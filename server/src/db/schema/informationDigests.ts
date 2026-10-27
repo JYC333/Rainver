@@ -161,6 +161,7 @@ export const informationDigestItems = pgTable("information_digest_items", {
   score: doublePrecision().notNull(),
   componentScoresJson: jsonb("component_scores_json").default({}).notNull(),
   rationale: text(),
+  provenanceJson: jsonb("provenance_json").default({}).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (t): PgTableExtraConfigValue[] => [
   unique("uq_information_digest_items_position").on(t.digestId, t.position),

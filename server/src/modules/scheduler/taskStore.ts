@@ -57,7 +57,7 @@ export class PgSchedulerTaskStore {
     return result.rows[0] ? normalizeSchedulerTaskRow(result.rows[0]) : null;
   }
 
-  async listDue(taskType: string, nowIso: string, limit?: number): Promise<SchedulerTaskRow[]> {
+  async listDue(taskType: string, nowIso: string, limit?: number, options?: { respectRetryAfter: boolean }): Promise<SchedulerTaskRow[]> {
     const params: unknown[] = [taskType, nowIso];
     let limitClause = "";
     if (typeof limit === "number") {
@@ -71,7 +71,8 @@ export class PgSchedulerTaskStore {
           AND status = 'active'
           AND next_run_at IS NOT NULL
           AND next_run_at <= $2
-        ORDER BY next_run_at ASC
+          ${options?.respectRetryAfter ? "AND (metadata_json->>'retry_after' IS NULL OR (metadata_json->>'retry_after')::timestamptz <= $2::timestamptz)" : ""}
+        ORDER BY ${options?.respectRetryAfter ? "GREATEST(next_run_at,(metadata_json->>'retry_after')::timestamptz)" : "next_run_at"} ASC, id ASC
         ${limitClause}`,
       params,
     );

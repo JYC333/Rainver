@@ -111,6 +111,7 @@ interface ConfirmDialogProps {
   description?: string
   onConfirm: () => void
   confirmLabel?: string
+  cancelLabel?: string
   variant?: ButtonProps['variant']
   restoreAvailable?: boolean
   restoreChecked?: boolean
@@ -124,6 +125,7 @@ export function ConfirmDialog({
   description,
   onConfirm,
   confirmLabel,
+  cancelLabel,
   variant = 'destructive',
   restoreAvailable = false,
   restoreChecked = false,
@@ -144,7 +146,7 @@ export function ConfirmDialog({
           </label>
         )}
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>{t('core_ui.dialog.cancel')}</Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>{cancelLabel ?? t('core_ui.dialog.cancel')}</Button>
           <Button
             variant={variant}
             onClick={() => { onConfirm(); onOpenChange(false) }}

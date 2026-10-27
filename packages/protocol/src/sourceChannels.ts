@@ -98,6 +98,7 @@ export const SourceChannelCapturePolicySchema = z.enum([
 ]);
 
 export const SourceChannelSchema = z.object({
+  goal_id: z.string().nullable().optional(),
   id: z.string().min(1),
   space_id: z.string().min(1),
   source_connection_id: z.string().min(1),

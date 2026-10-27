@@ -1,4 +1,4 @@
-import { link as link_, lstat, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link as link_, lstat, mkdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import type { ProviderBindingFrame } from "./execution.js";
 
@@ -281,11 +281,14 @@ export async function materializeProviderBinding(
  * dispatch cannot answer a login prompt, so a profile silently left without a
  * credential fails the run with no reason anybody can act on.
  *
- * **Not verified on a real paired host:** whether each runtime refreshes an expired credential in place or by
- * temp-file rename. A rename replaces this link with a private copy, and that
- * profile then keeps its own credential while the others keep the shared one.
- * Each stays usable; what is unknown is whether a rotating refresh token would
- * invalidate the siblings.
+ * Claude Code refreshes an expired credential by temp-file rename — seen on
+ * a paired host — which replaces this link with a private copy holding the
+ * rotated token, while the login home keeps the one the refresh just spent.
+ * Every other profile, and the next login link, then authenticates with a
+ * dead credential and the person is asked to log in again, about once a day.
+ * So a private copy newer than the login home's is **promoted**: renamed
+ * back over the login home's file and linked from here again. A rename moves
+ * the inode; nothing reads the bytes, which keeps ADR 0008's shape.
  */
 async function linkLoginCredential(
   profileRoot: string,
@@ -339,18 +342,26 @@ async function linkLoginCredential(
     // orphaned inode silently and forever. A profile that refreshed itself
     // later is newer and must be left alone, or the relink would undo it.
     if (sourceInfo.mtimeMs <= current.mtimeMs) {
-      // A private copy newer than the login home is the one state nothing
-      // else on the machine would ever surface: this profile stopped sharing
-      // the login, most likely because the runtime refreshed its token by
-      // temp-file rename. Said here so an operator can tell which profile
-      // diverged; a hard link to the same inode is the Windows fallback and
-      // is not divergence.
-      if (current.ino !== sourceInfo.ino || current.dev !== sourceInfo.dev) {
-        log(`profile ${profileRoot}: keeps its own ${link.credential_file}, newer than the login home's; it no longer shares that login`);
+      // A hard link to the same inode is the Windows fallback: nothing to do.
+      if (current.ino === sourceInfo.ino && current.dev === sourceInfo.dev) return;
+      // A private copy newer than the login home: the runtime refreshed its
+      // token here by temp-file rename, and the login home now holds the
+      // spent one. Move the fresh credential back where every profile links
+      // from, then link this profile to it like the rest. The rename is
+      // atomic and replaces the stale file in place.
+      try {
+        await rename(target, source);
+      } catch (error) {
+        // Another filesystem (EXDEV) or a login home this daemon cannot
+        // write: the profile keeps what it has, and the divergence is said
+        // so an operator can tell which profile stopped sharing the login.
+        log(`profile ${profileRoot}: keeps its own ${link.credential_file}, newer than the login home's, and could not hand it back (${error instanceof Error ? error.message : String(error)}); it no longer shares that login`);
+        return;
       }
-      return;
+      log(`profile ${profileRoot}: handed its refreshed ${link.credential_file} back to the login home and shares that login again`);
+    } else {
+      await rm(target, { force: true });
     }
-    await rm(target, { force: true });
   }
   await mkdir(dirname(target), { recursive: true, mode: 0o700 });
   await linkOrHardLink(source, target);

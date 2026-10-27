@@ -1,0 +1,14 @@
+import {useEffect,useState} from 'react'
+import type {SourceGoalDetail} from '@rainver/protocol'
+import {sourceGoalsApi,sourcesApi} from '../../api/client'
+import {useSpace} from '../../contexts/SpaceContext'
+import {SpaceLink,useSpaceNavigate} from '../../core/spaceNav'
+import {useAppTranslation} from '../../i18n'
+import {Button} from '../../components/ui/button'
+import {Card} from '../../components/ui/card'
+export default function SourceGoalsList({projectId}:{projectId?:string}){
+ const {activeSpaceId,userId}=useSpace();const {t}=useAppTranslation();const nav=useSpaceNavigate();const [goals,setGoals]=useState<SourceGoalDetail['goal'][]|null>(null);const [error,setError]=useState<unknown>(null);const [busy,setBusy]=useState(false);const [attempt,setAttempt]=useState(0);
+ useEffect(()=>{if(!activeSpaceId)return;const c=new AbortController();setError(null);setGoals(null);void sourceGoalsApi.list({spaceId:activeSpaceId,signal:c.signal}).then(p=>{if(!c.signal.aborted)setGoals(p.goals.filter(g=>projectId?g.project_id===projectId:!g.project_id))}).catch(e=>{if(!c.signal.aborted)setError(e)});return()=>c.abort()},[activeSpaceId,projectId,attempt]);
+ async function legacy(){if(!activeSpaceId||busy)return;setBusy(true);setError(null);try{const channels=await sourcesApi.channels({}, {spaceId:activeSpaceId});for(const c of channels.filter(c=>c.source_owner_user_id===userId&&c.status!=='archived'&&(projectId?c.project_id===projectId:!c.project_id)))await sourceGoalsApi.legacy(c.id,{spaceId:activeSpaceId});setAttempt(n=>n+1)}catch(e){setError(e)}finally{setBusy(false)}}
+ return <div className="space-y-4 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-xl font-semibold">{t('sourceGoals.goals')}</h1><Button asChild><SpaceLink to={`/sources/goals/new${projectId?`?project_id=${projectId}`:''}`}>{t('sourceGoals.question')}</SpaceLink></Button></div>{error!=null&&<div role="alert"><p>{t('sourceGoals.errorHint')}</p><Button onClick={()=>setAttempt(n=>n+1)}>{t('sourceGoals.retry')}</Button></div>}{!goals&&!error&&<p role="status">{t('sourceGoals.loading')}</p>}{goals?.filter(g=>g.space_id===activeSpaceId&&(projectId?g.project_id===projectId:!g.project_id)).map(g=><Card key={g.id} className="space-y-2 p-4"><SpaceLink className="font-medium underline" to={`/sources/goals/${g.id}`}>{String(g.intent_json.intent)}</SpaceLink><p>{t(`sourceGoals.status.${g.status}`)}</p>{g.compatibility_json?.scheduler_owner==='legacy'&&<p className="text-sm text-muted-foreground">{t('sourceGoals.legacy')}</p>}</Card>)}{goals?.length===0&&<p>{t('sourceGoals.beforeSend')}</p>}<Button variant="outline" disabled={busy} onClick={()=>void legacy()}>{t('sourceGoals.importExisting')}</Button><Button variant="outline" onClick={()=>nav(projectId?`/projects/${projectId}/sources`:'/library/reading')}>{t('sourceGoals.read')}</Button></div>
+}

@@ -137,10 +137,11 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
       }),
     };
   } catch (error) {
+    const historySkipped = error instanceof HttpError && (error.responseBody as {code?:string}|undefined)?.code === 'monitoring_history_before_latest' && triggerType === 'schedule';
     await withTransaction(pool, async (client) => {
       await new PgAutomationRepository(client).completeNativeAutomationRun({
         automationRunId: started.automationRunId,
-        status: "failed",
+        status: historySkipped ? "skipped" : "failed",
         error: {
           error_code: "information_digest_automation_failed",
           error_text: error instanceof Error ? error.message : "Digest generation failed",
@@ -148,6 +149,7 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
       });
       if (context.advanceSchedule) await new PgAutomationRepository(client).advanceSchedule(automation);
     });
+    if (historySkipped) return {automation_run_id:started.automationRunId,target_type:TARGET_TYPE,skipped:true,reason:'monitoring_history_before_latest'};
     if (context.advanceSchedule) throw markAutomationScheduleHandled(error, "Information digest operation failed");
     throw error;
   }

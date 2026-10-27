@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import ResearchAreaPage from '../ResearchAreaPage'
 import { projectsApi, projectResearchApi, inquiryApi } from '../../../api/client'
@@ -392,12 +392,25 @@ vi.mock('../../../api/client', () => ({
   },
 }))
 
-function renderArea(search = '') {
+function SetupLocationProbe() {
+  const [params, setParams] = useSearchParams()
+  return <>
+    <output data-testid="setup-location">{params.toString()}</output>
+    <button data-testid="render-after-cleanup" onClick={() => setParams(previous => {
+      const next = new URLSearchParams(previous)
+      next.set('after_cleanup', '1')
+      return next
+    })}>Render after cleanup</button>
+  </>
+}
+
+function renderArea(search = '?tab=standing', observeCleanup = false) {
   return render(
     <MemoryRouter
       initialEntries={[`/spaces/space-1/projects/project-1/research${search}`]}
       future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
     >
+      {observeCleanup && <SetupLocationProbe />}
       <Routes>
         <Route path="/spaces/:spaceId/projects/:projectId/research" element={<ResearchAreaPage />} />
       </Routes>
@@ -441,6 +454,7 @@ describe('Research Area workbench', () => {
     expect(await screen.findByText('Research status')).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Standing overview' })).toHaveAttribute('data-state', 'active')
     await openFocus()
+    expect(screen.getByRole('link', { name: 'Open research Area' })).toHaveAttribute('href', '/projects/project-1/research?tab=standing')
     expect(screen.getByText('Set the research question that screening and synthesis should answer.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^start initial research$/i })).toBeDisabled()
     expect(screen.getAllByRole('button', { name: /set up intake/i }).length).toBeGreaterThan(0)
@@ -660,7 +674,7 @@ describe('Research Area workbench', () => {
     await waitFor(() => expect(projectResearchApi.resolveQuestionChange).toHaveBeenCalledWith('project-1', 'workflow-1', 'rescreen'))
   })
 
-  it('opens Research Setup and preselects the ?thread= Hypothesis', async () => {
+  it.each([['', 'focus'], ['&tab=reading', 'reading'], ['&tab=invalid', 'focus']])('keeps Thread setup open after URL cleanup and a later render (%s)', async (tabQuery, expectedTab) => {
     vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
       id: 'workflow-1', project_id: 'project-1', current_stage: 'screening',
       status: 'active', state_json: { research_question: 'Does caching improve latency?' },
@@ -682,14 +696,25 @@ describe('Research Area workbench', () => {
       created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
     }])
 
-    renderArea('?research=new&thread=thread-2')
+    renderArea(`?research=new&thread=thread-2&keep=original${tabQuery}`, true)
 
     // The independent dialog opens preselecting thread-2's own wording — proof
     // the ?research=new wiring reached the right dialog with the right thread,
     // not the "edit the currently selected Workflow" dialog (workflow-1 /
     // thread-1, a Question). Definition itself happens on Inquiry, so with no
     // draft Workflow yet linked to thread-2 this dialog hands back there.
-    expect(await screen.findByText(/Researching: Batching improves throughput/)).toBeInTheDocument()
+    await waitFor(() => {
+      const cleaned = new URLSearchParams(screen.getByTestId('setup-location').textContent ?? '')
+      expect(cleaned.has('research')).toBe(false)
+      expect(cleaned.has('thread')).toBe(false)
+      expect(cleaned.get('tab')).toBe(expectedTab)
+      expect(cleaned.get('keep')).toBe('original')
+    })
+    fireEvent.click(screen.getByTestId('render-after-cleanup'))
+    await waitFor(() => expect(screen.getByTestId('setup-location')).toHaveTextContent('after_cleanup=1'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByText(/Researching: Batching improves throughput/)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Open deep research' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Refine in Inquiry' })).toHaveAttribute('href', '/projects/project-1/inquiry?thread=thread-2')
   })
 

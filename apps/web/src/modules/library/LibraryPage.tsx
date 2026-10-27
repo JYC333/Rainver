@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Outlet } from 'react-router-dom'
+import { Outlet, useLocation, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { BookOpen, CheckCircle2, ExternalLink, FileText, Library, RefreshCw, Search, XCircle } from 'lucide-react'
 import { SpaceLink as Link } from '../../core/spaceNav'
@@ -21,7 +21,6 @@ import {
   fmt,
   preview,
   short,
-  textExtractionActionLabel,
   textExtractionDisabledReason,
   type ItemFilter,
 } from '../sources/sourcePageModel'
@@ -70,7 +69,10 @@ function fmtDate(date: string): string {
 }
 
 export default function LibraryPage() {
+  const { t } = useAppTranslation()
   const { activeSpaceId, activeSpaceName } = useSpace()
+  const location = useLocation()
+  if (location.pathname.endsWith('/reading')) return <div className="p-4 md:p-6"><Outlet /></div>
 
   if (!activeSpaceId) {
     return (
@@ -81,8 +83,8 @@ export default function LibraryPage() {
   }
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-center gap-4 pb-4 border-b border-border">
+    <div className="p-4 md:p-6 space-y-6">
+      <div className="flex flex-wrap items-center gap-4 pb-4 border-b border-border">
         <div
           className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0"
           style={{
@@ -93,8 +95,8 @@ export default function LibraryPage() {
           <Library className="size-5 text-accent-foreground" />
         </div>
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Library</h1>
-          <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? activeSpaceId}</p>
+          <h1 className="text-xl font-semibold tracking-tight">{t(location.pathname.endsWith('/digests') ? 'reading.editions' : 'reading.mine')}</h1>
+          <p className="text-xs text-muted-foreground">{activeSpaceName} · {t('monitoring.readingIntro')}</p>
         </div>
       </div>
 
@@ -146,14 +148,15 @@ function SourceItemCard({
   extractionStatus: ExtractionJob['status'] | null
   onAction: (item: SourceItem, action: string) => void
 }) {
+  const { t } = useAppTranslation()
   const textExtractionReason = textExtractionDisabledReason(item)
-  const textExtractionLabel = textExtractionActionLabel(item)
+  const textExtractionLabel = t(item.content_state === 'content_saved' ? 'reading.reextract' : 'reading.extract')
   const itemBusy = busy?.startsWith(`item:${item.id}`) ?? false
   const extractionInProgress = extractionStatus === 'pending' || extractionStatus === 'running'
   const extractionLabel = extractionStatus === 'pending'
-    ? 'Queued'
+    ? t('reading.queued')
     : extractionStatus === 'running'
-      ? 'Extracting…'
+      ? t('reading.extracting')
       : textExtractionLabel
   return (
     <Card className="p-4 space-y-3">
@@ -247,6 +250,7 @@ export function LibraryPdfsPage() {
 }
 
 function LibraryItemsRoute({ libraryType }: { libraryType?: LibraryItemTypeFilter }) {
+  const { t } = useAppTranslation()
   const { activeSpaceId } = useSpace()
   const [channels, setChannels] = useState<SourceChannel[]>([])
   const [sourceItems, setSourceItems] = useState<SourceItem[]>([])
@@ -315,7 +319,7 @@ function LibraryItemsRoute({ libraryType }: { libraryType?: LibraryItemTypeFilte
     }
   }, [activeSpaceId, itemFilter, itemQuery, channelFilter, libraryType, itemOffset, selectedConnectionId])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { void load(); return () => { listRequest.current++ } }, [load])
 
   function changeItemFilter(value: string) {
     setItemFilter(value as ItemFilter)
@@ -411,7 +415,7 @@ function LibraryItemsRoute({ libraryType }: { libraryType?: LibraryItemTypeFilte
           />
           <Button variant="outline" onClick={load} disabled={loading} type="button">
             <RefreshCw className="size-4" />
-            Refresh
+            {t('reading.refresh')}
           </Button>
         </div>
       </div>
@@ -446,14 +450,21 @@ function LibraryItemsRoute({ libraryType }: { libraryType?: LibraryItemTypeFilte
 
 export function LibraryDigestsPage() {
   const { activeSpaceId } = useSpace()
+  return <ScopedLibraryDigestsPage key={activeSpaceId} />
+}
+function ScopedLibraryDigestsPage() {
+  const [params, setParams] = useSearchParams()
+  const { activeSpaceId } = useSpace()
   const [briefings, setBriefings] = useState<SourcePostProcessingBriefingDaySummary[]>([])
   const [briefingTotal, setBriefingTotal] = useState(0)
   const [briefingOffset, setBriefingOffset] = useState(0)
   const [loading, setLoading] = useState(false)
   const { t } = useAppTranslation()
   // The shown day; null asks for the latest complete day of the digest's timezone.
-  const [day, setDay] = useState<string | null>(null)
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(params.get('date') ?? '') ? params.get('date') : null
+  const setDay = (value: string) => { const next = new URLSearchParams(params); next.set('date', value); setParams(next) }
   const [latestDay, setLatestDay] = useState<string | null>(null)
+  const [dailyError, setDailyError] = useState<unknown>(null)
   const [daily, setDaily] = useState<InformationDigestLookup | null>(null)
   const shownDay = daily ? (daily.status === 'available' ? daily.digest.digest_date : daily.digest_date) : null
   const [profile, setProfile] = useState<InterestProfileSnapshot | null>(null)
@@ -472,6 +483,7 @@ export function LibraryDigestsPage() {
       return
     }
     setLoading(true)
+    setDaily(null); setDailyError(null)
     try {
       const [briefingResult, dailyResult, profileResult, projectResult] = await Promise.allSettled([
         sourcesApi.briefings({ limit: BRIEF_PAGE_SIZE, offset: briefingOffset }),
@@ -484,7 +496,9 @@ export function LibraryDigestsPage() {
         setBriefings(briefingResult.value.items)
         setBriefingTotal(briefingResult.value.total)
       } else {
-        throw briefingResult.reason
+        setBriefings([])
+        setBriefingTotal(0)
+        toast.error(errMsg(briefingResult.reason))
       }
       if (dailyResult.status === 'fulfilled') {
         setDaily(dailyResult.value)
@@ -494,6 +508,7 @@ export function LibraryDigestsPage() {
         // The day could not be read: say so rather than keep showing the
         // previous day under the newly selected one.
         setDaily(null)
+        setDailyError(dailyResult.reason)
         toast.error(errMsg(dailyResult.reason))
       }
       if (profileResult.status === 'fulfilled') setProfile(profileResult.value)
@@ -505,7 +520,7 @@ export function LibraryDigestsPage() {
     }
   }, [activeSpaceId, briefingOffset, day])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { void load(); return () => { loadRequest.current++ } }, [load])
 
   const firstLoad = loading && briefings.length === 0
 
@@ -513,19 +528,20 @@ export function LibraryDigestsPage() {
     <section className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Today for you</h2>
           <p className="text-xs text-muted-foreground">
-            {profile ? `${profile.maturity} profile · ${profile.read_item_count} read items` : 'Cross-source daily selection'}
+            {t('reading.historyHint')}
           </p>
         </div>
         <Button variant="outline" onClick={load} disabled={loading} type="button">
           <RefreshCw className="size-4" />
-          Refresh
+          {t('reading.refresh')}
         </Button>
       </div>
 
-      {activeSpaceId && <AnnotationRecoveryNotice spaceId={activeSpaceId} />}
 
+
+      <Link className="text-sm underline" to="/library/reading">{t('reading.mine')}</Link>
+      {dailyError != null && <div role="alert"><p>{errMsg(dailyError)}</p><Button onClick={load}>{t('reading.retry')}</Button></div>}
       {daily && shownDay && (
         <DigestDayNav
           date={shownDay}
@@ -537,8 +553,10 @@ export function LibraryDigestsPage() {
       {daily?.status === 'missing' && (
         <DigestMissing missing={daily} onBackfill={async (date) => {
           if (!activeSpaceId) return
+          const request = loadRequest.current
           try {
             const result = await informationDigestsApi.backfillPersonal(activeSpaceId, date)
+            if (request !== loadRequest.current) return
             setDaily({ status: 'available', digest: result.digest })
             toast.success(result.created ? t('digest_reports.backfill_done') : t('digest_reports.backfill_existing'))
           } catch (error) {
@@ -547,7 +565,7 @@ export function LibraryDigestsPage() {
         }} />
       )}
       {daily?.status === 'available' && <DigestProvenance digest={daily.digest} />}
-      {daily?.status === 'available' && <InformationDigestView digest={daily.digest} projects={projects} onFileToProject={async (itemId, sourceItemId, projectId) => {
+      {daily?.status === 'available' && <InformationDigestView reading digest={daily.digest} projects={projects} onFileToProject={async (itemId, sourceItemId, projectId) => {
         try {
           await projectsApi.addCorpusItem(projectId, {
             source_item_id: sourceItemId,
@@ -576,9 +594,12 @@ export function LibraryDigestsPage() {
         }
       }} />}
 
-      {activeSpaceId && profile && <InterestProfileControls spaceId={activeSpaceId} profile={profile} onChanged={load} />}
+      <details className="rounded-lg border border-border bg-card p-4"><summary className="cursor-pointer text-sm font-medium">{t('monitoring.readingPreferences')}</summary><div className="mt-4 space-y-4">
+        {activeSpaceId && <AnnotationRecoveryNotice spaceId={activeSpaceId} />}
+        {activeSpaceId && profile && <InterestProfileControls spaceId={activeSpaceId} profile={profile} onChanged={load} />}
+      </div></details>
 
-      <div className="pt-3 border-t space-y-3">
+      <details className="rounded-lg border border-border bg-card p-4"><summary className="cursor-pointer text-sm font-medium">{t('monitoring.sourceProcessingHistory')}</summary><div className="mt-4 space-y-3">
         <div>
           <h3 className="text-sm font-semibold">Source run briefings</h3>
           <p className="text-xs text-muted-foreground">{briefingTotal} digests from individual processing rules</p>
@@ -603,7 +624,7 @@ export function LibraryDigestsPage() {
       )}
 
       <Pagination total={briefingTotal} limit={BRIEF_PAGE_SIZE} offset={briefingOffset} onChange={setBriefingOffset} />
-      </div>
+      </div></details>
     </section>
   )
 }

@@ -116,6 +116,9 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "proposal.decide",
   // Bringing a Source into the Project. Both are proposals (ADR 0017 §1), so
   // they widen nothing that skips approval.
+  "project.monitoring.propose",
+  "project.monitoring.propose_details",
+  "project.monitoring.read",
   "project.source.propose_bind",
   "source.backfill.propose_start",
 ];

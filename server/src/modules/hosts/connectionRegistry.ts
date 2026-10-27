@@ -1,3 +1,4 @@
+import type { SourceExecution, SourceExecutionResult, SourceRequest, SourceResponse } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
 import type { FileContent, FileNode, GitDiff, GitStatus } from "@rainver/folder-read";
 import type { FolderWriteDaemonError, HostDaemonFrameOf, HostLaunchFrame, HostLaunchPayload, HostServerFrame, HostServerFrameOf, HostUsageQuota } from "@rainver/protocol";
@@ -121,6 +122,7 @@ interface PendingRun {
 
 interface HostConnection {
   sink: HostFrameSink | null;
+  sourcesEnabled?:boolean;
 }
 
 /** What the daemon reports back for one `install_tool` / `uninstall_tool` request. */
@@ -214,6 +216,7 @@ interface HostWorkspaceRegistration {
 /** What a daemon's login terminal sends back, frame by frame. */
 type LoginSessionEvent =
   | { type: "output"; data: string }
+  | { type: "callback_wanted"; port: number; authorize_url: string }
   | { type: "exit"; exit_code: number; logged_in: boolean | null };
 
 interface PendingLogin {
@@ -247,6 +250,12 @@ function unavailableQuota(error: string): HostUsageQuota {
 }
 
 export class HostConnectionRegistry {
+  private readonly sourceExecutions = new Map<string, {
+    hostId: string; execution: SourceExecution; abort: AbortController;
+    broker: (request: SourceRequest, signal: AbortSignal) => Promise<SourceResponse>;
+    authorize?: (signal:AbortSignal)=>Promise<void>;
+    settle: (result: SourceExecutionResult) => void; sequence: number; busy: boolean;
+  }>();
   private readonly connections = new Map<string, HostConnection>();
   private readonly pending = new Map<string, PendingRun>();
   private readonly pendingInstalls = new Map<string, { hostId: string; resolve: (result: ToolInstallResult) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -306,6 +315,9 @@ export class HostConnectionRegistry {
    * a hang, not patience.
    */
   private failPendingRequests(hostId: string): void {
+    for (const pending of this.sourceExecutions.values()) {
+      if (pending.hostId === hostId) pending.settle({ status: "failed", output_json: null, error: "source_host_disconnected" });
+    }
     for (const [requestId, pending] of this.pendingCommands) {
       if (pending.hostId !== hostId) continue;
       this.pendingCommands.delete(requestId);
@@ -399,7 +411,7 @@ export class HostConnectionRegistry {
     this.undeliveredStops.set(hostId, stops);
   }
 
-  registerConnection(hostId: string, sink: HostFrameSink): boolean {
+  registerConnection(hostId: string, sink: HostFrameSink, sourcesEnabled=false): boolean {
     // Revoked after its hello authenticated but before it got here: the
     // revoke's `closeConnection` found nothing to close, and the token is
     // already gone, so this socket must not become the host's live
@@ -410,8 +422,12 @@ export class HostConnectionRegistry {
     }
     // A second connection from the same host (e.g. daemon restart racing its
     // own reconnect) replaces the stale one rather than stacking silently.
+    // Sources have no reconnect grace: the broker grant belongs to this connection.
+    for (const pending of this.sourceExecutions.values()) {
+      if (pending.hostId === hostId) pending.settle({status:"failed",output_json:null,error:"source_host_disconnected"});
+    }
     this.connections.get(hostId)?.sink?.close(1000, "superseded_by_new_connection");
-    this.connections.set(hostId, { sink });
+    this.connections.set(hostId, { sink, sourcesEnabled });
     // The daemon is back before any pending run's grace period expired —
     // let it keep waiting for the real outcome instead of failing it out.
     for (const [runId, pendingRun] of this.pending) {
@@ -442,7 +458,7 @@ export class HostConnectionRegistry {
    * never-registered sink changes nothing and reports false, so the caller
    * can tell a host that went offline from a host that merely reconnected.
    */
-  unregisterConnection(hostId: string, sink: HostFrameSink): boolean {
+  unregisterConnection(hostId: string, sink: HostFrameSink, sourcesEnabled=false): boolean {
     const connection = this.connections.get(hostId);
     if (!connection || connection.sink !== sink) return false;
     connection.sink = null;
@@ -964,6 +980,14 @@ export class HostConnectionRegistry {
     return true;
   }
 
+  /** Hands the browser's OAuth redirect to the login on the host; the daemon checks it against the port it announced. */
+  sendLoginCallback(hostId: string, sessionId: string, url: string): boolean {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink || this.logins.get(sessionId)?.hostId !== hostId) return false;
+    connection.sink.send({ type: "login_callback", session_id: sessionId, url });
+    return true;
+  }
+
   closeLoginSession(hostId: string, sessionId: string): void {
     const pending = this.logins.get(sessionId);
     if (!pending || pending.hostId !== hostId) return;
@@ -989,6 +1013,68 @@ export class HostConnectionRegistry {
    * leave the quick one hanging. Its own budget is the command's plus a margin
    * for the round trip, so a daemon that never answers still fails.
    */
+  /** Sources-only transport. Callers bind an authorized broker before dispatch;
+   * there is no public route or automatic generated-code activation. */
+  async executeSource(hostId: string, execution: SourceExecution,
+    broker: ((request: SourceRequest, signal: AbortSignal) => Promise<SourceResponse>) & {readonly scopeSha256?:string;readonly authorizeExecution?:(signal:AbortSignal)=>Promise<void>}, signal: AbortSignal): Promise<SourceExecutionResult> {
+    if(execution.collection && (!broker.scopeSha256 || !broker.authorizeExecution))return Promise.resolve({status:"refused",output_json:null,error:"source_checkpoint_scope_missing"});
+    execution={...execution,execution_id:randomUUID(),...(execution.collection?{collection:{...execution.collection,authorization_sha256:broker.scopeSha256!}}:{})};
+    const sink = this.connections.get(hostId)?.sink;
+    if (!this.connections.get(hostId)?.sourcesEnabled || !sink || signal.aborted || this.sourceExecutions.has(execution.execution_id)) {
+      return Promise.resolve({ status: "refused", output_json: null, error: "source_host_unavailable" });
+    }
+    if(execution.collection){
+      try{await broker.authorizeExecution!(signal)}catch{return {status:"refused",output_json:null,error:"source_authority_revoked"};}
+      if(signal.aborted || this.connections.get(hostId)?.sink!==sink)return {status:"refused",output_json:null,error:"source_host_unavailable"};
+    }
+    return new Promise(resolve => {
+      const abort = new AbortController();
+      const cancel = () => settle({ status: "cancelled", output_json: null, error: "source_cancelled" });
+      const timer = setTimeout(() => settle({ status: "timed_out", output_json: null, error: "source_timeout" }), execution.limits.wall_ms + 5000);
+      const settle = (result: SourceExecutionResult) => {
+        if (!this.sourceExecutions.has(execution.execution_id)) return;
+        this.sourceExecutions.delete(execution.execution_id); clearTimeout(timer);
+        signal.removeEventListener("abort", cancel); abort.abort();
+        try { sink.send({ type: "source_cancel", execution_id: execution.execution_id }); } catch { /* offline */ }
+        resolve(result);
+      };
+      this.sourceExecutions.set(execution.execution_id, { hostId, execution, abort, broker, authorize:broker.authorizeExecution, settle, sequence: 0, busy: false });
+      signal.addEventListener("abort", cancel, { once: true });
+      try { sink.send({ type: "source_execute", execution }); } catch { settle({ status: "failed", output_json: null, error: "source_host_unavailable" }); }
+    });
+  }
+
+  receiveSourceRequest(hostId: string, executionId: string, request: SourceRequest): void {
+    const pending = this.sourceExecutions.get(executionId);
+    if (!pending || pending.hostId !== hostId) return;
+    if (pending.busy || request.sequence !== pending.sequence + 1 || request.sequence > pending.execution.limits.requests) {
+      pending.settle({ status: "failed", output_json: null, error: "source_channel_refused" }); return;
+    }
+    pending.sequence = request.sequence; pending.busy = true;
+    void pending.broker(request, pending.abort.signal).then(response => {
+      if (pending.abort.signal.aborted) return;
+      if (response.sequence !== request.sequence) throw new Error("source response mismatch");
+      pending.busy = false;
+      this.connections.get(hostId)?.sink?.send({ type: "source_response", execution_id: executionId, response });
+    }).catch(error => pending.settle({ status: error?.code==="source_cancelled"?"cancelled":error?.code==="source_timeout"?"timed_out":"failed", output_json: null,
+      error:typeof error?.code==="string" && /^source_[a-z_]+$/.test(error.code)?error.code:"source_request_refused", ...(error?.retryAt?{retry_at:error.retryAt}:{}) }));
+  }
+
+  receiveSourceResult(hostId: string, executionId: string, result: SourceExecutionResult): void {
+    const pending = this.sourceExecutions.get(executionId);
+    if (!pending || pending.hostId !== hostId) return;
+    if (pending.busy || (result.status === "succeeded" && (result.output_json === null || result.error !== null)) || (result.status !== "succeeded" && result.output_json !== null) || (result.output_json !== null && Buffer.byteLength(result.output_json) > pending.execution.limits.output_bytes)) {
+      pending.settle({ status: "failed", output_json: null, error: "source_output_refused" }); return;
+    }
+    if (result.output_json !== null) {
+      try { JSON.parse(result.output_json); } catch { pending.settle({status:"failed",output_json:null,error:"source_output_refused"}); return; }
+    }
+    if(pending.authorize){
+      pending.busy=true;
+      void pending.authorize(pending.abort.signal).then(()=>pending.settle(result)).catch(()=>pending.settle({status:"failed",output_json:null,error:"source_authority_revoked"}));
+    }else pending.settle(result);
+  }
+
   runHostCommand(
     hostId: string,
     frame: Omit<HostServerFrameOf<"command_run">, "type" | "request_id">,

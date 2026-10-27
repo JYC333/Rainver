@@ -37,7 +37,7 @@ function EvidenceTab({ signals, corpus, projectId }: {
       <div className="space-y-2 py-4">
         <p className="text-sm text-muted-foreground">No evidence has been classified against this Thread yet.</p>
         <Button size="sm" variant="outline" asChild>
-          <Link to={`/projects/${projectId}/research`}>Open the project Reading List</Link>
+          <Link to={`/projects/${projectId}/research?tab=reading`}>Open the project Reading List</Link>
         </Button>
       </div>
     )
@@ -68,7 +68,7 @@ function EvidenceTab({ signals, corpus, projectId }: {
       ))}
       <p className="border-t pt-3 text-xs text-muted-foreground">
         Only classified evidence appears here.{' '}
-        <Link className="underline" to={`/projects/${projectId}/research`}>See every retrieved item in the Reading List</Link>.
+        <Link className="underline" to={`/projects/${projectId}/research?tab=reading`}>See every retrieved item in the Reading List</Link>.
       </p>
     </div>
   )

@@ -1,4 +1,4 @@
-import type { HostUsageQuota } from "@rainver/protocol";
+import { HostUsageQuotaSchema, type HostUsageQuota } from "@rainver/protocol";
 import type { Pool } from "../../db/pool.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "./connectionRegistry.js";
@@ -34,6 +34,7 @@ export const HOST_USAGE_REFRESH_INTERVAL_SECONDS = 3 * 60 * 60;
 function quotaOf(value: unknown): HostUsageQuota {
   const row = (value ?? {}) as Partial<HostUsageQuota>;
   return {
+    windows: HostUsageQuotaSchema.shape.windows.safeParse(row.windows).data,
     available: row.available === true,
     session_pct: typeof row.session_pct === "number" ? row.session_pct : null,
     session_resets: typeof row.session_resets === "string" ? row.session_resets : null,
@@ -66,8 +67,7 @@ export async function readHostUsage(pool: Pool, hostId: string): Promise<HostUsa
   }));
 }
 
-async function writeHostUsage(pool: Pool, hostId: string, runtimeKey: string, installation: string, quota: HostUsageQuota): Promise<string> {
-  const checkedAt = new Date().toISOString();
+async function writeHostUsage(pool: Pool, hostId: string, runtimeKey: string, installation: string, quota: HostUsageQuota, checkedAt = new Date().toISOString()): Promise<string> {
   await pool.query(
     `INSERT INTO host_runtime_usage (host_id, runtime_key, installation, quota_json, checked_at)
      VALUES ($1, $2, $3, $4, $5)
@@ -107,6 +107,7 @@ export async function refreshHostUsage(
       // credential; a managed copy's manifest has it too, but the machine's
       // own installation has no manifest to read it from.
       login: acpRuntimeProbe(runtimeKey)?.login ?? null,
+      state: acpRuntimeProbe(runtimeKey)?.state ?? null,
     })
     : {
       available: false,
@@ -120,6 +121,14 @@ export async function refreshHostUsage(
     const cached = (await readHostUsage(pool, hostId))
       .find((row) => row.runtime_key === runtimeKey && row.installation === installation);
     if (cached?.quota.available) return cached;
+  }
+  if (runtimeKey === "claude_code" && quota.available) {
+    const cached = (await readHostUsage(pool, hostId)).find(row => row.runtime_key === runtimeKey && row.installation === installation);
+    const reported = new Set(quota.windows?.map(item => item.id) ?? []);
+    const retained = (cached?.quota.windows ?? []).filter(item =>
+      /^(five_hour|seven_day)_[a-z0-9_]+$/.test(item.id) && !reported.has(item.id)
+      && item.resets !== null && Date.parse(item.resets.replace(/^Resets /, "")) > Date.now());
+    if (retained.length) quota.windows = [...(quota.windows ?? []), ...retained].slice(0, 64);
   }
   const checkedAt = await writeHostUsage(pool, hostId, runtimeKey, installation, quota);
   return { host_id: hostId, runtime_key: runtimeKey, installation, quota, checked_at: checkedAt };
@@ -233,18 +242,40 @@ export async function mergeRunQuota(pool: Pool, input: {
     : input.quota.rate_limit_type === "seven_day"
       ? "week"
       : null;
-  if (!window) return;
+  const modelWindow = input.runtimeKey === "claude_code" && /^(five_hour|seven_day)_[a-z0-9_]+$/.test(input.quota.rate_limit_type);
+  if (!window && !modelWindow) return;
+  if (!Number.isFinite(input.quota.utilization) || input.quota.utilization < 0) return;
   const cached = (await readHostUsage(pool, input.hostId))
     .find((row) => row.runtime_key === input.runtimeKey && row.installation === input.installation);
   const pct = Math.max(0, Math.min(100, Math.round(input.quota.utilization * 100)));
   const resets = Number.isFinite(input.quota.resets_at) && input.quota.resets_at > 0
     ? `Resets ${new Date(input.quota.resets_at * 1000).toISOString()}`
     : null;
+  if (!window) {
+    // Model-specific events must never make the account-wide reading look fresh.
+    const id = input.quota.rate_limit_type;
+    const quota: HostUsageQuota = {
+      ...(cached?.quota ?? { available: true, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: null }),
+      available: true,
+      windows: [
+        { id, label: id.replace(/^seven_day_/, "").replace(/^five_hour_/, "").replaceAll("_", " ") + (id.startsWith("seven_day") ? " weekly" : " session"), used_pct: pct, resets },
+        ...(cached?.quota.windows ?? []).filter(item => item.id !== id),
+      ].slice(0, 64),
+    };
+    await writeHostUsage(pool, input.hostId, input.runtimeKey, input.installation, quota, cached?.checked_at);
+    return;
+  }
   const quota: HostUsageQuota = {
     ...(cached?.quota ?? { available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: null }),
     ...(window === "session" ? { session_pct: pct, session_resets: resets } : { week_pct: pct, week_resets: resets }),
     error: null,
   };
+  if (quota.windows) {
+    const id = input.quota.rate_limit_type;
+    const existing = quota.windows.find(item => item.id === id);
+    const updated = { id, label: existing?.label ?? id.replaceAll("_", " "), used_pct: pct, resets };
+    quota.windows = [...quota.windows.filter(item => item.id !== id), updated].slice(0, 64);
+  }
   quota.available = quota.session_pct !== null || quota.week_pct !== null;
   await writeHostUsage(pool, input.hostId, input.runtimeKey, input.installation, quota);
 }

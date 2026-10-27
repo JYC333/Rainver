@@ -1,6 +1,7 @@
+import {sourceExecutionOffer} from "./sourceCapability.js";
 import type { HostHelloInfo, HostRunDiffUpload, HostRunOutputsUpload, RuntimeProbe } from "@rainver/protocol";
 import { mkdtemp, rm } from "node:fs/promises";
-import { arch, platform, tmpdir } from "node:os";
+import { arch, homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { detectCapabilities, type AskRuntimeOptions } from "./capabilities.js";
 import { ambientSessionCounts } from "./ambientCounts.js";
@@ -10,6 +11,7 @@ import { collectWorkspaceStatus } from "./workspaceStatus.js";
 import { listManagedWorkspaces } from "./managedWorkspaces.js";
 import { daemonVersion } from "./version.js";
 import { ensurePackagedAdapter } from "./adapterInstallation.js";
+import { loggedIn, OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { localToolBridgeSupported } from "@rainver/agent-cli/local-bridge";
 
 export class ApiError extends Error {
@@ -87,11 +89,18 @@ function askRuntimeOptions(probes: RuntimeProbe[], log?: (line: string) => void)
     try {
       const [rawCommand, ...args] = probe.argv.map((arg) => substituteCwd(arg, cwd));
       const launch = resolveAcpLaunch(rawCommand!, args, installation, probe.runtime_key);
+      // A probe may ask the Agent to `authenticate` only when its credential
+      // file is there (the call then confirms a login) or when no boundary
+      // says where that file is. A copy known to hold no credential is
+      // reported as not logged in instead: for an Agent whose authenticate
+      // is interactive, the call would start a browser login and kill it.
+      const home = installation === OWN_INSTALLATION ? homedir() : readToolManifestSync(probe.runtime_key, installation)?.home ?? null;
+      const authenticate = probe.state && home ? loggedIn(home, probe.state) !== false : true;
       // Held for the probe's duration, so a replacement waits for it rather
       // than deleting the tree it is executing from.
       const options = await withRuntimeKeyHeld(
         lookup.runtime_key,
-        () => probeAcpOptions(launch.command, launch.args, launch.env, cwd, undefined, failed, lookup.runtime_key),
+        () => probeAcpOptions(launch.command, launch.args, launch.env, cwd, undefined, failed, lookup.runtime_key, { authenticate }),
       );
       if (options !== null && reportedProbeFailures.delete(key)) log?.(`${key}: login methods and options read successfully`);
       return options;
@@ -121,6 +130,7 @@ async function helloInfo(
       const command = probes?.find(candidate => candidate.runtime_key === lookup.runtime_key)?.argv[0];
       return command ? ensurePackagedAdapter(command) : true;
     },
+    log,
   );
   const currentPlatform = platform();
   const environment_kind = currentPlatform === "win32"
@@ -132,7 +142,7 @@ async function helloInfo(
     daemon_version: daemonVersion(),
     environment_kind,
     // The control plane offers the file tool bridge only where this daemon can pin it.
-    capabilities_json: { ...capabilities, tool_bridge_protocols: localToolBridgeSupported(currentPlatform) ? ["file-v1"] : [] },
+    capabilities_json: { ...capabilities, sources_execution:await sourceExecutionOffer(), tool_bridge_protocols: localToolBridgeSupported(currentPlatform) ? ["file-v1"] : [] },
     workspace_reports: await collectWorkspaceStatus(workspaces),
     managed_workspaces: await listManagedWorkspaces(),
     ambient_sessions: ambientSessionCounts(),

@@ -386,11 +386,13 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     // The button must exist before the first probe — that is exactly the
     // moment someone wants it, and the scheduled sweep is up to three hours
     // away.
-    const refresh = await screen.findByRole('button', { name: /refresh usage for managed:2\.0\.0 of claude code/i })
+    await userEvent.click(await screen.findByRole('button', { name: 'Usage details for Claude Code · managed:2.0.0' }))
+    const refresh = screen.getByRole('button', { name: 'Refresh usage' })
     await userEvent.click(refresh)
 
     await waitFor(() => expect(hostsApi.refreshUsage).toHaveBeenCalledWith('host-1', 'claude_code', 'managed:2.0.0'))
-    expect(await screen.findByText('session 61% · week 18%')).toBeInTheDocument()
+    expect(await screen.findByText('Highest used 61%')).toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: 'Session' })).toHaveAttribute('aria-valuenow', '61')
 
     await act(async () => {
       resolveCachedUsage({ items: [{
@@ -400,7 +402,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
       }] })
       await cachedUsage
     })
-    expect(screen.getByText('session 61% · week 18%')).toBeInTheDocument()
+    expect(screen.getByText('Highest used 61%')).toBeInTheDocument()
   })
 
   it('says a copy could not be read instead of leaving it looking healthy', async () => {
@@ -412,8 +414,8 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     }] })
     render(<HostsPanel />)
 
-    const badge = await screen.findByText('usage unavailable')
-    expect(badge).toHaveAttribute('title', expect.stringContaining('Log in to Claude Code'))
+    await userEvent.click(await screen.findByText('Usage unavailable'))
+    expect(screen.getByRole('status')).toHaveTextContent('Log in to Claude Code')
   })
 
   it('offers the rollback the host says it kept, and asks for it by adapter', async () => {

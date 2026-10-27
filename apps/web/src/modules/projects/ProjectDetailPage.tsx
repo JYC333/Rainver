@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, type MouseEvent } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import {
@@ -35,6 +35,7 @@ import ProjectConversationBackendCard from './ProjectConversationBackendCard'
 import ProjectPublicSummaryCard from './ProjectPublicSummaryCard'
 import { FocusAreaField } from '../focusAreas/FocusAreaField'
 import { formatDateTime } from '../../i18n/format'
+import { useAppTranslation } from '../../i18n'
 
 function fmt(dt: string | null | undefined) {
   return formatDateTime(dt)
@@ -49,13 +50,21 @@ interface EditDialogProps {
   onSaved: (updated: Project) => void
 }
 
+function editableFields(project: Project) {
+  return { name: project.name, description: project.description ?? '', focus: project.current_focus ?? '' }
+}
+
 // General Project settings only. Research intake configuration belongs to the
 // Research Area, which owns that state.
 function EditProjectDialog({ project, overview, open, onOpenChange, onSaved }: EditDialogProps) {
+  const { t } = useAppTranslation()
+  const navigate = useNavigate()
+  const [baseline, setBaseline] = useState(() => editableFields(project))
   const [name, setName] = useState(project.name)
   const [description, setDescription] = useState(project.description ?? '')
   const [focus, setFocus] = useState(project.current_focus ?? '')
   const [saving, setSaving] = useState(false)
+  const [discardOpen, setDiscardOpen] = useState(false)
 
   // Fill the fields when the dialog opens, not on every read: Pulse re-reads
   // the Project every few seconds, and each read is a new object.
@@ -63,11 +72,26 @@ function EditProjectDialog({ project, overview, open, onOpenChange, onSaved }: E
   projectRef.current = project
   useEffect(() => {
     if (!open) return
-    const current = projectRef.current
+    const current = editableFields(projectRef.current)
+    setBaseline(current)
     setName(current.name)
-    setDescription(current.description ?? '')
-    setFocus(current.current_focus ?? '')
+    setDescription(current.description)
+    setFocus(current.focus)
   }, [open, project.id])
+
+  // Leaving for Source management must not silently drop the draft, and must
+  // not save shared Project fields on the person's behalf.
+  const dirty = name !== baseline.name || description !== baseline.description || focus !== baseline.focus
+  const sourcesPath = `/projects/${project.id}/sources?tab=settings&from=settings`
+  function openSources(event: MouseEvent<HTMLAnchorElement>) {
+    // A modified click opens another tab; this draft stays open here.
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    if (saving || dirty) event.preventDefault()
+    // Stay until an in-flight save settles, so it cannot land after leaving.
+    if (saving) return
+    if (dirty) setDiscardOpen(true)
+    else onOpenChange(false)
+  }
 
   async function save() {
     if (!name.trim()) {
@@ -101,6 +125,7 @@ function EditProjectDialog({ project, overview, open, onOpenChange, onSaved }: E
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">
+          <Button variant="outline" asChild><Link to={sourcesPath} onClick={openSources} aria-disabled={saving || undefined} className="aria-disabled:opacity-40">{t('reading.monitoringSettings')}</Link></Button>
           <ProjectConversationBackendCard projectId={project.id} />
           <div className="space-y-1.5">
             <Label>Name <span className="text-destructive">*</span></Label>
@@ -127,6 +152,15 @@ function EditProjectDialog({ project, overview, open, onOpenChange, onSaved }: E
           </Button>
         </DialogFooter>
       </DialogContent>
+      <ConfirmDialog
+        open={discardOpen}
+        onOpenChange={setDiscardOpen}
+        title={t('reading.settingsDiscardTitle')}
+        description={t('reading.settingsDiscardDescription')}
+        cancelLabel={t('reading.settingsKeepEditing')}
+        confirmLabel={t('reading.settingsDiscardConfirm')}
+        onConfirm={() => { onOpenChange(false); navigate(sourcesPath) }}
+      />
     </Dialog>
   )
 }
@@ -156,7 +190,7 @@ export default function ProjectDetailPage() {
   const [instructionOpen, setInstructionOpen] = useState(false)
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false)
   const [archiving, setArchiving] = useState(false)
-  const runtimeSettingsRequested = searchParams.get('settings') === 'runtime'
+  const runtimeSettingsRequested = ['runtime', 'project'].includes(searchParams.get('settings') ?? '')
 
   useEffect(() => {
     if (runtimeSettingsRequested) setEditOpen(true)

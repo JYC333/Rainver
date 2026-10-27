@@ -1,3 +1,4 @@
+import { readingHref } from '../../library/readingLinks'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { notesApi, projectResearchApi, projectsApi, providersApi } from '../../../api/client'
@@ -185,7 +186,7 @@ export function ReadingListView({
             {expanded === row.id && (
               <div className="space-y-2 rounded bg-muted p-3 text-sm">
                 <p>{row.source_item?.excerpt ?? row.object?.summary ?? row.evidence?.content_excerpt ?? 'No additional evidence preview is available.'}</p>
-                {sourceId && <Link className="text-xs font-medium hover:underline" to={`/library/items/${sourceId}`}>Open in reader</Link>}
+                {sourceId && <Link className="text-xs font-medium hover:underline" to={readingHref({ source_item_id: sourceId, reader_origin: 'project' }, projectId, 'research')}>Open in reader</Link>}
               </div>
             )}
             {sourceId && (editing === row.id ? (

@@ -318,10 +318,10 @@ export async function seedAgentWithVersion(
 /** A finished agent Run in the Space, with the agent and version it needs. */
 export async function seedRun(
   pool: Pool,
-  input: { id: string; space: string; owner: string; agent: string; version: string; now?: string },
+  input: { id: string; space: string; owner: string; agent: string; version: string; now?: string; existingAgent?: boolean },
 ): Promise<void> {
   const now = input.now ?? new Date().toISOString();
-  await seedAgentWithVersion(pool, { agent: input.agent, version: input.version, space: input.space, owner: input.owner, name: "Run Agent", now });
+  if(!input.existingAgent)await seedAgentWithVersion(pool, { agent: input.agent, version: input.version, space: input.space, owner: input.owner, name: "Run Agent", now });
   const profile = await pool.query<{
     id: string;
     runtime_key: string;

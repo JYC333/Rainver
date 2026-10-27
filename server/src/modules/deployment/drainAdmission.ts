@@ -42,6 +42,7 @@ export const UNATTENDED_RUN_JOB_TYPES: readonly string[] = [
   "daily_capture_report",
   "source_post_processing_event",
   "source_annotation_event",
+  "source_goal_tick",
 ];
 
 /** True while an `update` job is queued or draining. */

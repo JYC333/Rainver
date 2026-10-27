@@ -64,6 +64,16 @@ beforeEach(async () => {
 });
 
 describe("host subscription quota cache (real Postgres)", () => {
+  it("preserves Antigravity model windows through the shared quota cache", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const windows = [{ id: "gemini-weekly", label: "Gemini weekly", used_pct: 62, resets: null }];
+    await refreshHostUsage(db.pool, "host-1", "acp_antigravity_acp", "managed:1.4.3", registry({
+      acp_antigravity_acp: { available: true, session_pct: null, session_resets: null, week_pct: 62, week_resets: null, error: null, windows },
+    }));
+    const cached = (await readHostUsage(db.pool, "host-1")).find(row => row.runtime_key === "acp_antigravity_acp");
+    expect(cached?.quota.windows).toEqual(windows);
+  });
+
   it("caches what the host answered, including a reason it could not answer", async (ctx) => {
     if (!db.available) return ctx.skip();
     const answered = await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({
@@ -175,9 +185,30 @@ describe("host subscription quota cache (real Postgres)", () => {
       });
 
       const [row] = await readHostUsage(db.pool, "host-1");
-      expect(row).toEqual(before);
+      expect(row?.checked_at).toEqual(before?.checked_at);
+      expect(row?.quota.session_pct).toEqual(before?.quota.session_pct);
+      expect(row?.quota.week_pct).toEqual(before?.quota.week_pct);
+      if (/^(five_hour|seven_day)_/.test(rateLimitType)) {
+        expect(row?.quota.windows?.find(item => item.id === rateLimitType)?.used_pct).toBe(99);
+      } else {
+        expect(row).toEqual(before);
+      }
     },
   );
+
+  it("retains an unexpired live model reading when a refresh omits it", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    await mergeRunQuota(db.pool, {
+      hostId: "host-1", runtimeKey: "claude_code", installation: "own",
+      quota: { rate_limit_type: "seven_day_fable", utilization: 0.8, resets_at: Date.now() / 1000 + 3600 },
+    });
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({
+      claude_code: { available: true, session_pct: 20, session_resets: null, week_pct: 40, week_resets: null, error: null },
+    }));
+    const [row] = await readHostUsage(db.pool, "host-1");
+    expect(row?.quota.windows?.find(window => window.id === "seven_day_fable")?.used_pct).toBe(80);
+    expect(row?.quota.week_pct).toBe(40);
+  });
 
   it("does not create an overall reading from a model-specific week", async (ctx) => {
     if (!db.available) return ctx.skip();
@@ -185,7 +216,9 @@ describe("host subscription quota cache (real Postgres)", () => {
       hostId: "host-1", runtimeKey: "claude_code", installation: "own",
       quota: { rate_limit_type: "seven_day_fable", utilization: 0.99, resets_at: 1_800_000_000 },
     });
-    expect(await readHostUsage(db.pool, "host-1")).toEqual([]);
+    const [row] = await readHostUsage(db.pool, "host-1");
+    expect(row?.quota).toMatchObject({ session_pct: null, week_pct: null });
+    expect(row?.quota.windows?.[0]).toMatchObject({ id: "seven_day_fable", used_pct: 99 });
   });
 });
 

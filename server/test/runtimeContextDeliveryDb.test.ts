@@ -855,8 +855,20 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     })).rejects.toThrow();
   });
 
-  it("sends the standing items into a fresh session and into a resumed one only when their versions changed", async () => {
+  it.each([false, true])("sends standing items only when changed across resumed Runs (Room: %s)", async (room) => {
     if (!db.available) return;
+    let activeRun = RUN;
+    let activeMessage = MESSAGE;
+    if (room) {
+      const group = randomUUID();
+      await db.pool.query(
+        `INSERT INTO agent_run_groups (id,space_id,root_run_id,manager_user_id,title,goal,status,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,'Room','Work','active',now(),now())`,
+        [group, SPACE, RUN, USER],
+      );
+      await db.pool.query(`UPDATE runs SET run_group_id=$2 WHERE id=$1`, [RUN, group]);
+    }
+    const standingTypes = room ? ["agent_version", "message", "run_group_agent_identity"] : ["agent_version", "message"];
     const sessionId = randomUUID();
     const decisionId = randomUUID();
     const vendorSession = "vendor-standing";
@@ -932,18 +944,18 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     await db.pool.query(`UPDATE execution_control_snapshots SET snapshot_json=$2::jsonb WHERE id=$1`, [CONTROL, JSON.stringify(authoritative)]);
     const plan = async () => (await createProductionRuntimeContextPlanningService(db.pool).planExecution({
       identity: { spaceId: SPACE, userId: USER },
-      invocationId: RUN,
+      invocationId: activeRun,
       deliveryId: randomUUID(),
-      turn: { work_context_scope_id: sessionId, expected_setup_version: 1, current_message_ref: { type: "message", id: MESSAGE }, one_off_refs: [], invocation_purpose: "agent_task" },
+      turn: { work_context_scope_id: sessionId, expected_setup_version: 1, current_message_ref: { type: "message", id: activeMessage }, one_off_refs: [], invocation_purpose: "agent_task" },
     })).envelope.items.map((item) => item.source_ref.type).sort();
     const dispatched = async () => (await db.pool.query<{ standing: { digest: string; sent: boolean } }>(
       `SELECT jsonb_build_object('digest', model_override_json->'host_thread'->>'standing_digest',
                                  'sent', (model_override_json->'host_thread'->>'standing_sent')::boolean) AS standing
-         FROM runs WHERE id=$1`, [RUN],
+         FROM runs WHERE id=$1`, [activeRun],
     )).rows[0]!.standing;
 
     // The session holds nothing yet: the Agent instruction goes with the message.
-    expect(await plan()).toEqual(["agent_version", "message"]);
+    expect(await plan()).toEqual(standingTypes);
     const first = await dispatched();
     expect(first.sent).toBe(true);
 
@@ -952,6 +964,43 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     expect(await plan()).toEqual(["message"]);
     expect(await dispatched()).toEqual({ digest: first.digest, sent: false });
 
+    // A new Run resumes the same session: audit refs change, content does not.
+    const nextRun = randomUUID();
+    const nextControl = randomUUID();
+    await db.pool.query(
+      `INSERT INTO runs (
+         id,space_id,agent_id,agent_version_id,run_type,trigger_origin,status,mode,
+         runtime_profile_id,runtime_profile_selection_source,runtime_key,runtime_profile_snapshot_json,
+         required_sandbox_level,instructed_by_user_id,owner_user_id,created_at,updated_at,execution_kind,
+         run_group_id,prompt,session_id,host_task_thread_id,model_override_json,model_provider_id
+       ) SELECT $2,space_id,agent_id,agent_version_id,run_type,trigger_origin,status,mode,
+                runtime_profile_id,runtime_profile_selection_source,runtime_key,runtime_profile_snapshot_json,
+                required_sandbox_level,instructed_by_user_id,owner_user_id,now(),now(),execution_kind,
+                run_group_id,prompt,session_id,host_task_thread_id,model_override_json,model_provider_id
+           FROM runs WHERE id=$1`,
+      [RUN, nextRun],
+    );
+    await db.pool.query(
+      `INSERT INTO execution_control_snapshots (id,space_id,run_id,snapshot_json,created_at)
+       VALUES ($1,$2,$3,$4::jsonb,now())`,
+      [nextControl, SPACE, nextRun, JSON.stringify({ ...authoritative, id: nextControl })],
+    );
+    activeRun = nextRun;
+    activeMessage = randomUUID();
+    await seedConversationMessages(db.pool, {
+      space: SPACE, session: sessionId,
+      messages: [{ id: activeMessage, role: "user", content: "Next turn.", userId: USER, runId: nextRun, metadata: {} }],
+    });
+    expect(await plan()).toEqual(["message"]);
+    expect(await dispatched()).toEqual({ digest: first.digest, sent: false });
+    if (room) {
+      await db.pool.query(`UPDATE agents SET name='Renamed' WHERE id=$1`, [AGENT]);
+      expect(await plan()).toEqual(standingTypes);
+      expect((await dispatched()).digest).not.toBe(first.digest);
+      await db.pool.query(`UPDATE agents SET name='Agent' WHERE id=$1`, [AGENT]);
+      expect(await plan()).toEqual(["message"]);
+    }
+
     // A revised Agent instruction is a new version, and goes out again.
     const revised = randomUUID();
     await db.pool.query(
@@ -959,13 +1008,13 @@ describe("Invocation Delivery and Snapshot persistence", () => {
        VALUES ($1,$2,$3,'v2','revised','{}','{}','[]','{}',now())`,
       [revised, AGENT, SPACE],
     );
-    await db.pool.query(`UPDATE runs SET agent_version_id=$2 WHERE id=$1`, [RUN, revised]);
-    expect(await plan()).toEqual(["agent_version", "message"]);
+    await db.pool.query(`UPDATE runs SET agent_version_id=$2 WHERE id=$1`, [activeRun, revised]);
+    expect(await plan()).toEqual(standingTypes);
     expect((await dispatched()).digest).not.toBe(first.digest);
 
     // A fresh session holds nothing, whatever the thread recorded for the old one.
-    await db.pool.query(`UPDATE runs SET agent_version_id=$2, model_override_json=$3::jsonb WHERE id=$1`, [RUN, VERSION, JSON.stringify(hostThread(null))]);
-    expect(await plan()).toEqual(["agent_version", "message"]);
+    await db.pool.query(`UPDATE runs SET agent_version_id=$2, model_override_json=$3::jsonb WHERE id=$1`, [activeRun, VERSION, JSON.stringify(hostThread(null))]);
+    expect(await plan()).toEqual(standingTypes);
   });
 
   it("rejects caller controls that differ from the persisted authority", async () => {

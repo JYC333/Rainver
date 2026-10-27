@@ -4147,6 +4147,7 @@ export interface SourcePostProcessingBriefingDetail {
 }
 
 export interface InformationDigestItem {
+  provenance_json?: {version?: number; version_id?: string; config_hash?: string; summary?: string; evidence_depth?: string; ready_at?: string}
   id: string
   source_item_id: string
   section: 'interest' | 'serendipity'

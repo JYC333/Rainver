@@ -663,3 +663,23 @@ custom SQL for structural drift.
 (`schema:generate`, `schema:check`) diff only against committed
 `server/migrations/meta/*.json` snapshots. `pull` is not a schema parity check
 for this repository.
+
+
+## Sources retained-body reading versions
+
+Sources distinguishes its operational `content_hash` (metadata/raw/text) from
+retained Reader body identity. Additive migrations 0011–0014 define the canonical
+body hash/revision and rolling-writer guards in PostgreSQL. The guards run at
+actual Reader artifact-pointer/fallback-snapshot changes, normalize retained
+text, preserve revision zero on first retention, and advance only between known
+different bodies. Historical fallback snapshots cannot displace a newer one.
+Existing records become a baseline and existing completion bindings survive.
+Older state writers are bound without inventing reading origins; a non-reading
+update cannot renew a stale completion. Application explicit writes still use
+Sources' state store and one transaction per authorized group. No feed/hash
+update or projection GET performs a new version write.
+
+Migration 0015 drops the unused `read_content_hash` introduced in the unpublished
+0009 migration. Current writers bind only `read_body_revision`; the released
+0008 writers and Sources body/state guard functions do not reference the removed
+column. Earlier migration files and their data backfills remain append-only.

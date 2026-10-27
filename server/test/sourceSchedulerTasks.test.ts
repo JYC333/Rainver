@@ -17,6 +17,8 @@ describe("buildSourceSchedulerTasks", () => {
     // a throw in an earlier domain would starve every later one. The registry
     // isolates their failures, alerts, and liveness.
     expect(names).toEqual([
+      "source_goal_scheduler",
+      "project_information_monitoring_scheduler",
       "source_extraction_scheduler",
       "source_backfill_reconciler",
       "custom_source_handler_scheduler",

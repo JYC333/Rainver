@@ -302,18 +302,27 @@ export type ManagedWorkspaceHeartbeat = z.infer<typeof ManagedWorkspaceHeartbeat
  * "expired", "the vendor did not respond" — and worth showing as the reason
  * rather than as a blank.
  */
+export const HostUsageQuotaSchema = z.object({
+  available: z.boolean(),
+  windows: z.array(z.object({
+    id: z.string().max(256),
+    label: z.string().max(256),
+    used_pct: z.number().finite().nonnegative().nullable(),
+    resets: z.string().max(512).nullable(),
+  })).max(64).optional(),
+  session_pct: z.number().nullable(),
+  session_resets: z.string().nullable(),
+  week_pct: z.number().nullable(),
+  week_resets: z.string().nullable(),
+  error: z.string().nullable(),
+});
+export type HostUsageQuota = z.infer<typeof HostUsageQuotaSchema>;
+
 export const HostRuntimeUsageSchema = z.object({
   host_id: IdSchema,
   runtime_key: z.string().min(1),
   installation: z.string().min(1),
-  quota: z.object({
-    available: z.boolean(),
-    session_pct: z.number().nullable(),
-    session_resets: z.string().nullable(),
-    week_pct: z.number().nullable(),
-    week_resets: z.string().nullable(),
-    error: z.string().nullable(),
-  }),
+  quota: HostUsageQuotaSchema,
   checked_at: ISODateTimeSchema,
 });
 export type HostRuntimeUsage = z.infer<typeof HostRuntimeUsageSchema>;

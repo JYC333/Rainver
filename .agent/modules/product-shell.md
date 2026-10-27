@@ -24,8 +24,8 @@ quick capture, and account controls.
 
 ## Current navigation
 
-Rail (from `navigation.tsx`): Home · Agent Work · Command Center · Inbox · Library ·
-Sources · Review · Knowledge · Shared · Tasks · Projects · Agents ·
+Rail (from `navigation.tsx`): Home · Agent Work · Command Center · Inbox · Reading ·
+Source settings · Review · Knowledge · Shared · Tasks · Projects · Agents ·
 Evolution · Instance Settings (instance admin) · Space Settings (space
 admin) · Settings.
 
@@ -99,3 +99,10 @@ ID. Builds have distinct IDs even when made from the same commit.
 An opt-in layout diagnostic text area exposes build, browser, display mode,
 viewport/screen/scroll geometry and resolved safe insets, with no account,
 conversation, URL or workspace content. It is not transmitted automatically.
+
+
+Reading keeps its route/module identity `library`. The shared desktop/mobile
+scene offers To read, Read, All material, Daily editions and legacy By type
+routes. Query-based views select the matching scene item. Project navigation
+labels its existing Sources Area Reading; the page distinguishes Project reading
+from My reading. Home adds only a preferred-Space preview of the same reading API.

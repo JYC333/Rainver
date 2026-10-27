@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "node:net";
 import { pathToFileURL } from "node:url";
+import { configureAntigravitySkills, prepareAntigravityHarness } from "../src/antigravityHarness.js";
 import { saveConfig } from "../src/config.js";
 import { startEgressProxy } from "../src/egressProxy.js";
 import { existsSync } from "node:fs";
@@ -29,6 +30,26 @@ import {
 let configDir: string;
 let workspaceDir: string;
 let attachedWorkspaceDir: string;
+
+describe("Antigravity skill isolation", () => {
+  it("keeps workspace and authority intact while discovering delivered skills outside the project", () => {
+    const original = { config: { workspaces: [{ filesystemWorkspace: { directory: "/project" } }],
+      skillsPaths: ["/user/skills"], skillsConfig: { enabled: true, presentationMode: "FILE_SYSTEM" },
+      policyConfig: { workspaceContainment: "WORKSPACE_CONTAINMENT_ENABLED" },
+      models: [{ name: "selected-model" }] } };
+    const result = JSON.parse(configureAntigravitySkills(JSON.stringify(original), "/profile/materialized", "/run/rainver/skills"));
+    expect(result.config.workspaces).toEqual(original.config.workspaces);
+    expect(result.config.policyConfig).toEqual(original.config.policyConfig);
+    expect(result.config.models).toEqual(original.config.models);
+    expect(result.config.skillsPaths).toEqual(["/user/skills", "/run/rainver/skills"]);
+    expect(result.config.skillsConfig).toEqual({ ...original.config.skillsConfig, materializedSkillsDir: "/profile/materialized" });
+    expect(() => configureAntigravitySkills('{"userInput":{}}', "/profile/materialized")).toThrow();
+  });
+
+  it("refuses an installation without its matching harness instead of falling back to project writes", async () => {
+    await expect(prepareAntigravityHarness(process.execPath, workspaceDir)).rejects.toThrow();
+  });
+});
 
 beforeEach(async () => {
   configDir = await mkdtemp(join(tmpdir(), "rainver-host-exec-config-"));

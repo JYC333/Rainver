@@ -1,3 +1,7 @@
+import { observePage } from './monitoring/pageObservation.js';
+import { MonitoringAdmissionError } from '../projects/monitoringControl.js';
+import { monitoringChannelControlClause } from '../projects/monitoringControl.js';
+import { consumeMonitoringBudgets } from "../projects/monitoringControl.js";
 import { createHash, randomUUID } from "node:crypto";
 import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -49,10 +53,41 @@ import {
 import { PgCustomSourceHandlerRepository } from "./customSources/customSourceHandlerRepository.js";
 import { capturePolicyScanState } from "./capturePolicy.js";
 import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
-import { sourceConnectorRegistry, type SourceConnectorHandler } from "./catalog/sourceConnectorRegistry.js";
+import { sourceConnectorRegistry, type SourceConnectorHandler, type NormalizedSourceItem } from "./catalog/sourceConnectorRegistry.js";
 import { ProjectResearchPipelineService } from "../projectResearch/pipeline/researchPipelineService.js";
 import { CustomSourceCredentialService } from "./customSources/customSourceCredentialService.js";
 import { upsertCanonicalEvidence } from "./evidenceIdentity.js";
+
+export interface SourceSnapshotInput {
+    spaceId: string;
+    sourceItemId: string | null;
+    connectionId: string | null;
+    snapshotType: "metadata" | "raw" | "extracted" | "summary";
+    artifactId: string | null;
+    contentHash: string | null;
+    sourceUri: string | null;
+    captureMethod: "manual" | "connection_scan" | "full_text" | "snapshot" | "internal";
+    trustLevel: string;
+    sourceVisibility: string;
+    metadata: Record<string, unknown>;
+    capturedAt: string;
+}
+
+export interface SourceScanItemInput {
+    job: ExtractionJobRow;
+    connection: ConnectionWithConnectorRow;
+    itemType: "feed_entry" | "external_url" | "document";
+    title: string;
+    sourceUri: string | null;
+    canonicalUri: string | null;
+    sourceExternalId: string | null;
+    author: string | null;
+    occurredAt: string | null;
+    contentHash: string;
+    excerpt: string | null;
+    metadata: Record<string, unknown>;
+    capturedAt: string;
+}
 
 interface ExtractionJobRow {
   id: string;
@@ -93,6 +128,7 @@ interface ConnectionWithConnectorRow extends SourceConnectionRow {
   connector_key: string;
   provider_key: string;
   provider_display_name: string;
+  monitoring_controlled?: boolean;
   channel_type: string | null;
   endpoint_url: string | null;
   fetch_frequency: string;
@@ -122,6 +158,7 @@ export class SourceExtractionWorker {
      * refuses loopback for exactly the reason it exists.
      */
     private readonly guard?: OutboundGuard,
+    private readonly monitoringOperationId?: string,
   ) {}
 
   /** Spread into a fetch's options so the worker's guard, if any, reaches it. */
@@ -138,8 +175,9 @@ export class SourceExtractionWorker {
         WHERE id = $1
           AND space_id = $2
           AND status = 'pending'
+          AND (metadata_json->>'monitoring_operation_id' IS NULL OR metadata_json->>'monitoring_operation_id'=$4::text)
         RETURNING ${JOB_COLUMNS}`,
-      [jobId, spaceId, now],
+      [jobId, spaceId, now,this.monitoringOperationId??null],
     );
     const job = claimed.rows[0];
     if (!job) {
@@ -147,7 +185,7 @@ export class SourceExtractionWorker {
       if (!current) throw new HttpError(404, "Extraction job not found");
       if (current.status === "running") throw new HttpError(409, `ExtractionJob ${jobId} is already running`);
       if (["succeeded", "failed", "skipped"].includes(current.status)) return current;
-      throw new HttpError(409, `Unexpected ExtractionJob status ${current.status}`);
+      throw new HttpError(409, `Unexpected or coordinator-owned ExtractionJob status ${current.status}`);
     }
 
     let runChildrenAfterSuccess = false;
@@ -179,7 +217,10 @@ export class SourceExtractionWorker {
       runChildrenAfterSuccess = job.job_type === "connection_scan";
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const code = error instanceof HttpError ? String(error.statusCode) : "run_error";
+      const code = error instanceof MonitoringAdmissionError ? error.code : error instanceof HttpError ? String(error.statusCode) : "run_error";
+      if(error instanceof MonitoringAdmissionError){
+        await this.db.query(`UPDATE extraction_jobs SET metadata_json=COALESCE(metadata_json,'{}'::jsonb)||jsonb_build_object('monitoring_admission', $3::jsonb) WHERE id=$1 AND space_id=$2`,[job.id,job.space_id,JSON.stringify({code:error.code,reason:error.reason})]);
+      }
       if (error instanceof SourceFetchFailure) {
         await this.recordJobFailureDiagnostics(job, error.diagnostics);
       }
@@ -315,6 +356,7 @@ export class SourceExtractionWorker {
     if (!job.connection_id) throw new HttpError(422, "connection_scan requires connection_id");
     const channelId = stringValue(record(job.metadata_json).source_channel_id);
     const connection = await this.getConnection(job.space_id, job.connection_id, channelId);
+    if(connection.monitoring_controlled && (!isBackfillJob(job) || !stringValue(record(job.metadata_json).monitoring_operation_id)))throw new HttpError(409,"Use the bounded Project monitoring operation");
     if (connection.channel_type === "search" && !connection.provider_query_json) {
       throw new HttpError(422, "Search channel is missing its executable Search Spec");
     }
@@ -331,6 +373,19 @@ export class SourceExtractionWorker {
 
     const handler = sourceConnectorRegistry.get(connection.connector_key);
     const narrowable = handler.getCapabilities().supports_page_size_narrowing;
+    // A feed has no server-side historical cursor. Freeze bounded normalized excerpts on the
+    // original work row, and put only its pointer/offset on the existing segment.
+    const observation = !!record(job.metadata_json).monitoring_operation_id && ['rss','atom'].includes(connection.connector_key);
+    if (observation) {
+      const segmentId = record(job.metadata_json).source_backfill_segment_id;
+      const saved = await this.db.query<{items: NormalizedSourceItem[]}>(`SELECT j.metadata_json->'observation_items' AS items FROM source_backfill_segments s JOIN extraction_jobs j ON j.id=COALESCE(s.window_json->>'observation_job_id',s.extraction_job_id) AND j.space_id=s.space_id WHERE s.id=$1 AND s.space_id=$2 AND j.metadata_json ? 'observation_items'`,[segmentId,job.space_id]);
+      if (saved.rows[0]?.items) {
+        await consumeMonitoringBudgets(this.db,job.space_id,String(record(job.metadata_json).monitoring_operation_id),{pages:1,candidates:backfillMaxItems(job.metadata_json)});
+        const result = await this.scanWithConnector(job,connection,handler,'',new Date().toISOString(),saved.rows[0].items);
+        await this.updateJobStats(job,{seen:result.seen,created:result.created,updated:result.updated,metadata:{observation_replay:true}});
+        return {seen:result.seen,page_size:backfillMaxItems(job.metadata_json),narrowable:false};
+      }
+    }
     const executableChannel = {
       endpoint_url: connection.endpoint_url,
       compiled_query: connection.provider_query_json,
@@ -404,7 +459,17 @@ export class SourceExtractionWorker {
       etag: response.headers.get("etag") ?? cursor.etag,
       last_modified: response.headers.get("last-modified") ?? cursor.last_modified,
     };
-    const result = await this.scanWithConnector(job, connection, handler, raw, completedAt);
+    let observationItems: NormalizedSourceItem[] | undefined;
+    if (observation) {
+      const plan = await this.db.query<{max_items:number}>(`SELECT (strategy_json->>'max_items')::int AS max_items FROM source_backfill_plans WHERE id=$1 AND space_id=$2`,[record(job.metadata_json).source_backfill_plan_id,job.space_id]);
+      const observationCap = Math.min(10000,Math.max(0,Number(plan.rows[0]?.max_items ?? 0)));
+      observationItems = handler.parseResponse(raw).slice(0,observationCap).map(item=>({...item,title:item.title.slice(0,1024),excerpt:item.excerpt?.slice(0,2048) ?? null,metadata:{feed_type:connection.connector_key}}));
+      await withQueryableTransaction(this.db,async tx=>{
+        await tx.query(`UPDATE extraction_jobs SET metadata_json=metadata_json||jsonb_build_object('observation_items',$3::jsonb) WHERE id=$1 AND space_id=$2`,[job.id,job.space_id,JSON.stringify(observationItems)]);
+        await tx.query(`UPDATE source_backfill_segments SET window_json=window_json||jsonb_build_object('observation_job_id',$3::text) WHERE id=$1 AND space_id=$2`,[record(job.metadata_json).source_backfill_segment_id,job.space_id,job.id]);
+      });
+    }
+    const result = await this.scanWithConnector(job, connection, handler, raw, completedAt, observationItems);
     if (!isBackfillJob(job)) {
       await this.updateConnectionAfterScan(connection, {
         ...nextCursor,
@@ -420,6 +485,7 @@ export class SourceExtractionWorker {
         endpoint_url: request.url,
       },
     });
+    if (!stringValue(record(job.metadata_json).monitoring_operation_id)) {
     await emitSourcePostProcessingEvent(this.db, {
       spaceId: job.space_id,
       sourceChannelId: connection.channel_id,
@@ -431,6 +497,7 @@ export class SourceExtractionWorker {
       sourceConnectionId: connection.id,
       newItemCount: result.created,
     });
+    }
     if (!isBackfillJob(job)) {
       await this.notifyResearchScanCompleted(
         job,
@@ -498,6 +565,8 @@ export class SourceExtractionWorker {
     maxDownloadBytes: number;
     buildRequest: (window: Record<string, unknown>) => BackfillPageRequest;
   }): Promise<{ response: SourceFetchResult; request: BackfillPageRequest; pageSize: number }> {
+    const operationId=stringValue(record(input.job.metadata_json).monitoring_operation_id);
+    let firstAttempt=true;
     return fetchBackfillPageWithNarrowing({
       window: record(record(input.job.metadata_json).window),
       requestedPageSize: backfillMaxItems(input.job.metadata_json),
@@ -509,6 +578,10 @@ export class SourceExtractionWorker {
         headers,
         ...(credentialHeaders ? { credentialHeaders } : {}),
         maxDownloadBytes: input.maxDownloadBytes,
+        ...(operationId ? {beforeAttempt:async()=>{
+          await consumeMonitoringBudgets(this.db,input.job.space_id,operationId,firstAttempt?{source_requests:1,pages:1,candidates:backfillMaxItems(input.job.metadata_json)}:{source_requests:1});
+          firstAttempt=false;
+        }}:{}),
         backfill: true,
         provider: input.provider,
         timeoutMs,
@@ -535,7 +608,9 @@ export class SourceExtractionWorker {
       );
       const current = segment.rows[0];
       if (!current || current.status !== "running") return;
-      const next = nextBackfillWindow(record(current.window_json), {
+      const next: {outcome:string;window:Record<string,unknown>} = record(current.window_json).observation_exhausted === true
+        ? {outcome: 'exhausted', window: {...record(current.window_json), consumed_items: Number(record(current.window_json).consumed_items ?? 0) + result.seen, has_more:false, exhausted:true, partial:false}}
+        : nextBackfillWindow(record(current.window_json), {
         seen: result.seen,
         pageSize: result.page_size,
         narrowable: result.narrowable,
@@ -546,6 +621,11 @@ export class SourceExtractionWorker {
         `UPDATE source_backfill_segments SET window_json=$3::jsonb WHERE id=$1 AND space_id=$2 AND status='running'`,
         [segmentId, job.space_id, JSON.stringify(next.window)],
       );
+      if (next.outcome === "exhausted") return;
+      if (stringValue(metadata.monitoring_operation_id)) {
+        await db.query(`UPDATE source_backfill_segments SET window_json=$3::jsonb WHERE id=$1 AND space_id=$2`,[segmentId,job.space_id,JSON.stringify({...next.window,cursor:next.window.next_cursor ?? next.window.cursor,...(result.narrowable ? {offset:next.window.consumed_items} : {}),has_more:true,exhausted:false,partial:true})]);
+        return;
+      }
       if (next.outcome !== "continue") return;
       // The next page is reserved against the budget it shares with sibling
       // segments and plans, not only against this segment's own window: a
@@ -587,8 +667,17 @@ export class SourceExtractionWorker {
     handler: SourceConnectorHandler,
     raw: string,
     capturedAt: string,
+    observationItems?: NormalizedSourceItem[],
   ): Promise<{ seen: number; created: number; updated: number; cursor: ScanCursor }> {
-    const items = handler.parseResponse(raw).slice(0, backfillPageItemLimit(record(record(job.metadata_json).window)));
+    if (connection.connector_key === 'web_page' && record(job.metadata_json).monitoring_operation_id) return this.scanPageChange(job,connection,raw,capturedAt);
+    const window = record(record(job.metadata_json).window);
+    const observation = ['rss','atom'].includes(connection.connector_key) && isBackfillJob(job);
+    const offset = observation ? Number(window.consumed_items ?? 0) : 0;
+    const parsed = observationItems ?? handler.parseResponse(raw);
+    const items = parsed.slice(offset, offset + backfillPageItemLimit(window));
+    if (observation && offset + items.length >= parsed.length) {
+      await this.db.query(`UPDATE source_backfill_segments SET window_json=window_json||'{"observation_exhausted":true}'::jsonb WHERE id=$1 AND space_id=$2`,[record(job.metadata_json).source_backfill_segment_id,job.space_id]);
+    }
     let created = 0;
     let updated = 0;
     let lastGuid: string | undefined;
@@ -638,21 +727,26 @@ export class SourceExtractionWorker {
     };
   }
 
-  private async upsertScannedItem(input: {
-    job: ExtractionJobRow;
-    connection: ConnectionWithConnectorRow;
-    itemType: "feed_entry" | "external_url";
-    title: string;
-    sourceUri: string | null;
-    canonicalUri: string | null;
-    sourceExternalId: string | null;
-    author: string | null;
-    occurredAt: string | null;
-    contentHash: string;
-    excerpt: string | null;
-    metadata: Record<string, unknown>;
-    capturedAt: string;
-  }): Promise<{ itemId: string; created: boolean }> {
+  private async scanPageChange(job: ExtractionJobRow, connection: ConnectionWithConnectorRow, raw: string, capturedAt: string) {
+    return observePage(this.db,{job,connection,raw,capturedAt},tx=>{
+      const worker = new SourceExtractionWorker(tx,this.config,this.guard,this.monitoringOperationId);
+      return {
+        upsertScannedItemLocked: (input)=>worker.upsertScannedItemLocked(input),
+        writeReaderDocumentArtifact: (...args)=>worker.writeReaderDocumentArtifact(...args),
+        createSourceSnapshot: (input)=>worker.createSourceSnapshot(input),
+      };
+    });
+  }
+
+  private async upsertScannedItem(input: Parameters<SourceExtractionWorker['upsertScannedItemLocked']>[0]): Promise<{itemId:string;created:boolean}> {
+    return withQueryableTransaction(this.db,async tx=>{
+      const identities=[input.canonicalUri, input.sourceUri, stringValue(input.metadata.arxiv_id), normalizeDoi(stringValue(input.metadata.doi)), `external:${input.connection.id}:${input.sourceExternalId ?? input.contentHash}`].filter((v):v is string=>!!v).sort();
+      for(const key of identities)await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`source-item:${input.job.space_id}:${input.connection.project_id??input.connection.owner_user_id}:${key}`]);
+      return new SourceExtractionWorker(tx,this.config,this.guard,this.monitoringOperationId).upsertScannedItemLocked(input);
+    });
+  }
+
+  private async upsertScannedItemLocked(input: SourceScanItemInput, conflictRetry = false): Promise<{ itemId: string; created: boolean }> {
     const now = input.capturedAt;
     const author = input.author?.slice(0, 512) ?? null;
     const excerpt = input.excerpt?.slice(0, 2048) ?? null;
@@ -669,6 +763,8 @@ export class SourceExtractionWorker {
           AND ($12::varchar IS NOT NULL OR owner_user_id IS NOT DISTINCT FROM $13::varchar)
           AND (
             ($2::text IS NOT NULL AND canonical_uri = $3::text)
+            OR ($14::text IS NOT NULL AND source_uri=$14::text)
+            OR ($15::text IS NOT NULL AND metadata_json->>'page_uri'=$15::text AND metadata_json->>'after_hash'=$16::text)
             OR ($4::text IS NOT NULL AND metadata_json->>'arxiv_id' = $4::text)
             OR ($5::text IS NOT NULL AND lower(metadata_json->>'doi') = $5::text)
             OR ($6::varchar IS NOT NULL AND connection_id = $7::varchar AND source_external_id = $8::varchar)
@@ -689,6 +785,9 @@ export class SourceExtractionWorker {
         input.contentHash,
         input.connection.project_id,
         input.connection.owner_user_id,
+        input.sourceUri,
+        input.metadata.page_change ? input.metadata.page_uri : null,
+        input.metadata.page_change ? input.metadata.after_hash : null,
       ],
     );
     const policy = capturePolicyScanState(input.connection.capture_policy);
@@ -716,7 +815,7 @@ export class SourceExtractionWorker {
     let created = false;
     if (!itemId) {
       itemId = randomUUID();
-      await this.db.query(
+      const inserted = await this.db.query(
         `INSERT INTO source_items (
            id, space_id, project_id, connection_id, item_type, title, source_uri, canonical_uri,
            source_domain, source_external_id, author, occurred_at, first_seen_at,
@@ -729,7 +828,7 @@ export class SourceExtractionWorker {
            $12, $13, $14, $15,
            $16, $17::jsonb, $12, $12,
            $18, $19, $20
-         )`,
+         ) ON CONFLICT DO NOTHING RETURNING id`,
         [
           itemId,
           input.job.space_id,
@@ -758,6 +857,10 @@ export class SourceExtractionWorker {
           input.connection.access_level,
         ],
       );
+      if (inserted.rowCount === 0) {
+        if (conflictRetry) throw new HttpError(409,'Source identity changed concurrently; retry the capture');
+        return this.upsertScannedItemLocked(input,true);
+      }
       if (input.connection.visibility === "selected_users") await inheritContentAccessGrants(this.db, {
         spaceId: input.job.space_id,
         sourceResourceType: "source_connection",
@@ -767,7 +870,7 @@ export class SourceExtractionWorker {
         inheritedAt: now,
       });
       created = true;
-    } else {
+    } else if (!input.metadata.page_change) {
       await this.db.query(
         `UPDATE source_items
             SET title = $3,
@@ -1372,6 +1475,7 @@ export class SourceExtractionWorker {
   private async getConnection(spaceId: string, connectionId: string, channelId: string | null = null): Promise<ConnectionWithConnectorRow> {
     const result = await this.db.query<ConnectionWithConnectorRow>(
       `SELECT sc.*, c.connector_key, p.provider_key, p.display_name AS provider_display_name,
+              ${monitoringChannelControlClause('sc.space_id','ch.id')} AS monitoring_controlled,
               ch.id AS channel_id, ch.channel_type, ch.endpoint_url, ch.fetch_frequency,
               ch.schedule_rule_json,
               CASE WHEN ch.channel_type='search'
@@ -1473,20 +1577,7 @@ export class SourceExtractionWorker {
     );
   }
 
-  private async createSourceSnapshot(input: {
-    spaceId: string;
-    sourceItemId: string | null;
-    connectionId: string | null;
-    snapshotType: "metadata" | "raw" | "extracted" | "summary";
-    artifactId: string | null;
-    contentHash: string | null;
-    sourceUri: string | null;
-    captureMethod: "manual" | "connection_scan" | "full_text" | "snapshot" | "internal";
-    trustLevel: string;
-    sourceVisibility: string;
-    metadata: Record<string, unknown>;
-    capturedAt: string;
-  }): Promise<string> {
+  private async createSourceSnapshot(input: SourceSnapshotInput): Promise<string> {
     const id = randomUUID();
     await this.db.query(
       `INSERT INTO source_snapshots (

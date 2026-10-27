@@ -177,25 +177,30 @@ export function buildUnboundRuntimeProfile(
   runtimeKey: string,
   scope: RuntimeProfileScope,
 ): RemoteProviderBindingFrame {
-  const login = getRuntimeAdapterSpec(runtimeKey)?.credentials?.login ?? null;
+  const state = getRuntimeAdapterSpec(runtimeKey)?.credentials?.state ?? null;
   // A runtime profile can replace the machine's state root only when its login
   // can travel with it. Running without that contract would put every Agent on
   // the managed installation's one session/auto-memory tree, contradicting
-  // B68. Fail closed until the registry entry declares the login boundary.
-  if (!login) {
+  // B68. Fail closed until the adapter declares its state boundary.
+  if (!state) {
     throw new RemoteProviderBindingError(
       "runtime_profile_isolation_unsupported",
-      `Runtime adapter '${runtimeKey}' does not declare a login/state-root boundary, so Rainver cannot isolate its CLI state by Agent.`,
+      `Runtime adapter '${runtimeKey}' does not declare a state boundary (state-root variables and credential file), so Rainver cannot isolate its CLI state by Agent.`,
     );
   }
   return {
     profile_key: runtimeProfileKey(scope, runtimeKey, null),
     env: {},
-    profile_env: profileStateEnv(runtimeKey),
+    profile_env: state.env,
     files: [],
     credential_source: "host_login",
-    login_link: { home_subdir: login.home_subdir, credential_file: login.credential_file },
+    login_link: { home_subdir: state.home_subdir, credential_file: state.credential_file },
   };
+}
+
+/** The declared state-root variables of a runtime, with HOME at the profile root; the adapter spec is the one source. */
+function boundProfileEnv(runtimeKey: string, extra: Record<string, string> = {}): Record<string, string> {
+  return { HOME: ".", ...(getRuntimeAdapterSpec(runtimeKey)?.credentials?.state?.env ?? {}), ...extra };
 }
 
 /**
@@ -223,17 +228,6 @@ export function buildUnboundRuntimeProfile(
  *   machine-global. That is not the isolation this claims. Recorded in the
  *   deferred register.
  */
-function profileStateEnv(runtimeKey: string): Record<string, string> {
-  if (runtimeKey === "claude_code") return { CLAUDE_CONFIG_DIR: ".claude" };
-  if (runtimeKey === "codex_cli") return { CODEX_HOME: ".codex" };
-  return {
-    XDG_DATA_HOME: ".local/share",
-    XDG_CONFIG_HOME: ".config",
-    XDG_STATE_HOME: ".local/state",
-    XDG_CACHE_HOME: ".cache",
-  };
-}
-
 /**
  * `model_override_json.source` written after the selected Runtime Profile's
  * backend is handed to the remote runtime. It marks a backend actually used,
@@ -643,7 +637,7 @@ function bindingFrame(input: {
       env.ANTHROPIC_DEFAULT_OPUS_MODEL = input.model;
       env.ANTHROPIC_DEFAULT_HAIKU_MODEL = input.model;
     }
-    return { profile_key, env, profile_env: { HOME: ".", CLAUDE_CONFIG_DIR: ".claude" }, files: [], credential_source, login_link };
+    return { profile_key, env, profile_env: boundProfileEnv("claude_code"), files: [], credential_source, login_link };
   }
 
   const model = input.model!;
@@ -652,7 +646,7 @@ function bindingFrame(input: {
     return {
       profile_key,
       env: {},
-      profile_env: { HOME: ".", CODEX_HOME: ".codex" },
+      profile_env: boundProfileEnv("codex_cli"),
       credential_source,
       login_link,
       files: [
@@ -693,7 +687,9 @@ function bindingFrame(input: {
   return {
     profile_key,
     env: {},
-    profile_env: { HOME: ".", OPENCODE_CONFIG: "opencode.json" },
+    // OpenCode reads its provider configuration from one file; the XDG
+    // state roots come from the declared boundary like every other runtime.
+    profile_env: boundProfileEnv("opencode", { OPENCODE_CONFIG: "opencode.json" }),
     credential_source,
     login_link,
     files: [{ relative_path: "opencode.json", contents: JSON.stringify(document, null, 2) }],

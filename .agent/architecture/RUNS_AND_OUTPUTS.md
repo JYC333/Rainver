@@ -636,3 +636,25 @@ Workbench controls filter UI eligibility by source membership and Run standing;
 Task/Proposal lifecycle changes remain linked to their existing owning pages.
 The attention DTO adds optional bounded Agent label, runtime key and start time
 from existing Run facts; it adds no state machine or database columns.
+
+## Conversation previews
+
+`GET /api/v1/runs/{runId}/file-preview?path=...` resolves an authorized primary
+workspace file into a Files & Code destination, or returns bounded published
+Run output text/raster bytes for an in-page preview. Run and artifact bodies
+must be readable now; no arbitrary host pathname is served. See
+[Conversation file previews](CONVERSATION.md#file-links-and-temporary-previews).
+
+
+### Headless domain work surface
+
+A headless Sources goal explore/repair Run with domain grants and no `task.report` receives a domain work
+skill listing its actual grants. It is not instructed to call unavailable Task
+or Artifact actions. Conversation turns and Task Runs retain their existing
+work skill. This changes the bound Run context, not Room sibling admission,
+Conversation locking, Host workspace leases or collaboration budgets. Sources
+goal Runs use this path through the same Profile/router/dispatcher.
+
+This headless variant is restricted to the Sources goal explore/repair contract;
+an unrelated headless Run without Task reporting does not select it. Its rendered
+skill retains the normal `name`/`description` frontmatter.

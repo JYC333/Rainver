@@ -26,8 +26,9 @@ export async function assertSourcePromptEgressAllowed(
   db: Queryable,
   connection: SourceConnectionRow,
   agentId: string,
+  runtimeProfileId?:string,
 ): Promise<void> {
-  const destination = await resolveAgentPromptEgressDestination(db, connection.space_id, agentId);
+  const destination = await resolveAgentPromptEgressDestination(db, connection.space_id, agentId,runtimeProfileId);
   const governance = normalizeSourceConnectionReadGovernance(connection);
   const retrievalSettings = await readSpaceRetrievalSettings(db, connection.space_id);
   if (destination === "external_provider" && !retrievalSettings.externalEgressEnabled) {
@@ -63,6 +64,7 @@ async function resolveAgentPromptEgressDestination(
   db: Queryable,
   spaceId: string,
   agentId: string,
+  runtimeProfileId?:string,
 ): Promise<RetrievalEgressDestination> {
   const result = await db.query<{
     runtime_key: string;
@@ -95,9 +97,10 @@ async function resolveAgentPromptEgressDestination(
       WHERE arp.space_id = $1
         AND arp.agent_id = $2
         AND arp.enabled = TRUE
+        AND ($3::varchar IS NULL OR arp.id=$3)
       ORDER BY arp.is_default DESC, arp.created_at ASC, arp.id ASC
       LIMIT 1`,
-    [spaceId, agentId],
+    [spaceId, agentId,runtimeProfileId??null],
   );
   const profile = result.rows[0];
   if (!profile) throw new HttpError(409, "Selected agent has no enabled runtime profile.");

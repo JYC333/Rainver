@@ -400,6 +400,16 @@ export async function projectReaderIds(
  * One predicate, projected two ways. The predicate is the part that must not
  * drift; the columns and the sort are each caller's own business.
  */
+export function projectReaderFromSql(spaceExpr: string, userAlias: string, membershipAlias: string): string {
+  return `FROM users ${userAlias}
+    JOIN space_memberships ${membershipAlias} ON ${membershipAlias}.user_id=${userAlias}.id
+      AND ${membershipAlias}.space_id=${spaceExpr} AND ${membershipAlias}.status='active'`;
+}
+
+export function projectReaderPredicateSql(spaceExpr: string, projectExpr: string, userAlias: string): string {
+  return `${userAlias}.status='active' AND ${projectReadAccessSql(spaceExpr, projectExpr, `${userAlias}.id`)}`;
+}
+
 async function readerRows<T extends object>(
   db: Queryable,
   spaceId: string,
@@ -408,10 +418,8 @@ async function readerRows<T extends object>(
 ): Promise<T[]> {
   const result = await db.query<T>(
     `SELECT ${select.columns}
-       FROM users u
-       JOIN space_memberships sm
-         ON sm.user_id = u.id AND sm.space_id = $1 AND sm.status = 'active'
-      WHERE u.status = 'active' AND ${projectReadAccessSql("$1", "$2", "u.id")}
+       ${projectReaderFromSql("$1", "u", "sm")}
+      WHERE ${projectReaderPredicateSql("$1", "$2", "u")}
       ${select.orderBy ? `ORDER BY ${select.orderBy}` : ""}`,
     [spaceId, projectId],
   );

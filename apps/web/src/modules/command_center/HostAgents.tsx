@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { acpAgentsApi, hostsApi, type AcpAgentOut, type AcpRegistryEntry } from '../../api/client'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -389,11 +390,12 @@ export default function HostAgents({
       )}
 
       {loginOpen && (
-        <div className="space-y-1">
-          <div className="flex items-center justify-between text-xs">
-            <span>{loginOpen.target.kind === 'logout' ? 'Logout' : 'Login'} · {adapters.find(adapter => adapter.runtime_key === loginOpen.runtimeKey)?.display_name ?? loginOpen.runtimeKey} · {loginOpen.installation}</span>
-            <Button size="sm" variant="ghost" onClick={() => setLoginOpen(null)}>Close</Button>
-          </div>
+        <Dialog open onOpenChange={open => { if (!open) { clearLoginCloseTimer(); setLoginOpen(null) } }}>
+          <DialogContent className="max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>{loginOpen.target.kind === 'logout' ? 'Logout' : 'Login'} · {adapters.find(adapter => adapter.runtime_key === loginOpen.runtimeKey)?.display_name ?? loginOpen.runtimeKey}</DialogTitle>
+              <DialogDescription>{host.name} · {loginOpen.installation}</DialogDescription>
+            </DialogHeader>
           <RuntimeLoginTerminal
             key={`${loginOpen.attempt}:${loginOpen.runtimeKey}:${loginOpen.installation}:${loginOpen.target.kind === 'acp' ? loginOpen.target.method.id : loginOpen.target.kind}`}
             hostId={host.id}
@@ -404,6 +406,7 @@ export default function HostAgents({
               : loginOpen.target.kind === 'cli' ? { kind: 'cli' }
               : loginOpen.target.kind === 'logout' ? { kind: 'logout' } : null}
             interactive={loginOpen.target.kind !== 'acp' || loginOpen.target.method.type !== 'agent'}
+            onRestart={() => { clearLoginCloseTimer(); setLoginOpen(current => current ? { ...current, attempt: current.attempt + 1 } : null) }}
             onDone={loggedIn => {
               void onChanged()
               clearLoginCloseTimer()
@@ -415,7 +418,8 @@ export default function HostAgents({
               }
             }}
           />
-        </div>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   )

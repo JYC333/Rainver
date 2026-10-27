@@ -54,6 +54,12 @@ export class InterestProfileService {
     this.repo = new PgInterestProfileRepository(db);
   }
 
+  /** Canonical maturity evidence for delivery consumers; Project opens and
+   * synchronized state never become personal interest evidence. */
+  maturityInputs(spaceId: string, userId: string) {
+    return this.repo.maturityInputs(spaceId, userId);
+  }
+
   /**
    * Reads the profile as consumers see it.
    *

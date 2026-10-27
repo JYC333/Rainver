@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
+import { ResearchScanTimeline } from './ResearchScanTimeline'
 import { ProjectResearchStandingPanel } from './ProjectResearchStandingPanel'
 import { projectResearchApi } from '../../api/client'
 
@@ -50,6 +51,7 @@ describe('ProjectResearchStandingPanel', () => {
     render(<ProjectResearchStandingPanel projectId="project-1" canAct />)
 
     expect(await screen.findByText('Project understanding is not ready')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open Reading List' })).toHaveAttribute('href', '/projects/project-1/research?tab=reading')
     expect(screen.getByText('Daily comparison budget reached')).toBeInTheDocument()
     expect(screen.getByText('Provider execution failed')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open Project notes' })).toHaveAttribute('href', '/projects/project-1/notes')
@@ -61,4 +63,13 @@ describe('ProjectResearchStandingPanel', () => {
       expect(projectResearchApi.retryStandingBatch).toHaveBeenCalledWith('project-1', 'blocked-1')
     })
   })
+})
+
+it('links a completed scan update to the explicit standing tab', () => {
+  render(<ResearchScanTimeline projectId="project-1" monitoringActive summaries={[{
+    workflow_id: 'workflow-1', scan_date: '2026-10-24', new_item_count: 1,
+    relevant_count: 1, maybe_count: 0, supports_count: 1, contradicts_count: 0,
+    new_direction_count: 0, comparisons: [], integrity_alerts: [],
+  } as never]} />)
+  expect(screen.getByRole('link', { name: 'View update' })).toHaveAttribute('href', '/projects/project-1/research?tab=standing')
 })

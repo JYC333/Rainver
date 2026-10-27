@@ -6,6 +6,7 @@ export const digestReportsEn = {
   backfill_note: 'Rebuilt later from the material retained now, without the outside-your-usual-view section.',
   missing_title: 'No digest for {{date}}',
   missing_reason: {
+    monitoring_history_before_latest: 'A newer monitoring Digest is already sealed; missing days can only be generated in forward order.',
     not_generated: 'No digest was generated for this day. It can be backfilled from the material retained now.',
     day_not_complete: 'This day has not ended yet in the digest\'s timezone; its digest is generated after it ends.',
   },

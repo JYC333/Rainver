@@ -149,12 +149,13 @@ describe("what a runtime says it can be set to", () => {
 
   it("keeps an explicit built-in login flow authoritative", async () => {
     __clearRuntimeOptionsCache();
-    const login = { command: ["git", "credential"], home_subdir: ".missing", credential_file: "auth" };
+    const login = { command: ["git", "credential"] };
+    const state = { env: {}, home_subdir: ".missing", credential_file: "auth" };
     const copy = own(await detectCapabilities(async () => ({
       config_options: [],
       auth_methods: [{ id: "generic", name: "Generic", description: null, type: "agent" as const, args: [], env: {} }],
       session_available: true,
-    }), [{ runtime_key: "test", runtime: "git", login }]), "test");
+    }), [{ runtime_key: "test", runtime: "git", login, state }]), "test");
     expect(copy?.logged_in).toBe(false);
     expect(copy?.options?.auth_methods).toEqual([]);
   });

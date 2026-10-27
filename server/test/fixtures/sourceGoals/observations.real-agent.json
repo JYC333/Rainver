@@ -1,0 +1,22 @@
+{
+  "provenance": {
+    "generated_by": "real canonical Agent Run / codex_cli runtime_native own",
+    "generated_on": "2026-10-27",
+    "generation_status": "succeeded",
+    "generation_preview_complete": true,
+    "repair_status": "succeeded",
+    "repair_publication_status": "published",
+    "handwritten": false,
+    "evidence": "Generated/validated in a6679858; current contract: .agent/architecture/SOURCE_GOALS.md"
+  },
+  "initial": {
+    "code": "export default async ({ input, request }) => {\n  const response = await request(input.endpoint_url);\n  if (response.status < 200 || response.status >= 300) {\n    throw new Error(\"Observations endpoint returned an unsuccessful status\");\n  }\n  const data = JSON.parse(Buffer.from(response.body_base64, \"base64\").toString(\"utf8\"));\n  if (!data || !Object.prototype.hasOwnProperty.call(data, \"observations\") || !Array.isArray(data.observations)) {\n    throw new Error(\"Required top-level observations array is missing or invalid\");\n  }\n  const items = data.observations.slice(0, 20).map((observation) => {\n    if (!observation || typeof observation !== \"object\") {\n      throw new Error(\"Invalid observation\");\n    }\n    for (const field of [\"observationId\", \"headline\", \"published\", \"permalink\"]) {\n      if (typeof observation[field] !== \"string\" || observation[field].trim() === \"\") {\n        throw new Error(\"Observation is missing required field: \" + field);\n      }\n    }\n    if (!Number.isFinite(Date.parse(observation.published))) {\n      throw new Error(\"Observation has an invalid published timestamp\");\n    }\n    return {\n      external_id: observation.observationId,\n      title: observation.headline,\n      source_uri: observation.permalink,\n      published_at: observation.published,\n      excerpt: \"\",\n      snapshots: [],\n      evidence: []\n    };\n  });\n  return { items, cursor: {} };\n};\n",
+    "kind": "isolated",
+    "sha256": "cfb5ffa83442671ddda021d93b0f6a7ef860745b256b9e2d231a355589314a85"
+  },
+  "repaired": {
+    "code": "export default async ({ input, request }) => {\n  const response = await request(input.endpoint_url);\n  if (response.status < 200 || response.status >= 300) throw new Error(\"Observations endpoint returned an unsuccessful status\");\n  const data = JSON.parse(Buffer.from(response.body_base64, \"base64\").toString(\"utf8\"));\n  const observations = data && data.observations;\n  const legacy = Array.isArray(observations);\n  const entries = legacy ? observations : observations && observations.entries;\n  if (!Array.isArray(entries)) throw new Error(\"Required observations collection is missing or invalid\");\n  const fields = legacy ? [\"observationId\", \"headline\", \"published\", \"permalink\"] : [\"id\", \"heading\", \"date\", \"url\"];\n  const items = entries.slice(0, 20).map((entry) => {\n    if (!entry || typeof entry !== \"object\" || Array.isArray(entry)) throw new Error(\"Invalid observation\");\n    for (const field of fields) {\n      if (typeof entry[field] !== \"string\" || entry[field].trim() === \"\") throw new Error(\"Observation is missing required field: \" + field);\n    }\n    const [id, title, time, link] = fields.map((field) => entry[field]);\n    if (!Number.isFinite(Date.parse(time))) throw new Error(\"Observation has an invalid published timestamp\");\n    return {external_id: id, title, source_uri: link, published_at: time, excerpt: \"\", snapshots: [], evidence: []};\n  });\n  return {items, cursor: {}};\n};\n",
+    "kind": "isolated",
+    "sha256": "04bfa00ac5e1b299ac64f0a0f276b8cc4d852b91809bf8625f778617856b03aa"
+  }
+}

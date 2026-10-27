@@ -13,7 +13,7 @@
  * Runs.
  */
 
-type ManagedExecutionKind = "source_post_processing" | "source_annotation" | "project_research";
+type ManagedExecutionKind = "source_goal" | "source_post_processing" | "source_annotation" | "project_research";
 export type CredentialSetupKind =
   | "source_post_processing"
   | "daily_report"
@@ -26,6 +26,7 @@ type ManagedExecutionFailurePolicy = "fail_fast";
 
 /** The one trigger origin each kind's authorization covers. */
 const PRE_AUTHORIZED_ORIGIN: Readonly<Record<ManagedExecutionKind | CredentialSetupKind, "job" | "system">> = {
+  source_goal: "system",
   source_post_processing: "job",
   source_annotation: "job",
   project_research: "system",
@@ -104,7 +105,7 @@ export function isManagedFailFastRun(input: ManagedRunPolicyInput): boolean {
   if (!policy) return false;
   return (
     (input.trigger_origin === "job" && policy.managed_execution === "source_post_processing")
-    || (input.trigger_origin === "system" && policy.managed_execution === "project_research")
+    || (input.trigger_origin === "system" && (policy.managed_execution === "project_research" || policy.managed_execution === "source_goal"))
   );
 }
 
@@ -120,7 +121,7 @@ export function credentialPolicyMetadata(
 }
 
 function isManagedExecutionKind(value: unknown): value is ManagedExecutionKind {
-  return value === "source_post_processing" || value === "source_annotation" || value === "project_research";
+  return value === "source_goal" || value === "source_post_processing" || value === "source_annotation" || value === "project_research";
 }
 
 function isPreAuthorizableKind(value: unknown): value is ManagedExecutionKind | CredentialSetupKind {

@@ -467,3 +467,22 @@ object is needed. Capability-layer removal does not decide that work.
 Remove an item when its trigger fires and the work moves to
 [../plans/backlog.md](../plans/backlog.md) or lands, or when the item stops being
 true. Retire this file when nothing remains.
+
+## Information monitoring — usage and retirement gates
+
+| Work | Recorded trigger | Owner / evidence |
+|---|---|---|
+| Real monitoring quality and unattended acceptance | The person supplies actual direction, Source/model access, limits and schedule, and explicitly authorizes instance use | Projects + Sources + Digest; follow [Product Acceptance](../architecture/PRODUCT_ACCEPTANCE.md#information-monitoring--real-use-acceptance), inspect initial and several daily results. Engineering fixtures alone do not satisfy this gate. |
+| Physical retirement of legacy deep Research | Useful replacement behavior demonstrated in real use **and** authorization for a read-only inventory of instance operations, executions, Jobs, bound template versions and managed Agents/profiles | Research + owning domains; [retained consumer families](../architecture/PROJECTS.md#deep-research-compatibility-and-retirement). Prove no writers/consumers remain, define historical read compatibility and recovery/cancel/migration paths, then separately authorize retirement. Table removal requires an additional generated migration; do not infer no in-flight data from static imports or test fixtures. |
+
+The completed information-monitoring implementation does not authorize permanent
+removal of deep Research, changing unrelated automations, stopping in-flight work,
+deployment or paid/live acceptance. Feedback-based ranking, autonomous query/range
+expansion, multi-source configuration and broader Research restructuring are not
+implied by the retired implementation plan. New work needs an actual use requirement.
+
+## Sources — deployment enablement
+
+| Item | Trigger | Owner |
+|---|---|---|
+| Sources `isolated-v1` successful execution in the standard sandbox-runner container remains unverified. Real Host systemd/direct-cgroup success and unprivileged-container refusal are distinct evidence. | Before enabling generated collection in that container, an administrator provisions a private delegated cgroup v2 subtree and permitted user namespaces, then executes the successful path and cancellation/resource/egress checks in PRODUCT_ACCEPTANCE. Never grant broad container privilege or fall back to the old runner merely to pass. | Hosts + Sources + operator |

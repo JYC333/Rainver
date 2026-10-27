@@ -232,7 +232,15 @@ Deterministic Verification Engine checks use the
 separate `command_run` frame: it carries a server-defined command and one
 workspace identity, with no shell, no ambient environment, no provider channel
 and a minimal environment. Strict commands have no network; trusted commands
-retain native network access. A Run that cannot reach past its workspace is
+retain native network access.
+
+Sources collection code uses the separate Sources-only Host contract in
+[ADR 0026](decisions/0026-sources-isolated-request-execution.md): no workspace
+mounts, credentials or caller-selected host paths, and no direct network on
+either trusted or strict Hosts. Missing namespace/resource capability refuses
+execution; the ordinary Run proxy and old handler patches are not fallbacks.
+
+A Run that cannot reach past its workspace is
 the strict Host's namespace (ADR 0016), not a behavioural probe.
 
 **A verification recipe is code, and it runs on the host that holds the

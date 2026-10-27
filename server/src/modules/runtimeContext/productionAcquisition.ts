@@ -40,7 +40,7 @@ import {
   contentResourceTypeForRetrievalObject,
 } from "../contentAccess/audit.js";
 import { ContextWindowReconciliationRepository } from "./reconciliationRepository.js";
-import { normalizeContextItem } from "./itemNormalizer.js";
+import { contextItemText, normalizeContextItem } from "./itemNormalizer.js";
 import {
   RuntimeContextAcquisitionComposition,
   type RuntimeContextAuthorityPort,
@@ -366,7 +366,18 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
       model_override_json: run.model_override_json,
     });
     if (!thread.thread_id) return false;
-    const digest = standingItemsDigest(standing.map((item) => item.source_ref));
+    const digest = standingItemsDigest(standing.map((item) => {
+      const ref = item.source_ref;
+      // The Run ref is required for delivery authorization, but changes on
+      // every turn. Compare the Room identity's meaning, not its audit ref.
+      return ref.type === "run_group_agent_identity"
+        ? {
+            type: ref.type,
+            id: run.agent_id!,
+            version: createHash("sha256").update(contextItemText(item)).digest("hex"),
+          }
+        : ref;
+    }));
     const row = thread.resume_attempted
       ? (await this.db.query<{ standing_digest: string | null; vendor_session_id: string | null }>(
           `SELECT standing_digest, vendor_session_id FROM host_threads WHERE id = $1 AND space_id = $2`,

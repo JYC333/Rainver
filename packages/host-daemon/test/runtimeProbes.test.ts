@@ -10,7 +10,8 @@ describe("runtime probes from the control plane", () => {
     argv: ["opencode", "acp", "--cwd", "rainver:remote-workspace-cwd"],
     distribution: null,
     version: null,
-    login: { command: ["opencode", "auth", "login"], home_subdir: ".local/share/opencode", credential_file: "auth.json" },
+    login: { command: ["opencode", "auth", "login"] },
+    state: { env: {}, home_subdir: ".local/share/opencode", credential_file: "auth.json" },
     remote_host_only: false,
   };
 

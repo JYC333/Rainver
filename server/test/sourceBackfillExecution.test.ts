@@ -98,6 +98,7 @@ describe("source backfill extraction windows",()=>{
 
   it("claims quota and creates a segment job in one transaction",async()=>{
     const query=vi.fn(async(sql:string)=>{
+      if(sql.startsWith("SELECT id FROM source_channels"))return{rows:[{id:"channel-1"}],rowCount:1};
       if(sql.startsWith("SELECT p.project_operation_id"))return{rows:[{project_operation_id:null,project_operation_kind:null}],rowCount:1};
       if(sql.startsWith("SELECT p.*, o.kind AS project_operation_kind"))return{rows:[{status:"approved",source_channel_id:"channel-1",quota_policy_json:{window:"minute",limit_count:2},strategy_json:{max_items:25},items_ingested:0,project_operation_id:null,project_operation_kind:null,operation_max_items:null}],rowCount:1};
       if(sql.startsWith("SELECT ch.source_connection_id, c.connector_key"))return{rows:[{source_connection_id:"connection-1",connector_key:"arxiv_api"}],rowCount:1};
@@ -118,6 +119,7 @@ describe("source backfill extraction windows",()=>{
   it("persists the actual quota reset on both segment and plan",async()=>{
     const reset="2026-01-01T00:01:00.000Z";
     const query=vi.fn(async(sql:string)=>{
+      if(sql.startsWith("SELECT id FROM source_channels"))return{rows:[{id:"channel-1"}],rowCount:1};
       if(sql.startsWith("SELECT p.project_operation_id"))return{rows:[{project_operation_id:null,project_operation_kind:null}],rowCount:1};
       if(sql.startsWith("SELECT p.*, o.kind AS project_operation_kind"))return{rows:[{status:"running",source_channel_id:"channel-1",quota_policy_json:{window:"minute",limit_count:1},strategy_json:{max_items:25},items_ingested:0,project_operation_id:null,project_operation_kind:null,operation_max_items:null}],rowCount:1};
       if(sql.startsWith("SELECT ch.source_connection_id, c.connector_key"))return{rows:[{source_connection_id:"connection-1",connector_key:"arxiv_api"}],rowCount:1};
@@ -162,6 +164,7 @@ describe("source backfill extraction windows",()=>{
           rowCount: 1,
         };
       }
+      if (sql.startsWith("SELECT id FROM source_channels")) return { rows: [{ id: "channel-1" }], rowCount: 1 };
       if (sql.startsWith("SELECT p.project_operation_id")) {
         return { rows: [{ project_operation_id: null, project_operation_kind: null }], rowCount: 1 };
       }
@@ -201,6 +204,7 @@ describe("source backfill extraction windows",()=>{
 
   it("keys the quota bucket by source connection so two plans on the same connection share one budget", async () => {
     const query = vi.fn(async (sql: string, _params?: readonly unknown[]) => {
+      if (sql.startsWith("SELECT id FROM source_channels")) return { rows: [{ id: "channel-1" }], rowCount: 1 };
       if (sql.startsWith("SELECT p.project_operation_id")) {
         return { rows: [{ project_operation_id: null, project_operation_kind: null }], rowCount: 1 };
       }
@@ -240,6 +244,7 @@ describe("source backfill extraction windows",()=>{
       if (sql.startsWith("SELECT status FROM source_backfill_plans")) {
         return { rows: [{ status: "draft" }], rowCount: 1 };
       }
+      if (sql.startsWith("SELECT id FROM source_channels")) return { rows: [{ id: "channel-1" }], rowCount: 1 };
       if (sql.startsWith("SELECT p.project_operation_id")) {
         return { rows: [{ project_operation_id: "operation-research", project_operation_kind: "research" }], rowCount: 1 };
       }

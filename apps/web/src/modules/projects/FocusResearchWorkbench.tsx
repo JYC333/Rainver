@@ -668,7 +668,7 @@ export function FocusResearchWorkbench({
               }))}
             onChange={onSelectWorkflow}
           />}
-          <Link to={`/projects/${project.id}/research`}><Button size="sm"><BookOpen className="size-3.5" />Open research Area</Button></Link>
+          <Link to={`/projects/${project.id}/research?tab=standing`}><Button size="sm"><BookOpen className="size-3.5" />Open research Area</Button></Link>
           <Button size="sm" variant={projectQuestion ? 'ghost' : 'secondary'} onClick={onEditQuestion}>
             <Edit2 className="size-3.5" />
             {projectQuestion ? 'Edit question' : 'Set research question'}

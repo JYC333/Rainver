@@ -29,6 +29,14 @@ function recorder(responses: Array<Response | ((hop: Hop) => Response)>): { hops
 }
 
 describe("guardedFetch", () => {
+  it("admits each physical hop and propagates refusal before sending a redirect",async()=>{
+    const refusal=new Error("request budget exhausted");
+    let admitted=0;
+    const {hops,fetch}=recorder([new Response(null,{status:302,headers:{location:"https://example.test/next"}}),new Response("ok")]);
+    await expect(guardedFetch({url:"https://example.test/start",maxDownloadBytes:1024,beforeSend:async()=>{if(admitted++===1)throw refusal;}},{guard:publicGuard,fetch})).rejects.toBe(refusal);
+    expect(hops).toHaveLength(1);
+    expect(admitted).toBe(2);
+  });
   it("connects only to the address the guard pinned", async () => {
     const { hops, fetch } = recorder([new Response("body", { status: 200 })]);
     const result = await guardedFetch({ url: "https://example.test/a", maxDownloadBytes: 1024 }, { guard: publicGuard, fetch });

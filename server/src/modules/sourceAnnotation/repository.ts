@@ -1,3 +1,4 @@
+import { monitoringChannelControlClause } from '../projects/monitoringControl.js';
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import type { AnnotationPromptItem } from "./instruction.js";
@@ -135,6 +136,15 @@ export class PgSourceAnnotationRepository {
     return result.rowCount ?? 0;
   }
 
+  async enqueueMonitoringItems(spaceId:string,channelId:string,itemIds:string[]):Promise<void>{
+    if(itemIds.length>200)throw new Error('Monitoring annotation batch exceeds bound');
+    await this.db.query(`INSERT INTO source_item_annotations(id,space_id,source_item_id,source_channel_id,status,created_at,updated_at)
+      SELECT gen_random_uuid()::text,i.space_id,i.id,$2,'pending',now(),now() FROM source_items i
+      JOIN source_channel_item_links l ON l.source_item_id=i.id AND l.space_id=i.space_id AND l.source_channel_id=$2
+      WHERE i.space_id=$1 AND i.id=ANY($3::varchar[]) AND i.deleted_at IS NULL
+      ON CONFLICT(space_id,source_item_id) DO NOTHING`,[spaceId,channelId,itemIds]);
+  }
+
   /** Explicit, bounded accelerator for pre-annotation subscription history. */
   async enqueueSubscriptionHistory(spaceId: string, userId: string, limit: number): Promise<number> {
     const now = new Date().toISOString();
@@ -181,7 +191,7 @@ export class PgSourceAnnotationRepository {
    * between scan and annotation would otherwise be sent to a model after the
    * user removed it.
    */
-  async loadPendingBatch(spaceId: string, limit: number): Promise<PendingAnnotationRow[]> {
+  async loadPendingBatch(spaceId: string, limit: number, itemIds?: string[]): Promise<PendingAnnotationRow[]> {
     const result = await this.db.query<{
       id: string;
       title: string;
@@ -201,9 +211,11 @@ export class PgSourceAnnotationRepository {
         WHERE a.space_id = $1
           AND ${RUNNABLE_CLAUSE}
           AND i.deleted_at IS NULL
+          AND ($3::varchar[] IS NULL OR i.id=ANY($3::varchar[]))
+          AND ($3::varchar[] IS NOT NULL OR NOT EXISTS(SELECT 1 FROM source_channel_item_links ml WHERE ml.source_item_id=i.id AND ml.space_id=i.space_id AND ${monitoringChannelControlClause('ml.space_id','ml.source_channel_id')}))
         ORDER BY a.next_retry_at ASC NULLS FIRST, a.created_at ASC, a.id ASC
         LIMIT $2`,
-      [spaceId, limit],
+      [spaceId, limit, itemIds ?? null],
     );
     return result.rows.map((row) => ({
       id: row.id,

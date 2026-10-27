@@ -52,6 +52,7 @@ export async function listDueSourceChannelScanTasks(
         AND st.next_run_at <= $2
         AND ch.status = 'active'
         AND ch.fetch_frequency <> 'manual'
+        AND NOT EXISTS(SELECT 1 FROM source_goals g JOIN source_goal_bindings b ON b.goal_id=g.id WHERE g.space_id=ch.space_id AND b.spec_json->>'source_channel_id'=ch.id AND g.active_version_id IS NOT NULL AND g.status<>'deleted')
         AND sc.status = 'active'
         AND sc.deleted_at IS NULL
         AND NOT EXISTS (

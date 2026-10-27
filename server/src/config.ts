@@ -56,6 +56,8 @@ export interface ServerConfig {
   providerProxyPort: number;
   /** Runs the built-in execution host executes at once; see `BUILTIN_HOST_MAX_CONCURRENT_RUNS`. */
   builtinHostMaxConcurrentRuns: number;
+  /** Independent background jobs the server may process concurrently. */
+  jobsWorkerConcurrency: number;
   /**
    * Base URL a *remote* execution host should use to reach the provider proxy,
    * when that differs from the in-network one. Unset means remote runs cannot
@@ -170,6 +172,7 @@ const KNOWN_ENV_KEYS = new Set([
   "PROVIDER_PROXY_PORT",
   "PROVIDER_PROXY_EXTERNAL_BASE_URL",
   "BUILTIN_HOST_MAX_CONCURRENT_RUNS",
+  "JOBS_WORKER_CONCURRENCY",
   "WORKSPACE_ROOT",
   "SANDBOX_ROOT",
   "ARTIFACT_STORAGE_ROOT",
@@ -524,6 +527,7 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     1,
     64,
   );
+  const jobsWorkerConcurrency = parseBoundedInt(env.JOBS_WORKER_CONCURRENCY, 8, "JOBS_WORKER_CONCURRENCY", 1, 64);
   const rawProviderProxyExternalBaseUrl = env.PROVIDER_PROXY_EXTERNAL_BASE_URL?.trim();
   const providerProxyExternalBaseUrl = rawProviderProxyExternalBaseUrl
     ? validateHttpBaseUrl(rawProviderProxyExternalBaseUrl, "PROVIDER_PROXY_EXTERNAL_BASE_URL")
@@ -766,6 +770,7 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     providerProxyListenHost,
     providerProxyPort,
     builtinHostMaxConcurrentRuns,
+    jobsWorkerConcurrency,
     providerProxyExternalBaseUrl,
     workspaceRoot,
     sandboxRoot,

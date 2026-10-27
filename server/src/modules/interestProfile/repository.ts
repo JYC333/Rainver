@@ -67,7 +67,7 @@ export const NEW_TOPIC_READ_THRESHOLD = DEFAULT_INTEREST_PROFILE_SETTINGS.new_to
  * serendipity section) and the source is still one they subscribe to.
  */
 const PROFILE_READ_EVIDENCE_SQL = `s.read_status <> 'unread'
-          AND COALESCE(s.read_origin, 'library') <> 'serendipity'
+          AND COALESCE(s.read_origin, 'library') = 'library'
           AND ${sourceItemProfileEvidenceClause("si", "$2")}`;
 
 export class PgInterestProfileRepository {
@@ -306,7 +306,7 @@ export class PgInterestProfileRepository {
       `SELECT a.source_item_id,
               a.domain_key,
               a.topic_candidates_json,
-              (COALESCE(s.read_status, 'unread') <> 'unread' AND COALESCE(s.read_origin, 'library') <> 'serendipity') AS was_read,
+              (COALESCE(s.read_status, 'unread') <> 'unread' AND COALESCE(s.read_origin, 'library') = 'library') AS was_read,
               COALESCE(s.library_status, 'new') = 'ignored' AS was_ignored,
               o.id IS NOT NULL AS already_observed
          FROM source_item_annotations a
@@ -330,7 +330,7 @@ export class PgInterestProfileRepository {
           AND ${sourceItemProfileEvidenceClause("si", "$2")}
           AND (
             o.id IS NULL
-            OR (o.counted_as_read = FALSE AND COALESCE(s.read_status, 'unread') <> 'unread' AND COALESCE(s.read_origin, 'library') <> 'serendipity')
+            OR (o.counted_as_read = FALSE AND COALESCE(s.read_status, 'unread') <> 'unread' AND COALESCE(s.read_origin, 'library') = 'library')
           )
         ORDER BY a.annotated_at ASC NULLS LAST, a.id ASC
         LIMIT $4`,

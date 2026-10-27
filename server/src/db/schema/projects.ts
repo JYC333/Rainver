@@ -1,3 +1,4 @@
+import { projectInformationMonitoringVersions } from "./projectInformationMonitoring.js";
 import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { users } from "./auth.js";
@@ -13,6 +14,8 @@ export const projects = pgTable("projects", {
 	description: text(),
 	status: varchar({ length: 32 }).notNull(),
 	currentFocus: text("current_focus"),
+	activeInformationMonitoringVersionId: varchar("active_information_monitoring_version_id", { length: 36 }),
+	informationMonitoringPaused: integer("information_monitoring_paused").default(1).notNull(),
 	settingsJson: jsonb("settings_json"),
 	/** Which long-term focus area this Project serves. Navigation only. ADR 0015. */
 	focusAreaId: varchar("focus_area_id", { length: 36 }),
@@ -23,6 +26,7 @@ export const projects = pgTable("projects", {
 	archivedAt: timestamp("archived_at", { withTimezone: true, mode: 'string' }),
 	deletedAt: timestamp("deleted_at", { withTimezone: true, mode: 'string' }),
 }, (table): PgTableExtraConfigValue[] => [
+	foreignKey({columns:[table.activeInformationMonitoringVersionId,table.id,table.spaceId],foreignColumns:[projectInformationMonitoringVersions.id,projectInformationMonitoringVersions.projectId,projectInformationMonitoringVersions.spaceId],name:"projects_monitoring_version_fkey"}),
 	index("ix_projects_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
 	index("ix_projects_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_projects_status").using("btree", table.status.asc().nullsLast()),

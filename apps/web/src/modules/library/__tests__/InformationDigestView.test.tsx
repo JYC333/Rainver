@@ -41,6 +41,11 @@ const items = [
 afterEach(async () => { await i18n.changeLanguage('en') })
 
 describe('InformationDigestView', () => {
+  it.each(['not_run','analysis_pending','quota_paused','source_failed','no_new'])('labels an empty monitoring day honestly as %s', (coverage)=>{
+    render(<InformationDigestView digest={{...digest([]),settings:{ranking:'project_monitoring',coverage}}} project/>);
+    expect(screen.queryByText('Nothing new today')).not.toBeInTheDocument();
+    expect(screen.getAllByText(i18n.t(`monitoring.${coverage}`)).length).toBeGreaterThan(0);
+  });
   it('words sections, team counts and feedback in English', () => {
     render(<InformationDigestView digest={digest(items)} project onSerendipityFeedback={vi.fn()} />)
     expect(screen.getByText('For your interests')).toBeInTheDocument()

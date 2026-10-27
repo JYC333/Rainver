@@ -121,6 +121,12 @@ export interface GuardedRequest {
   bodyIdleTimeoutMs?: number;
   signal?: AbortSignal;
   maxRedirects?: number;
+  /** Admission immediately before each physical send, redirects included. Refusals propagate unchanged. */
+  beforeSend?: (url: URL, signal: AbortSignal) => Promise<void>;
+  /** Server-owned per-hop header resolution, after destination pinning. */
+  headersForHop?: (url: URL, signal: AbortSignal) => Promise<{ headers?: Record<string,string>; credentialHeaders?: Record<string,string> }>;
+  /** Opt-in bounded error bodies for Sources API diagnostics. */
+  readErrorBody?: boolean;
 }
 
 export interface GuardedResponse {
@@ -129,7 +135,7 @@ export interface GuardedResponse {
   status: number;
   ok: boolean;
   headers: Headers;
-  /** Never longer than `maxDownloadBytes`. Empty for stream sinks, 304 and non-OK status. */
+  /** Never longer than `maxDownloadBytes`. Empty for stream sinks and (by default) non-OK status; readErrorBody opts in. */
   bytes: Uint8Array;
   /** The body was longer than `maxDownloadBytes`, or the upstream declared that it was. */
   truncated: boolean;
@@ -191,11 +197,16 @@ export async function guardedFetch(
       // downgrade, whether or not the credential itself still travels.
       throw new OutboundGuardError(502, "Outbound URL redirected from https to http");
     }
-    const headers = sameOrigin
+    let headers = sameOrigin
       ? { ...safeHeaders, ...credentialHeaders }
       : Object.fromEntries(Object.entries(safeHeaders).filter(([name]) => !ALWAYS_CREDENTIAL_HEADERS.has(name)));
 
     const pinned = await deps.guard.pin(current, signal);
+    const hopHeaders = await request.headersForHop?.(current, signal);
+    if (hopHeaders) headers = { ...headers, ...lowerCaseHeaders(hopHeaders.headers), ...lowerCaseHeaders(hopHeaders.credentialHeaders) };
+    signal.throwIfAborted();
+    await request.beforeSend?.(current, signal);
+    signal.throwIfAborted();
     const response = await deps.fetch(
       current.toString(),
       { method: request.method ?? "GET", headers, signal, redirect: "manual" },
@@ -211,6 +222,7 @@ export async function guardedFetch(
         request.maxDownloadBytes,
         request.bodyIdleTimeoutMs,
         stream,
+        request.readErrorBody,
       );
     }
     const location = response.headers.get("location");
@@ -229,10 +241,11 @@ async function readGuardedBody(
   maxDownloadBytes: number,
   bodyIdleTimeoutMs: number | undefined,
   stream: GuardedStreamSink | undefined,
+  readErrorBody = false,
 ): Promise<GuardedResponse> {
   // A body nobody is going to read is still a transfer this process pays for,
   // and an upstream that answers an error with megabytes of HTML is ordinary.
-  if (!response.ok) {
+  if (!response.ok && !readErrorBody) {
     await response.body?.cancel().catch(() => undefined);
     return { url, status: response.status, ok: false, headers: response.headers, bytes: new Uint8Array(0), truncated: false };
   }
@@ -247,5 +260,5 @@ async function readGuardedBody(
     onChunk: stream?.onChunk,
     collectBytes: !stream,
   });
-  return { url, status: response.status, ok: true, headers: response.headers, bytes, truncated };
+  return { url, status: response.status, ok: response.ok, headers: response.headers, bytes, truncated };
 }

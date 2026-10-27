@@ -83,3 +83,11 @@ export const sourceQuotaBuckets = pgTable("source_quota_buckets", {
 	check("ck_source_quota_buckets_window", sql`"window" IN ('minute','hour','day')`),
 	check("ck_source_quota_buckets_counts", sql`limit_count>0 AND used_count>=0`),
 ]);
+
+/** Server-owned service-account/endpoint quota state, shared across connections and Spaces.
+ * Only opaque hashes are stored; this is admission state, not a readable domain object. */
+export const sourceRequestQuotaState = pgTable("source_request_quota_state", {
+  groupKey: varchar("group_key", { length: 64 }).primaryKey().notNull(),
+  windowsJson: jsonb("windows_json").notNull(),
+  cooldownUntil: timestamp("cooldown_until", { withTimezone: true, mode: 'string' }),
+});

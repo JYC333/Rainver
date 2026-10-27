@@ -197,3 +197,76 @@ The script intentionally fails when credentials or prepared records are
 missing. It executes real external work, verifies canonical logical I/O,
 validation evidence, cancellation, retry/fallback evidence, and routing
 evidence, but it does not automatically delete audit data.
+
+## Information monitoring — real-use acceptance
+
+Engineering tests use deterministic HTTP/model boundaries and real test PostgreSQL;
+they do not establish live recommendation quality or unattended reliability. Before
+real use, the person confirms direction/include/exclude criteria, Source permissions,
+history interval or current-only observation, evidence depth, Agent/model, per-run
+and daily quantity limits, recommendation count/language, timezone and actual
+collection/stop/Digest times. Missing configuration is not permission to enable
+instance calls. Monetary/token measurements are soft controls, not hard stop-loss.
+
+In an authorized disposable acceptance Project:
+
+1. Confirm the typed monitoring configuration and each independent Source-owner
+   activation/binding/history dependency. Opening Sources or the bare Research
+   choice page must create no Research workflow or external request.
+2. Run a bounded initial check. Inspect recommended and unselected candidates,
+   original Reader evidence and personal read/relevance feedback. Record false
+   relevance, duplicates, broken links and real coverage, including RSS/page
+   current-only limits. Verify a second reader sees only the shared readable set.
+3. Exercise Source failure, explicit retry, pause/resume and quantity exhaustion.
+   Confirm retained offsets, spent budget and honest status; a permission-blocked
+   page must become readable/retryable only after actual authority is restored.
+4. Only after useful manual results, separately confirm daily operation. Over
+   several days inspect new and zero-new intervals, partial/failed/not-run states,
+   recent-first then historical remainder, midnight/DST, late analysis and immutable
+   daily Digest membership. Do not auto-expand scope to fill a short list.
+5. Record whether the list is worth opening daily. Real source/model behavior,
+   continuous-day quality and unattended reliability remain unverified until this
+   procedure is actually performed. See the trigger in
+   [Deferred Register](../tasks/deferred-register.md#information-monitoring--usage-and-retirement-gates).
+
+Deterministic regression owners are `projectInformationMonitoringDb`,
+`projectMonitoringGenericSourcesDb`, `informationDigestDb/Date`, Sources execution
+and scheduler tests, outbound-guard fetch tests, and the Project monitoring browser
+fixture. A passing fixture is not evidence that an actual instance has been enabled.
+
+## Conversational Source Goals
+
+Use a disposable personal Space and a separate Project with controlled HTTP/RSS
+fixtures. Record the selected Host/Profile and exact goal version. Distinguish
+real model generation from a deterministic external-Agent fixture.
+
+1. From empty Reading, describe a goal, inspect a multi-source preview, refine
+   it, and confirm the exact fresh version. Check desktop EN and narrow ZH,
+   close/refresh recovery, zero writes before first send, stale preview refusal
+   and single-source support. A running approved version must survive drafts.
+2. Exercise pause/resume, ownership and Project revocation, legacy-source mapping,
+   restart, rollback and repeated takeover. Confirm exactly one collection
+   scheduler and unchanged successful history, subscription, quotas and cursors.
+3. On a Host offering `isolated-v1`, exercise exact-SHA execution, physical-request
+   quotas, persisted-result watermarks, parser change, candidate verification,
+   CAS publication/rollback and gap recovery within the existing authorization.
+4. Test both permitted original-archive replay and nonarchive automatic repair.
+   Metadata/reference/extract-text sources must not retain raw bodies or expose
+   them through repair Run/tool results. Confirm randomized synthetic checks,
+   two independent live trials, stable ID/field semantics, unchanged successful
+   items/watermark during validation, exact-CAS publication and rollback. Missing
+   semantic evidence or exhausted budgets pauses only that source; permission
+   changes reject immediately. Quota interruption must retry the saved candidate
+   within the same Run budget, without another model invocation. Unsupported
+   formats must honestly report insufficient evidence. Do not enable archiving
+   as a fallback. Deterministic candidates and real OS/HTTP/PG validation do not
+   establish that a real model generated a nonarchive repair: record that smoke
+   separately if explicitly authorized, without reusing archive evidence as proof.
+5. Before container enablement, have its administrator provide delegated cgroup
+   v2/userns facilities and run the success path in the actual sandbox-runner,
+   including egress bypass denial, resource limits, cancellation and orphan
+   cleanup. The existing unprivileged refusal/zero-request check is insufficient
+   evidence of success. Missing facilities must remain fail closed.
+
+Do not make paid calls or widen permissions solely to reproduce historical
+evidence; use the authorized Profile and record unknown monetary cost honestly.

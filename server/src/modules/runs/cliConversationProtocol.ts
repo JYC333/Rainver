@@ -19,9 +19,10 @@ import {
   permissionRequestQuestion,
   type AskedUser,
 } from "./vendorQuestion.js";
-import { getRuntimeAdapterSpec, isAcpRuntimeAdapter, type VendorCliRuntimeKey } from "../runtimeAdapters/specs.js";
+import { getRuntimeAdapterSpec, isAcpRuntimeAdapter } from "../runtimeAdapters/specs.js";
 
-type ConversationProtocolAdapter = VendorCliRuntimeKey;
+// Registry adapters have dynamic keys; admission is checked against the catalog.
+type ConversationProtocolAdapter = string;
 
 export interface AcpSessionConfigSelection {
   id: string;
@@ -442,9 +443,9 @@ export class AcpController implements CliStdioController {
         );
         return;
       }
-      const hasUsage = Object.prototype.hasOwnProperty.call(result, "usage");
+      const hasUsage = result.usage !== undefined && result.usage !== null;
       const rawUsage = recordOrNull(result.usage);
-      const usage = rawUsage ? usageFromAcp(rawUsage) : null;
+      const usage = rawUsage ? usageFromAcp(rawUsage, this.input.runtime_key === "acp_antigravity_acp") : null;
       if (hasUsage && !usage) {
         this.fail(`${this.label()} ACP returned invalid token usage`, closeStdin);
         return;

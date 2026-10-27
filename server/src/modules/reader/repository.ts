@@ -1,3 +1,4 @@
+import { readingVersionCurrentSql } from '../sources/readingIdentity.js';
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import { stat, readFile } from "node:fs/promises";
@@ -289,11 +290,12 @@ async function enforceSourceItemReadConsent({ db, identity, item }: ConsentCheck
     await enforceConnectionReadConsent(db, identity, item.connection_id, isoTimestamp(item.first_seen_at));
     return;
   }
-  if (item.created_by_user_id !== identity.userId) throw new HttpError(404, "Not found");
+  // Unconnected saves already passed the canonical item/Project content gate.
+  // Creation provenance is not an additional reader ACL.
 }
 
 /** Where a reader reached an item from; decides whether the read is interest evidence (B54). */
-export type ReadOrigin = "library" | "serendipity";
+export type ReadOrigin = "library" | "serendipity" | "project";
 
 async function markSourceItemOpened(
   db: Queryable,
@@ -305,22 +307,25 @@ async function markSourceItemOpened(
   await db.query(
     `INSERT INTO source_item_user_states (
        id, space_id, source_item_id, user_id, library_status, read_status,
-       first_opened_at, last_opened_at, read_origin, progress_json, created_at, updated_at
+       first_opened_at, last_opened_at, read_origin, progress_json, created_at, updated_at, read_body_revision
      ) VALUES (
        $1, $2, $3, $4, 'new', 'skimmed',
-       $5, $5, $6, '{}'::jsonb, $5, $5
+       $5, $5, $6, '{}'::jsonb, $5, $5,
+       (SELECT reading_body_revision FROM source_items WHERE space_id=$2::varchar(36) AND id=$3::varchar(36))
      )
      ON CONFLICT (space_id, source_item_id, user_id) DO UPDATE SET
        first_opened_at = COALESCE(source_item_user_states.first_opened_at, $5::timestamptz),
        last_opened_at = $5::timestamptz,
        read_status = CASE
+         WHEN NOT (SELECT ${readingVersionCurrentSql('version_item', 'source_item_user_states')} FROM source_items version_item WHERE version_item.space_id=$2 AND version_item.id=$3) THEN 'skimmed'
          WHEN source_item_user_states.read_status = 'unread' THEN 'skimmed'
          ELSE source_item_user_states.read_status
        END,
+       read_body_revision = EXCLUDED.read_body_revision,
        -- An open from the serendipity section never becomes evidence by
        -- itself; a later open the reader reached on their own does.
        read_origin = CASE
-         WHEN $6 = 'serendipity' THEN COALESCE(source_item_user_states.read_origin, 'serendipity')
+         WHEN $6 IN ('serendipity','project') THEN COALESCE(source_item_user_states.read_origin, $6)
          ELSE 'library'
        END,
        updated_at = $5`,

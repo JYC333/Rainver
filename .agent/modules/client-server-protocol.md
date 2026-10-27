@@ -292,3 +292,28 @@ their explicit source Space. The user-level aggregate stream above supplies only
 collection invalidation/summary, not conversation content. Replies and exact-source
 Run/authorization/Proposal commands retain their existing owning endpoints; no
 second sender or execution watcher is introduced.
+
+## Reading API usage
+
+Use typed `informationDigestsApi.reading(spaceId, query, projectId?, {signal})`
+for personal or Project views (`pending`, `read`, `all`). Forward the opaque
+`next_cursor` unchanged only within the same Space/user/Project/view/search;
+409 means restart from page one. Search is literal. Counts and group membership
+are server-authoritative; do not combine per-source pages in a client cache.
+Use `readingState` for read/restore/private dismissal and re-read the authorized
+window after success; failures clear stale content. Preference GET/PUT changes
+only the current user's default-off Project inclusion setting.
+
+For fixed history use personal/Project edition lookup with explicit `date`;
+GET never generates. Backfill is explicit and scope-authorized. Forward a full
+reading card's `reader_origin` through `readingHref` to the shared Reader
+(`from` becomes the document request's `origin`); summary-only cards do not link.
+Project candidates, Source annotations and Research Reading List links explicitly
+use project origin. `readingReturnTo` accepts only the enumerated local reading,
+Sources candidates/settings, research reading-list and exact personal/Project
+daily-edition destinations. Daily links retain the snapshot date; Project edition
+returns must match the link’s explicit `projectId` context, independently of the
+SourceItem’s own Project. This UI context grants no access. These UI
+query parameters do not replace the Reader's current server authorization.
+See [Information Digest](information-digest.md#unified-reading-projection) for
+routes, pagination, state and immutable edition semantics.

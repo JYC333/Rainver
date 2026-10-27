@@ -6,7 +6,7 @@ import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
 import { HostDaemonFrameSchema, HostHelloInfoSchema, HostRunDiffUploadSchema,
-  HostRunOutputsUploadSchema, type HostHelloInfo, isOwnCliUpdateRuntimeKey, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
+  HostRunOutputsUploadSchema, type HostHelloInfo, isOwnCliUpdateRuntimeKey, LOGIN_CALLBACK_URL_MAX_CHARS, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import { scheduleAmbientSyncs } from "../importedSessions/syncScheduler.js";
 import { authRepositoryFromConfig, sessionRefreshSink, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
 import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow, type HostUploadRefusal } from "./repository.js";
@@ -83,8 +83,9 @@ function isRemoteDispatchEligible(runtimeKey: string): boolean {
     && spec.implementation_status === "implemented"
     && spec.invocation?.protocol === "acp"
     // An unbound host run needs this contract to give each Agent a separate
-    // state root without losing the managed installation's login.
-    && spec.credentials?.login !== undefined;
+    // state root without losing the installation's login. Login itself may
+    // be a CLI command or ACP Agent Auth; the boundary is what dispatch needs.
+    && spec.credentials?.state !== undefined;
 }
 
 /**
@@ -721,7 +722,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (previous) sharedHostConnectionRegistry.closeLoginSession(resolved.hostId, previous);
     const sessionId = sharedHostConnectionRegistry.openLoginSession(
       resolved.hostId,
-      { runtime_key: runtimeKey, installation, login: probe.login, argv: probe.argv, auth_method: authMethod, login_action: loginAction },
+      { runtime_key: runtimeKey, installation, login: probe.login, state: probe.state ?? null, argv: probe.argv, auth_method: authMethod, login_action: loginAction },
       (event) => {
         emit(event);
         if (event.type === "exit") {
@@ -758,6 +759,37 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
     const sessionId = activeLoginSessions.get(loginSessionKey(resolved.hostId, runtimeKey, installation));
     if (!sessionId || !sharedHostConnectionRegistry.sendLoginInput(resolved.hostId, sessionId, data)) {
+      return reply.code(409).send({ detail: "No login session is open for this installation" });
+    }
+    return reply.code(204).send();
+  });
+
+  /**
+   * The browser's OAuth redirect, delivered on the host. A login that waits
+   * on a loopback redirect can only be completed by a browser on that
+   * machine; a person elsewhere pastes the `http://127.0.0.1:…` address
+   * their browser could not open, and the daemon makes that request
+   * locally, against the port the login announced. The address is relayed,
+   * never stored or logged: its query carries a one-time authorization code.
+   */
+  app.post("/api/v1/hosts/:hostId/installations/:runtimeKey/:installation/login/callback", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
+    if (!resolved) return reply;
+    const { runtimeKey, installation } = params(request);
+    const url = body<{ url?: unknown }>(request).url;
+    if (!runtimeKey || !installation || typeof url !== "string" || !url.trim()) return reply.code(400).send({ detail: "url is required" });
+    if (url.length > LOGIN_CALLBACK_URL_MAX_CHARS) return reply.code(413).send({ detail: "The callback address is too long" });
+    let parsed: URL;
+    try {
+      parsed = new URL(url.trim());
+    } catch {
+      return reply.code(422).send({ detail: "Paste the full address the browser landed on, starting with http://127.0.0.1:" });
+    }
+    if (parsed.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname)) {
+      return reply.code(422).send({ detail: "Only a loopback redirect (http://127.0.0.1:… or http://localhost:…) can be delivered to the host" });
+    }
+    const sessionId = activeLoginSessions.get(loginSessionKey(resolved.hostId, runtimeKey, installation));
+    if (!sessionId || !sharedHostConnectionRegistry.sendLoginCallback(resolved.hostId, sessionId, url.trim())) {
       return reply.code(409).send({ detail: "No login session is open for this installation" });
     }
     return reply.code(204).send();
@@ -1074,7 +1106,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               }
               // Revoked while this hello was in flight: the registry has
               // closed the socket; no acknowledgement, no connection.
-              if (!sharedHostConnectionRegistry.registerConnection(host.id, frameSink)) return;
+              if (!sharedHostConnectionRegistry.registerConnection(host.id, frameSink, frame.capabilities_json.sources_execution === "isolated-v1")) return;
               frameSink.send({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes(probeHostKind) });
               void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), host.id)
                 .catch(() => undefined);
@@ -1141,6 +1173,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             case "login_output":
               sharedHostConnectionRegistry.receiveLoginEvent(hostId, frame.session_id, { type: "output", data: frame.data });
               return;
+            case "login_callback_wanted":
+              sharedHostConnectionRegistry.receiveLoginEvent(hostId, frame.session_id, { type: "callback_wanted", port: frame.port, authorize_url: frame.authorize_url });
+              return;
             case "login_exit":
               sharedHostConnectionRegistry.receiveLoginEvent(hostId, frame.session_id, { type: "exit", exit_code: frame.exit_code, logged_in: frame.logged_in });
               return;
@@ -1175,6 +1210,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             case "usage_probe_result":
               sharedHostConnectionRegistry.receiveUsageProbeResult(hostId, frame.request_id, frame.quota);
               return;
+            case "source_rejected": return;
+            case "source_request":
+              sharedHostConnectionRegistry.receiveSourceRequest(hostId, frame.execution_id, frame.request); return;
+            case "source_result":
+              sharedHostConnectionRegistry.receiveSourceResult(hostId, frame.execution_id, frame.result); return;
             case "command_result": {
               sharedHostConnectionRegistry.receiveCommandResult(hostId, frame.request_id, {
                 exit_code: frame.exit_code,

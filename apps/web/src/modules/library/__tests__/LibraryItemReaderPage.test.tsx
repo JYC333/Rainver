@@ -1,13 +1,16 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import i18n from '../../../i18n'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { toast } from 'sonner'
 import LibraryItemReaderPage from '../LibraryItemReaderPage'
+import { InformationDigestView } from '../InformationDigestView'
 import { readerApi, sourcesApi } from '../../../api/client'
 import type { TextSelection } from '../../../components/editor/ReadOnlyTiptapReader'
 import type {
+  InformationDigest,
   ReaderAnnotation,
   ReaderCommentThread,
   ReaderDocumentPayload,
@@ -687,7 +690,7 @@ describe('LibraryItemReaderPage', () => {
   it('on the standalone route (no day context), backs to Library and shows no prev/next', async () => {
     await renderPage('/library/items/item-1')
 
-    expect(screen.getByRole('link', { name: 'Library' })).toHaveAttribute('href', '/library/items')
+    expect(screen.getByRole('link', { name: 'Reading' })).toHaveAttribute('href', '/library/items')
     expect(screen.queryByRole('link', { name: 'Previous item' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Next item' })).not.toBeInTheDocument()
     expect(mockedSourcesApi.briefing).not.toHaveBeenCalled()
@@ -722,4 +725,140 @@ describe('LibraryItemReaderPage', () => {
     expect(screen.queryByRole('link', { name: 'Previous item' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Next item' })).not.toBeInTheDocument()
   })
+})
+
+it.each(['candidates','settings'])('preserves a project %s origin and bounded return destination',async tab=>{
+  await renderPage(`/library/items/item-1?from=project&returnTo=${encodeURIComponent(`/projects/project-a/sources?tab=${tab}`)}`)
+  expect(mockedApi.getDocument).toHaveBeenCalledWith('source_item','item-1',{origin:'project'})
+  expect(screen.getByRole('link',{name:'Source management'})).toHaveAttribute('href',`/projects/project-a/sources?tab=${tab}`)
+})
+it.each(['/projects/project-a/sources?tab=untrusted&redirect=https://other.test', '/projects/project-a/research?tab=reading&redirect=https://other.test', 'https://other.test/projects/project-a/research?tab=reading'])('rejects an unbounded Reader return: %s',async returnTo=>{
+  await renderPage(`/library/items/item-1?from=project&returnTo=${encodeURIComponent(returnTo)}`)
+  expect(screen.getByRole('link',{name:'Reading'})).toHaveAttribute('href','/library/items')
+})
+
+it('returns research Readers to the bounded reading-list tab and keeps project origin during re-extraction', async () => {
+  await renderPage(`/library/items/item-1?from=project&returnTo=${encodeURIComponent('/projects/project-a/research?tab=reading')}`)
+  expect(screen.getByRole('link', { name: 'Research reading list' })).toHaveAttribute('href', '/projects/project-a/research?tab=reading')
+  await userEvent.click(screen.getByRole('button', { name: 'Re-extract' }))
+  await waitFor(() => expect(mockedApi.getDocument).toHaveBeenCalledTimes(2))
+  expect(mockedApi.getDocument).toHaveBeenLastCalledWith('source_item', 'item-1', { origin: 'project' })
+})
+
+afterEach(async () => { await i18n.changeLanguage('en') })
+it('localizes Reader controls and names the actual Source management return in Chinese', async () => {
+  await i18n.changeLanguage('zh-CN')
+  mockedApi.listAnnotations.mockResolvedValue({ items: [] })
+  await renderPage(`/library/items/item-1?from=project&returnTo=${encodeURIComponent('/projects/project-a/sources?tab=settings')}`)
+  expect(screen.getByRole('link', { name: '来源管理' })).toHaveAttribute('href', '/projects/project-a/sources?tab=settings')
+  expect(screen.getByRole('button', { name: '重新提取' })).toBeEnabled()
+  expect(screen.getByRole('complementary', { name: '阅读检查面板' })).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: '关闭检查面板' }))
+  await userEvent.click(screen.getByRole('button', { name: '显示检查面板' }))
+  expect(screen.getByText('检查面板')).toBeInTheDocument()
+  expect(screen.getByText('0 条批注')).toBeInTheDocument()
+  expect(screen.getByRole('region', { name: '批注笔记本' })).toHaveTextContent('批注笔记')
+  expect(screen.getByText('在正文中选择文字，使用工具栏创建第一条批注。')).toBeInTheDocument()
+  expect(screen.getByText('来源资料 · 已保存正文')).toBeInTheDocument()
+})
+
+it.each([
+  [1, 0, '1 annotation · 0 open threads'],
+  [1, 1, '1 annotation · 1 open thread'],
+  [2, 2, '2 annotations · 2 open threads'],
+] as const)('uses English plural rules for %i annotations and %i open threads', async (annotations, open, expected) => {
+  mockedApi.listAnnotations.mockResolvedValue({ items: Array.from({ length: annotations }, (_, n) => makeAnnotation({ id: `ann-${n}`, quote_text: `Passage ${n}` })) })
+  mockedApi.listThreads.mockResolvedValue({ items: [
+    ...Array.from({ length: open }, (_, n) => makeThread({ id: `open-${n}` })),
+    makeThread({ id: 'resolved', status: 'resolved' }),
+  ] })
+  await renderPage()
+  await userEvent.click(within(screen.getByRole('region', { name: 'Annotation notebook' })).getAllByRole('button')[0])
+  expect(await screen.findByText(expected)).toBeInTheDocument()
+})
+
+it.each([0, 1, 2])('localizes the Chinese Inspector with %i open threads', async open => {
+  await i18n.changeLanguage('zh-CN')
+  mockedApi.listThreads.mockResolvedValue({ items: Array.from({ length: open }, (_, n) => makeThread({ id: `thread-${n}` })) })
+  await renderPage()
+  await userEvent.click(within(screen.getByRole('region', { name: '批注笔记本' })).getAllByRole('button')[0])
+  expect(await screen.findByText(`1 条批注 · ${open} 个未解决讨论`)).toBeInTheDocument()
+  if (open === 0) expect(screen.getByText('暂无评论。')).toBeInTheDocument()
+  expect(screen.getByPlaceholderText('添加评论…')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '保存为证据' })).toBeInTheDocument()
+})
+
+it.each([
+  [null, '正文提取已排队'],
+  ['succeeded', '正文提取成功'],
+  ['failed', '正文提取失败'],
+] as const)('localizes Chinese re-extraction result %s and preserves project origin', async (status, expected) => {
+  await i18n.changeLanguage('zh-CN')
+  mockedSourcesApi.jobs.mockImplementation(async params => ({ items: params?.status === 'pending' && status ? [{ id: 'queued-job', status: 'pending' }] : [] }) as never)
+  mockedSourcesApi.runJob.mockResolvedValue({ status, error_message: null, error_code: null } as never)
+  await renderPage('/library/items/item-1?from=project')
+  await userEvent.click(screen.getByRole('button', { name: '重新提取' }))
+  await waitFor(() => expect(toast.success).toHaveBeenCalledWith(expected))
+  expect(mockedApi.getDocument).toHaveBeenLastCalledWith('source_item', 'item-1', { origin: 'project' })
+  if (status === 'failed') {
+    expect(screen.getByRole('alert')).toHaveTextContent('正文提取失败')
+    expect(screen.getByRole('alert')).toHaveTextContent('未记录错误详情。')
+  }
+})
+
+it('keeps recorded extraction error details while translating the Chinese failure banner', async () => {
+  await i18n.changeLanguage('zh-CN')
+  mockedSourcesApi.jobs.mockResolvedValue({ items: [{ status: 'failed', error_message: '原始服务端错误详情', error_code: '502' }] } as never)
+  await renderPage()
+  expect(screen.getByRole('alert')).toHaveTextContent('正文提取失败')
+  expect(screen.getByRole('alert')).toHaveTextContent('原始服务端错误详情')
+})
+
+it.each([
+  ['en', 'project', 'interest', 'project'], ['zh-CN', 'project', 'interest', 'project'],
+  ['en', 'personal', 'interest', undefined], ['zh-CN', 'personal', 'interest', undefined],
+  ['en', 'personal', 'serendipity', 'serendipity'], ['zh-CN', 'personal', 'serendipity', 'serendipity'],
+] as const)('returns from %s %s/%s edition through Reader to the snapshot day', async (locale, scope, section, origin) => {
+  await i18n.changeLanguage(locale)
+  const date = '2024-02-29'
+  const destination = scope === 'project' ? `/projects/project-a/sources?tab=digest&date=${date}` : `/library/digests?date=${date}`
+  // Source ownership is not the edition's Project context.
+  mockedApi.getDocument.mockResolvedValue({ ...docPayload, project_id: 'source-owning-project' })
+  const snapshot: InformationDigest = {
+    id: 'fixed-edition', digest_type: scope, owner_user_id: scope === 'personal' ? 'user-1' : null,
+    project_id: scope === 'project' ? 'project-a' : null, digest_date: date, timezone: 'Asia/Shanghai',
+    period_start_utc: '2024-02-28T16:00:00Z', period_end_utc: '2024-02-29T16:00:00Z',
+    generation_kind: 'backfill', generated_at: '2026-01-04T10:00:00Z', profile_maturity: null,
+    status: 'ready', settings: {}, created_at: '2026-01-04T10:00:00Z', updated_at: '2026-01-04T10:00:00Z',
+    team_aggregates_available: false, team_blind_spot_domains: [],
+    items: [{ id: 'edition-item', source_item_id: 'item-1', title: 'Snapshot article', section,
+      position: 0, quota_slot: section, score: 1, component_scores: {}, rationale: null,
+      matched_topic_id: null, serendipity_pool_item_id: null, target_domain_key: null, discovery_origin: null,
+      source_uri: null, source_domain: null, author: null, excerpt: null, occurred_at: '2023-12-01T00:00:00Z',
+      domain_key: 'history', depth: 'analysis', genre: 'paper', summary: null, stance_target: null,
+      stance_target_key: null, stance_polarity: 'neutral', stance_confidence: 0, read_status: 'read',
+      serendipity_feedback: null, anonymous_read_count: null }],
+  }
+  function Edition() {
+    const location = useLocation()
+    return <><output aria-label="Edition address">{location.pathname + location.search}</output><InformationDigestView digest={snapshot} project={scope === 'project'} /></>
+  }
+  render(<MemoryRouter initialEntries={[destination]}><Routes>
+    <Route path="/projects/:projectId/sources" element={<Edition />} />
+    <Route path="/library/digests" element={<Edition />} />
+    <Route path="/library/items/:itemId" element={<LibraryItemReaderPage />} />
+  </Routes></MemoryRouter>)
+  await userEvent.click(screen.getByRole('link', { name: 'Snapshot article' }))
+  await screen.findByTestId('reader-content')
+  expect(mockedApi.getDocument).toHaveBeenCalledWith('source_item', 'item-1', { origin })
+  const back = screen.getByRole('link', { name: locale === 'en' ? 'Daily editions' : '每日版' })
+  expect(back).toHaveAttribute('href', destination)
+  await userEvent.click(back)
+  expect(screen.getByLabelText('Edition address')).toHaveTextContent(destination)
+  expect(screen.getByRole('link', { name: 'Snapshot article' })).toBeInTheDocument()
+})
+
+it('rejects a Reader return to a different Project edition from its declared context', async () => {
+  await renderPage(`/library/items/item-1?from=project&projectId=project-a&returnTo=${encodeURIComponent('/projects/project-b/sources?tab=digest&date=2026-01-02')}`)
+  expect(screen.getByRole('link', { name: 'Reading' })).toHaveAttribute('href', '/library/items')
 })

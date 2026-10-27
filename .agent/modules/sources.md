@@ -18,6 +18,11 @@ artifact retention, and an observability read model exist. There is no
 browser or Python handler evaluation.
 
 
+Goal orchestration is implemented in `sources/goals/`, with conversational setup
+in `SourceGoalPage.tsx`, goal management and explicit legacy-source compatibility
+mapping. See [Source Goals](../architecture/SOURCE_GOALS.md) for authority,
+API, runtime, repair, coverage and remaining deployment acceptance boundaries.
+
 ## Purpose
 
 Sources is the canonical boundary for raw source material before it becomes
@@ -506,10 +511,12 @@ Each binding persists an extraction profile and a
 default; ordinary writer-created bindings use `generic_document_v1` unless the
 writer explicitly selects another registered profile, and unknown keys are
 rejected. The Project Sources UI exposes the registry descriptors, active
-profile, and Standing state. The direct-binding UI defaults Standing on. Template
-recommendations persist their declared profile and also default Standing on;
-both paths idempotently ensure the Project's four Research baseline Notes before
-monitoring begins.
+profile, and Standing state. The direct-binding UI defaults Standing off
+(explicit opt-in), so adding a source alone does not initialize deep research.
+Template recommendations retain their declared profile and Standing-on contract.
+When Standing comparison is explicitly enabled, the binding service idempotently
+ensures the Project's four Research baseline Notes. Lightweight information
+monitoring keeps comparison disabled and has no Research-baseline prerequisite.
 
 Removing a Project binding disconnects it from normal Project reads and UI. The
 row is retained as an internal archive for operation/backfill/proposal history;
@@ -906,3 +913,307 @@ Policy envelope behavior:
 - [Source Connector Consent](../architecture/SOURCE_CONNECTOR_CONSENT.md)
 - [Source Provenance Matrix](../architecture/SOURCE_PROVENANCE_MATRIX.md)
 - [Sources Custom Source Handlers](../architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md)
+
+## Project manual monitoring integration (P1)
+
+Projects' `monitoring/` orchestrator composes the existing Source owners through
+`ProjectSourceProposalService`, backfill planning/execution, extraction,
+sourceAnnotation and post-processing. Native manual arXiv Channels do not need
+Research attempts/FINER. Setup explicitly disables daily inbox processing and
+standing comparison, forces an independent paused draft on identity collision,
+and preserves activation → binding → history owner approval dependencies.
+A monitoring version only accepts an active, Project-bound, manual native arXiv
+Source without active foreign processing rules or research workflow ownership.
+
+Managed backfill plans retain the server-only monitoring-version marker. Accepting
+the history proposal does not dispatch them: an explicit bounded operation is
+required. Pages retain exact existing segment windows/cursors and pending
+continuations on quota/total-cap exhaustion. Managed scans require a backfill
+job and operation ID. Each physical source fetch attempt (including retries and
+page narrowing) enters `projects/monitoringControl.ts`; no duplicate fetch or
+materializer is introduced. Item identity advisory locks serialize managed
+concurrent materialization before the canonical URI/arXiv/DOI lookup.
+
+Managed capture suppresses automatic annotation/post-processing events; its
+explicit bounded item list enters the existing objective annotation queue,
+including old items newly associated with the Source. Ordinary background queue
+selection excludes these items; post-processing requires the matching operation,
+frozen Agent/rule/relevance profile and abstract-only contract. Source-specific
+relevance remains in rule/item decisions, never in the global objective summary.
+`monitoring/candidates.ts` owns the read/feedback seam over canonical Source rows:
+current all-Project-reader full-content checks, snapshot/plan provenance, private
+user-state merge and no shared triage or interest-profile learning. Reading
+candidates remains in the Project all-candidates destination and canonical Library Reader;
+the Sources management page does not become another Reader.
+
+Monitoring quota refusals are a pause, not a permanent Source failure: the first
+HTTP attempt and its page/candidate reservation share one Project transaction;
+retries and redirect hops reserve only requests, immediately before each physical send through outbound-guard. Reconciliation retains the segment window/offset,
+returns it to pending and does not count the quota refusal as a failed Source
+attempt. A matching monitoring coordinator is required to claim its extraction
+jobs; ordinary pollers cannot steal them. The Sources-owned
+`monitoring/recovery.ts` seam restores interrupted pages only after Projects
+proves the old coordinator Job stopped, holds its session lock and finds no live
+child Run. Already charged work stays charged.
+
+The monitoring Agent read tool is content-free; it does not forward Source text
+under human read permission alone. Candidate relevance feedback and read_status
+remain independent private fields. Ordinary connector scans and managed capture share the sorted identity locks described below. Other materialization entry points are outside this concurrency guarantee.
+
+Monitoring pre-send refusals use the typed monitoring_admission_denied code and
+bounded reason, not message text. Budget, pause, lost authority, confirmed Source
+drift and inactive operations retain the same pending segment offset and do not
+consume a Source failure attempt; the audit job retains the refusal. This does
+not refund any earlier sent attempt. Actual HTTP/network/provider failures stay
+on the existing Sources retry/permanent-failure paths, including their attempt
+counts and diagnostics.
+
+## Confirmed daily monitoring (P2)
+
+`monitoring/schedule.ts` stores the accepted acquisition cadence in the existing
+scheduler_tasks store (`project_information_monitoring`, key Project). The existing
+Sources monitoring SchedulerRegistry task calls `monitoring/heartbeat.ts`; no additional timer,
+queue, Channel frequency or foreign Automation is enabled. Without a confirmed
+schedule there is no acquisition task with active due work. Pause updates both
+Project admission and task eligibility in one transaction; resume retains its
+original due slot. The heartbeat locks Project before task, rechecks confirmation
+and the schedule owner, and calls the same bounded operation service as manual
+work. A blocked due slot retains its identity and a content-free reason. Its separate retry_after eligibility backs off for one minute, including unexpected per-Project failures after rollback; eligibility compares timestamps and selection orders by the effective next attempt, so blocked tasks cannot monopolize the first 25 due rows even with a slow heartbeat. Explicit pause/resume clears that backoff. If blocking spans multiple daily slots, recovery attempts the oldest retained slot (partial if its dispatch window ended), then advances the schedule from the current time; it does not replay each missed day.
+
+A daily operation is unique by Project/local date and also uses the existing
+progress idempotency key. The coordinator session lock, JobDeferredError and
+stopped-Job reconciliation remain authoritative. A stopped daily coordinator may
+requeue its same operation only inside its original dispatch window, with no live
+child/competitor and no reset of charged counters. If the window ended, later daily
+work resumes the durable segments. Native/manual Channel scan and autonomous
+annotation/post-processing remain excluded from this managed path.
+
+`monitoring/recent.ts` creates finite recent windows for confirmed daily or explicit manual checks,
+using ordinary plan/segment storage and deterministic native query windows. It is
+not a public history direct-start or approval. Each day starts a new frozen window
+from the last recorded cutoff; existing unresolved recent segments remain as
+backlog, with newer windows first. A manual check resumes an unresolved window on the same local date; after
+exhaustion it may open a new finite window. The daily slot always opens its newer
+cutoff, even if an earlier manual check that day is unfinished. No incomplete page
+advances a complete-coverage watermark. History can run only after all preceding
+recent pages exhaust or reach terminal failure; pending/limited recent pages block
+history. The explicit recent-window total cap is separate from the unchanged
+approved history plan cap; neither is automatically increased.
+
+Managed partial pages persist the exact next item offset (or the established
+page-number cursor/width for non-narrowable providers), including when the physical
+page exactly consumes its allowance. Day/budget/stop-time refusal preserves pending
+segments via the P1 typed admission path. The acquisition stop time blocks new
+physical requests/model work, while already admitted work may settle; late ready
+material belongs to a later full-day Digest. The retained cutoff also exposes the
+after-collection publication gap as partial coverage rather than a claim to have
+searched the entire calendar day. Sources content stays in the fixed Project
+preview/Reader, never in Agent monitoring status output.
+
+Coverage examines every retained recent window: a newer exhausted empty window
+cannot hide an older pending offset or failed range. `no_new` is only a statement
+about an actually exhausted new window after unresolved recent backlog is accounted
+for, never a substitute for not-run or quota-paused work.
+
+Monitoring now registers its own `project_information_monitoring_scheduler` task
+in SchedulerRegistry, separate from ordinary scan → extraction. Unexpected
+per-Project dispatch or recovery failures are collected while the remaining
+selected Projects are attempted, then thrown as an AggregateError through the
+existing scheduler failure/liveness/alert path. Recovery failures do not skip the
+due-dispatch pass. A broken monitor cannot abort ordinary Source scanning or
+extraction; HTTP admission blocks keep their P1 typed state and original slot.
+
+### Generic Project monitoring observations (P3)
+
+`monitoring/pageChanges.ts` reuses structured Reader extraction and normalizes
+body text (NFC/whitespace) for SHA-256 identity; `pageObservation.ts` composes
+existing Source materialization/artifact/snapshot writers under the canonical
+Project/page lock. No additional connector, HTTP client, model pipeline, timer
+or queue is introduced. First capture is a baseline; unchanged/noise-only pages
+retain the extracted version. A changed body creates a document SourceItem with
+page_change provenance and immutable before/after Reader evidence. Page content
+revision identity is scoped to Space/Project/page; repeated revisions do not
+rewrite old change documents. Existing URL uniqueness remains intact: changes
+reference the original URL via metadata and page/snapshot IDs, not fabricated
+paper URLs. This is a captured-body comparison, not semantic importance scoring;
+dynamic text inside the readable body can still trigger an update.
+
+Sources plans additionally accept current_snapshot for rss/atom/web_page with
+page_cursor. This is one bounded current observation, explicitly no historical
+coverage. The ordinary start proposal still belongs to the Source owner; page
+setup additionally proposes full_text retention, checked before each monitored
+dispatch. Generic plans become completed when their saved segment is exhausted,
+even if the last page used all of this operation's allowance.
+
+Managed feeds freeze at most min(10,000, the confirmed plan total cap) normalized entries on their original extraction
+Job (titles <=1,024, excerpts <=2,048 characters; no raw feed body), with the Job
+pointer and consumed_items cursor on the existing segment. Continuation replays
+that stored page and still consumes atomic page/candidate admission, but has no
+HTTP request to charge. Reconciliation removes observation_items once the segment succeeds and no continuation needs it; counts, fingerprints and audit jobs remain. New daily observations run first; old saved remainder
+follows. Expired unseen upstream entries remain unavailable, reported as
+current-only coverage. History-cap values never increase at day rollover.
+
+All ordinary connector scans and monitored captures now enter the same sorted
+identity advisory locks (canonical/source URI, normalized DOI/arXiv and connector
+external identity). The existing scoped resolver and bounded INSERT-conflict
+re-read preserve one item and every channel hit. Personal identity remains
+owner-scoped; Project identity remains Project-scoped. Normal research gates,
+post-processing contracts, typed admission, real retry accounting and consent
+checks remain in force.
+
+### Monitoring failure recovery
+
+Explicit Run now retries failed segments in the existing approved history/recent
+plans after current Project/Source/version authority and absence of active work
+are checked. It preserves the plan, approval, range, offset, attempt count and
+consumed budget; it neither raises the total cap nor retries during a GET.
+Failed extraction Job rows retain diagnostics. Daily sweeps do not silently
+reopen permanent Source failures. Older unresolved ranges remain coverage_partial
+after a successful newer observation; only a failed latest observation says
+source_failed. Run now can fill the retained gap on the same day.
+
+An unscheduled arXiv check also creates a bounded recent window after the approved
+history cutoff, using the confirmed total cap and ordinary per-run/day admission;
+it does not install a schedule. Future arXiv history endpoints are rejected on
+proposal and activation. A page baseline that becomes unreadable to the Project
+audience is a typed permission_changed refusal, retaining the pending offset;
+restoring access permits the next explicit check to detect the page change.
+Any request already sent remains charged. Upstream HTTP 403 remains a real
+Source failure, distinct from this local permission refusal.
+
+## Reading identity, state and material references
+
+`readingIdentity.ts` owns the shared set-based identity resolver for reading and
+state writes. A frozen `reading_initial_hash` records Sources' exact original
+capture fingerprint alongside canonical URI; operational `content_hash` remains
+free to represent metadata, raw bytes or extracted text and is never treated as
+a body revision. First extraction does not split that capture family. Equal
+verified retained bodies can join different capture fingerprints. Conflicting
+retained bodies or genuine revisions partition the family by actual body hash;
+an unknown member cannot bridge conflicting versions. Missing canonical URI or
+capture/body evidence stays independent; no title similarity or client URL
+normalization invents identity. Ownership and historical deliveries are unchanged.
+
+Sources' database guards (`0011`–`0014`) derive `reading_body_hash` only from
+retained Reader text: a canonical Reader artifact pointer, or the latest extracted
+snapshot when Reader has no pointer. Text is NFC/whitespace normalized before
+hashing. First retention establishes revision zero; replacing a known body with
+different text advances `reading_body_revision` and records its change time.
+Feed rescans, raw snapshot bytes, HTML noise and first extraction do not advance
+it. Late historical snapshots do not replace the current fallback body. These
+guards cover older application writers during rolling upgrades, as well as the
+current normal, custom and monitoring Sources materialization paths.
+
+Private completion binds `source_item_user_states.read_body_revision` to that
+revision, the sole read-version binding. Migration 0015 removes the unused,
+unpublished `read_content_hash` column introduced in 0009. Existing data is baselined without rewriting
+snapshots. Legacy state writes without the new column are bound by a Sources
+state guard; non-reading updates cannot renew an obsolete completion. For a
+NULL binding from an upgrade interval, the last actual body change time and the
+state's own timestamp provide the fallback meaning. Reader opens remain skimmed
+and cannot complete new body text using an older completion.
+
+`SourceReadingStateService.update` resolves currently authorized members by the
+canonical-URI index, locks rows in order and uses the same identity CTE as queue
+reads. One transaction and a per-user/URI advisory lock make group changes atomic.
+`SourceItemUserStateStore` records explicit state time independently of incidental
+Reader opens. The anchor gets its server-resolved Library/serendipity/Project
+origin; copied members get no new interest evidence and retain existing origins,
+including legacy NULL. Library `mark_selected`, `read_later` and `mark_discussed`
+explicitly write library and upgrade an existing serendipity/project origin;
+`mark_ignored` and pure dismissed changes leave a new origin NULL. The
+Information Digest service verifies reading context before invoking this writer.
+
+`readingMaterial.ts` provides the Sources-owned bulk association projection for
+active bindings, direct saves and Corpus SourceItem/bridge references. Project
+`view=all` returns real references in `material_links` and the same Reader target;
+Evidence/Notes without a SourceItem stay in their owning views. The Project
+recommendation audience calls the same reader FROM/predicate helpers as
+`projects/access.ts`'s `projectReaderIds`, including active user and membership
+rules. No copied audience SQL is maintained.
+
+The acquisition-only `/sources/project-items` route retains its binding
+collection meaning. The complete reading-material contract is
+`GET /spaces/:spaceId/projects/:projectId/reading?view=all`.
+
+
+The reading UI now consumes the shared Information Digest projection rather
+than monitoring candidates. Sources retains collection settings, live candidate
+processing and diagnostics. Project `tab=raw`/`candidates` reaches those candidates;
+`tab=materials` reaches the complete authorized reading-material projection.
+Relevant does not imply formal recommendation. Pending decisions link to the
+canonical proposals surface, not the raw Activity inbox. Existing per-Source
+briefing and item/Reader routes remain valid for deep links and history.
+
+Research Reading List and Project Source annotations open the same SourceItem
+Reader with `from=project`, returning to the bounded research reading-list tab or
+Source management settings. Reader reload after re-extraction preserves that
+origin; opening or synchronizing Project reading never fabricates Library
+interest or serendipity feedback. Project association reuses Corpus references
+and the retained Reader artifact rather than duplicating the body. Turning off
+personal inclusion removes only recommendation contributions, not SourceItems,
+Corpus references, saved Library triage, private state or daily snapshot rows.
+
+
+### Reading quick start
+
+ReadingStart, Sources list/detail and Project MonitoringPanel now route creation
+and editing to the shared goal conversation rather than a provider/query form.
+The unused SourceMonitorDialog, SourceQuickStartFields, ArxivCategoryPicker,
+ScheduleRuleFields and MonitoringScheduleFields frontend authoring components
+are removed. Backend taxonomy, compilers/search, legacy APIs, Source display,
+subscriptions, history and necessary operational settings remain available.
+See [SOURCE_GOALS](../architecture/SOURCE_GOALS.md) for canonical Session/Run
+association, server-authoritative preview/start, compatibility mapping and the
+single scheduler owner. No real instance migration occurs from opening a page.
+
+### Isolated Sources execution foundation
+
+[ADR 0026](../decisions/0026-sources-isolated-request-execution.md) describes the
+current foundation. Hosts opt in and offer `isolated-v1`; server dispatch generates
+execution identities and refuses unoffered Hosts. Trusted mode never weakens it.
+A Host offer describes executability only, never authorization. The server must
+recheck Host ownership and Source/Space/Project permissions at selection, dispatch,
+every physical request and result acceptance; phase two cannot infer access from an offer.
+Bubblewrap mounts only the real Node executable, libraries and readonly code;
+no handler node_modules, credentials, shell or writable host directory is exposed.
+Resources use verified user-systemd cgroups or an administrator-delegated direct
+cgroup v2 subtree. Missing capabilities refuse execution; standard-container
+acceptance still needs that delegation and has not been performed.
+
+The trusted daemon's pinned BasicCrawler/Cheerio adapter is serial, with a private
+queue, scope/code-bound atomic checkpoint and recoverable owner leases. It invokes
+isolated handlers for bounded `{items,next_urls}`. The framework concurrency-four
+benchmark is not this adapter's throughput. Business cursors and materialization
+remain server-owned. Sources broker scopes credentials by exact route on every
+hop, requires HTTPS for credentials, combines registry/request cancellation,
+preserves binary bytes, and exposes only bounded incremental metadata. Account
+and endpoint admission/cooldown are durable and atomic (429 and eligible 503 only,
+1s..24h). Current create/scan/repair flows have not enabled free generation; old
+Legacy Level 3 remains frozen. The foundation itself added no goal UI; the
+current goal model and conversation consumer are described in SOURCE_GOALS.
+They reuse the existing scheduler and never add a second scheduler.
+
+The adapter bounds HTML discovery to the first 100 valid HTTP(S) links (URLs at
+most 8192 characters), passes `link_coverage` to code and returns aggregate
+`coverage` counts (`discovered_links`, `provided_links`, `truncated_pages`). This
+never enqueues omitted links or expands broker scope/budgets. Deterministic
+HTTP/contract/scope/output failures do not retry; transient network errors and
+5xx retain one retry (eligible Retry-After stops for persistent cooldown).
+Public `input_json` remains independently capped at 1MiB UTF8. A daemon-only,
+readonly `collection.json` transports response/link metadata within 16MiB, with
+an 8MiB decoded response-body ceiling (at most 17MiB together with public input);
+this is not a new public input field.
+Lease owner files are complete before atomic hard-link publication; ownerless
+legacy directories do not hold a lease. Release never recursively removes a
+new contender. Temporary ownership files are reclaimed only for proven dead
+boot/start identities. Direct execution requires trusted `prlimit` to inherit
+CORE=0 and FSIZE=output_bytes, in addition to kernel cgroup/tmpfs limits.
+
+Stage-three review fixes: goal adjustment budgets are per explicit user-message
+cycle, not goal lifetime; automatic attempts remain finite. Legacy ownership
+serializes PATCH/manual scans/backfill dispatch with takeover. Rollback uses full
+snapshot CAS, clears effective transfer markers while retaining audit, and restores
+original manual/Project scheduling rules. Existing legacy deep links resolve
+read-only; paused goal conversation cannot activate collection. See SOURCE_GOALS
+for the exact contract and review-fix evidence for executed checks.

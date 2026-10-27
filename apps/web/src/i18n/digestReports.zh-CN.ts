@@ -9,6 +9,7 @@ export const digestReportsZhCN = {
   backfilled: '补生成于 {{when}}',
   backfill_note: '依据当前保留的材料补生成，不含"常规视野之外"部分。',
   missing_reason: {
+    monitoring_history_before_latest: '已有更新的监测日报封存，缺失日期只能向前补生成。',
     not_generated: '这一天没有生成摘要。可以用现在保留的材料补生成。',
     day_not_complete: '按摘要的时区，这一天还没有结束；摘要会在这一天结束后生成。',
   },

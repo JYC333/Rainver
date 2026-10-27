@@ -1,4 +1,7 @@
-import { CircleArrowUp, Loader2, RefreshCw } from 'lucide-react'
+import { useState } from 'react'
+import RuntimeQuotaDetails from './RuntimeQuotaDetails'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog'
+import { CircleArrowUp, Loader2 } from 'lucide-react'
 import { isOwnCliUpdateRuntimeKey } from '@rainver/protocol'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -42,32 +45,6 @@ function installationVersionLabel(entry: RuntimeInstallation, adapter: HostRunti
   return adapter.reports_managed_cli_version
     ? 'managed · CLI version unavailable'
     : `managed · ${versionLabel(entry.version)}`
-}
-
-/**
- * A subscription's remaining share, short enough to sit inline: "62% · 18%"
- * is session then week. Percentages are of the window *used*, so higher is
- * closer to empty — the badge turns warning past 90 so a run about to be
- * refused is visible before it is attempted.
- */
-function usageLabel(usage: HostRuntimeUsage | undefined): { text: string; spent: boolean; title: string } | null {
-  if (!usage) return null
-  const { quota } = usage
-  // A copy that could not be read is not a copy that is fine: `warning` says
-  // so at a glance, with the host's own reason on hover.
-  if (!quota.available) return { text: 'usage unavailable', spent: true, title: quota.error ?? 'This host has not reported a reading yet.' }
-  const parts = [
-    quota.session_pct === null ? null : `session ${quota.session_pct}%`,
-    quota.week_pct === null ? null : `week ${quota.week_pct}%`,
-  ].filter((part): part is string => part !== null)
-  if (parts.length === 0) return null
-  const highest = Math.max(quota.session_pct ?? 0, quota.week_pct ?? 0)
-  const resets = [quota.session_resets, quota.week_resets].filter((line): line is string => Boolean(line))
-  return {
-    text: parts.join(' · '),
-    spent: highest >= 90,
-    title: [...resets, `Checked ${new Date(usage.checked_at).toLocaleString()}`].join('\n'),
-  }
 }
 
 function authMethodLabel(method: RuntimeAuthMethod, loggedIn: boolean | null): string {
@@ -126,10 +103,11 @@ export default function HostAgentRow({
   onRefreshUsage: (installation: string) => void
   onRollback: () => void
 }) {
+  const [loginChoice, setLoginChoice] = useState<string | null>(null)
   return (
-    <li className="flex min-w-0 items-center gap-2 overflow-x-auto rounded-md border border-border px-2 py-1.5 text-xs" data-testid={`host-agent-${host.id}-${adapter.runtime_key}`}>
+    <li className="flex min-w-0 flex-col items-start gap-2 rounded-md sm:flex-row sm:items-center border border-border px-2 py-1.5 text-xs" data-testid={`host-agent-${host.id}-${adapter.runtime_key}`}>
       <span className="w-28 shrink-0 truncate font-medium" title={adapter.display_name}>{adapter.display_name}</span>
-      <span className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+      <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
         {copies.map(entry => {
           // One Log in when Rainver's managed CLI login exists. The Agent-Auth
           // handshake runs unattended afterwards: the daemon's probe and every
@@ -150,14 +128,13 @@ export default function HostAgentRow({
           // empty. A copy signed in only by its advertised Agent Auth has
           // nothing to log out of here.
           const canLogout = (entry.logged_in === true || (multiAccount && accounts.length > 0)) && authMethods.length === 0
-          const quota = usageLabel(usage.get(entry.id))
           const badge = (
             <Badge variant={entry.logged_in === false || (multiAccount && accounts.length === 0) ? 'warning' : 'secondary'}>
               {installationVersionLabel(entry, adapter)}
               {multiAccount ? ` · ${accountSummary}` : entry.logged_in === null ? '' : entry.logged_in ? ' · logged in' : ' · not logged in'}
             </Badge>
           )
-          return <span key={entry.id} className="flex shrink-0 items-center gap-1">
+          return <span key={entry.id} className="flex min-w-0 flex-wrap items-center gap-1">
               {multiAccount && accounts.length > 0 ? (
                 // The names on hover, in the app's tooltip rather than the
                 // browser's title bubble; the row itself stays one line.
@@ -174,20 +151,11 @@ export default function HostAgentRow({
                   </Tooltip>
                 </TooltipProvider>
               ) : badge}
-              {quota && (
-                <Badge variant={quota.spent ? 'warning' : 'outline'} title={quota.title}>{quota.text}</Badge>
-              )}
-              {manageable && entry.reports_subscription_quota && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 w-7 p-0"
-                  aria-label={`Refresh usage for ${entry.id} of ${adapter.display_name} on ${host.name}`}
-                  disabled={host.status !== 'online' || usageBusy.has(entry.id)}
-                  onClick={() => onRefreshUsage(entry.id)}
-                >
-                  {usageBusy.has(entry.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                </Button>
+              {(usage.has(entry.id) || entry.reports_subscription_quota) && (
+                <RuntimeQuotaDetails usage={usage.get(entry.id)} title={`${adapter.display_name} · ${entry.id}`}
+                  canRefresh={manageable && Boolean(entry.reports_subscription_quota)}
+                  busy={usageBusy.has(entry.id)} online={host.status === 'online'}
+                  onRefresh={() => onRefreshUsage(entry.id)} />
               )}
               {manageable && host.kind === 'remote' && entry.id === 'own' && isOwnCliUpdateRuntimeKey(adapter.runtime_key) && hasOwnUpdate(entry.version, adapter.latest_own_version) && (
                 <Button size="sm" variant="ghost"
@@ -223,19 +191,38 @@ export default function HostAgentRow({
                   {multiAccount ? 'Add account' : entry.logged_in ? 'Log in again' : 'Log in'}
                 </Button>
               )}
-              {(manageable ? authMethods : []).map(method => (
-                <Button
-                  key={method.id}
-                  size="sm"
-                  variant={entry.logged_in ? 'ghost' : 'outline'}
-                  aria-label={authMethodAria(method, entry.logged_in, entry.id, adapter.display_name, host.name)}
-                  title={method.description ?? undefined}
-                  disabled={host.status !== 'online'}
-                  onClick={() => onLogin(entry.id, { kind: 'acp', method })}
-                >
-                  {authMethodLabel(method, entry.logged_in)}
-                </Button>
-              ))}
+              {manageable && authMethods.length > 0 && (
+                <>
+                  <Button size="sm" variant={entry.logged_in ? 'ghost' : 'outline'}
+                    aria-label={`Log in ${entry.id} of ${adapter.display_name} on ${host.name}`}
+                    disabled={host.status !== 'online'}
+                    onClick={() => {
+                      if (authMethods.length === 1) onLogin(entry.id, { kind: 'acp', method: authMethods[0] })
+                      else setLoginChoice(entry.id)
+                    }}>
+                    {entry.logged_in ? 'Log in again' : 'Log in'}
+                  </Button>
+                  <Dialog open={loginChoice === entry.id} onOpenChange={open => setLoginChoice(open ? entry.id : null)}>
+                    <DialogContent className="max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-md overflow-y-auto">
+                      <DialogHeader>
+                        <DialogTitle>Sign in to {adapter.display_name}</DialogTitle>
+                        <DialogDescription>Choose a login method for {entry.id} on {host.name}.</DialogDescription>
+                      </DialogHeader>
+                      <div className="mt-4 space-y-2">
+                        {authMethods.map(method => (
+                          <Button key={method.id} variant="outline" className="h-auto min-h-11 w-full flex-col items-start whitespace-normal py-3 text-left"
+                            aria-label={authMethodAria(method, entry.logged_in, entry.id, adapter.display_name, host.name)}
+                            disabled={host.status !== 'online'}
+                            onClick={() => { setLoginChoice(null); onLogin(entry.id, { kind: 'acp', method }) }}>
+                            <span>{authMethodLabel(method, entry.logged_in)}</span>
+                            {method.description && <span className="text-xs font-normal text-muted-foreground">{method.description}</span>}
+                          </Button>
+                        ))}
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                </>
+              )}
               {manageable && entry.options?.cli_login_available && (
                 <Button
                   size="sm"

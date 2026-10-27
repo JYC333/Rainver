@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { informationDigestsApi } from '../../api/client'
 import { Button } from '../../components/ui/button'
 import { Skeleton } from '../../components/ui/skeleton'
@@ -16,50 +16,52 @@ import { useAppTranslation } from '../../i18n'
 export default function ProjectDigestPage() {
   const { projectId = '' } = useParams()
   const { activeSpaceId } = useSpace()
+  return <ScopedProjectDigest key={`${activeSpaceId}:${projectId}`} />
+}
+function ScopedProjectDigest() {
+  const [params, setParams] = useSearchParams()
+  const { projectId = '' } = useParams()
+  const { activeSpaceId } = useSpace()
   const { t } = useAppTranslation()
-  const [day, setDay] = useState<string | null>(null)
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(params.get('date') ?? '') ? params.get('date') : null
+  const setDay = (value: string) => { const next = new URLSearchParams(params); next.set('date', value); setParams(next) }
   const [latestDay, setLatestDay] = useState<string | null>(null)
   const [lookup, setLookup] = useState<InformationDigestLookup | null>(null)
+  const [error, setError] = useState<unknown>(null)
   const [loading, setLoading] = useState(true)
   const digest = lookup?.status === 'available' ? lookup.digest : null
-
-  // Another Project starts at its own latest day, not the day picked here.
-  useEffect(() => {
-    setDay(null)
-    setLatestDay(null)
-    setLookup(null)
-  }, [projectId])
 
   // Only the latest request lands, so fast prev/next cannot show a stale day.
   const loadRequest = useRef(0)
   const load = useCallback(async () => {
     if (!activeSpaceId || !projectId) return
     const request = ++loadRequest.current
-    setLoading(true)
+    setLoading(true); setLookup(null); setError(null)
     try {
       const next = await informationDigestsApi.project(activeSpaceId, projectId, day ?? undefined)
       if (request !== loadRequest.current) return
       setLookup(next)
       if (day === null) setLatestDay(next.status === 'available' ? next.digest.digest_date : next.digest_date)
     } catch (error) {
-      if (request === loadRequest.current) toast.error(errMsg(error))
+      if (request === loadRequest.current) { setLookup(null); setError(error); toast.error(errMsg(error)) }
     } finally {
       if (request === loadRequest.current) setLoading(false)
     }
   }, [activeSpaceId, projectId, day])
   const shownDay = lookup ? (lookup.status === 'available' ? lookup.digest.digest_date : lookup.digest_date) : null
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => { void load(); return () => { loadRequest.current++ } }, [load])
 
   return (
-    <div className="p-6 space-y-5">
-      <div className="flex items-end justify-between gap-3">
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
         <div>
-          <h1 className="text-xl font-semibold">Project digest</h1>
-          <p className="text-sm text-muted-foreground">One shared daily view of newly admitted Project Corpus material. Reading state remains yours.</p>
+          <h1 className="text-xl font-semibold tracking-tight">{t('reading.editions')}</h1>
+          <p className="text-xs text-muted-foreground">{t('reading.historyHint')}</p>
         </div>
-        <Button variant="outline" onClick={load} disabled={loading}><RefreshCw className="size-4" />Refresh</Button>
+        <Button variant="outline" onClick={load} disabled={loading}><RefreshCw className="size-4" />{t('reading.refresh')}</Button>
       </div>
+      {error != null && <div role="alert"><p>{errMsg(error)}</p><Button onClick={load}>{t('reading.retry')}</Button></div>}
       {loading && !lookup ? <div className="space-y-3"><Skeleton className="h-32" /><Skeleton className="h-32" /></div> : null}
       {lookup && shownDay ? (
         <DigestDayNav
@@ -72,8 +74,10 @@ export default function ProjectDigestPage() {
       {lookup?.status === 'missing' ? (
         <DigestMissing missing={lookup} onBackfill={async (date) => {
           if (!activeSpaceId) return
+          const request = loadRequest.current
           try {
             const result = await informationDigestsApi.backfillProject(activeSpaceId, projectId, date)
+            if (request !== loadRequest.current) return
             setLookup({ status: 'available', digest: result.digest })
             toast.success(result.created ? t('digest_reports.backfill_done') : t('digest_reports.backfill_existing'))
           } catch (error) {
@@ -87,11 +91,11 @@ export default function ProjectDigestPage() {
           <h2 className="text-sm font-semibold">Team blind spots</h2>
           <p className="text-xs text-muted-foreground">Project Corpus domains no active member has read yet. Individual reading activity is never shown.</p>
           <div className="flex flex-wrap gap-2">
-            {digest.team_blind_spot_domains.map(domain => <span key={domain} className="rounded border px-2 py-1 text-xs">{domain.replace(/_/g, ' ')}</span>)}
+            {digest.team_blind_spot_domains.map(domain => <span key={domain} className="rounded-md border border-border px-2 py-1 text-xs">{domain.replace(/_/g, ' ')}</span>)}
           </div>
         </Card>
       ) : null}
-      {digest ? <InformationDigestView digest={digest} project /> : null}
+      {digest ? <InformationDigestView digest={digest} project reading /> : null}
     </div>
   )
 }

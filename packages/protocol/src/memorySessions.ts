@@ -124,6 +124,12 @@ const CommonMessageMetadata = {
 
 /** A person speaking, or an Agent replying. The default. */
 export const ConversationMessageMetadataSchema = z.object({
+  source_goal_message_key:z.string().max(128).nullish(),
+  source_goal_dispatch_pending:z.boolean().nullish(),
+  source_goal_paused_request:z.boolean().nullish(),
+  source_goal_cycle:z.number().int().nonnegative().nullish(),
+  source_goal_dispatch_failed:z.boolean().nullish(),
+  source_goal_dispatch_error:z.string().regex(/^source_goal_[a-z_]+$/).nullish(),
   room_display: z.literal("conversation").nullish(),
   /** A person's choice when another discussion was active; never inferred from timing. */
   discussion_intent: z.enum(["join", "separate"]).nullish(),

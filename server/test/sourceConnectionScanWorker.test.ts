@@ -1,3 +1,4 @@
+import { jobOut } from '../src/modules/sources/sourceRepositoryMappers.js';
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
@@ -63,6 +64,8 @@ class ScanDb implements Queryable {
 
   async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []) {
     this.calls.push({ sql, params });
+    // SQL-shape fixture only; durable concurrent identity behavior is covered by the real-PG monitoring suite.
+    if (sql.includes("pg_advisory_xact_lock")) return {rows:[] as Row[],rowCount:1};
     const retrievalResult = handleSourceRetrievalTestSql<Row>(sql, params);
     if (retrievalResult) return retrievalResult;
     if (sql.includes("SET status = 'running'")) {
@@ -888,3 +891,11 @@ function arxivFeed() {
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
+
+it('keeps persisted feed observation content out of public Job status',()=>{
+ const row={id:'job',metadata_json:{source_channel_id:'channel',observation_items:[{title:'Private captured title',excerpt:'Private captured body'}],window:{consumed_items:2,observation_job_id:'first-job'}}} as Parameters<typeof jobOut>[0];
+ const status=jobOut(row);
+ expect(status.metadata_json).toEqual({source_channel_id:'channel',window:{consumed_items:2,observation_job_id:'first-job'}});
+ expect(JSON.stringify(status)).not.toContain('Private captured');
+ expect(row.metadata_json).toHaveProperty('observation_items');
+});

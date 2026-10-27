@@ -16,6 +16,7 @@ import { ProjectFileDraftController, conflictingDraft, sha256Utf8, type DraftCon
 import type { CurrentFileAttachment } from '../projects/ProjectFolderConversationContext'
 
 interface ProjectFileEditorProps {
+  initialLine?: number
   colorMode?: 'light' | 'dark'
   file: FileContent | null
   draft: ProjectFileDraft | null
@@ -91,6 +92,7 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
   onCancel,
   onEdit,
   colorMode = 'dark',
+  initialLine,
   projectFolderId = null,
   workspaceLocationId = null,
   workspaceLocationAvailable = true,
@@ -449,6 +451,7 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
       <div className="min-h-0 flex-1">
         <CodeMirrorEditor
           colorMode={colorMode}
+          initialLine={initialLine}
           value={draftContent}
           language={language}
           readOnly={!canEdit || hostConflict || draftConflict || !path.trim()}

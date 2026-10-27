@@ -1,3 +1,5 @@
+import { readingStatusSql } from "../sources/readingIdentity.js";
+import { sharedMonitoringItemIds } from '../sources/monitoring/candidates.js';
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import { contentAccessLevelSql } from "../access/contentAccessSql.js";
@@ -170,22 +172,6 @@ export class PgInformationDigestRepository {
     return result.rows.map(hydrateCandidate);
   }
 
-  async maturityInputs(spaceId: string, userId: string): Promise<{ readItemCount: number; coveredDomainCount: number }> {
-    const result = await this.db.query<{ read_items: string; domains: string }>(
-      `SELECT COUNT(*)::text AS read_items, COUNT(DISTINCT a.domain_key)::text AS domains
-         FROM source_item_annotations a
-         JOIN source_item_user_states s
-           ON s.source_item_id = a.source_item_id AND s.space_id = a.space_id
-        WHERE a.space_id = $1 AND s.user_id = $2 AND a.status = 'succeeded'
-          AND s.read_status <> 'unread'`,
-      [spaceId, userId],
-    );
-    return {
-      readItemCount: Number(result.rows[0]?.read_items ?? 0),
-      coveredDomainCount: Number(result.rows[0]?.domains ?? 0),
-    };
-  }
-
   async activeTopics(spaceId: string, userId: string): Promise<Array<{ id: string; topic_key: string; aliases: string[]; weight: number }>> {
     const result = await this.db.query<{ id: string; topic_key: string; aliases_json: unknown; weight: number }>(
       `SELECT t.id, t.topic_key, t.aliases_json, t.weight
@@ -213,6 +199,7 @@ export class PgInformationDigestRepository {
     settings: Record<string, unknown>;
     items: Array<{
       candidate: DigestCandidate;
+      provenance?: Record<string, unknown>;
       section: "interest" | "serendipity";
       position: number;
       quotaSlot: string;
@@ -240,11 +227,11 @@ export class PgInformationDigestRepository {
       await this.db.query(
         `INSERT INTO information_digest_items
            (id, space_id, digest_id, source_item_id, section, position, quota_slot,
-            matched_topic_id, serendipity_pool_item_id, score, component_scores_json, rationale, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13)`,
+            matched_topic_id, serendipity_pool_item_id, score, component_scores_json, rationale, created_at, provenance_json)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14::jsonb)`,
         [randomUUID(), input.spaceId, digestId, item.candidate.source_item_id, item.section,
           item.position, item.quotaSlot, item.matchedTopicId, item.serendipityPoolItemId ?? null, item.score,
-          JSON.stringify(item.componentScores), item.rationale, now],
+          JSON.stringify(item.componentScores), item.rationale, now, JSON.stringify(item.provenance??{})],
       );
     }
     return digestId;
@@ -272,15 +259,15 @@ export class PgInformationDigestRepository {
       effective_access_level: "full" | "summary";
     }>(
       `SELECT di.id, di.section, di.position, di.quota_slot, di.matched_topic_id,
-              di.score, di.component_scores_json, di.rationale, di.serendipity_pool_item_id,
+              di.score, di.component_scores_json, di.rationale, di.serendipity_pool_item_id, di.provenance_json,
               sp.target_domain_key, sp.discovery_origin,
-              i.id AS source_item_id, i.connection_id, i.title, i.source_uri,
+              i.id AS source_item_id, i.connection_id, i.title, COALESCE(i.source_uri, CASE WHEN di.provenance_json ? 'version_id' THEN i.metadata_json->>'page_uri' END) AS source_uri,
               i.source_domain, i.author, i.excerpt, i.occurred_at, i.first_seen_at,
-              a.domain_key, a.depth, a.genre, a.summary, a.topic_candidates_json,
+              a.domain_key, a.depth, a.genre, COALESCE(di.provenance_json->>'summary',a.summary) AS summary, a.topic_candidates_json,
               a.stance_target, a.stance_target_key, a.stance_polarity, a.stance_confidence,
               NULL::varchar AS project_relevance, NULL::double precision AS project_confidence,
               ${contentAccessLevelSql({ definition: SOURCE_ITEM_ACCESS, alias: "i", userExpr: "$3" })} AS effective_access_level,
-              COALESCE(us.read_status, 'unread') AS read_status,
+              ${readingStatusSql("i", "us")} AS read_status,
               feedback.feedback AS serendipity_feedback,
               team_read.anonymous_read_count
          FROM information_digest_items di
@@ -310,7 +297,9 @@ export class PgInformationDigestRepository {
         ORDER BY di.position`,
       [spaceId, digestId, readerUserId, root.project_id, root.digest_type === "project"],
     );
-    const teamInsights = root.project_id
+    const monitoring = recordValue(root.settings_json).ranking === 'project_monitoring';
+    const allowed = monitoring && root.project_id ? new Set(await sharedMonitoringItemIds(this.db,spaceId,root.project_id,items.rows.map(r=>r.source_item_id))) : null;
+    const teamInsights = !monitoring && root.project_id
       ? await this.projectTeamInsights(spaceId, root.project_id, readerUserId)
       : { available: false, blindSpots: [] as string[] };
     return {
@@ -321,7 +310,7 @@ export class PgInformationDigestRepository {
       settings: recordValue(root.settings_json),
       team_aggregates_available: teamInsights.available,
       team_blind_spot_domains: teamInsights.blindSpots,
-      items: items.rows.map(hydratePersistedItem),
+      items: items.rows.filter(r=>!allowed || allowed.has(r.source_item_id)).map(hydratePersistedItem),
     };
   }
 

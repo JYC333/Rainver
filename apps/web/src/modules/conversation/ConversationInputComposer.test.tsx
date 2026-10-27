@@ -223,3 +223,13 @@ describe('shared conversation input composer', () => {
   })
 
 })
+
+it('retains legacy no-parts consumer controls; only explicit text-only goals opt out',()=>{
+ const props={editor:<textarea aria-label="Notebook message"/>,sending:false,sendDisabled:false,onSend:vi.fn()}
+ const {container,rerender}=render(<ConversationComposer {...props}/> )
+ const controls=container.querySelectorAll('button').length
+ expect(controls).toBeGreaterThan(1)
+ rerender(<ConversationComposer {...props} inputAttachmentsEnabled={false}/> )
+ expect(container.querySelectorAll('button')).toHaveLength(1)
+ expect(screen.getByLabelText('Notebook message')).toBeInTheDocument()
+})

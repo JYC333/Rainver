@@ -102,6 +102,21 @@ function renderPage(
 }
 
 describe('Project Files & Code Area', () => {
+  it('opens the exact linked file in the requested Folder using the ordinary read path', async () => {
+    vi.mocked(projectFoldersApi.list).mockResolvedValue({ items: [folder('folder-1', 'Source'), folder('folder-2', 'Reports')], total: 2 } as never)
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
+    vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'Reports', path: '.', type: 'dir', children: [] })
+    vi.mocked(projectFoldersApi.file).mockResolvedValue({ path: '.agent/report.md', content: '# Linked report\nsecond line', size: 27, line_count: 2, encoding: 'utf8', writable: true })
+    renderPage('/projects/project-1/files?folder=folder-2&path=.agent%2Freport.md&line=2')
+    expect(await screen.findByText('.agent/report.md')).toBeInTheDocument()
+    expect(projectFoldersApi.file).toHaveBeenCalledWith('project-1', 'folder-2', '.agent/report.md')
+    expect(projectFoldersApi.file).not.toHaveBeenCalledWith('project-1', 'folder-1', '.agent/report.md')
+    fireEvent.click(screen.getByRole('button', { name: 'Reports' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Source' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Source' })).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: 'Reports' })).toBeNull()
+  })
+
   it('loads directories only when opened, retries failures and loads the next page', async () => {
     vi.mocked(projectFoldersApi.list).mockResolvedValue({ items: [folder('folder-1', 'Source')], total: 1 } as never)
     vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })

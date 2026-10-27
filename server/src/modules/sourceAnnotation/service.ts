@@ -1,3 +1,4 @@
+import { consumeMonitoringBudget } from "../projects/monitoringControl.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
 import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy.js";
@@ -58,9 +59,9 @@ export class SourceAnnotationService {
    * has, and a space without a model provider is a normal state, not a fault
    * worth failing a job over and retrying forever.
    */
-  async annotatePendingBatch(spaceId: string): Promise<AnnotationSweepResult> {
+  async annotatePendingBatch(spaceId: string, monitoring?: {itemIds:string[];agentId:string;operationId:string;projectId:string;userId:string}): Promise<AnnotationSweepResult> {
     const repo = new PgSourceAnnotationRepository(this.db);
-    const batch = await repo.loadPendingBatch(spaceId, ANNOTATION_BATCH_SIZE);
+    const batch = await repo.loadPendingBatch(spaceId, ANNOTATION_BATCH_SIZE, monitoring?.itemIds);
     if (batch.length === 0) {
       return { space_id: spaceId, requested: 0, annotated: 0, skipped: 0, failed: 0, run_id: null, status: "no_work" };
     }
@@ -68,7 +69,7 @@ export class SourceAnnotationService {
 
     let agentId: string;
     try {
-      agentId = (await ensureSourceAnnotatorAgent(this.requirePool(), spaceId)).id;
+      agentId = monitoring?.agentId ?? (await ensureSourceAnnotatorAgent(this.requirePool(), spaceId)).id;
     } catch {
       // Not the items' fault, so it must not spend their retry budget. A space
       // with no model provider yet is the ordinary cold-start state; these rows
@@ -119,9 +120,11 @@ export class SourceAnnotationService {
       .filter((row) => allowed.has(row.id))
       .map(toPromptItem);
 
+    // A quota refusal is not a failed model attempt and must not spend annotation retries.
+    if(monitoring) await consumeMonitoringBudget(this.db,spaceId,monitoring.operationId,'model_runs',1);
     let run: RunRecord;
     try {
-      run = await this.executeAnnotationRun(spaceId, agentId, promptItems);
+      run = await this.executeAnnotationRun(spaceId, agentId, promptItems, monitoring);
     } catch (error) {
       await repo.markAttemptFailed(
         spaceId,
@@ -321,6 +324,7 @@ export class SourceAnnotationService {
     spaceId: string,
     agentId: string,
     items: readonly AnnotationPromptItem[],
+    monitoring?: {operationId:string;projectId:string;userId:string},
   ): Promise<RunRecord> {
     const pool = this.requirePool();
     const instruction = renderAnnotationInstruction(items);
@@ -328,9 +332,9 @@ export class SourceAnnotationService {
     const run = await runs.createQueuedRun({
       execution_kind: "agent",
       space_id: spaceId,
-      user_id: await resolveSystemActorUserId(pool, spaceId),
+      user_id: monitoring?.userId ?? await resolveSystemActorUserId(pool, spaceId),
       agent_id: agentId,
-      project_id: null,
+      project_id: monitoring?.projectId ?? null,
       project_folder_id: null,
       prompt: "Classify incoming source material.",
       instruction,
@@ -342,8 +346,9 @@ export class SourceAnnotationService {
       mode: "live",
       runtime_profile_id: null,
       contract_snapshot: {
-        source: { kind: "direct", id: `source_annotation:${spaceId}` },
-        project_id: null,
+        source: { kind: "direct", id: monitoring?.operationId ?? `source_annotation:${spaceId}` },
+        ...(monitoring?{budget_sources:[{source:{kind:'direct',id:monitoring.operationId},max_attempts:1,max_duration_seconds:1800}]}:{}),
+        project_id: monitoring?.projectId ?? null,
         structured_output_json: sourceAnnotationOutputContract(),
         policy_context_json: createManagedExecutionPolicy("source_annotation", true),
       },

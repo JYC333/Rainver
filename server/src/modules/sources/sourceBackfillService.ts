@@ -201,7 +201,7 @@ export class SourceBackfillPlanningService {
     const created = await insertProposalRow(db, {
       spaceId: identity.spaceId,
       proposalType: "source_backfill_start",
-      title: "Start Source history import",
+      title: objectValue(plan.strategy_json).history_mode === "current_snapshot" ? "Inspect current Source snapshot (no historical coverage)" : "Start Source history import",
       payload: {
         proposal_type: "source_backfill_start",
         action_id: "source.backfill.propose_start",
@@ -212,7 +212,7 @@ export class SourceBackfillPlanningService {
         quota_policy_json: plan.quota_policy_json,
         ...(actor.idempotencyKey ? { idempotency_key: actor.idempotencyKey } : {}),
       },
-      rationale: objectValue(plan.strategy_json).history_mode === "all_available"
+      rationale: objectValue(plan.strategy_json).history_mode === "current_snapshot" ? "Inspect the current feed or page only, with bounded processing; historical coverage is unavailable." : objectValue(plan.strategy_json).history_mode === "all_available"
         ? "Run a quota-controlled import across all available arXiv history."
         : "Run a bounded, quota-controlled history import.",
       createdByUserId: actor.agentId ? null : identity.userId,

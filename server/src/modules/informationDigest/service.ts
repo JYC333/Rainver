@@ -1,3 +1,6 @@
+import { monitoringDeliveryCandidates } from '../sources/monitoring/delivery.js';
+import { ProjectMonitoringConfigSchema } from '@rainver/protocol';
+import { HttpError } from '../routeUtils/common.js';
 import type { Queryable } from "../routeUtils/common.js";
 import { withQueryableTransaction } from "../routeUtils/common.js";
 import { profileMaturity, type ProfileMaturity } from "../interestProfile/maturity.js";
@@ -34,7 +37,7 @@ export type DigestLookup =
       timezone: string;
       period_start_utc: string;
       period_end_utc: string;
-      reason: "day_not_complete" | "not_generated";
+      reason: "day_not_complete" | "not_generated" | "monitoring_history_before_latest";
       /** Whether this viewer may request a backfill for this day now. */
       backfill_available: boolean;
     };
@@ -57,37 +60,48 @@ export class InformationDigestService {
    * standby-pool movement. A day with no snapshot is answered as missing, with
    * whether a backfill may be requested for it.
    */
-  async lookup(
-    spaceId: string,
-    scope: { type: "personal"; userId: string } | { type: "project"; projectId: string; readerUserId: string },
-    requestedDate: string | null,
-  ): Promise<DigestLookup> {
-    const timezone = await digestTimezone(this.db, spaceId, scope.type === "personal"
-      ? { type: "personal", userId: scope.userId }
-      : { type: "project", projectId: scope.projectId });
+  async lookup(spaceId: string, scope: {
+    type: "personal";
+    userId: string;
+  } | {
+    type: "project";
+    projectId: string;
+    readerUserId: string;
+  }, requestedDate: string | null): Promise<DigestLookup> {
+    const timezone = await digestTimezone(this.db, spaceId, scope.type === "personal" ? {
+      type: "personal",
+      userId: scope.userId
+    } : {
+      type: "project",
+      projectId: scope.projectId
+    });
     const date = requestedDate ?? latestCompleteDigestDate(timezone);
     assertDate(date);
     const repo = new PgInformationDigestRepository(this.db);
     const scopeKey = scope.type === "personal" ? scope.userId : scope.projectId;
     const readerUserId = scope.type === "personal" ? scope.userId : scope.readerUserId;
     const existing = await repo.findByScope(spaceId, scope.type, scopeKey, date);
-    if (existing) return { status: "available", digest: (await repo.get(spaceId, existing.id, readerUserId))! };
+    if (existing) return {
+      status: "available",
+      digest: (await repo.get(spaceId, existing.id, readerUserId))!
+    };
     const period = digestPeriod(date, timezone);
     const complete = isCompleteDigestDay(date, timezone);
     // A Project's digest is backfilled by someone who may write to the
     // Project; a reader is told the day is missing, not offered a 403.
-    const mayBackfill = scope.type === "personal"
-      || await canWriteProject(this.db, spaceId, scope.projectId, scope.readerUserId);
+    const mayBackfill = scope.type === "personal" || (await canWriteProject(this.db, spaceId, scope.projectId, scope.readerUserId));
+    const newer = scope.type === 'project' ? await this.db.query(`SELECT 1 FROM information_digests d JOIN projects p ON p.id=d.project_id AND p.space_id=d.space_id WHERE d.space_id=$1 AND d.project_id=$2 AND p.active_information_monitoring_version_id IS NOT NULL AND d.digest_date>$3 LIMIT 1`, [spaceId, scope.projectId, date]) : null;
     return {
       status: "missing",
       digest_date: date,
       timezone,
       period_start_utc: period.startUtc,
       period_end_utc: period.endUtc,
-      reason: complete ? "not_generated" : "day_not_complete",
-      backfill_available: complete && mayBackfill,
+      reason: newer?.rows.length ? "monitoring_history_before_latest" : complete ? "not_generated" : "day_not_complete",
+      backfill_available: complete && mayBackfill && !newer?.rows.length
     };
   }
+
 
   /**
    * The scheduled pass for one day. Write-once and idempotent: a fire that
@@ -147,7 +161,7 @@ export class InformationDigestService {
       const profileService = new InterestProfileService(tx);
       await profileService.runFactLayer(spaceId, userId);
       const profileSettings = await profileService.settings(spaceId, userId);
-      const inputs = await repo.maturityInputs(spaceId, userId);
+      const inputs = await profileService.maturityInputs(spaceId, userId);
       const maturity = profileMaturity(inputs, profileSettings);
       const candidates = await repo.personalCandidates(spaceId, userId, period);
       // Cold maturity keeps deterministic profile facts and does not use
@@ -204,29 +218,118 @@ export class InformationDigestService {
     });
   }
 
-  private async generateProject(
-    spaceId: string,
-    projectId: string,
-    readerUserId: string,
-    period: DigestPeriod,
-    kind: DigestGenerationKind,
-    automationRunId: string | null,
-  ): Promise<{ digest: PersistedDigest; created: boolean }> {
+  private async generateProject(spaceId: string, projectId: string, readerUserId: string, period: DigestPeriod, kind: DigestGenerationKind, automationRunId: string | null): Promise<{
+    digest: PersistedDigest;
+    created: boolean;
+  }> {
     assertDate(period.date);
-    return withQueryableTransaction(this.db, async (tx) => {
+    return withQueryableTransaction(this.db, async tx => {
       const repo = new PgInformationDigestRepository(tx);
+      // Every Project date and the initial seal use this lock before the scope/day lock.
+      await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, [`monitoring-delivery:${spaceId}:${projectId}`]);
       await repo.lockScope(spaceId, "project", projectId, period.date);
       const existing = await repo.findByScope(spaceId, "project", projectId, period.date);
-      if (existing) return { digest: (await repo.get(spaceId, existing.id, readerUserId))!, created: false };
+      if (existing) return {
+        digest: (await repo.get(spaceId, existing.id, readerUserId))!,
+        created: false
+      };
+      const active = await tx.query<{
+        config_json: unknown;
+        id: string;
+      }>(`SELECT v.config_json,v.id FROM projects p JOIN project_information_monitoring_versions v ON v.id=p.active_information_monitoring_version_id AND v.space_id=p.space_id WHERE p.id=$1 AND p.space_id=$2`, [projectId, spaceId]);
+      if (active.rows[0]) {
+        const latest = await tx.query<{
+          date: string;
+        }>(`SELECT max(digest_date)::text AS date FROM information_digests WHERE space_id=$1 AND project_id=$2`, [spaceId, projectId]);
+        if (latest.rows[0]?.date && latest.rows[0].date >= period.date) throw new HttpError(422, 'monitoring_history_before_latest', {
+          code: 'monitoring_history_before_latest'
+        });
+        const operation = await tx.query<{
+          status: string;
+          progress_json: Record<string, unknown>;
+          version_id: string;
+          config_json: unknown;
+        }>(`SELECT o.status,o.progress_json,v.id AS version_id,v.config_json
+          FROM project_operations o JOIN project_information_monitoring_versions v
+            ON v.id=o.progress_json->>'version_id' AND v.space_id=o.space_id AND v.project_id=o.project_id
+          WHERE o.space_id=$1 AND o.project_id=$2 AND o.progress_json->>'purpose'='information_monitoring'
+            AND o.created_at >= $3::timestamptz AND o.created_at < $4::timestamptz
+            AND (COALESCE(o.progress_json->>'run_kind','initial')<>'daily'
+              OR (o.progress_json->>'local_date'=$5 AND (o.progress_json->>'slot')::timestamptz >= $3::timestamptz
+                AND (o.progress_json->>'slot')::timestamptz < $4::timestamptz))
+          ORDER BY COALESCE(o.progress_json->>'run_kind'='daily',false) DESC,o.created_at DESC,o.id DESC LIMIT 1`,
+          [spaceId, projectId, period.startUtc, period.endUtc, period.date]);
+        const op = operation.rows[0];
+        const cfg = ProjectMonitoringConfigSchema.parse(op?.config_json ?? active.rows[0].config_json);
+        const selected = await monitoringDeliveryCandidates(tx, spaceId, projectId, period.startUtc, period.endUtc, cfg.recommendation_count);
+        // A settlement after the cutoff cannot retrospectively complete that day's coverage.
+        const settledAfterCutoff = op?.progress_json.as_of && Date.parse(String(op.progress_json.as_of)) >= Date.parse(period.endUtc);
+        const coverage = op ? op.status === 'active' || settledAfterCutoff ? 'analysis_pending' : op.progress_json.reason ?? op.progress_json.coverage ?? 'not_run' : 'not_run';
+        const digestId = await repo.create({
+          spaceId,
+          type: 'project',
+          projectId,
+          period,
+          generationKind: kind,
+          maturity: null,
+          automationRunId,
+          settings: {
+            interest_slots: cfg.recommendation_count,
+            ranking: 'project_monitoring',
+            serendipity: false,
+            monitoring_version_id: op?.version_id ?? active.rows[0].id,
+            acquisition_cutoff: op?.progress_json.acquisition_cutoff ?? null,
+            dispatch_until: op?.progress_json.dispatch_until ?? null,
+            coverage,
+            coverage_scope: op?.progress_json.coverage_scope ?? null,
+            ...(kind === 'backfill' ? {
+              history_note: BACKFILL_HISTORY_NOTE
+            } : {})
+          },
+          items: selected.map((item, position) => ({
+            candidate: item,
+            section: 'interest',
+            position,
+            quotaSlot: `project:${position + 1}`,
+            matchedTopicId: null,
+            score: item.project_confidence ?? 0,
+            componentScores: {},
+            rationale: item.reason,
+            provenance: {
+              ...(item.page_change ? {page_change:item.page_change,content_revision:item.content_revision} : {}),
+              decision_id: item.decision_id,
+              run_id: item.run_id,
+              version: item.version,
+              version_id: item.version_id,
+              config_hash: item.config_hash,
+              summary: item.summary.slice(0, 12000),
+              evidence_depth: item.evidence_depth,
+              ready_at: new Date(item.ready_at).toISOString()
+            }
+          }))
+        });
+        return {
+          digest: (await repo.get(spaceId, digestId, readerUserId))!,
+          created: true
+        };
+      }
       const candidates = await repo.projectCandidates(spaceId, projectId, period);
       const selected = diversify(rankProject(candidates, period), DEFAULT_PROJECT_SLOTS);
       const digestId = await repo.create({
-        spaceId, type: "project", projectId, period, generationKind: kind, maturity: null, automationRunId,
+        spaceId,
+        type: "project",
+        projectId,
+        period,
+        generationKind: kind,
+        maturity: null,
+        automationRunId,
         settings: {
           interest_slots: DEFAULT_PROJECT_SLOTS,
           ranking: "project_triage_recency_source_diversity",
           serendipity: false,
-          ...(kind === "backfill" ? { history_note: BACKFILL_HISTORY_NOTE } : {}),
+          ...(kind === "backfill" ? {
+            history_note: BACKFILL_HISTORY_NOTE
+          } : {})
         },
         items: selected.map((item, position) => ({
           candidate: item.candidate,
@@ -236,10 +339,13 @@ export class InformationDigestService {
           matchedTopicId: null,
           score: item.score,
           componentScores: item.components,
-          rationale: "Selected from the day's Project Corpus using triage, confidence, recency, and source diversity.",
-        })),
+          rationale: "Selected from the day's Project Corpus using triage, confidence, recency, and source diversity."
+        }))
       });
-      return { digest: (await repo.get(spaceId, digestId, readerUserId))!, created: true };
+      return {
+        digest: (await repo.get(spaceId, digestId, readerUserId))!,
+        created: true
+      };
     });
   }
 }

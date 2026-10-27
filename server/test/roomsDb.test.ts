@@ -1868,6 +1868,9 @@ describe("Room workflow (real Postgres)", () => {
     // every Room turn. Do not match this turn's wording and inject a
     // per-turn override block.
     expect(runPrompt.rows[0]?.prompt).toContain("treat that as an execution instruction");
+    expect(runPrompt.rows[0]?.prompt).toContain("use project.monitoring.read and project.monitoring.propose");
+    expect(runPrompt.rows[0]?.prompt).toContain("Do not require FINER");
+    expect(runPrompt.rows[0]?.prompt).toContain("real approval and Sources owner gates");
     expect(runPrompt.rows[0]?.prompt).not.toContain("[Current turn execution mode]");
 
     // Choosing whether to open another question is the model's own judgment.
@@ -2597,7 +2600,7 @@ describe("Room workflow (real Postgres)", () => {
       }>(`SELECT * FROM room_discussions WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1`, [sessionId])).rows[0];
     }
 
-    async function roomWithSpecialist(title: string, specialistName = "Research Specialist") {
+    async function roomWithSpecialist(title: string, specialistName = "Research Specialist", additionalAgentIds: readonly string[] = []) {
       const owner = { spaceId: "space-1", userId: "user-1" };
       const now = new Date().toISOString();
       await seedSpecialist(now, "agent-2", "version-2", specialistName);
@@ -2607,6 +2610,16 @@ describe("Room workflow (real Postgres)", () => {
          VALUES ($1, 'space-1', $2, 'agent-2', 'member', 'active', $3, $3)`,
         [randomUUID(), created.room.id, now],
       );
+      // Populate the roster before the existing fixture initializes and pins
+      // Conversation runtimes; late members have no initialized backend binding.
+      for (const agentId of additionalAgentIds) {
+        await seedSpecialist(now, agentId, `version-${agentId}`, agentId);
+        await db.pool.query(
+          `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
+           VALUES ($1, 'space-1', $2, $3, 'member', 'active', $4, $4)`,
+          [randomUUID(), created.room.id, agentId, now],
+        );
+      }
       const conversation = await seedConversation(owner, created.room.id, title);
       const manager = (await db.pool.query<{ name: string }>(`SELECT name FROM agents WHERE id = 'agent-1'`)).rows[0]!.name;
       return { owner, created, conversation, manager };
@@ -3651,6 +3664,41 @@ describe("Room workflow (real Postgres)", () => {
       expect((await db.pool.query("SELECT action,decision,audit_code FROM policy_decision_records WHERE id=$1",
         [denied.policy_decision_record_id])).rows[0]).toMatchObject({ action: "run.spawn_child", decision: "deny", audit_code: "run_spawn_child_capacity_limit" });
       expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", containerId))!.budget_json).toEqual(before);
+    });
+
+    it.for(["all_members", "outsider", "removed", "duplicate", "coordinator"])("validates a larger collaboration against Room membership: %s", async (mode, ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Implementation and two reviews", "Research Specialist", ["agent-3", "agent-4"]);
+      const now = new Date().toISOString();
+      await seedSpecialist(now, "agent-outsider", "version-outsider", "Outside this Room");
+      if (mode === "removed") {
+        await db.pool.query("UPDATE room_agent_members SET status='removed' WHERE room_id=$1 AND agent_id='agent-4'", [created.room.id]);
+      }
+      const task = await new PgTaskRepository(db.pool).createTask(owner, { title: "Implement with two independent reviewers", project_id: "project-1" });
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Implement, then ask both reviewers." });
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
+      const participants = ["agent-2", "agent-3", "agent-4"];
+      if (mode === "outsider") participants.push("agent-outsider");
+      if (mode === "duplicate") participants.push("agent-2");
+      if (mode === "coordinator") participants.push("agent-1");
+      const bounds = { task_id: task.id, participant_agent_ids: participants, max_delegations: 3 };
+      const spawn = (target: string, budget?: Record<string, unknown>) => groupService!.spawnChildRun(owner, {
+        space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
+        requesting_agent_id: "agent-1", target_agent_id: target, manager_user_id: "user-1",
+        instruction: "Implement or independently review the authorized change.", budget_json: budget,
+      });
+      if (mode !== "all_members") {
+        await expect(spawn("agent-2", { collaboration: bounds })).rejects.toThrow(
+          mode === "duplicate" ? "Participants must be distinct" : "other active Room members",
+        );
+        expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", group.id))!.budget_json?.collaboration).toBeUndefined();
+        return;
+      }
+      for (const [index, target] of participants.entries()) {
+        expect((await spawn(target, index === 0 ? { collaboration: bounds } : undefined)).child_run_id).toBeTruthy();
+      }
+      expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", group.id))!.budget_json?.collaboration).toMatchObject(bounds);
+      expect(await spawn("agent-2")).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
     });
 
     it.for(["done", "cancelled"])("declares a fresh task collaboration on a completion after the prior Task is %s", async (status, ctx) => {

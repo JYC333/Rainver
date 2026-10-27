@@ -1,3 +1,4 @@
+import { useAppTranslation } from '../../i18n'
 import { useState, type RefObject } from 'react'
 import { toast } from 'sonner'
 import { readerApi } from '../../api/client'
@@ -56,6 +57,7 @@ export function ReaderInspector({
   onThreadsUpdated,
   onClose,
 }: ReaderInspectorProps) {
+  const { t } = useAppTranslation()
   const [archiving, setArchiving] = useState(false)
   const [commentBody, setCommentBody] = useState('')
   const [commenting, setCommenting] = useState(false)
@@ -70,7 +72,7 @@ export function ReaderInspector({
     try {
       await readerApi.deleteAnnotation(selectedAnnotation.id)
       onAnnotationArchived(selectedAnnotation.id)
-      toast.success('Annotation removed')
+      toast.success(t('reading.annotationRemoved'))
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -113,7 +115,7 @@ export function ReaderInspector({
     setActioning(true)
     try {
       await readerApi.createEvidence(selectedAnnotation.id, {})
-      toast.success('Evidence candidate created')
+      toast.success(t('reading.evidenceCreated'))
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -126,7 +128,7 @@ export function ReaderInspector({
     setActioning(true)
     try {
       await readerApi.createProposal(selectedAnnotation.id, { proposal_type: proposalType })
-      toast.success(proposalType === 'memory_create' ? 'Memory proposal created' : 'Knowledge proposal created')
+      toast.success(proposalType === 'memory_create' ? t('reading.memoryProposed') : t('reading.knowledgeProposed'))
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -135,53 +137,53 @@ export function ReaderInspector({
   }
 
   return (
-    <aside className="reader-inspector border-l bg-background flex flex-col h-full overflow-y-auto" aria-label="Reader inspector">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
+    <aside className="reader-inspector border-l border-border bg-background flex flex-col h-full overflow-y-auto" aria-label={t('reading.inspectorRegion')}>
+      {/* Keep the mobile close control clear of Shell’s floating capture action. */}
+      <div className="flex items-center justify-between pl-3 pr-20 md:pr-3 py-2 border-b border-border shrink-0">
         <div className="min-w-0">
-          <p className="text-sm font-medium">Inspector</p>
+          <p className="text-sm font-medium">{t('reading.inspector')}</p>
           <p className="text-xs text-muted-foreground">
-            {annotations.length} annotation{annotations.length === 1 ? '' : 's'}
-            {selectedAnnotation ? ` · ${openThreads} open thread${openThreads === 1 ? '' : 's'}` : ''}
+            {t('reading.annotationCount', { count: annotations.length })}
+            {selectedAnnotation && <> · {t('reading.openThreadCount', { count: openThreads })}</>}
           </p>
         </div>
-        <Button variant="ghost" size="icon" className="size-6" onClick={onClose} aria-label="Close inspector">
+        <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label={t('reading.closeInspector')}>
           <X className="size-4" />
         </Button>
       </div>
 
       {/* Current selection */}
       {selection && !selectedAnnotation && (
-        <section className="p-3 space-y-2 border-b" aria-label="Current selection">
-          <p className="text-xs font-medium text-muted-foreground">Selection</p>
-          <blockquote className="text-xs italic border-l-2 pl-2 text-muted-foreground line-clamp-3">
+        <section className="p-3 space-y-2 border-b border-border" aria-label={t('reading.currentSelection')}>
+          <p className="text-xs font-medium text-muted-foreground">{t('reading.selection')}</p>
+          <blockquote className="text-xs italic border-l-2 border-border pl-2 text-muted-foreground line-clamp-3">
             {selection.quoteText}
           </blockquote>
           <Input
             className="h-7 text-xs"
-            placeholder="Label (optional)"
+            placeholder={t('reading.optionalLabel')}
             value={createLabel}
             onChange={(e) => onCreateLabelChange(e.target.value)}
           />
           <p className="text-xs text-muted-foreground">
-            Use the toolbar over the selection to save a highlight, comment, excerpt, or bookmark.
+            {t('reading.selectionHint')}
           </p>
         </section>
       )}
 
       {/* Selected annotation */}
       {selectedAnnotation && (
-        <section className="p-3 space-y-3 border-b" aria-label="Selected annotation">
+        <section className="p-3 space-y-3 border-b border-border" aria-label={t('reading.selectedAnnotation')}>
           <div className="flex items-start justify-between gap-2">
             <div className="space-y-1 min-w-0">
               <div className="flex gap-1 flex-wrap">
-                <Badge variant="outline" className="text-xs">{selectedAnnotation.annotation_type}</Badge>
+                <Badge variant="outline" className="text-xs">{t(`reading.${selectedAnnotation.annotation_type}`)}</Badge>
                 <Badge variant={selectedAnnotation.visibility === 'private' ? 'secondary' : 'default'} className="text-xs">
                   {selectedAnnotation.visibility === 'private' ? <Lock className="size-2.5 mr-0.5" /> : <Globe className="size-2.5 mr-0.5" />}
-                  {selectedAnnotation.visibility}
+                  {t(`reading.visibility_${selectedAnnotation.visibility}`, { defaultValue: selectedAnnotation.visibility })}
                 </Badge>
                 {selectedAnnotation.anchor_state === 'unverified' && (
-                  <Badge variant="destructive" className="text-xs">unverified anchor</Badge>
+                  <Badge variant="destructive" className="text-xs">{t('reading.unverifiedAnchor')}</Badge>
                 )}
               </div>
               {selectedAnnotation.label && (
@@ -189,36 +191,36 @@ export function ReaderInspector({
               )}
             </div>
             <Button
-              variant="ghost" size="icon" className="size-6 shrink-0"
+              variant="ghost" size="icon-sm" className="shrink-0"
               onClick={archiveAnnotation} disabled={archiving}
-              aria-label="Remove annotation"
+              aria-label={t('reading.removeAnnotation')}
             >
               <Trash2 className="size-3" />
             </Button>
           </div>
 
-          <blockquote className="text-xs italic border-l-2 pl-2 text-muted-foreground line-clamp-4">
+          <blockquote className="text-xs italic border-l-2 border-border pl-2 text-muted-foreground line-clamp-4">
             {selectedAnnotation.quote_text}
           </blockquote>
 
           {/* Comments */}
           <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">Comments</p>
+            <p className="text-xs font-medium text-muted-foreground">{t('reading.comments')}</p>
             {threads.length === 0 && (
-              <p className="text-xs text-muted-foreground">No comments yet.</p>
+              <p className="text-xs text-muted-foreground">{t('reading.noComments')}</p>
             )}
             {threads.map((thread) => (
               <Card key={thread.id} className="p-2 space-y-2">
                 <div className="flex items-center justify-between">
-                  <Badge variant="outline" className="text-xs">{thread.status}</Badge>
+                  <Badge variant="outline" className="text-xs">{t(`reading.thread_${thread.status}`)}</Badge>
                   <div className="flex gap-1">
                     {thread.status === 'open' && (
-                      <Button variant="ghost" size="sm" className="h-5 text-xs px-1"
-                        onClick={() => setThreadStatus(thread.id, 'resolved')}>Resolve</Button>
+                      <Button variant="ghost" size="sm"
+                        onClick={() => setThreadStatus(thread.id, 'resolved')}>{t('reading.resolve')}</Button>
                     )}
                     {thread.status === 'resolved' && (
-                      <Button variant="ghost" size="sm" className="h-5 text-xs px-1"
-                        onClick={() => setThreadStatus(thread.id, 'open')}>Reopen</Button>
+                      <Button variant="ghost" size="sm"
+                        onClick={() => setThreadStatus(thread.id, 'open')}>{t('reading.reopen')}</Button>
                     )}
                   </div>
                 </div>
@@ -234,37 +236,37 @@ export function ReaderInspector({
               ref={commentInputRef}
               className="text-xs resize-none min-h-0"
               rows={2}
-              placeholder="Add a comment…"
+              placeholder={t('reading.addComment')}
               value={commentBody}
               onChange={(e) => setCommentBody(e.target.value)}
             />
             <Button size="sm" className="w-full" onClick={addComment}
               disabled={!commentBody.trim() || commenting}>
-              Comment
+              {t('reading.comment')}
             </Button>
           </div>
 
           {/* Downstream actions */}
           <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground">Actions</p>
+            <p className="text-xs font-medium text-muted-foreground">{t('reading.actions')}</p>
             <div className="flex flex-col gap-1">
               <Button
                 variant="outline" size="sm" className="h-7 text-xs justify-start"
                 onClick={createEvidence} disabled={actioning}
               >
-                <Quote className="size-3 mr-1.5" />Save as evidence
+                <Quote className="size-3 mr-1.5" />{t('reading.saveEvidence')}
               </Button>
               <Button
                 variant="outline" size="sm" className="h-7 text-xs justify-start"
                 onClick={() => createProposal('knowledge_create')} disabled={actioning}
               >
-                <Lightbulb className="size-3 mr-1.5" />Propose knowledge
+                <Lightbulb className="size-3 mr-1.5" />{t('reading.proposeKnowledge')}
               </Button>
               <Button
                 variant="outline" size="sm" className="h-7 text-xs justify-start"
                 onClick={() => createProposal('memory_create')} disabled={actioning}
               >
-                <Brain className="size-3 mr-1.5" />Propose memory
+                <Brain className="size-3 mr-1.5" />{t('reading.proposeMemory')}
               </Button>
             </div>
           </div>
@@ -272,11 +274,11 @@ export function ReaderInspector({
       )}
 
       {/* Notebook */}
-      <section className="p-3 space-y-1 flex-1" aria-label="Annotation notebook">
-        <p className="text-xs font-medium text-muted-foreground pb-1">Notebook</p>
+      <section className="p-3 space-y-1 flex-1" aria-label={t('reading.notebookRegion')}>
+        <p className="text-xs font-medium text-muted-foreground pb-1">{t('reading.notebook')}</p>
         {annotations.length === 0 && (
           <p className="text-xs text-muted-foreground">
-            Select text in the document and use the toolbar to create your first annotation.
+            {t('reading.notebookEmpty')}
           </p>
         )}
         {annotations.map((ann) => {
@@ -291,21 +293,21 @@ export function ReaderInspector({
             >
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Icon className="size-3 shrink-0" />
-                <span>{ann.annotation_type}</span>
+                <span>{t(`reading.${ann.annotation_type}`)}</span>
                 {ann.visibility === 'private'
                   ? <Lock className="size-2.5 shrink-0" />
                   : <Globe className="size-2.5 shrink-0" />}
                 {ann.anchor_state === 'unverified' && (
-                  <Badge variant="destructive" className="text-[10px] px-1 py-0">unverified</Badge>
+                  <Badge variant="destructive" className="text-xs px-1 py-0">{t('reading.unverified')}</Badge>
                 )}
               </div>
               <p className="text-xs line-clamp-2">{ann.quote_text}</p>
-              {ann.label && <p className="text-[10px] text-muted-foreground truncate">{ann.label}</p>}
+              {ann.label && <p className="text-xs text-muted-foreground truncate">{ann.label}</p>}
             </button>
           )
         })}
         <p className="sr-only" data-testid="annotation-type-counts">
-          {`highlights ${counts.highlight}, comments ${counts.comment}, excerpts ${counts.excerpt}, bookmarks ${counts.bookmark}`}
+          {t('reading.typeCounts', { highlights: counts.highlight, comments: counts.comment, excerpts: counts.excerpt, bookmarks: counts.bookmark })}
         </p>
       </section>
     </aside>

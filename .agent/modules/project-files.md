@@ -217,7 +217,11 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 - Files and Notes share the `DocumentTab` silhouette and existing tab-strip
   styling. File tabs size to the complete filename without ellipsis, with room
   for italic overhang; the strip scrolls horizontally when needed. Notes keep
-  their existing bounded tab widths. The file toolbar uses the shared control sizes; size, encoding and
+  their existing bounded tab widths. The silhouette keeps fixed-width curved ends and stretches only its straight
+  middle, so long filenames and close controls remain inside the outline.
+  Each segment has an independently positioned SVG viewport matching the tab's
+  height; the middle ends at the cap boundary so its fill cannot cover the curve.
+  The file toolbar uses the shared control sizes; size, encoding and
   line-ending details live in a bottom status bar. CodeMirror uses application
   color tokens and a color-mode compartment from the global Theme Context,
   including conflict comparisons. Theme changes preserve edits, selection and
@@ -276,3 +280,14 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   both the server-host path and the paired host daemon
 - `server/src/modules/projectFolderExecutionConfigs/` — execution-config routes
 - `apps/web/src/modules/project_files/` — Files & Code and Folder settings pages
+
+## Opening a file from a reply
+
+`/projects/{projectId}/files?folder={folderId}&path={relativePath}&line={line}`
+opens that file through the ordinary selection path, including draft flushing,
+stale-read fencing and error handling. A supplied Folder is also selected when
+Files & Code was already mounted. The optional line focuses the editor without
+changing its text. Conversation links are resolved through the producing
+Run's file-preview API before navigation; the server never uses a model's
+absolute path to read outside the authorized registered workspace. Raster
+image links open the conversation preview dialog instead of the text editor.

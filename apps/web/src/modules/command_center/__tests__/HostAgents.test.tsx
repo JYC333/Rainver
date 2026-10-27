@@ -4,13 +4,15 @@ import { describe, expect, it, vi } from 'vitest'
 import HostAgents from '../HostAgents'
 import type { Host, HostRuntimeDefinitionOption } from '../../../types/api'
 
-const { enable, disable, installRuntime, uninstallRuntime, loginInput, loginStream, goose, enabledGoose } = vi.hoisted(() => {
+const { enable, disable, installRuntime, uninstallRuntime, loginInput, loginCallback, loginStream, goose, enabledGoose, flags } = vi.hoisted(() => {
   const goose = {
     id: 'goose', name: 'goose', version: '1.2.3', description: 'An agent', repository: null, license: null, icon: null,
     distribution: { kind: 'npx' as const, package: 'goose-acp@1.2.3', args: [], env: {} },
   }
   return {
-    enable: vi.fn(), disable: vi.fn(), installRuntime: vi.fn(), uninstallRuntime: vi.fn(), loginInput: vi.fn(), loginStream: vi.fn(), goose,
+    enable: vi.fn(), disable: vi.fn(), installRuntime: vi.fn(), uninstallRuntime: vi.fn(), loginInput: vi.fn(), loginCallback: vi.fn(), loginStream: vi.fn(), goose,
+    /** Per-test switches for the fake daemon. */
+    flags: { loopbackCallback: false, namedQuota: false },
     enabledGoose: { ...goose, enabled_at: '', enabled_by_user_id: null, runtime_key: 'acp_goose', installed_on: [{ host_id: 'h1', name: 'Laptop' }] },
   }
 })
@@ -30,12 +32,27 @@ vi.mock('../../../api/client', async importOriginal => {
     },
     hostsApi: {
       ...original.hostsApi,
+      usage: vi.fn(async () => ({ items: flags.namedQuota ? [{
+        host_id: 'h1', runtime_key: 'acp_goose', installation: 'managed:1.2.3', checked_at: '2026-10-26T12:00:00Z',
+        quota: { available: true, session_pct: 20, session_resets: null, week_pct: 10, week_resets: null, error: null,
+          windows: [{ id: 'seven_day_fable', label: 'Fable weekly', used_pct: 95, resets: null }] },
+      }] : [] })),
+
       installRuntime: installRuntime.mockImplementation(async (hostId: string, runtimeKey: string) => ({ host_id: hostId, runtime_key: runtimeKey, ok: true, error: null, installation: 'managed:1.2.3' })),
       uninstallRuntime: uninstallRuntime.mockImplementation(async (hostId: string, runtimeKey: string, installation: string) => ({ host_id: hostId, runtime_key: runtimeKey, ok: true, error: null, installation })),
       // The fake daemon: prompts, waits for what is typed, then exits logged in.
       loginStream: loginStream.mockImplementation(async function* (_hostId: string, _runtimeKey: string, _installation: string, target?: { kind: string } | null) {
         yield { type: 'hint', text: 'Follow the prompts.' }
         yield { type: 'output', data: '\u001b[32mcode? \u001b[0mhttps://login.example.test/device?id=abc\n' }
+        if (flags.loopbackCallback && target?.kind === 'acp') {
+          // A loopback OAuth login: the browser on this device cannot deliver
+          // the redirect, so the panel takes the address it landed on.
+          yield { type: 'callback_wanted', port: 51601, authorize_url: 'https://accounts.example/auth?redirect_uri=http%3A%2F%2F127.0.0.1%3A51601%2F' }
+          const pasted = await new Promise<string>(resolve => { loginCallback.mockImplementation(async (...args: unknown[]) => { resolve(String(args[3])); return null }) })
+          yield { type: 'output', data: `callback:${pasted}` }
+          yield { type: 'exit', exit_code: 0, logged_in: true }
+          return
+        }
         if (target) {
           yield { type: 'exit', exit_code: 0, logged_in: true }
           return
@@ -45,6 +62,7 @@ vi.mock('../../../api/client', async importOriginal => {
         yield { type: 'exit', exit_code: 0, logged_in: true }
       }),
       loginInput,
+      loginCallback,
     },
   }
 })
@@ -88,6 +106,18 @@ const HOST = {
 } as unknown as Host
 
 describe('HostAgents', () => {
+  it('shows named model quota separately from account-wide readings', async () => {
+    flags.namedQuota = true
+    try {
+      render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false} manageable onChanged={vi.fn()} />)
+      expect(await screen.findByText('Highest used 95%')).toBeInTheDocument()
+      expect(screen.queryByText('Fable weekly')).toBeNull()
+      await userEvent.click(screen.getByRole('button', { name: 'Usage details for goose · managed:1.2.3' }))
+      expect(screen.getByText('Fable weekly')).toBeInTheDocument()
+      expect(screen.getByRole('progressbar', { name: 'Fable weekly' })).toHaveAttribute('aria-valuenow', '95')
+    } finally { flags.namedQuota = false }
+  })
+
   it('updates an own CLI through its separate endpoint and refreshes the Host', async () => {
     const update = vi.spyOn((await import('../../../api/client')).hostsApi, 'updateOwnRuntime').mockResolvedValue({ ok: true, error: null, installation: 'own' } as never)
     const changed = vi.fn()
@@ -156,13 +186,45 @@ describe('HostAgents', () => {
   it('shows every authentication method advertised by an ACP agent that has no CLI login fallback', async () => {
     render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={vi.fn()} />)
-    expect(screen.getByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Log in managed:3.0.0 of Kite on Laptop' }))
     expect(screen.getByRole('button', { name: 'Device login for managed:3.0.0 of Kite on Laptop' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Log in managed:3.0.0 of Kite on Laptop' })).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' }))
     await waitFor(() => expect(loginStream).toHaveBeenCalledWith('h1', 'acp_browser_only', 'managed:3.0.0', { kind: 'acp', methodId: 'browser' }, expect.any(AbortSignal)))
     expect(screen.queryByLabelText('Login input')).toBeNull()
     await waitFor(() => expect(screen.getByTestId('runtime-login-terminal')).toHaveTextContent('Logged in.'))
+  })
+
+  it('takes the address a browser elsewhere landed on when the login returns to the host\'s loopback port', async () => {
+    flags.loopbackCallback = true
+    try {
+      render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false}
+            manageable onChanged={vi.fn()} />)
+      await userEvent.click(screen.getByRole('button', { name: 'Log in managed:3.0.0 of Kite on Laptop' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' }))
+      // The login returns to the host's loopback port: the panel offers the
+      // authorization link and takes the address the browser lands on.
+      const panel = await screen.findByTestId('login-callback-panel')
+    expect(panel).toHaveTextContent('Paste the return address')
+    expect(screen.getByRole('button', { name: 'Complete login' })).toBeDisabled()
+    await userEvent.type(screen.getByLabelText('Callback address'), 'https://example.com/wrong')
+    await userEvent.click(screen.getByRole('button', { name: 'Complete login' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('does not match the current login')
+    await userEvent.clear(screen.getByLabelText('Callback address'))
+    expect(screen.queryByRole('alert')).toBeNull()
+    await userEvent.type(screen.getByLabelText('Callback address'), 'http://127.0.0.1:51601/?state=s&code=c')
+    loginCallback.mockRejectedValueOnce(new Error('Host is unavailable'))
+    await userEvent.click(screen.getByRole('button', { name: 'Complete login' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Host is unavailable'))
+    expect(screen.getByLabelText('Callback address')).toHaveValue('http://127.0.0.1:51601/?state=s&code=c')
+    expect(screen.getByRole('button', { name: 'Complete login' })).toBeEnabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Complete login' }))
+    await waitFor(() => expect(loginCallback).toHaveBeenCalledWith('h1', 'acp_browser_only', 'managed:3.0.0', 'http://127.0.0.1:51601/?state=s&code=c'))
+    await waitFor(() => expect(screen.getByTestId('runtime-login-terminal')).toHaveTextContent('Logged in.'))
+    expect(screen.queryByTestId('login-callback-panel')).toBeNull()
+    } finally {
+      flags.loopbackCallback = false
+    }
   })
 
   it('shows a multi-account CLI by account count, adds one, and removes one through the vendor logout', async () => {
@@ -199,12 +261,13 @@ describe('HostAgents', () => {
   it('starts a fresh session when the same copy is logged in again while its last panel is still open', async () => {
     render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={vi.fn()} />)
-    const button = screen.getByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' })
     const before = loginStream.mock.calls.length
-    await userEvent.click(button)
-    await waitFor(() => expect(screen.getByTestId('runtime-login-terminal')).toHaveTextContent('Logged in.'))
-    // The host row is not refreshed by this fixture, so the label is unchanged.
-    await userEvent.click(button)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await userEvent.click(screen.getByRole('button', { name: 'Log in managed:3.0.0 of Kite on Laptop' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' }))
+      await waitFor(() => expect(screen.getByTestId('runtime-login-terminal')).toHaveTextContent('Logged in.'))
+      await userEvent.click(screen.getByRole('button', { name: 'Close' }))
+    }
     await waitFor(() => expect(loginStream.mock.calls.length).toBe(before + 2))
   })
 

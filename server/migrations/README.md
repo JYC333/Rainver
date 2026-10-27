@@ -28,6 +28,18 @@ chain shape so accidental drift fails in CI. The narrow unpublished-plan
 squash exception is described below and in
 [ADR 0025](../../.agent/decisions/0025-unpublished-migration-squash.md).
 
+The unpublished `dev` suffix formerly numbered `0005`–`0022` is composed into
+`0005_project_reading_and_source_goals.sql`. The published `0000`–`0004`
+prefix is unchanged. The formal file retains every original statement, backfill
+and inter-file `RESET search_path` in order; its snapshot is the former final
+snapshot linked to `0004`. Schema authoring still appends after this chain.
+
+Preparation archived the original and target chains with the managed squash
+tool outside the source tree. Before updating any database that applied the
+former suffix, use ADR 0025's archived-pair discovery and explicit offline
+cutover procedure; ordinary `up` cannot replace its migration history.
+This source consolidation does not perform a database cutover or authorize one.
+
 ## Changing the schema
 
 ```bash

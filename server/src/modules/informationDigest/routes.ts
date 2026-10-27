@@ -1,5 +1,7 @@
+import { ReadingService } from "./readingService.js";
+import { ReadingPreferences } from "./readingPreferences.js";
 import type { FastifyInstance } from "fastify";
-import { InformationDigestBackfillRequestSchema, SourceAnnotationRetryRequestSchema } from "@rainver/protocol";
+import { ReadingPreferenceSchema, ReadingQuerySchema, ReadingStateRequestSchema, InformationDigestBackfillRequestSchema, SourceAnnotationRetryRequestSchema } from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { InterestProfileService } from "../interestProfile/service.js";
 import {
@@ -29,6 +31,46 @@ import { SerendipityFeedbackService, type SerendipityFeedback } from "./feedback
 import { INTEREST_STARTER_PACKS, InterestStarterPackService } from "./starterPacks.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  for (const path of ["/api/v1/spaces/:spaceId/reading", "/api/v1/spaces/:spaceId/projects/:projectId/reading"]) {
+    app.get(path, async (request, reply) => {
+      const identity = await resolveIdentity(context.config, request, reply);
+      if (!identity) return reply;
+      if (params(request).spaceId !== identity.spaceId) return reply.code(404).send({ detail: "Space not found" });
+      try {
+        return reply.send(await new ReadingService(dbPool(context.config)).list(
+          identity, parseBody(ReadingQuerySchema, query(request)), params(request).projectId,
+        ));
+      } catch (error) { return sendRouteError(reply, error); }
+    });
+  }
+  for (const path of ["/api/v1/spaces/:spaceId/reading/items/:itemId/state", "/api/v1/spaces/:spaceId/projects/:projectId/reading/items/:itemId/state"]) app.patch(path, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    if (params(request).spaceId !== identity.spaceId) return reply.code(404).send({ detail: "Space not found" });
+    try {
+      return reply.send(await new ReadingService(dbPool(context.config)).state(
+        identity, params(request).itemId ?? "", parseBody(ReadingStateRequestSchema, jsonBody(request)), params(request).projectId,
+      ));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
+  const preferencePath = "/api/v1/spaces/:spaceId/projects/:projectId/reading-preference";
+  app.get(preferencePath, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    if (params(request).spaceId !== identity.spaceId) return reply.code(404).send({ detail: "Space not found" });
+    try {
+      return reply.send(await new ReadingPreferences(dbPool(context.config)).get(identity, params(request).projectId ?? ""));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
+  app.put(preferencePath, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    if (params(request).spaceId !== identity.spaceId) return reply.code(404).send({ detail: "Space not found" });
+    try {
+      const body = parseBody(ReadingPreferenceSchema, jsonBody(request));
+      return reply.send(await new ReadingPreferences(dbPool(context.config)).set(identity, params(request).projectId ?? "", body.show_in_my_reading));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
   // History reads are read-only: a day with no snapshot answers `missing`,
   // and nothing is generated, written or taken from the standby pool by
   // looking. Generation is the scheduled fire's, or an explicit backfill's.

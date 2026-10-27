@@ -1,4 +1,6 @@
+import { readingHref } from '../library/readingLinks'
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
+import { useAppTranslation } from '../../i18n'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { AlertTriangle, BookOpen, FileText, Link2, Network, Play, Plus, RefreshCw, Rss, Search, Trash2 } from 'lucide-react'
@@ -90,7 +92,7 @@ function AddProjectSourceDialog({
   const [connectionId, setConnectionId] = useState('')
   const [deliveryScope, setDeliveryScope] = useState<'project_members' | 'source_subscribers'>('project_members')
   const [backfill, setBackfill] = useState(true)
-  const [standingComparison, setStandingComparison] = useState(true)
+  const [standingComparison, setStandingComparison] = useState(false)
   const [profileKey, setProfileKey] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -99,7 +101,7 @@ function AddProjectSourceDialog({
     setConnectionId(options[0]?.value ?? '')
     setDeliveryScope('project_members')
     setBackfill(true)
-    setStandingComparison(true)
+    setStandingComparison(false)
     setProfileKey(profiles.find(profile => profile.is_default)?.key ?? profiles[0]?.key ?? '')
   }, [open, channels, bindings, profiles])
 
@@ -195,7 +197,8 @@ function AddProjectSourceDialog({
   )
 }
 
-export default function ProjectSourcesPage() {
+export default function ProjectSourcesPage({view='all'}:{view?:'all'|'manage'|'materials'}) {
+  const { t } = useAppTranslation()
   const { projectId = '' } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
   const [project, setProject] = useState<Project | null>(null)
@@ -457,9 +460,10 @@ export default function ProjectSourcesPage() {
   const attentionCount = health.filter(row => row.status === 'attention' || row.status === 'failing').length
   return (
     <div className="p-6 space-y-6">
+      {view !== 'materials' && <>
       <div className="flex flex-wrap items-center gap-2 rounded border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
         <BookOpen className="size-3.5 shrink-0" />
-        <span>Material triage and reading status live in the <Link className="font-medium text-foreground hover:underline" to={`/projects/${projectId}/research`}>Research Area → Reading List</Link>. This page manages collection only.</span>
+        <span>{t('monitoring.sourcesReadingHint')} <Link className="font-medium text-foreground hover:underline" to={`/projects/${projectId}/research?tab=reading`}>{t('monitoring.deepReadingList')}</Link></span>
       </div>
 
       <div className="flex items-start justify-between gap-4 flex-wrap pb-4 border-b border-border">
@@ -485,7 +489,7 @@ export default function ProjectSourcesPage() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {projectId && <Button variant="outline" asChild><Link to={`/projects/${projectId}/research`}><BookOpen className="size-4" />Review reading list</Link></Button>}
+          {projectId && <Button variant="outline" asChild><Link to={`/projects/${projectId}/research?tab=reading`}><BookOpen className="size-4" />{t('monitoring.deepReadingList')}</Link></Button>}
           <Button variant="outline" className="gap-1.5 shrink-0" asChild disabled={!projectId}>
             <Link to={projectGraphHref(projectId, bindings)}>
               <Network className="size-4" />
@@ -640,6 +644,9 @@ export default function ProjectSourcesPage() {
           </div>
       </details>
 
+      </>}
+      {view !== 'manage' && <>
+      {view === 'materials' && <Button variant="outline" onClick={()=>setSaveUrlOpen(true)}><Plus className="size-4" />{t('monitoring.saveMaterial')}</Button>}
       <section className="space-y-3">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Collected items</h2>
@@ -715,7 +722,7 @@ export default function ProjectSourcesPage() {
                     />
                   )}
                   <Button size="sm" variant="outline" asChild>
-                    <Link to={`/library/items/${row.item.id}`}>Open reader</Link>
+                    <Link to={readingHref({ source_item_id: row.item.id, reader_origin: 'project' }, projectId, 'settings')}>Open reader</Link>
                   </Button>
                 </div>
               </div>
@@ -724,7 +731,8 @@ export default function ProjectSourcesPage() {
         </div>
       </section>
 
-      {projectId && <ProjectSourceSignals projectId={projectId} channels={channels} />}
+      </>}
+      {view !== 'materials' && projectId && <ProjectSourceSignals projectId={projectId} channels={channels} />}
 
       <SaveProjectUrlDialog
         open={saveUrlOpen}

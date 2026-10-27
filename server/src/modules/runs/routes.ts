@@ -1,3 +1,5 @@
+import { stateChangingReadAllowed } from "../../gateway/csrfOrigin.js";
+import { readRunFilePreview } from "./filePreview.js";
 import { randomUUID } from "node:crypto";
 import { QuotaRecoveryUpdateSchema } from "@rainver/protocol";
 import { updateQuotaRecovery } from "../rooms/quotaRecovery.js";
@@ -145,6 +147,15 @@ function commandServices(context: ModuleContext): RunsCommandServices {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  app.get("/api/v1/runs/:runId/file-preview", async (request, reply) => {
+    if (!stateChangingReadAllowed(request, context.config.frontendUrl)) return reply.code(403).send({ detail: "Cross-site request refused" });
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    try {
+      reply.header("cache-control", "no-store");
+      return reply.send(await readRunFilePreview(dbPool(context.config), context.config, identity, params(request).runId!, query(request).path ?? ""));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
   /**
    * The tool surface a dispatched agent calls back on.
    *

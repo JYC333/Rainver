@@ -33,6 +33,8 @@ export const projectOperations = pgTable("project_operations", {
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (t): PgTableExtraConfigValue[] => [
+	uniqueIndex("uq_project_operations_monitoring_day").on(t.spaceId,t.projectId,sql`(progress_json->>'local_date')`).where(sql`kind='custom' AND progress_json->>'purpose'='information_monitoring' AND progress_json->>'run_kind'='daily'`),
+	check("ck_project_operations_monitoring_day",sql`NOT (kind='custom' AND progress_json->>'purpose'='information_monitoring' AND progress_json->>'run_kind'='daily') OR (progress_json->>'local_date' IS NOT NULL AND progress_json->>'local_date' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')`),
 	index("ix_project_operations_project_status").on(t.projectId, t.status),
 	uniqueIndex("uq_project_operations_active_research_workflow").using(
 		"btree",

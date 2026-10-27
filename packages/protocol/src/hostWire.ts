@@ -1,3 +1,4 @@
+import { HostSourceRejectedFrameSchema, HostSourceExecuteFrameSchema, HostSourceCancelFrameSchema, HostSourceResponseFrameSchema, HostSourceRequestFrameSchema, HostSourceResultFrameSchema } from "./sourceExecution.js";
 /**
  * The execution-host WebSocket wire, both directions, as one contract.
  *
@@ -27,7 +28,7 @@ import {
   AmbientSessionImportSchema,
   AmbientTrimLimitsSchema,
 } from "./ambientSessions.js";
-import { LaunchWorkspaceSchema, LocationLaunchWorkspaceSchema, ManagedWorkspaceHeartbeatSchema, RuntimeAuthMethodSchema } from "./hosts.js";
+import { HostUsageQuotaSchema, LaunchWorkspaceSchema, LocationLaunchWorkspaceSchema, ManagedWorkspaceHeartbeatSchema, RuntimeAuthMethodSchema } from "./hosts.js";
 import { ConversationInputResourceSchema } from "./conversationInput.js";
 import { RuntimeKeySchema } from "./runtimeAuthority.js";
 import { HostSkillScanSchema, HostSkillFilesSchema, HostSkillCandidateSchema } from "./skills.js";
@@ -63,11 +64,58 @@ export const LOGIN_TERMINAL_ROWS = 24;
  * server never had.
  */
 export const REMOTE_CWD_PLACEHOLDER = "rainver:remote-workspace-cwd";
+
+/** An OAuth authorization or redirect URL; Google's run to about 600 characters. */
+export const LOGIN_CALLBACK_URL_MAX_CHARS = 8192;
+
+/**
+ * Whether a URL is the loopback redirect of an OAuth login running on a
+ * host, for the port that login announced. Shared by the server route and
+ * the daemon so neither forwards a request anywhere else.
+ */
+export function parseLoopbackCallbackUrl(raw: string, port: number): { path: string } | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:") return null;
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") return null;
+  if (Number(url.port || "80") !== port) return null;
+  return { path: `${url.pathname}${url.search}` };
+}
 export const WORK_SKILL_PATH_PLACEHOLDER = "rainver:work-skill-path";
 
 /**
- * How a runtime is logged into and how a login is recognised. The server's
- * adapter spec is the source; the daemon applies it and adds nothing.
+ * A runtime's state boundary: how one copy's state root is relocated to a
+ * per-Agent profile, and where inside it the login credential lives. This is
+ * what lets the daemon give every Agent its own sessions and memory while
+ * all share the machine's one login — independent of *how* that login is
+ * made (a CLI command, or ACP Agent Auth). The server's adapter spec is the
+ * source; the daemon applies it and adds nothing.
+ */
+export const RuntimeStateBoundarySchema = z.object({
+  /** State-root variables, each a path relative to the profile root (`CLAUDE_CONFIG_DIR: ".claude"`). */
+  env: z.record(z.string()),
+  /** Where the credential file sits under a login home or a profile root. */
+  home_subdir: z.string(),
+  credential_file: z.string(),
+  /**
+   * How the credential file lists accounts, for a CLI that holds several
+   * (OpenCode): a JSON object keyed by provider id whose values carry a
+   * `type`. Only ids and types are ever read from it, never secrets.
+   */
+  accounts_format: z.literal("json_object_by_provider").optional(),
+});
+export type RuntimeStateBoundary = z.infer<typeof RuntimeStateBoundarySchema>;
+
+/**
+ * How a runtime is logged into from a terminal, when its CLI has such a
+ * command. A runtime without one (Antigravity) is logged in through the ACP
+ * `authenticate` method it advertises; its credential still lands where the
+ * state boundary says.
  */
 export const RuntimeLoginSpecSchema = z.object({
   command: z.array(z.string()),
@@ -80,14 +128,6 @@ export const RuntimeLoginSpecSchema = z.object({
   /** The vendor's logout, in the same two forms; absent when the CLI has none. */
   logout_command: z.array(z.string()).optional(),
   managed_logout_command: z.array(z.string()).optional(),
-  home_subdir: z.string(),
-  credential_file: z.string(),
-  /**
-   * How the credential file lists accounts, for a CLI that holds several
-   * (OpenCode): a JSON object keyed by provider id whose values carry a
-   * `type`. Only ids and types are ever read from it, never secrets.
-   */
-  accounts_format: z.literal("json_object_by_provider").optional(),
   hint: z.string().optional(),
 });
 export type RuntimeLoginSpec = z.infer<typeof RuntimeLoginSpecSchema>;
@@ -115,16 +155,33 @@ export type RuntimeDistribution = z.infer<typeof RuntimeDistributionSchema>;
  * independent catalog: a runtime it can dispatch to is one the server told it
  * how to look for, ask, install, and log into.
  */
+/**
+ * Where a registry agent's own copy might be on a machine, derived from its
+ * registry distribution: a binary target's executable name, or an npm package
+ * whose `bin` names the daemon resolves locally. A candidate is only a place to
+ * look; a copy exists when it answers an ACP `initialize`.
+ */
+export const OwnCopyCandidateSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("binary"), command: z.string().min(1), args: z.array(z.string()) }),
+  z.object({ kind: z.literal("npm"), package: z.string().min(1), args: z.array(z.string()) }),
+]);
+export type OwnCopyCandidate = z.infer<typeof OwnCopyCandidateSchema>;
+
 export const RuntimeProbeSchema = z.object({
   runtime_key: RuntimeKeySchema,
   /** The PATH binary of the machine's own install; null for a managed-only runtime. */
   runtime: z.string().nullable(),
+  /** For a runtime with no fixed PATH binary: where its own copy might be, verified by ACP handshake. */
+  own_candidates: z.array(OwnCopyCandidateSchema).optional(),
   /** The launch argv, with the daemon's cwd placeholder where a workspace path goes. */
   argv: z.array(z.string()),
   distribution: RuntimeDistributionSchema.nullable(),
   /** The pinned version a managed install gets, when the distribution names one. */
   version: z.string().nullable(),
+  /** The CLI login command, when the runtime has one. */
   login: RuntimeLoginSpecSchema.nullable(),
+  /** Where its state and credential live; null for a runtime that declares no boundary (not host-executable). */
+  state: RuntimeStateBoundarySchema.nullable().optional(),
   remote_host_only: z.boolean(),
 });
 export type RuntimeProbe = z.infer<typeof RuntimeProbeSchema>;
@@ -429,12 +486,13 @@ export const HostUsageProbeFrameSchema = z.object({
   request_id: IdSchema,
   runtime_key: RuntimeKeySchema,
   installation: z.string().min(1),
+  login: RuntimeLoginSpecSchema.nullable(),
   /**
    * Where this runtime keeps its credential inside a login home. The daemon
    * has it in a managed copy's manifest but not for the machine's own
    * installation, and the adapter spec is the source either way.
    */
-  login: RuntimeLoginSpecSchema.nullable(),
+  state: RuntimeStateBoundarySchema.nullable().optional(),
   timeout_seconds: z.number().positive(),
 });
 
@@ -581,16 +639,6 @@ export const HostTaskMergeStepResultSchema = z.object({
   error: z.string().nullable(),
 });
 
-/** The shape the control plane already caches; `available: false` with a reason is a real answer. */
-export const HostUsageQuotaSchema = z.object({
-  available: z.boolean(),
-  session_pct: z.number().nullable(),
-  session_resets: z.string().nullable(),
-  week_pct: z.number().nullable(),
-  week_resets: z.string().nullable(),
-  error: z.string().nullable(),
-});
-export type HostUsageQuota = z.infer<typeof HostUsageQuotaSchema>;
 
 /**
  * Undoes the last upgrade of one managed copy, by promoting the version kept
@@ -653,6 +701,8 @@ export const HostLoginOpenFrameSchema = z.object({
   runtime_key: RuntimeKeySchema,
   installation: z.string().min(1),
   login: RuntimeLoginSpecSchema.nullable(),
+  /** Where the credential lands, so the daemon can tell a completed login apart from an exit code. */
+  state: RuntimeStateBoundarySchema.nullable().optional(),
   /** Normal ACP launch program; required when a machine-owned copy uses ACP auth. */
   argv: z.array(z.string()).optional(),
   /** Selected from this installation's last ACP initialize response. */
@@ -729,6 +779,7 @@ const managedWorkspaceActionFields = {
 };
 
 export const HostServerFrameSchema = z.discriminatedUnion("type", [
+  HostSourceExecuteFrameSchema, HostSourceCancelFrameSchema, HostSourceResponseFrameSchema,
   z.object({ type: z.literal("hello_ack"), host_id: IdSchema, runtime_probes: z.array(RuntimeProbeSchema) }),
   // The catalog can change while a daemon stays connected (for example when
   // an ACP registry agent is enabled), so every acknowledgement refreshes the
@@ -768,6 +819,14 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
   HostUninstallToolFrameSchema,
   HostLoginOpenFrameSchema,
   z.object({ type: z.literal("login_input"), session_id: IdSchema, data: z.string().max(LOGIN_INPUT_MAX_CHARS) }),
+  /**
+   * The browser's OAuth redirect, delivered on the host instead: a loopback
+   * redirect only reaches the machine the login runs on, so a person on
+   * another device pastes the address their browser landed on and the daemon
+   * makes that one request locally. Validated at both ends against the port
+   * the login announced.
+   */
+  z.object({ type: z.literal("login_callback"), session_id: IdSchema, url: z.string().max(LOGIN_CALLBACK_URL_MAX_CHARS) }),
   z.object({ type: z.literal("login_close"), session_id: IdSchema }),
   HostAmbientImportFrameSchema,
   HostFolderReadFrameSchema,
@@ -792,6 +851,7 @@ export const HostHelloFrameSchema = HostHelloInfoSchema.extend({ type: z.literal
 export const HostHeartbeatFrameSchema = HostHelloInfoSchema.extend({ type: z.literal("heartbeat") });
 
 export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
+  HostSourceRequestFrameSchema, HostSourceResultFrameSchema, HostSourceRejectedFrameSchema,
   HostHelloFrameSchema,
   HostHeartbeatFrameSchema,
   /** The child process is registered; `stdin` frames may follow. */
@@ -900,6 +960,8 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
     error: z.string().nullable(),
   }),
   z.object({ type: z.literal("login_output"), session_id: IdSchema, data: z.string() }),
+  /** The login waits for an OAuth redirect to a loopback port of the host; the browser may be elsewhere. */
+  z.object({ type: z.literal("login_callback_wanted"), session_id: IdSchema, port: z.number().int().min(1).max(65535), authorize_url: z.string().max(LOGIN_CALLBACK_URL_MAX_CHARS) }),
   z.object({ type: z.literal("login_exit"), session_id: IdSchema, exit_code: z.number(), logged_in: z.boolean().nullable() }),
   /** One frame per session: a folder's history is megabytes even trimmed. */
   z.object({ type: z.literal("ambient_import_session"), request_id: IdSchema, session: AmbientSessionImportSchema }),
@@ -1026,6 +1088,6 @@ export type HostRunDiffUpload = z.infer<typeof HostRunDiffUploadSchema>;
 
 export const HostRunOutputsUploadSchema = z.object({
   launch_id: IdSchema,
-  files: z.array(z.object({ name: z.string().min(1).max(512), content: z.string() })).max(1_000),
+  files: z.array(z.object({ name: z.string().min(1).max(512), content: z.string(), encoding: z.literal("base64").optional() })).max(1_000),
 });
 export type HostRunOutputsUpload = z.infer<typeof HostRunOutputsUploadSchema>;

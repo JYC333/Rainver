@@ -119,8 +119,15 @@ function validateRemoteFile(value: Record<string, unknown>): FileContent | null 
   if (!boundedInteger(value.size, MAX_FILE_BYTES) || !boundedInteger(value.line_count, MAX_FILE_BYTES + 1)) return null;
   if (value.sha256 !== undefined && (typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256))) return null;
   if (value.encoding !== undefined && (typeof value.encoding !== "string" || !["utf8", "utf16le", "utf16be", "binary", "unknown"].includes(value.encoding))) return null;
+  let original: Buffer | null = null;
+  if (value.content_base64 !== undefined) {
+    if (typeof value.content_base64 !== 'string' || value.content_base64.length > Math.ceil(MAX_FILE_BYTES / 3) * 4) return null;
+    original = Buffer.from(value.content_base64, 'base64');
+    if (original.toString('base64') !== value.content_base64 || original.length !== value.size || typeof value.sha256 !== 'string' || createHash('sha256').update(original).digest('hex') !== value.sha256) return null;
+  }
   const rawBytes = reconstructRawBytes(value);
   if (rawBytes && value.size !== rawBytes.byteLength) return null;
+  if (original && rawBytes && !original.equals(rawBytes)) return null;
   // A non-UTF-8 admission result deliberately carries no body while still
   // reporting the line count of the file it declined to send, so the count can
   // only be checked against the body when there is one.
@@ -136,6 +143,7 @@ function validateRemoteFile(value: Record<string, unknown>): FileContent | null 
   if (value.conversion_available !== undefined && typeof value.conversion_available !== "boolean") return null;
   return {
     path: value.path,
+    ...(original ? { content_base64: original.toString("base64") } : {}),
     content: value.content,
     size: value.size,
     line_count: value.line_count,

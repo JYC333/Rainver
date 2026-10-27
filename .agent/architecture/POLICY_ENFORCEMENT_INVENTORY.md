@@ -188,7 +188,7 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
   `artifact.persist`, `proposal.create`, `proposal.apply`, `agent.config_update`,
   `project_folder.read`, `input_resource.read`, `input_resource.search`,
   `project_folder.apply_patch`, `automation.create`, `automation.fire`,
-  `automation.update`, `source.connection.manage`, `source.item_create`, `source.item_update`,
+  `automation.update`, `source.goal.manage`, `source.connection.manage`, `source.item_create`, `source.item_update`,
   `evidence.create`, `evidence.update`, `evidence.link`, `source.custom.create`,
   `source.custom.generate`, `source.custom.test`, `source.custom.activate`, `source.custom.repair`,
   `source.custom.rollback`, `source.custom.credential_create`, `source.recipe.create`,
@@ -470,3 +470,7 @@ blocked. Space-wide publication is routed through `egress_review`; its applier
 re-loads the target taint and requires database-backed, unrevoked
 `egress_granting_user` approvals from every contributing owner. Payload flags
 are declarations, never proof of approval.
+
+Goal collection uses `source.goal.manage` for its own resource. Each bound source
+still passes `source.connection.manage` with its real Source identity at domain
+write/admission time, in addition to full content and owner/Project ACLs.

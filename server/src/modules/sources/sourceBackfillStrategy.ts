@@ -4,7 +4,7 @@ const WINDOW_UNITS = ["date_window", "page_cursor", "id_cursor"] as const;
 const QUOTA_WINDOWS = ["minute", "hour", "day"] as const;
 export const ARXIV_HISTORY_FLOOR = "1991-01-01T00:00:00.000Z";
 
-const BACKFILL_HISTORY_MODES = ["bounded_range", "all_available"] as const;
+const BACKFILL_HISTORY_MODES = ["bounded_range", "all_available", "current_snapshot"] as const;
 export type BackfillHistoryMode = (typeof BACKFILL_HISTORY_MODES)[number];
 
 export interface BackfillStrategy {
@@ -43,7 +43,7 @@ export function normalizeStrategy(body: Record<string, unknown>): BackfillStrate
   }
   const historyMode = optionalString(raw.history_mode) ?? "bounded_range";
   if (!BACKFILL_HISTORY_MODES.includes(historyMode as BackfillHistoryMode)) {
-    throw new HttpError(422, "strategy.history_mode must be bounded_range or all_available");
+    throw new HttpError(422, "strategy.history_mode must be bounded_range, all_available or current_snapshot");
   }
   const monitoringField = optionalString(raw.monitoring_field) ?? "submittedDate";
   if (!["submittedDate", "lastUpdatedDate"].includes(monitoringField)) {
@@ -74,6 +74,8 @@ export function normalizeQuota(value: unknown): BackfillQuotaPolicy {
 }
 
 export function assertSupportedStrategy(connectorKey: string, strategy: BackfillStrategy): void {
+  if (strategy.history_mode === "current_snapshot" && ["rss", "atom", "web_page"].includes(connectorKey) && strategy.window_unit === "page_cursor") return;
+  if (strategy.history_mode === "current_snapshot") throw new HttpError(422, "Current snapshots require a feed or fixed page");
   if (!["arxiv_api", "openalex_api", "semantic_scholar_api"].includes(connectorKey)) {
     throw new HttpError(422, "History import is not supported by this connector");
   }
@@ -92,6 +94,7 @@ export function assertSupportedStrategy(connectorKey: string, strategy: Backfill
  * a quota unit).
  */
 export function planSegments(strategy: BackfillStrategy): BackfillSegmentWindow[] {
+  if (strategy.history_mode === "current_snapshot") return [{cursor: 0, max_items: strategy.max_items}];
   if (strategy.window_unit !== "date_window") return planCursorSegments(strategy.max_items, strategy.monitoring_field ?? "submittedDate");
   return planDateWindowSegments(strategy);
 }

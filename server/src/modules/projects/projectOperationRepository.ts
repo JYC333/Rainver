@@ -116,6 +116,10 @@ export class ProjectOperationRepository {
 
     const steps = await this.db.query(`SELECT * FROM project_operation_steps WHERE operation_id=$1 AND space_id=$2 ORDER BY seq`, [operationId, identity.spaceId]);
     const links = await this.db.query(`SELECT * FROM project_operation_links WHERE operation_id=$1 AND space_id=$2 ORDER BY created_at`, [operationId, identity.spaceId]);
+    const progress=objectValue(row.progress_json);
+    if(progress.purpose==='information_monitoring') {
+      return {...row,progress_json:{purpose:progress.purpose,phase:progress.phase,reason:progress.reason,used:progress.used,as_of:progress.as_of},steps:[],links:[]};
+    }
     return { ...row, steps: steps.rows, links: links.rows };
   }
 

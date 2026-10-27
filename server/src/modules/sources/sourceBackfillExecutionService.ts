@@ -1,3 +1,5 @@
+import { monitoringAdmissionReason } from '../projects/monitoringControl.js';
+import { monitoringPlan } from "../projects/monitoringControl.js";
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import { HttpError, objectValue, withQueryableTransaction } from "../routeUtils/common.js";
@@ -36,7 +38,7 @@ interface ReconcileJobRow {
 }
 
 export class SourceBackfillExecutionService {
-  constructor(private readonly db: Queryable) {}
+  constructor(private readonly db: Queryable, private readonly monitoringOperationId?: string) {}
 
   async start(spaceId: string, planId: string, proposalId: string, strategy: unknown, quota: unknown) {
     return withQueryableTransaction(this.db, (db) =>
@@ -60,7 +62,7 @@ export class SourceBackfillExecutionService {
   }
 
   async executeNext(spaceId: string, planId: string) {
-    return withQueryableTransaction(this.db, (db) => new SourceBackfillExecutionService(db).executeNextLocked(spaceId, planId));
+    return withQueryableTransaction(this.db, (db) => new SourceBackfillExecutionService(db, this.monitoringOperationId).executeNextLocked(spaceId, planId));
   }
 
   async reconcile(spaceId: string, planId: string) {
@@ -69,6 +71,27 @@ export class SourceBackfillExecutionService {
 
   async retry(spaceId: string, planId: string) {
     return withQueryableTransaction(this.db, (db) => new SourceBackfillExecutionService(db).retryLocked(spaceId, planId));
+  }
+
+  /** Explicit Run now retries only previously approved monitoring ranges, never raises a cap.
+   * Caller holds the Project lock and has checked the active version, Source authority and no active run.
+   * Job rows retain failure diagnostics; segment attempts and consumed offsets remain cumulative.
+   */
+  async retryMonitoringRanges(spaceId: string, channelId: string, historyId: string) {
+    return withQueryableTransaction(this.db, async db => {
+      const plans = await db.query<{id:string}>(`SELECT p.id FROM source_backfill_plans p
+        WHERE p.space_id=$1 AND p.source_channel_id=$2
+          AND (p.id=$3 OR p.strategy_json->>'monitoring_purpose'='recent')
+          AND p.status IN ('approved','running','paused','failed')
+          AND EXISTS(SELECT 1 FROM source_backfill_segments s WHERE s.plan_id=p.id AND s.space_id=p.space_id AND s.status='failed')
+        ORDER BY p.id FOR UPDATE`, [spaceId,channelId,historyId]);
+      for (const plan of plans.rows) {
+        const running = await db.query(`SELECT 1 FROM source_backfill_segments WHERE plan_id=$1 AND space_id=$2 AND status='running' LIMIT 1`,[plan.id,spaceId]);
+        if (running.rows.length) throw new HttpError(409,'Source range still has active work');
+        await db.query(`UPDATE source_backfill_segments SET status='pending',extraction_job_id=NULL,next_eligible_at=NULL,error_json=NULL WHERE plan_id=$1 AND space_id=$2 AND status='failed'`,[plan.id,spaceId]);
+        await db.query(`UPDATE source_backfill_plans SET status='approved',segments_failed=0,next_eligible_at=NULL,error_json=NULL,updated_at=now() WHERE id=$1 AND space_id=$2`,[plan.id,spaceId]);
+      }
+    });
   }
 
   async continuePartial(spaceId: string, planId: string, additionalItems: number) {
@@ -136,6 +159,11 @@ export class SourceBackfillExecutionService {
     );
     const plan = planResult.rows[0];
     if (!plan || !["approved", "running"].includes(plan.status)) return null;
+    // Never wait for a transfer's channel lock while holding this plan lock.
+    const channelLock=await this.db.query('SELECT id FROM source_channels WHERE id=$1 AND space_id=$2 FOR UPDATE SKIP LOCKED',[plan.source_channel_id,spaceId]);if(!channelLock.rows.length)return null;
+    const owner=await this.db.query(`SELECT 1 FROM source_goal_bindings b JOIN source_goals g ON g.id=b.goal_id AND g.space_id=b.space_id WHERE g.space_id=$1 AND b.spec_json->>'source_channel_id'=$2 AND g.active_version_id IS NOT NULL AND g.status<>'deleted'`,[spaceId,plan.source_channel_id]);if(owner.rows.length)return {paused:true,reason:'source_goal_owns_schedule'};
+    const monitored=objectValue(plan.strategy_json).information_monitoring_version_id ? await monitoringPlan(this.db,spaceId,planId) : null;
+    if(monitored && !this.monitoringOperationId)return null;
 
     const segmentResult = await this.db.query<SegmentRow>(
       `SELECT * FROM source_backfill_segments
@@ -149,10 +177,24 @@ export class SourceBackfillExecutionService {
       return null;
     }
 
-    const { remaining: remainingBudget, unsettled } = await this.remainingBudgetLocked(spaceId, plan, segment);
+    const { remaining: planRemaining, unsettled } = await this.remainingBudgetLocked(spaceId, plan, segment);
+    let remainingBudget = planRemaining;
+    if (monitored && this.monitoringOperationId) {
+      const active = await this.db.query<{progress_json:Record<string,unknown>}>(`SELECT progress_json FROM project_operations WHERE id=$1 AND space_id=$2 AND status='active' AND (progress_json->>'plan_id'=$3 OR EXISTS(SELECT 1 FROM source_backfill_plans recent WHERE recent.id=$3 AND recent.space_id=$2 AND recent.strategy_json->>'monitoring_purpose'='recent' AND recent.source_channel_id=(progress_json->'config'->>'source_channel_id')))`,[this.monitoringOperationId,spaceId,planId]);
+      if(!active.rows[0]) return null;
+      const progress=active.rows[0].progress_json;
+      const config=progress.config as {timezone:string;daily:{candidates:number;pages:number;source_requests:number};batch:{candidates:number;pages:number;source_requests:number}};
+      const used=(progress.used??{}) as Record<string,number>;
+      const daily=await this.db.query<{used:Record<string,number>}>(`SELECT progress_json->'used' AS used FROM project_operations WHERE space_id=$1 AND project_id=$2 AND progress_json->>'purpose'='information_monitoring_budget' AND (progress_json->>'period_start')::timestamptz<=now() AND (progress_json->>'period_end')::timestamptz>now()`,[spaceId,monitored.project_id]);
+      const dayUsed=daily.rows[0]?.used??{};
+      remainingBudget=Math.min(remainingBudget,config.batch.candidates-(used.candidates??0),config.daily.candidates-(dayUsed.candidates??0));
+      if((dayUsed.pages??0)>=config.daily.pages||(dayUsed.source_requests??0)>=config.daily.source_requests||(used.source_requests??0)>=config.batch.source_requests)return null;
+      if(remainingBudget<=0||(used.pages??0)>=config.batch.pages)return null;
+    }
     // A sibling's in-flight page holds budget it may not use. Wait for it to
     // settle rather than skipping this plan's remaining history for good.
     if (remainingBudget <= 0 && unsettled > 0) return null;
+    if (remainingBudget <= 0 && monitored) return null;
     if (remainingBudget <= 0) {
       await this.db.query(
         `UPDATE source_backfill_segments SET status='skipped'
@@ -204,7 +246,7 @@ export class SourceBackfillExecutionService {
     await this.db.query(
       `INSERT INTO extraction_jobs (id, space_id, connection_id, job_type, status, metadata_json, created_at)
        VALUES ($1,$2,$3,'connection_scan','pending',$4::jsonb,$5)`,
-      [jobId, spaceId, channel.rows[0].source_connection_id, JSON.stringify({ source_channel_id: plan.source_channel_id, source_backfill_plan_id: planId, source_backfill_segment_id: segment.id, window: scheduledWindow }), now],
+      [jobId, spaceId, channel.rows[0].source_connection_id, JSON.stringify({ ...(this.monitoringOperationId ? { monitoring_operation_id: this.monitoringOperationId } : {}), source_channel_id: plan.source_channel_id, source_backfill_plan_id: planId, source_backfill_segment_id: segment.id, window: scheduledWindow }), now],
     );
     await this.db.query(
       `UPDATE source_backfill_segments SET status='running', next_eligible_at=NULL, attempt_count=attempt_count+1, extraction_job_id=$3 WHERE id=$1 AND space_id=$2`,
@@ -326,7 +368,9 @@ export class SourceBackfillExecutionService {
           ? row.window_json as Record<string, unknown>
           : {};
         const cumulative = Number.isInteger(Number(window.consumed_items)) ? Number(window.consumed_items) : itemsIngested;
-        await this.db.query(`UPDATE source_backfill_segments SET status='succeeded', items_ingested=$3 WHERE id=$1 AND space_id=$2`, [row.segment_id, spaceId, cumulative]);
+        const managed=objectValue(row.metadata_json).monitoring_operation_id != null;
+        const nextStatus=managed && window.partial===true && window.exhausted!==true ? 'pending':'succeeded';
+        await this.db.query(`UPDATE source_backfill_segments SET status=$4::varchar, items_ingested=$3, extraction_job_id=CASE WHEN $4::varchar='pending' THEN NULL ELSE extraction_job_id END WHERE id=$1 AND space_id=$2`, [row.segment_id, spaceId, cumulative,nextStatus]);
       } else if (row.status === "failed") {
         const failureDiagnostics = objectValue(objectValue(row.metadata_json).failure_diagnostics);
         const errorJson = {
@@ -335,7 +379,10 @@ export class SourceBackfillExecutionService {
           extraction_job_id: row.extraction_job_id,
           ...(Object.keys(failureDiagnostics).length > 0 ? { diagnostics: failureDiagnostics } : {}),
         };
-        if (failureDiagnostics.retryable === true) {
+        const refusal=monitoringAdmissionReason(row.error_code,objectValue(objectValue(row.metadata_json).monitoring_admission).reason);
+        if(objectValue(row.metadata_json).monitoring_operation_id && refusal){
+          await this.db.query(`UPDATE source_backfill_segments SET status='pending',extraction_job_id=NULL,next_eligible_at=NULL,attempt_count=GREATEST(attempt_count-1,0),error_json=$3::jsonb WHERE id=$1 AND space_id=$2`,[row.segment_id,spaceId,JSON.stringify({...errorJson,paused_reason:refusal})]);
+        } else if (failureDiagnostics.retryable === true) {
           const nextRetryAt = nextBackfillRetryAt(Number(row.attempt_count ?? 1));
           const deferredError = { ...errorJson, deferred_retry: true, next_retry_at: nextRetryAt };
           deferredRetries.push({ at: nextRetryAt, error: deferredError });
@@ -354,6 +401,15 @@ export class SourceBackfillExecutionService {
       }
     }
     await this.refreshCounters(spaceId, planId);
+    // A finite current observation is complete once its stored excerpt page is exhausted,
+    // even when this operation has no dispatch budget left to enter executeNext again.
+    await this.db.query(`UPDATE source_backfill_plans p SET status='completed',updated_at=now() WHERE p.id=$1 AND p.space_id=$2 AND p.strategy_json->>'history_mode'='current_snapshot' AND p.status IN ('approved','running','paused') AND EXISTS(SELECT 1 FROM source_backfill_segments s WHERE s.plan_id=p.id AND s.space_id=p.space_id) AND NOT EXISTS(SELECT 1 FROM source_backfill_segments s WHERE s.plan_id=p.id AND s.space_id=p.space_id AND (s.status<>'succeeded' OR COALESCE(s.window_json->>'exhausted','false')<>'true'))`,[planId,spaceId]);
+    // Keep the durable response while any continuation can replay it. Terminal segments
+    // keep counts and snapshot provenance, but no longer retain the feed excerpt payload.
+    await this.db.query(`UPDATE extraction_jobs j SET metadata_json=j.metadata_json-'observation_items'
+      WHERE j.space_id=$2 AND j.metadata_json ? 'observation_items'
+        AND EXISTS(SELECT 1 FROM source_backfill_segments s WHERE s.plan_id=$1 AND s.space_id=$2 AND (s.window_json->>'observation_job_id'=j.id OR s.extraction_job_id=j.id) AND s.status='succeeded')
+        AND NOT EXISTS(SELECT 1 FROM source_backfill_segments s WHERE s.space_id=$2 AND (s.window_json->>'observation_job_id'=j.id OR s.extraction_job_id=j.id) AND s.status IN ('pending','running','failed'))`,[planId,spaceId]);
     if (deferredRetries.length > 0) {
       const nextRetry = deferredRetries.map((retry) => retry.at).sort()[0]!;
       await this.db.query(

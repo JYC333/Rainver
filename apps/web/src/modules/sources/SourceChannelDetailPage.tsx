@@ -8,9 +8,9 @@ import { EmptyState } from '../../components/ui/empty-state'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { errMsg } from '../../lib/utils'
-import { SourceMonitorDialog } from './SourceMonitorDialog'
+import {useSpaceNavigate} from '../../core/spaceNav'
 import { sourceQueryText } from './sourceQueryText'
-import type { SourceChannel, SourceProvider, SourceProviderCategoryGroup } from '../../types/api'
+import type { SourceChannel } from '../../types/api'
 import { useAppTranslation } from '../../i18n'
 
 function sourceIcon(channel: Pick<SourceChannel, 'channel_type'>) {
@@ -39,13 +39,10 @@ function statusLabel(status: SourceChannel['status'] | 'mixed') {
 
 /** A source detail page manages one origin and all of its independent monitors. */
 export default function SourceChannelDetailPage() {
+  const navigate=useSpaceNavigate()
   const { sourceId } = useParams<{ sourceId: string }>()
   const { activeSpaceId } = useSpace()
   const [channels, setChannels] = useState<SourceChannel[]>([])
-  const [providers, setProviders] = useState<SourceProvider[]>([])
-  const [categoryGroups, setCategoryGroups] = useState<readonly SourceProviderCategoryGroup[]>([])
-  const [addMonitorOpen, setAddMonitorOpen] = useState(false)
-  const [editingMonitor, setEditingMonitor] = useState<SourceChannel | null>(null)
   const [busyMonitorId, setBusyMonitorId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   // Kept apart from "not found": a request that failed says nothing about
@@ -58,14 +55,9 @@ export default function SourceChannelDetailPage() {
     setLoading(true)
     setLoadError(null)
     try {
-      const [channelRows, providerRows] = await Promise.all([
-        sourcesApi.channels(),
-        sourcesApi.providers(),
-      ])
+      const channelRows=await sourcesApi.channels()
       const direct = channelRows.filter(channel => channel.source_connection_id === sourceId)
       setChannels(direct)
-      setProviders(providerRows)
-      setCategoryGroups(providerRows.find(provider => provider.provider_key === 'arxiv')?.setup_schema?.category_groups ?? [])
     } catch (error) {
       setLoadError(errMsg(error))
     } finally {
@@ -157,9 +149,9 @@ export default function SourceChannelDetailPage() {
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold">Monitors</h2>
-            <p className="text-sm text-muted-foreground">Each monitor can use a different query, category scope, or schedule. Capture policy belongs to the Source.</p>
+            <p className="text-sm text-muted-foreground">{t('sourceGoals.legacy')}</p>
           </div>
-          <Button onClick={() => setAddMonitorOpen(true)}><Plus className="size-4 mr-2" />Add monitor</Button>
+          <Button onClick={() => navigate(`/sources/goals/new${source.project_id?`?project_id=${source.project_id}`:''}`)}><Plus className="size-4 mr-2" />{t('sourceGoals.begin')}</Button>
         </div>
 
         <div className="space-y-3">
@@ -177,9 +169,10 @@ export default function SourceChannelDetailPage() {
                     </div>
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
-                    <Button size="sm" variant="outline" onClick={() => setEditingMonitor(monitor)}><Settings2 className="size-4 mr-1" />Edit</Button>
-                    <Button size="sm" variant="outline" onClick={() => void toggle(monitor)} disabled={busy}>{monitor.status === 'active' ? <Pause className="size-4" /> : <Play className="size-4" />}{monitor.status === 'active' ? 'Pause' : 'Resume'}</Button>
-                    <Button size="sm" variant="outline" onClick={() => void scan(monitor)} disabled={busy}><RefreshCw className="size-4 mr-1" />Scan now</Button>
+                        {monitor.goal_id&&<Button size="sm" variant="outline" onClick={()=>navigate(`/sources/goals/${monitor.goal_id}`)}>{t('sourceGoals.ownerControl')}</Button>}
+                    <Button size="sm" variant="outline" onClick={() => navigate(monitor.goal_id?`/sources/goals/${monitor.goal_id}`:`/sources/goals/new?channel_id=${monitor.id}${monitor.project_id?`&project_id=${monitor.project_id}`:''}`)}><Settings2 className="size-4 mr-1" />{t('sourceGoals.adjust')}</Button>
+                    <Button size="sm" variant="outline" onClick={() => void toggle(monitor)} disabled={busy||!!monitor.goal_id}>{monitor.status === 'active' ? <Pause className="size-4" /> : <Play className="size-4" />}{monitor.status === 'active' ? 'Pause' : 'Resume'}</Button>
+                    <Button size="sm" variant="outline" onClick={() => void scan(monitor)} disabled={busy||!!monitor.goal_id}><RefreshCw className="size-4 mr-1" />Scan now</Button>
                   </div>
                 </div>
               </div>
@@ -188,28 +181,7 @@ export default function SourceChannelDetailPage() {
         </div>
       </section>
 
-      <SourceMonitorDialog
-        open={addMonitorOpen}
-        mode="monitor"
-        providers={providers}
-        categoryGroups={categoryGroups}
-        sourceName={source.source_name}
-        providerKey={source.provider.key ?? undefined}
-        sourceConnectionId={sourceId}
-        onOpenChange={setAddMonitorOpen}
-        onSaved={load}
-      />
-      <SourceMonitorDialog
-        open={Boolean(editingMonitor)}
-        mode="monitor"
-        providers={providers}
-        categoryGroups={categoryGroups}
-        sourceName={source.source_name}
-        providerKey={source.provider.key ?? undefined}
-        monitor={editingMonitor}
-        onOpenChange={open => { if (!open) setEditingMonitor(null) }}
-        onSaved={async () => { setEditingMonitor(null); await load() }}
-      />
+
     </div>
   )
 }

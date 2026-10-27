@@ -381,7 +381,12 @@ const egressReview = z.object({
   required_egress_approver_user_ids: z.array(z.string().min(1)).min(1),
 }).passthrough();
 
+const monitoringDetails=z.object({proposal_type:z.literal('project_information_monitoring_details'),version_id:z.string().uuid(),config_hash:z.string().length(64),expected_active_version_id:z.string().uuid()}).passthrough();
+const monitoringActivation = z.object({proposal_type:z.literal("project_information_monitoring_activation"),version_id:z.string().uuid(),config_hash:z.string().length(64),expected_active_version_id:z.string().uuid().nullable(),history_proposal_id:z.string().uuid()}).passthrough();
+
 const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
+  monitoringDetails,
+  monitoringActivation,
   memoryCreate,
   memoryUpdate,
   memoryArchive,

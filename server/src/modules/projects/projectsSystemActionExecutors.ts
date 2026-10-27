@@ -1,3 +1,4 @@
+import { ProjectMonitoringService } from "./monitoring/service.js";
 import type { SystemActionId } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
@@ -20,6 +21,22 @@ export function registerProjectsSystemActionExecutors(
 ): void {
   const db = getDbPool(config.databaseUrl!);
   const identity = { spaceId: run.space_id, userId: run.instructed_by_user_id! };
+
+  executors.set('project.monitoring.propose',async(input)=>{
+    if(!run.project_id)throw new Error('Project-scoped run required');
+    const result=await new ProjectMonitoringService(db,config).propose(identity,run.project_id,input,{agentId:run.agent_id,runId:run.id,visibility:runVisibility(run.visibility),proposalKind:"scope"});
+    return {modelResult:{ok:true,...result},summary:{tool_name:'project.monitoring.propose',ok:true}};
+  });
+  executors.set('project.monitoring.propose_details',async(input)=>{
+    if(!run.project_id)throw new Error('Project-scoped run required');
+    const result=await new ProjectMonitoringService(db,config).propose(identity,run.project_id,input,{agentId:run.agent_id,runId:run.id,visibility:runVisibility(run.visibility),proposalKind:'details'});
+    return {modelResult:{ok:true,...result},summary:{tool_name:'project.monitoring.propose_details',ok:true}};
+  });
+  executors.set('project.monitoring.read',async()=>{
+    if(!run.project_id)throw new Error('Project-scoped run required');
+    const state=await new ProjectMonitoringService(db,config).agentStatus(identity,run.project_id);
+    return {modelResult:state,summary:{tool_name:'project.monitoring.read',ok:true}};
+  });
 
   executors.set("project.source.propose_bind" as SystemActionId, async (input, context) => {
     if (!run.project_id) throw new Error("project.source.propose_bind requires a project-scoped run");

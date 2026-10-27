@@ -916,3 +916,31 @@ action is cancel.
   (`.agent/architecture/DATA_AUTHORITY_MATRIX.md`) is automatic domain
   bookkeeping with a single owning projector, not an agent-authorized action;
   it must not be reimplemented as, or routed through, a system action.
+
+### Project manual information monitoring
+
+The conversation surface registers `project.monitoring.read` and two typed
+proposal actions: `project.monitoring.propose` for owner-required execution scope,
+and `project.monitoring.propose_details` for low-risk/reviewer changes within the
+approved scope. The server computes the diff and appliers revalidate Project
+writer authority; both proposal actions are non-grantable and do not auto-accept.
+`project.monitoring.configure` uses the Project policy resource and fail-closed
+audit; Sources activation/bind/history retain their separate owner gates. These
+actions do not start jobs or schedules; explicit authenticated human Run is the
+P1 execution entry. See [Projects](PROJECTS.md#bounded-manual-information-monitoring-p1).
+
+The P1 monitoring read executor calls `ProjectMonitoringService.agentStatus`, a
+content-free projection, rather than returning the HTTP reader DTO. Titles,
+abstract summaries, relevance reasons, Source names/queries and config text are
+not model tool output. Read permission alone never substitutes for the canonical
+Source prompt-egress gate; any later content-bearing action must enforce it.
+
+Room standing guidance (`RESEARCH_EXECUTION_POLICY` → `roomExecutionRules`)
+distinguishes routine monitoring from on-demand deep research. Monitoring needs
+no FINER, refinement, Inquiry Thread, Research Workflow, synthesis, critique,
+revision, ideas or experiments. This guidance grants no permission: configuration
+and Sources owner proposals still require their real decision gates. The original
+instruction to execute an explicitly requested search on an accepted question
+remains in force. Monitoring uses human Run now or a confirmed P2 daily schedule;
+visiting the new Research choice page starts neither. See the
+[Research retention boundaries](PROJECTS.md#deep-research-compatibility-and-retirement).

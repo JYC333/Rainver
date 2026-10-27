@@ -397,8 +397,9 @@ inside one: Claude Code under `CLAUDE_CONFIG_DIR`, Codex under
 — for a **bound** run reached through `HOME`, since `XDG_DATA_HOME` is not on
 B67's allowlist and there would be nothing to point; an unbound run points the
 XDG roots instead and keeps the machine's `HOME` (below).
-Each profile's state-root variables are set so that every `home_subdir` a
-login spec names resolves inside it. Nothing brokers a profile from the control
+Each profile's state-root variables are the adapter's declared
+`credentials.state.env`, set so that the `home_subdir` the same boundary names
+resolves inside it. Nothing brokers a profile from the control
 plane on either host kind (ADR 0016), so environment injection alone would
 leave the machine's own `~/.claude` or `~/.codex` in play.
 
@@ -489,17 +490,21 @@ logins by Agents × Rooms. So the login stays where it was:
   existing login stream;
 - when the daemon materializes a profile for an **unbound** run, it links
   **only** the runtime's credential file (the `credential_file` under
-  `home_subdir` the login spec already names) from that login home into the
-  profile. Everything else in the profile — sessions, auto-memory, settings —
-  is the profile's own;
-- a runtime that declares **no** login/state-root spec is not host-executable.
-  A dynamic ACP registry agent is the current case: moving it into an empty
-  profile would break authentication, while leaving it in the managed copy's
-  shared home would mix sessions and auto-memory across Agents. Dispatch fails
-  closed with `runtime_profile_isolation_unsupported` until its registry entry
-  can name the credential file and state-root variable; the host adapter
-  catalog therefore exposes such a copy for installation/management but marks
-  it `remote_eligible: false`;
+  `home_subdir` the adapter's state boundary names) from that login home into
+  the profile. Everything else in the profile — sessions, auto-memory,
+  settings — is the profile's own;
+- a runtime that declares **no** state boundary (`credentials.state`) is not
+  host-executable. Moving it into an empty profile would break
+  authentication, while leaving it in the managed copy's shared home would mix
+  sessions and auto-memory across Agents. Dispatch fails closed with
+  `runtime_profile_isolation_unsupported`, and the host adapter catalog
+  exposes such a copy for installation/management but marks it
+  `remote_eligible: false`. The boundary is independent of how the login is
+  made: the builtins declare it beside their CLI login command, and a
+  registry agent gets it from `acpAgents/stateBoundaries.ts` when its
+  product's state layout is known (Antigravity: `GEMINI_HOME`,
+  `.gemini/antigravity-acp/acp_token.json`), logging in through ACP Agent
+  Auth. The registry itself carries none of this, and nothing infers it;
 - a link, never a copy and never a token in the environment. Passing the
   credential through `CLAUDE_CODE_OAUTH_TOKEN` or its equivalents would mean
   Rainver read a credential and injected it into a subprocess, the shape
@@ -524,16 +529,18 @@ logins by Agents × Rooms. So the login stays where it was:
   credential the runtime refreshed into the profile itself, and once a
   temp-file rename has dropped the shared inode's link count the two look
   identical on disk. **Recency decides**: a login home newer than the target is
-  followed (relinked), a profile that refreshed itself later is left alone —
-  and logged, once per launch, as no longer sharing that login, because that
-  divergence is the one state nothing else on the machine would ever surface
-  (a hard link to the same inode, the Windows fallback, is not divergence).
-  Without that, a hard link would pin a profile to an orphaned inode silently
-  and forever. A link that *fails* throws rather than leaving the run to
-  discover it has no credential — a headless dispatch cannot answer a login
-  prompt. **Unverified on a paired host**: whether each runtime refreshes
-  in place or by temp-file rename, and whether a rotating refresh token would
-  invalidate the siblings. See the deferred register;
+  followed (relinked); a profile that refreshed itself later holds the live
+  token and the login home the spent one, so the private file is **handed
+  back** — renamed over the login home's credential (an inode move, no bytes
+  read) and the profile linked to it again. Claude Code does refresh by
+  temp-file rename on a paired host, and the rotated refresh token does
+  invalidate the siblings: without the hand-back every other profile asked
+  for a login again about once a day. A hand-back that fails (another
+  filesystem, an unwritable login home) leaves the profile its private copy
+  and logs, once per launch, that it no longer shares the login (a hard link
+  to the same inode, the Windows fallback, is not divergence). A link that
+  *fails* throws rather than leaving the run to discover it has no
+  credential — a headless dispatch cannot answer a login prompt;
 - provider-bound runs are unchanged: the profile carries the lease
   configuration and no login link, because linking the machine's subscription
   credential into a profile that is not using it puts a credential where it
@@ -716,7 +723,18 @@ handled the same way — the builtin CLIs and enabled registry agents alike:
 - **`own`** — the machine's PATH install (bundled
   `claude-agent-acp`/`codex-acp` for Claude/Codex, the vendor binary for
   OpenCode). Detected by `--version`; never installed, upgraded, or
-  reconfigured by the daemon. Its login state is the machine's.
+  reconfigured by the daemon. Its login state is the machine's. A registry
+  agent has no fixed binary name — ACP has no discovery — so its probe
+  carries `own_candidates` derived from the registry distribution (a binary
+  target's executable name and arguments; an npm package, whose command
+  names the daemon reads from a global install's `bin` field, else the
+  unscoped package name), and the daemon reports an `own` copy only for a
+  candidate on PATH that answers ACP `initialize`, taking its version from
+  `agentInfo` (`packages/host-daemon/src/ownCopies.ts`). The verified launch
+  is what the `own` copy's Runs and logins start. The daemon extends its own
+  PATH at start with the owner's tool directories that exist (`~/.local/bin`,
+  `~/bin`, Homebrew, npm/bun/cargo/go bins, nvm/fnm/volta nodes), because a
+  service inherits no shell profile (`userPath.ts`).
 - **`managed:<version>`** — a copy the daemon installed on the owner's
   request into `<config dir>/tools/<runtime_key>/<version>/`, with its own
   stable HOME at `<config dir>/managed-state/<runtime_key>/home/`, separate
@@ -736,8 +754,13 @@ the launch `argv`, the `distribution` to install a managed copy from (a
 builtin spec names its ACP registry entry — `distribution: { registry_id }` —
 resolved by the acpAgents refresh loop, persisted in instance settings and
 read from memory, never fetched on the hello path; a registry agent carries
-a snapshot), and the `login` knowledge (`credentials.login` in the spec:
-command, `managed_command` inside a tree, `home_subdir`, `credential_file`).
+a snapshot of the entry's distribution *and* its `version` as
+`distribution_version`, since only an npm package string repeats the version
+and a binary or uvx distribution does not), the state boundary (`state`:
+`credentials.state` in the spec — state-root variables, `home_subdir`,
+`credential_file` — by which a login is recognised and a profile isolated),
+and the CLI login command when the runtime has one (`login`:
+`credentials.login` — command, `managed_command` inside a tree).
 Every
 `heartbeat_ack` carries the current catalog again; when enabling an ACP agent
 changes it, the connected daemon adopts the new probes and immediately sends a
@@ -756,7 +779,11 @@ reads `configOptions`, including the generic `category: "model"` selector;
 Rainver does not maintain a CLI-specific model catalog. When session setup
 answers `auth_required`, it tries one advertised Agent-Auth method and asks
 again. A refused authenticate reports session unavailable; an unrelated
-failure is inconclusive and keeps advertised login methods. `options.auth_methods`
+failure, a timeout, or an exit after `initialize` answered is inconclusive and
+keeps the advertised login methods (an Agent such as Antigravity starts its
+own browser OAuth flow on `session/new` when it holds no credential and never
+answers within the probe window; without the methods it would have no Log in
+button). `options.auth_methods`
 holds ACP auth flows; `options.cli_login_available` is a separate verified
 Rainver compatibility capability, never an ACP method. The Space Assistant
 accepts a copy with either a signed-in native account or a successful ACP
@@ -774,8 +801,10 @@ sends `install_tool { request_id, runtime_key, version, distribution, login,
 runtime_version_command }`;
 the daemon materializes the distribution — `npx` as a pinned `npm install
 --prefix`, `uvx` as `uv tool install` with a private `UV_TOOL_DIR`, `binary`
-as an https download verified against its sha256 and extracted — behind a
-staging rename, writes `manifest.json` (absolute command, args, env, `home`,
+as an https download verified against its sha256 and extracted (tarballs
+through the machine's `tar`; zips in process with `yauzl`, keeping Unix modes
+and refusing escaping entries, since a stock Linux image has no `unzip`) —
+behind a staging rename, writes `manifest.json` (absolute command, args, env, `home`,
 the rendered `login_command`), answers `tool_result { installation }` and
 heartbeats. `DELETE .../installations/:runtimeKey/:installation` sends
 `uninstall_tool`; only a managed copy can be removed.
@@ -914,15 +943,27 @@ or a spawn error names neither the copy nor its login file.
 Claude's is an OAuth call against `api.anthropic.com/api/oauth/usage`; Codex's
 runs `codex -s read-only -a untrusted app-server` and asks
 `account/rateLimits/read`, recovering the numbers from the refusal an
-over-limit account gets. Anything else answers "no subscription quota" rather
+over-limit account gets. Antigravity ACP refreshes only its copy's stored
+authorized-user credential against Google's fixed token endpoint, then reads
+quota summary / legacy measured quota buckets. It never starts onboarding,
+borrows an IDE/CLI account, or persists refreshed credentials. Missing credentials,
+denied quota access and unknown measurements remain unavailable.
+Named optional quota windows preserve model-family labels, measured used
+percentages and resets end to end (wire, cache and host card). Claude OAuth
+includes independent windows such as Fable alongside account-wide windows;
+unknown model-window keys matching the vendor time-window convention are retained.
+Antigravity aggregate session/week fields take the highest measured usage only
+among explicit matching cadences; legacy model buckets stay named-only.
+Other runtimes answer "no subscription quota" rather
 than launching a CLI to learn nothing. The control plane caches the answer in
 `host_runtime_usage`, refreshes every three hours, folds in the live reading a
 finished Run carries back, and shows it beside the copy on the host card.
 Live Claude readings update that account-wide cache only for the exact
 `five_hour` and `seven_day` windows. Model-specific windows such as
 `seven_day_fable`, and other unrecognised window names, do not overwrite the
-account percentages, reset times, or cache freshness. Their Run metadata is
-retained; this cache does not represent separate model allowances.
+account percentages, reset times, or account cache freshness. Recognized
+model-specific five-hour/seven-day readings are retained as separate named
+windows for detail display; arbitrary unknown window types remain ignored.
 `GET /api/v1/hosts/:hostId/usage` is a cache read; `POST
 .../installations/:runtimeKey/:installation/usage` is the probe. One gate reads
 the cache: an Agent-triggered Room turn waits while its login is past the
@@ -998,6 +1039,32 @@ successful. Failure retains the credential file, prints an installation-repair
 message and reports unknown login state rather than claiming success. The
 runtime remains held against replacement until verification finishes. Existing
 Hosts need the updated daemon and control-plane login spec for these guards.
+An Agent Auth login is protocol-driven and often turns on a browser round
+trip the person completes elsewhere (Antigravity prints a Google OAuth URL
+and waits for the redirect to a loopback port of its own process), so the
+daemon does not kill it when the stream that opened it closes: the session
+is detached and allowed to finish within a bounded grace (5 minutes, the
+flow's own limit), after which it is ended; a completion meanwhile still
+clears the copy's capability cache and heartbeats, so the card updates. Such
+a flow's redirect goes to `127.0.0.1:<port>` *on the host*, which a browser
+on another device cannot reach (Rainver is normally used over the network):
+the daemon reads the port from the authorization URL's `redirect_uri` the
+Agent printed and sends `login_callback_wanted { port, authorize_url }`; the
+login panel shows authorization steps above collapsible terminal details, with
+shared controls and a stacked mobile form. It retains the submitted address
+while waiting for Agent confirmation, supports resubmission, checks the announced
+loopback port before sending, and offers restarting after failure or disconnection.
+The panel offers the link and a field for the address the browser
+lands on, which `POST …/login/callback { url }` relays as `login_callback`,
+and the daemon makes that one request to the announced loopback port, path
+and query as the browser had them. Both ends accept only a loopback URL on
+that port; the address is never stored or logged, since its query carries
+the one-time authorization code. For
+the same reason the heartbeat options probe never calls `authenticate` on a
+copy whose state boundary says its credential file is absent — that call
+would start a login nobody asked for and then kill it — and reports such a
+copy as not logged in with its methods intact; it authenticates only to
+confirm a credential that is there, or when no boundary says where to look.
 Some Agents advertise Agent Auth but wait indefinitely for credentials their
 own CLI must create first (Cursor: `agent login`, then `authenticate` with
 `cursor_login`). A managed installation without an explicit login spec is
@@ -2363,15 +2430,23 @@ the Run cannot write, with no error.
   in the directory, and the repository's own index is never read or written;
   the dangling blobs are what `git stash create` leaves and `git gc` prunes
   them; a launch whose baseline capture failed falls back to tree-vs-HEAD) and
-  the output directory's contents (`src/outputFiles.ts`, UTF-8 only — a
-  binary file would come back corrupted) before sending `complete`.
-  The prompt does not mention `RAINVER_OUTPUT_DIR`. Every remote dispatch is
-  workspace-bound, and the intent-to-add diff capture above already records a
-  new file. Do not instruct the agent to write ordinary workspace files there:
-  that sends them into an upload path nothing consumes. The env var and upload
-  path stay wired. A structured channel for information meant for Rainver
-  itself, distinct from workspace file changes, is still an open design
-  (`tasks/deferred-register.md`).
+  the output directory's contents before sending `complete`.
+  `src/outputFiles.ts` reuses the bounded no-symlink Folder reader: UTF-8 text
+  stays text; PNG/JPEG/GIF/WebP is uploaded as canonical base64 with explicit
+  `encoding: "base64"`. Unsupported binary, secret-like paths and symlinks are
+  omitted. Collection is capped at 1 MiB per file (the shared Folder read cap),
+  20 files and 16 MiB total; traversal is bounded in depth and entry count.
+  The server independently checks output names, bytes, raster signatures and
+  aggregate size. Text containing NUL is skipped before database insertion,
+  so a misdecoded binary cannot roll back other files in the same upload.
+  Images are not exported as misleading text downloads. Image delivery requires
+  the updated Host collector as well as the server; restarting the app alone
+  does not update a separately installed Host.
+  The work-surface instructions explain temporary preview delivery through
+  `RAINVER_OUTPUT_DIR` and `/__run_output__/name`, without requiring a Task
+  output declaration. Ordinary editable files remain in the workspace.
+  Preview reads use Run and artifact ACL; see
+  [Conversation file previews](../architecture/CONVERSATION.md#file-links-and-temporary-previews).
   Termination uses `process.kill(-pid, signal)` against the whole process
   group (`detached: true` at spawn), escalating a graceful `SIGTERM` to
   `SIGKILL` after a 5s grace window if the process ignores it. A `terminate`
@@ -2512,6 +2587,34 @@ these contracts.
 
 ## Global CLI Skill acquisition
 
+### Antigravity generated and delivered skills
+
+For `acp_antigravity_acp`, the Host uses the vendor-supported
+`ANTIGRAVITY_HARNESS_PATH` override to adapt only the harness initialization.
+`skillsConfig.materializedSkillsDir` points to
+`$GEMINI_HOME/antigravity-acp/materialized`; the session workspace is unchanged.
+The loopback bridge preserves the vendor's local handshake authentication and
+does not change models, policies, credential routing or tool permissions.
+Missing companion harness or managed absolute GEMINI_HOME refuses execution
+rather than silently writing system skills into a project. This currently
+requires a POSIX Host and an adjacent `localharness_external` binary.
+
+The Run's verified `RAINVER_SKILL_ROOT` is added to native `skillsPaths`, keeping
+the vendor/project skill search paths. Delivered Rainver skills stay Run-owned;
+vendor-generated built-ins stay profile-owned. Discovery grants no new file or
+execution authority. Install the updated Host before relying on this behavior;
+an already-running older Host can recreate project-local built-ins.
+
+Reuse/Dependency Check: existing work-surface materialization and managed state
+remain authoritative. The ACP interface does not expose the tested harness
+field. A narrowly scoped loopback initialization bridge uses `ws` (also used in
+the workspace), avoiding a custom WebSocket implementation or modifying vendor
+archives. Tested with the installed ACP 1.4.3 harness: project skills absent,
+the identical run-workflow file materialized under managed state; synthetic
+delivered skill description discovered and its body read through native
+view_file. Local fake model responses exercised tools without vendor inference
+or real credentials; this is not a live model or deployed-Host acceptance test.
+
 Daemon 0.4.3 supports `skill_scan` and `skill_read` on the shared single-frame
 request transport. `globalSkills.ts` resolves fixed personal and managed CLI
 roots locally, supports top-level linked Skill folders, returns bounded logical
@@ -2520,3 +2623,72 @@ There is no caller-supplied arbitrary root or server filesystem access. Paired
 Host state is owner-only; scanning built-in Host global state requires instance
 admin. The capabilities module owns API import, hash binding and review. The
 Skill import modal replaces the Project Folder picker with these discoveries.
+
+The host Agent list keeps one login entry per copy. Multiple advertised ACP
+authentication methods are selected in the shared dialog before starting a
+login; the active login also uses a dialog instead of expanding the card.
+Quota buttons show only the highest measured used percentage (or an explicit
+unchecked/unavailable state). Their non-modal anchored quota card opens on hover, focus or click and closes
+after the pointer leaves the trigger/card (while keyboard interaction remains
+available). It preserves named windows, progress bars, reset information and
+manual refresh without a modal overlay. Only reported model windows appear;
+there are no model-specific placeholders. A successful Claude refresh retains previously
+observed model windows only until their reported reset, unless the refresh
+supplies a replacement for the same window. Unknown
+windows have no progress bar, and read-only viewers cannot trigger probes.
+
+Antigravity quota fractions retain measured precision in transport. Command
+Center formats usage below 1% with one decimal place and usage at or above 1%
+as an integer percentage, consistently in the summary, detail and accessibility
+label. A quota percentage is a window measurement, not accumulated token usage.
+
+## Sources-only execution foundation
+
+[ADR 0026](../decisions/0026-sources-isolated-request-execution.md) describes the
+current foundation. Hosts opt in and offer `isolated-v1`; server dispatch generates
+execution identities and refuses unoffered Hosts. Trusted mode never weakens it.
+A Host offer describes executability only, never authorization. The server must
+recheck Host ownership and Source/Space/Project permissions at selection, dispatch,
+every physical request and result acceptance; phase two cannot infer access from an offer.
+Bubblewrap mounts only the real Node executable, libraries and readonly code;
+no handler node_modules, credentials, shell or writable host directory is exposed.
+Resources use verified user-systemd cgroups or an administrator-delegated direct
+cgroup v2 subtree. Missing capabilities refuse execution; standard-container
+acceptance still needs that delegation and has not been performed.
+
+The trusted daemon's pinned BasicCrawler/Cheerio adapter is serial, with a private
+queue, scope/code-bound atomic checkpoint and recoverable owner leases. It invokes
+isolated handlers for bounded `{items,next_urls}`. The framework concurrency-four
+benchmark is not this adapter's throughput. Business cursors and materialization
+remain server-owned. Sources broker scopes credentials by exact route on every
+hop, requires HTTPS for credentials, combines registry/request cancellation,
+preserves binary bytes, and exposes only bounded incremental metadata. Account
+and endpoint admission/cooldown are durable and atomic (429 and eligible 503 only,
+1s..24h). Current create/scan/repair flows have not enabled free generation; old
+Level 3 remains frozen. No goal model, UI or second scheduler is introduced.
+
+The adapter bounds HTML discovery to the first 100 valid HTTP(S) links (URLs at
+most 8192 characters), passes `link_coverage` to code and returns aggregate
+`coverage` counts (`discovered_links`, `provided_links`, `truncated_pages`). This
+never enqueues omitted links or expands broker scope/budgets. Deterministic
+HTTP/contract/scope/output failures do not retry; transient network errors and
+5xx retain one retry (eligible Retry-After stops for persistent cooldown).
+Public `input_json` remains independently capped at 1MiB UTF8. A daemon-only,
+readonly `collection.json` transports response/link metadata within 16MiB, with
+an 8MiB decoded response-body ceiling (at most 17MiB together with public input);
+this is not a new public input field.
+Lease owner files are complete before atomic hard-link publication; ownerless
+legacy directories do not hold a lease. Release never recursively removes a
+new contender. Temporary ownership files are reclaimed only for proven dead
+boot/start identities. Direct execution requires trusted `prlimit` to inherit
+CORE=0 and FSIZE=output_bytes, in addition to kernel cgroup/tmpfs limits.
+
+
+## Goal conversation execution boundary
+
+The Sources goal UI does not change Host authority or runtime selection.
+Existing owned enabled Agent/Profile routing remains canonical. Compatibility
+mapping executes no handler; existing versions remain readable. New generated
+code uses the reviewed Sources isolated executor, with no legacy-runner fallback.
+Standard-container success still requires administrator cgroup/userns capability
+validation before deployment; missing capability refuses with zero requests.

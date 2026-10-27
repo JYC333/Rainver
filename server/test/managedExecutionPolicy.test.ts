@@ -47,3 +47,12 @@ describe("managed execution policy", () => {
     })).toBe(false);
   });
 });
+
+it('bounds goal repair credential authorization to its server-managed system origin',()=>{
+ const context=createManagedExecutionPolicy('source_goal',true);
+ expect(allowsManagedCredentialUse('system',context)).toBe(true);
+ expect(allowsManagedCredentialUse('manual',context)).toBe(false);
+ expect(allowsManagedCredentialUse('job',context)).toBe(false);
+ expect(allowsManagedCredentialUse('system',createManagedExecutionPolicy('source_goal',false))).toBe(false);
+ expect(isManagedFailFastRun({trigger_origin:'system',contract_snapshot_json:{policy_context_json:context}})).toBe(true);
+});

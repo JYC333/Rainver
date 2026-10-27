@@ -38,6 +38,8 @@ interface CustomSourceHandlerRunContext {
   spaceId: string;
   sourceConnectionId: string;
   handlerVersionId: string;
+  /** Server-owned operational provenance, independent of content retention. */
+  goal?: {id:string;bindingId:string;bindingRevision:number;implementationSha256:string|null};
 }
 
 interface CustomSourceMaterializationResult {
@@ -49,12 +51,12 @@ interface CustomSourceMaterializationResult {
   errors: string[];
 }
 
-type SourceMaterializationKind = "custom_source_handler" | "source_recipe";
+type SourceMaterializationKind = "custom_source_handler" | "source_recipe" | "source_goal";
 
 interface SourceMaterializationDescriptor {
-  captureMethod: SourceMaterializationKind;
-  implementationVersionMetadataKey: "handler_version_id" | "recipe_version_id";
-  runMetadataKey: "handler_run_id" | "extraction_job_id";
+  captureMethod: SourceMaterializationKind | "connection_scan";
+  implementationVersionMetadataKey: "handler_version_id" | "recipe_version_id" | "goal_version_id";
+  runMetadataKey: "handler_run_id" | "extraction_job_id" | "goal_run_id";
   artifactPathSegment: string;
   snapshotArtifactType: string;
   outputArtifactType: string;
@@ -224,6 +226,7 @@ export class CustomSourceMaterializationService {
       [descriptor.implementationVersionMetadataKey]: run.handlerVersionId,
       [descriptor.runMetadataKey]: run.runId,
       ...(item.metadata ?? {}),
+      ...(run.goal?{goal_id:run.goal.id,goal_binding_id:run.goal.bindingId,goal_binding_revision:run.goal.bindingRevision,goal_implementation_sha256:run.goal.implementationSha256,goal_version_id:run.handlerVersionId,goal_run_id:run.runId,capture_method:descriptor.captureMethod}:{}),
     });
     // Column limits: title varchar(1024), excerpt varchar(2048), author varchar(512).
     const title = item.title.slice(0, 1024);
@@ -542,6 +545,19 @@ export class CustomSourceMaterializationService {
 
 const ALLOWED_SNAPSHOT_TYPES = new Set(["metadata", "raw", "extracted", "summary"]);
 function sourceMaterializationDescriptor(kind: SourceMaterializationKind): SourceMaterializationDescriptor {
+  if (kind === "source_goal") {
+    return {
+      captureMethod: "connection_scan",
+      implementationVersionMetadataKey: "goal_version_id",
+      runMetadataKey: "goal_run_id",
+      artifactPathSegment: "source-goal",
+      snapshotArtifactType: "source_goal_snapshot",
+      outputArtifactType: "source_goal_output",
+      snapshotTitlePrefix: "Source goal snapshot",
+      outputTitlePrefix: "Source goal output",
+      outputRunLabel: "goal_run_id",
+    };
+  }
   if (kind === "source_recipe") {
     return {
       captureMethod: "source_recipe",

@@ -237,3 +237,14 @@ ownership remains in `autonomy`.
 - [PROJECTS.md](../architecture/PROJECTS.md)
 - [Sources module](sources.md)
 - [ROADMAP_AND_FUTURE_RISKS.md](../architecture/ROADMAP_AND_FUTURE_RISKS.md) — Capability 6
+
+## Project monitoring cadence coordination
+
+An explicit owner-approved Project monitoring schedule may coordinate its single
+existing information_digest daily row through Information Digest's
+`monitoringSchedule.ts`. It uses the provisioning lock and rejects another owner's
+row or duplicate daily rows, preserving their configuration on failure. Sources
+acquisition uses its own existing scheduler task store/heartbeat; it is not a new
+Automation target and does not trigger an Agent Automation or grant. Digest remains
+a deterministic, no-fetch complete-day delivery. A late monitoring slot that would
+fill a day before a newer sealed snapshot is recorded as skipped and advanced.

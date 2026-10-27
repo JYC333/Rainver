@@ -310,10 +310,11 @@ describe("keeping a linked login usable over time", () => {
     await expect(readFile(target, "utf8")).resolves.toBe('{"token":"second"}');
   });
 
-  it("leaves a credential the profile refreshed after the link alone", async () => {
+  it("hands a credential the profile refreshed after the link back to the login home", async () => {
     // The other direction of the same question. The profile re-authenticated
     // itself, so its file is the newer of the two; relinking would replace a
-    // working credential with the stale one from the login home.
+    // working credential with the stale one from the login home — and leaving
+    // it private would leave every sibling on the spent token.
     const home = await tempDir();
     const source = join(home, login.home_subdir, login.credential_file);
     await mkdir(join(home, login.home_subdir), { recursive: true });
@@ -333,7 +334,11 @@ describe("keeping a linked login usable over time", () => {
       home,
     );
 
+    // The refreshed token is the live one: it goes back to the login home,
+    // and this profile links to it there like every other.
     await expect(readFile(target, "utf8")).resolves.toBe('{"token":"refreshed-here"}');
+    await expect(readFile(source, "utf8")).resolves.toBe('{"token":"refreshed-here"}');
+    expect((await lstat(target)).isSymbolicLink()).toBe(true);
   });
 
   it("leaves a hard link that still points at the live credential alone", async () => {
@@ -519,11 +524,11 @@ describe("a login link that stopped pointing where it should", () => {
     await expect(readFile(target, "utf8")).resolves.toBe('{"token":"mine"}');
   });
 
-  it("says so when a profile keeps a credential newer than the login home's", async () => {
-    // The one state nothing else on the machine surfaces: the runtime refreshed
-    // its token by temp-file rename, the shared inode is gone, and this
-    // profile silently stopped sharing the login. Recency keeps the private
-    // copy (it is the current one); the log line is what tells an operator.
+  it("promotes a credential newer than the login home's so the siblings stop asking for a login", async () => {
+    // Claude Code refreshes by temp-file rename: the shared inode is gone, this
+    // profile holds the rotated token and the login home the spent one. Every
+    // other profile would now be told to log in again. The fresh file is moved
+    // back over the login home's and this profile linked to it again.
     const home = await tempDir();
     const source = join(home, login.home_subdir, login.credential_file);
     await mkdir(join(home, login.home_subdir), { recursive: true });
@@ -542,8 +547,10 @@ describe("a login link that stopped pointing where it should", () => {
       (line) => lines.push(line),
     );
 
+    await expect(readFile(source, "utf8")).resolves.toBe('{"token":"refreshed-here"}');
+    expect((await lstat(target)).isSymbolicLink()).toBe(true);
     await expect(readFile(target, "utf8")).resolves.toBe('{"token":"refreshed-here"}');
-    expect(lines).toEqual([expect.stringMatching(/no longer shares that login/)]);
+    expect(lines).toEqual([expect.stringMatching(/handed its refreshed .* back to the login home/)]);
   });
 
   it("leaves a symlink that still resolves to this login home alone", async () => {

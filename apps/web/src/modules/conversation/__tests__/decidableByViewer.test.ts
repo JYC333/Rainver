@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { delegatedRunIds, mergeMessages, messageRunIds } from '../ConversationSurface'
+import { mergeMessages } from '../ConversationSurface'
+import { delegatedRunIds, messageRunIds, roomLiveRunAnchors } from '../roomTimeline'
 import { decidableByViewer } from '../ActionPreviewCard'
 import type { RoomMessage } from '../../../types/api'
 import type { ChatActionPreview } from '../../../types/api'
@@ -101,5 +102,37 @@ describe('a polled page merged into the held transcript', () => {
     const held = { run_id: null, metadata_json: { run_ids: ['run-recipient'], delegated_run_ids: ['run-child'] } }
     expect(messageRunIds(held)).toEqual(['run-recipient', 'run-child'])
     expect(delegatedRunIds(held)).toEqual(['run-child'])
+  })
+
+  it('places the continuing parent after its latest child reply, leaving unrelated work anchored', () => {
+    const messages = [
+      message('request', { metadata_json: { run_ids: ['parent', 'other'], delegated_run_ids: ['child-a', 'child-b'] } }),
+      message('reply-a', { role: 'assistant', run_id: 'child-a' }),
+      message('reply-b', { role: 'assistant', run_id: 'child-b' }),
+      message('unrelated'),
+    ]
+    const runs = { parent: { parent_run_id: null }, other: { parent_run_id: null }, 'child-a': { parent_run_id: 'parent' }, 'child-b': { parent_run_id: 'parent' } }
+    expect([...roomLiveRunAnchors(messages, runs)]).toEqual([['reply-b', ['parent']], ['request', ['other']]])
+    // Once the parent answers, its reply owns the turn; no duplicate live row remains.
+    expect([...roomLiveRunAnchors([...messages, message('final', { role: 'assistant', run_id: 'parent' })], runs)])
+      .toEqual([['request', ['other']]])
+  })
+
+  it('keeps pending children visible and handles a cyclic parent chain without hanging', () => {
+    const messages = [
+      message('request', { metadata_json: { run_ids: ['parent'], delegated_run_ids: ['child-a', 'child-b'] } }),
+      message('reply-a', { role: 'assistant', run_id: 'child-a' }),
+    ]
+    expect([...roomLiveRunAnchors(messages, {
+      parent: { parent_run_id: 'child-a' }, 'child-a': { parent_run_id: 'parent' }, 'child-b': { parent_run_id: 'parent' },
+    })]).toEqual([['reply-a', ['parent', 'child-b']]])
+  })
+
+  it('does not treat a serial recipient dependency as delegation', () => {
+    expect([...roomLiveRunAnchors([
+      message('request', { metadata_json: { run_ids: ['parent', 'recipient'] } }),
+      message('reply', { role: 'assistant', run_id: 'recipient' }),
+    ], { parent: { parent_run_id: null }, recipient: { parent_run_id: 'parent' } })])
+      .toEqual([['request', ['parent']]])
   })
 })

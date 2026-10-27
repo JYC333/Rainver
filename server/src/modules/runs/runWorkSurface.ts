@@ -49,7 +49,9 @@ export interface RunWorkSurface {
  * and told its reply reached nobody.
  */
 export function workSkillOptionsForRun(run: RunRecord): WorkSkillOptions {
+  const grants=assembleRunInputEnvelope(run).tool_grants.map(g=>g.action_id);
   return {
+    ...(!run.session_id && !grants.includes('task.report') && !!(run.contract_snapshot_json as {workflow_input_json?:{source_goal?:{goal_id?:string;purpose?:string}}}|null)?.workflow_input_json?.source_goal?.goal_id && ['explore','repair'].includes((run.contract_snapshot_json as {workflow_input_json:{source_goal:{purpose:string}}}).workflow_input_json.source_goal.purpose) && grants.some(a=>a.startsWith('source.goal.'))?{domainActions:grants}:{}),
     conversation: Boolean(run.session_id),
     deliverOutputs: assembleRunInputEnvelope(run).tool_grants.some((grant) => grant.action_id === "artifact.submit"),
   };

@@ -58,14 +58,14 @@ describe('Shell scene sidebar collapse', () => {
   it('renders Library item type routes and digests in the scene sidebar', () => {
     render(<MemoryRouter initialEntries={['/spaces/personal-1/library/items/pdfs']} future={routerFuture}><Shell /></MemoryRouter>)
 
-    const sidebar = screen.getByLabelText('Library navigation')
-    expect(within(sidebar).getByRole('link', { name: 'All Items' })).toHaveAttribute('href', '/spaces/personal-1/library/items')
+    const sidebar = screen.getByLabelText('Reading navigation')
+    expect(within(sidebar).getByRole('link', { name: 'By type' })).toHaveAttribute('href', '/spaces/personal-1/library/items')
     expect(within(sidebar).getByRole('link', { name: 'Articles' })).toHaveAttribute('href', '/spaces/personal-1/library/items/articles')
     expect(within(sidebar).getByRole('link', { name: 'Podcasts' })).toHaveAttribute('href', '/spaces/personal-1/library/items/podcasts')
     const pdfsLink = within(sidebar).getByRole('link', { name: 'PDFs' })
     expect(pdfsLink).toHaveAttribute('href', '/spaces/personal-1/library/items/pdfs')
     expect(pdfsLink).toHaveAttribute('aria-current', 'page')
-    expect(within(sidebar).getByRole('link', { name: 'Digests' })).toHaveAttribute('href', '/spaces/personal-1/library/digests')
+    expect(within(sidebar).getByRole('link', { name: 'Daily editions' })).toHaveAttribute('href', '/spaces/personal-1/library/digests')
   })
 })
 
@@ -79,7 +79,7 @@ describe('Shell mobile tab bar', () => {
     expect(within(tabs).getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '/spaces/personal-1/projects')
     fireEvent.click(within(tabs).getByRole('button', { name: 'More' }))
     const more = screen.getByRole('dialog')
-    for (const name of ['Inbox', 'Library', 'Review', 'Tasks', 'Command Center']) {
+    for (const name of ['Inbox', 'Reading', 'Review', 'Tasks', 'Command Center']) {
       expect(within(more).getByRole('link', { name })).toBeInTheDocument()
     }
     expect(within(tabs).queryByRole('link', { name: 'Command Center' })).toBeNull()
@@ -100,4 +100,15 @@ it('keeps one account aggregate stream across navigation and updates the Agent W
   expect(within(link).getByRole('status', { name: /3 need you.*42 unread/ })).toBeVisible()
   fireEvent.click(link)
   expect(agentAttentionApi.stream).toHaveBeenCalledTimes(1)
+})
+
+
+describe('Reading scene view selection', () => {
+  it.each(['read','all'])('selects only the requested %s view on desktop and mobile', view => {
+    render(<MemoryRouter initialEntries={[`/spaces/personal-1/library/reading?view=${view}`]} future={routerFuture}><Shell /></MemoryRouter>)
+    const sidebar=screen.getByLabelText('Reading navigation')
+    const expected=view==='read'?'Read':'All material'
+    expect(within(sidebar).getByRole('link',{name:expected})).toHaveAttribute('aria-current','page')
+    expect(within(sidebar).getByRole('link',{name:'To read'})).not.toHaveAttribute('aria-current')
+  })
 })

@@ -253,7 +253,9 @@ describe("ACP registry agents", () => {
     const probes = (await helloAck).runtime_probes as Array<Record<string, unknown>>;
     expect(probes).toContainEqual({
       runtime_key: "acp_goose", runtime: null, argv: ["acp_goose"], distribution: GOOSE.distribution,
-      version: "1.2.3", login: null, remote_host_only: true,
+      version: "1.2.3", login: null, state: null, remote_host_only: true,
+      // Where an owner-installed copy might be, for the daemon to verify by handshake.
+      own_candidates: [{ kind: "npm", package: "goose-acp", args: [] }],
     });
 
     const installed = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/installations/acp_goose` });
@@ -331,6 +333,10 @@ describe("ACP registry agents", () => {
           auth_method: { id: "device", type: "terminal", args: ["login"] },
         });
         socket.send(JSON.stringify({ type: "login_output", session_id: frame.session_id, data: "code? " }));
+        socket.send(JSON.stringify({ type: "login_callback_wanted", session_id: frame.session_id, port: 51601, authorize_url: "https://accounts.example/auth?redirect_uri=http%3A%2F%2F127.0.0.1%3A51601%2F" }));
+      }
+      if (frame.type === "login_callback") {
+        socket.send(JSON.stringify({ type: "login_output", session_id: frame.session_id, data: `callback:${String(frame.url)}\n` }));
       }
       if (frame.type === "login_input") {
         socket.send(JSON.stringify({ type: "login_output", session_id: frame.session_id, data: `got:${String(frame.data).trim()}\n` }));
@@ -358,6 +364,26 @@ describe("ACP registry agents", () => {
     };
     await readUntil(() => events.some((event) => event.type === "output"));
     expect(events[0]).toMatchObject({ type: "output", data: "code? " });
+    // The login announced a loopback redirect; a browser on another device
+    // cannot reach it, so the address it landed on is delivered through the host.
+    await readUntil(() => events.some((event) => event.type === "callback_wanted"));
+    expect(events).toContainEqual({ type: "callback_wanted", port: 51601, authorize_url: "https://accounts.example/auth?redirect_uri=http%3A%2F%2F127.0.0.1%3A51601%2F" });
+    const offsite = await app.inject({
+      method: "POST",
+      url: `/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/callback`,
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ url: "https://evil.example/?code=c" }),
+    });
+    expect(offsite.statusCode).toBe(422);
+    const delivered = await app.inject({
+      method: "POST",
+      url: `/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/callback`,
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ url: "http://127.0.0.1:51601/?state=s&code=c" }),
+    });
+    expect(delivered.statusCode).toBe(204);
+    await readUntil(() => events.some((event) => String(event.data ?? "").startsWith("callback:")));
+    expect(events).toContainEqual({ type: "output", data: "callback:http://127.0.0.1:51601/?state=s&code=c\n" });
     const input = await app.inject({
       method: "POST",
       url: `/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/input`,
@@ -374,8 +400,8 @@ describe("ACP registry agents", () => {
     });
     expect(oversized.statusCode).toBe(413);
     await readUntil(() => events.some((event) => event.type === "exit"));
-    expect(events.map((event) => event.type)).toEqual(["output", "output", "exit"]);
-    expect(events[2]).toMatchObject({ exit_code: 0, logged_in: true });
+    expect(events.map((event) => event.type)).toEqual(["output", "callback_wanted", "output", "output", "exit"]);
+    expect(events[4]).toMatchObject({ exit_code: 0, logged_in: true });
     // After exit there is nothing to type into.
     const late = await app.inject({
       method: "POST",

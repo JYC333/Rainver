@@ -756,19 +756,23 @@ describe("information digest persistence", () => {
     }
   });
 
-  it("reports the scheduled slot's previous local day in the scope's configured timezone, even when the fire runs late", async () => {
+  it.each([
+    ['Asia/Shanghai','2025-12-31T23:00:00.000Z','2025-12-31','2025-12-30T16:00:00.000Z','2025-12-31T16:00:00.000Z'],
+    ['America/New_York','2026-03-09T11:00:00.000Z','2026-03-08','2026-03-08T05:00:00.000Z','2026-03-09T04:00:00.000Z'],
+    ['America/New_York','2025-11-03T12:00:00.000Z','2025-11-02','2025-11-02T04:00:00.000Z','2025-11-03T05:00:00.000Z'],
+  ])("freezes the delayed scheduled slot's previous local day in %s (%s)", async (timezone, slot, day, start, end) => {
     if (!db.available) return;
     expect(await reconcileInformationDigestAutomations(db.pool)).toBeGreaterThan(0);
     const updated = await db.pool.query<{ id: string }>(
-      `UPDATE automations SET config_json = config_json || '{"timezone":"Asia/Shanghai"}'::jsonb
+      `UPDATE automations SET config_json = config_json || jsonb_build_object('timezone',$3::text)
         WHERE space_id=$1 AND owner_user_id=$2 AND config_json->>'scope'='personal' AND config_json->>'operation'='daily'
         RETURNING id`,
-      [SPACE, OWNER],
+      [SPACE, OWNER, timezone],
     );
     const row = await new PgAutomationRepository(db.pool).get(SPACE, updated.rows[0]!.id);
-    // The slot 2026-01-01 07:00 in Shanghai is 2025-12-31T23:00Z; the worker
-    // gets to it days later. The day reported is still 2025-12-31 there.
-    const automation = { ...row!, next_run_at: "2025-12-31T23:00:00.000Z" };
+    // Execution happens later; the slot still names the original local day,
+    // including a 23/25-hour DST day. Replays must reuse the frozen snapshot.
+    const automation = { ...row!, next_run_at: slot };
     registerInformationDigestAutomationTarget();
     const handler = automationTargetHandlerRegistry.get("information_digest")!;
     const execute = async () => await handler.execute({
@@ -783,12 +787,12 @@ describe("information digest persistence", () => {
       advanceSchedule: false,
     } as never) as Record<string, unknown>;
     const result = await execute();
-    expect(result).toMatchObject({ digest_date: "2025-12-31", timezone: "Asia/Shanghai", created: true });
+    expect(result).toMatchObject({ digest_date: day, timezone, created: true });
     const stored = await db.pool.query<{ period_start_utc: Date; period_end_utc: Date }>(
       `SELECT period_start_utc, period_end_utc FROM information_digests WHERE id=$1`, [result.digest_id],
     );
-    expect(stored.rows[0]!.period_start_utc.toISOString()).toBe("2025-12-30T16:00:00.000Z");
-    expect(stored.rows[0]!.period_end_utc.toISOString()).toBe("2025-12-31T16:00:00.000Z");
+    expect(stored.rows[0]!.period_start_utc.toISOString()).toBe(start);
+    expect(stored.rows[0]!.period_end_utc.toISOString()).toBe(end);
     // A restart replaying the same slot answers with the same snapshot.
     expect(await execute()).toMatchObject({ digest_id: result.digest_id, created: false });
   });

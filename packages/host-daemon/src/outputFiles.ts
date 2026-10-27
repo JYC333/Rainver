@@ -1,35 +1,35 @@
-import { readdir, readFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { readFolderFile } from '@rainver/folder-read';
+import { OUTPUT_MAX_FILES, OUTPUT_MAX_TOTAL_BYTES, PREVIEW_MAX_BYTES, rasterImageMime, type HostRunOutputsUpload } from '@rainver/protocol';
 
-/**
- * Reads text files from the per-run output directory (`RAINVER_OUTPUT_DIR`)
- * for upload as run artifacts. Read as UTF-8. A binary file would come back
- * corrupted. Do not treat this as a binary-safe channel.
- */
-export async function collectOutputFiles(dir: string): Promise<Array<{ name: string; content: string }>> {
-  const files: Array<{ name: string; content: string }> = [];
-  await walk(dir, dir, files);
-  return files;
-}
-
-async function walk(dir: string, base: string, files: Array<{ name: string; content: string }>): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      await walk(full, base, files);
-    } else if (entry.isFile()) {
-      try {
-        const content = await readFile(full, "utf8");
-        files.push({ name: relative(base, full), content });
-      } catch {
-        // Skip an unreadable file rather than failing the whole upload.
+/** Explicit Run outputs only. Reuse the bounded, no-symlink Folder reader. */
+export async function collectOutputFiles(root: string): Promise<HostRunOutputsUpload['files']> {
+  const files: HostRunOutputsUpload['files'] = [];
+  let total = 0;
+  let visited = 0;
+  async function walk(dir: string, depth: number) {
+    if (depth > 8 || files.length >= OUTPUT_MAX_FILES) return;
+    // opendir is not needed for a bounded private Run directory; the actual
+    // file open below pins and validates every component against the root.
+    const entries = await readdir(join(root, dir), { withFileTypes: true }).catch(() => []);
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (++visited > 1000 || files.length >= OUTPUT_MAX_FILES) return;
+      const name = dir ? `${dir}/${entry.name}` : entry.name;
+      if (entry.isDirectory() && !entry.isSymbolicLink()) await walk(name, depth + 1);
+      else if (entry.isFile()) {
+        try {
+          const file = await readFolderFile(root, name, { includeOriginalBytes: true });
+          const bytes = Buffer.from(file.content_base64!, 'base64');
+          if (bytes.length > PREVIEW_MAX_BYTES || total + bytes.length > OUTPUT_MAX_TOTAL_BYTES) continue;
+          if (rasterImageMime(bytes)) files.push({ name, content: bytes.toString('base64'), encoding: 'base64' });
+          else if (file.encoding === 'utf8') files.push({ name, content: file.content });
+          else continue;
+          total += bytes.length;
+        } catch { /* Missing, unsafe, oversize or unsupported output: leave it out. */ }
       }
     }
   }
+  await walk('', 0);
+  return files;
 }

@@ -79,6 +79,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/PROJECT_WORK.md](architecture/PROJECT_WORK.md) | Current-state Project advancement: the four state axes, the five Loop stages, the append-only work event stream and its single writer, Run settlement, and who a held Task interrupts |
 | [architecture/ONTOLOGY.md](architecture/ONTOLOGY.md) | Current-state ontology layer: Entity registry and Interfaces, which domains join the ontology and why, `space_objects` root contract, link-type endpoints and per-edge governance, the single write path and its guards |
 | [architecture/CLAIM_FACT_ATOM_MODEL.md](architecture/CLAIM_FACT_ATOM_MODEL.md) | Current-state model for `space_objects`, global claims/facts/takes, claim evidence, claim relations, and FK-backed `object_relations` |
+| [architecture/SOURCE_GOALS.md](architecture/SOURCE_GOALS.md) | Goal collection backend: versions, preview/start, Agent-bound repair, quotas, cursor/coverage and acceptance limits |
 | [architecture/SOURCE_CONNECTOR_CONSENT.md](architecture/SOURCE_CONNECTOR_CONSENT.md) | Source/connector consent and policy: owner/subject/readers/agents, egress class, retention, trust, proposal-gated derived writes |
 | [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md) | Data classification, offline write rules, sync schema guidelines |
 
@@ -263,6 +264,7 @@ when shortening a decision; do not delete an ADR merely because it is old.
 | [0023](decisions/0023-authentication-foundation-schema-epoch.md) | The completed authentication foundation replaced the provisional auth migrations with a Drizzle-generated baseline; earlier databases had no upgrade path or compatibility shim |
 | [0024](decisions/0024-access-reading-and-execution-integrity-schema-epoch.md) | This release's schema changes were folded into a new Drizzle-generated baseline with the contract steps applied directly; earlier databases are recreated, not upgraded |
 | [0025](decisions/0025-unpublished-migration-squash.md) | Unpublished plan migrations may be squashed into one formal migration, with explicit data-preserving history conversion for existing databases |
+| [0026](decisions/0026-sources-isolated-request-execution.md) | Sources-only Host execution, OS network/resource containment and shared per-request account/endpoint admission; generated-code product integration remains gated |
 
 ---
 

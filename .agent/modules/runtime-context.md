@@ -145,8 +145,9 @@ Agent's instruction (`agent_version`), the Project Instruction and Brief,
 the Skills bound to the Agent or Project, the Room identity block — are sent
 into a fresh session and into a resumed one only when their versions changed:
 `PgDirectProvider.standingAlreadyHeld` hashes their source refs
-(`standingItemsDigest`), compares with `host_threads.standing_digest` for the
-very session being resumed, and records its decision on the Run
+(`standingItemsDigest`), using the Agent id and rendered-content hash for the
+Room identity instead of its per-Run audit ref. It compares with
+`host_threads.standing_digest` for the very session being resumed and records its decision on the Run
 (`model_override_json.host_thread.standing_digest` / `standing_sent`); the
 thread learns the digest only from a Run that carried them and landed
 (`recordRunOutcome`), exactly as the Room identity digest does. No

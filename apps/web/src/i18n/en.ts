@@ -1,5 +1,6 @@
 /** English is the source locale. Keep keys stable when display wording changes. */
 export const en = {
+  file_preview: { title: 'File preview', open_image: 'View image', loading: 'Loading preview…', retry: 'Try again', unavailable: 'This preview is unavailable, expired, or outside this conversation’s workspace. Ask the agent to share it again.' },
   fileTree: { openInNewTab: 'Open in new tab', loading: 'Loading…', empty: 'No files found', retry: 'Could not load directory · Retry', more: 'Load more' },
   agent_work: {
     badge: '{{needs}} need you · {{unread}} unread',
@@ -116,16 +117,18 @@ export const en = {
   nav: {
     more: 'More',
     agent_work: 'Agent Work',
-    home: 'Home', command_center: 'Command Center', inbox: 'Inbox', library: 'Library',
-    source: 'Sources', review: 'Review', knowledge: 'Knowledge', publications: 'Shared',
+    home: 'Home', command_center: 'Command Center', inbox: 'Inbox', library: 'Reading',
+    source: 'Source settings', review: 'Review', knowledge: 'Knowledge', publications: 'Shared',
     tasks: 'Tasks', projects: 'Projects', agents: 'Agents', evolution: 'Evolution',
     instance_settings: 'Instance Settings', space_settings: 'Space Settings', settings: 'Settings',
   },
   scene: {
+    by_type: 'By type',
+    to_read: 'To read', read: 'Read', all_material: 'All material', daily_editions: 'Daily editions',
     all: 'All', raw: 'Raw', proposals_generated: 'Proposals generated',
-    processed: 'Processed', archived: 'Archived', all_items: 'All Items',
+    processed: 'Processed', archived: 'Archived', all_items: 'All material',
     articles: 'Articles', emails: 'Emails', videos: 'Videos', podcasts: 'Podcasts',
-    pdfs: 'PDFs', digests: 'Digests', proposals: 'Proposals', memory: 'Memory',
+    pdfs: 'PDFs', digests: 'Recommended', proposals: 'Proposals', memory: 'Memory',
     my_agents: 'My agents', chat_history: 'Chat history', templates: 'Templates',
     runs: 'Runs', plans: 'Plans', automations: 'Automations',
     skills: 'Skills', artifacts: 'Artifacts',

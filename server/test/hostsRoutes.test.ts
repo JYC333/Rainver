@@ -795,7 +795,8 @@ describe("hosts routes", () => {
     expect(probes.find((probe) => probe.runtime === "opencode")).toMatchObject({
       runtime_key: "opencode",
       argv: ["opencode", "acp", "--cwd", "rainver:remote-workspace-cwd"],
-      login: { command: ["opencode", "auth", "login"], home_subdir: ".local/share/opencode", credential_file: "auth.json" },
+      login: { command: ["opencode", "auth", "login"] },
+      state: { home_subdir: ".local/share/opencode", credential_file: "auth.json" },
       // A paired Host installs what the ACP registry publishes, never the
       // Server's release pin. The registry refresh has not run here, so it is
       // told there is nothing to install rather than handed the pin.

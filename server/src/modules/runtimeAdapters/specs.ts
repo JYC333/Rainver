@@ -36,13 +36,33 @@ export type RuntimeDistribution =
   | { kind: "binary"; platforms: Record<string, RuntimeBinaryTarget> };
 
 /**
- * How a runtime is logged into, and how a login is recognised. The adapter
- * spec is the only source; the daemon's login terminal applies it and adds
- * nothing. `command` is the vendor CLI as it is named on PATH (an `own`
- * installation); `managed_command` addresses the same CLI inside a managed
- * tree, with `{tree}` the install directory, `{node}` this daemon's node,
- * `{platform}` the registry platform key (`linux-x86_64`), and
- * `{node_platform}` node's own `<platform>-<arch>` (`linux-x64`).
+ * A runtime's state boundary: the variables that relocate its state root to
+ * a per-Agent profile (each a path relative to the profile root), and where
+ * under that root — or under a login home — its credential file lives. This
+ * is the whole contract the daemon needs to give every Agent its own
+ * sessions and memory while all share one login (B68), and it is
+ * independent of how the login is made: a CLI command (`RuntimeLoginSpec`)
+ * or ACP Agent Auth. Every CLI differs here and nothing infers it; a
+ * runtime without one is not host-executable.
+ */
+export interface RuntimeStateBoundary {
+  env: Record<string, string>;
+  home_subdir: string;
+  credential_file: string;
+  /** Declared for a CLI that holds several accounts in its credential file (see the protocol schema). */
+  accounts_format?: "json_object_by_provider";
+}
+
+/**
+ * How a runtime is logged into from a terminal, when its CLI has such a
+ * command. The adapter spec is the only source; the daemon's login terminal
+ * applies it and adds nothing. `command` is the vendor CLI as it is named on
+ * PATH (an `own` installation); `managed_command` addresses the same CLI
+ * inside a managed tree, with `{tree}` the install directory, `{node}` this
+ * daemon's node, `{platform}` the registry platform key (`linux-x86_64`),
+ * and `{node_platform}` node's own `<platform>-<arch>` (`linux-x64`). A
+ * runtime without one is logged in through the ACP auth method it
+ * advertises.
  */
 export interface RuntimeLoginSpec {
   command: string[];
@@ -54,10 +74,6 @@ export interface RuntimeLoginSpec {
   /** The vendor's logout in the same two forms; absent when the CLI has none. */
   logout_command?: string[];
   managed_logout_command?: string[];
-  home_subdir: string;
-  credential_file: string;
-  /** Declared for a CLI that holds several accounts in its credential file (see the protocol schema). */
-  accounts_format?: "json_object_by_provider";
   hint?: string;
 }
 
@@ -127,10 +143,20 @@ export interface RuntimeAdapterSpec {
   };
   /** How an execution host obtains a managed copy; absent = only the machine's own install. */
   distribution?: RuntimeDistribution | { registry_id: string };
+  /**
+   * The version of a snapshot `distribution`, as the registry entry named
+   * it; a snapshot without one has nothing to install. A registry entry
+   * carries its version beside the distribution, not inside it. Ignored for
+   * a `registry_id` distribution, whose version is the resolved entry's.
+   */
+  distribution_version?: string;
   /** Fixed argv inside a managed tree that prints the bundled vendor CLI version. */
   managed_runtime_version_command?: string[];
   credentials: {
     credential_mode: CredentialMode;
+    /** Required for host execution: without it an Agent's state cannot be isolated. */
+    state?: RuntimeStateBoundary;
+    /** The CLI's own login command; absent when login is ACP Agent Auth only. */
     login?: RuntimeLoginSpec;
     credential_release_channel?: CredentialReleaseChannel;
     credential_runtime_name?: string;
@@ -362,11 +388,14 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
         // The bundled SDK ships the vendor binary per platform.
         managed_command: ["{tree}/node_modules/@anthropic-ai/claude-agent-sdk-{node_platform}/claude", "/login"],
         managed_logout_command: ["{tree}/node_modules/@anthropic-ai/claude-agent-sdk-{node_platform}/claude", "/logout"],
+        hint: "A browser URL will appear - open it to authorize your Claude.ai account.",
+      },
+      state: {
+        env: { CLAUDE_CONFIG_DIR: ".claude" },
         home_subdir: ".claude",
         // `claude /login` exits non-zero from its REPL; the credential file is
         // the reliable success signal.
         credential_file: ".credentials.json",
-        hint: "A browser URL will appear - open it to authorize your Claude.ai account.",
       },
       credential_mode: "cli_profile",
       credential_runtime_name: "claude_code",
@@ -466,9 +495,12 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
         managed_command: ["{node}", "{tree}/node_modules/@openai/codex/bin/codex.js", "login", "--device-auth"],
         logout_command: ["codex", "logout"],
         managed_logout_command: ["{node}", "{tree}/node_modules/@openai/codex/bin/codex.js", "logout"],
+        hint: "Open the device-auth URL and enter the code shown.",
+      },
+      state: {
+        env: { CODEX_HOME: ".codex" },
         home_subdir: ".codex",
         credential_file: "auth.json",
-        hint: "Open the device-auth URL and enter the code shown.",
       },
       credential_mode: "cli_profile",
       credential_runtime_name: "codex_cli",
@@ -562,10 +594,19 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
         // account of several, which is what a multi-account CLI needs.
         logout_command: ["opencode", "auth", "logout"],
         managed_logout_command: ["{tree}/opencode", "auth", "logout"],
-        accounts_format: "json_object_by_provider",
+        hint: "Follow the prompts to complete login.",
+      },
+      state: {
+        // OpenCode keeps its state under the XDG directories.
+        env: {
+          XDG_DATA_HOME: ".local/share",
+          XDG_CONFIG_HOME: ".config",
+          XDG_STATE_HOME: ".local/state",
+          XDG_CACHE_HOME: ".cache",
+        },
         home_subdir: ".local/share/opencode",
         credential_file: "auth.json",
-        hint: "Follow the prompts to complete login.",
+        accounts_format: "json_object_by_provider",
       },
       credential_mode: "cli_profile_or_model_provider",
       credential_runtime_name: "opencode",

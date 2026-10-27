@@ -3,10 +3,12 @@ import { LOGIN_TERMINAL_COLS, LOGIN_TERMINAL_ROWS } from "@rainver/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
-import { loggedIn, OWN_INSTALLATION, readToolManifestSync, renderManagedLoginCommand, toolsDir, type ToolLoginSpec, renderManagedCommand } from "./tools.js";
+import { loggedIn, OWN_INSTALLATION, readToolManifestSync, renderManagedLoginCommand, toolsDir, type ToolLoginSpec, type ToolStateBoundary, renderManagedCommand } from "./tools.js";
 import { parseAcpAuthMethods } from "./acpProbe.js";
 import { holdRuntimeKey, resolveAcpLaunch, substituteCwd } from "./execution.js";
 import { terminalAuthAvailable } from "./terminalAuth.js";
+import { get as httpGet } from "node:http";
+import { LOGIN_CALLBACK_URL_MAX_CHARS, parseLoopbackCallbackUrl } from "@rainver/protocol";
 import { clearVendorCredentialEnv } from "./providerBinding.js";
 import { probeVersion } from "./capabilities.js";
 
@@ -27,6 +29,8 @@ type LoginOpenFrame = Omit<HostServerFrameOf<"login_open">, "type">;
 
 interface LoginSession {
   write(data: string): void;
+  /** Delivers the browser's OAuth redirect to the loopback port this login announced; absent for a terminal login. */
+  callback?(url: string): void;
   close(): void;
 }
 
@@ -49,7 +53,7 @@ function loginAmbient(runtimeKey: string): Record<string, string> {
 }
 
 /** What fixed login program to run for one copy. */
-export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[]; env: Record<string, string>; home: string; login: ToolLoginSpec | null; verification_command?: string[] | null } {
+export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[]; env: Record<string, string>; home: string; login: ToolLoginSpec | null; state: ToolStateBoundary | null; verification_command?: string[] | null } {
   const ambient = loginAmbient(frame.runtime_key);
   if (frame.auth_method && frame.login_action) throw new Error("Choose either ACP authentication or CLI login");
   if (frame.login_action === "logout") return resolveLogoutCommand(frame, ambient);
@@ -64,6 +68,7 @@ export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[];
       env: { ...ambient, ...manifest.env, HOME: manifest.home },
       home: manifest.home,
       login: null,
+      state: frame.state ?? null,
     };
   }
   if (frame.auth_method?.type === "terminal") {
@@ -73,13 +78,14 @@ export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[];
       env: { ...ambient, ...launch.env, ...frame.auth_method.env, HOME: launch.home },
       home: launch.home,
       login: null,
+      state: frame.state ?? null,
     };
   }
   if (frame.installation === OWN_INSTALLATION) {
     const command = frame.login?.command;
     if (!command) throw new Error("This installation does not declare a supported login method");
     return { command, env: sanitizedEnv(frame.login?.env ?? {}, homedir(), frame.runtime_key), home: homedir(), login: frame.login,
-      verification_command: frame.login?.verification_command };
+      state: frame.state ?? null, verification_command: frame.login?.verification_command };
   }
   const manifest = readToolManifestSync(frame.runtime_key, frame.installation);
   if (!manifest) throw new Error(`This daemon does not have ${frame.runtime_key} ${frame.installation} installed.`);
@@ -90,6 +96,7 @@ export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[];
   const command = renderManagedLoginCommand(tree, login) ?? manifest.login_command;
   if (!command) throw new Error("This installation does not declare a supported login method");
   return { command, env: sanitizedEnv({ ...manifest.env, ...login?.env }, manifest.home, frame.runtime_key), home: manifest.home, login,
+    state: frame.state ?? null,
     verification_command: renderManagedCommand(tree, login?.managed_verification_command) };
 }
 
@@ -103,19 +110,20 @@ export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[];
 function resolveLogoutCommand(
   frame: LoginOpenFrame,
   ambient: Record<string, string>,
-): { command: string[]; env: Record<string, string>; home: string; login: ToolLoginSpec | null } {
+): { command: string[]; env: Record<string, string>; home: string; login: ToolLoginSpec | null; state: ToolStateBoundary | null } {
   if (frame.installation === OWN_INSTALLATION) {
     const command = frame.login?.logout_command;
     if (!command) throw new Error("This installation does not declare a logout command");
-    return { command, env: sanitizedEnv(frame.login?.env ?? {}, homedir(), frame.runtime_key), home: homedir(), login: frame.login };
+    return { command, env: sanitizedEnv(frame.login?.env ?? {}, homedir(), frame.runtime_key), home: homedir(), login: frame.login, state: frame.state ?? null };
   }
   const manifest = readToolManifestSync(frame.runtime_key, frame.installation);
   if (!manifest) throw new Error(`This daemon does not have ${frame.runtime_key} ${frame.installation} installed.`);
   const login = frame.login ?? manifest.login;
   const tree = join(toolsDir(), manifest.runtime_key, manifest.version);
   const specCommand = renderManagedCommand(tree, login?.managed_logout_command);
+  const state = frame.state ?? null;
   if (specCommand) {
-    return { command: specCommand, env: sanitizedEnv({ ...manifest.env, ...login?.env }, manifest.home, frame.runtime_key), home: manifest.home, login };
+    return { command: specCommand, env: sanitizedEnv({ ...manifest.env, ...login?.env }, manifest.home, frame.runtime_key), home: manifest.home, login, state };
   }
   if (login) throw new Error("This installation does not declare a logout command");
   const entryArgs = manifest.entry_args ?? (manifest.command === process.execPath ? null : []);
@@ -125,6 +133,7 @@ function resolveLogoutCommand(
     env: { ...ambient, ...manifest.env, HOME: manifest.home },
     home: manifest.home,
     login: null,
+    state,
   };
 }
 
@@ -137,6 +146,46 @@ function acpErrorText(value: unknown): string {
     return value.message.slice(0, 1000);
   }
   return "Agent returned an error";
+}
+
+/**
+ * How long an Agent Auth login keeps waiting after the browser that opened it
+ * has gone. A protocol-driven login often turns on a browser round trip the
+ * person completes elsewhere — Antigravity prints a Google OAuth URL and
+ * waits for the redirect to a loopback port of this process — and closing
+ * the Rainver page meanwhile used to kill the process, so the redirect
+ * found nothing listening. Nothing is typed into this session, so leaving
+ * it running costs no terminal; the bound matches what such a flow allows
+ * itself (Antigravity: 300s) and keeps an abandoned login from lingering.
+ */
+const AGENT_AUTH_DETACHED_GRACE_MS = 5 * 60 * 1000;
+let agentAuthDetachedGraceMs = AGENT_AUTH_DETACHED_GRACE_MS;
+
+/** Exported for tests: how long a detached Agent Auth login may go on. */
+export function __setAgentAuthDetachedGraceMsForTests(ms: number | null): void {
+  agentAuthDetachedGraceMs = ms ?? AGENT_AUTH_DETACHED_GRACE_MS;
+}
+
+/** The loopback port an OAuth authorization URL's `redirect_uri` points at, or null when it points elsewhere. */
+export function loopbackRedirectPort(authorizeUrl: string): number | null {
+  let redirect: string | null;
+  try {
+    redirect = new URL(authorizeUrl).searchParams.get("redirect_uri");
+  } catch {
+    return null;
+  }
+  if (!redirect) return null;
+  let url: URL;
+  try {
+    url = new URL(redirect);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:") return null;
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") return null;
+  const port = Number(url.port || "80");
+  return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
 }
 
 /** ACP Agent Auth: initialize a fresh copy, verify the method, then authenticate by id. */
@@ -159,11 +208,30 @@ function openAgentAuthSession(
   let buffer = "";
   let exited = false;
   let waitingTimer: ReturnType<typeof setTimeout> | null = null;
+  let detachTimer: ReturnType<typeof setTimeout> | null = null;
+  // The loopback port the Agent's own OAuth flow listens on, read from the
+  // authorization URL it prints (`redirect_uri=http://127.0.0.1:<port>/`).
+  // A browser on another device cannot reach it; the person pastes where
+  // that browser landed and `callback` makes the request from here.
+  let callbackPort: number | null = null;
+  let stderrTail = "";
+  const announceCallback = (chunk: string) => {
+    stderrTail = (stderrTail + chunk).slice(-16_384);
+    if (callbackPort !== null) return;
+    for (const match of stderrTail.matchAll(/https?:\/\/[^\s'"<>]+/g)) {
+      const port = loopbackRedirectPort(match[0]);
+      if (port === null) continue;
+      callbackPort = port;
+      send({ type: "login_callback_wanted", session_id: frame.session_id, port, authorize_url: match[0].slice(0, LOGIN_CALLBACK_URL_MAX_CHARS) });
+      return;
+    }
+  };
   const finish = (code: number, loggedInState: boolean) => {
     if (exited) return;
     exited = true;
     releaseLogin();
     if (waitingTimer) clearTimeout(waitingTimer);
+    if (detachTimer) clearTimeout(detachTimer);
     sessions.delete(frame.session_id);
     try { child.kill(); } catch { /* already gone */ }
     send({ type: "login_exit", session_id: frame.session_id, exit_code: code, logged_in: loggedInState });
@@ -219,7 +287,10 @@ function openAgentAuthSession(
       }
     }
   });
-  child.stderr?.on("data", (chunk: string) => send({ type: "login_output", session_id: frame.session_id, data: chunk }));
+  child.stderr?.on("data", (chunk: string) => {
+    send({ type: "login_output", session_id: frame.session_id, data: chunk });
+    announceCallback(chunk);
+  });
   child.on("error", (error) => {
     send({ type: "login_output", session_id: frame.session_id, data: `${error.message}\n` });
     finish(1, false);
@@ -238,10 +309,45 @@ function openAgentAuthSession(
       clientInfo: { name: "rainver-host", version: "1" },
     },
   });
-  return {
+  const session: LoginSession = {
     write() { /* Agent Auth is protocol-driven; there is no terminal stdin. */ },
-    close() { try { child.kill("SIGTERM"); } catch { /* already gone */ } },
+    callback(url) {
+      if (exited) return;
+      const parsed = callbackPort === null ? null : parseLoopbackCallbackUrl(url, callbackPort);
+      if (!parsed) {
+        send({ type: "login_output", session_id: frame.session_id, data: "\r\n[rainver] That is not the address this login is waiting for; paste the full http://127.0.0.1:… address the browser landed on.\r\n" });
+        return;
+      }
+      // One plain request to the port the login announced, the path and
+      // query exactly as the browser would have sent them. Nothing is
+      // logged from it: the query carries the one-time authorization code.
+      send({ type: "login_output", session_id: frame.session_id, data: "\r\n[rainver] Delivering the browser's redirect to the login on this host…\r\n" });
+      const request = httpGet({ host: "127.0.0.1", port: callbackPort!, path: parsed.path, timeout: 15_000 }, (response) => {
+        response.resume();
+        send({ type: "login_output", session_id: frame.session_id, data: `[rainver] Redirect delivered (HTTP ${response.statusCode ?? "?"}); waiting for the login to finish.\r\n` });
+      });
+      request.on("timeout", () => request.destroy(new Error("timed out")));
+      request.on("error", (error) => {
+        send({ type: "login_output", session_id: frame.session_id, data: `[rainver] The login on this host did not take the redirect: ${error.message}. It may have ended; start the login again.\r\n` });
+      });
+    },
+    close() {
+      // The page that opened this is gone; the login it started may still be
+      // in a browser. Let it finish within the grace, then give up.
+      if (exited || detachTimer) return;
+      if (agentAuthDetachedGraceMs <= 0) {
+        try { child.kill("SIGTERM"); } catch { /* already gone */ }
+        return;
+      }
+      log(`ACP authenticate ${frame.runtime_key} ${frame.installation}: client left; waiting up to ${Math.round(agentAuthDetachedGraceMs / 1000)}s for the login to complete`);
+      detachTimer = setTimeout(() => {
+        detachTimer = null;
+        try { child.kill("SIGTERM"); } catch { /* already gone */ }
+      }, agentAuthDetachedGraceMs);
+      detachTimer.unref?.();
+    },
   };
+  return session;
 }
 
 /**
@@ -329,8 +435,8 @@ export function openLoginSession(
     exited = true;
     let exitCode = code ?? -1;
     let loginState = launchFailed ? null : frame.login_action === "logout"
-      ? (resolved.login ? loggedIn(resolved.home, resolved.login) : code === 0 ? false : null)
-      : frame.auth_method?.type === "terminal" || frame.login_action === "cli" ? code === 0 : loggedIn(resolved.home, resolved.login);
+      ? (resolved.state ? loggedIn(resolved.home, resolved.state) : code === 0 ? false : null)
+      : frame.auth_method?.type === "terminal" || frame.login_action === "cli" ? code === 0 : loggedIn(resolved.home, resolved.state);
     try {
       if (loginState === true && frame.login_action !== "logout" && resolved.verification_command?.length) {
         const [command, ...args] = resolved.verification_command;

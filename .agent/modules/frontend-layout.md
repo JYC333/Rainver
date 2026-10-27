@@ -69,7 +69,7 @@ use dynamic viewport height instead of the desktop 640px minimum.
 At `lg` and above, ProjectAreaLayout fills the Shell content height: its Project
 navigation and Area content each own a bounded, contained vertical scroller.
 Scrolling Area content does not move the Project navigation, and long navigation
-remains independently reachable. Below `lg` the existing stacked layout remains.
+remains independently reachable. Below `lg`, Project navigation starts as a compact expandable row so Area content appears first; the full navigation remains reachable and collapses after selecting a destination.
 Project navigation and Files & Code separators explicitly use `border-border`
 rather than inheriting the text color.
 
@@ -77,3 +77,21 @@ The Project Board uses a minimum page height rather than a fixed `h-full`, so
 lanes grow to enclose their full card lists. Long Boards scroll in the Area
 content while Project navigation remains independent; horizontal lane overflow
 is retained and cards are not clipped by individual lane scroll containers.
+
+
+## Goal conversation routes
+
+Sources owns `/sources/goals/new`, `/sources/goals/:goalId`, `/sources/goals`
+and the dedicated `/sources/access` credential route. Reading and Project Sources
+entry links carry scope into the same page. Desktop uses a two-column layout;
+narrow screens switch conversation/plan on the same page with native focusable
+buttons. Existing source list/detail and Project Sources/settings links remain.
+No independent chat engine or new navigation platform is introduced.
+
+Goal composer draft persistence is an opt-in predicate on the shared draft hook:
+recognized secret patterns clear older session storage before another write.
+Other conversation consumers keep their existing persistence behavior. Legacy
+channel deep links first resolve existing mappings read-only; paused goals support
+candidate conversation while collection/preview remains stopped. Owned source
+list/detail controls route to goal management. Error guidance is categorized and
+localized; budget/credentials/stopped errors do not suggest blind Agent retries.

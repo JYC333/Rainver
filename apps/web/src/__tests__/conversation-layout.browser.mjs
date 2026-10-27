@@ -214,6 +214,46 @@ test('Files shares document tabs and follows light and dark editor themes', asyn
 })
 
 
+for (const viewport of [{ width: 1000, height: 800 }, { width: 390, height: 844 }]) {
+test(`All working delegation members stay after returned results (${viewport.width})`, async () => {
+  const page = await browser.newPage({ viewport, serviceWorkers: 'block' })
+  try {
+    await mockApi(page)
+    await page.route('**/api/v1/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      if (path.endsWith('/messages')) return route.fulfill({ json: { ...pageOf([
+        { ...message, id: 'request', role: 'user', user_id: 'user-layout', content: 'Investigate together', metadata_json: { run_ids: ['parent-live'], delegated_run_ids: ['child-done', 'child-live'] } },
+        { ...message, id: 'child-reply', run_id: 'child-done', content: 'Returned child findings' },
+      ]), queued: [] } })
+      if (path.endsWith('/runs/parent-live')) return route.fulfill({ json: { id: 'parent-live', status: 'running', parent_run_id: null } })
+      if (path.endsWith('/runs/child-live')) return route.fulfill({ json: { id: 'child-live', status: 'running', parent_run_id: 'parent-live' } })
+      if (path.endsWith('/runs/child-done')) return route.fulfill({ json: { id: 'child-done', status: 'succeeded', parent_run_id: 'parent-live' } })
+      return route.fallback()
+    })
+    await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
+    const parent = page.getByTestId('turn-parent-live')
+    await parent.waitFor()
+    await page.waitForFunction(() => {
+      const parent = document.querySelector('[data-testid="turn-parent-live"]')
+      const child = [...document.querySelectorAll('[data-role="agent"]')].find(node => node.textContent.includes('Returned child findings'))
+      return child && parent && Boolean(child.compareDocumentPosition(parent) & Node.DOCUMENT_POSITION_FOLLOWING)
+    })
+    const sibling = page.getByTestId('turn-child-live')
+    await sibling.waitFor()
+    await page.waitForFunction(() => {
+      const sibling = document.querySelector('[data-testid="turn-child-live"]')
+      const result = [...document.querySelectorAll('[data-role="agent"]')].find(node => node.textContent.includes('Returned child findings'))
+      return result && sibling && Boolean(result.compareDocumentPosition(sibling) & Node.DOCUMENT_POSITION_FOLLOWING)
+    })
+    assert.equal(await sibling.count(), 1)
+    assert.match(await sibling.textContent(), /delegated by/i)
+    assert.equal(await parent.count(), 1)
+    assert.equal(await page.getByTestId('turn-child-done').count(), 0)
+  } finally { await page.close() }
+})
+}
+
+
 test('File tabs show complete names and leave room for italic overhang', async () => {
   const page = await browser.newPage({ viewport: { width: 1000, height: 800 }, serviceWorkers: 'block' })
   try {
@@ -234,8 +274,13 @@ test('File tabs show complete names and leave room for italic overhang', async (
         const glyph = range.getBoundingClientRect()
         const label = text.getBoundingClientRect()
         const close = tab.parentElement.querySelector('.note-tab__close').getBoundingClientRect()
+        const fills = [...tab.parentElement.querySelectorAll('.note-tab__fill')]
+        const inside = (x, y) => fills.some(path => path.isPointInFill(new DOMPoint(x, y).matrixTransform(path.getScreenCTM().inverse())))
         return { name: tab.textContent, width: text.clientWidth, scroll: text.scrollWidth,
           overflow: getComputedStyle(text).overflowX, ellipsis: getComputedStyle(text).textOverflow,
+          insideOutline: inside(glyph.left + 1, (glyph.top + glyph.bottom) / 2)
+            && inside(glyph.right - 1, (glyph.top + glyph.bottom) / 2)
+            && inside((close.left + close.right) / 2, (close.top + close.bottom) / 2),
           endPadding: label.right - glyph.right, clearOfClose: close.left - glyph.right }
       })
       return { tabs, width: strip.clientWidth, scroll: strip.scrollWidth,
@@ -249,9 +294,28 @@ test('File tabs show complete names and leave room for italic overhang', async (
       assert.equal(tab.overflow, 'visible')
       assert.ok(tab.endPadding >= 3, JSON.stringify(tab))
       assert.ok(tab.clearOfClose >= 6, JSON.stringify(tab))
+      assert.ok(tab.insideOutline, JSON.stringify(tab))
     }
     await page.getByRole('tab', { name: 'README.md' }).scrollIntoViewIfNeeded()
     await page.screenshot({ path: '/tmp/rainver-file-tab-names.png' })
+    await page.evaluate(() => document.documentElement.classList.add('theme-light'))
+    await page.getByRole('tab', { name: 'a-very-long-file-name-that-must-remain-fully-visible-in-the-tab.md', exact: true }).click()
+    await page.getByRole('tablist', { name: 'Open files' }).screenshot({ path: '/tmp/rainver-file-tab-light.png' })
+    const shape = await page.locator('.note-tab--active .note-tab__bg').evaluate(background => {
+      const box = background.getBoundingClientRect()
+      const [left, middle, right] = [...background.children].map(node => node.getBoundingClientRect())
+      const fills = [...background.querySelectorAll('.note-tab__fill')]
+      const inside = (x, y) => fills.some(path => path.isPointInFill(new DOMPoint(x, y).matrixTransform(path.getScreenCTM().inverse())))
+      return { middleEnd: middle.right, rightStart: right.left, leftEnd: left.right, middleStart: middle.left,
+        height: box.height, capHeight: right.height,
+        outsideRight: inside(box.right - 2, box.top + box.height / 2),
+        outsideLeft: inside(box.left + 2, box.top + box.height / 2) }
+    })
+    assert.ok(Math.abs(shape.middleEnd - shape.rightStart) < 1, JSON.stringify(shape))
+    assert.ok(Math.abs(shape.leftEnd - shape.middleStart) < 1, JSON.stringify(shape))
+    assert.equal(shape.capHeight, shape.height)
+    assert.equal(shape.outsideRight, false, JSON.stringify(shape))
+    assert.equal(shape.outsideLeft, false, JSON.stringify(shape))
   } finally {
     await page.close()
   }
@@ -508,4 +572,56 @@ test('Execution context has no empty notice gap and aggregates expired Agents', 
     await panel.locator('summary').click()
     assert.equal(await panel.getByRole('button', { name: /New session for/ }).count(), 4)
   } finally { await page.close() }
+})
+
+test('Reply files open Files & Code and images preview in a closable dialog on desktop and phone', async () => {
+  for (const width of [390, 1440]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' })
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement('canvas')
+      canvas.width = 2400; canvas.height = 1600
+      const context = canvas.getContext('2d')
+      context.fillStyle = '#e2e8f0'; context.fillRect(0, 0, 2400, 1600)
+      context.fillStyle = '#0f172a'; context.font = '72px sans-serif'; context.fillText('Large preview fixture', 80, 140)
+      return canvas.toDataURL('image/png').split(',')[1]
+    })
+    const errors = []
+    page.on('pageerror', error => errors.push(error.message))
+    try {
+      await mockApi(page)
+      await page.route('**/api/v1/**', async route => {
+        const url = new URL(route.request().url())
+        if (url.pathname.endsWith('/messages')) return route.fulfill({ json: { ...pageOf([{ ...message, run_id: 'run-preview', metadata_json: { delegated_run_ids: ['child-preview'] }, content: '[Open report](/home/person/project/README.md)\n\n![Show image](/__run_output__/preview.png)\n\n[Expired preview](/tmp/missing.png)' }]), queued: [] } })
+        if (url.pathname.endsWith('/runs/run-preview/file-preview')) {
+          const path = url.searchParams.get('path')
+          if (path === '/tmp/missing.png') return route.fulfill({ status: 404, json: { detail: 'Preview expired' } })
+          return route.fulfill({ json: path === '/__run_output__/preview.png'
+            ? { kind: 'image', name: 'preview.png', mime_type: 'image/png', content_base64: png }
+            : { kind: 'workspace', project_id: project.id, folder_id: folder.id, path: 'README.md' } })
+        }
+        return route.fallback()
+      })
+      const source = `${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`
+      await page.goto(source)
+      await page.getByRole('button', { name: 'Show image', exact: true }).click()
+      const dialog = page.getByRole('dialog')
+      const image = dialog.getByRole('img', { name: 'preview.png' })
+      await image.waitFor()
+      await page.waitForFunction(() => { const image = document.querySelector('[role="dialog"] img'); return image?.complete && image.naturalWidth > 0 })
+      const bounds = await image.boundingBox()
+      assert.ok(bounds.width <= width && bounds.height <= 900 * 0.8, 'Large images stay inside the viewport')
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1))
+      assert.equal(new URL(page.url()).pathname, `/spaces/${room.space_id}/projects/${project.id}/rooms`)
+      await page.screenshot({ path: `/tmp/rainver-preview-dialog-${width}.png` })
+      await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+      await page.getByRole('link', { name: 'Expired preview', exact: true }).click()
+      await page.getByRole('alert').filter({ hasText: 'unavailable' }).waitFor()
+      await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+      await page.getByRole('link', { name: 'Open report', exact: true }).click()
+      await page.waitForURL(url => url.pathname.endsWith('/files') && url.searchParams.get('path') === 'README.md')
+      await page.locator('.cm-editor').waitFor()
+      assert.equal(new URL(page.url()).searchParams.get('folder'), folder.id)
+      assert.equal(errors.length, 0, errors.join('\n'))
+    } finally { await page.close() }
+  }
 })

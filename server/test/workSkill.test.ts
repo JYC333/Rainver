@@ -66,3 +66,18 @@ describe("the tool channel a Host is offered", () => {
     expect(selectToolBridgeProtocol({ platform: null, capabilities_json: null })).toBeNull();
   });
 });
+
+it('gives a headless domain Run only its actual action contract, without Task reporting instructions',()=>{
+ const options=workSkillOptionsForRun({id:'domain',session_id:null,contract_snapshot_json:{workflow_input_json:{source_goal:{goal_id:'goal',purpose:'explore'}}},permission_snapshot_json:{tool_grants:['source.goal.read','source.goal.write_version'].map(action_id=>({action_id,capability_id:null,approval_behavior:'none',side_effecting:true}))}} as unknown as RunRecord);
+ const skill=renderWorkSkill(options);expect(skill).toContain('source.goal.write_version');expect(skill).not.toContain('call task.list');expect(skill).not.toContain('task.report');expect(workSkillPromptPointer('/skill',options)).not.toContain('task.request_review');
+});
+
+it('keeps unrelated headless, Task, conversation and artifact skill consumers unchanged',()=>{
+ const grants=['source.goal.read','artifact.submit'].map(action_id=>({action_id,capability_id:null,approval_behavior:'none',side_effecting:true}));
+ const base={id:'other',session_id:null,permission_snapshot_json:{tool_grants:grants}};
+ expect(workSkillOptionsForRun(base as unknown as RunRecord)).toEqual({conversation:false,deliverOutputs:true});
+ const source={...base,contract_snapshot_json:{workflow_input_json:{source_goal:{goal_id:'goal',purpose:'repair'}}}};
+ expect(renderWorkSkill(workSkillOptionsForRun(source as unknown as RunRecord))).toMatch(/^---\nname: rainver-work\ndescription: .+\n---\n/);
+ expect(workSkillOptionsForRun({...source,session_id:'session'} as unknown as RunRecord).domainActions).toBeUndefined();
+ expect(workSkillOptionsForRun({...source,permission_snapshot_json:{tool_grants:[...grants,{action_id:'task.report'}]}} as unknown as RunRecord).domainActions).toBeUndefined();
+});

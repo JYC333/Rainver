@@ -33,7 +33,8 @@ afterEach(async () => {
   await rm(configDir, { recursive: true, force: true });
 });
 
-const LOGIN = { command: ["goose", "login"], home_subdir: ".goose", credential_file: "auth.json" };
+const LOGIN = { command: ["goose", "login"] };
+const STATE = { env: {}, home_subdir: ".goose", credential_file: "auth.json" };
 
 async function writeManifest(runtimeKey: string, version: string, command: string, login = LOGIN) {
   const dir = join(toolsDir(), runtimeKey, version);
@@ -133,14 +134,14 @@ describe("managed installations", () => {
     const home = join(configDir, "managed-state", "acp_goose", "home");
     await mkdir(join(toolsDir(), "half", "0.1"), { recursive: true }); // no manifest: not installed
     expect([...(await installedTools()).keys()]).toEqual(["acp_goose"]);
-    expect(loggedIn(home, LOGIN)).toBe(false);
+    expect(loggedIn(home, STATE)).toBe(false);
     await mkdir(join(home, ".goose"), { recursive: true });
     await writeFile(join(home, ".goose", "auth.json"), "{}");
-    expect(loggedIn(home, LOGIN)).toBe(true);
+    expect(loggedIn(home, STATE)).toBe(true);
     expect(loggedIn(home, null)).toBeNull();
 
     const capabilities = await detectCapabilities(undefined, [
-      { runtime_key: "acp_goose", runtime: null, login: LOGIN },
+      { runtime_key: "acp_goose", runtime: null, login: LOGIN, state: STATE },
       { runtime_key: "acp_other", runtime: null, login: null },
     ]);
     // `rollback_version: null` because this is the first version installed:
@@ -167,7 +168,7 @@ describe("managed installations", () => {
     // installed: only that copy is unusable, not the managed one beside it.
     const capabilities = await detectCapabilities(
       undefined,
-      [{ runtime_key: "acp_goose", runtime: process.execPath, login: LOGIN }],
+      [{ runtime_key: "acp_goose", runtime: process.execPath, login: LOGIN, state: STATE }],
       async () => false,
     );
     expect(capabilities.installations.acp_goose?.map((installation) => installation.id)).toEqual(["managed:1.2.3"]);
@@ -241,7 +242,7 @@ describe("managed installations", () => {
 });
 
 describe("held accounts", () => {
-  const LOGIN = { command: ["opencode", "auth", "login"], home_subdir: ".local/share/opencode", credential_file: "auth.json", accounts_format: "json_object_by_provider" as const };
+  const STATE = { env: {}, home_subdir: ".local/share/opencode", credential_file: "auth.json", accounts_format: "json_object_by_provider" as const };
 
   it("lists provider ids and credential kinds from a multi-account credential file, never the secrets", async () => {
     const home = join(configDir, "home");
@@ -251,20 +252,20 @@ describe("held accounts", () => {
       anthropic: { type: "oauth", access: "tok", refresh: "tok" },
       odd: "not-an-object",
     }));
-    expect(heldAccounts(home, LOGIN)).toEqual([
+    expect(heldAccounts(home, STATE)).toEqual([
       { id: "yitang", kind: "api" },
       { id: "anthropic", kind: "oauth" },
       { id: "odd", kind: "unknown" },
     ]);
-    expect(JSON.stringify(heldAccounts(home, LOGIN))).not.toContain("sk-secret");
+    expect(JSON.stringify(heldAccounts(home, STATE))).not.toContain("sk-secret");
   });
 
   it("is absent for a single-account CLI and empty when the file is missing or unreadable", async () => {
     const home = join(configDir, "home2");
-    expect(heldAccounts(home, { ...LOGIN, accounts_format: undefined })).toBeUndefined();
-    expect(heldAccounts(home, LOGIN)).toEqual([]);
+    expect(heldAccounts(home, { ...STATE, accounts_format: undefined })).toBeUndefined();
+    expect(heldAccounts(home, STATE)).toEqual([]);
     await mkdir(join(home, ".local/share/opencode"), { recursive: true });
     await writeFile(join(home, ".local/share/opencode/auth.json"), "{ not json");
-    expect(heldAccounts(home, LOGIN)).toEqual([]);
+    expect(heldAccounts(home, STATE)).toEqual([]);
   });
 });

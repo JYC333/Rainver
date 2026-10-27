@@ -1,3 +1,4 @@
+import { registerMonitoringApplier } from "../projects/monitoring/applier.js";
 import {
   memoryColumnsWithAccess,
   serializeMemoryRow,
@@ -129,6 +130,7 @@ export function createDefaultProposalApplierRegistry(
   registerResearchProposalAppliers(registry);
   registerEgressReviewProposalApplier(registry);
   registerProjectDefinitionProposalAppliers(registry);
+  registerMonitoringApplier(registry);
   registerResearchHistoryExtendApplier(registry);
   contributor?.applyProposalAppliers(registry);
   return registry;

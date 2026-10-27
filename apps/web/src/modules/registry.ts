@@ -186,7 +186,7 @@ export const MODULE_REGISTRY: Module[] = [
     component: lazy(() => import('./activity/ActivityModule')),
   },
   {
-    id: 'library', label: 'Library', path: '/library',
+    id: 'library', label: 'Reading', path: '/library',
     section: 'capture', group: 'daily', icon: 'library',
     description: 'Read, filter, and triage the articles, papers, and digests your sources bring in.',
     source: 'built_in',

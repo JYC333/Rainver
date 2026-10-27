@@ -155,16 +155,16 @@ export function sourceConnectionDeliveredToReaderClause(connectionAlias: string,
  * listing is narrower and follows subscriptions only
  * (`sourceItemReadableClause`).
  */
-export function sourceItemDocumentReadableClause(itemAlias: string, userParam: string): string {
+export function sourceItemDocumentReadableClause(itemAlias: string, userParam: string, options?: { includeOversight?: boolean }): string {
   return `(
-    ${contentReadSql("source_item", itemAlias, userParam)}
+    ${contentReadSql("source_item", itemAlias, userParam, options)}
     AND (
       ${itemAlias}.connection_id IS NULL
       OR EXISTS (
         SELECT 1 FROM source_connections document_connection
          WHERE document_connection.space_id = ${itemAlias}.space_id
            AND document_connection.id = ${itemAlias}.connection_id
-           AND ${sourceConnectionReaderConsentClause("document_connection", userParam, `${itemAlias}.first_seen_at`)}
+           AND ${sourceConnectionReaderConsentClause("document_connection", userParam, `${itemAlias}.first_seen_at`, options)}
       )
     )
   )`;
@@ -228,7 +228,7 @@ export function sourceDerivedArtifactReadableClause(artifactAlias: string, userP
  */
 export function sourceItemProfileEvidenceClause(itemAlias: string, userParam: string): string {
   return `(
-    ${itemAlias}.connection_id IS NULL
+    (${itemAlias}.connection_id IS NULL AND ${itemAlias}.project_id IS NULL AND ${itemAlias}.owner_user_id = ${userParam})
     OR EXISTS (
       SELECT 1 FROM source_connections sc_own
        WHERE sc_own.space_id = ${itemAlias}.space_id AND sc_own.id = ${itemAlias}.connection_id
@@ -250,7 +250,7 @@ export function sourceItemProfileEvidenceClause(itemAlias: string, userParam: st
  * live subscriber, a reader it was delivered to inside a subscription window,
  * or a Space owner/admin when the consent allows them.
  */
-export function sourceConnectionReaderConsentClause(connectionAlias: string, userParam: string, deliveredAtExpr: string): string {
+export function sourceConnectionReaderConsentClause(connectionAlias: string, userParam: string, deliveredAtExpr: string, options?: { includeOversight?: boolean }): string {
   // A withdrawn connection (archived or soft-deleted) admits nobody through
   // any of the branches below, its owner and consent-listed readers included.
   return `(
@@ -263,7 +263,8 @@ export function sourceConnectionReaderConsentClause(connectionAlias: string, use
     OR ${sourceConnectionLiveSubscriberClause(connectionAlias, userParam)}
     OR ${sourceConnectionDeliveredToReaderClause(connectionAlias, userParam, deliveredAtExpr)}
     OR (
-      COALESCE((${connectionAlias}.consent_json->>'allow_space_admins')::boolean, true)
+      ${options?.includeOversight === false ? 'false' : 'true'}
+      AND COALESCE((${connectionAlias}.consent_json->>'allow_space_admins')::boolean, true)
       AND EXISTS (
         SELECT 1 FROM space_memberships consent_membership
          WHERE consent_membership.space_id = ${connectionAlias}.space_id

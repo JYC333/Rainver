@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useParams, useSearchParams } from 'react-router-dom'
+import { useLocation, useParams, useSearchParams } from 'react-router-dom'
 import { Folder, GitBranch, FileDiff, Info, Loader, Plus, RefreshCw, Settings as SettingsIcon, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
@@ -91,6 +91,8 @@ export default function ProjectFilesPage() {
   const { projectId = '' } = useParams<{ projectId: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
   const preselectedId = searchParams.get('folder')
+  const navigationKey = useLocation().key
+  const consumedFolderLink = useRef<string | null>(null)
 
   const [folders, setFolders] = useState<ProjectFolder[]>([])
   const [selectedFolder, setSelectedFolder] = useState<ProjectFolder | null>(null)
@@ -202,6 +204,19 @@ export default function ProjectFilesPage() {
   }, [projectId])
 
   useEffect(() => { void loadFolders() }, [loadFolders])
+
+  // Consume each URL action once; a later manual Folder selection must stay selected.
+  useEffect(() => {
+    if (foldersLoading || !preselectedId || consumedFolderLink.current === navigationKey) return
+    consumedFolderLink.current = navigationKey
+    if (selectedFolder?.id !== preselectedId) {
+      const target = folders.find(folder => folder.id === preselectedId)
+      if (target) void handleFolderChange(target.id)
+      else toast.error('The linked Folder is unavailable or you no longer have access')
+    }
+    // Use the same draft-flushing path as the Folder picker, once per navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigationKey, preselectedId, foldersLoading])
 
   async function unregisterFolder(folder: ProjectFolder, confirm = false) {
     try {
@@ -347,6 +362,19 @@ export default function ProjectFilesPage() {
       void loadGitStatus(selectedFolder, generation)
     })
   }, [selectedFolder, loadGitStatus, loadTree])
+
+  const linkedFile = searchParams.get('path')
+  const openedLink = useRef<string | null>(null)
+  useEffect(() => {
+    if (!linkedFile || !selectedFolder || foldersLoading || mutationLoading || (preselectedId && selectedFolder.id !== preselectedId)) return
+    const key = `${navigationKey}:${selectedFolder.id}:${linkedFile}`
+    if (openedLink.current === key) return
+    openedLink.current = key
+    // The ordinary selection path preserves draft flushing, ACL failures and stale-read fencing.
+    void handleFileSelect(linkedFile)
+    // Selection is an explicit URL action, not something edits should repeat.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigationKey, linkedFile, selectedFolder, foldersLoading, mutationLoading, preselectedId])
 
   function flushEditorBeforeNavigation(message: string): boolean | Promise<boolean> {
     const editor = editorRef.current
@@ -902,6 +930,7 @@ export default function ProjectFilesPage() {
                   // state to the file it was replacing.
                   key={`file:${selectedFolder?.id ?? ''}:${centerView.data.path}`}
                   file={centerView.data}
+                  initialLine={linkedFile === centerView.data.path ? Number(searchParams.get('line')) || undefined : undefined}
                   draft={fileDraft}
                   draftLoading={draftLoading}
                   saving={mutationLoading}

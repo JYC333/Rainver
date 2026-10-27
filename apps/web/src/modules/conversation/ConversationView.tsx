@@ -1,3 +1,4 @@
+import { ConversationFilePreview } from "./ConversationFilePreview"
 import { hasSkillReference, skillReferenceRanges, skillReferenceText, SkillMenuEmptyHint, useAvailableSkills, type SkillReferenceRange } from './conversationSkills'
 import { useAppTranslation } from '../../i18n'
 import { forwardRef, useEffect, useLayoutEffect, useState, useRef, type ReactNode } from 'react'
@@ -27,6 +28,7 @@ interface ConversationEntry {
   id: string
   role: 'user' | 'assistant'
   content: string
+  runId?: string
   /** The live or replayed turn, when this surface has it. */
   turn?: RunTurn | null
   error?: boolean
@@ -62,6 +64,7 @@ export function ConversationView({
   runHref,
   inputParts = [],
   onInputPartsChange,
+  inputAttachmentsEnabled,
   projectId,
   projectFolderId,
   inputFileSources,
@@ -86,6 +89,7 @@ export function ConversationView({
   composerControls?: ReactNode
   runHref?: (entry: ConversationEntry) => string | undefined
   inputParts?: ConversationInputPart[]
+  inputAttachmentsEnabled?: boolean
   onInputPartsChange?: (parts: ConversationInputPart[]) => void
   projectId?: string | null
   projectFolderId?: string | null
@@ -141,7 +145,7 @@ export function ConversationView({
       </Conversation>
 
       <form className="mt-3" onSubmit={event => { event.preventDefault(); onSend() }}>
-        <ConversationComposer
+        <ConversationComposer inputAttachmentsEnabled={inputAttachmentsEnabled}
           editor={<ConversationTextEditor
             input={input}
             inputParts={inputParts} onInputPartsChange={onInputPartsChange}
@@ -310,7 +314,7 @@ function ConversationEntryView({ entry, runHref }: { entry: ConversationEntry; r
             </span>
           )}
           <ConversationInputPartsView parts={entry.inputParts} text={entry.content} />
-          {entry.content && <MessageResponse>{entry.content}</MessageResponse>}
+          {entry.content && (entry.role === 'assistant' && entry.runId ? <ConversationFilePreview key={entry.runId} runId={entry.runId}><MessageResponse>{entry.content}</MessageResponse></ConversationFilePreview> : <MessageResponse>{entry.content}</MessageResponse>)}
           {entry.extra}
         </MessageContent>
       </Message>

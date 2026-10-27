@@ -46,6 +46,7 @@ interface CodeMirrorEditorProps {
   readOnly?: boolean
   lineSeparator?: '\n' | '\r\n'
   indent?: string
+  initialLine?: number
   ariaLabel?: string
   onChange?: (value: string) => void
   onSelectionChange?: (selection: CodeMirrorSelection) => void
@@ -112,6 +113,7 @@ export function CodeMirrorEditor({
   lineSeparator = '\n',
   indent = '  ',
   ariaLabel = 'File content',
+  initialLine,
   onChange,
   onSelectionChange,
   onFocus,
@@ -196,6 +198,13 @@ export function CodeMirrorEditor({
 
   useEffect(() => {
     const view = viewRef.current
+    if (!view || !initialLine || !Number.isSafeInteger(initialLine) || initialLine < 1) return
+    const anchor = view.state.doc.line(Math.min(initialLine, view.state.doc.lines)).from
+    view.dispatch({ selection: { anchor }, effects: EditorView.scrollIntoView(anchor, { y: 'center' }) })
+  }, [initialLine])
+
+  useEffect(() => {
+    const view = viewRef.current
     if (!view || view.state.doc.toString() === value) return
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } })
   }, [value])
@@ -233,6 +242,7 @@ interface CodeMirrorMergeProps {
   original: string
   current: string
   language?: CodeMirrorLanguage
+  initialLine?: number
   ariaLabel?: string
   className?: string
 }

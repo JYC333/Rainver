@@ -220,7 +220,12 @@ tests assert both tool behavior and the guidance delivered with those tools.
   [CAPABILITY_WORKFLOW_SKILL_SYSTEM.md](../architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md)
   and the GLOSSARY.
 - [ ] Project Research layer rework — the follow-on the retired capability
-  shrink plan named and did not authorize. Auto Research is a code-enforced
+  shrink plan named and did not authorize. The first usable slice is implemented:
+  [Project information monitoring](../architecture/PROJECTS.md#bounded-manual-information-monitoring-p1)
+  provides bounded first delivery, daily recommendations, recent-first acquisition
+  and resumable backfill. Real-use acceptance and physical deep-research retirement
+  retain their [separate evidence gates](../tasks/deferred-register.md#information-monitoring--usage-and-retirement-gates).
+  Auto Research is a code-enforced
   stage machine with its own managed Agent and runtime; the conversational
   path (Room Agent + research System Actions + Project Operations) reaches
   the same outcome. Map Auto Research onto Task, Agent Plan and a reference

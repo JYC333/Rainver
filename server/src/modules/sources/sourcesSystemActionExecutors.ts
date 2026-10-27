@@ -1,3 +1,4 @@
+import {registerSourceGoalActions} from './goals/actions.js';
 import type { SystemActionId } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
@@ -16,6 +17,7 @@ export function registerSourcesSystemActionExecutors(
   config: ServerConfig,
   run: RunRecord,
 ): void {
+  registerSourceGoalActions(executors,config,run);
   const db = getDbPool(config.databaseUrl!);
   const identity = { spaceId: run.space_id, userId: run.instructed_by_user_id! };
 

@@ -849,7 +849,8 @@ and prospective counts to `decisionCore`; preflight is rechecked at execution.
 
 For sustained implementation/review work explicitly requested by the person,
 `agent.delegate` can declare `budget.collaboration`: an open `task_id` in this
-Room's Project, one or two fixed `participant_agent_ids`, and a hard total
+Room's Project, one or more fixed `participant_agent_ids` selected from its other
+active members (no separate numeric participant cap), and a hard total
 `max_delegations` (1–128). Bind the Task covering the authorized workflow rather
 than a single intermediate stage. A declaration requires the original human
 manual container, its coordinator and Project writer authority. The original

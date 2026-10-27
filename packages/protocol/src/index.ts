@@ -161,3 +161,10 @@ export * from "./turnParts.js";
 export * from "./deployment.js";
 export * from "./informationDigests.js";
 export * from "./agentAttention.js";
+export * from './projectInformationMonitoring.js';
+export * from './filePreviews.js';
+export * from './reading.js';
+
+export * from "./sourceExecution.js";
+
+export * from "./sourceGoals.js";

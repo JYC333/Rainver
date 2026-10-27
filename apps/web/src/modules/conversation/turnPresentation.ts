@@ -30,10 +30,13 @@ export function presentToolOutput(output: string | null): { text: string | null;
  * Builds the conversation's display model without changing the durable turn.
  *
  * Reasoning and successful calls remain available in the Run audit trail, but
- * they are not conversation content. Active/failed calls and diagnostics stay
+ * they are not conversation content. Successful preauthorization diagnostics
+ * also remain audit-only. Active/failed calls and other diagnostics stay
  * visible because they explain what is happening or what went wrong.
  */
 export function presentConversationParts(parts: readonly TurnPart[]): TurnPart[] {
   return parts.filter(part => part.type !== 'reasoning'
-    && !(part.type === 'tool_call' && part.status === 'succeeded'))
+    && !(part.type === 'tool_call' && part.status === 'succeeded')
+    && !(part.type === 'diagnostic' && part.level === 'info' && !part.error_code
+      && /^Permission pre-authorized \([^\r\n()]+\): allowed$/.test(part.text)))
 }

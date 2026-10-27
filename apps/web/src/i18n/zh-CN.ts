@@ -3,6 +3,7 @@ import type { en } from './en'
 type TranslateShape<T> = { [K in keyof T]: T[K] extends string ? string : TranslateShape<T[K]> }
 
 export const zhCN = {
+  file_preview: { title: '文件预览', open_image: '查看图片', loading: '正在加载预览…', retry: '重试', unavailable: '预览不可用、已失效，或不在当前对话的工作区内，请让 Agent 重新提供。' },
   fileTree: { openInNewTab: '在新标签中打开', loading: '加载中…', empty: '没有文件', retry: '目录加载失败 · 重试', more: '加载更多' },
   agent_work: {
     badge: '{{needs}} 项需要你 · {{unread}} 项未读',
@@ -119,16 +120,18 @@ export const zhCN = {
   nav: {
     more: '更多',
     agent_work: 'Agent 工作台',
-    home: '首页', command_center: '指挥中心', inbox: '收件箱', library: '资料库',
-    source: '信息源', review: '审核', knowledge: '知识', publications: '共享',
+    home: '首页', command_center: '指挥中心', inbox: '收件箱', library: '阅读',
+    source: '来源管理', review: '审核', knowledge: '知识', publications: '共享',
     tasks: '任务', projects: '项目', agents: '智能体', evolution: '演进',
     instance_settings: '实例设置', space_settings: '空间设置', settings: '设置',
   },
   scene: {
+    by_type: '按类型',
+    to_read: '待读', read: '已读', all_material: '全部资料', daily_editions: '每日版',
     all: '全部', raw: '原始记录', proposals_generated: '已生成提案',
-    processed: '已处理', archived: '已归档', all_items: '全部条目',
+    processed: '已处理', archived: '已归档', all_items: '全部资料',
     articles: '文章', emails: '邮件', videos: '视频', podcasts: '播客',
-    pdfs: 'PDF', digests: '摘要', proposals: '提案', memory: '记忆',
+    pdfs: 'PDF', digests: '为你推荐', proposals: '提案', memory: '记忆',
     my_agents: '我的智能体', chat_history: '聊天记录', templates: '模板',
     runs: '运行', plans: '计划', automations: '自动化',
     skills: '技能库', artifacts: '产物',

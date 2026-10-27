@@ -3,6 +3,7 @@ import { ScopedSettingsStore } from "../settings/scopedSettings.js";
 import { listRuntimeAdapterSpecs, setDynamicRuntimeAdapterSpecs, type RuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { AcpRegistryError, fetchAcpRegistry, setResolvedRegistryEntries } from "./registry.js";
 import { ACP_AGENTS_SCOPE_ID, ACP_AGENTS_SETTINGS, ACP_REGISTRY_CACHE_SETTINGS, type EnabledAcpAgent } from "./settings.js";
+import { acpAgentStateBoundary } from "./stateBoundaries.js";
 
 /** `acp_<registry id>`, in the same character set the id is validated to. */
 export function acpAgentRuntimeKey(registryId: string): string {
@@ -15,12 +16,14 @@ export function acpAgentRuntimeKey(registryId: string): string {
  * a runtime nobody here has audited can get: low trust, the machine's own
  * login only, no provider binding, nothing promised about subagents or
  * usage accounting. An operator who wants more for a particular agent writes
- * it a builtin spec.
+ * it a builtin spec. The one thing a registry entry cannot say and dispatch
+ * needs — the state boundary — comes from `stateBoundaries.ts` when known.
  */
 export function acpAgentRuntimeAdapterSpec(agent: EnabledAcpAgent): RuntimeAdapterSpec {
-  // A registry agent has no machine-own install: its command *is* its
-  // adapter type, which the daemon resolves to a managed installation.
+  // A registry agent's command *is* its adapter type: the daemon resolves it
+  // to a managed installation, or to an own copy it verified by handshake.
   const command = acpAgentRuntimeKey(agent.id);
+  const state = acpAgentStateBoundary(agent.id);
   return {
     runtime_key: command,
     display_name: agent.name,
@@ -45,10 +48,12 @@ export function acpAgentRuntimeAdapterSpec(agent: EnabledAcpAgent): RuntimeAdapt
       remote_host_only: true,
     },
     distribution: agent.distribution,
+    distribution_version: agent.version,
     credentials: {
       credential_mode: "cli_profile",
       credential_runtime_name: command,
       supports_oauth_login_state: false,
+      ...(state ? { state } : {}),
     },
     sandbox: {
       requires_file_access: true,

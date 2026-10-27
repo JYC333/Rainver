@@ -1,9 +1,12 @@
+import {registerSourceGoalJob} from '../sources/goals/worker.js';
+import { registerMonitoringJob } from "../projects/monitoring/worker.js";
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { JobDeferredError, JobHandlerRegistry } from "./handlerRegistry.js";
 import { PgJobQueueRepository } from "./repository.js";
 import { JobWorker } from "./worker.js";
-import { waitForJobWake, wakeJobWorkers } from "./wakeSignal.js";
+import { runJobWorkerPool } from "./workerPool.js";
+import { wakeJobWorkers } from "./wakeSignal.js";
 import { registerAgentRunHandler } from "../runs/agentRunHandler.js";
 import { registerProviderTaskRunHandler } from "../runs/providerTaskRunHandler.js";
 import { registerMemoryConsolidationHandler } from "../activity/consolidationJob.js";
@@ -97,10 +100,12 @@ export function buildJobHandlerRegistry(
   pluginHost?: PluginHost,
 ): JobHandlerRegistry {
   const registry = new JobHandlerRegistry();
+  registerSourceGoalJob(registry,config);
   registerAgentRunHandler(registry, config);
   registerProviderTaskRunHandler(registry, config);
   registerMemoryConsolidationHandler(registry, config);
   registerDailyCaptureReportHandler(registry, config);
+  registerMonitoringJob(registry, config);
   registerSourceExtractionHandler(registry, config);
   registerSourcePostProcessingHandler(registry, config);
   registerSourceAnnotationHandler(registry, config);
@@ -141,21 +146,16 @@ export function startJobsWorker(
   }
 
   const workerId = `ts-job-worker:${randomUUID()}`;
-  const worker = new JobWorker(
-    queue,
-    registry,
-    workerId,
-    claimableJobTypes,
-    undefined,
+  const workers = Array.from({ length: config.jobsWorkerConcurrency }, (_, index) => new JobWorker(
+    queue, registry, `${workerId}:${index}`, claimableJobTypes, undefined,
     OperationalAlertService.fromConfig(config),
-  );
+  ));
 
   let stopped = false;
   let lastReclaim = 0;
-  let idleWaitMs = POLL_INTERVAL_MS;
 
   const loop = (async () => {
-    log?.info(`[jobs-worker] started (${workerId}) types=${claimableJobTypes.join(",")}`);
+    log?.info(`[jobs-worker] started (${workerId}) lanes=${workers.length} types=${claimableJobTypes.join(",")}`);
     try {
       const recovered = await runs.recoverStaleRuns(3600);
       if (recovered > 0) log?.warn(`[jobs-worker] recovered ${recovered} stale run(s)`);
@@ -186,34 +186,23 @@ export function startJobsWorker(
         }`,
       );
     }
-    while (!stopped) {
-      try {
+    await runJobWorkerPool(workers, {
+      stopped: () => stopped,
+      pollIntervalMs: POLL_INTERVAL_MS,
+      postWakeRecheckMs: POST_WAKE_RECHECK_MS,
+      log,
+      beforePoll: async () => {
         const now = Date.now();
-        if (now - lastReclaim >= RECLAIM_INTERVAL_MS) {
-          const reclaimed = await worker.reclaimStuckJobs(STUCK_AFTER_SECONDS);
-          if (reclaimed > 0) log?.warn(`[jobs-worker] reclaimed ${reclaimed} stuck job(s)`);
-          await reconcileTerminalChatRuns(config, runs, log);
-          await reconcileUnfinalizedTaskRuns(config, runs, log);
-      await resumeUnsettledRuns(config, runs, log);
-          lastReclaim = now;
-        }
-        const result = await worker.processOne();
-        if (result.status === "idle") {
-          const wake = await waitForJobWake(idleWaitMs);
-          idleWaitMs = wake === "signalled" ? POST_WAKE_RECHECK_MS : POLL_INTERVAL_MS;
-        } else {
-          idleWaitMs = POLL_INTERVAL_MS;
-          if (result.status === "failed") {
-            log?.warn(`[jobs-worker] job ${result.job_id} failed: ${result.error}`);
-          }
-        }
-      } catch (error) {
-        log?.error(
-          `[jobs-worker] loop error: ${error instanceof Error ? error.message : String(error)}`,
-        );
-        await sleep(POLL_INTERVAL_MS);
-      }
-    }
+        if (now - lastReclaim < RECLAIM_INTERVAL_MS) return;
+        // Reserve before awaiting so only one lane sweeps this interval.
+        lastReclaim = now;
+        const reclaimed = await workers[0]!.reclaimStuckJobs(STUCK_AFTER_SECONDS);
+        if (reclaimed > 0) log?.warn(`[jobs-worker] reclaimed ${reclaimed} stuck job(s)`);
+        await reconcileTerminalChatRuns(config, runs, log);
+        await reconcileUnfinalizedTaskRuns(config, runs, log);
+        await resumeUnsettledRuns(config, runs, log);
+      },
+    });
     log?.info(`[jobs-worker] stopped (${workerId})`);
   })();
 
@@ -351,11 +340,4 @@ export async function resumeUnsettledRuns(
       log?.warn(`[jobs-worker] Run ${item.run_id} settlement still owed: ${settled.error_code ?? "unknown"}`);
     }
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolveSleep) => {
-    const timer = setTimeout(resolveSleep, ms);
-    timer.unref?.();
-  });
 }

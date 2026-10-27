@@ -9,6 +9,13 @@ describe("folder_read_result host frame validation", () => {
     expect(parseFolderReadResultFrame({ ok: true, kind: "tree", result })).toMatchObject({ result: { next_offset: 500 } });
     expect(parseFolderReadResultFrame({ ok: true, kind: "tree", result: { ...result, next_offset: -1 } })).toBeNull();
   });
+  it("preserves only bounded, canonical original bytes with their exact digest", () => {
+    const bytes = Buffer.from([137, 80, 78, 71, 0, 255]);
+    const result = { path: 'preview.png', content: '', encoding: 'binary', size: bytes.length, line_count: 0, content_base64: bytes.toString('base64'), sha256: createHash('sha256').update(bytes).digest('hex') };
+    expect(parseFolderReadResultFrame({ ok: true, kind: 'file', result })).toMatchObject({ result: { content_base64: bytes.toString('base64') } });
+    for (const patch of [{ size: 999 }, { sha256: '0'.repeat(64) }, { content_base64: result.content_base64 + '!' }]) expect(parseFolderReadResultFrame({ ok: true, kind: 'file', result: { ...result, ...patch } })).toBeNull();
+  });
+
   it("accepts bounded success shapes for each read kind", () => {
     expect(parseFolderReadResultFrame({ ok: true, kind: "tree", result: { name: "root", path: ".", type: "dir" } }))
       .toMatchObject({ ok: true, kind: "tree" });

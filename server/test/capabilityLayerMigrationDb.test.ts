@@ -72,7 +72,7 @@ it("upgrades converted Skill content to reviewed and drops only the retired capa
       VALUES ($1,$2,'original','low','converted',now(),now())`, [pkg, source]);
     await db.pool.query(`INSERT INTO skill_package_files (id,skill_package_id,path,kind,content_base64,created_at)
       VALUES ($1,$2,'SKILL.md','skill_markdown','b3JpZ2luYWw=',now())`, [file, pkg]);
-    expect((await migrate(db.pool, directory)).applied).toEqual(["0004"]);
+    expect((await migrate(db.pool, directory)).applied).toEqual(loadMigrations(directory).filter(migration => migration.version >= "0004").map(migration => migration.version));
     for (const table of ["evolution_targets", "evolution_strategy_assets"]) {
       const rows = (await db.pool.query(`SELECT * FROM ${table} WHERE space_id=$1`, [space])).rows;
       expect(rows).toHaveLength(targetTypes.length + (table === "evolution_targets" ? 1 : 0));

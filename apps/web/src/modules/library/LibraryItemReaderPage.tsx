@@ -1,3 +1,5 @@
+import { readingReturnTo } from './readingLinks'
+import { useAppTranslation } from '../../i18n'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -9,7 +11,7 @@ import { errMsg, isNotFoundError } from '../../lib/utils'
 import type { ExtractionJob, ReaderAnnotation, ReaderDocumentPayload, SourcePostProcessingBriefingDetail, SourcePostProcessingItemRelevance } from '../../types/api'
 import { ReaderWorkspace } from '../../components/reader/ReaderWorkspace'
 import { runPendingItemJob } from '../sources/sourceActions'
-import { textExtractionActionLabel, textExtractionDisabledReason } from '../sources/sourcePageModel'
+import { textExtractionDisabledReason } from '../sources/sourcePageModel'
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Button } from '../../components/ui/button'
@@ -26,10 +28,11 @@ function orderedItemIds(briefing: SourcePostProcessingBriefingDetail): string[] 
 }
 
 export default function LibraryItemReaderPage() {
+  const { t } = useAppTranslation()
   const { itemId = '', connectionId, date } = useParams<{ itemId: string; connectionId?: string; date?: string }>()
   const [searchParams] = useSearchParams()
   // Reached from the digest's serendipity section: the open is reading, not interest evidence.
-  const readOrigin = searchParams.get('from') === 'serendipity' ? 'serendipity' as const : undefined
+  const readOrigin = searchParams.get('from') === 'project' ? 'project' as const : searchParams.get('from') === 'serendipity' ? 'serendipity' as const : undefined
   const { activeSpaceId } = useSpace()
   const [briefing, setBriefing] = useState<SourcePostProcessingBriefingDetail | null>(null)
   const [document, setDocument] = useState<ReaderDocumentPayload | null>(null)
@@ -64,8 +67,8 @@ export default function LibraryItemReaderPage() {
 
   const ids = useMemo(() => briefing ? orderedItemIds(briefing) : [], [briefing]); const index = ids.indexOf(itemId)
   const previous = index > 0 ? ids[index - 1] : null; const next = index >= 0 && index < ids.length - 1 ? ids[index + 1] : null
-  const dayScoped = Boolean(connectionId && date); const backTo = dayScoped ? `/library/digests/${connectionId}/${date}` : '/library/items'
-  const backLabel = dayScoped ? (briefing?.connection_name ?? 'Day') : 'Library'; const itemPath = (id: string) => `/library/digests/${connectionId}/${date}/items/${id}`
+  const dayScoped = Boolean(connectionId && date); const backTo = dayScoped ? `/library/digests/${connectionId}/${date}` : (readingReturnTo(searchParams.get('returnTo'), searchParams.get('projectId')) ?? '/library/items')
+  const backLabel = dayScoped ? (briefing?.connection_name ?? t('reading.day')) : t(backTo.startsWith('/library/digests') || /[?]tab=digest(?:&date=\d{4}-\d{2}-\d{2})?$/.test(backTo) ? 'reading.editions' : backTo.includes('/research?') ? 'reading.researchReturn' : /[?]tab=(candidates|settings)$/.test(backTo) ? 'reading.sources' : backTo.startsWith('/projects/') ? 'reading.project' : 'nav.library'); const itemPath = (id: string) => `/library/digests/${connectionId}/${date}/items/${id}`
 
   async function reextract() {
     if (!document || document.document_type !== 'source_item' || !document.content_state) return
@@ -74,35 +77,35 @@ export default function LibraryItemReaderPage() {
     setReextracting(true)
     try {
       await sourcesApi.itemAction(id, 'queue_content'); const job = await runPendingItemJob(id, 'extract_text')
-      const [doc, result] = await Promise.all([readerApi.getDocument('source_item', id), readerApi.listAnnotations('source_item', id)])
-      toast.success(job ? `Text extraction ${job.status}` : 'Text extraction queued')
+      const [doc, result] = await Promise.all([readerApi.getDocument('source_item', id, { origin: readOrigin }), readerApi.listAnnotations('source_item', id)])
+      toast.success(t(`reading.extractionResult_${job?.status ?? 'queued'}`))
       if (currentItemId.current !== id) return
       setFailedJob(job?.status === 'failed' ? job : null); setDocument(doc); setAnnotations(result.items)
     } catch (error) { toast.error(errMsg(error)) } finally { setReextracting(false) }
   }
 
   if (loading) return <div className="max-w-3xl space-y-4 p-6"><Skeleton className="h-6 w-32"/><Skeleton className="h-8 w-64"/><Skeleton className="h-96 w-full"/></div>
-  if (!document) return <div className="p-6"><Button variant="ghost" size="sm" asChild><Link to={backTo}><ArrowLeft className="mr-1 size-4"/>{backLabel}</Link></Button><EmptyState title="Document not found" description="No readable content is available for this item. Try queueing content extraction first."/></div>
+  if (!document) return <div className="p-6"><Button variant="ghost" size="sm" asChild><Link to={backTo}><ArrowLeft className="mr-1 size-4"/>{backLabel}</Link></Button><EmptyState title={t('reading.documentMissing')} description={t('reading.documentMissingHint')}/></div>
 
-  const disabledReason = document.content_state ? textExtractionDisabledReason({ content_state: document.content_state, source_uri: document.source_uri }) : 'Text extraction is only available for source items.'
+  const disabledReason = document.content_state ? textExtractionDisabledReason({ content_state: document.content_state, source_uri: document.source_uri }) : t('reading.extractSourceOnly')
   // `remoteImages`: a captured article's images are part of the article the
   // person chose to read (`image_policy: "remote_reference"`). The other caller
   // of `ReaderWorkspace` renders a synthesis Run's output — model-authored over
   // ingested third-party items — and deliberately does not pass it.
   return <ReaderWorkspace remoteImages document={document} annotations={annotations} onAnnotationsChange={setAnnotations}
-    header={({ panelOpen, togglePanel }) => <header className="flex shrink-0 items-center gap-3 border-b px-4 py-2">
+    header={({ panelOpen, togglePanel }) => <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-2">
       <Button variant="ghost" size="sm" asChild><Link to={backTo}><ArrowLeft className="mr-1 size-4"/>{backLabel}</Link></Button>
       {dayScoped && <div className="flex shrink-0 items-center gap-0.5">
-        <Button variant="ghost" size="icon" className="size-7" disabled={!previous} asChild={Boolean(previous)}>{previous ? <Link to={itemPath(previous)} aria-label="Previous item"><ChevronLeft className="size-4"/></Link> : <ChevronLeft className="size-4"/>}</Button>
-        <Button variant="ghost" size="icon" className="size-7" disabled={!next} asChild={Boolean(next)}>{next ? <Link to={itemPath(next)} aria-label="Next item"><ChevronRight className="size-4"/></Link> : <ChevronRight className="size-4"/>}</Button>
+        <Button variant="ghost" size="icon-sm" disabled={!previous} asChild={Boolean(previous)}>{previous ? <Link to={itemPath(previous)} aria-label={t('reading.previousItem')}><ChevronLeft className="size-4"/></Link> : <ChevronLeft className="size-4"/>}</Button>
+        <Button variant="ghost" size="icon-sm" disabled={!next} asChild={Boolean(next)}>{next ? <Link to={itemPath(next)} aria-label={t('reading.nextItem')}><ChevronRight className="size-4"/></Link> : <ChevronRight className="size-4"/>}</Button>
       </div>}
-      <div className="min-w-0 flex-1"><h1 className="truncate text-sm font-medium">{document.title}</h1>{document.content_state && <p className="truncate text-xs text-muted-foreground">{document.document_type} · {document.content_state}</p>}</div>
-      {safeHttpUrl(document.source_uri) && <Button variant="ghost" size="icon" className="size-7" asChild><SafeExternalLink href={document.source_uri} aria-label="Open source URL"><ExternalLink className="size-4"/></SafeExternalLink></Button>}
+      <div className="min-w-0 flex-1"><h1 className="truncate text-sm font-medium">{document.title}</h1>{document.content_state && <p className="truncate text-xs text-muted-foreground">{t(`reading.document_${document.document_type}`)} · {t(`reading.content_${document.content_state}`, { defaultValue: document.content_state })}</p>}</div>
+      {safeHttpUrl(document.source_uri) && <Button variant="ghost" size="icon-sm" asChild><SafeExternalLink href={document.source_uri} aria-label={t('reading.openSource')}><ExternalLink className="size-4"/></SafeExternalLink></Button>}
       <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={reextracting || disabledReason !== null} title={disabledReason ?? undefined} onClick={reextract}>
-        {document.content_state === 'content_saved' ? <RefreshCw className="size-3.5"/> : <FileText className="size-3.5"/>}{reextracting ? 'Extracting...' : textExtractionActionLabel({ content_state: document.content_state ?? 'pending' })}
+        {document.content_state === 'content_saved' ? <RefreshCw className="size-3.5"/> : <FileText className="size-3.5"/>}{t(reextracting ? 'reading.extracting' : document.content_state === 'content_saved' ? 'reading.reextract' : 'reading.extract')}
       </Button>
-      <Button variant="ghost" size="icon" className="size-7" onClick={togglePanel} aria-label={panelOpen ? 'Hide inspector' : 'Show inspector'}><PanelRight className="size-4"/></Button>
+      <Button variant="ghost" size="icon-sm" onClick={togglePanel} aria-label={t(panelOpen ? 'reading.hideInspector' : 'reading.showInspector')}><PanelRight className="size-4"/></Button>
     </header>}
-    banner={failedJob && <div role="alert" className="mx-4 mt-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm"><AlertTriangle className="mt-0.5 size-4 text-destructive"/><div><p className="font-medium text-destructive">Text extraction failed</p><p className="text-muted-foreground">{failedJob.error_message ?? failedJob.error_code ?? 'No error detail was recorded.'}</p></div></div>}
+    banner={failedJob && <div role="alert" className="mx-4 mt-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm"><AlertTriangle className="mt-0.5 size-4 text-destructive"/><div><p className="font-medium text-destructive">{t('reading.extractionResult_failed')}</p><p className="text-muted-foreground">{failedJob.error_message ?? failedJob.error_code ?? t('reading.noErrorDetail')}</p></div></div>}
   />
 }

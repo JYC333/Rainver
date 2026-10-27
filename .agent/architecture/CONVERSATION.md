@@ -410,6 +410,14 @@ the recipients' `run_ids`, and never offered a Retry, reads "delegated by
 the name (the Room's Manager until that Run is read). A recipient Run's
 technical `parent_run_id`, used to serialize a fan-out group in one workspace,
 does not by itself mean delegation and never produces that label.
+Live-turn placement is projected by `modules/conversation/roomTimeline.ts`.
+Explicitly delegated child edges form a group; every still-pending member,
+including parent and siblings, follows its latest visible group message.
+Unrelated recipients and separate delegation groups keep their own positions;
+technical serialization parent pointers alone never form a delegation group.
+Missing Run relations remain ungrouped until loaded. Persisted message order
+is unchanged; each Run's own reply replaces its live row without duplication.
+The delegated-by label follows Run identity rather than the display anchor.
 
 A message sent while a turn is running is not refused: the composer sends it
 with `queue: true` (unless it has attachments), and a 202 shows it at the end
@@ -552,3 +560,72 @@ Cache expiry notices are aggregated into one collapsed count summary. The
 explicit Agent-specific reset choices are revealed on expansion in a bounded
 scroll area. No notice wrapper is mounted when no runtime is expired, keeping
 the configured execution row at its compact height.
+
+## File links and temporary previews
+
+Assistant replies with a known producing Run resolve local file references as
+preview actions rather than browser paths. Relative paths (including `.agent/`)
+and legacy `/home/...`, `/tmp/...` references never navigate to the app catch-all.
+The Markdown renderer classifies local links and images after HTML sanitizing
+and before URL hardening, preserving relative paths verbatim for the Run API
+instead of blocking bare filenames or resolving them as browser URLs.
+Files outside a readable, registered primary workspace fail explicitly; an
+arbitrary local pathname is not read authority. Older replies without a Run
+explain that the preview is unavailable instead of opening the homepage.
+
+`GET /api/v1/runs/{runId}/file-preview?path=...` checks current source-Space,
+Run-body authority and, for published outputs, artifact-body authority. A
+workspace reference is checked with the normal Project Folder reader (Project
+ACL, pinned active Location, Host ownership/liveness and PathPolicy, no
+symlinks); text opens Files & Code at `?folder=...&path=...&line=...`.
+Workspace raster images open in the same preview dialog. Workspace migration
+fails explicitly rather than silently opening another checkout.
+Resolving a file reference does not open a loading dialog: workspace text
+navigates directly once authorized. Only returned preview content or a read
+error opens the dialog.
+
+For a temporary image or text preview, the Agent copies the file into its
+Run's `RAINVER_OUTPUT_DIR` and uses
+`/__run_output__/preview.png` as the link target, or the same target in image Markdown. The daemon
+collects it on exit, using the existing Run output upload and artifact
+retention/ACL. No manual Task declaration, report manager or download step is
+required. These previews remain with Run history under existing storage
+lifecycle; they are not a new permanent Knowledge object or an arbitrary host
+file server. Previously unpublished `/tmp` files must be provided again.
+
+The browser reads only on click, in the source conversation's Space, and opens
+a closable Dialog without changing the current route. PNG/JPEG/GIF/WebP bytes
+are checked before a local object URL is created; SVG/HTML are never active
+image previews. Text previews are inert text. Closing, unmounting or opening
+another preview aborts/discards older responses and revokes image object URLs.
+Other external links retain Streamdown's confirmation policy and external
+images retain their existing no-automatic-fetch policy.
+
+Reuse / Dependency Check: reuse Run outputs and artifact ACL/provenance,
+`@rainver/folder-read` bounded no-symlink reads, Files & Code tabs, Streamdown's
+post-sanitize extension points, and the existing Radix Dialog. Native raster
+image display needs no added dependency or second file storage service.
+
+
+## Sources goal consumer
+
+SourceGoalPage reuses ConversationScope, ConversationView, useConversationDraft,
+existing Run turn streams and action preview cards. SourceGoalConversation stores
+canonical Session/user messages and attaches existing headless source_goal Runs
+through chat_turn metadata; the existing chat finalizer writes assistant replies.
+This consumer accepts text only and hides unsupported attachment/Retrieval
+controls. Normal Conversation/Room consumers retain their existing controls.
+Draft goal text never mutates the approved active plan or its repair semantics.
+
+Source goal user messages carry an audited adjustment cycle and dispatch state.
+Only a new authenticated user message opens a finite cycle; canonical Run/Profile
+admission remains authoritative. Dispatch failures release pending claims, and
+message-key retries reuse a committed Run. The shared draft hook accepts an
+optional persistence predicate; only the goal composer opts into recognized-secret
+filtering and clearing old forbidden drafts. Other consumers remain unchanged.
+
+`ConversationComposer.inputAttachmentsEnabled` defaults to true, including legacy
+consumers without a parts callback (for example Notebook). Only the goal surface
+explicitly sets false. Missing callbacks are not a signal to alter consumer UI.
+Goal dispatch stores stable typed/code categories and emits the existing error
+envelope; frontend code mapping precedes legacy detail-message fallback.

@@ -18,6 +18,7 @@ vi.mock('../api/client', () => ({
     ]),
   },
   homeApi: { summary: vi.fn() },
+  informationDigestsApi: { reading: vi.fn().mockResolvedValue({items:[],total:0,next_cursor:null}) },
 }))
 
 vi.mock('../contexts/SpaceContext', () => ({

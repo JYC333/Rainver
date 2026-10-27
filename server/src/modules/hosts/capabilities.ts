@@ -12,13 +12,11 @@ import {
 } from "@rainver/protocol";
 
 /**
- * Which runtimes have a subscription quota to read at all. OpenCode bills
- * through whichever provider it is pointed at and a registry Agent's limits
- * are its own product's, so probing them costs a CLI launch to be told there
- * is nothing to say. Stated here because the capability report carries it: the
- * host card must not keep a second copy of this list in step.
+ * Runtimes with an implemented, account-scoped quota reader. Registry agents
+ * are opt-in by verified product identity (currently Antigravity ACP).
+ * The host card consumes this capability rather than keeping another list.
  */
-const QUOTA_RUNTIMES = new Set(["claude_code", "codex_cli"]);
+const QUOTA_RUNTIMES = new Set(["claude_code", "codex_cli", "acp_antigravity_acp"]);
 
 export function hasSubscriptionQuota(runtimeKey: string): boolean {
   return QUOTA_RUNTIMES.has(runtimeKey);

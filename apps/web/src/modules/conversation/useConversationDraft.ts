@@ -4,6 +4,7 @@ import { conversationInputApi } from '../../api/client'
 import type { ConversationInputFileSource } from './ConversationInputComposer'
 import { useConversationScope } from './ConversationScope'
 import {
+  clearConversationDraft,
   draftFileSearchQuery,
   readConversationDraft,
   writeConversationDraft,
@@ -25,6 +26,8 @@ export interface VersionedConversationDraft<T> {
 interface ConversationDraftOptions<T> {
   /** Store key of the destination the draft belongs to (`conversationDraft.ts`). */
   destination: string
+  /** Opt-in domain policy, checked before restore and every storage write. */
+  isTextPersistable?: (text: string) => boolean
   initialValue: () => T
   textOf: (value: T) => string
   withText: (value: T, text: string) => T
@@ -75,7 +78,14 @@ export function useConversationDraft<T>(options: ConversationDraftOptions<T>) {
   const readyRef = useRef<string | null>(null)
   const pendingRef = useRef<PendingRestore | null>(null)
 
+  const persist = useCallback(() => {
+    const current=optionsRef.current;const text=current.textOf(draftRef.current.value)
+    if(current.isTextPersistable?.(text)===false){clearConversationDraft(destination);return}
+    writeConversationDraft({destination,text,input_parts:draftRef.current.parts,route_choice:current.routeChoiceOf?.(draftRef.current.value)??undefined})
+  },[destination])
+
   const setValue = useCallback((next: T) => {
+    if(optionsRef.current.isTextPersistable?.(optionsRef.current.textOf(next))===false)clearConversationDraft(optionsRef.current.destination)
     const current = draftRef.current
     draftRef.current = { ...current, value: next, textVersion: current.textVersion + 1 }
     setValueState(next)
@@ -94,7 +104,8 @@ export function useConversationDraft<T>(options: ConversationDraftOptions<T>) {
     if (pendingRef.current?.destination !== destination) {
       readyRef.current = null
       const stored = readConversationDraft(destination)
-      if (!stored) {
+      if (stored&&optionsRef.current.isTextPersistable?.(stored.text)===false)clearConversationDraft(destination)
+      if (!stored||optionsRef.current.isTextPersistable?.(stored.text)===false) {
         pendingRef.current = null
         readyRef.current = destination
         return
@@ -129,25 +140,18 @@ export function useConversationDraft<T>(options: ConversationDraftOptions<T>) {
       }
       pendingRef.current = null
       readyRef.current = destination
-      writeConversationDraft({
-        destination,
-        text: optionsRef.current.textOf(draftRef.current.value),
-        input_parts: draftRef.current.parts,
-        route_choice: optionsRef.current.routeChoiceOf?.(draftRef.current.value) ?? undefined,
-      })
+      persist()
     })()
     return () => { cancelled = true }
-  }, [destination, scope, setParts, setValue])
+  }, [destination, scope, setParts, setValue, persist])
 
   const text = options.textOf(value)
   const routeChoice = options.routeChoiceOf?.(value) ?? null
   useEffect(() => {
     if (readyRef.current !== destination) return
-    const timer = window.setTimeout(() => writeConversationDraft({
-      destination, text, input_parts: parts, route_choice: routeChoice ?? undefined,
-    }), 250)
+    const timer = window.setTimeout(persist, 250)
     return () => window.clearTimeout(timer)
-  }, [destination, parts, routeChoice, text])
+  }, [destination, parts, routeChoice, text, persist])
 
   return { value, parts, setValue, setParts, draftRef, readyRef }
 }

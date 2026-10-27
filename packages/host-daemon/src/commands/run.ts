@@ -1,3 +1,6 @@
+import {blockSourceExecution,sourceExecutionLocallyEnabled} from "../sourceCapability.js";
+import { recoverSourceExecutions } from "../sourceOwnership.js";
+import { SourceExecutionChannel } from "../sourceExecutionChannel.js";
 import { scanGlobalSkills, readGlobalSkill } from "../globalSkills.js";
 import { rm, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -46,6 +49,7 @@ import { forgetWorkspace, listDirectories, registerWorkspace } from "../remoteWo
 import { archiveAgentProfiles, archiveLegacyProfileTree, archiveManagedWorkspace, restoreManagedWorkspace, sweepManagedWorkspaceArchives, type ManagedWorkspaceContainer } from "../managedWorkspaces.js";
 import { clearFailedRuntimeOptionsCache, clearRuntimeOptionsCache } from "../capabilities.js";
 import { disableInstalledService } from "../service.js";
+import { augmentProcessPath } from "../userPath.js";
 /**
  * How long an upgrade waits for the copy's Runs to finish before giving up.
  *
@@ -196,6 +200,9 @@ function toAmbientImportRequest(
  */
 export async function runService(options: { log?: (line: string) => void } = {}): Promise<void> {
   const log = options.log ?? ((line: string) => console.log(`[rainver-host] ${line}`));
+  // A service's PATH is not the owner's shell's: the CLIs they installed
+  // themselves live in directories it never sees (`userPath.ts`).
+  augmentProcessPath();
   // The built-in host has no pairing step: the control plane publishes its
   // credential into the mount both containers share and this adopts it. A
   // paired machine short-circuits here (`not_builtin`) and keeps the
@@ -226,6 +233,10 @@ export async function runService(options: { log?: (line: string) => void } = {})
   let reportedOutdated = false;
   // A run outlives a single WebSocket connection. See
   // `ReconnectableFrameSink`: this cannot be a plain per-connection closure.
+  if(sourceExecutionLocallyEnabled()) {
+    try{await recoverSourceExecutions({root:join(configDir(),"source-executions"),cgroupRoot:process.env.RAINVER_SOURCE_CGROUP_ROOT});}
+    catch{blockSourceExecution();log("Sources execution disabled: source_recovery_refused");}
+  }
   const sink = new ReconnectableFrameSink();
 
   for (;;) {
@@ -307,6 +318,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     let updateRestartTimer: ReturnType<typeof setInterval> | null = null;
     let restartForUpdate = false;
     const folderReadControllers = new Map<string, AbortController>();
+    const sourceChannel = new SourceExecutionChannel({ root: join(configDir(), "source-executions"), node: process.execPath, maxConcurrent: 1,enabled:sourceExecutionLocallyEnabled(),cgroupRoot:process.env.RAINVER_SOURCE_CGROUP_ROOT }, frame => sendOnThisConnection(frame));
     const updateRequestPath = join(configDir(), "update-restart-requested");
     // Bound into `sink` only once hello succeeds (below), matching when the
     // server actually registers this connection in
@@ -417,6 +429,10 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       }
       const frame = parsed.frame;
       switch (frame.type) {
+        case "source_execute":
+        case "source_response":
+        case "source_cancel":
+          sourceChannel.handle(frame); return;
         case "hello_ack": {
           helloAcked = true;
           sink.bind(sendOnThisConnection);
@@ -787,6 +803,9 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         case "login_input":
           loginSession(frame.session_id)?.write(frame.data);
           return;
+        case "login_callback":
+          loginSession(frame.session_id)?.callback?.(frame.url);
+          return;
         case "login_close":
           loginSession(frame.session_id)?.close();
           return;
@@ -876,6 +895,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (taskWorktreeSweepTimer) clearInterval(taskWorktreeSweepTimer);
       if (updateRestartTimer) clearInterval(updateRestartTimer);
+      sourceChannel.disconnect();
       for (const controller of folderReadControllers.values()) controller.abort();
       folderReadControllers.clear();
       sink.unbindIfCurrent(sendOnThisConnection);

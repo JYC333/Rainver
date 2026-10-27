@@ -22,7 +22,7 @@ source pipeline, subscription model, data model, and API.
 ## Owns
 
 - Library shell (`/library`): Shell scene sidebar navigation for reading
-  sections; defaults to `/library/items`.
+  sections; defaults to `/library/reading` (the cross-day pending recommendation list). The navigation labels it Reading. All material uses `/library/reading?view=all`; legacy `/library/items` and type filters remain reachable under By type.
 - Per-user item stream (`/library/items`): source-scanned items from sources
   the current user follows, items those sources delivered while the user
   followed them (historical eligibility, below), plus manually saved
@@ -61,7 +61,10 @@ source pipeline, subscription model, data model, and API.
 - Interest evidence. A read counts toward the private interest profile only
   when the reader reached it themselves (`read_origin = 'library'`; an open
   from the digest's serendipity section is recorded `serendipity` and never
-  counts, per B54) and the source is one they currently follow or own
+  counts, per B54). Explicit Library selection, saving for later or marking
+  discussed upgrades an existing serendipity/project origin to library; ignored
+  and pure dismissed changes do not assign an origin. Interest evidence also
+  requires that the source is one they currently follow or own
   (`sourceItemProfileEvidenceClause`). Leaving a source rebuilds the profile's
   automatic facts (observations and candidate counts) on the next pass;
   topics the owner accepted or created, and dismissed candidates, stay.
@@ -74,7 +77,7 @@ source pipeline, subscription model, data model, and API.
   These are soft read-time filters over source metadata, URL/domain hints, and
   MIME/content-type hints. They are not source import requirements and do not
   create hard schema categories.
-- Library daily digest (`/library/digests`): one deterministic cross-source
+- Reading recommendations (`/library/digests`): one deterministic cross-source
   selection per reader and complete day of the digest's configured timezone
   (see [information digest](information-digest.md#days-history-and-backfill))
   from subscribed channels with
@@ -229,3 +232,154 @@ it does not mutate project source bindings or source subscriptions.
 - [information-digest.md](information-digest.md)
 - [activity-inbox.md](activity-inbox.md)
 - [sources.md](sources.md)
+
+Project fixed-page monitoring changes open the existing Library item Reader.
+They are evidence documents containing the previous/current captured body and
+references to the two Sources page-version snapshots, not live refetches or new
+articles. Their source_uri is intentionally null in the stored change item, so
+re-extraction cannot overwrite the historical comparison with a live page.
+The monitoring/Digest surface supplies the original page link separately.
+Reader and snapshot access still recheck the Source/Project/current audience;
+revisiting an old page revision never rewrites its comparison artifact.
+
+
+The reading-first UI keeps recommendation preferences/annotation recovery and
+individual Source processing briefings in separate collapsed sections. Primary
+cards show the title, summary, rationale and reading/Project actions rather than
+raw rank scores. The edition still belongs to the latest complete day, not an
+invented live feed; Source settings owns subscription and collection management.
+Opening Reading never activates acquisition or changes source visibility.
+
+The unified reading backend contract is available separately from edition reads:
+see [Information Digest — Unified reading projection](information-digest.md#unified-reading-projection).
+It supplies cross-day pending/read recommendation lists, current authorized
+Project reasons, personal opt-in and a searchable all-material view. Its item
+and material references open the same shared Reader; callers forward
+`reader_origin` as the Reader's `origin` query to preserve interest isolation.
+The existing edition and per-Source routes retain their scope and history; explicit `?date=` opens that fixed edition, including completed members.
+
+## Unified reading UI
+
+`ReadingWorkspace` consumes the typed `informationDigestsApi.reading` contract
+for both My reading and Project reading (`/projects/:projectId/sources`). Pending
+is the default; read and all-material views change the server query, never a local
+filter of one fetched page. Cards render all currently authorized contributions,
+original rationales, edition date/timezone or first-result label, recommendation
+arrival time and separate article time. Material-only rows are explicitly labeled.
+Summary-only rows do not link into Reader. Full rows forward `reader_origin`,
+including project, to the shared Reader. A bounded return destination preserves
+reading navigation; legacy day-scoped Reader deep links retain prev/next.
+
+`useReading` owns request sequencing, scope resets and page transport only.
+Space/Project/view/search are bound to each request and cursor; late responses
+are discarded and superseded GET transports are aborted through the existing
+RequestOptions.signal/fetch path. Search keeps an editable draft; only explicit
+form submission updates the URL and issues the aggregate query. Errors clear displayed content (including stale authorization),
+and a 409 offers a fresh first page. Mark read/restore/dismiss call the canonical
+state API then re-read the already loaded window from the server. Existing
+cards stay mounted and disabled until that authorized replacement is complete,
+preserving native scroll anchoring. Each fetch is at most 100 items; larger
+windows follow fresh server cursors before publishing atomically. Errors clear
+the whole window, including partially fetched replacements. No browser
+deduplication, local membership/count inference or second state store is added. Private dismissals can be restored in All material.
+
+Project preferences are discoverable in both reading scopes. Per-project controls
+read the authenticated user's default-off setting, wait for server confirmation,
+and show failed writes without claiming success. They never change monitoring
+scope, schedules, Source subscriptions or budgets. The personal preference picker
+lists the first 200 active Projects and links to the Projects directory for more.
+
+Daily editions remain at `/library/digests` and Project `?tab=digest`; each uses
+explicit scope/date, clears old content on failures and ignores superseded reads
+or backfills. Reading state remains dynamic without removing historical members.
+The existing interest controls, annotation recovery and per-Source historical
+briefing deep links remain available. Source management owns live candidates
+and diagnostics; review links target the canonical pending proposals surface.
+
+Home retains its user-level cross-Space work aggregate and adds only a three-item
+preview of the preferred Space's same pending API. The preview names its scope,
+links into Reading and performs no generation, ranking, aggregation or acquisition.
+Summary-only preview entries are plain text rather than inaccessible Reader links.
+Project candidate/source-management Reader links use the lightweight shared
+readingLinks helper with project origin and bounded candidates/settings returns.
+
+### Using Reading and finding retained material
+
+1. Open Reading in the current Space. To read spans retained days; completing an
+   item removes it from that queue, while Read and its original Daily edition
+   retain it. Restore unread returns it to the queue. Private set-aside can be
+   undone from All material.
+2. Open Project reading preferences to include formal recommendations from a
+   Project (default off). Each enabled Project contributes its original reasons;
+   matching content has one card with all authorized reasons. Disabling a Project
+   removes that contribution, retaining your own saves and other contributions.
+3. Use All material for associated material that was not selected. Filing a
+   personal edition item into a Project uses the existing Corpus-add writer;
+   Project All material finds that SourceItem and opens the same retained Reader
+   body, without copying it into another document.
+4. Daily editions use explicit scope/date, display their original timezone, and
+   do not generate on GET. A missing complete edition offers an explicit backfill
+   only when allowed; its provenance explains retention limits. Initial results
+   have no invented edition date. DST and delayed work use the original local
+   period/slot, and existing snapshots remain frozen.
+
+Research Reading List and shared Source annotation links also forward project
+origin. Their bounded return targets are the research reading-list tab and Source
+settings, respectively. Reader names those destinations accurately and preserves
+origin when re-extraction reloads the document. Refresh, extraction and Inspector
+controls follow the browser English/Chinese locale. The personal preference
+picker shows its isolation explanation once, while a standalone Project control
+keeps its own explanation.
+
+Daily edition item links also use `readingHref`, preserving the snapshot's exact
+scope and `digest_date`: personal `/library/digests?date=YYYY-MM-DD`, Project
+`/projects/:projectId/sources?tab=digest&date=YYYY-MM-DD`. Project context is
+explicit because the same SourceItem can be recommended by another Project.
+Reader labels either destination Daily editions / 每日版 and returns to that day;
+project/serendipity origins and old Source day prev/next are unchanged. Only exact
+bounded destinations with valid calendar dates pass `readingReturnTo`; query
+extensions, encoded/normalized path tricks and mismatched Projects are rejected.
+
+Project Settings also links to the existing Source management configuration via
+`/projects/:id/sources?tab=settings&from=settings`. Its visible arrow-back control
+returns to the same Project Settings dialog (`?settings=project`); other entry
+paths return to Project reading. Switching management tabs preserves this bounded
+origin. The Reading entry remains available; no monitoring form or authority is copied.
+With unsaved Name, Description or Current focus edits, the link asks before
+leaving: Keep editing preserves the open draft, and only Discard navigates. It
+never saves those shared fields itself and is inactive while a save is in flight.
+
+### Reading presentation
+
+Personal and Project reading use the system page gutters and compact icon/title
+header, with a theme-colored divider. Reading filters form a separate group from
+edition, source-management and review links. Recommendation, candidate and edition
+cards use a single-column list, compact titles, shared status badges and neutral
+rationale borders. Empty/loading lists reuse EmptyState and Skeleton.
+
+Daily edition feedback and Project filing reuse Button and Select; Project editions
+use the same reading presentation as personal editions. Reading preferences follow
+the shared card/form styling, and interest controls use the English/Chinese locale
+catalogs. Reader toolbar controls use the shared small icon size and explicit
+border tokens; long-form document typography remains specific to Reader.
+
+### First reading material
+
+An empty unfiltered To read or All material view offers “What would you like to
+keep following?” in EN/ZH. ReadingStart opens the Sources-owned complete goal
+page with optional Project context; it creates nothing until a message is sent.
+Desktop conversation and actual preview are adjacent; narrow screens switch on
+the same page. Existing goals recover canonical Session messages, precise plan
+versions, Run progress and source coverage on return/refresh.
+
+Save an article still uses the existing URL writer and extraction jobs, with
+Project writer checks. Only a completed save revalidates the Reading list;
+cancelling either save or unsent setup leaves the list mounted. Reader,
+subscriptions and successful SourceItem history remain the same consumers.
+
+Project Sources/configuration now opens the same goal management list. Historical
+monitoring candidates/digests, linked Source display and necessary settings remain
+reachable through their existing routes. Compatibility mapping sends no collection
+requests and keeps the old scheduler owner until an exact valid preview is
+confirmed. See [SOURCE_GOALS](../architecture/SOURCE_GOALS.md) for transfer and
+conservative rollback semantics; engine output is not itself a Library item.

@@ -309,3 +309,11 @@ describe("config diagnostics", () => {
     });
   });
 });
+
+
+it("bounds independent job worker concurrency and defaults to eight lanes", () => {
+  expect(loadConfig({}).jobsWorkerConcurrency).toBe(8);
+  expect(loadConfig({ JOBS_WORKER_CONCURRENCY: "16" }).jobsWorkerConcurrency).toBe(16);
+  expect(() => loadConfig({ JOBS_WORKER_CONCURRENCY: "0" })).toThrow(ConfigError);
+  expect(() => loadConfig({ JOBS_WORKER_CONCURRENCY: "65" })).toThrow(ConfigError);
+});

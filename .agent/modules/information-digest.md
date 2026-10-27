@@ -151,3 +151,134 @@ consent or later membership changes fail closed.
 - [automations.md](automations.md)
 - [../architecture/PROJECTS.md](../architecture/PROJECTS.md)
 - [../BOUNDARIES.md](../BOUNDARIES.md) — B54/B55/B56
+
+## Confirmed Project monitoring (P2)
+
+A Project with an active monitoring version uses the Sources-owned
+`monitoring/delivery.ts` selector. Initial sealing and every Project Digest date
+first take `monitoring-delivery:<space>:<project>`, then Digest takes its existing
+scope/day lock. Selection and writing occur inside that transaction, with no IO.
+The selector excludes both sealed initial membership and all Project Digest
+membership, uses all current Project readers' full Source access, excludes shared
+Corpus triage exclusions and dismissed decisions, and preserves private feedback.
+
+Candidates must have a successful objective annotation and scoped relevance
+decision. The decision's post-processing Run joins its actual monitoring
+operation/version; changing presentation configuration cannot relabel an old Run.
+`ready_at = greatest(project Source link creation, annotation time, decision update)`
+must precede the complete day's end. Ready backlog is eligible regardless of the
+old material's publication/Corpus date; this admits late annotation on a later
+day. Current-day ready items rank ahead of older ready backlog. Preview reads and
+`check`/daily operations do not reserve recommendation membership.
+
+`information_digest_items.provenance_json` freezes bounded summary, evidence
+depth, actual version/hash, decision/Run references and ready time; membership,
+order and rationale are already immutable item rows. Hydration uses the frozen
+summary and rechecks the complete current Project audience, not just the viewer.
+Monitoring snapshots suppress team aggregates rather than exposing stale counts
+about newly inaccessible rows. Older Project and personal snapshots retain their
+original selection, hydration and history semantics.
+
+An existing date remains idempotent. Missing monitoring dates may only be built
+later than the latest sealed Project date. A backward request returns 422
+`monitoring_history_before_latest`; lookup disables that backfill and explains it.
+A stale scheduled slot is audited as skipped and advanced, never backfilled behind
+newer snapshots. Generation still performs no Source/model calls and never waits
+for all pages/analysis. Frozen coarse coverage distinguishes not_run, no_new,
+analysis_pending, quota_paused, partial coverage and source failure.
+
+The accepted monitoring schedule coordinates the existing single hidden Project
+Digest Automation. `monitoringSchedule.ts` uses the provisioning scope lock,
+refuses another owner's row or ambiguous duplicates, and changes only the accepted
+owner's cadence/timezone and resumes that same owner's paused daily row when
+the accepted configuration explicitly enables daily delivery. It never creates a second concurrent daily Digest.
+Manual initial results remain separate from complete-day snapshots, and GET
+never generates either.
+
+Monitoring coverage belongs to the snapshot's local period. Generation selects
+operations created in `[period_start, period_end)`, preferring a daily operation
+whose frozen local_date and scheduled slot also belong to that period, then the
+latest manual/check operation in the interval. Earlier quota/no-new outcomes and
+future operations do not stand in for a missing day: no match freezes `not_run`.
+A settlement after the day cutoff is represented as analysis pending, not copied
+back as a completed historical state. Matching operations supply their frozen
+configuration version and recommendation limit; with no run, the current confirmed
+configuration only supplies selection settings. Existing snapshots never change.
+
+## Unified reading projection
+
+`ReadingService` / `ReadingRepository` own the read-only, Space-local reading
+projection. `GET /api/v1/spaces/:spaceId/reading` accepts `view=pending|read|all`,
+`limit` (1–100, default 30), optional `q` and an opaque `cursor`. The same path
+under `/projects/:projectId/reading` scopes it to a readable Project without
+requiring the personal opt-in. Neither GET generates, fetches, ranks, writes a
+snapshot or runs a model. `pending` is the default: unread/skimmed recommendations
+across all retained days, excluding personal dismissals. `read` includes
+read/discussed recommendations. `all` adds personal Library material, or the
+Project's legitimately associated Source material, with no age cutoff.
+
+The personal projection includes only the caller's persisted daily slots and
+formal daily/initial Project recommendations from Projects they opted into.
+Initial membership is the completed monitoring Operation's sealed
+`recommendation_ids` plus saved `recommendations`, never relevance candidates.
+All Project contributions recheck the viewer and complete current Project
+audience. Withdrawing membership, Source consent or a preference removes that
+contribution's name, reason and count; another authorized contribution survives.
+Summary-only personal delivery withholds Source URLs. Each contribution retains
+its original position, section, reason, frozen summary when available, edition
+date/timezone (null for initial delivery), and actual availability time.
+`occurred_at` remains article time. Existing edition routes/snapshots are unchanged.
+
+All eligible deliveries are authorized before grouping, filtering and keyset
+pagination. Source members and private state are joined in bulk; summary, search
+matches, reasons and material references aggregate once per group, without a
+per-group Space scan or correlated scan of the authorized CTE. Search reuses
+`escapeLikePattern` with an explicit SQL escape character, so percent,
+underscore and backslash match literally. A group sorts by its first eligible delivery time plus its stable
+Sources revision key; an additional recommendation adds a reason without moving
+or duplicating it. A cursor binds the Space, caller, view, search and Project,
+and freezes delivery arrival time. New arrivals appear on a fresh read. A changed
+permission/preference/content-membership fingerprint returns 409 and requires
+restarting pagination, rather than using stale authorization or a shifted group.
+Counts are computed only after current authorization and grouping.
+
+`GET/PUT .../projects/:projectId/reading-preference` reads/sets
+`{show_in_my_reading:boolean}`. The typed `reading.projects` ScopedSettingsStore
+descriptor uses `space_user`, defaults off, and serializes concurrent edits with
+a transaction lock. A Project viewer can change only their own preference; it
+never mutates shared monitoring configuration, subscriptions or schedules.
+
+`PATCH .../reading/items/:itemId/state` accepts `read_status` and/or `dismissed`
+and returns `{updated}`. Sources resolves the current authorized equivalent
+revision members and writes their private state atomically through `SourceItemUserStateStore`. No caller-supplied member list is accepted. Opening Reader remains
+skimmed, not completed. Explicit read/restore actions outrank later incidental
+opens on a new duplicate; only a changed retained body revision invalidates completion.
+Metadata/raw hash changes and the first extracted body do not invalidate it.
+Dismissal changes only `progress_json.reading_dismissed`, without changing
+Library triage, Project relevance or interest feedback. The authenticated context resolves the anchor's origin: personal interest
+recommendation/Library material is `library`, a personal serendipity slot is
+`serendipity`, and a Project context is `project`. Copied members have no new
+interest evidence and retain existing origins, including NULL. A non-reading
+change leaves a new origin NULL. The Project-scoped state path is
+`PATCH .../projects/:projectId/reading/items/:itemId/state`, with the same strict
+request schema and current Project gate; the client cannot supply an origin. Digest maturity uses the Interest Profile service’s canonical
+evidence inputs; Project-origin state is also excluded from exploration reading
+shape. Cards expose `reader_origin` for the Reader request.
+
+The protocol schemas are in `packages/protocol/src/reading.ts`; typed client
+methods live alongside `informationDigestsApi`. The shared `ReadingWorkspace` and bounded Home preview consume this contract;
+UI pages do not reproduce grouping, permission, pagination or state semantics.
+Edition reads remain separate fixed scope/date history.
+
+### Reading workflow verification
+
+Cross-scope acceptance uses `readingDb.test.ts` with real PostgreSQL and the
+explicit `readingBrowserAcceptance.browser.ts` Chromium harness. It covers
+personal + Project A/B contribution withdrawal, retained personal saves,
+version separation and current-ACL counts, Corpus lookup with one Reader body,
+old backlog/keyset arrivals, private read/restore and frozen daily history.
+`informationDigestDb.test.ts` exercises missing/backfilled history and delayed
+scheduled snapshots across Shanghai and New York's 23/25-hour DST days;
+`projectInformationMonitoringDb.test.ts` protects sealed initial versus daily
+membership and late-settlement coverage. The browser uses real reading,
+preference, edition and Reader routes; shell metadata is fixture-backed.

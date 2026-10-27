@@ -1,7 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ReactNode } from 'react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import ProjectDetailPage from '../ProjectDetailPage'
 import { focusAreasApi, projectsApi } from '../../../api/client'
 
@@ -16,13 +15,6 @@ vi.mock('../../../contexts/SpaceContext', () => ({
     userId: 'user-1',
     spaces: [{ id: 'space-1', role: 'member' }],
   }),
-}))
-
-vi.mock('../../../core/spaceNav', () => ({
-  useSpaceNavigate: () => vi.fn(),
-  SpaceLink: ({ to, children, ...props }: { to: string; children: ReactNode }) => (
-    <a href={to} {...props}>{children}</a>
-  ),
 }))
 
 vi.mock('../../../api/client', () => ({
@@ -116,14 +108,20 @@ async function settle() {
   for (let i = 0; i < 3; i += 1) await act(() => new Promise(resolve => setTimeout(resolve, 0)))
 }
 
-function renderPage() {
+function SourcesLocation() {
+  const location = useLocation()
+  return <output aria-label="Source management route">{location.pathname + location.search}</output>
+}
+
+function renderPage(search = '') {
   return render(
     <MemoryRouter
-      initialEntries={['/spaces/space-1/projects/project-1']}
+      initialEntries={['/spaces/space-1/projects/project-1' + search]}
       future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
     >
       <Routes>
         <Route path="/spaces/:spaceId/projects/:projectId" element={<ProjectDetailPage />} />
+        <Route path="/spaces/:spaceId/projects/:projectId/sources" element={<SourcesLocation />} />
       </Routes>
     </MemoryRouter>,
   )
@@ -303,6 +301,7 @@ describe('ProjectDetailPage (Pulse)', () => {
     renderPage()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
+    expect(screen.getByRole('link', { name: 'Information monitoring and sources' })).toHaveAttribute('href', '/spaces/space-1/projects/project-1/sources?tab=settings&from=settings')
     expect(screen.getByLabelText('Current focus')).toBeInTheDocument()
     expect(screen.queryByText('Saved intake configuration')).toBeNull()
     expect(screen.queryByLabelText('New item limit')).toBeNull()
@@ -507,5 +506,78 @@ describe('ProjectDetailPage (Pulse)', () => {
     renderPage()
 
     expect(await screen.findByRole('button', { name: 'Instruction' })).toBeInTheDocument()
+  })
+})
+
+it('reopens Project settings when returning from source management', async () => {
+  setup()
+  renderPage('?settings=project')
+  expect(await screen.findByRole('dialog')).toBeInTheDocument()
+  expect(screen.getByRole('link', {name: 'Information monitoring and sources'})).toHaveAttribute('href', '/spaces/space-1/projects/project-1/sources?tab=settings&from=settings')
+})
+
+describe('Project settings link to Source management', () => {
+  beforeEach(() => vi.clearAllMocks())
+  const sourcesRoute = '/spaces/space-1/projects/project-1/sources?tab=settings&from=settings'
+
+  async function openSettingsWithDraft() {
+    setup()
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
+    const settings = screen.getByRole('dialog', { name: 'Project settings' })
+    fireEvent.change(within(settings).getByDisplayValue('Project One'), { target: { value: 'Unsaved name' } })
+    fireEvent.click(within(settings).getByRole('link', { name: 'Information monitoring and sources' }))
+    return screen.findByRole('dialog', { name: 'Discard unsaved project changes?' })
+  }
+
+  it('keeps the dialog and its draft when the person chooses to keep editing', async () => {
+    const confirm = await openSettingsWithDraft()
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Keep editing' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Discard unsaved project changes?' })).toBeNull())
+    const settings = screen.getByRole('dialog', { name: 'Project settings' })
+    expect(within(settings).getByDisplayValue('Unsaved name')).toBeInTheDocument()
+    expect(screen.queryByRole('status', { name: 'Source management route' })).toBeNull()
+    expect(projectsApi.update).not.toHaveBeenCalled()
+  })
+
+  it('opens Source management in the same Space and Project only after discarding, without saving', async () => {
+    const confirm = await openSettingsWithDraft()
+    expect(screen.queryByRole('status', { name: 'Source management route' })).toBeNull()
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Discard and open sources' }))
+
+    expect(await screen.findByRole('status', { name: 'Source management route' })).toHaveTextContent(sourcesRoute)
+    expect(projectsApi.update).not.toHaveBeenCalled()
+  })
+
+  it('opens Source management directly from unchanged settings', async () => {
+    setup()
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
+    fireEvent.click(screen.getByRole('link', { name: 'Information monitoring and sources' }))
+
+    expect(await screen.findByRole('status', { name: 'Source management route' })).toHaveTextContent(sourcesRoute)
+    expect(screen.queryByRole('dialog', { name: 'Discard unsaved project changes?' })).toBeNull()
+    expect(projectsApi.update).not.toHaveBeenCalled()
+  })
+
+  it('stays in settings while a save is in flight', async () => {
+    setup()
+    let finishSave!: (value: never) => void
+    vi.mocked(projectsApi.update).mockReturnValueOnce(new Promise(resolve => { finishSave = resolve }))
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
+    const settings = screen.getByRole('dialog', { name: 'Project settings' })
+    fireEvent.change(within(settings).getByDisplayValue('Project One'), { target: { value: 'Saved name' } })
+    fireEvent.click(within(settings).getByRole('button', { name: /save changes/i }))
+    const link = within(settings).getByRole('link', { name: 'Information monitoring and sources' })
+    expect(link).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(link)
+
+    expect(screen.queryByRole('dialog', { name: 'Discard unsaved project changes?' })).toBeNull()
+    expect(screen.queryByRole('status', { name: 'Source management route' })).toBeNull()
+    await act(async () => finishSave({ ...project, name: 'Saved name' } as never))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Project settings' })).toBeNull())
+    expect(screen.queryByRole('status', { name: 'Source management route' })).toBeNull()
   })
 })

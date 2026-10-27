@@ -1,3 +1,4 @@
+import {assertLegacySourceOwner} from '../goals/compatibility.js';
 import { createHash, randomUUID } from "node:crypto";
 import { InterestProfileService } from "../../interestProfile/index.js";
 import type { ServerConfig } from "../../../config.js";
@@ -26,6 +27,9 @@ interface SourceChannelRow {
   source_connection_id: string;
   source_name?: string;
   created_by_user_id: string;
+  project_id?: string|null;
+  source_owner_user_id?: string;
+  goal_id?:string|null;
   name: string;
   channel_type: string;
   endpoint_url: string | null;
@@ -104,6 +108,7 @@ export class SourceChannelService {
     );
     return result.rows.map((row) => ({
       ...this.channelOut(row),
+      goal_id:null,
       subscription_status: row.subscription_status as "subscribed" | "muted",
     }));
   }
@@ -123,6 +128,7 @@ export class SourceChannelService {
     );
     return result.rows.map((row) => ({
       ...this.channelOut(row),
+      goal_id:null,
       subscription_status: row.subscription_status ?? "pending",
       recommendation_message: row.recommendation_message ?? null,
       last_notified_at: row.last_notified_at ?? null,
@@ -213,7 +219,7 @@ export class SourceChannelService {
         ORDER BY array_position($2::text[], ch.id)`,
       [identity.spaceId, ids],
     );
-    return result.rows.map((row) => this.channelOut(row));
+    return result.rows.map((row) => ({...this.channelOut(row),goal_id:row.created_by_user_id===identity.userId?row.goal_id??null:null}));
   }
 
   async get(identity: SpaceUserIdentity, channelId: string) {
@@ -461,8 +467,14 @@ export class SourceChannelService {
   }
 
   async update(identity: SpaceUserIdentity, channelId: string, body: Record<string, unknown>) {
+    return withQueryableTransaction(this.db,db=>new SourceChannelService(db,this.config).updateLocked(identity,channelId,body));
+  }
+
+  private async updateLocked(identity: SpaceUserIdentity, channelId: string, body: Record<string, unknown>) {
+    await this.db.query('SELECT id FROM source_channels WHERE id=$1 AND space_id=$2 FOR UPDATE',[channelId,identity.spaceId]);
     const current = await this.getRaw(identity, channelId);
     if (!current) throw new HttpError(404, "Source channel not found");
+    await assertLegacySourceOwner(this.db,identity.spaceId,channelId);
     const frequency = optionalString(body.fetch_frequency) ?? current.fetch_frequency;
     if (!["manual", "hourly", "daily", "weekly"].includes(frequency)) throw new HttpError(422, "Invalid fetch_frequency");
     const status = optionalString(body.status) ?? current.status;
@@ -505,8 +517,13 @@ export class SourceChannelService {
   }
 
   async scan(identity: SpaceUserIdentity, channelId: string) {
+    return withQueryableTransaction(this.db,db=>new SourceChannelService(db,this.config).scanLocked(identity,channelId));
+  }
+  private async scanLocked(identity: SpaceUserIdentity, channelId: string) {
+    await this.db.query('SELECT id FROM source_channels WHERE id=$1 AND space_id=$2 FOR UPDATE',[channelId,identity.spaceId]);
     const channel = await this.getRaw(identity, channelId);
     if (!channel) throw new HttpError(404, "Source channel not found");
+    await assertLegacySourceOwner(this.db,identity.spaceId,channelId);
     const result = await this.db.query(
       `INSERT INTO extraction_jobs (id, space_id, connection_id, source_item_id, job_type, status, metadata_json, created_at)
        VALUES ($1,$2,$3,NULL,'connection_scan','pending',$4::jsonb,$5)
@@ -584,7 +601,7 @@ export class SourceChannelService {
   private selectSql() {
     return `SELECT ch.*, p.provider_key, p.display_name AS provider_display_name, c.connector_key,
                    spc.id AS connector_mapping_id, sc.name AS source_name, sc.status AS connection_status,
-                   sc.capture_policy, sc.visibility AS connection_visibility,
+                   (SELECT g.id FROM source_goals g JOIN source_goal_bindings b ON b.goal_id=g.id AND b.space_id=g.space_id WHERE g.space_id=ch.space_id AND b.spec_json->>'source_channel_id'=ch.id AND g.active_version_id IS NOT NULL AND g.status<>'deleted' LIMIT 1) AS goal_id, sc.capture_policy, sc.project_id, sc.owner_user_id AS source_owner_user_id, sc.visibility AS connection_visibility,
                    st.status AS scan_status, st.metadata_json AS scan_metadata_json,
                    st.next_run_at AS scan_next_run_at, st.last_run_at AS scan_last_run_at,
                    ss.compiled_provider_query_json AS search_spec_provider_query_json,
@@ -622,6 +639,7 @@ export class SourceChannelService {
       status: row.status,
       fetch_frequency: row.fetch_frequency,
       schedule_rule: row.schedule_rule_json ?? null,
+      connector_key: row.connector_key,
       provider: { key: row.provider_key ?? null, display_name: row.provider_display_name ?? null },
       connection_status: row.connection_status ?? null,
       capture_policy: row.capture_policy ?? null,
@@ -632,6 +650,9 @@ export class SourceChannelService {
         next_run_at: row.scan_next_run_at ?? null,
         last_run_at: row.scan_last_run_at ?? null,
       },
+      goal_id: row.goal_id ?? null,
+      project_id: row.project_id ?? null,
+      source_owner_user_id: row.source_owner_user_id,
       created_by_user_id: row.created_by_user_id,
       created_at: row.created_at,
       updated_at: row.updated_at,

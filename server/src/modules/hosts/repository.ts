@@ -1,3 +1,4 @@
+import { OUTPUT_MAX_TOTAL_BYTES, rasterImageMime } from "@rainver/protocol";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
@@ -563,10 +564,16 @@ export class PgHostRepository {
         [run.id, input.launch_id],
       );
       const skipped: string[] = [];
-      const accepted: Array<{ name: string; content: string }> = [];
+      const accepted: Array<{ name: string; content: string; encoding?: "base64"; mime: string }> = [];
+      let total = 0;
       for (const file of input.files.slice(0, MAX_OUTPUT_FILES)) {
-        if (file.content.length > MAX_OUTPUT_FILE_BYTES) skipped.push(file.name);
-        else accepted.push(file);
+        const bytes = Buffer.from(file.content, file.encoding === "base64" ? "base64" : "utf8");
+        // PostgreSQL text cannot store NUL. Reject a binary file decoded as
+        // text before INSERT so it cannot roll back every valid sibling file.
+        const mime = file.encoding === "base64" ? rasterImageMime(bytes) : file.content.includes("\0") ? null : "text/plain";
+        const safeName = !file.name.startsWith("/") && !file.name.includes("\\") && !file.name.includes("\0") && !file.name.split("/").some(part => !part || part === "." || part === "..");
+        if (!safeName || !mime || (file.encoding === "base64" && bytes.toString("base64") !== file.content) || bytes.length > MAX_OUTPUT_FILE_BYTES || total + bytes.length > OUTPUT_MAX_TOTAL_BYTES) skipped.push(file.name);
+        else { accepted.push({ ...file, mime }); total += bytes.length; }
       }
       // Ids come back in file-name order on the first delivery and on a
       // replay alike, so a retry sees the same answer it would have seen.
@@ -586,8 +593,8 @@ export class PgHostRepository {
              exportable, export_formats_json, preview, created_at, updated_at,
              metadata_json, visibility, owner_user_id, trust_level, project_id, project_folder_id
            ) VALUES (
-             $1, $2, $3, 'remote_output', $4, $5, 'text/plain',
-             true, $6::jsonb, false, $7, $7,
+             $1, $2, $3, 'remote_output', $4, $5, $12,
+             $13, $6::jsonb, false, $7, $7,
              $8::jsonb, 'space_shared', $9, 'unknown', $10, $11
            )`,
           [
@@ -596,12 +603,14 @@ export class PgHostRepository {
             run.id,
             file.name,
             file.content,
-            JSON.stringify(["text/plain"]),
+            JSON.stringify(file.encoding ? [] : ["text/plain"]),
             now,
-            JSON.stringify({ source_filename: file.name, launch_id: input.launch_id }),
+            JSON.stringify({ source_filename: file.name, launch_id: input.launch_id, ...(file.encoding ? { encoding: file.encoding } : {}) }),
             hostOwnerUserId ?? run.owner_user_id,
             run.project_id,
             run.project_folder_id,
+            file.mime,
+            !file.encoding,
           ],
         );
         artifactIds.push(id);

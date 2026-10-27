@@ -340,3 +340,10 @@ passes preserve Run scope and revalidate bindings and exact bytes (locking on
 the final pass). Hosts materialize accepted Delivery files with their original
 hashes and source/planned-item references. There are no normalized Skill
 renderers. The Work Skill remains a separate required code contract.
+
+Antigravity ACP includes cached reads inside its input token count. The shared
+measurement parser subtracts that subset before canonical accounting, while
+retaining strict nonnegative counts and total consistency checks. An absent or
+null optional prompt usage is unknown, not an execution failure. Successful
+preauthorization notices remain in the audit trail but are omitted from ordinary
+conversation parts; cancellations and errors remain visible.

@@ -116,25 +116,42 @@ export { isAcpAuthRequiredError } from "@rainver/protocol";
  * It deliberately does not open a Session: installation readiness must not
  * depend on a native account being logged in or a Rainver provider existing.
  */
-export function probeAcpHealth(
+export async function probeAcpHealth(
   command: string,
   args: string[],
   env: Record<string, string>,
   cwd: string,
   timeoutMs = 15_000,
 ): Promise<boolean> {
+  return (await probeAcpIdentity(command, args, env, cwd, timeoutMs)) !== null;
+}
+
+/**
+ * Whether an executable speaks ACP, and what it says it is: the `initialize`
+ * answer's `agentInfo.version`, when the agent gives one. The one way to
+ * tell that a binary found by name is a copy of an agent, since ACP has no
+ * discovery and a name proves nothing. Null when it does not answer in time,
+ * exits first, or answers something that is not ACP.
+ */
+export function probeAcpIdentity(
+  command: string,
+  args: string[],
+  env: Record<string, string>,
+  cwd: string,
+  timeoutMs = 15_000,
+): Promise<{ version: string | null } | null> {
   return new Promise((resolve) => {
     let settled = false;
     let buffer = "";
     let child: ReturnType<typeof spawn>;
-    const finish = (healthy: boolean) => {
+    const finish = (identity: { version: string | null } | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       try { child.kill(); } catch { /* already exited */ }
-      resolve(healthy);
+      resolve(identity);
     };
-    const timer = setTimeout(() => finish(false), timeoutMs);
+    const timer = setTimeout(() => finish(null), timeoutMs);
     timer.unref?.();
     try {
       child = spawn(command, args, {
@@ -144,7 +161,7 @@ export function probeAcpHealth(
       });
     } catch {
       clearTimeout(timer);
-      resolve(false);
+      resolve(null);
       return;
     }
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -167,18 +184,20 @@ export function probeAcpHealth(
         const result = message.result && typeof message.result === "object" && !Array.isArray(message.result)
           ? message.result as Record<string, unknown>
           : null;
-        finish(
-          message.jsonrpc === "2.0"
+        const healthy = message.jsonrpc === "2.0"
           && message.error === undefined
           && result !== null
-          && result.protocolVersion === 1,
-        );
+          && result.protocolVersion === 1;
+        const agentInfo = healthy && result!.agentInfo && typeof result!.agentInfo === "object"
+          ? result!.agentInfo as Record<string, unknown>
+          : null;
+        finish(healthy ? { version: typeof agentInfo?.version === "string" ? agentInfo.version.slice(0, 100) : null } : null);
         return;
       }
     });
-    child.once("error", () => finish(false));
-    child.once("close", () => finish(false));
-    child.stdin?.once("error", () => finish(false));
+    child.once("error", () => finish(null));
+    child.once("close", () => finish(null));
+    child.stdin?.once("error", () => finish(null));
     child.stdin?.write(`${JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
@@ -245,6 +264,17 @@ export function probeAcpOptions(
    */
   onFailure?: (reason: string) => void,
   runtimeKey?: string,
+  options: {
+    /**
+     * Whether a session refused with auth_required may be retried after an
+     * ACP `authenticate`. For an Agent whose `authenticate` is interactive
+     * (Antigravity opens a browser OAuth flow and waits on the redirect), a
+     * probe that calls it starts a login nobody asked for and then kills
+     * it; the caller says no when the copy's credential file is known to
+     * be absent, and the probe reports "not logged in" with the methods.
+     */
+    authenticate?: boolean;
+  } = {},
 ): Promise<RuntimeOptions | null> {
   return new Promise((resolve) => {
     let authMethods: RuntimeAuthMethod[] = [];
@@ -273,7 +303,31 @@ export function probeAcpOptions(
       if (value === null && reason) onFailure?.(reason);
       resolve(value);
     };
-    const timer = setTimeout(() => finish(null, `no answer within ${Math.round(timeoutMs / 1000)}s${stderrTail()}`), timeoutMs);
+    /**
+     * The session probe never concluded — but `initialize` did, and the auth
+     * methods it advertised are the only login path a registry agent has.
+     * An agent that starts its own browser login on `session/new` when it
+     * holds no credential (Antigravity prints an OAuth URL and waits for
+     * the redirect) answers nothing within any timeout; dropping the
+     * methods then left the copy with no Log in button and no way to
+     * ever get one. Keep them; the login state is unknown, as it is for a
+     * session that fails for a reason other than auth_required.
+     */
+    const inconclusive = (reason: string) => {
+      if (settled) return;
+      if (authMethods.length === 0) {
+        finish(null, reason);
+        return;
+      }
+      onFailure?.(`${reason} — login methods kept from initialize, login state unknown`);
+      finish({
+        config_options: [],
+        auth_methods: authMethods,
+        session_available: null,
+        ...(promptCapabilities ? { prompt_capabilities: promptCapabilities } : {}),
+      });
+    };
+    const timer = setTimeout(() => inconclusive(`no answer within ${Math.round(timeoutMs / 1000)}s${stderrTail()}`), timeoutMs);
     timer.unref?.();
 
     let child: ReturnType<typeof spawn>;
@@ -329,6 +383,17 @@ export function probeAcpOptions(
         if (message.id === sessionRequestId) {
           const agentMethod = authMethods.find((method) => method.type === "agent");
           if (message.error && !authenticateTried && agentMethod && isAcpAuthRequiredError(message.error)) {
+            if (options.authenticate === false) {
+              // Not logged in, by the credential file; asking the Agent to
+              // authenticate would start its login. Report exactly that.
+              finish({
+                config_options: [],
+                auth_methods: authMethods,
+                session_available: false,
+                ...(promptCapabilities ? { prompt_capabilities: promptCapabilities } : {}),
+              });
+              continue;
+            }
             authenticateTried = true;
             send({ jsonrpc: "2.0", id: 3, method: "authenticate", params: { methodId: agentMethod.id } });
             continue;
@@ -364,7 +429,7 @@ export function probeAcpOptions(
       // stderr/stdout data events can be queued immediately after the child's
       // close notification. Give those readable streams one turn to deliver
       // their final diagnostics before resolving the probe.
-      setImmediate(() => finish(null, `exited (${signal ?? `code ${code}`}) before answering${stderrTail()}`));
+      setImmediate(() => inconclusive(`exited (${signal ?? `code ${code}`}) before answering${stderrTail()}`));
     });
 
     send({

@@ -16,7 +16,7 @@ export interface CliRuntimeMeasurement {
   } | null;
 }
 
-export function usageFromAcp(value: Record<string, unknown>): CanonicalUsage | null {
+export function usageFromAcp(value: Record<string, unknown>, cacheIncludedInInput = false): CanonicalUsage | null {
   const usage = strictUsage({
     input_tokens: value.inputTokens,
     output_tokens: value.outputTokens,
@@ -26,6 +26,13 @@ export function usageFromAcp(value: Record<string, unknown>): CanonicalUsage | n
     reasoning_tokens: value.thoughtTokens,
   }, ["input_tokens", "output_tokens", "total_tokens"]);
   if (!usage) return null;
+  // Antigravity 1.4.3 maps Google's prompt_token_count directly to input:
+  // cached_content_token_count is a subset, not an additional input bucket.
+  if (cacheIncludedInInput) {
+    const cached = (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+    if (cached > usage.input_tokens!) return null;
+    usage.input_tokens = usage.input_tokens! - cached;
+  }
   const buckets = (
     usage.input_tokens ?? 0
   ) + (

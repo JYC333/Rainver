@@ -68,6 +68,7 @@ interface ItemsVar {
 type RecipeVar = HtmlVar | ItemsVar;
 
 interface RecipeContext {
+  controlledFetch?: (url:string,signal:AbortSignal)=>Promise<GuardedResponse>;
   vars: Map<string, RecipeVar>;
   policyEnvelope: SourcePolicyEnvelope;
   limits: CustomSourcePolicyLimits;
@@ -89,6 +90,8 @@ interface RecipeContext {
 }
 
 export interface SourceRecipeRunInput {
+  /** Trusted Sources broker port; never accepted from recipe JSON. */
+  controlledFetch?: (url:string,signal:AbortSignal)=>Promise<GuardedResponse>;
   policyEnvelope: SourcePolicyEnvelope;
   recipe: SourceRecipeDefinition;
   mode: SourceRecipeRunMode;
@@ -126,6 +129,7 @@ export async function runSourceRecipe(
   const limits = effectiveCustomSourceLimits(settings, input.policyEnvelope.limits);
   const ctx: RecipeContext = {
     vars: new Map(),
+    controlledFetch:input.controlledFetch,
     policyEnvelope: input.policyEnvelope,
     limits,
     mode: input.mode,
@@ -151,6 +155,7 @@ export async function runSourceRecipe(
         `recipe output.items_var "${input.recipe.output.items_var}" was never bound to an items result`,
       );
     }
+    if(outputVar.value.length>limits.max_items)ctx.warnings.push('source_recipe_items_truncated');
     const items = outputVar.value.slice(0, limits.max_items).map((item) => ({
       ...item,
       metadata: item.metadata ?? {},
@@ -282,6 +287,14 @@ function requireVar<K extends RecipeVar["kind"]>(
 }
 
 /** One place the two network-facing options are assembled, so no step forgets the body ceiling or the guard. */
+async function recipeFetch(ctx:RecipeContext,url:string):Promise<GuardedResponse>{
+  if(ctx.controlledFetch){
+    if(!ctx.policyEnvelope.allowed_network_origins.includes(new URL(url).origin))throw new Error("source_scope_refused");
+    return ctx.controlledFetch(url,AbortSignal.timeout(remainingMs(ctx)));
+  }
+  return fetchAllowedOriginResponse(url,ctx.policyEnvelope.allowed_network_origins,fetchOptions(ctx));
+}
+
 function fetchOptions(ctx: { limits: { max_download_bytes: number }; credential: CustomSourceFetchCredential | null; guard?: OutboundGuard; deadlineAt: number }) {
   return {
     signal: AbortSignal.timeout(remainingMs(ctx as RecipeContext)),
@@ -315,7 +328,7 @@ async function execFetchPage(
     return;
   }
   checkDeadline(ctx);
-  const response = await fetchAllowedOriginResponse(step.url, ctx.policyEnvelope.allowed_network_origins, fetchOptions(ctx));
+  const response = await recipeFetch(ctx,step.url);
   if (!response.ok) throw new RecipeStepError(`fetch_page(${step.bind}): HTTP ${response.status} from ${step.url}`);
   const text = guardedResponseText(response);
   ctx.followedUrls.push(step.url);
@@ -338,6 +351,7 @@ function execParseFeed(
     throw new RecipeStepError(`parse_${feedType}(${step.bind}): ${errorMessage(error)}`);
   }
   const baseUrl = inputVar.sourceUrl ?? ctx.endpointUrl;
+  if(parsed.length>maxItems)ctx.warnings.push('source_recipe_items_truncated');
   const items = parsed.slice(0, maxItems).map((feedItem, index) => feedItemToRecipeItem(feedItem, baseUrl, index));
   trace.item_count = items.length;
   ctx.vars.set(step.bind, { kind: "items", value: items });
@@ -373,8 +387,9 @@ function execExtractList(
     html: inputVar.value,
     cssClass: step.selector.css_class,
     baseUrl: inputVar.sourceUrl ?? ctx.endpointUrl,
-    maxItems,
+    maxItems: maxItems+1,
   });
+  if(items.length>maxItems){ctx.warnings.push('source_recipe_items_truncated');items.length=maxItems;}
   trace.item_count = items.length;
   ctx.vars.set(step.bind, { kind: "items", value: items });
 }
@@ -415,7 +430,7 @@ async function execFollowLink(
     const item = itemsVar.value[i]!;
     let text: string;
     try {
-      const response = await fetchAllowedOriginResponse(item.source_uri, ctx.policyEnvelope.allowed_network_origins, fetchOptions(ctx));
+      const response = await recipeFetch(ctx,item.source_uri);
       if (!response.ok) {
         ctx.warnings.push(`follow_link: ${item.source_uri} returned HTTP ${response.status}`);
         continue;
@@ -464,7 +479,7 @@ async function execDownloadAsset(
     checkDeadline(ctx);
     let response: GuardedResponse;
     try {
-      response = await fetchAllowedOriginResponse(item.source_uri, ctx.policyEnvelope.allowed_network_origins, fetchOptions(ctx));
+      response = await recipeFetch(ctx,item.source_uri);
     } catch (error) {
       ctx.warnings.push(`download_asset: ${item.source_uri} failed: ${errorMessage(error)}`);
       continue;
@@ -515,7 +530,10 @@ async function execPaginate(
         merged.push(item);
       }
     }
-    if (merged.length >= ctx.limits.max_items || pageIndex === step.max_pages) break;
+    if (merged.length >= ctx.limits.max_items || pageIndex === step.max_pages) {
+      if((produced?.kind==='items' && produced.value.length>merged.length) || resolveNextPageUrl(step.next_page,currentUrl,currentHtml,pageIndex))ctx.warnings.push('source_recipe_items_truncated');
+      break;
+    }
 
     const nextUrl = resolveNextPageUrl(step.next_page, currentUrl, currentHtml, pageIndex);
     if (!nextUrl) break;
@@ -527,7 +545,7 @@ async function execPaginate(
     checkDeadline(ctx);
     let response: GuardedResponse;
     try {
-      response = await fetchAllowedOriginResponse(nextUrl, ctx.policyEnvelope.allowed_network_origins, fetchOptions(ctx));
+      response = await recipeFetch(ctx,nextUrl);
     } catch (error) {
       ctx.warnings.push(`paginate: failed to fetch page ${pageIndex + 1}: ${errorMessage(error)}`);
       break;

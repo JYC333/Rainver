@@ -6,6 +6,9 @@ import LibraryModule from '../LibraryModule'
 import { informationDigestsApi, projectsApi, sourcesApi } from '../../../api/client'
 import type { ExtractionJob, InformationDigest, InterestProfileSnapshot, SourceChannel, SourceItem } from '../../../types/api'
 
+// First-content guidance is covered by ReadingStart integration tests.
+vi.mock('../ReadingStart', () => ({ ReadingStart: () => <p>No pending recommendations</p> }))
+
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }))
@@ -14,11 +17,10 @@ vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({ activeSpaceId: 'space-1', activeSpaceName: 'Space One' }),
 }))
 
-vi.mock('../../../core/spaceNav', () => ({
-  SpaceLink: ({ to, children, ...props }: { to: string; children: ReactNode }) => (
-    <a href={to} {...props}>{children}</a>
-  ),
-}))
+vi.mock('../../../core/spaceNav', async () => {
+  const { Link }=await import('react-router-dom')
+  return {SpaceLink: ({to,children,...props}:{to:string;children:ReactNode})=><Link to={to} {...props}>{children}</Link>}
+})
 
 vi.mock('../../../api/client', () => ({
   projectsApi: {
@@ -26,6 +28,7 @@ vi.mock('../../../api/client', () => ({
     addCorpusItem: vi.fn(),
   },
   informationDigestsApi: {
+    reading: vi.fn().mockResolvedValue({items:[],total:0,next_cursor:null}),
     personal: vi.fn(),
     profile: vi.fn(),
     acceptCandidate: vi.fn(),
@@ -264,13 +267,14 @@ describe('LibraryPage', () => {
     await waitFor(() => expect(informationDigestsApi.annotationEpisodes).toHaveBeenCalledTimes(1))
   })
 
-  it('defaults the Library shell to the all items route', async () => {
+  it('opens recommendations first and keeps the full material stream available', async () => {
     renderLibrary('/library')
 
-    expect(await screen.findByText('Gaussian Splatting Paper')).toBeInTheDocument()
-    expect(sourcesApi.channels).toHaveBeenCalledTimes(1)
-    expect(sourcesApi.items).toHaveBeenCalledWith(expect.objectContaining({ limit: 30, offset: 0 }))
-    expect(sourcesApi.briefings).not.toHaveBeenCalled()
+    expect(await screen.findByRole('heading',{name:'My reading'})).toBeInTheDocument()
+    await waitFor(()=>expect(informationDigestsApi.reading).toHaveBeenCalledWith('space-1',expect.objectContaining({view:'pending'}),undefined,expect.objectContaining({signal:expect.any(AbortSignal)})))
+    expect(sourcesApi.items).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button',{name:'All material'}))
+    await waitFor(()=>expect(informationDigestsApi.reading).toHaveBeenLastCalledWith('space-1',expect.objectContaining({view:'all'}),undefined,expect.objectContaining({signal:expect.any(AbortSignal)})))
   })
 
   it('renders source items as the primary reading stream', async () => {
@@ -418,7 +422,8 @@ describe('LibraryPage', () => {
 
     renderLibrary('/library/digests')
 
-    fireEvent.change(await screen.findByLabelText('Project for Useful paper'), { target: { value: 'project-1' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Project for Useful paper' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Research Project' }))
     fireEvent.click(screen.getByRole('button', { name: 'Add to Project Corpus' }))
     await waitFor(() => expect(projectsApi.addCorpusItem).toHaveBeenCalledWith('project-1', {
       source_item_id: 'source-item-1', role: 'candidate', triage_status: 'new',

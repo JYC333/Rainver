@@ -3,6 +3,7 @@ import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes
 import {
   HttpError,
   dateIso,
+  objectValue,
 } from "../routeUtils/common.js";
 import type {
   EvidenceLinkRow,
@@ -57,6 +58,8 @@ export function itemOut(row: WithAccessLevel<SourceItemRow>) {
 }
 
 export function jobOut(row: ExtractionJobRow) {
+  // Durable observation payload is internal work input, never status/API/model content.
+  const {observation_items: _observationItems, ...statusMetadata} = objectValue(row.metadata_json);
   return {
     id: row.id,
     space_id: row.space_id,
@@ -74,7 +77,7 @@ export function jobOut(row: ExtractionJobRow) {
     items_updated: row.items_updated,
     error_code: row.error_code,
     error_message: row.error_message,
-    metadata_json: row.metadata_json ?? null,
+    metadata_json: row.metadata_json ? statusMetadata : null,
     created_at: dateIso(row.created_at),
   };
 }

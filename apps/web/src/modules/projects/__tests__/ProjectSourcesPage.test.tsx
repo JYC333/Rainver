@@ -401,6 +401,9 @@ describe('ProjectSourcesPage', () => {
     expect(screen.getByRole('link', { name: 'RSS feeds' })).toHaveAttribute('href', '/sources/conn-1')
     expect(screen.queryByText(/a previous scan failed/i)).not.toBeInTheDocument()
     expect(screen.getByText('Collected paper')).toBeInTheDocument()
+    const readerHref = new URL(screen.getByRole('link',{name:'Open reader'}).getAttribute('href')!, 'https://app.test')
+    expect(readerHref.searchParams.get('from')).toBe('project')
+    expect(readerHref.searchParams.get('returnTo')).toBe('/projects/project-1/sources?tab=settings')
     expect(screen.queryByText('Project corpus')).not.toBeInTheDocument()
 
     await waitFor(() => {
@@ -501,7 +504,7 @@ describe('ProjectSourcesPage', () => {
     await waitFor(() => expect(projectsApi.deleteSourceBinding).toHaveBeenCalledWith('project-1', 'binding-1'))
   })
 
-  it('directly binds an existing Source for a Project writer', async () => {
+  it('binds a Source without implicitly opting into Standing deep research', async () => {
     vi.mocked(projectsApi.sourceBindings).mockResolvedValueOnce([])
     vi.mocked(projectsApi.createSourceBinding).mockResolvedValue({ id: 'binding-new' } as never)
     renderPage()
@@ -514,7 +517,7 @@ describe('ProjectSourcesPage', () => {
       source_channel_id: 'channel-1',
       delivery_scope: 'project_members',
       backfill_history: true,
-      standing_comparison_enabled: true,
+      standing_comparison_enabled: false,
       extraction_policy: { profile_key: 'generic_document_v1' },
     })))
     expect(projectsApi.proposeSourceBinding).not.toHaveBeenCalled()
@@ -645,7 +648,10 @@ describe('ProjectSourcesPage derived source signals', () => {
     // The annotation card links back to the Library reader — it never owns
     // the reader, and offers no annotation controls of its own.
     const link = await screen.findByRole('link', { name: /highlighted content from the article/i })
-    expect(link).toHaveAttribute('href', '/library/items/item-1')
+    const destination = new URL(link.getAttribute('href')!, 'http://test')
+    expect(destination.pathname).toBe('/library/items/item-1')
+    expect(destination.searchParams.get('from')).toBe('project')
+    expect(destination.searchParams.get('returnTo')).toBe('/projects/project-1/sources?tab=settings')
     expect(screen.queryByRole('button', { name: /save annotation/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /delete annotation/i })).toBeNull()
 

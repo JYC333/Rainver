@@ -94,6 +94,7 @@ export async function fetchSourceConnection(input: {
   timeoutMs?: number;
   /** The outbound boundary; a test supplies one pinned at its fixture server. */
   guard?: OutboundGuard;
+  beforeAttempt?: () => Promise<void>;
 }): Promise<SourceFetchResult> {
   const maxAttempts = input.backfill ? BACKFILL_FETCH_ATTEMPTS : 1;
   const timeoutMs = input.backfill ? input.timeoutMs ?? backfillFetchTimeoutMs(1) : undefined;
@@ -103,6 +104,7 @@ export async function fetchSourceConnection(input: {
     try {
       const response = await fetchSource(input.url, {
         headers: input.headers,
+        beforeSend: input.beforeAttempt,
         ...(input.credentialHeaders ? { credentialHeaders: input.credentialHeaders } : {}),
         maxDownloadBytes: input.maxDownloadBytes,
         ...(timeoutMs ? { timeoutMs } : {}),

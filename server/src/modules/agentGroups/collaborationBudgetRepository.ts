@@ -9,7 +9,7 @@ import { countContainerDelegations } from "../rooms/delegationBudget.js";
 // An active task keeps fixed bounds; a closed task may be followed by a new declaration.
 export const CollaborationBudgetSchema = z.object({
   task_id: z.string().min(1),
-  participant_agent_ids: z.array(z.string().min(1)).min(1).max(2)
+  participant_agent_ids: z.array(z.string().min(1)).min(1)
     .refine((ids) => new Set(ids).size === ids.length, "Participants must be distinct"),
   max_delegations: z.number().int().min(1).max(128),
 }).strict();

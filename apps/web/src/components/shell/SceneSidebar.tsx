@@ -35,6 +35,7 @@ function sceneItems(
   pathname: string,
   searchValue: string | null,
   spaceId: string | null,
+  searchParams: URLSearchParams,
 ): ActiveItem[] {
   const logical = stripSpacePrefix(pathname)
   if (scene.kind === 'filter') {
@@ -46,17 +47,17 @@ function sceneItems(
       active: logical.startsWith(scene.base) && it.value === current,
     }))
   }
-  // route scene: the active item is the one whose path is the longest prefix of pathname
+  // Route items may select a server view in the query (e.g. pending/read/all).
   const routeItems = flattenRouteItems(scene.items)
-  let bestLen = -1
-  routeItems.forEach(it => {
-    if (logical === it.to || logical.startsWith(`${it.to}/`)) bestLen = Math.max(bestLen, it.to.length)
-  })
+  const matches = (to: string) => {
+    const [path, query] = to.split('?')
+    return (logical === path || logical.startsWith(`${path}/`)) &&
+      [...new URLSearchParams(query)].every(([key, value]) => searchParams.get(key) === value)
+  }
+  const bestLen = Math.max(-1, ...routeItems.filter(it => matches(it.to)).map(it => it.to.length))
   return routeItems.map(it => ({
-    to: spacePath(spaceId, it.to),
-    label: it.label,
-    depth: it.depth,
-    active: (logical === it.to || logical.startsWith(`${it.to}/`)) && it.to.length === bestLen,
+    to: spacePath(spaceId, it.to), label: it.label, depth: it.depth,
+    active: matches(it.to) && it.to.length === bestLen,
   }))
 }
 
@@ -74,7 +75,7 @@ export function SceneSidebar({
   const { t } = useAppTranslation()
   const [searchParams] = useSearchParams()
   const searchValue = scene.kind === 'filter' ? searchParams.get(scene.filterKey) : null
-  const items = sceneItems(scene, pathname, searchValue, spaceId)
+  const items = sceneItems(scene, pathname, searchValue, spaceId, searchParams)
   const title = t(`nav.${scene.id}`, { defaultValue: t(`modules.${scene.id}`, { defaultValue: scene.title }) })
   const Icon = scene.icon
 
@@ -128,7 +129,7 @@ export function SceneTabs({
   const { t } = useAppTranslation()
   const [searchParams] = useSearchParams()
   const searchValue = scene.kind === 'filter' ? searchParams.get(scene.filterKey) : null
-  const items = sceneItems(scene, pathname, searchValue, spaceId)
+  const items = sceneItems(scene, pathname, searchValue, spaceId, searchParams)
 
   return (
     <div className="md:hidden flex gap-1.5 overflow-x-auto border-b border-border bg-card px-3 py-2">

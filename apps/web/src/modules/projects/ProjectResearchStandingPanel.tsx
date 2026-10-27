@@ -191,7 +191,7 @@ export function ProjectResearchStandingPanel({ projectId, canAct }: ProjectResea
       </section>
 
       <section className="space-y-2" aria-labelledby="recent-inflow-heading">
-        <div className="flex items-center justify-between"><h2 id="recent-inflow-heading" className="text-sm font-semibold">Recent inflow</h2><Link className="text-xs text-muted-foreground hover:underline" to={`/projects/${projectId}/research`}>Open Reading List</Link></div>
+        <div className="flex items-center justify-between"><h2 id="recent-inflow-heading" className="text-sm font-semibold">Recent inflow</h2><Link className="text-xs text-muted-foreground hover:underline" to={`/projects/${projectId}/research?tab=reading`}>Open Reading List</Link></div>
         {status.recent_inflow.length === 0 ? (
           <Card className="p-4"><p className="text-sm text-muted-foreground">No material has arrived from monitored sources yet.</p></Card>
         ) : (

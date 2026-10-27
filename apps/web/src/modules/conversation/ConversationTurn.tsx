@@ -1,3 +1,4 @@
+import { ConversationFilePreview } from "./ConversationFilePreview"
 import { RunModelLabel } from './RunModelLabel'
 import { useState } from 'react'
 import { AlertTriangle, ChevronRight, CircleHelp, Info, ListChecks } from 'lucide-react'
@@ -73,7 +74,7 @@ export function ConversationTurn({
   const [showWork, setShowWork] = useState(false)
   const stepsOpen = working || blocked || turn.state === 'failed' || showWork
   return (
-    <Message from="assistant" className={cn('gap-1.5', className)}>
+    <ConversationFilePreview key={turn.run_id} runId={turn.run_id}><Message from="assistant" className={cn('gap-1.5', className)}>
       <MessageContent className="w-full gap-2">
         <RunModelLabel model={turn.model_selection} />
         {/*
@@ -146,7 +147,7 @@ export function ConversationTurn({
         */}
         {working && <Shimmer className="text-sm">{t('conversation_ui.turn.working')}</Shimmer>}
       </MessageContent>
-    </Message>
+    </Message></ConversationFilePreview>
   )
 }
 

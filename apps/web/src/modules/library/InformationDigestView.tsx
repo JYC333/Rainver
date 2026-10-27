@@ -1,3 +1,4 @@
+import { readingHref } from './readingLinks'
 import { useState } from 'react'
 import { ExternalLink } from 'lucide-react'
 import type { InformationDigest, Project } from '../../types/api'
@@ -7,13 +8,16 @@ import { EmptyState } from '../../components/ui/empty-state'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { SafeExternalLink } from '../../components/SafeExternalLink'
 import { useAppTranslation } from '../../i18n'
-import { formatNumber } from '../../i18n/format'
+import { Button } from '../../components/ui/button'
+import { Select } from '../../components/ui/select'
+import { formatDateTime, formatNumber } from '../../i18n/format'
 
 type Feedback = 'interesting' | 'neutral' | 'never'
 
-export function InformationDigestView({ digest, project = false, onSerendipityFeedback, projects = [], onFileToProject }: {
+export function InformationDigestView({ digest, project = false, onSerendipityFeedback, projects = [], onFileToProject, reading = false }: {
   digest: InformationDigest
   project?: boolean
+  reading?: boolean
   onSerendipityFeedback?: (itemId: string, feedback: Feedback) => Promise<void>
   projects?: Array<Pick<Project, 'id' | 'name'>>
   onFileToProject?: (itemId: string, sourceItemId: string, projectId: string) => Promise<void>
@@ -23,25 +27,30 @@ export function InformationDigestView({ digest, project = false, onSerendipityFe
   if (digest.items.length === 0) {
     return (
       <EmptyState
-        title={t('workspace_ui.digest.empty_title')}
-        description={project ? t('workspace_ui.digest.empty_project') : t('workspace_ui.digest.empty_personal')}
+        title={digest.settings.ranking === 'project_monitoring' ? t(`monitoring.${String(digest.settings.coverage ?? 'not_run')}`) : t('workspace_ui.digest.empty_title')}
+        description={digest.settings.ranking === 'project_monitoring' ? t(`monitoring.${String(digest.settings.coverage ?? 'not_run')}`) : project ? t('workspace_ui.digest.empty_project') : t('workspace_ui.digest.empty_personal')}
       />
     )
   }
+  const projectId = digest.digest_type === 'project' ? digest.project_id ?? undefined : undefined
   const interest = digest.items.filter(item => item.section === 'interest')
   const serendipity = digest.items.filter(item => item.section === 'serendipity')
   const renderItems = (items: InformationDigest['items']) => items.map(item => (
-        <Card key={item.id} className="p-4 space-y-2">
+        <Card key={item.id} className="p-4 space-y-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <Link className="font-medium hover:underline" to={`/library/items/${item.source_item_id}${item.section === 'serendipity' ? '?from=serendipity' : ''}`}>
+              <Link className="break-words text-sm font-medium leading-snug hover:underline" to={readingHref({ source_item_id: item.source_item_id, reader_origin: projectId ? 'project' : item.section === 'serendipity' ? 'serendipity' : 'library' }, projectId, 'digest', digest.digest_date)}>
                 {item.title}
               </Link>
               <div className="mt-1 flex flex-wrap gap-1.5">
+                {!reading && <>
                 <Badge variant="outline">{item.domain_key}</Badge>
                 <Badge variant="muted">{item.depth}</Badge>
                 <Badge variant="muted">{item.genre}</Badge>
                 {item.read_status !== 'unread' && <Badge variant="success">{item.read_status}</Badge>}
+                </>}
+                {reading && item.read_status !== 'unread' && <Badge variant="success">{t(`reading.status_${item.read_status}`)}</Badge>}
+                {reading && item.occurred_at && <span className="text-xs text-muted-foreground">{formatDateTime(item.occurred_at)}</span>}
                 {project && item.anonymous_read_count !== null && <Badge variant="outline">{t('workspace_ui.digest.people_read', { count: item.anonymous_read_count })}</Badge>}
               </div>
             </div>
@@ -51,11 +60,12 @@ export function InformationDigestView({ digest, project = false, onSerendipityFe
               </SafeExternalLink>
             )}
           </div>
-          {(item.summary || item.excerpt) && <p className="text-sm text-muted-foreground">{item.summary ?? item.excerpt}</p>}
-          {item.rationale && <p className="text-xs text-muted-foreground border-l-2 pl-2">{item.rationale}</p>}
-          <div className="text-[11px] text-muted-foreground">
+          {(item.summary || item.excerpt) && <p className="break-words text-sm leading-relaxed text-muted-foreground">{item.summary ?? item.excerpt}</p>}
+          {item.provenance_json?.version_id && <p className="text-xs text-muted-foreground">v{item.provenance_json.version} · {t(item.provenance_json.evidence_depth === 'title' ? 'monitoring.titleOnly' : 'monitoring.depth')} · {formatDateTime(item.occurred_at)} · {t('monitoring.date')}: {formatDateTime(item.provenance_json.ready_at as string | undefined)}</p>}
+          {item.rationale && <p className="break-words text-sm text-muted-foreground border-l-2 border-border pl-3">{item.rationale}</p>}
+          {!reading && <div className="text-[11px] text-muted-foreground">
             {t('workspace_ui.digest.slot_score', { slot: item.quota_slot, score: formatNumber(item.score, { minimumFractionDigits: 3, maximumFractionDigits: 3 }) })}
-          </div>
+          </div>}
           {item.section === 'serendipity' && onSerendipityFeedback && (
             item.serendipity_feedback ? (
               <p className="text-xs text-muted-foreground" role="status">
@@ -63,37 +73,38 @@ export function InformationDigestView({ digest, project = false, onSerendipityFe
               </p>
             ) : (
               <div className="flex flex-wrap gap-2" aria-label={t('workspace_ui.digest.feedback_group', { title: item.title })}>
-                <button className="rounded border px-2 py-1 text-xs hover:bg-accent" type="button" onClick={() => void onSerendipityFeedback(item.id, 'interesting')}>{t('workspace_ui.digest.feedback_interesting')}</button>
-                <button className="rounded border px-2 py-1 text-xs hover:bg-accent" type="button" onClick={() => void onSerendipityFeedback(item.id, 'neutral')}>{t('workspace_ui.digest.feedback_neutral')}</button>
-                <button className="rounded border px-2 py-1 text-xs text-destructive hover:bg-destructive/10" type="button" onClick={() => void onSerendipityFeedback(item.id, 'never')}>{t('workspace_ui.digest.feedback_never')}</button>
+                <Button size="sm" variant="outline" type="button" onClick={() => void onSerendipityFeedback(item.id, 'interesting')}>{t('workspace_ui.digest.feedback_interesting')}</Button>
+                <Button size="sm" variant="outline" type="button" onClick={() => void onSerendipityFeedback(item.id, 'neutral')}>{t('workspace_ui.digest.feedback_neutral')}</Button>
+                <Button size="sm" variant="destructive" type="button" onClick={() => void onSerendipityFeedback(item.id, 'never')}>{t('workspace_ui.digest.feedback_never')}</Button>
               </div>
             )
           )}
           {!project && onFileToProject && projects.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 border-t pt-2">
-              <select
-                className="h-8 rounded border bg-background px-2 text-xs"
-                aria-label={t('workspace_ui.digest.project_for', { title: item.title })}
+            <div className="flex flex-wrap items-center gap-2 border-t border-border pt-2">
+              <Select
+                size="sm"
+                className="w-full sm:w-56"
+                ariaLabel={t('workspace_ui.digest.project_for', { title: item.title })}
                 value={projectByItem[item.id] ?? ''}
-                onChange={event => setProjectByItem(current => ({ ...current, [item.id]: event.target.value }))}
-              >
-                <option value="">{t('workspace_ui.digest.file_into_project')}</option>
-                {projects.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}
-              </select>
-              <button
-                className="rounded border px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
+                onChange={value => setProjectByItem(current => ({ ...current, [item.id]: value }))}
+                options={[{ value: '', label: t('workspace_ui.digest.file_into_project') }, ...projects.map(option => ({ value: option.id, label: option.name }))]}
+              />
+              <Button
+                size="sm" variant="outline"
                 type="button"
                 disabled={!projectByItem[item.id]}
                 onClick={() => void onFileToProject(item.id, item.source_item_id, projectByItem[item.id]!)}
               >
                 {t('workspace_ui.digest.add_to_corpus')}
-              </button>
+              </Button>
             </div>
           )}
         </Card>
       ))
   return (
     <div className="space-y-6">
+      {digest.settings.coverage_scope === 'current_only' && <p className="text-sm">{t('monitoring.currentOnly')}</p>}
+      {digest.settings.ranking === 'project_monitoring' && <p className="text-sm">{t(`monitoring.${String(digest.settings.coverage ?? 'not_run')}`)}</p>}
       <section className="space-y-3">
         <div>
           <h3 className="text-sm font-semibold">{t('workspace_ui.digest.interests_title')}</h3>
@@ -102,7 +113,7 @@ export function InformationDigestView({ digest, project = false, onSerendipityFe
         {renderItems(interest)}
       </section>
       {serendipity.length > 0 && (
-        <section className="space-y-3 border-t pt-5">
+        <section className="space-y-3 border-t border-border pt-5">
           <div>
             <h3 className="text-sm font-semibold">{t('workspace_ui.digest.serendipity_title')}</h3>
             <p className="text-xs text-muted-foreground">{t('workspace_ui.digest.serendipity_hint')}</p>

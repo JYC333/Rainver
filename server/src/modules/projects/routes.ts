@@ -1,3 +1,4 @@
+import { registerMonitoringRoutes } from "./monitoring/routes.js";
 import type { FastifyInstance } from "fastify";
 import * as protocol from "@rainver/protocol";
 import type {
@@ -47,6 +48,7 @@ import { enforceSources } from "../sources/enforceSources.js";
 import { ProjectOperationService } from "./projectOperationService.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerMonitoringRoutes(app, context);
   const repository = () => PgProjectRepository.fromConfig(context.config);
   const corpusRepository = () => new ProjectCorpusRepository(dbPool(context.config));
   const summaryGenerator = () => ProjectPublicSummaryGenerator.fromConfig(context.config);

@@ -1,3 +1,4 @@
+import { SpaceLink as ReadingLink } from '../../core/spaceNav'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BookOpen, Globe2, Pause, Play, Plus, RefreshCw, Rss, Search, SlidersHorizontal, Sparkles } from 'lucide-react'
@@ -10,9 +11,9 @@ import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Select } from '../../components/ui/select'
 import { errMsg } from '../../lib/utils'
-import { SourceMonitorDialog } from './SourceMonitorDialog'
+import {useSpaceNavigate} from '../../core/spaceNav'
 import { sourceQueryText } from './sourceQueryText'
-import type { FollowedSourceChannel, SourceChannel, SourceProvider, SourceProviderCategoryGroup, SourceRecommendation } from '../../types/api'
+import type { FollowedSourceChannel, SourceChannel, SourceProvider, SourceRecommendation } from '../../types/api'
 import { useAppTranslation } from '../../i18n'
 
 interface SourceGroup {
@@ -84,15 +85,14 @@ function statusLabel(status: SourceGroup['status'] | SourceChannel['status']) {
 
 /** Sources are origins; query and scheduling rules are shown as nested monitors. */
 export default function SourceChannelsPage() {
+  const navigate=useSpaceNavigate()
   const { activeSpaceId } = useSpace()
   const [providers, setProviders] = useState<SourceProvider[]>([])
-  const [arxivCategoryGroups, setArxivCategoryGroups] = useState<readonly SourceProviderCategoryGroup[]>([])
   const [channels, setChannels] = useState<SourceChannel[]>([])
   const [recommendations, setRecommendations] = useState<SourceRecommendation[]>([])
   const [followed, setFollowed] = useState<FollowedSourceChannel[]>([])
   const [providerFilter, setProviderFilter] = useState('')
   const [search, setSearch] = useState('')
-  const [setupOpen, setSetupOpen] = useState(false)
   const [busyMonitorId, setBusyMonitorId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [followedError, setFollowedError] = useState<string | null>(null)
@@ -116,7 +116,6 @@ export default function SourceChannelsPage() {
       setProviders(providerRows)
       setChannels(channelRows)
       setRecommendations(recommendationRows)
-      setArxivCategoryGroups(providerRows.find(provider => provider.provider_key === 'arxiv')?.setup_schema?.category_groups ?? [])
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
@@ -199,12 +198,13 @@ export default function SourceChannelsPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-2xl font-semibold">Sources</h1>
+          <h1 className="text-2xl font-semibold">{t('monitoring.sourceManagement')}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{t('monitoring.sourceManagementIntro')} <ReadingLink className="text-primary hover:underline" to="/library">{t('monitoring.backToReading')}</ReadingLink></p>
           <p className="text-sm text-muted-foreground">Manage external origins and the monitors that collect content from them.</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => void load()} disabled={loading}><RefreshCw className="size-4 mr-2" />Refresh</Button>
-          <Button onClick={() => setSetupOpen(true)}><Plus className="size-4 mr-2" />Add source</Button>
+          <Button onClick={() => navigate('/sources/goals/new')}><Plus className="size-4 mr-2" />{t('sourceGoals.begin')}</Button>
         </div>
       </div>
 
@@ -277,7 +277,7 @@ export default function SourceChannelsPage() {
       </div>
 
       {channels.length === 0 && !loading ? (
-        <EmptyState title="No sources yet" description="Add an academic search, feed subscription, or web page to start collecting content." action={<Button onClick={() => setSetupOpen(true)}><Plus className="size-4 mr-2" />Add source</Button>} />
+        <EmptyState title={t('sourceGoals.question')} description={t('sourceGoals.examples')} action={<Button onClick={() => navigate('/sources/goals/new')}><Plus className="size-4 mr-2" />{t('sourceGoals.begin')}</Button>} />
       ) : visibleSources.length === 0 && !loading ? (
         <EmptyState title="No matching sources" description="Try a different source, platform, or monitor name." />
       ) : (
@@ -317,8 +317,9 @@ export default function SourceChannelsPage() {
                         </div>
                       </div>
                       <div className="flex shrink-0 gap-2">
-                        <Button variant="outline" size="sm" onClick={() => void toggle(monitor)} disabled={busy}>{monitor.status === 'active' ? <Pause className="size-4" /> : <Play className="size-4" />}{monitor.status === 'active' ? 'Pause' : 'Resume'}</Button>
-                        <Button variant="outline" size="sm" onClick={() => void scan(monitor)} disabled={busy}><RefreshCw className="size-4 mr-1" />Scan now</Button>
+                        {monitor.goal_id&&<Button size="sm" variant="outline" onClick={()=>navigate(`/sources/goals/${monitor.goal_id}`)}>{t('sourceGoals.ownerControl')}</Button>}
+                        <Button variant="outline" size="sm" onClick={() => void toggle(monitor)} disabled={busy||!!monitor.goal_id}>{monitor.status === 'active' ? <Pause className="size-4" /> : <Play className="size-4" />}{monitor.status === 'active' ? 'Pause' : 'Resume'}</Button>
+                        <Button variant="outline" size="sm" onClick={() => void scan(monitor)} disabled={busy||!!monitor.goal_id}><RefreshCw className="size-4 mr-1" />Scan now</Button>
                       </div>
                     </div>
                   )
@@ -329,14 +330,7 @@ export default function SourceChannelsPage() {
         </div>
       )}
 
-      <SourceMonitorDialog
-        open={setupOpen}
-        mode="source"
-        providers={providers}
-        categoryGroups={arxivCategoryGroups}
-        onOpenChange={setSetupOpen}
-        onSaved={load}
-      />
+
     </div>
   )
 }

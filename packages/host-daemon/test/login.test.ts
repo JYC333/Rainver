@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { LOGIN_INPUT_BURST_CHARS, LOGIN_INPUT_SESSION_MAX_CHARS, createLoginInputGovernor, openLoginSession, resolveLoginCommand } from "../src/login.js";
+import { LOGIN_INPUT_BURST_CHARS, LOGIN_INPUT_SESSION_MAX_CHARS, __setAgentAuthDetachedGraceMsForTests, createLoginInputGovernor, openLoginSession, resolveLoginCommand } from "../src/login.js";
 import { LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import { managedToolHome, toolsDir } from "../src/tools.js";
 import { withRuntimeKeyDrained } from "../src/execution.js";
 
 let configDir: string;
-const LOGIN = { command: ["goose", "login"], home_subdir: ".goose", credential_file: "auth.json" };
+const LOGIN = { command: ["goose", "login"] };
 
 beforeEach(async () => {
   configDir = await mkdtemp(join(tmpdir(), "rainver-host-login-"));
@@ -50,12 +50,13 @@ mkdir -p "$HOME/.fake"; echo credential > "$HOME/.fake/auth.json"
 if [ "$DISABLE_AUTOUPDATER" != "1" ] || [ "${damaged}" = "true" ]; then rm "$0"; fi
 exit 1
 `, { mode: 0o755 });
-    const login = { ...LOGIN, managed_command: ["{tree}/fake-claude", "login"], home_subdir: ".fake", credential_file: "auth.json",
+    const login = { ...LOGIN, managed_command: ["{tree}/fake-claude", "login"],
       env: { DISABLE_AUTOUPDATER: "1" }, managed_verification_command: ["{tree}/fake-claude", "--version"] };
+    const state = { env: {}, home_subdir: ".fake", credential_file: "auth.json" };
     // An existing installation predates the guard; the current server spec applies without reinstalling it.
     await writeFile(join(dir, "manifest.json"), JSON.stringify({ runtime_key: "claude_code", version: "login-guard", command, args: [], env: { DISABLE_AUTOUPDATER: "0" }, home,
       login_command: [command, "login"], login: { ...login, env: undefined }, installed_at: "" }));
-    openLoginSession({ session_id: "guarded", runtime_key: "claude_code", installation: "managed:login-guard", login }, frame => frames.push(frame), () => {});
+    openLoginSession({ session_id: "guarded", runtime_key: "claude_code", installation: "managed:login-guard", login, state }, frame => frames.push(frame), () => {});
     if (!damaged) {
       await waitFor(() => existsSync(join(home, "verification-started")));
       try {
@@ -113,7 +114,8 @@ exit 1
         session_id: "s",
         runtime_key: "claude_code",
         installation: "own",
-        login: { command: ["claude", "auth", "login"], home_subdir: ".claude", credential_file: ".credentials.json" },
+        login: { command: ["claude", "auth", "login"] },
+        state: { env: { CLAUDE_CONFIG_DIR: ".claude" }, home_subdir: ".claude", credential_file: ".credentials.json" },
       });
       expect(own.env.ANTHROPIC_API_KEY).toBeUndefined();
       expect(own.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
@@ -204,10 +206,115 @@ exit 1
     try {
       await expect(withRuntimeKeyDrained("registry_agent", 0, async () => "replaced")).rejects.toThrow(/still using registry_agent/);
     } finally {
+      // No grace here: the test is about the hold, not the detached wait.
+      __setAgentAuthDetachedGraceMsForTests(0);
       session.close();
+      __setAgentAuthDetachedGraceMsForTests(null);
     }
     await waitFor(() => frames.some(frame => frame.type === "login_exit"));
     await expect(withRuntimeKeyDrained("registry_agent", 0, async () => "replaced")).resolves.toBe("replaced");
+  });
+
+  it("lets an Agent Auth login finish after the client left, and reports it", async () => {
+    // The browser round trip (Antigravity's Google OAuth redirect) lands on a
+    // loopback port of the agent process; killing it when the page is left
+    // made the redirect fail. The session keeps waiting within the grace.
+    const frames: Record<string, unknown>[] = [];
+    const logs: string[] = [];
+    const dir = join(toolsDir(), "registry_agent", "5.0.0");
+    const home = managedToolHome("registry_agent");
+    await mkdir(dir, { recursive: true });
+    await mkdir(home, { recursive: true });
+    const initialized = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { authMethods: [{ id: "browser", name: "Browser login" }] } });
+    const authenticated = JSON.stringify({ jsonrpc: "2.0", id: 2, result: {} });
+    await writeFile(join(dir, "manifest.json"), JSON.stringify({
+      runtime_key: "registry_agent", version: "5.0.0", command: "/bin/sh",
+      args: ["-c", `printf '%s\\n' '${initialized}'; sleep 0.6; printf '%s\\n' '${authenticated}'; sleep 10`], env: {}, home,
+      login_command: null, login: null, installed_at: "",
+    }));
+    const session = openLoginSession({
+      session_id: "agent-detached", runtime_key: "registry_agent", installation: "managed:5.0.0", login: null,
+      auth_method: { id: "browser", name: "Browser login", description: null, type: "agent", args: [], env: {} },
+    }, frame => frames.push(frame), line => logs.push(line));
+    await waitFor(() => logs.some(line => line.includes("ACP authenticate registry_agent")));
+    session.close();
+    await waitFor(() => frames.some(frame => frame.type === "login_exit"), 5_000);
+    expect(logs).toContainEqual(expect.stringContaining("client left; waiting up to 300s"));
+    expect(frames).toContainEqual({ type: "login_exit", session_id: "agent-detached", exit_code: 0, logged_in: true });
+  });
+
+  it("gives up a detached Agent Auth login when the grace runs out", async () => {
+    const frames: Record<string, unknown>[] = [];
+    const dir = join(toolsDir(), "registry_agent", "6.0.0");
+    const home = managedToolHome("registry_agent");
+    await mkdir(dir, { recursive: true });
+    await mkdir(home, { recursive: true });
+    const initialized = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { authMethods: [{ id: "browser", name: "Browser login" }] } });
+    await writeFile(join(dir, "manifest.json"), JSON.stringify({
+      runtime_key: "registry_agent", version: "6.0.0", command: "/bin/sh",
+      args: ["-c", `printf '%s\\n' '${initialized}'; exec sleep 30`], env: {}, home,
+      login_command: null, login: null, installed_at: "",
+    }));
+    __setAgentAuthDetachedGraceMsForTests(200);
+    try {
+      const session = openLoginSession({
+        session_id: "agent-expired", runtime_key: "registry_agent", installation: "managed:6.0.0", login: null,
+        auth_method: { id: "browser", name: "Browser login", description: null, type: "agent", args: [], env: {} },
+      }, frame => frames.push(frame), () => {});
+      await new Promise(resolve => setTimeout(resolve, 100));
+      session.close();
+      await waitFor(() => frames.some(frame => frame.type === "login_exit"), 5_000);
+      expect(frames.find(frame => frame.type === "login_exit")).toMatchObject({ session_id: "agent-expired", logged_in: false });
+    } finally {
+      __setAgentAuthDetachedGraceMsForTests(null);
+    }
+  });
+
+  it("announces the loopback redirect an Agent Auth login waits for and delivers a pasted callback to it", async () => {
+    // Google's loopback flow: the agent prints an authorization URL whose
+    // redirect_uri is 127.0.0.1:<port> on this host. A browser elsewhere
+    // lands on an address it cannot open; pasted here, the daemon makes that
+    // request locally — the path and query exactly as the browser had them.
+    const { createServer } = await import("node:http");
+    const received: string[] = [];
+    const server = createServer((request, response) => { received.push(request.url ?? ""); response.end("ok"); });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    const frames: Record<string, unknown>[] = [];
+    const dir = join(toolsDir(), "registry_agent", "7.0.0");
+    const home = managedToolHome("registry_agent");
+    await mkdir(dir, { recursive: true });
+    await mkdir(home, { recursive: true });
+    const initialized = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { authMethods: [{ id: "oauth-personal", name: "Log in with Google" }] } });
+    const authorize = `https://accounts.example/o/oauth2/auth?client_id=c&redirect_uri=http%3A%2F%2F127.0.0.1%3A${port}%2F&state=s1`;
+    await writeFile(join(dir, "manifest.json"), JSON.stringify({
+      runtime_key: "registry_agent", version: "7.0.0", command: "/bin/sh",
+      args: ["-c", `printf '%s\\n' '${initialized}'; sleep 0.2; echo 'Open the following link to authenticate the ACP server: ${authorize}' >&2; exec sleep 30`], env: {}, home,
+      login_command: null, login: null, installed_at: "",
+    }));
+    __setAgentAuthDetachedGraceMsForTests(0);
+    const session = openLoginSession({
+      session_id: "agent-callback", runtime_key: "registry_agent", installation: "managed:7.0.0", login: null,
+      auth_method: { id: "oauth-personal", name: "Log in with Google", description: null, type: "agent", args: [], env: {} },
+    }, frame => frames.push(frame), () => {});
+    try {
+      await waitFor(() => frames.some(frame => frame.type === "login_callback_wanted"));
+      expect(frames).toContainEqual({ type: "login_callback_wanted", session_id: "agent-callback", port, authorize_url: authorize });
+
+      // Wrong port: refused without a request.
+      session.callback!(`http://127.0.0.1:${port + 1}/?state=s1&code=c1`);
+      await waitFor(() => frames.some(frame => String(frame.data ?? "").includes("not the address this login is waiting for")));
+      expect(received).toEqual([]);
+
+      session.callback!(`http://127.0.0.1:${port}/?state=s1&code=c1`);
+      await waitFor(() => received.length > 0);
+      expect(received).toEqual(["/?state=s1&code=c1"]);
+      await waitFor(() => frames.some(frame => String(frame.data ?? "").includes("Redirect delivered (HTTP 200)")));
+    } finally {
+      session.close();
+      __setAgentAuthDetachedGraceMsForTests(null);
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
   });
 
   it.skipIf(!hasScript)("runs the login on a PTY, relays typed input, and reports the login state on exit", async () => {
@@ -215,11 +322,12 @@ exit 1
     const home = join(configDir, "home");
     await mkdir(home, { recursive: true });
     // A fake vendor login: reads a code, then writes its credential file.
-    const login = { command: ["sh", "-c", `printf 'code? '; read -r code; mkdir -p "$HOME/.fake" && echo "$code" > "$HOME/.fake/auth.json"; echo done:$code`], home_subdir: ".fake", credential_file: "auth.json" };
+    const login = { command: ["sh", "-c", `printf 'code? '; read -r code; mkdir -p "$HOME/.fake" && echo "$code" > "$HOME/.fake/auth.json"; echo done:$code`] };
+    const state = { env: {}, home_subdir: ".fake", credential_file: "auth.json" };
     const saved = process.env.HOME;
     process.env.HOME = home;
     try {
-      const session = openLoginSession({ session_id: "s1", runtime_key: "fake", installation: "own", login }, (frame) => frames.push(frame), () => {});
+      const session = openLoginSession({ session_id: "s1", runtime_key: "fake", installation: "own", login, state }, (frame) => frames.push(frame), () => {});
       await waitFor(() => frames.some((frame) => frame.type === "login_output" && String(frame.data).includes("code?")));
       session.write("abc\n");
       await waitFor(() => frames.some((frame) => frame.type === "login_exit"));
@@ -244,7 +352,6 @@ describe("logout", () => {
   const SPEC = {
     command: ["opencode", "auth", "login"], managed_command: ["{tree}/opencode", "auth", "login"],
     logout_command: ["opencode", "auth", "logout"], managed_logout_command: ["{tree}/opencode", "auth", "logout"],
-    home_subdir: ".local/share/opencode", credential_file: "auth.json",
   };
 
   it("runs the vendor's logout for the machine's own copy and, inside its tree, for a managed copy", async () => {
@@ -276,7 +383,7 @@ describe("logout", () => {
     expect(registry.command).toEqual([join(dir, "cursor-agent"), "logout"]);
 
     // A spec without a logout command fails closed rather than guessing one.
-    const noLogout = { command: ["goose", "login"], home_subdir: ".goose", credential_file: "auth.json" };
+    const noLogout = { command: ["goose", "login"] };
     expect(() => resolveLoginCommand({ session_id: "s", runtime_key: "acp_goose", installation: "own", login: noLogout, login_action: "logout" })).toThrow(/logout command/);
     expect(() => resolveLoginCommand({ session_id: "s", runtime_key: "acp_goose", installation: "managed:9", login: null, login_action: "logout" })).toThrow(/not have/);
   });

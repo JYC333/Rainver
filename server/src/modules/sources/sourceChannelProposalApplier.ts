@@ -15,7 +15,9 @@ export function registerSourceChannelProposalAppliers(registry: ProposalApplierR
         FOR UPDATE OF ch, sc`,
       [channelId, proposal.space_id],
     );
-    if (!current.rows[0] || new Date(String(current.rows[0].channel_updated_at)).toISOString() !== new Date(expectedUpdatedAt).toISOString()) {
+    const updatedAt = current.rows[0]?.channel_updated_at;
+    const currentTimestamp = updatedAt instanceof Date ? updatedAt.toISOString() : updatedAt ? new Date(String(updatedAt)).toISOString() : null;
+    if (!current.rows[0] || currentTimestamp !== new Date(expectedUpdatedAt).toISOString()) {
       throw new Error("Source Channel draft changed after proposal creation");
     }
     const now = new Date().toISOString();

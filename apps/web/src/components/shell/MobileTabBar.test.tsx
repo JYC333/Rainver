@@ -26,7 +26,7 @@ describe('mobile navigation', () => {
     expect(within(menu).getByRole('link', { name: 'Diary' })).toHaveAttribute('href', '/spaces/team/diary')
     expect(within(menu).queryByRole('link', { name: 'Instance Settings' })).not.toBeInTheDocument()
     expect(within(menu).queryByRole('link', { name: 'Space Settings' })).not.toBeInTheDocument()
-    fireEvent.click(within(menu).getByRole('link', { name: 'Library' }))
+    fireEvent.click(within(menu).getByRole('link', { name: 'Reading' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: /More/ })).toHaveAttribute('aria-current', 'true')
   })

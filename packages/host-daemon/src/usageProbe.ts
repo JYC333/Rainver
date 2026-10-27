@@ -1,9 +1,10 @@
+import { probeAntigravity } from "./antigravityUsage.js";
 import { spawn } from "node:child_process";
 import { helperProcessEnv } from "./providerBinding.js";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { HostUsageQuota, RuntimeLoginSpec } from "@rainver/protocol";
+import type { HostUsageQuota, RuntimeLoginSpec, RuntimeStateBoundary } from "@rainver/protocol";
 import { OWN_INSTALLATION, readToolManifestSync, type ToolManifest } from "./tools.js";
 import { sanitizeFailure } from "./ambientRedaction.js";
 
@@ -97,12 +98,18 @@ export function parseClaudeOAuthUsage(value: unknown): HostUsageQuota {
     result.week_pct = pct(week.utilization);
     result.week_resets = oauthResetText(week);
   }
-  result.available = result.session_pct !== null || result.week_pct !== null;
+  const windows = Object.entries(root).filter(([key]) => /^(five_hour|seven_day)(_|$)/.test(key))
+    .flatMap(([key, value]) => {
+      const window = parseOAuthWindow(value);
+      return window ? [{ id: key, label: key === "five_hour" ? "Session" : key === "seven_day" ? "Weekly" : key.startsWith("seven_day_") ? `${key.slice(10).replaceAll("_", " ")} weekly` : key.replaceAll("_", " "), used_pct: pct(window.utilization), resets: oauthResetText(window) }] : [];
+    }).slice(0, 64);
+  if (windows.length) result.windows = windows;
+  result.available = result.session_pct !== null || result.week_pct !== null || windows.length > 0;
   return result;
 }
 
-async function probeClaude(home: string, login: RuntimeLoginSpec | null, timeoutSeconds: number): Promise<HostUsageQuota> {
-  const credentialPath = join(home, login?.home_subdir ?? ".claude", login?.credential_file ?? ".credentials.json");
+async function probeClaude(home: string, state: RuntimeStateBoundary | null, timeoutSeconds: number): Promise<HostUsageQuota> {
+  const credentialPath = join(home, state?.home_subdir ?? ".claude", state?.credential_file ?? ".credentials.json");
   let accessToken: string;
   try {
     const oauth = asRecord(asRecord(JSON.parse(await readFile(credentialPath, "utf8")))?.claudeAiOauth);
@@ -420,13 +427,15 @@ type UsageProbeFrame = {
   runtime_key: string;
   installation: string;
   login: RuntimeLoginSpec | null;
+  state?: RuntimeStateBoundary | null;
   timeout_seconds: number;
 };
 
 export async function probeUsage(frame: UsageProbeFrame): Promise<HostUsageQuota> {
   const copy = copyHome(frame.runtime_key, frame.installation);
   if (!copy) return failed(`This host does not have ${frame.runtime_key} ${frame.installation} installed.`);
-  if (frame.runtime_key === "claude_code") return probeClaude(copy.home, frame.login ?? copy.manifest?.login ?? null, frame.timeout_seconds);
+  if (frame.runtime_key === "acp_antigravity_acp") return probeAntigravity(copy.home, frame.state ?? null, frame.timeout_seconds);
+  if (frame.runtime_key === "claude_code") return probeClaude(copy.home, frame.state ?? null, frame.timeout_seconds);
   if (frame.runtime_key === "codex_cli") return probeCodex(copy.home, copy.manifest, frame.timeout_seconds);
   // OpenCode bills through whichever provider it is pointed at, and a registry
   // Agent's limits are its own product's business. Neither has a subscription

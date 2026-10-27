@@ -19,6 +19,8 @@ import { clearStateRootEnv, clearVendorCredentialEnv, filterAmbientEnv, material
 import { managedToolTree, OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { ensureManagedWorkspace, runtimeProfileContainerPath, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
 import { isPackagedAdapter, resolvePackagedAdapter } from "./adapterInstallation.js";
+import { prepareAntigravityHarness } from "./antigravityHarness.js";
+import { ownLaunchFor } from "./ownCopies.js";
 import { egressProxyEnv, proxyBypassHosts, type EgressProfile, type EgressProxyHandle } from "./egressProxy.js";
 import { ensureCodexStrictSandboxConfig } from "./codexStrictSandbox.js";
 import { startLocalToolBridge, type LocalToolBridge } from "@rainver/agent-cli/local-bridge";
@@ -349,6 +351,11 @@ export function resolveAcpLaunch(
     }
     return { command: tool.command, args: [...tool.args, ...args.slice(shared)], env: { ...tool.env, HOME: tool.home } };
   }
+  // A registry agent's launch template names its runtime key, which is no
+  // executable; its own copy is whatever the capability probe verified on
+  // PATH, launched with the registry's arguments plus the template's.
+  const own = ownLaunchFor(runtimeKey);
+  if (own) return { command: own.command, args: [...own.args, ...args], env: {} };
   if (!isPackagedAdapter(rawCommand)) return { command: rawCommand, args, env: {} };
   const entrypoint = resolveAcpEntrypoint(rawCommand);
   if (!entrypoint) throw new Error(`This daemon does not have the ${rawCommand} adapter installed.`);
@@ -1429,6 +1436,15 @@ async function launchRun(
   // authority, and this machine does not get to override which Rainver a run
   // reports to.
   const derivedEnv: Record<string, string> = { RAINVER_OUTPUT_DIR: outputsDir, ...attachedWorkspaceEnv, ...acpAdapterEnv, ...bindingEnv, ...workSurfaceEnv };
+  if (frame.runtime_key === "acp_antigravity_acp") {
+    try {
+      Object.assign(derivedEnv, await prepareAntigravityHarness(command, runDir(frame.run_id)));
+    } catch (error) {
+      send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false,
+        error: `Could not isolate Antigravity generated skills: ${error instanceof Error ? error.message : String(error)}` });
+      return;
+    }
+  }
   if (hold.toolBridge) delete derivedEnv.RAINVER_TOOL_TOKEN;
 
   let spawnCommand = command;

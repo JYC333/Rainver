@@ -271,3 +271,19 @@ Every real-Postgres file clones the migrated baseline. Do not load a
 hand-written subset schema: a test that seeds rows the real constraints
 refuse must fail for a real reason. Request `{ empty: true }` only to test the
 migration runner or a plugin's own migrations.
+
+Sources execution foundation separates deterministic transport/contract tests,
+real-PG account/endpoint admission and HTTP-fixture tests, and an explicit OS
+smoke (`SOURCE_EXECUTION_OS_SMOKE=1`) in the Host package. The latter is skipped
+in the canonical suite and requires bubblewrap plus user-systemd or delegated cgroup v2; only an explicit successful smoke verifies namespace/resource behavior.
+Reproduction commands are in COMMANDS. Engine benchmark/queue-restart fixtures
+run in temporary directories through `tools/source-engine`, not a second
+scheduler, test database or product data path.
+
+Dual-review Sources regressions additionally use the actual serial Host adapter
+with real HTTP and two separate daemon worker processes. The checkpoint is
+outside the code namespace; this is distinct from the framework-only benchmark.
+`tools/source-engine/direct-smoke.mjs` tests a delegated private cgroup subtree
+while making the user bus unavailable. Default tests never depend on that OS
+infrastructure. Broker-to-registry cancellation and cached-output reauthorization
+use real-PG fixtures around the transport boundary.

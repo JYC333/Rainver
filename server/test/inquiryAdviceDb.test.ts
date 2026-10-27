@@ -582,10 +582,14 @@ describe("Inquiry next-step advice (real Postgres)", () => {
         cited_refs: [],
       })).generateAdvice(identity(), PROJECT, THREAD, "search_completed");
       let settled = false;
-      const adopting = serviceReturning({}).adoptAdvice(identity(), PROJECT, THREAD).finally(() => { settled = true; });
+      // Observe the expected rejection before COMMIT releases the lock; under
+      // full-suite load it may settle before the COMMIT promise resumes this test.
+      const adopting = serviceReturning({}).adoptAdvice(identity(), PROJECT, THREAD)
+        .finally(() => { settled = true; })
+        .then(() => ({ error: null }), (error: unknown) => ({ error }));
       await waitForLockWaiter(db.pool, { settled: () => settled });
       await generating.query("COMMIT");
-      await expect(adopting).rejects.toMatchObject({ statusCode: 409 });
+      expect(await adopting).toMatchObject({ error: { statusCode: 409 } });
     } finally {
       await generating.query("ROLLBACK").catch(() => undefined);
       generating.release();

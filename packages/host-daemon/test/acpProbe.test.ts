@@ -127,6 +127,43 @@ describe('probeAcpOptions failure reporting', () => {
   })
 })
 
+describe('probeAcpOptions with an agent that logs itself in on session/new', () => {
+  it('keeps the advertised methods when the session request never concludes, so the copy can be logged in', async () => {
+    const { probeAcpOptions } = await import('../src/acpProbe.js')
+    const reasons: string[] = []
+    // Antigravity's shape: initialize advertises Agent-Auth methods; a
+    // session/new with no stored credential starts a browser OAuth flow,
+    // prints the URL to stderr and waits minutes for the redirect.
+    const script = `
+      const rl = require("node:readline").createInterface({ input: process.stdin });
+      setInterval(() => {}, 1000);
+      rl.on("line", (line) => {
+        if (!line.trim()) return;
+        const msg = JSON.parse(line);
+        if (msg.id === 1) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { authMethods: [{ id: "oauth-personal", name: "Log in with Google" }] } }) + "\\n");
+        if (msg.id === 2) process.stderr.write("Open the following link to authenticate the ACP server: https://accounts.example/auth\\n");
+      });
+    `
+    const result = await probeAcpOptions(process.execPath, ['-e', script], {}, process.cwd(), 2_000, r => reasons.push(r))
+    expect(result).toEqual({ config_options: [], auth_methods: [expect.objectContaining({ id: 'oauth-personal', type: 'agent' })], session_available: null })
+    expect(reasons[0]).toMatch(/no answer within 2s; stderr: Open the following link.*login methods kept from initialize/)
+  })
+
+  it('still yields nothing when the copy exits after advertising no method', async () => {
+    const { probeAcpOptions } = await import('../src/acpProbe.js')
+    const script = `
+      const rl = require("node:readline").createInterface({ input: process.stdin });
+      rl.on("line", (line) => {
+        if (!line.trim()) return;
+        const msg = JSON.parse(line);
+        if (msg.id === 1) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { authMethods: [] } }) + "\\n", () => process.exit(2));
+      });
+    `
+    const result = await probeAcpOptions(process.execPath, ['-e', script], {}, process.cwd(), 5_000)
+    expect(result).toBeNull()
+  })
+})
+
 describe('probeAcpOptions with an agent that stops reading', () => {
   it('reports the closed input instead of ending the daemon', async () => {
     const { probeAcpOptions } = await import('../src/acpProbe.js')
@@ -205,6 +242,27 @@ describe('probeAcpOptions authentication', () => {
     const { probeAcpOptions } = await import('../src/acpProbe.js')
     const result = await probeAcpOptions(process.execPath, ['-e', fakeAgent(true)], {}, process.cwd(), 10_000)
     expect(result).toMatchObject({ session_available: true, auth_methods: [expect.objectContaining({ id: 'cursor_login' })] })
+  })
+
+  it('does not ask an Agent to authenticate when its credential is known to be absent', async () => {
+    const { probeAcpOptions } = await import('../src/acpProbe.js')
+    // Antigravity's authenticate is a browser login; a probe must not start
+    // one. An authenticate call here exits the fake, which the probe would
+    // report as inconclusive rather than "not logged in".
+    const script = `
+      const rl = require("node:readline").createInterface({ input: process.stdin });
+      setInterval(() => {}, 1000);
+      rl.on("line", (line) => {
+        if (!line.trim()) return;
+        const msg = JSON.parse(line);
+        const reply = (body) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, ...body }) + "\\n");
+        if (msg.method === "initialize") return reply({ result: { authMethods: [{ id: "oauth-personal", name: "Log in with Google" }] } });
+        if (msg.method === "authenticate") process.exit(9);
+        if (msg.method === "session/new") return reply({ error: { code: -32000, message: "Authentication required", data: { reason: "auth_required" } } });
+      });
+    `
+    const result = await probeAcpOptions(process.execPath, ['-e', script], {}, process.cwd(), 10_000, undefined, undefined, { authenticate: false })
+    expect(result).toEqual({ config_options: [], auth_methods: [expect.objectContaining({ id: 'oauth-personal' })], session_available: false })
   })
 
   it('reports a copy whose authenticate is refused as not logged in, methods intact', async () => {

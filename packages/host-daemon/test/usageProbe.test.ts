@@ -72,8 +72,6 @@ describe("which program the probe enters", () => {
     ],
     login: {
       command: ["codex", "login", "--device-auth"],
-      home_subdir: ".codex",
-      credential_file: "auth.json",
     },
     installed_at: "2026-09-08T13:27:20.849Z",
   } as const;
@@ -92,7 +90,7 @@ describe("which program the probe enters", () => {
     expect(managedCliEntry({
       ...codexManifest,
       login_command: ["/tools/claude/claude", "/login"],
-      login: { command: ["claude", "/login"], home_subdir: ".claude", credential_file: ".credentials.json" },
+      login: { command: ["claude", "/login"] },
     } as never)).toEqual({ command: "/tools/claude/claude", args: [] });
   });
 
@@ -135,7 +133,7 @@ describe("probing one copy on this host", () => {
       home: join(configDir, "codex-home"),
       // A managed binary that has gone missing: Node's spawn error names it by absolute path.
       login_command: [join(configDir, "missing", "codex"), "login", "--device-auth"],
-      login: { command: ["codex", "login", "--device-auth"], home_subdir: ".codex", credential_file: "auth.json" },
+      login: { command: ["codex", "login", "--device-auth"] },
       installed_at: "",
     }));
 

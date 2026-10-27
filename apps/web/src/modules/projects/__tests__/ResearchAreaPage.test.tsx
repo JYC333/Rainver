@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ResearchAreaPage from '../ResearchAreaPage'
+import i18n from '../../../i18n'
 import { projectResearchApi } from '../../../api/client'
 import type { Project, ResearchReadingList, ResearchArea } from '../../../types/api'
 
@@ -69,6 +70,7 @@ const reading = {
 
 describe('ResearchAreaPage', () => {
   beforeEach(async () => {
+    await i18n.changeLanguage('en')
     vi.clearAllMocks()
     window.localStorage.clear()
     const api = await import('../../../api/client')
@@ -94,13 +96,39 @@ describe('ResearchAreaPage', () => {
     vi.mocked(api.sourcesApi.projectItems).mockResolvedValue({ items: [], total: 0, limit: 5, offset: 0 })
   })
 
-  function renderPage() {
+  function renderPage(search = '?tab=standing') {
     render(
-      <MemoryRouter initialEntries={['/projects/project-1/research']}>
+      <MemoryRouter initialEntries={[`/projects/project-1/research${search}`]}>
         <Routes><Route path="/projects/:projectId/research" element={<ResearchAreaPage />} /></Routes>
       </MemoryRouter>,
     )
   }
+
+  it('keeps a default visit content-free and opens deep research only on demand', async () => {
+    renderPage('')
+    expect(screen.getByRole('link', { name: 'Read project updates' })).toHaveAttribute('href', '/projects/project-1/sources')
+    expect(screen.getByRole('link', { name: 'Past reports' })).toHaveAttribute('href', '/projects/project-1/research?tab=reports')
+    expect(screen.getByRole('link', { name: 'Research runs' })).toHaveAttribute('href', '/projects/project-1/research?tab=runs')
+    expect(screen.getByRole('link',{name:'Choose a project question'})).toHaveAttribute('href','/projects/project-1/inquiry')
+    expect(projectResearchApi.initializeArea).not.toHaveBeenCalled()
+    expect(projectResearchApi.workflows).not.toHaveBeenCalled()
+    expect(projectResearchApi.readingList).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('link', { name: 'Continue research' }))
+    expect(await screen.findByRole('tab', { name: 'Standing overview' })).toBeInTheDocument()
+    expect(projectResearchApi.initializeArea).toHaveBeenCalledWith('project-1')
+    fireEvent.click(screen.getByRole('tab', { name: 'Reports' }))
+    expect(await screen.findByText('How?')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Standing overview' }))
+    expect(screen.queryByRole('link', { name: 'Continue research' })).not.toBeInTheDocument()
+  })
+
+  it('renders the monitoring and optional research entry in Chinese without creating an area', async () => {
+    await i18n.changeLanguage('zh-CN')
+    renderPage('')
+    expect(screen.getByRole('link', { name: '查看项目更新' })).toHaveAttribute('href', '/projects/project-1/sources')
+    expect(screen.getByRole('link', { name: '继续已有研究' })).toHaveAttribute('href', '/projects/project-1/research?tab=focus')
+    expect(projectResearchApi.initializeArea).not.toHaveBeenCalled()
+  })
 
   /**
    * There is no Notebook tab. Notes are a Project-level surface. Do not add

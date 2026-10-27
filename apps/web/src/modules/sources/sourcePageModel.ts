@@ -1,3 +1,4 @@
+import i18n from '../../i18n'
 import type { SourceItem, SourceCapturePolicy, SourceScheduleRule } from '../../types/api'
 
 export type ItemFilter = 'open' | 'new' | 'triaged' | 'selected' | 'ignored'
@@ -120,16 +121,12 @@ function isoUtcWeekday(date: Date) {
 const TEXT_EXTRACTION_READY_STATES = new Set(['metadata_only', 'excerpt_saved', 'content_saved', 'extraction_failed'])
 
 export function textExtractionDisabledReason(item: Pick<SourceItem, 'content_state' | 'source_uri'>) {
-  if (!item.source_uri) return 'This item has no source URL to fetch.'
+  if (!item.source_uri) return i18n.t('reading.extractNoUrl')
   if (TEXT_EXTRACTION_READY_STATES.has(item.content_state)) return null
-  if (item.content_state === 'content_queued') return 'Text extraction is already queued.'
-  if (item.content_state === 'snapshot_queued') return 'Snapshot capture is already queued.'
-  if (item.content_state === 'snapshot_saved') return 'A source snapshot is already saved.'
-  return `Text extraction is not available for ${item.content_state}.`
-}
-
-export function textExtractionActionLabel(item: Pick<SourceItem, 'content_state'>) {
-  return item.content_state === 'content_saved' ? 'Re-extract' : 'Extract text'
+  if (item.content_state === 'content_queued') return i18n.t('reading.extractAlreadyQueued')
+  if (item.content_state === 'snapshot_queued') return i18n.t('reading.snapshotAlreadyQueued')
+  if (item.content_state === 'snapshot_saved') return i18n.t('reading.snapshotSaved')
+  return i18n.t('reading.extractUnavailable', { state: i18n.t(`reading.content_${item.content_state}`, { defaultValue: item.content_state }) })
 }
 
 export function fmt(dt: string | null) {

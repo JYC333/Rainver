@@ -12,7 +12,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
       expect(definition.id).toMatch(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/);
       expect(policyById.has(definition.policy_action)).toBe(true);
       expect(SystemActionDefinitionSchema.safeParse(definition).success).toBe(true);
-      if(!["authorization.request","input_resource.read","input_resource.search","conversation.search","source.channel.propose_activation","project.source.propose_bind","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.promote_knowledge","research.start_acquisition","research.cancel_acquisition","agent.delegate","task.create","task.report","task.handoff","task.advance_stage","task.complete","task.request_review","proposal.decide","inquiry.adopt_next_step","memory.remember","memory.revise","artifact.submit","handoff.write"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
+      if(!["source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate","authorization.request","input_resource.read","input_resource.search","conversation.search","source.channel.propose_activation","project.source.propose_bind","project.monitoring.propose","project.monitoring.propose_details","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.promote_knowledge","research.start_acquisition","research.cancel_acquisition","agent.delegate","task.create","task.report","task.handoff","task.advance_stage","task.complete","task.request_review","proposal.decide","inquiry.adopt_next_step","memory.remember","memory.revise","artifact.submit","handoff.write"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
     }
   });
 
@@ -263,4 +263,15 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
       side_effects: "conditional_proposal", proposal_type: "plan_review", gate_class: "direction",
     });
   });
+});
+
+
+it("requires bound goal action inputs and never accepts credential or network grants",()=>{
+ const actions=new Map(SYSTEM_ACTION_REGISTRY.map(a=>[a.id,a]));
+ for(const id of ["source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate"] as const){
+  expect(actions.get(id)!.input_schema.safeParse({}).success).toBe(false);
+ }
+ expect(actions.get("source.goal.inspect")!.input_schema.safeParse({goal_id:"g",source_connection_id:"s",source_channel_id:"c",credential:"secret"}).success).toBe(false);
+ expect(actions.get("source.goal.read")!.policy_resource?.resource_type).toBe("source_goal");
+ expect(actions.get("source.goal.inspect")!.side_effects).toBe("durable");
 });

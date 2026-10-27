@@ -1,3 +1,7 @@
+import {assertLegacySourceOwner} from './goals/compatibility.js';
+import {withQueryableTransaction} from '../routeUtils/common.js';
+import { readingStatusSql } from "./readingIdentity.js";
+import { SourceItemUserStateStore } from "./readingState.js";
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import type { Queryable } from "../routeUtils/common.js";
@@ -103,7 +107,7 @@ function itemColumnsWithCurrentUserState(itemAlias: string): string {
   return [
     itemColumnsForAlias(itemAlias),
     "suis.library_status",
-    "suis.read_status",
+    `${readingStatusSql(itemAlias, "suis")} AS read_status`,
     "suis.first_opened_at",
     "suis.last_opened_at",
     "suis.progress_json",
@@ -220,7 +224,7 @@ export class PgSourcesRepository {
       if (!SOURCE_ITEM_READ_STATUSES.has(filters.readStatus)) {
         throw new HttpError(422, "read_status must be one of: unread, skimmed, read, discussed");
       }
-      clauses.push(`COALESCE(suis.read_status, 'unread') = ${add(filters.readStatus)}`);
+      clauses.push(`${readingStatusSql("si", "suis")} = ${add(filters.readStatus)}`);
     }
     if (filters.contentState) clauses.push(`si.content_state = ${add(filters.contentState)}`);
     if (filters.connectionId) clauses.push(`si.connection_id = ${add(filters.connectionId)}`);
@@ -400,7 +404,7 @@ export class PgSourcesRepository {
             ? "triaged"
             : null;
       const readStatus = action === "mark_discussed" ? "discussed" : null;
-      await this.upsertItemUserState(identity, itemId, {
+      await new SourceItemUserStateStore(this.db).upsert(identity, itemId, {
         libraryStatus,
         readStatus,
         firstOpenedAt: null,
@@ -1301,6 +1305,10 @@ export class PgSourcesRepository {
   }
 
   async scanChannel(identity: SpaceUserIdentity, channelId: string) {
+    return withQueryableTransaction(this.db,db=>new PgSourcesRepository(db,this.config).scanChannelLocked(identity,channelId));
+  }
+  private async scanChannelLocked(identity: SpaceUserIdentity, channelId: string) {
+    await this.db.query('SELECT id FROM source_channels WHERE id=$1 AND space_id=$2 FOR UPDATE',[channelId,identity.spaceId]);
     const channel = await this.db.query<{
       id: string;
       space_id: string;
@@ -1325,6 +1333,7 @@ export class PgSourcesRepository {
     if (row.handler_kind === "recipe" && !row.active_recipe_version_id) {
       throw new HttpError(409, "Recipe Source Channel has no active recipe version");
     }
+    await assertLegacySourceOwner(this.db,identity.spaceId,channelId);
     const metadata: Record<string, unknown> = { created_by: "manual_scan", source_channel_id: row.id };
     if (row.handler_kind === "generated_custom") metadata.handler_kind = "generated_custom";
     if (row.handler_kind === "recipe") {
@@ -1346,51 +1355,6 @@ export class PgSourcesRepository {
       );
     }
     return jobOut(job.rows[0]!);
-  }
-
-  private async upsertItemUserState(
-    identity: SpaceUserIdentity,
-    itemId: string,
-    input: {
-      libraryStatus: string | null;
-      readStatus: string | null;
-      firstOpenedAt: string | null;
-      lastOpenedAt: string | null;
-      progress: Record<string, unknown> | null;
-      readOrigin: "library" | null;
-    },
-  ): Promise<void> {
-    const now = new Date().toISOString();
-    await this.db.query(
-      `INSERT INTO source_item_user_states (
-         id, space_id, source_item_id, user_id, library_status, read_status,
-         first_opened_at, last_opened_at, read_origin, progress_json, created_at, updated_at
-       ) VALUES (
-         $1, $2, $3, $4, COALESCE($5::varchar(32), 'new'), COALESCE($6::varchar(32), 'unread'),
-         $7::timestamptz, $8::timestamptz, $11::varchar(32), COALESCE($9::jsonb, '{}'::jsonb), $10, $10
-       )
-       ON CONFLICT (space_id, source_item_id, user_id) DO UPDATE SET
-         library_status = COALESCE($5::varchar(32), source_item_user_states.library_status),
-         read_status = COALESCE($6::varchar(32), source_item_user_states.read_status),
-         first_opened_at = COALESCE(source_item_user_states.first_opened_at, $7::timestamptz),
-         last_opened_at = COALESCE($8::timestamptz, source_item_user_states.last_opened_at),
-         read_origin = COALESCE($11::varchar(32), source_item_user_states.read_origin),
-         progress_json = COALESCE($9::jsonb, source_item_user_states.progress_json),
-         updated_at = $10`,
-      [
-        randomUUID(),
-        identity.spaceId,
-        itemId,
-        identity.userId,
-        input.libraryStatus,
-        input.readStatus,
-        input.firstOpenedAt,
-        input.lastOpenedAt,
-        input.progress ? JSON.stringify(input.progress) : null,
-        now,
-        input.readOrigin,
-      ],
-    );
   }
 
   private async getEvidenceRow(identity: SpaceUserIdentity, evidenceId: string, requireFull = false) {

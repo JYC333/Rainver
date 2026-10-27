@@ -1,3 +1,5 @@
+import {SourceGoalVersionWriteSchema,SourceGoalRepairSchema} from './sourceGoals.js';
+import { ProposeProjectMonitoringSchema } from "./projectInformationMonitoring.js";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { PolicyActionId } from "./policy.js";
@@ -290,12 +292,20 @@ const proposalInputs:Record<string,z.ZodType>={
   // parameters, not a reference to an already-existing channel. Only
   // `provider_key` is required (`requiredString`); `name`, `query`, and
   // `endpoint_url` all have service-side defaults.
+  "source.goal.read":z.object({goal_id:z.string().min(1)}).strict(),
+  "source.goal.sources":z.object({goal_id:z.string().min(1)}).strict(),
+  "source.goal.inspect":z.object({goal_id:z.string().min(1),source_connection_id:z.string().min(1),source_channel_id:z.string().min(1)}).strict(),
+  "source.goal.write_version":SourceGoalVersionWriteSchema,
+  "source.goal.repair_candidate":SourceGoalRepairSchema.extend({goal_id:z.string().min(1)}),
   "source.channel.propose_activation": z.object({
     provider_key: z.string().min(1),
     name: z.string().min(1).optional(),
     query: z.record(z.string(), z.unknown()).nullable().optional(),
     endpoint_url: z.string().min(1).optional(),
   }).passthrough(),
+  "project.monitoring.propose": ProposeProjectMonitoringSchema,
+  "project.monitoring.propose_details": ProposeProjectMonitoringSchema,
+  "project.monitoring.read": z.object({}).strict(),
   "project.source.propose_bind":z.object({source_channel_id:z.string().min(1)}).passthrough(),
   "source.backfill.propose_start":z.object({source_channel_id:z.string().min(1),source_backfill_plan_id:z.string().min(1)}).passthrough(),
   "project.propose_definition": z.object({
@@ -464,7 +474,15 @@ export const SYSTEM_ACTION_REGISTRY = [
   httpAction("project.source.bind", "Bind a Source to a Project", "projects", "ProjectSourceBindingService.createBinding", "project.source.bind", "durable"),
   httpAction("policy.action_grant.create", "Create an action approval grant", "policy", "ActionApprovalGrantService.create", "policy.action_grant.create", "durable"),
   httpAction("policy.action_grant.revoke", "Revoke an action approval grant", "policy", "ActionApprovalGrantService.revoke", "policy.action_grant.revoke", "durable"),
+  agentAction("source.goal.read", "Read collection goal", "sources", "SourceGoalService.read", "source.goal.manage", "none", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
+  agentAction("source.goal.sources", "List authorized collection sources", "sources", "SourceGoalActions.sources", "source.goal.manage", "none", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
+  agentAction("source.goal.inspect", "Inspect untrusted source documentation", "sources", "SourceGoalActions.inspect", "source.goal.manage", "durable", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
+  agentAction("source.goal.write_version", "Write immutable collection plan candidate", "sources", "SourceGoalService.writeVersion", "source.goal.manage", "draft", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
+  agentAction("source.goal.repair_candidate", "Validate bounded source repair candidate", "sources", "SourceGoalRepairService.candidate", "source.goal.manage", "durable", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   gatedProposalAction("source.channel.propose_activation", "Propose Source Channel activation", "sources", "SourceChannelService.proposeActivation", "source.connection.manage", "source_channel_activation", "money"),
+  { ...gatedProposalAction("project.monitoring.propose", "Propose bounded Project monitoring", "projects", "ProjectMonitoringService.propose", "project.monitoring.configure", "project_information_monitoring_activation", "money"), grantable:false, policy_resource:{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false} },
+  { ...gatedProposalAction("project.monitoring.propose_details", "Propose Project monitoring details within approved scope", "projects", "ProjectMonitoringService.propose", "project.monitoring.configure", "project_information_monitoring_details", "direction"), grantable:false, policy_resource:{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false} },
+  agentAction("project.monitoring.read", "Read content-free Project monitoring status", "projects", "ProjectMonitoringService.agentStatus", "project.operation.manage", "none", {resource_id_fallback:"project_or_run",check_action_approval_grant:false}),
   gatedProposalAction("project.source.propose_bind", "Propose binding a Source to a Project", "projects", "ProjectSourceBindingService.proposeBind", "project.source.bind", "project_source_bind", "money"),
   gatedProposalAction("project.propose_definition", "Propose the Project goal or core problem", "projects", "ProjectDefinitionProposalService.proposeDefinition", "project.brief.propose", "project_brief_publish", "direction"),
   httpAction("project.operation.read", "Read Project operation progress", "projects", "ProjectOperationService.get", "project.operation.manage", "none"),

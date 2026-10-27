@@ -27,6 +27,7 @@ export class PgSerendipityRepository {
          JOIN source_item_user_states s
            ON s.space_id=a.space_id AND s.source_item_id=a.source_item_id
         WHERE a.space_id=$1 AND s.user_id=$2 AND a.status='succeeded' AND s.read_status <> 'unread'
+          AND COALESCE(s.read_origin,'library') <> 'project'
         GROUP BY a.domain_key, a.depth, a.genre, a.stance_target_key, a.stance_polarity, a.stance_confidence`,
       [spaceId, userId],
     );

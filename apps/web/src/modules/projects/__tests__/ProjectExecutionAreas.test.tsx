@@ -113,15 +113,14 @@ describe('Project execution Areas', () => {
     )
 
     expect(await screen.findByText('Execution Project')).toBeInTheDocument()
-    // Three promoted destinations, then everything else under Areas. Do not
+    // Four promoted destinations, then everything else under Areas. Do not
     // drop a route when promoting one. Every route stays one click away.
     expect(screen.getByRole('link', { name: /^Pulse/ })).toBeInTheDocument()
     for (const gone of ['Explore', 'Decide & learn', 'Digest', 'Raw material', 'Experiments', 'Knowledge review', 'Learning', 'Operations']) {
       expect(screen.queryByText(gone)).not.toBeInTheDocument()
     }
-    // Six Areas, flat. Sources has three tabs, Inquiry has two views, the Room
-    // is a link, and Learning and Operations are Space-level. Every previous
-    // route still resolves.
+    // Six Areas, flat. Reading keeps the existing Sources route. Every previous
+    // route stays reachable.
     const destinations = [
       ['Pulse', ''],
       ['Board', '/board'],
@@ -129,8 +128,8 @@ describe('Project execution Areas', () => {
       ['Conversations', '/conversations'],
       ['Notes', '/notes'],
       ['Inquiry', '/inquiry'],
+      ['Reading', '/sources'],
       ['Research', '/research'],
-      ['Sources', '/sources'],
       ['Files & Code', '/files'],
       ['Decisions', '/decisions'],
     ] as const

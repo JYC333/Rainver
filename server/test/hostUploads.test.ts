@@ -1,3 +1,5 @@
+import { readRunFilePreview } from "../src/modules/runs/filePreview.js";
+import { loadConfig } from "../src/config.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { HostRunDiffUploadSchema } from "@rainver/protocol";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -5,7 +7,7 @@ import { resetTables } from "./support/resetTables.js";
 import { PgHostRepository } from "../src/modules/hosts/repository.js";
 import { PgArtifactRepository } from "../src/modules/artifacts/repository.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
-import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects, seedServerHost } from "./support/domainSeeds.js";
 
 // Real-Postgres coverage for the ADR 0016 D7 upload path: a remote host may
 // only upload diff/output artifacts for a Run bound to its own Folder, and
@@ -47,6 +49,7 @@ beforeEach(async () => {
      VALUES (gen_random_uuid()::varchar, $1, $2, 'member', 'active', $3, $3)`,
     [SPACE, MEMBER, now],
   );
+  await db.pool.query(`INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES (gen_random_uuid()::varchar, $1, $2, 'member', 'active', now(), now())`, [SPACE, OWNER]);
   await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
@@ -153,6 +156,78 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
     );
     expect(row.rows[0]!.content.length).toBeLessThan(oversized.length);
     expect(row.rows[0]!.metadata_json).toMatchObject({ truncated: true });
+  });
+
+  it("locates a linked workspace file under the pinned Location and rechecks path/Project authority", async () => {
+    const { mkdtemp, mkdir, writeFile, symlink, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const root = await mkdtemp(join(tmpdir(), 'rainver-file-preview-'));
+    try {
+      await mkdir(join(root, '.agent'));
+      await writeFile(join(root, '.agent', 'report.md'), '# Result\nSafe report');
+      await writeFile(join(root, '.env'), 'SECRET=x');
+      const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1ioAAAAASUVORK5CYII=';
+      await writeFile(join(root, 'preview.png'), Buffer.from(png, 'base64'));
+      await symlink(join(root, '.agent', 'report.md'), join(root, 'link.md'));
+      await seedServerHost(db.pool, { id: '99999999-9999-4999-8999-999999999999' });
+      await db.pool.query(`UPDATE workspace_locations SET execution_host_id = '99999999-9999-4999-8999-999999999999', execution_host_kind = 'server', root_path = $1, display_path = $1 WHERE id = 'location-a'`, [root]);
+      await db.pool.query(`UPDATE runs SET project_id = $2 WHERE id = $1`, [RUN_A, PROJECT]);
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+      const identity = { spaceId: SPACE, userId: OWNER };
+      expect(await readRunFilePreview(db.pool, config, identity, RUN_A, `${root}/.agent/report.md:2`)).toMatchObject({ kind: 'workspace', project_id: PROJECT, folder_id: FOLDER_A, path: '.agent/report.md', line: 2 });
+      expect(await readRunFilePreview(db.pool, config, identity, RUN_A, 'preview.png')).toMatchObject({ kind: 'image', mime_type: 'image/png', content_base64: png });
+      await expect(readRunFilePreview(db.pool, config, identity, RUN_A, '../outside.md')).rejects.toMatchObject({ statusCode: 404 });
+      await expect(readRunFilePreview(db.pool, config, identity, RUN_A, '.env')).rejects.toMatchObject({ statusCode: 403 });
+      await expect(readRunFilePreview(db.pool, config, identity, RUN_A, 'link.md')).rejects.toMatchObject({ statusCode: 403 });
+      await db.pool.query(`DELETE FROM project_members WHERE project_id = $1 AND user_id = $2`, [PROJECT, MEMBER]);
+      await expect(readRunFilePreview(db.pool, config, { ...identity, userId: MEMBER }, RUN_A, '.agent/report.md')).rejects.toMatchObject({ statusCode: 404 });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("previews uploaded raster bytes only through the visible Run and artifact, rejects unsafe output", async () => {
+    const hosts = new PgHostRepository(db.pool);
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1ioAAAAASUVORK5CYII=";
+    const uploaded = accepted(await hosts.recordOutputArtifacts(HOST_A, OWNER, RUN_A, { launch_id: LAUNCH_A, files: [
+      { name: "preview.png", content: png, encoding: "base64" },
+      { name: "note.md", content: "# Preview" },
+      { name: "evil.svg", content: Buffer.from('<svg onload="alert(1)"/>').toString('base64'), encoding: "base64" },
+      { name: "../escape.png", content: png, encoding: "base64" },
+    ] }));
+    expect(uploaded.skipped).toEqual(["evil.svg", "../escape.png"]);
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    const identity = { spaceId: SPACE, userId: OWNER };
+    expect(await readRunFilePreview(db.pool, config, identity, RUN_A, '/__run_output__/preview.png')).toEqual({ kind: 'image', name: 'preview.png', mime_type: 'image/png', content_base64: png });
+    expect(await readRunFilePreview(db.pool, config, identity, RUN_A, '/__run_output__/note.md')).toMatchObject({ kind: 'text', content: '# Preview' });
+    await expect(readRunFilePreview(db.pool, config, identity, RUN_A, '/tmp/unpublished.png')).rejects.toMatchObject({ statusCode: 404 });
+    await expect(readRunFilePreview(db.pool, config, { ...identity, spaceId: 'elsewhere' }, RUN_A, '/__run_output__/preview.png')).rejects.toMatchObject({ statusCode: 404 });
+    await db.pool.query(`UPDATE artifacts SET access_level = 'summary' WHERE run_id = $1`, [RUN_A]);
+    await expect(readRunFilePreview(db.pool, config, { ...identity, userId: MEMBER }, RUN_A, '/__run_output__/preview.png')).rejects.toMatchObject({ statusCode: 404 });
+    await db.pool.query(`UPDATE artifacts SET access_level = 'full' WHERE run_id = $1`, [RUN_A]);
+    await db.pool.query(`UPDATE runs SET visibility = 'private', owner_user_id = $2 WHERE id = $1`, [RUN_A, MEMBER]);
+    await expect(readRunFilePreview(db.pool, config, identity, RUN_A, '/__run_output__/preview.png')).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("skips NUL-containing text without rolling back valid previews in the same upload", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const hosts = new PgHostRepository(db.pool);
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1ioAAAAASUVORK5CYII=";
+    const result = accepted(await hosts.recordOutputArtifacts(HOST_A, OWNER, RUN_A, {
+      launch_id: LAUNCH_A,
+      files: [
+        { name: "misdecoded.png", content: Buffer.from(png, "base64").toString("utf8") },
+        { name: "note.txt", content: "中文预览\nPREVIEW-OK" },
+        { name: "image.png", content: png, encoding: "base64" },
+      ],
+    }));
+    expect(result.skipped).toEqual(["misdecoded.png"]);
+    expect(result.artifact_ids).toHaveLength(2);
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    const identity = { spaceId: SPACE, userId: OWNER };
+    expect(await readRunFilePreview(db.pool, config, identity, RUN_A, "/__run_output__/note.txt"))
+      .toMatchObject({ kind: "text", content: "中文预览\nPREVIEW-OK" });
+    expect(await readRunFilePreview(db.pool, config, identity, RUN_A, "/__run_output__/image.png"))
+      .toMatchObject({ kind: "image", mime_type: "image/png", content_base64: png });
   });
 
   it("records one artifact per output file, skipping oversized files and capping the count", async (ctx) => {

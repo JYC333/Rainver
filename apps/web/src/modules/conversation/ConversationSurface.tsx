@@ -1,3 +1,5 @@
+import { messageRunIds, delegatedRunIds, roomLiveRunAnchors } from './roomTimeline'
+import { ConversationFilePreview } from "./ConversationFilePreview"
 import { useAttentionViewing } from '../agent_work/AgentAttentionProvider'
 import { mergeAbortSignals } from '../../lib/mergeAbortSignals'
 import { ConversationScope, useConversationScope } from './ConversationScope'
@@ -572,7 +574,7 @@ function ConversationSurfaceContent({
 
   // Runs whose reply is already a message here. Their turn has been said.
   const repliedRunIds = new Set(messages.flatMap(message =>
-    message.role === 'assistant' ? messageRunIds(message) : []))
+    message.role === 'assistant' && message.run_id ? [message.run_id] : []))
   // Visible messages anchor ordinary recipients and real delegated children.
   // A later discussion wave is started by a hidden internal message, so its
   // live turn is rendered from the discussion detail until its reply lands.
@@ -975,6 +977,7 @@ function ConversationSurfaceContent({
   )
 
   const compact = variant === 'panel'
+  const liveRunAnchors = roomLiveRunAnchors(messages, runs)
   const timelineItems = groupDiscussionMessages(messages, discussions)
   const lastSegment = new Map(timelineItems.flatMap(item =>
     item.kind === 'discussion' ? [[item.discussionId, item.segment] as const] : []))
@@ -1004,7 +1007,6 @@ function ConversationSurfaceContent({
         projectId={detail?.room.project_id ?? null}
       />
     )
-    const delegatedIds = new Set(delegatedRunIds(message))
     return (
       <Fragment key={message.id}>
         <RoomMessageView
@@ -1029,12 +1031,11 @@ function ConversationSurfaceContent({
           onActionDecision={readOnly ? undefined : continueAfterDecision}
         />
         {/*
-          The turns this message started, as the Agent speaking after the
-          person — not as an attachment under what the person said. A turn
-          that has already produced its reply is a message of its own by
-          then, so only the ones still running are rendered here.
+          Pending turns in one explicit delegation group share the latest
+          visible group message, independent of Agent role.
+          A turn with its own reply is rendered through that message instead.
         */}
-        {messageRunIds(message)
+        {(liveRunAnchors.get(message.id) ?? [])
           // A turn is shown until its reply is a message of its own —
           // and then it is shown *as* that message (see `RoomMessageView`,
           // which renders an Agent reply through the same component when
@@ -1047,7 +1048,7 @@ function ConversationSurfaceContent({
               runId={runId}
               turn={liveTurns[runId]}
               agentName={agentNameForRun(runId)}
-              delegatedBy={delegatedIds.has(runId) ? delegatorNameForRun(runId) : undefined}
+              delegatedBy={allDelegatedRunIds.has(runId) ? delegatorNameForRun(runId) : undefined}
               run={runs[runId]}
               projectId={detail?.room.project_id ?? null}
               onRetry={readOnly || allDelegatedRunIds.has(runId) ? undefined : retryRun}
@@ -1348,11 +1349,12 @@ function RoomMessageView({
   const foldReply = delegated && !unsuccessful && !message.metadata_json?.awaiting_answer && (turn
     ? turn.state === 'done'
     : runIds.some(id => ['succeeded', 'degraded'].includes(runs[id]?.status)))
+  const previewRunId = message.run_id ?? (runIds.length === 1 ? runIds[0] : null)
   const reply = <>
     <ConversationInputPartsView parts={message.input_parts} text={message.content} />
     {turn
       ? <ConversationTurn turn={settledTurn(turn, turn.state, message.content)!} runHref={`/runs/${turn.run_id}`} className="max-w-none" />
-      : message.content && <MessageResponse>{message.content}</MessageResponse>}
+      : message.content && (previewRunId && !mine && !system ? <ConversationFilePreview key={previewRunId} runId={previewRunId}><MessageResponse>{message.content}</MessageResponse></ConversationFilePreview> : <MessageResponse>{message.content}</MessageResponse>)}
   </>
   return (
     // Who said it has to be readable at a glance in a column of mixed-language
@@ -1562,38 +1564,6 @@ function uniqueMessages(messages: RoomMessage[]): RoomMessage[] {
   })
 }
 
-/**
- * Every Run this message is tied to.
- *
- * `run_id` is the column: the Run that produced an Agent reply, or the Run a
- * person's message started. `metadata_json.run_ids` is the separate Room case
- * where one dispatched message fanned out to several recipients;
- * `delegated_run_ids` lists the child Runs an Agent delegated while answering
- * it.
- */
-export function messageRunIds(message: {
-  metadata_json?: RoomMessage['metadata_json']
-  run_id?: string | null
-}): string[] {
-  const fanout = message.metadata_json?.run_ids
-  const retries = message.metadata_json?.retry_run_ids
-  const superseded = new Set(Array.isArray(message.metadata_json?.retry_superseded_run_ids)
-    ? message.metadata_json.retry_superseded_run_ids.filter((id): id is string => typeof id === 'string')
-    : [])
-  const delegated = message.metadata_json?.delegated_run_ids
-  const ids = [
-    ...(Array.isArray(fanout) ? fanout.filter(id => typeof id === 'string' && !superseded.has(id)) : []),
-    ...(Array.isArray(retries) ? retries.filter(id => typeof id === 'string' && !superseded.has(id)) : []),
-    ...(Array.isArray(delegated) ? delegated : []),
-    ...(message.run_id ? [message.run_id] : []),
-  ]
-  return uniqueIds(ids.filter((id): id is string => typeof id === 'string'))
-}
-
-export function delegatedRunIds(message: { metadata_json?: RoomMessage['metadata_json'] }): string[] {
-  const delegated = message.metadata_json?.delegated_run_ids
-  return Array.isArray(delegated) ? delegated.filter((id): id is string => typeof id === 'string') : []
-}
 
 function metadataActionPreviews(metadata: Record<string, unknown> | null | undefined): ChatActionPreview[] {
   const value = metadata?.action_previews

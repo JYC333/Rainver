@@ -6,6 +6,7 @@ import {
   runAgentRoomToolCall,
 } from "../src/modules/runs/managedAgentDelegationTools.js";
 import type { AgentRunRecord } from "../src/modules/runs/repository.js";
+import { CollaborationBudgetSchema } from "../src/modules/agentGroups/collaborationBudgetRepository.js";
 
 function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
   return {
@@ -53,6 +54,27 @@ function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
 const config = loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" });
 
 describe("ACP agent delegation tools", () => {
+  it("advertises task collaboration for every available specialist without a numeric participant cap", async () => {
+    const targets = ["implementer", "reviewer-a", "reviewer-b"].map((name) => ({ agent_id: name, name, role: "worker" }));
+    const binding = await resolveAgentDelegationToolBinding(config, run(), {
+      targets,
+      service: { async spawnChildRun() { throw new Error("Contract inspection must not dispatch a Run"); } },
+    });
+    expect(binding?.toolDefinitions[0]?.input_schema).toMatchObject({
+      properties: {
+        budget: { properties: { collaboration: { properties: { participant_agent_ids: { minItems: 1 } } } } },
+      },
+    });
+    const schema = binding!.toolDefinitions[0]!.input_schema as {
+      properties: { budget: { properties: { collaboration: { properties: { participant_agent_ids: Record<string, unknown> } } } } };
+    };
+    expect(schema.properties.budget.properties.collaboration.properties.participant_agent_ids).not.toHaveProperty("maxItems");
+    const bounds = { task_id: "implementation-task", participant_agent_ids: targets.map((target) => target.agent_id), max_delegations: 20 };
+    expect(CollaborationBudgetSchema.parse(bounds)).toEqual(bounds);
+    expect(CollaborationBudgetSchema.safeParse({ ...bounds, participant_agent_ids: [] }).success).toBe(false);
+    expect(CollaborationBudgetSchema.safeParse({ ...bounds, participant_agent_ids: ["implementer", "implementer"] }).success).toBe(false);
+  });
+
   it("dispatches auditable child-run requests as bounded tool calls", async () => {
     const spawnCalls: unknown[] = [];
     const managerRun = run();

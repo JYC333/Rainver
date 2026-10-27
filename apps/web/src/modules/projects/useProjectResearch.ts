@@ -400,6 +400,11 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
       const next = new URLSearchParams(previous)
       next.delete('research')
       next.delete('thread')
+      // Cleanup must not turn an explicit setup into the bare choice route:
+      // that would unmount this hook and discard the open dialog/Thread.
+      if (!['standing', 'focus', 'reading', 'checklist', 'reports', 'runs'].includes(next.get('tab') ?? '')) {
+        next.set('tab', 'focus')
+      }
       return next
     }, { replace: true })
   }, [inquiryThreads, loading, navigate, projectId, researchWorkflows, searchParams, setSearchParams, userId])

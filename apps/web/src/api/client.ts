@@ -1,3 +1,6 @@
+import type { ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol'
+import type { RunFilePreview } from "@rainver/protocol"
+import type { ProjectMonitoringState,ProjectMonitoringConfig,MonitoringVersion } from "@rainver/protocol";
 import { mergeAbortSignals } from '../lib/mergeAbortSignals'
 import type {
   AuthAccount,
@@ -1390,6 +1393,7 @@ export const spaceEgressApi = {
 
 // ── Runs (canonical API) ──────────────────────────────────────────────────
 export const runsApi = {
+  filePreview: (id: string, path: string, options?: RequestOptions) => request<RunFilePreview>("GET", `/runs/${id}/file-preview?path=${encodeURIComponent(path)}`, undefined, options),
   list: (params: {
     status?: string
     mode?: string
@@ -2255,6 +2259,9 @@ export const hostsApi = {
       void reader.cancel().catch(() => undefined)
     }
   },
+  /** Delivers the `http://127.0.0.1:…` address a browser on another device landed on to the login on the host. */
+  loginCallback: (hostId: string, runtimeKey: string, installation: string, url: string) =>
+    post<null>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}/login/callback`, { url }),
   loginInput: (hostId: string, runtimeKey: string, installation: string, data: string) =>
     post<null>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}/login/input`, { data }),
   /** Empty string clears the override and returns this host to the derived address. */
@@ -2410,6 +2417,8 @@ export const acpAgentsApi = {
 export type RuntimeLoginEvent =
   | { type: 'output'; data: string }
   | { type: 'hint'; text: string }
+  /** The login waits for an OAuth redirect to a loopback port of the host; a browser elsewhere cannot reach it. */
+  | { type: 'callback_wanted'; port: number; authorize_url: string }
   | { type: 'exit'; exit_code: number; logged_in: boolean | null }
   | { type: 'error'; message: string }
 
@@ -2508,6 +2517,18 @@ export const activityApi = {
 
 // ── Source / Evidence ────────────────────────────────────────────────────
 export const informationDigestsApi = {
+  reading: (spaceId: string, input: Partial<ReadingQuery> = {}, projectId?: string, options: RequestOptions = {}) => {
+    const search = new URLSearchParams()
+    for (const [key, value] of Object.entries(input)) if (value !== undefined) search.set(key, String(value))
+    const scope = projectId ? `/projects/${encodeURIComponent(projectId)}` : ''
+    return get<ReadingPage>(`/spaces/${encodeURIComponent(spaceId)}${scope}/reading?${search}`, { ...options, spaceId })
+  },
+  readingPreference: (spaceId: string, projectId: string) =>
+    get<{ show_in_my_reading: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/reading-preference`),
+  setReadingPreference: (spaceId: string, projectId: string, show_in_my_reading: boolean) =>
+    put<{ show_in_my_reading: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/reading-preference`, { show_in_my_reading }),
+  readingState: (spaceId: string, itemId: string, body: ReadingStateRequest, projectId?: string) =>
+    patch<{ updated: number }>(`/spaces/${encodeURIComponent(spaceId)}${projectId ? `/projects/${encodeURIComponent(projectId)}` : ''}/reading/items/${encodeURIComponent(itemId)}/state`, body),
   /** Read-only: the day's snapshot, or `missing`. Without a date, the latest complete day of the digest's timezone. */
   personal: (spaceId: string, date?: string) => {
     const q = date ? `?date=${encodeURIComponent(date)}` : ''
@@ -2550,7 +2571,7 @@ export const informationDigestsApi = {
 }
 
 export const sourcesApi = {
-  providers: () => get<SourceProvider[]>('/sources/providers'),
+  providers: (options?: RequestOptions) => get<SourceProvider[]>('/sources/providers', options),
   sourceCatalog: () => get<SourceCatalog>('/instance/source-catalog'),
   updateCatalogProvider: (id: string, body: { status?: 'active' | 'disabled' }) =>
     patch<SourceCatalogProvider>(`/instance/source-catalog/providers/${id}`, body),
@@ -2558,15 +2579,15 @@ export const sourcesApi = {
     patch<SourceConnector>(`/instance/source-catalog/connectors/${id}`, body),
   updateCatalogMapping: (id: string, body: { status?: 'active' | 'disabled'; priority?: number }) =>
     patch<SourceCatalogMapping>(`/instance/source-catalog/mappings/${id}`, body),
-  channels: (params: { status?: string; provider_key?: string } = {}) => {
+  channels: (params: { status?: string; provider_key?: string } = {}, options?: RequestOptions) => {
     const q = new URLSearchParams()
     if (params.status) q.set('status', params.status)
     if (params.provider_key) q.set('provider_key', params.provider_key)
     const suffix = q.toString() ? `?${q.toString()}` : ''
-    return get<SourceChannel[]>(`/sources/channels${suffix}`)
+    return get<SourceChannel[]>(`/sources/channels${suffix}`, options)
   },
   recommendations: () => get<SourceRecommendation[]>('/sources/recommendations'),
-  followed: () => get<FollowedSourceChannel[]>('/sources/followed'),
+  followed: (options?: RequestOptions) => get<FollowedSourceChannel[]>('/sources/followed', options),
   decideRecommendation: (channelId: string, decision: 'subscribed' | 'dismissed' | 'muted') =>
     post<{ source_channel_id: string; status: string; updated_at: string }>(`/sources/recommendations/${encodeURIComponent(channelId)}/decision`, { decision }),
   /** Leave (`muted`) or rejoin (`subscribed`) a channel; what was delivered while subscribed stays readable. */
@@ -2584,12 +2605,12 @@ export const sourcesApi = {
     schedule_rule?: Record<string, unknown>
     capture_policy?: SourceCapturePolicy
     source_connection_id?: string
-  }) => post<SourceChannel>('/sources/channels', body),
+  }, options?: RequestOptions) => post<SourceChannel>('/sources/channels', body, options),
   previewQuery: (body: { provider_key: string; query: Record<string, unknown>; source_channel_id?: string }) =>
     post<SourceQueryPreview>('/sources/query-preview', body),
   updateChannel: (id: string, body: Partial<Pick<SourceChannel, 'source_name' | 'name' | 'status' | 'fetch_frequency' | 'schedule_rule'>> & { query?: Record<string, unknown>; endpoint_url?: string | null }) =>
     patch<SourceChannel>(`/sources/channels/${id}`, body),
-  scanChannel: (id: string) => post<ExtractionJob>(`/sources/channels/${id}/scan`),
+  scanChannel: (id: string, options?: RequestOptions) => post<ExtractionJob>(`/sources/channels/${id}/scan`, undefined, options),
   previewChannelBackfill: (channelId: string, body: { strategy: Partial<SourceBackfillStrategy>; quota_policy?: Partial<SourceBackfillQuotaPolicy> }) =>
     post<SourceBackfillPreview>(`/sources/channels/${channelId}/backfill/plans/preview`, body),
   createChannelBackfillPlan: (channelId: string, body: { idempotency_key: string; strategy: Partial<SourceBackfillStrategy>; quota_policy?: Partial<SourceBackfillQuotaPolicy>; project_source_binding_id?: string; project_operation_id?: string }) =>
@@ -2665,14 +2686,14 @@ export const sourcesApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<SourceItem>>('/sources/items?' + new URLSearchParams(q))
   },
-  getItem: (id: string) =>
-    get<SourceItem>(`/sources/items/${id}`),
+  getItem: (id: string, options?: RequestOptions) =>
+    get<SourceItem>(`/sources/items/${id}`, options),
   updateItem: (id: string, body: { connection_id?: string | null }) =>
     patch<SourceItem>(`/sources/items/${id}`, body),
-  createManualUrl: (body: { url: string; title?: string; connection_id?: string | null; queue_content?: boolean }) =>
-    post<SourceItem>('/sources/items/manual-url', body),
-  itemAction: (id: string, action: string) =>
-    post<SourceItem>(`/sources/items/${id}/actions`, { action }),
+  createManualUrl: (body: { url: string; title?: string; project_id?: string; connection_id?: string | null; queue_content?: boolean }, options?: RequestOptions) =>
+    post<SourceItem>('/sources/items/manual-url', body, options),
+  itemAction: (id: string, action: string, options?: RequestOptions) =>
+    post<SourceItem>(`/sources/items/${id}/actions`, { action }, options),
   jobs: (params: {
     status?: string
     source_item_id?: string
@@ -2680,7 +2701,7 @@ export const sourcesApi = {
     job_type?: string
     limit?: number
     offset?: number
-  } = {}) => {
+  } = {}, options?: RequestOptions) => {
     const q: Record<string, string> = {}
     if (params.status !== undefined) q.status = params.status
     if (params.source_item_id !== undefined) q.source_item_id = params.source_item_id
@@ -2688,10 +2709,10 @@ export const sourcesApi = {
     if (params.job_type !== undefined) q.job_type = params.job_type
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
-    return get<Page<ExtractionJob>>('/sources/jobs?' + new URLSearchParams(q))
+    return get<Page<ExtractionJob>>('/sources/jobs?' + new URLSearchParams(q), options)
   },
-  runJob: (id: string) =>
-    post<ExtractionJob>(`/sources/jobs/${id}/run`),
+  runJob: (id: string, options?: RequestOptions) =>
+    post<ExtractionJob>(`/sources/jobs/${id}/run`, undefined, options),
 
   evidence: (params: { status?: string; evidence_type?: string; source_item_id?: string; project_id?: string; connection_id?: string; limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
@@ -2867,7 +2888,7 @@ export const sourcesApi = {
 // ── Reader ────────────────────────────────────────────────────────────────
 export const readerApi = {
   /** `origin: 'serendipity'` marks an open that came from the digest's serendipity section; it is not interest evidence. */
-  getDocument: (documentType: string, documentId: string, options: { origin?: 'serendipity' } = {}) =>
+  getDocument: (documentType: string, documentId: string, options: { origin?: 'library' | 'serendipity' | 'project' } = {}) =>
     get<ReaderDocumentPayload>(`/reader/documents/${documentType}/${documentId}${options.origin ? `?origin=${options.origin}` : ''}`),
 
   listAnnotations: (documentType: string, documentId: string) =>
@@ -4172,4 +4193,28 @@ export const diaryApi = {
     get<{ date: string; entries: DiaryEntry[] }>(`/diary/on-this-day?date=${encodeURIComponent(date)}`),
   reflections: (date: string) =>
     get<{ entry_date: string; reflections: DiaryReflection[] }>(`/diary/entries/${encodeURIComponent(date)}/reflections`),
+}
+
+
+export const projectMonitoringApi = {
+  reconcile:(projectId:string)=>post<ProjectMonitoringState>(`/projects/${projectId}/information-monitoring/reconcile`,{}),
+  state:(projectId:string,offset=0)=>get<ProjectMonitoringState>(`/projects/${projectId}/information-monitoring?offset=${offset}`),
+  setup:(projectId:string,query:string,provider_key:'arxiv'|'rss'|'atom'|'web_page'='arxiv')=>post<{channel_draft:{id:string};source_proposal:{id:string;status:string};binding_proposal:{id:string;status:string}}>(`/projects/${projectId}/information-monitoring/source-setup`,{query,provider_key,idempotency_key:crypto.randomUUID()}),
+  propose:(projectId:string,config:ProjectMonitoringConfig,active:string|null)=>post(`/projects/${projectId}/information-monitoring/proposals`,{config,expected_active_version_id:active,idempotency_key:crypto.randomUUID()}),
+  details:(projectId:string,body:{expected_version_id:string;recommendation_count:number;language:string})=>patch<MonitoringVersion>(`/projects/${projectId}/information-monitoring/details`,body),
+  paused:(projectId:string,versionId:string,paused:boolean)=>patch(`/projects/${projectId}/information-monitoring/state`,{expected_version_id:versionId,paused}),
+  run:(projectId:string,version:MonitoringVersion,kind:'initial'|'check'='initial')=>post(`/projects/${projectId}/information-monitoring/runs`,{version_id:version.id,config_hash:version.config_hash,kind,idempotency_key:crypto.randomUUID()}),
+  feedback:(projectId:string,itemId:string,feedback:'read'|'relevant'|'not_relevant')=>post(`/projects/${projectId}/information-monitoring/items/${itemId}/feedback`,{feedback}),
+};
+
+// Goal collection uses the same scoped transport and canonical Run stream.
+export const sourceGoalsApi={
+ findLegacy:(channel:string,options:RequestOptions={})=>get<{goal_id:string|null}>(`/sources/goal-setup/legacy/${encodeURIComponent(channel)}`,options),
+ storeCredential:(data:{name:string;secret:string},options:RequestOptions={})=>post<CustomSourceCredentialDTO>('/sources/custom-source-credentials',data,options),
+ list:(options:RequestOptions={})=>get<{goals:import('@rainver/protocol').SourceGoalDetail['goal'][]}>('/sources/goals',options),
+ read:(id:string,options:RequestOptions={})=>get<import('@rainver/protocol').SourceGoalDetail>(`/sources/goals/${encodeURIComponent(id)}`,options),
+ begin:(data:{intent:string;project_id?:string|null;idempotency_key?:string},options:RequestOptions={})=>post<{id:string;space_id:string}>('/sources/goal-setup/begin',data,options),
+ message:(goal_id:string,content:string,idempotency_key:string,options:RequestOptions={})=>post<{run_id:string;session_id:string}>('/sources/goal-setup/message',{goal_id,content,idempotency_key},options),
+ legacy:(channel_id:string,options:RequestOptions={})=>post<{goal:{id:string}}>('/sources/goal-setup/legacy',{channel_id},options),
+ action:(id:string,action:string,body:Record<string,unknown>={},options:RequestOptions={})=>post(`/sources/goals/${encodeURIComponent(id)}/${action}`,body,options),
 }

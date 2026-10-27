@@ -14,9 +14,13 @@ web surfaces for this feature are `CustomSourceSpacePolicyPanel` (Space
 Settings) and `CustomSourceRunnerSettingsPanel` (Instance Settings).
 Repair/rollback and credentialed source support are implemented backend-side
 (see "Repair" and "Credentialed Sources" below). Browser/Python handlers are
-not implemented. There is no Repair or credential-management UI — those routes exist as API/service only.
+not implemented. Goal repair is represented by lightweight source status, with no
+code-approval UI. `/sources/access` now submits credentials through the existing
+encrypted Source credential endpoint; creation and editing use the shared goal
+conversation, not a direct Custom Source form.
 
-`typescript_node` is the generated-code Level 3 fallback. Existing
+`typescript_node` identifies retained legacy Level 3 records. New goal-generated
+code uses exact-SHA isolated execution and never falls back to that runner. Existing
 `declarative_pipeline_v1` handler versions stay readable and executable and can
 be explicitly bridged into Level 2 `source_recipe_versions`. See "Declarative
 pipeline model" below for the Level 1/2/3 split: new configurable source
@@ -725,3 +729,49 @@ availability flags) all record a `blocked` handler run with the reason as
 - Browser automation in the first default path.
 - Shell execution in the first default path.
 - Dynamic dependency installation in the first default path.
+
+## Isolated execution foundation
+
+[ADR 0026](../decisions/0026-sources-isolated-request-execution.md) describes the
+current foundation. Hosts opt in and offer `isolated-v1`; server dispatch generates
+execution identities and refuses unoffered Hosts. Trusted mode never weakens it.
+Bubblewrap mounts only the real Node executable, libraries and readonly code;
+no handler node_modules, credentials, shell or writable host directory is exposed.
+Resources use verified user-systemd cgroups or an administrator-delegated direct
+cgroup v2 subtree. Missing capabilities refuse execution; standard-container
+acceptance still needs that delegation and has not been performed.
+
+The trusted daemon's pinned BasicCrawler/Cheerio adapter is serial, with a private
+queue, scope/code-bound atomic checkpoint and recoverable owner leases. It invokes
+isolated handlers for bounded `{items,next_urls}`. The framework concurrency-four
+benchmark is not this adapter's throughput. Business cursors and materialization
+remain server-owned. Sources broker scopes credentials by exact route on every
+hop, requires HTTPS for credentials, combines registry/request cancellation,
+preserves binary bytes, and exposes only bounded incremental metadata. Account
+and endpoint admission/cooldown are durable and atomic (429 and eligible 503 only,
+1s..24h). Current create/scan/repair flows have not enabled free generation; old
+Level 3 remains frozen. This foundation itself adds no goal model or scheduler.
+Stage-two orchestration now consumes it through the existing scheduler/jobs; see
+[Source Goals](SOURCE_GOALS.md), including the implemented goal conversation
+and explicit compatibility mapping described below.
+
+Host capability offers describe executability, not authorization. Host owner and
+Source/Space/Project permission checks remain server-owned; phase two cannot use
+self-reported capability as authority. The adapter uses one retry only for
+transient network/5xx errors, truncates HTML discoveries to 100 HTTP(S) links with
+explicit `link_coverage`/aggregate `coverage`, and never expands broker scope or
+request caps. Public input remains 1MiB UTF8; an independent readonly daemon-only
+collection envelope is bounded at 16MiB with response bodies <=8MiB decoded.
+Atomic complete owner-file publication excludes collection workers; empty legacy
+lease directories are not claims. Direct isolation also requires `prlimit`
+CORE=0/FSIZE=output_bytes, without weakening namespace or cgroup controls.
+
+
+## Goal UI compatibility
+
+Source list/detail authoring now opens the goal conversation. Existing handler
+and recipe registry/read APIs remain, and metadata-only legacy goal mapping
+does not execute or rewrite versions. Credentials use the existing encrypted
+Source endpoint through the dedicated `/sources/access` page, never messages
+or generated code. New generated goal implementations retain exact-SHA isolated
+execution; unavailable isolation refuses rather than using the legacy runner.

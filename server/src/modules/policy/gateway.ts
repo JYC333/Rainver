@@ -261,6 +261,8 @@ export function computeDecision(
 // ---------------------------------------------------------------------------
 
 const PROPOSAL_TYPE_RISK: Record<string, RiskLevel> = {
+  project_information_monitoring_details: "low",
+  project_information_monitoring_activation: "medium",
   memory_create: "medium",
   memory_update: "medium",
   memory_archive: "medium",

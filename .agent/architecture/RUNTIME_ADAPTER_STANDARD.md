@@ -102,10 +102,17 @@ drivers or a second runtime-identity branch.
 
 A builtin ACP adapter also declares how a *managed* copy is obtained on an
 execution host (`distribution: { registry_id }`, resolved against the ACP
-registry) and how it is logged into (`credentials.login`: PATH command,
-`managed_command` inside a tree, `home_subdir`, `credential_file`). The
-server sends that spec; the daemon logs the copy in. Do not keep a second
-login procedure on the server. See `modules/hosts.md` "Installations".
+registry), where it keeps its state (`credentials.state`: the state-root
+variables that relocate it to a per-Agent profile, plus `home_subdir` and
+`credential_file` of its login credential — required for host execution)
+and, when its CLI has one, how it is logged into from a terminal
+(`credentials.login`: PATH command, `managed_command` inside a tree). A
+runtime without a login command is logged in through the ACP auth method it
+advertises; its credential still lands where `state` says. The server sends
+that spec; the daemon logs the copy in and reads nothing else. Do not keep a
+second login procedure on the server, and do not branch on a runtime key to
+decide a state root — the declaration is the one source. See
+`modules/hosts.md` "Installations".
 
 An agent from the ACP registry needs no spec at all: enabling it
 (`modules/acpAgents`) publishes a dynamic adapter built from the registry

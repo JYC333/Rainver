@@ -38,9 +38,11 @@ const probe = {
 describe("Host runtime probe identity", () => {
   it("preserves fixed login process settings and post-login verification commands", () => {
     const login = { command: ["claude", "/login"], env: { DISABLE_AUTOUPDATER: "1" },
-      verification_command: ["claude", "--version"], managed_verification_command: ["{tree}/claude", "--version"],
-      home_subdir: ".claude", credential_file: ".credentials.json" };
-    expect(RuntimeProbeSchema.parse({ ...probe, login }).login).toEqual(login);
+      verification_command: ["claude", "--version"], managed_verification_command: ["{tree}/claude", "--version"] };
+    const state = { env: { CLAUDE_CONFIG_DIR: ".claude" }, home_subdir: ".claude", credential_file: ".credentials.json" };
+    const parsed = RuntimeProbeSchema.parse({ ...probe, login, state });
+    expect(parsed.login).toEqual(login);
+    expect(parsed.state).toEqual(state);
     expect(RuntimeProbeSchema.safeParse({ ...probe, login: { ...login, verification_command: [] } }).success).toBe(false);
   });
   it("names a runtime only by runtime_key", () => {
@@ -73,4 +75,19 @@ describe("install_tool transport", () => {
     expect(HostInstallToolFrameSchema.safeParse({ ...frame, egress_transport: { mode: "unsafe_direct" } }).success)
       .toBe(false);
   });
+});
+
+it("keeps Sources execution separate from workspace and credential-bearing launches", () => {
+  const execution = { execution_id:"source-1", version_sha256:"a".repeat(64), code:"export default()=>({})", input_json:"{}",
+    limits:{wall_ms:1000,memory_bytes:134217728,cpu_quota_percent:50,processes:32,output_bytes:4096,requests:10} };
+  expect(HostServerFrameSchema.parse({type:"source_execute",execution})).toEqual({type:"source_execute",execution});
+  for (const extra of [{cwd:"/"},{env:{API_KEY:"secret"}},{credential_id:"other"},{isolation:{egress_profile:"default"}}]) {
+    expect(HostServerFrameSchema.safeParse({type:"source_execute",execution:{...execution,...extra}}).success).toBe(false);
+  }
+});
+it("bounds Sources kernel tasks and rejects credential-bearing request headers",async()=>{
+  const {SourceRequestSchema,SourceExecutionLimitsSchema}=await import('../src/sourceExecution.js');
+  expect(SourceRequestSchema.safeParse({sequence:1,url:'https://a.test',method:'GET',headers:{authorization:'secret'}}).success).toBe(false);
+  expect(SourceRequestSchema.safeParse({sequence:1,url:'https://a.test',method:'GET',headers:{'if-none-match':'"v1"'}}).success).toBe(true);
+  expect(SourceExecutionLimitsSchema.safeParse({wall_ms:1000,memory_bytes:134217728,cpu_quota_percent:50,processes:1,output_bytes:100,requests:1}).success).toBe(false);
 });

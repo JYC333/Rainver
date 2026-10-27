@@ -6,7 +6,7 @@ import type { ConversationInputPart, RuntimePromptCapabilities } from '@rainver/
 import { ConversationInputSendGuardContext, useConversationInputDraft, type ConversationInputFileSource } from './ConversationInputComposer'
 
 /** One composer frame for direct chat, Rooms, and the Project sidecar. */
-export function ConversationComposer({ editor, controls, note, sending, inputDisabled = sending, sendDisabled, onSend, attachments, renderInputReferences = true, inputParts, onInputPartsChange, projectId, projectFolderId, fileSources, sessionId, inputResetToken, inputCapabilities, inputCapabilityMessage, onPaste, onDragOver, onDrop }: {
+export function ConversationComposer({ editor, controls, note, sending, inputDisabled = sending, sendDisabled, onSend, attachments, renderInputReferences = true, inputAttachmentsEnabled = true, inputParts, onInputPartsChange, projectId, projectFolderId, fileSources, sessionId, inputResetToken, inputCapabilities, inputCapabilityMessage, onPaste, onDragOver, onDrop }: {
   editor: ReactNode
   controls?: ReactNode
   note?: ReactNode
@@ -16,6 +16,7 @@ export function ConversationComposer({ editor, controls, note, sending, inputDis
   onSend: () => void
   attachments?: ReactNode
   renderInputReferences?: boolean
+  inputAttachmentsEnabled?: boolean
   inputParts?: ConversationInputPart[]
   onInputPartsChange?: (parts: ConversationInputPart[]) => void
   projectId?: string | null
@@ -46,12 +47,12 @@ export function ConversationComposer({ editor, controls, note, sending, inputDis
     <ConversationInputSendGuardContext.Provider value={() => canSend}>
       <div
         className="rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-ring"
-        onPaste={event => { inputDraft.onPaste(event); onPaste?.(event) }}
-        onDragOver={event => { inputDraft.onDragOver(event); onDragOver?.(event) }}
-        onDrop={event => { inputDraft.onDrop(event); onDrop?.(event) }}
+        onPaste={event => { if(inputAttachmentsEnabled)inputDraft.onPaste(event); onPaste?.(event) }}
+        onDragOver={event => { if(inputAttachmentsEnabled)inputDraft.onDragOver(event); onDragOver?.(event) }}
+        onDrop={event => { if(inputAttachmentsEnabled)inputDraft.onDrop(event); onDrop?.(event) }}
         onDragLeave={inputDraft.onDragLeave}
       >
-        {attachments ?? inputDraft.attachments}
+        {attachments ?? (inputAttachmentsEnabled?inputDraft.attachments:null)}
         <div className="min-w-0">
           {renderInputReferences && inputDraft.references}
           {imageUnsupported && <p className="border-b border-destructive/30 bg-destructive/5 px-3 py-1.5 text-xs text-destructive" role="alert">{inputCapabilityMessage ?? t('conversation_ui.composer.image_unsupported')}</p>}
@@ -59,7 +60,7 @@ export function ConversationComposer({ editor, controls, note, sending, inputDis
         </div>
         <div className="flex min-h-10 items-end justify-between gap-2 px-2 pb-2">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-            {inputDraft.controls}
+            {inputAttachmentsEnabled&&inputDraft.controls}
             {controls}
             {note && <span className="text-xs text-muted-foreground">{note}</span>}
           </div>

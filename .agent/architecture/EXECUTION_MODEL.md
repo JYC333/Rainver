@@ -560,7 +560,8 @@ fan-out ceiling and bounded defaults). The implementation is
   `origin_group_id` and charge this same chain. Human-started work opens a new
   container.
 - **Explicit task collaboration.** A coordinator can declare one open Project
-  Task, one or two fixed participants and a hard `max_delegations` (1–128).
+  Task, one or more fixed participants from the other active Room members and
+  a hard `max_delegations` (1–128). There is no separate numeric participant cap.
   Active bounds remain immutable (409 on changing Task, participants or cap).
   Once that Task is `done` or `cancelled`, the coordinator may explicitly
   declare another open Task and bounds in the same container, including on a
@@ -1089,3 +1090,14 @@ implemented. No proposal type auto-applies without user acceptance.
 - Sub-agent orchestration schema.
 - Cost accounting per run or step.
 - Vendor-specific trace schema.
+
+
+Background execution uses a bounded job worker pool rather than awaiting one
+Run before claiming the next job. `JOBS_WORKER_CONCURRENCY` defaults to 8
+(range 1–64); each lane has a distinct queue owner identity. Startup recovery
+runs once before the lanes start, maintenance reserves one interval across
+lanes, and shutdown wakes idle lanes and awaits active handlers. This removes
+cross-session and cross-CLI queue serialization, while conversation dispatch
+locks, host capacity (`BUILTIN_HOST_MAX_CONCURRENT_RUNS`) and checkout write
+leases remain independent protections. A host waiting for capacity or a shared
+checkout can still queue; separate vendor sessions do not isolate shared files.

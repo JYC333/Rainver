@@ -1,3 +1,4 @@
+import { assertMonitoringProcessingContract, monitoringChannel, consumeMonitoringBudget } from "../../projects/monitoringControl.js";
 import type { ServerConfig } from "../../../config.js";
 import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import { loadViewerSpaceRole } from "../../retrieval/sourcePolicy.js";
@@ -323,6 +324,7 @@ export class SourcePostProcessingService {
     spaceId: string;
     ruleId: string;
     itemIds: string[];
+    monitoringOperationId?: string;
   }): Promise<SourcePostProcessingRunOut | null> {
     if (input.itemIds.length === 0) return null;
     if (input.itemIds.length > SOURCE_POST_PROCESSING_LIMITS.researchStructuredOutputBatchSize) {
@@ -362,6 +364,7 @@ export class SourcePostProcessingService {
       triggerConfig,
       batch,
       summaryGoal: inputConfig.summary_goal ?? null,
+      monitoringOperationId: input.monitoringOperationId,
       executionTimeoutMs: SOURCE_POST_PROCESSING_LIMITS.researchStructuredOutputTimeoutMs,
     });
   }
@@ -1021,7 +1024,14 @@ export class SourcePostProcessingService {
     batch: SourcePostProcessingInputBatch;
     summaryGoal: string | null;
     executionTimeoutMs?: number;
+    monitoringOperationId?: string;
   }): Promise<SourcePostProcessingRunOut> {
+    if(await monitoringChannel(this.db,input.connection.space_id,input.sourceChannelId)){
+      if(!input.monitoringOperationId)throw new HttpError(409,"Use the bounded Project monitoring operation");
+      if(input.actions.batch_digest||input.actions.per_item_summary||input.actions.extract_evidence||input.actions.create_proposals||!input.actions.mark_items||input.inputConfig.deep_analysis.enabled||input.inputConfig.candidate_prefilter.enabled||input.inputConfig.retrieval_context.enabled||input.inputConfig.content_source!=='excerpt_only')throw new HttpError(409,'Monitoring processing rule changed beyond the confirmed contract');
+      await assertMonitoringProcessingContract(this.db,input.connection.space_id,input.monitoringOperationId,{channelId:input.sourceChannelId,ruleId:input.rule?.id??null,agentId:input.agentId,profile:input.inputConfig.relevance_profile,summaryGoal:input.inputConfig.summary_goal??null,outputInstructions:input.inputConfig.output_instructions??null});
+      await consumeMonitoringBudget(this.db,input.connection.space_id,input.monitoringOperationId,"model_runs",1);
+    }
     if (input.rule && await this.researchQuestionDrift(input.rule)) {
       throw new HttpError(409, "Research question changed; apply it to future runs before processing this item");
     }
@@ -1118,6 +1128,7 @@ export class SourcePostProcessingService {
           ? SOURCE_POST_PROCESSING_OUTPUT_CONTRACT
           : null,
         postProcessingRunId: postRun.id,
+        monitoringOperationId: input.monitoringOperationId,
         executionTimeoutMs: input.executionTimeoutMs,
       });
       if (agentRun.status !== "succeeded" && agentRun.status !== "degraded") {
@@ -1398,6 +1409,7 @@ export class SourcePostProcessingService {
     runtimeProfileId: string | null;
     structuredOutputContract: typeof SOURCE_POST_PROCESSING_OUTPUT_CONTRACT | null;
     postProcessingRunId: string;
+    monitoringOperationId?: string;
     executionTimeoutMs?: number;
   }): Promise<RunRecord> {
     const pool = this.requirePool();
@@ -1421,7 +1433,8 @@ export class SourcePostProcessingService {
       mode: "live",
       runtime_profile_id: input.runtimeProfileId,
       contract_snapshot: {
-        source: { kind: "direct", id: input.postProcessingRunId },
+        source: { kind: "direct", id: input.monitoringOperationId ?? input.postProcessingRunId },
+        ...(input.monitoringOperationId ? {budget_sources:[{source:{kind:"direct",id:input.monitoringOperationId},max_attempts:1,max_duration_seconds:1800}]}:{}),
         project_id: input.projectId,
         ...(input.structuredOutputContract ? { structured_output_json: input.structuredOutputContract } : {}),
         policy_context_json: createManagedExecutionPolicy(

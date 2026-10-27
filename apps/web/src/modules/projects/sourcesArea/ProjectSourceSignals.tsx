@@ -1,3 +1,4 @@
+import { readingHref } from '../../library/readingLinks'
 import { useCallback, useEffect, useState } from 'react'
 import { CheckCircle, FileText, Target } from 'lucide-react'
 import { readerApi, sourcesApi } from '../../../api/client'
@@ -110,7 +111,7 @@ export function ProjectSourceSignals({
                 annotation.document_type === 'source_item' ? (
                   <Link
                     key={annotation.id}
-                    to={`/library/items/${annotation.document_id}`}
+                    to={readingHref({ source_item_id: annotation.document_id, reader_origin: 'project' }, projectId, 'settings')}
                     className="-mx-1 block min-w-0 rounded px-1 py-0.5 transition-colors hover:bg-muted/50"
                   >
                     <p className="text-xs capitalize text-muted-foreground">{annotation.annotation_type}</p>

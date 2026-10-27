@@ -1,5 +1,4 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import SourceChannelsPage from '../SourceChannelsPage'
@@ -89,7 +88,7 @@ function renderPage(initialEntry = '/sources') {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
-        <Route path="/sources" element={<SourceChannelsPage />} />
+        <Route path="/sources" element={<SourceChannelsPage />} /><Route path="/sources/goals/new" element={<h1>Goal setup</h1>}/>
       </Routes>
     </MemoryRouter>,
   )
@@ -112,7 +111,7 @@ describe('Sources page', () => {
   it('presents sources instead of exposing the internal channel model', async () => {
     renderPage()
 
-    expect(await screen.findByRole('heading', { name: 'Sources' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Source settings' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'arXiv' })).toHaveAttribute('href', '/sources/connection-1')
     expect(screen.getByText('Agent memory')).toBeInTheDocument()
     expect(screen.queryByText(/source channel/i)).not.toBeInTheDocument()
@@ -146,7 +145,7 @@ describe('Sources page', () => {
     vi.mocked(sourcesApi.followed).mockRejectedValue(new Error('Followed unavailable'))
     renderPage()
     expect(await screen.findByText(/Sources you follow could not be loaded/)).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Sources' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Source settings' })).toBeInTheDocument()
 
     await i18n.changeLanguage('zh-CN')
     try {
@@ -154,76 +153,6 @@ describe('Sources page', () => {
     } finally {
       await i18n.changeLanguage('en')
     }
-  })
-
-  it('configures an academic source through the provider-aware setup dialog', async () => {
-    renderPage()
-
-    fireEvent.click(await screen.findByRole('button', { name: /add source/i }))
-    expect(screen.getByRole('heading', { name: 'Add source' })).toBeInTheDocument()
-    fireEvent.change(screen.getByPlaceholderText('e.g. all:"agent memory"'), { target: { value: 'all:"planning"' } })
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'Hour' }), { target: { value: '14' } })
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'Minute' }), { target: { value: '30' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create source' }))
-
-    await waitFor(() => expect(sourcesApi.createChannel).toHaveBeenCalledWith(expect.objectContaining({
-      provider_key: 'arxiv',
-      source_name: 'arXiv',
-      name: 'all:"planning"',
-      query: { mode: 'search', search_query: 'all:"planning"' },
-      fetch_frequency: 'daily',
-      schedule_rule: expect.objectContaining({ frequency: 'daily', hour: expect.any(Number), minute: 30 }),
-      capture_policy: 'extract_text',
-    })))
-  })
-
-  it('previews an arXiv query without saving the source', async () => {
-    renderPage()
-    fireEvent.click(await screen.findByRole('button', { name: /add source/i }))
-    fireEvent.change(screen.getByPlaceholderText('e.g. all:"agent memory"'), { target: { value: 'agent memory' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Test query' }))
-
-    expect(await screen.findByText('Approximately 42 matches')).toBeInTheDocument()
-    expect(screen.getByText('• Agent memory systems')).toBeInTheDocument()
-    expect(sourcesApi.previewQuery).toHaveBeenCalledWith({ provider_key: 'arxiv', query: { mode: 'search', search_query: 'agent memory' } })
-    expect(sourcesApi.createChannel).not.toHaveBeenCalled()
-  })
-
-  it('allows an explicit all-arXiv source without a user query', async () => {
-    const user = userEvent.setup({ delay: null })
-    renderPage()
-
-    await user.click(await screen.findByRole('button', { name: /add source/i }))
-    await user.click(screen.getByRole('button', { name: 'Search scope' }))
-    await user.click(screen.getByRole('option', { name: 'All arXiv papers' }))
-    await user.click(screen.getByRole('button', { name: 'Create source' }))
-
-    await waitFor(() => expect(sourcesApi.createChannel).toHaveBeenCalledWith(expect.objectContaining({
-      provider_key: 'arxiv',
-      query: { mode: 'all' },
-    })))
-  })
-
-  it('allows selecting multiple arXiv categories from the searchable taxonomy', async () => {
-    const user = userEvent.setup({ delay: null })
-    renderPage()
-
-    await user.click(await screen.findByRole('button', { name: /add source/i }))
-    await user.click(screen.getByRole('button', { name: 'Search scope' }))
-    await user.click(screen.getByRole('option', { name: 'Category stream' }))
-    await user.click(screen.getByText('Select categories'))
-    await user.click(screen.getByRole('checkbox', { name: /cs\.AI/i }))
-    await user.click(screen.getByRole('checkbox', { name: /cs\.LG/i }))
-    await user.click(screen.getByRole('button', { name: 'Clear' }))
-    expect(screen.getByRole('button', { name: 'Select categories' })).toBeInTheDocument()
-    await user.click(screen.getByRole('checkbox', { name: /cs\.AI/i }))
-    await user.click(screen.getByRole('checkbox', { name: /cs\.LG/i }))
-    await user.click(screen.getByRole('button', { name: 'Create source' }))
-
-    await waitFor(() => expect(sourcesApi.createChannel).toHaveBeenCalledWith(expect.objectContaining({
-      provider_key: 'arxiv',
-      query: { mode: 'recent_by_category', categories: ['cs.AI', 'cs.LG'] },
-    })))
   })
 
   it('calls a source whose monitors are all stopped Paused, whatever order they come in', async () => {
@@ -236,52 +165,6 @@ describe('Sources page', () => {
     await screen.findByText('Agent memory')
     expect(screen.queryByText('Mixed')).not.toBeInTheDocument()
     expect(screen.getAllByText('Paused').length).toBeGreaterThan(0)
-  })
-
-  it('closes only the category list on Escape, keeping the dialog and what was typed', async () => {
-    const user = userEvent.setup({ delay: null })
-    renderPage()
-
-    await user.click(await screen.findByRole('button', { name: /add source/i }))
-    await user.click(screen.getByRole('button', { name: 'Search scope' }))
-    await user.click(screen.getByRole('option', { name: 'Category stream' }))
-    await user.click(screen.getByText('Select categories'))
-    const option = screen.getByRole('checkbox', { name: /cs\.AI/i })
-    fireEvent.keyDown(option, { key: 'Escape' })
-
-    await waitFor(() => expect(screen.queryByRole('checkbox', { name: /cs\.AI/i })).not.toBeInTheDocument())
-    expect(screen.getByRole('heading', { name: 'Add source' })).toBeInTheDocument()
-  })
-
-  it('names a new source after the platform chosen, until the name is edited by hand', async () => {
-    const user = userEvent.setup({ delay: null })
-    renderPage()
-
-    await user.click(await screen.findByRole('button', { name: /add source/i }))
-    expect(screen.getByDisplayValue('arXiv')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Source platform' }))
-    await user.click(screen.getByRole('option', { name: 'RSS Feed' }))
-    expect(screen.getByDisplayValue('RSS Feed')).toBeInTheDocument()
-
-    await user.clear(screen.getByDisplayValue('RSS Feed'))
-    await user.type(screen.getByPlaceholderText('RSS Feed'), 'My feeds')
-    await user.click(screen.getByRole('button', { name: 'Source platform' }))
-    await user.click(screen.getByRole('option', { name: 'arXiv' }))
-    expect(screen.getByDisplayValue('My feeds')).toBeInTheDocument()
-  })
-
-  it('drops a query preview once the query it was for changes', async () => {
-    const user = userEvent.setup({ delay: null })
-    renderPage()
-
-    await user.click(await screen.findByRole('button', { name: /add source/i }))
-    fireEvent.change(screen.getByPlaceholderText('e.g. all:"agent memory"'), { target: { value: 'agent memory' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Test query' }))
-    expect(await screen.findByText('Approximately 42 matches')).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'Search scope' }))
-    await user.click(screen.getByRole('option', { name: 'All arXiv papers' }))
-    expect(screen.queryByText('Approximately 42 matches')).not.toBeInTheDocument()
   })
 
   it('lets a follower leave another member\'s source and follow it again', async () => {

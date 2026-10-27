@@ -1,3 +1,5 @@
+import { isLocalFileReference } from "@rainver/protocol"
+import { LocalMarkdownImage, LocalMarkdownLink } from "./markdownFileContext"
 import { cjk } from '@streamdown/cjk'
 import type { ComponentProps } from 'react'
 import { defaultRehypePlugins, type StreamdownProps } from 'streamdown'
@@ -20,7 +22,7 @@ import { safeHttpUrl, safeAppPath } from '../../lib/safeHttpUrl'
  * renderer that bypasses the component still cannot fetch one.
  */
 export function safeMarkdownImageSource(url: string): string {
-  return safeAppPath(url) ?? safeHttpUrl(url) ?? ''
+  return isLocalFileReference(url) ? url : safeAppPath(url) ?? safeHttpUrl(url) ?? ''
 }
 
 /**
@@ -37,7 +39,7 @@ export function safeMarkdownUrlTransform(url: string, key: string): string {
   if (key === 'src') return safeMarkdownImageSource(url)
   // An in-app path is a real destination in this product. Do not blank it.
   // An empty `href` reloads the page on click.
-  if (key === 'href') return safeAppPath(url) ?? safeHttpUrl(url) ?? ''
+  if (key === 'href') return isLocalFileReference(url) ? url : safeAppPath(url) ?? safeHttpUrl(url) ?? ''
   return safeHttpUrl(url) ?? ''
 }
 
@@ -65,8 +67,21 @@ export const SAFE_SANITIZE_SCHEMA = {
   attributes: { ...(defaultSchema.attributes as Record<string, unknown>), source: [] },
 }
 
-const safeRehypePlugins = Object.entries(defaultRehypePlugins).map(([name, plugin]) =>
-  name === 'sanitize' ? [sanitizeEntry[0], SAFE_SANITIZE_SCHEMA] : plugin,
+/** Classify sanitized file references before harden rejects or rewrites relative URLs. */
+type MarkdownNode = { type?: string; tagName?: string; properties?: { href?: unknown; src?: unknown }; children?: MarkdownNode[] }
+function localFileLinks() {
+  return (tree: MarkdownNode) => {
+    const visit = (node: MarkdownNode) => {
+      if (node.tagName === 'a' && typeof node.properties?.href === 'string' && isLocalFileReference(node.properties.href)) node.tagName = 'rainver-file-link'
+      if (node.tagName === 'img' && typeof node.properties?.src === 'string' && isLocalFileReference(node.properties.src)) node.tagName = 'rainver-file-image'
+      for (const child of node.children ?? []) if (child.type === 'element') visit(child)
+    }
+    visit(tree)
+  }
+}
+
+const safeRehypePlugins = Object.entries(defaultRehypePlugins).flatMap<unknown>(([name, plugin]) =>
+  name === 'sanitize' ? [[sanitizeEntry[0], SAFE_SANITIZE_SCHEMA], localFileLinks] : [plugin],
 ) as StreamdownProps['rehypePlugins']
 
 /** Whether this source is served by us, and may therefore load inline. */
@@ -104,6 +119,7 @@ export function isSameOriginImage(src: string | undefined): boolean {
  */
 export function MarkdownImage({ src, alt, title, node: _node, ...props }: ComponentProps<'img'> & { node?: unknown }) {
   const source = typeof src === 'string' ? src : undefined
+  if (source && isLocalFileReference(source)) return <LocalMarkdownImage src={source} alt={alt} />
   if (isSameOriginImage(source)) {
     // biome-ignore lint/a11y/useAltText: alt comes from the markdown; `''` is the correct decorative default.
     return <img {...props} src={source} alt={alt ?? ''} title={title} className="max-w-full rounded-lg" />
@@ -160,6 +176,10 @@ export const safeStreamdownProps = {
   plugins: streamdownPlugins,
   rehypePlugins: safeRehypePlugins,
   urlTransform: safeMarkdownUrlTransform,
-  components: { img: MarkdownImage },
+  components: {
+    img: MarkdownImage,
+    'rainver-file-link': LocalMarkdownLink,
+    'rainver-file-image': ({ src, alt }: ComponentProps<'img'>) => src ? <LocalMarkdownImage src={src} alt={alt} /> : null,
+  } as StreamdownProps['components'],
   linkSafety,
 }

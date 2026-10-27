@@ -276,6 +276,16 @@ describe('InquiryAreaPage', () => {
     expect(await screen.findByText('In progress')).toBeInTheDocument()
   })
 
+  it.each([false, true])('links Thread evidence to the explicit reading tab (signals=%s)', async hasSignals => {
+    if (hasSignals) vi.mocked(inquiryApi.listSignals).mockResolvedValue([{
+      id: 'sig-1', classification: 'supports', corpus_item_id: null,
+      is_material: true, confidence: 0.9, model_version: 'fixture', status: 'confirmed',
+    }] as never)
+    renderPage()
+    const name = hasSignals ? 'See every retrieved item in the Reading List' : 'Open the project Reading List'
+    expect(await screen.findByRole('link', { name })).toHaveAttribute('href', '/projects/project-1/research?tab=reading')
+  })
+
   it('keeps pause in the Thread menu without calling off its work', async () => {
     vi.mocked(inquiryApi.getThread).mockResolvedValue({ ...QUESTION_DETAIL, attention_state: 'focused' })
     vi.mocked(inquiryApi.updateWork).mockResolvedValue({ ...QUESTION, wip_limit_exceeded: false })

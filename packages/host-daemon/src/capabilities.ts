@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { helperProcessEnv } from "./providerBinding.js";
-import { heldAccounts, installedTools, loggedIn, managedInstallationId, OWN_INSTALLATION, rollbackTargetFor, type ToolLoginSpec, type ToolManifest } from "./tools.js";
-import type { RuntimeOptions, RuntimeAccount } from "@rainver/protocol";
+import { heldAccounts, installedTools, loggedIn, managedInstallationId, OWN_INSTALLATION, rollbackTargetFor, type ToolLoginSpec, type ToolManifest, type ToolStateBoundary } from "./tools.js";
+import type { OwnCopyCandidate, RuntimeOptions, RuntimeAccount } from "@rainver/protocol";
 import { homedir } from "node:os";
 import { terminalAuthAvailable } from "./terminalAuth.js";
+import { findOwnCopy } from "./ownCopies.js";
 
 /**
  * The daemon discovers whatever the machine already has installed — it
@@ -43,7 +44,12 @@ export interface RuntimeLookup {
   runtime_key: string;
   /** The PATH binary of the machine's own install; null for a managed-only runtime. */
   runtime: string | null;
+  /** For a runtime with no fixed PATH binary: where its own copy might be, verified by ACP handshake (`ownCopies.ts`). */
+  own_candidates?: readonly OwnCopyCandidate[];
+  /** The CLI login command, when the runtime has one. */
   login: ToolLoginSpec | null;
+  /** Where its credential lives, by which a login is recognised; null for a runtime with no declared boundary. The catalog is the one source: no copy records it. */
+  state?: ToolStateBoundary | null;
 }
 
 /**
@@ -124,8 +130,8 @@ export function clearRuntimeOptionsCache(runtimeKey: string, installation: strin
   optionsCache.delete(`${runtimeKey}@${installation}`);
 }
 
-function loginState(home: string, login: ToolLoginSpec | null, options: RuntimeOptions | null): boolean | null {
-  const fileState = loggedIn(home, login);
+function loginState(home: string, state: ToolStateBoundary | null | undefined, options: RuntimeOptions | null): boolean | null {
+  const fileState = loggedIn(home, state);
   if (fileState !== null) return fileState;
   return options?.auth_methods?.length ? options.session_available ?? null : null;
 }
@@ -219,6 +225,7 @@ export async function detectCapabilities(
   /** What the server can dispatch to; nothing until `hello_ack` says. */
   lookups: readonly RuntimeLookup[] = [],
   ensureOwnRuntime?: EnsureOwnRuntime,
+  log: (line: string) => void = () => {},
 ): Promise<DaemonCapabilities> {
   const runtimes: ProbedBinary[] = [];
   const installations: Record<string, RuntimeInstallation[]> = {};
@@ -235,14 +242,31 @@ export async function detectCapabilities(
         runtimes.push(lookup.runtime);
         versions[lookup.runtime] = version;
         const asked = askOptions ? await runtimeOptions(`${lookup.runtime_key}@${OWN_INSTALLATION}`, () => askOptions(lookup, OWN_INSTALLATION)) : null;
-        const ownAccounts = heldAccounts(homedir(), lookup.login);
+        const ownAccounts = heldAccounts(homedir(), lookup.state);
         found.push({
           id: OWN_INSTALLATION,
           version,
           runtime_version: version,
-          logged_in: loginState(homedir(), lookup.login, asked),
+          logged_in: loginState(homedir(), lookup.state, asked),
           options: reportedOptions(lookup.login, asked),
           ...(ownAccounts ? { accounts: ownAccounts } : {}),
+        });
+      }
+    } else if (lookup.own_candidates?.length) {
+      // A registry agent: no fixed binary name, so the candidates the
+      // server derived from its distribution are looked for and the one that
+      // answers ACP initialize is this machine's own copy. Its version is
+      // what it said in the handshake; `--version` is not a flag ACP defines.
+      const copy = await findOwnCopy(lookup.runtime_key, lookup.own_candidates, log);
+      if (copy) {
+        const asked = askOptions ? await runtimeOptions(`${lookup.runtime_key}@${OWN_INSTALLATION}`, () => askOptions(lookup, OWN_INSTALLATION)) : null;
+        found.push({
+          id: OWN_INSTALLATION,
+          version: copy.version,
+          runtime_version: copy.version,
+          health_check_protocol: "acp",
+          logged_in: loginState(homedir(), lookup.state, asked),
+          options: reportedOptions(lookup.login, asked),
         });
       }
     }
@@ -250,13 +274,13 @@ export async function detectCapabilities(
     for (const manifest of managed.get(lookup.runtime_key) ?? []) {
       const id = managedInstallationId(manifest.version);
       const asked = askOptions ? await runtimeOptions(`${lookup.runtime_key}@${id}`, () => askOptions(lookup, id)) : null;
-      const managedAccounts = heldAccounts(manifest.home, manifest.login);
+      const managedAccounts = heldAccounts(manifest.home, lookup.state);
       found.push({
         id,
         version: manifest.version,
         runtime_version: manifest.runtime_version ?? null,
         health_check_protocol: manifest.health_check_protocol ?? null,
-        logged_in: loginState(manifest.home, manifest.login, asked),
+        logged_in: loginState(manifest.home, lookup.state, asked),
         options: reportedOptions(manifest.login, await withManagedCliLogin(manifest, asked)),
         ...(managedAccounts ? { accounts: managedAccounts } : {}),
         // Only the current copy offers a rollback; the target itself is not one.

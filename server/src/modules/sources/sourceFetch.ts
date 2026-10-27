@@ -32,11 +32,13 @@ export interface SourceFetchOptions {
    * guard; a test supplies one pinned at its own fixture server.
    */
   guard?: OutboundGuard;
+  beforeSend?: () => Promise<void>;
 }
 
 export async function fetchSource(url: string, options: SourceFetchOptions): Promise<SourceFetchResult> {
   const result = await fetchGuarded({
     url,
+    beforeSend: options.beforeSend,
     headers: {
       ...options.headers,
       // Source bodies are consumed by the server. Keep the representation

@@ -621,6 +621,7 @@ function ChatPanelContent({
             id: m.id ?? `entry-${index}`,
             role: m.role === 'user' ? 'user' as const : 'assistant' as const,
             content: m.content,
+            runId: m.runId,
             inputParts: m.inputParts,
             turn: m.turn ?? null,
             error: m.error,

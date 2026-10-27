@@ -51,7 +51,7 @@ export const RAIL_ITEMS: RailItem[] = [
   // the space-scoped rail items so it reads as the space's home surface.
   { id: 'command-center', label: 'Command Center', to: '/command-center', icon: Server, scope: 'space' },
   { id: 'inbox',      label: 'Inbox',      to: '/activity',    icon: Inbox,       scope: 'space' },
-  { id: 'library',    label: 'Library',    to: '/library',     icon: Library,     scope: 'space' },
+  { id: 'library',    label: 'Reading',    to: '/library',     icon: Library,     scope: 'space' },
   { id: 'source',     label: 'Sources',    to: '/sources',      icon: Rss,         scope: 'space' },
   { id: 'review',     label: 'Review',     to: '/proposals',   icon: CheckCircle, scope: 'space' },
   { id: 'knowledge',  label: 'Knowledge',  to: '/knowledge',   icon: BookOpen,    scope: 'space' },
@@ -130,12 +130,16 @@ export const SCENES: Scene[] = [
   {
     kind: 'route',
     id: 'library',
-    title: 'Library',
+    title: 'Reading',
     icon: Library,
     segments: ['library'],
     items: [
+      { label: 'To read', to: '/library/reading' },
+      { label: 'Read', to: '/library/reading?view=read' },
+      { label: 'All material', to: '/library/reading?view=all' },
+      { label: 'Daily editions', to: '/library/digests' },
       {
-        label: 'All Items',
+        label: 'By type',
         to: '/library/items',
         children: [
           { label: 'Articles', to: '/library/items/articles' },
@@ -145,7 +149,6 @@ export const SCENES: Scene[] = [
           { label: 'PDFs',     to: '/library/items/pdfs' },
         ],
       },
-      { label: 'Digests', to: '/library/digests' },
     ],
   },
   // Knowledge intentionally has NO scene: cross-section navigation is the lightweight

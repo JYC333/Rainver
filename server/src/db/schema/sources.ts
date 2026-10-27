@@ -89,6 +89,12 @@ export const sourceItems = pgTable("source_items", {
 	firstSeenAt: timestamp("first_seen_at", { withTimezone: true, mode: 'string' }).notNull(),
 	lastSeenAt: timestamp("last_seen_at", { withTimezone: true, mode: 'string' }).notNull(),
 	contentHash: varchar("content_hash", { length: 128 }),
+	/** Frozen capture identity; operational content_hash mixes metadata/raw/body. */
+	readingInitialHash: varchar("reading_initial_hash", { length: 128 }),
+	/** Only retained extracted Reader text establishes or changes this version. */
+	readingBodyHash: varchar("reading_body_hash", { length: 64 }),
+	readingBodyRevision: integer("reading_body_revision").default(0).notNull(),
+	readingBodyChangedAt: timestamp("reading_body_changed_at", { withTimezone: true, mode: 'string' }),
 	excerpt: varchar({ length: 2048 }),
 	contentState: varchar("content_state", { length: 64 }).notNull(),
 	retentionPolicy: varchar("retention_policy", { length: 32 }).notNull(),
@@ -104,6 +110,7 @@ export const sourceItems = pgTable("source_items", {
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 	deletedAt: timestamp("deleted_at", { withTimezone: true, mode: 'string' }),
 }, (table): PgTableExtraConfigValue[] => [
+	index("ix_source_items_reading_family").on(table.spaceId, table.canonicalUri, table.readingInitialHash).where(sql`deleted_at IS NULL`),
 	index("ix_source_items_canonical_uri").using("btree", table.spaceId.asc().nullsLast(), table.canonicalUri.asc().nullsLast()),
 	index("ix_source_items_connection_id").using("btree", table.connectionId.asc().nullsLast()),
 	index("ix_source_items_content_hash").using("btree", table.contentHash.asc().nullsLast()),
@@ -355,8 +362,10 @@ export const sourceItemUserStates = pgTable("source_item_user_states", {
 	// Where the reading came from. `serendipity` is an open from the digest's
 	// "outside your usual view" section and is not interest evidence (B54);
 	// `library` is the reader's own reach and is. A later library open
-	// upgrades a serendipity origin; nothing downgrades it.
+	// upgrades a serendipity/project origin; nothing downgrades it.
+	// `project` also marks synchronized completion without a personal open.
 	readOrigin: varchar("read_origin", { length: 32 }),
+	readBodyRevision: integer("read_body_revision"),
 	progressJson: jsonb("progress_json").default({}).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
@@ -382,7 +391,7 @@ export const sourceItemUserStates = pgTable("source_item_user_states", {
 	check("ck_source_item_user_states_library_status", sql`(library_status)::text = ANY (ARRAY[('new'::character varying)::text, ('triaged'::character varying)::text, ('selected'::character varying)::text, ('ignored'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_source_item_user_states_read_status", sql`(read_status)::text = ANY (ARRAY[('unread'::character varying)::text, ('skimmed'::character varying)::text, ('read'::character varying)::text, ('discussed'::character varying)::text])`),
 	check("ck_source_item_user_states_progress_json", sql`jsonb_typeof(progress_json) = 'object'::text`),
-	check("ck_source_item_user_states_read_origin", sql`read_origin IS NULL OR read_origin IN ('library', 'serendipity')`),
+	check("ck_source_item_user_states_read_origin", sql`read_origin IS NULL OR read_origin IN ('library', 'serendipity', 'project')`),
 ]);
 
 export const sourcePostProcessingRules = pgTable("source_post_processing_rules", {

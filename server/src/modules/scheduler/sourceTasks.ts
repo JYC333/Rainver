@@ -1,3 +1,5 @@
+import {enqueueDueSourceGoals} from '../sources/goals/worker.js';
+import { enqueueDueMonitoring } from '../sources/monitoring/heartbeat.js';
 /**
  * Source-domain scheduled tasks.
  *
@@ -45,6 +47,13 @@ export function buildSourceSchedulerTasks(
   const db = () => getDbPool(config.databaseUrl!);
 
   const tasks: ScheduledTask[] = [
+    {name:"source_goal_scheduler",intervalSeconds,runOnStart:true,run:async()=>{await enqueueDueSourceGoals(db());}},
+    {
+      name: "project_information_monitoring_scheduler",
+      intervalSeconds,
+      runOnStart: true,
+      run: async () => { await enqueueDueMonitoring(db(), config); },
+    },
     {
       name: "source_extraction_scheduler",
       intervalSeconds,

@@ -88,3 +88,6 @@ export * from "./projectFolders.js";
 export * from "./projectFileDrafts.js";
 export * from "./workspaceLocations.js";
 export * from "./agentAttention.js";
+export * from './projectInformationMonitoring.js';
+
+export * from "./sourceGoals.js";

@@ -23,6 +23,13 @@ function requireFlag(args: string[], name: string): string {
 async function main(argv: string[]): Promise<void> {
   const [command, sub, ...rest] = argv;
 
+  if (command === "__antigravity-harness") {
+    if (!sub) throw new Error("Missing Antigravity harness executable");
+    const { runAntigravityHarness } = await import("./antigravityHarness.js");
+    await runAntigravityHarness(sub);
+    return;
+  }
+
   if (command === "--version" || command === "version") {
     console.log(daemonVersion());
     return;

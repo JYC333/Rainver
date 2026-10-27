@@ -1,4 +1,4 @@
-import type { HostEgressTransport, HostServerFrameOf, RuntimeDistribution, RuntimeLoginSpec, RuntimeAccount } from "@rainver/protocol";
+import type { HostEgressTransport, HostServerFrameOf, RuntimeDistribution, RuntimeLoginSpec, RuntimeStateBoundary, RuntimeAccount } from "@rainver/protocol";
 import { helperProcessEnv } from "./providerBinding.js";
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -8,6 +8,7 @@ import { join, parse, resolve } from "node:path";
 import { configDir } from "./config.js";
 import { probeAcpHealth } from "./acpProbe.js";
 import { downloadRuntimeArtifact, type RuntimeArtifactDownloadDependencies } from "./toolDownload.js";
+import { extractZip } from "./zipExtract.js";
 
 /**
  * Agents from the ACP registry that the control plane asked this daemon to
@@ -26,9 +27,10 @@ import { downloadRuntimeArtifact, type RuntimeArtifactDownloadDependencies } fro
 const MANAGED_PREFIX = "managed:";
 export const OWN_INSTALLATION = "own";
 
-/** How a runtime is logged into and how a login is recognised (the spec's `credentials.login`). */
-/** The wire contract's login spec; the server's adapter spec is the source. */
+/** The wire contract's CLI login command (the spec's `credentials.login`); the server's adapter spec is the source. */
 export type ToolLoginSpec = RuntimeLoginSpec;
+/** Where a runtime keeps its state and credential (the spec's `credentials.state`); what a login is recognised by. */
+export type ToolStateBoundary = RuntimeStateBoundary;
 export interface ToolManifest {
   runtime_key: string;
   version: string;
@@ -153,9 +155,9 @@ export function renderManagedLoginCommand(tree: string, login: ToolLoginSpec | n
 }
 
 /** Whether a login has been completed for this HOME, by the runtime's own credential file. */
-export function loggedIn(home: string, login: ToolLoginSpec | null): boolean | null {
-  if (!login) return null;
-  return existsSync(join(home, login.home_subdir, login.credential_file));
+export function loggedIn(home: string, state: ToolStateBoundary | null | undefined): boolean | null {
+  if (!state) return null;
+  return existsSync(join(home, state.home_subdir, state.credential_file));
 }
 
 /**
@@ -164,10 +166,10 @@ export function loggedIn(home: string, login: ToolLoginSpec | null): boolean | n
  * accounts format (single-account CLIs), an empty list when the file is
  * missing or unreadable. Secrets are never read past the `type` field.
  */
-export function heldAccounts(home: string, login: ToolLoginSpec | null): RuntimeAccount[] | undefined {
-  if (!login?.accounts_format) return undefined;
+export function heldAccounts(home: string, state: ToolStateBoundary | null | undefined): RuntimeAccount[] | undefined {
+  if (!state?.accounts_format) return undefined;
   try {
-    const parsed = JSON.parse(readFileSync(join(home, login.home_subdir, login.credential_file), "utf8")) as unknown;
+    const parsed = JSON.parse(readFileSync(join(home, state.home_subdir, state.credential_file), "utf8")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
     return Object.entries(parsed as Record<string, unknown>).flatMap(([id, value]): RuntimeAccount[] => {
       const kind = value && typeof value === "object" && typeof (value as { type?: unknown }).type === "string"
@@ -461,7 +463,10 @@ async function extract(archive: string, url: string, dir: string, log: (line: st
     return;
   }
   if (/\.zip(\?.*)?$/i.test(url)) {
-    await run(platform() === "win32" ? "tar" : "unzip", platform() === "win32" ? ["-xf", archive, "-C", dir] : ["-q", archive, "-d", dir], dir, log);
+    // In process, not `unzip`: the registry publishes zips and a stock
+    // Linux image does not ship the tool (see zipExtract.ts).
+    log(`extracting ${archive} into ${dir}`);
+    await extractZip(archive, dir);
     return;
   }
   // Not an archive: the download is the executable itself.

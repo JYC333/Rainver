@@ -1,3 +1,4 @@
+import { ReadingPreview } from '../library/ReadingWorkspace'
 import { AttentionBadge } from '../agent_work/AttentionIndicators'
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -512,6 +513,7 @@ export default function HomePage() {
           <>
             <NeedsAttention summary={s} failedRunCount={failedRunCount} onGo={goList} />
             <BySpace spaces={s.spaces} onOpen={openInSpace} />
+            <ReadingPreview />
             <ReviewPackets pending={pending} onOpen={openInSpace} />
             <ContinueWorking summary={s} onOpen={openInSpace} />
             <SuggestedActions suggestions={suggestions} onGo={goList} />

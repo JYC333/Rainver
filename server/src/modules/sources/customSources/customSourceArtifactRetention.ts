@@ -1,3 +1,4 @@
+import {cleanGoalSamples} from '../goals/samples.js';
 import { unlink } from "node:fs/promises";
 import type { ServerConfig } from "../../../config.js";
 import { withDbTransaction, type Pool } from "../../routeUtils/common.js";
@@ -27,6 +28,7 @@ export async function pruneSupersededCustomSourceHandlerArtifacts(
   config: ServerConfig,
   batchLimit = 100,
 ): Promise<number> {
+  await cleanGoalSamples(db,config);
   if (!config.customSourceArtifactRetentionEnabled) return 0;
   const cutoff = new Date(
     Date.now() - config.customSourceArtifactRetentionDays * 24 * 60 * 60 * 1000,

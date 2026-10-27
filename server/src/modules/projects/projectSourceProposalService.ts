@@ -115,7 +115,7 @@ export class ProjectSourceProposalService {
         _initial_status: "paused",
       });
       const channelId = requiredString(channel.id, "source_channel_id");
-      const draftUpdatedAt = requiredString(channel.updated_at, "draft_updated_at");
+      const draftUpdatedAt = channel.updated_at instanceof Date ? channel.updated_at.toISOString() : requiredString(channel.updated_at, "draft_updated_at");
       const activationProposal = await insertProposalRow(db, {
         spaceId: identity.spaceId,
         proposalType: "source_channel_activation",
