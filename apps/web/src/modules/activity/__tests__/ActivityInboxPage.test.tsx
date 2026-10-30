@@ -147,6 +147,20 @@ describe('ActivityInboxPage', () => {
       .toHaveAttribute('href', '/activity/activity-1')
   })
 
+  it('routes a briefing change notice to its briefing surface, which re-authorizes on open', async () => {
+    vi.mocked(activityApi.list).mockResolvedValue([
+      activityRecord({ id: 'briefing-project', source_type: 'system_event', title: 'A Project briefing has new changes', content: 'Open the briefing to see what changed.', visibility: 'private',
+        metadata_json: { pointer_type: 'briefing_changes', scope_type: 'project', project_id: 'project-1', briefing_id: 'b1', version: 2 } }),
+      activityRecord({ id: 'briefing-personal', source_type: 'system_event', title: 'Your briefing has new changes', content: 'Open the briefing to see what changed.', visibility: 'private',
+        metadata_json: { pointer_type: 'briefing_changes', scope_type: 'personal', project_id: null, briefing_id: 'b2', version: 3 } }),
+    ])
+
+    renderPage()
+
+    expect(await screen.findByRole('link', { name: 'A Project briefing has new changes' })).toHaveAttribute('href', '/projects/project-1/sources?tab=digest')
+    expect(screen.getByRole('link', { name: 'Your briefing has new changes' })).toHaveAttribute('href', '/library/reading')
+  })
+
   it('routes a Project-free Agent persona pointer to the Memory review surface', async () => {
     vi.mocked(activityApi.list).mockResolvedValue([
       activityRecord({

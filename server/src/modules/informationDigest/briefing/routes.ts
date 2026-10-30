@@ -1,8 +1,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { BriefingGenerateRequestSchema, BriefingSettingsRequestSchema } from "@rainver/protocol";
+import { BriefingAdoptionConfirmRequestSchema, BriefingGenerateRequestSchema, BriefingSettingsRequestSchema } from "@rainver/protocol";
 import type { ModuleContext } from "../../../gateway/routeRegistry.js";
 import { assertProjectReadable } from "../../projects/access.js";
-import { dbPool, HttpError, jsonBody, params, parseBody, resolveIdentity, sendRouteError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
+import { dbPool, HttpError, jsonBody, params, parseBody, resolveIdentity, sendRouteError, type Pool, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
+import { confirmAdoption, previewAdoption } from "./adoption.js";
+import { prepareFollowUp } from "./followUp.js";
 import type { BriefingScopeAdapter } from "./contract.js";
 import { personalBriefingScope } from "./personalScope.js";
 import { projectBriefingScope } from "./projectScope.js";
@@ -105,6 +107,50 @@ function registerScopeRoutes(app: FastifyInstance, context: ModuleContext, base:
       const scope = await scoped(request, reply);
       if (!scope) return reply;
       return reply.send(await scope.service.cancel(scope.route.adapter, scope.identity.userId, params(request).briefingId ?? ""));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  const highlightOf = (request: FastifyRequest) => {
+    const index = Number(params(request).index);
+    if (!Number.isInteger(index) || index < 0 || index > 32) throw new HttpError(422, "Invalid highlight");
+    return { briefingId: params(request).briefingId ?? "", index };
+  };
+
+  // Prepares a follow-up on one highlight: the text a conversation in this scope would receive. Writes nothing.
+  app.post(`${base}/:briefingId/highlights/:index/follow-up`, async (request, reply) => {
+    try {
+      const scope = await scoped(request, reply);
+      if (!scope) return reply;
+      const { briefingId, index } = highlightOf(request);
+      return reply.send(await prepareFollowUp(scope.db, scope.route.adapter, scope.identity.userId, briefingId, index));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  // Previews the Task a highlight would become. Writes nothing.
+  app.post(`${base}/:briefingId/highlights/:index/adoption/preview`, async (request, reply) => {
+    try {
+      const scope = await scoped(request, reply);
+      if (!scope) return reply;
+      const { briefingId, index } = highlightOf(request);
+      return reply.send(await previewAdoption(scope.db, scope.route.adapter, scope.identity, briefingId, index));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  // Creates the previewed Task; the same highlight always returns the same Task.
+  app.post(`${base}/:briefingId/highlights/:index/adoption`, async (request, reply) => {
+    try {
+      const scope = await scoped(request, reply);
+      if (!scope) return reply;
+      const { briefingId, index } = highlightOf(request);
+      const body = parseBody(BriefingAdoptionConfirmRequestSchema, jsonBody(request));
+      const result = await confirmAdoption(scope.db as Pool, scope.route.adapter, scope.identity, briefingId, index, body.preview_hash);
+      return reply.code(result.created ? 201 : 200).send(result);
     } catch (error) {
       return sendRouteError(reply, error);
     }

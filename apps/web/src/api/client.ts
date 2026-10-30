@@ -1,5 +1,5 @@
 import type { ReaderDocumentNoteResponse, ReaderAnnotationRangeUpdate } from "@rainver/protocol"
-import type { Briefing, BriefingGenerateResponse, BriefingOverviewResponse, ReaderAppearance, ReaderPositionResult, ReaderPositionWrite, ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol'
+import type { Briefing, BriefingAdoptionPreview, BriefingAdoptionResult, BriefingFollowUpPreview, BriefingGenerateResponse, BriefingOverviewResponse, ReaderAppearance, ReaderPositionResult, ReaderPositionWrite, ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol'
 import type { RunFilePreview } from "@rainver/protocol"
 import type { ProjectMonitoringState,ProjectMonitoringConfig,MonitoringVersion } from "@rainver/protocol";
 import { mergeAbortSignals } from '../lib/mergeAbortSignals'
@@ -2541,6 +2541,14 @@ export const informationBriefingsApi = {
     post<Briefing>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/${encodeURIComponent(briefingId)}/cancel`),
   setDaily: (spaceId: string, projectId: string, daily_enabled: boolean) =>
     put<{ daily_enabled: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/settings`, { daily_enabled }),
+  /** The text a follow-up in this Project would carry. Writes nothing. */
+  followUp: (spaceId: string, projectId: string, briefingId: string, index: number) =>
+    post<BriefingFollowUpPreview>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/${encodeURIComponent(briefingId)}/highlights/${index}/follow-up`, {}),
+  /** The Task a highlight would become. Writes nothing. */
+  previewAdoption: (spaceId: string, projectId: string, briefingId: string, index: number) =>
+    post<BriefingAdoptionPreview>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/${encodeURIComponent(briefingId)}/highlights/${index}/adoption/preview`, {}),
+  adopt: (spaceId: string, projectId: string, briefingId: string, index: number, preview_hash: string) =>
+    post<BriefingAdoptionResult>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/${encodeURIComponent(briefingId)}/highlights/${index}/adoption`, { preview_hash }),
 }
 
 /** The caller's own personal briefing in this Space (never another person's). */
@@ -2555,6 +2563,12 @@ export const personalBriefingsApi = {
     post<Briefing>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/cancel`),
   setDaily: (spaceId: string, daily_enabled: boolean) =>
     put<{ daily_enabled: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/settings`, { daily_enabled }),
+  followUp: (spaceId: string, briefingId: string, index: number) =>
+    post<BriefingFollowUpPreview>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/highlights/${index}/follow-up`, {}),
+  previewAdoption: (spaceId: string, briefingId: string, index: number) =>
+    post<BriefingAdoptionPreview>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/highlights/${index}/adoption/preview`, {}),
+  adopt: (spaceId: string, briefingId: string, index: number, preview_hash: string) =>
+    post<BriefingAdoptionResult>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/highlights/${index}/adoption`, { preview_hash }),
 }
 
 export const informationDigestsApi = {

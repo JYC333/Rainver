@@ -347,6 +347,7 @@ export const conversationUiEn = {
         messages_one: '{{count}} message',
         messages_other: '{{count}} messages',
         thread: 'A conversation',
+        briefing_highlight: 'A briefing highlight with its evidence',
       },
       picks_dropped: '{{error}} — the message was not sent, and what you picked has been dropped. Send again to post it on its own.',
       proposal_gone: 'The proposal is no longer available',

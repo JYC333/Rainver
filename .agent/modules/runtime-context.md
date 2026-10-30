@@ -160,7 +160,18 @@ session — the first turn, a context reset, a restart from a summary — opens
 with standing context and the conversation title, plus the summary the Agent
 wrote when it is a restart (`modules/hosts.md`, "Conversation summary and
 restart"); nothing of the transcript is replayed, as with a cleared CLI
-session. The remote Host adapter sends the Work Skill pointer into a fresh
+session. The one exception is a briefing highlight the person attached for
+this turn, i.e. after the Agent's last reply. A fresh session gets it as a
+required `room_briefing_reference` item: reference data, `external_untrusted`,
+the stored copy verbatim. A resumed session reads it in the Room increment.
+Either way the planner and the gateway first re-verify it through the Source
+egress gate against the Delivery's own destination, which comes from the Run's
+persisted adapter and ModelProvider (`runDestination.ts`), never the editable
+Profile. The gateway does this after locking the copy's Source closure, held to
+commit, and refuses the Delivery otherwise
+(`informationDigest/briefing/referenceDelivery.ts`).
+Provider-backed continuity is gated the same way for any briefing reference
+it replays. The remote Host adapter sends the Work Skill pointer into a fresh
 session only; a resumed session already holds it. A resumed turn that
 carries only the person's message is sent as that message, verbatim
 (`runs/acpRuntimeContextPrompt.ts`).

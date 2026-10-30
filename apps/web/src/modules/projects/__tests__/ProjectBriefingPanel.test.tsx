@@ -6,6 +6,7 @@ import { ProjectBriefingPanel } from '../ProjectBriefingPanel'
 import { informationBriefingsApi } from '../../../api/client'
 import { clearSessionResidue } from '../../../lib/sessionResidue'
 
+vi.mock('../../../core/spaceNav', () => ({ useSpaceNavigate: () => vi.fn() }))
 vi.mock('../../../api/client', () => ({
   informationBriefingsApi: { project: vi.fn(), get: vi.fn(), generate: vi.fn(), cancel: vi.fn(), setDaily: vi.fn() },
 }))
@@ -24,7 +25,7 @@ function briefing(overrides: Partial<Briefing> = {}): Briefing {
       title: 'Gripper launch', what_changed: 'A soft gripper shipped.', novelty: 'baseline', importance: 'high', why_it_matters: 'Fragile items.',
       impact: { assessment: 'insufficient_context', text: 'No Task covers grippers.', context_refs: [] }, suggested_action: 'watch',
       statements: [{ kind: 'fact', text: 'It shipped.', refs: ['S1'] }, { kind: 'inference', text: 'It may replace ours.', refs: ['S1', 'C1'] }],
-      contradictions: null, refs: ['S1'], source_domains: 1, rests_on_unverified: true,
+      contradictions: null, refs: ['S1'], source_domains: 1, rests_on_unverified: true, index: 0,
     }],
     open_questions: [],
     evidence: [{ key: 'S1', source_item_id: ITEM, title: 'Gripper report', source_domain: 'news.test', occurred_at: null, delta_class: 'baseline', unverified: true, lenses: [{ kind: 'corpus', label: 'Project Corpus' }] }],
@@ -48,6 +49,9 @@ it('lets a reader read a cited briefing with honest wording, but offers no gener
   expect(await screen.findByText('One launch dominates.')).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Generate briefing' })).not.toBeInTheDocument()
   expect(screen.getByText('Only Project writers can generate briefings.')).toBeInTheDocument()
+  // A reader may ask about a highlight, but not adopt it as a Project Task.
+  expect(screen.getByRole('button', { name: 'Ask about this' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Adopt as Task' })).not.toBeInTheDocument()
   expect(screen.getByText('Rests on agent-provided material that nobody verified.')).toBeInTheDocument()
   expect(screen.getByText('Not enough Project context to judge the impact.')).toBeInTheDocument()
   expect(screen.getByText('Fact')).toBeInTheDocument()

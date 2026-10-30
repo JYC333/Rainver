@@ -1,9 +1,17 @@
 import { HttpError, type Queryable } from "../../routeUtils/common.js";
 import { PgConversationBackendRepository } from "../../sessions/conversationBackendRepository.js";
-import { assertSourcePromptEgressAllowed } from "../../sources/sourcePromptEgress.js";
+import { assertSourceEgressAllowedForDestination, assertSourcePromptEgressAllowed } from "../../sources/sourcePromptEgress.js";
+import type { RetrievalEgressDestination } from "../../retrieval/egress/egressPolicy.js";
 import type { SourceConnectionRow } from "../../sources/sourceRepositoryRows.js";
 
 export interface BriefingExecution { agent_id: string; runtime_profile_id: string }
+
+/**
+ * What a Source's model-egress consent is checked against: an execution still
+ * to be chosen (resolved from its runtime Profile now), or a model call whose
+ * destination is already fixed — a Run's Delivery (`runtimeContext/runDestination.ts`).
+ */
+export type BriefingEgress = BriefingExecution | { destination: RetrievalEgressDestination };
 
 /**
  * The model a briefing runs on: the requester's own active Agent and an
@@ -27,14 +35,15 @@ export async function selectExecution(db: Queryable, spaceId: string, userId: st
 }
 
 /** Whether a Source consents to this execution's model destination; the one Sources gate, never a copy. */
-export async function sourceEgressAllowed(db: Queryable, spaceId: string, connectionId: string, execution: BriefingExecution): Promise<boolean> {
+export async function sourceEgressAllowed(db: Queryable, spaceId: string, connectionId: string, execution: BriefingEgress): Promise<boolean> {
   const connection = (await db.query<SourceConnectionRow>(
     `SELECT * FROM source_connections WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
     [connectionId, spaceId],
   )).rows[0];
   if (!connection) return false;
   try {
-    await assertSourcePromptEgressAllowed(db, connection, execution.agent_id, execution.runtime_profile_id);
+    if ("destination" in execution) await assertSourceEgressAllowedForDestination(db, connection, execution.destination);
+    else await assertSourcePromptEgressAllowed(db, connection, execution.agent_id, execution.runtime_profile_id);
     return true;
   } catch (error) {
     if (error instanceof HttpError && error.statusCode === 403) return false;

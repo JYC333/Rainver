@@ -66,6 +66,8 @@ import {
   PgRuntimeSkillProvider,
 } from "../skills/runtimeSkillProvider.js";
 import { isAcpRuntimeAdapter, isVendorCliAdapter } from "../runtimeAdapters/specs.js";
+import { assertBriefingReferencesDeliverable, isBriefingReference, pendingBriefingReferences } from "../informationDigest/briefing/referenceDelivery.js";
+import { runDestination } from "./runDestination.js";
 import { acpSessionConfigFromRunOverride } from "../runs/cliConversationProtocol.js";
 import { ACP_RUNTIME_MANAGED_WINDOW } from "../usage/modelCatalog.js";
 import { effectiveRunProviderModel } from "../runs/remoteProviderBinding.js";
@@ -243,6 +245,7 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
           conflictKey: "room_routing_instruction",
         }));
       }
+      items.push(...await this.briefingReferences(run, request, authority));
     }
     if (run.prompt?.trim() && run.instruction?.trim()
       && !(request.turn.current_message_ref.type === "run_request" && instructionInRunRequest(run))) {
@@ -393,6 +396,38 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
       await this.context.recordHostThreadStandingDispatch(run.space_id, run.id, { digest, sent: !held });
     }
     return held;
+  }
+
+  /**
+   * Briefing highlights attached for this turn of a vendor CLI session, gated
+   * on the destination the Run's own binding fixes (`runDestination.ts`,
+   * `referenceDelivery.ts`); the gateway re-checks it under its locks. A resumed
+   * session reads them in the Room increment the recipient instruction already
+   * carries; a fresh session, which is sent nothing of the transcript, gets
+   * the copy the person attached as its own untrusted reference item.
+   */
+  private async briefingReferences(
+    run: RunContextRecord,
+    request: RuntimeContextPlanningRequest,
+    authority: RuntimeContextAuthoritySnapshot,
+  ): Promise<ContextItem[]> {
+    if (!isVendorCliAdapter(run.runtime_key) || !run.session_id || !run.agent_id) return [];
+    const pending = await pendingBriefingReferences(this.db, {
+      spaceId: request.identity.spaceId,
+      sessionId: run.session_id,
+      currentMessageId: request.turn.current_message_ref.id,
+      agentId: run.agent_id,
+    });
+    if (pending.length) {
+      await assertBriefingReferencesDeliverable(this.db, request.identity.spaceId, pending, await runDestination(this.db, request.identity.spaceId, run));
+    }
+    if (briefingReferencesInRecipientInstruction(run.model_override_json)) return [];
+    return pending.map((message) => normalizeOwned({
+      authority, request,
+      sourceRef: { type: "room_briefing_reference", id: message.id },
+      selection: "required", semanticRole: "reference_data", trust: "external_untrusted",
+      text: message.content,
+    }));
   }
 
   private async loadProjectResearchMatrix(
@@ -642,6 +677,11 @@ class PgCheckpointContinuityProvider implements RuntimeContextChannelProvider {
     if (!current) throw new Error("Current conversation message is unavailable for continuity planning");
     const continuity = renderCheckpointContinuity(messages, current, checkpoint, bounded.room_conversation);
     if (!continuity) return [];
+    const replayed = new Set(continuity.messageRefs.map((ref) => ref.id));
+    const references = messages.filter((message) => replayed.has(message.id) && isBriefingReference(message));
+    if (references.length) {
+      await assertBriefingReferencesDeliverable(this.db, request.identity.spaceId, references, await runDestination(this.db, request.identity.spaceId, run));
+    }
     return [normalizeOwned({
       authority,
       request,
@@ -969,6 +1009,15 @@ export function isRoomConversation(value: unknown): boolean {
   return record(value).execution_mode === "room_conversation.v1";
 }
 
+/**
+ * Whether the Room layer already put this turn's increment — and so its
+ * briefing references — into the recipient instruction: only for a resumed
+ * host session (`agentGroups/service.ts`; a fresh one is sent no transcript).
+ */
+export function briefingReferencesInRecipientInstruction(modelOverride: unknown): boolean {
+  return record(record(modelOverride).host_thread).fresh === false;
+}
+
 export function roomRoutingInstruction(value: unknown): string | null {
   const routing = record(record(value).room_turn_routing);
   if (routing.schema_version !== "room_turn_routing.v1") return null;
@@ -1005,7 +1054,7 @@ function normalizeOwned(input: {
   sourceRef: { type: string; id: string; version?: string | null };
   selection: "required" | "pinned" | "ranked";
   semanticRole: "delegated_instruction" | "user_input" | "reference_data";
-  trust: "system_approved" | "user_confirmed" | "domain_approved" | "derived";
+  trust: "system_approved" | "user_confirmed" | "domain_approved" | "derived" | "external_untrusted";
   text: string;
   acquisition?: "direct" | "explicit" | "continuity";
   conflictKey?: string | null;

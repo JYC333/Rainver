@@ -107,6 +107,12 @@ true). A known item routed again (a connection re-scan, extraction finishing)
 does not re-surface a handled or discarded row to `raw`: only a new or
 reactivated link counts as collected.
 
+Briefing change notices (`operational_alert`, `pointer_type =
+briefing_changes`) are private per-recipient pointers: one per briefing scope
+and person, with a generic title and no Project on the row. They open the
+Project's Sources digest tab or `/library/reading`, where the briefing is
+re-authorized.
+
 Source recommendation rows are also pointers only: they open
 `/sources?view=pending&connection_id=...`. Reviewing or archiving the pointer
 does not change `source_connection_user_subscriptions`; Follow, Dismiss, Mute,

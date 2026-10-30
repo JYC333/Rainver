@@ -9,6 +9,7 @@ import { useAppTranslation } from '../../../i18n'
 import { sessionEpoch } from '../../../lib/sessionResidue'
 import { errMsg } from '../../../lib/utils'
 import { BriefingView } from './BriefingView'
+import { HighlightActions, highlightActionOwner, type BriefingActionScope, type HighlightActionApi } from './HighlightActions'
 
 const POLL_MS = 4000
 // At most 30 minutes of automatic re-reads per mount (or per manual refresh); then Refresh re-reads on demand.
@@ -24,7 +25,9 @@ const recoverable = (b: { status: string; error_code: string | null } | null | u
   Boolean(b && (b.status === 'queued' || (b.status === 'blocked' && b.error_code !== null && HELD_CODES.has(b.error_code))))
 
 /** One briefing scope's API, already bound to its Space (and Project). Keep it stable for a mount. */
-export interface BriefingScopeApi {
+export interface BriefingScopeApi extends HighlightActionApi {
+  /** Where this scope's highlights may be discussed and adopted. */
+  scope: BriefingActionScope
   overview: () => Promise<BriefingOverviewResponse>
   get: (briefingId: string) => Promise<Briefing>
   generate: () => Promise<unknown>
@@ -109,6 +112,10 @@ export function BriefingPanel({ api, evidenceHref, title, hint, readOnlyNote, te
     return () => window.clearTimeout(timer)
   }, [moving, reads, load])
 
+  const actionsFor = (briefing: Briefing) => (highlight: Briefing['highlights'][number]) => (
+    <HighlightActions key={highlightActionOwner(api.scope, briefing.id, highlight.index)} briefingId={briefing.id} index={highlight.index} scope={api.scope} api={api} canAdopt={Boolean(overview?.can_generate)} />
+  )
+
   const select = async (briefingId: string) => {
     if (briefingId === latest?.id) { sequence.current++; selectedRef.current = null; setSelected(null); return }
     const live = begin()
@@ -185,7 +192,7 @@ export function BriefingPanel({ api, evidenceHref, title, hint, readOnlyNote, te
           <BriefingStatus briefing={shown} />
           {shown.checked_at ? <p className="text-xs text-muted-foreground">{t('briefing.checked', { when: new Date(shown.checked_at).toLocaleString() })}</p> : null}
           {shown.status === 'ready' && shown.outcome === 'briefing'
-            ? open ? <BriefingView briefing={shown} evidenceHref={evidenceHref} /> : <p className="line-clamp-3 text-sm">{shown.overview?.text}</p>
+            ? open ? <BriefingView briefing={shown} evidenceHref={evidenceHref} highlightActions={actionsFor(shown)} /> : <p className="line-clamp-3 text-sm">{shown.overview?.text}</p>
             : null}
         </div>
       ) : null}
@@ -199,7 +206,7 @@ export function BriefingPanel({ api, evidenceHref, title, hint, readOnlyNote, te
             <span>{t('briefing.version', { version: lastBriefing.version })}</span>
             <time dateTime={lastBriefing.cutoff_at}>{new Date(lastBriefing.cutoff_at).toLocaleString()}</time>
           </div>
-          <BriefingView briefing={lastBriefing} evidenceHref={evidenceHref} />
+          <BriefingView briefing={lastBriefing} evidenceHref={evidenceHref} highlightActions={actionsFor(lastBriefing)} />
         </section>
       ) : null}
       {open && overview && overview.history.length > 1 ? (

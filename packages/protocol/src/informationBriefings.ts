@@ -158,7 +158,8 @@ export const BriefingSchema = BriefingSummarySchema.extend({
   visibility: z.enum(["visible", "partial", "withheld"]),
   hidden_units: z.number().int().nonnegative(),
   overview: z.object({ text: z.string(), refs: z.array(RefKeySchema) }).nullable(),
-  highlights: z.array(BriefingHighlightSchema),
+  /** Only the highlights the reader may see now; `index` is the highlight's stable position in the version. */
+  highlights: z.array(BriefingHighlightSchema.extend({ index: z.number().int().nonnegative() })),
   open_questions: z.array(z.object({ text: z.string(), refs: z.array(RefKeySchema) })),
   evidence: z.array(BriefingEvidenceSchema),
   context: z.array(BriefingContextRefSchema),
@@ -199,3 +200,49 @@ export const BriefingSettingsRequestSchema = z.object({
   runtime_profile_id: IdSchema.optional(),
 }).strict();
 export type BriefingSettingsRequest = z.infer<typeof BriefingSettingsRequestSchema>;
+
+/**
+ * A follow-up on one highlight, prepared but not sent: the exact text that
+ * would be attached to a conversation in the briefing's own scope (a Room of
+ * its Project; for a personal briefing, a Room only its owner reads). Nothing
+ * is written, sent or run by preparing it.
+ */
+export const BriefingFollowUpPreviewSchema = z.object({
+  briefing_id: IdSchema,
+  highlight: z.number().int().nonnegative(),
+  scope_type: BriefingScopeTypeSchema,
+  project_id: IdSchema.nullable(),
+  title: z.string(),
+  preview: z.string(),
+}).strict();
+export type BriefingFollowUpPreview = z.infer<typeof BriefingFollowUpPreviewSchema>;
+
+/**
+ * A Task drafted from one highlight, shown before it exists. `preview_hash`
+ * binds the confirmation to exactly this draft: a change to the highlight's
+ * standing or text in between asks for a new preview.
+ */
+export const BriefingAdoptionPreviewSchema = z.object({
+  briefing_id: IdSchema,
+  highlight: z.number().int().nonnegative(),
+  /** The Project the Task lands in; null for a personal briefing's private Task. */
+  project_id: IdSchema.nullable(),
+  visibility: z.enum(["space_shared", "private"]),
+  title: z.string(),
+  description: z.string(),
+  preview_hash: z.string().length(64),
+  /** Already adopted: confirming returns this Task. */
+  existing_task_id: IdSchema.nullable(),
+}).strict();
+export type BriefingAdoptionPreview = z.infer<typeof BriefingAdoptionPreviewSchema>;
+
+export const BriefingAdoptionConfirmRequestSchema = z.object({
+  preview_hash: z.string().length(64),
+}).strict();
+export type BriefingAdoptionConfirmRequest = z.infer<typeof BriefingAdoptionConfirmRequestSchema>;
+
+export const BriefingAdoptionResultSchema = z.object({
+  created: z.boolean(),
+  task: z.object({ id: IdSchema, title: z.string(), project_id: IdSchema.nullable() }).strict(),
+}).strict();
+export type BriefingAdoptionResult = z.infer<typeof BriefingAdoptionResultSchema>;

@@ -9,7 +9,7 @@ import { contentReadSql } from "../access/contentAccessSql.js";
 import { isExplicitReferenceType, roomScopedAgentReadSql } from "./workContextService.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
-import { retrievalEgressAllowed, runtimeProviderEgressDestination, type RetrievalEgressDestination } from "../retrieval/egress/egressPolicy.js";
+import { retrievalEgressAllowed, type RetrievalEgressDestination } from "../retrieval/egress/egressPolicy.js";
 import { excerptAroundQuery } from "../retrieval/normalize.js";
 import { RetrievalRegistry } from "../retrieval/registry.js";
 import {
@@ -41,6 +41,7 @@ import { loadConversationContinuityThroughMessage } from "./conversationContinui
 import { contextItemText } from "./itemNormalizer.js";
 import { instructionInRunRequest } from "./runRequest.js";
 import {
+  briefingReferencesInRecipientInstruction,
   createProductionRuntimeContextPlanningService,
   groupedAgentIdentityContext,
   isRoomConversation,
@@ -53,8 +54,8 @@ import { trimContextText } from "./windowPlanner.js";
 import { PgRuntimeContextAcquisitionRepository } from "./acquisitionRepository.js";
 import { PgRuntimeSkillProvider } from "../skills/runtimeSkillProvider.js";
 import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
-import { effectiveRunProviderModel } from "../runs/remoteProviderBinding.js";
-import { availableModels } from "../providers/dbReader.js";
+import { assertBriefingReferencesDeliverable, lockBriefingReferenceClosure, pendingBriefingReferences } from "../informationDigest/briefing/referenceDelivery.js";
+import { classifyRunDestination, loadRunProvider } from "./runDestination.js";
 import {
   loadConversationInputResourceDescriptors,
   loadConversationSkillDescriptors,
@@ -240,6 +241,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       run_group_id: string | null;
       session_id: string | null;
       model_override_json: unknown;
+      runtime_profile_id: string | null;
       runtime_profile_snapshot_json: unknown;
       agent_id: string | null;
       project_id: string | null;
@@ -249,7 +251,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     }>(
       `SELECT run.runtime_key,run.model_provider_id,run.owner_user_id,run.instructed_by_user_id,
               run.prompt,run.instruction,run.delegation_id,run.error_json,run.run_group_id,
-              run.session_id,run.model_override_json,run.runtime_profile_snapshot_json,run.agent_id,run.project_id,
+              run.session_id,run.model_override_json,run.runtime_profile_id,run.runtime_profile_snapshot_json,run.agent_id,run.project_id,
               run.project_folder_id,run.capability_id,run.capabilities_json
          FROM execution_control_snapshots control_row
          JOIN runs run ON run.id=control_row.run_id AND run.space_id=control_row.space_id
@@ -393,25 +395,12 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       throw new HttpError(409, "Invocation Delivery CLI egress authority no longer matches the adapter");
     }
     if (run.model_provider_id) {
-      const providerResult = await db.query<{ space_id: string; provider_type: string; base_url: string | null; config_json: unknown; default_model: string | null; capabilities_json: unknown }>(
-        `SELECT provider.space_id,provider.provider_type,provider.base_url,provider.config_json,provider.default_model,provider.capabilities_json
-           FROM model_provider_space_grants provider_grant
-           JOIN model_providers provider ON provider.id=provider_grant.provider_id
-          WHERE provider_grant.space_id=$1 AND provider_grant.provider_id=$2
-            AND provider_grant.enabled=TRUE AND provider.enabled=TRUE
-          FOR SHARE OF provider_grant,provider`,
-        [input.spaceId, run.model_provider_id],
-      );
-      const provider = providerResult.rows[0];
+      const provider = await loadRunProvider(db, input.spaceId, run.model_provider_id, { lock: true });
       if (!provider || control.egress.destination_id !== run.model_provider_id
         || !control.egress.allowed_provider_ids.includes(run.model_provider_id)) {
         throw new HttpError(409, "Invocation Delivery provider grant is no longer active");
       }
-      destination = runtimeProviderEgressDestination(
-        run.runtime_key,
-        { ...provider, model: effectiveRunProviderModel(run, { ...provider, available_models: availableModels(provider.capabilities_json) }) },
-        input.spaceId,
-      );
+      destination = classifyRunDestination(run, provider, input.spaceId);
       external = destination === "external_provider";
     }
     if (!external) return { destination, externalEgressEnabled: true };
@@ -440,6 +429,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       model_override_json: unknown;
       runtime_key?: string | null;
       agent_id?: string | null;
+      runtime_profile_id?: string | null;
       project_id?: string | null;
       capability_id?: string | null;
       capabilities_json?: unknown;
@@ -447,6 +437,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
   ): Promise<void> {
     const decisions = new Map(input.envelope.window_plan.decisions.map((decision) => [decision.item_id, decision.decision]));
     const accepted = input.envelope.items.filter((item) => decisions.get(item.id) !== "blocked");
+    await this.authorizeBriefingReferences(db, input, accepted, run, egress.destination);
     for (const item of accepted) {
       if (item.acquisition === "direct" && item.source_ref.type === "message") {
         await this.authorizeMessageSource(db, input, item, run);
@@ -478,6 +469,8 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
           || contextItemText(item) !== roomRoutingInstruction(run.model_override_json)) {
           throw new HttpError(409, "Invocation Delivery Room routing instruction changed after planning");
         }
+      } else if (item.acquisition === "direct" && item.source_ref.type === "room_briefing_reference") {
+        // Verified with this turn's pending references, above.
       } else if (item.acquisition === "direct" && item.source_ref.type === "personal_memory_grant") {
         await this.authorizePersonalMemoryGrant(db, input, item);
       } else if (item.acquisition === "direct" && item.source_ref.type === "project_research_evidence_matrix") {
@@ -489,7 +482,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       } else if (item.acquisition === "direct" && item.source_ref.type === "skill_package_binding") {
         await this.authorizeRuntimeSkill(db, input, control, item);
       } else if (item.acquisition === "continuity") {
-        await this.authorizeContinuitySource(db, input, item, run);
+        await this.authorizeContinuitySource(db, input, item, run, egress.destination);
       } else if (item.acquisition === "runtime_event") {
         // CLI history replay no longer exists: the vendor session holds the
         // conversation and the Context Event ledger is audit, not prompt.
@@ -501,6 +494,71 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
           && isExplicitReferenceType(item.source_ref.type))) {
         await this.authorizeExplicitSource(db, input, control, item);
       }
+    }
+  }
+
+  /**
+   * A vendor CLI Room turn carries the briefing references attached since the
+   * Agent's last reply — in the recipient instruction of a resumed session,
+   * or as their own items in a fresh one. Each is re-gated here on the
+   * destination this Delivery is authorized for (`authorizeEgress`, from the
+   * Run's own adapter and ModelProvider, not the live Profile;
+   * `informationDigest/briefing/referenceDelivery.ts`), after the
+   * reference messages, the briefing rows and every Source item, Source
+   * connection and subscription the copy rests on are locked: a concurrent
+   * revocation either commits first and is refused here, or waits for this
+   * Delivery to commit. A delivered item must be exactly one of them, as
+   * attached.
+   */
+  private async authorizeBriefingReferences(
+    db: Queryable,
+    input: InvocationAttemptInput,
+    accepted: readonly ContextItem[],
+    run: { session_id: string | null; model_override_json: unknown; runtime_key?: string | null; agent_id?: string | null },
+    destination: RetrievalEgressDestination,
+  ): Promise<void> {
+    const items = accepted.filter((item) => item.source_ref.type === "room_briefing_reference");
+    const currentRef = input.envelope.turn_request.current_message_ref;
+    const roomTurn = currentRef.type === "message" && isRoomConversation(run.model_override_json)
+      && isVendorCliAdapter(run.runtime_key) && Boolean(run.session_id && run.agent_id);
+    if (!roomTurn) {
+      if (items.length) throw new HttpError(409, "Invocation Delivery carries a briefing reference outside a Room turn");
+      return;
+    }
+    const pending = await pendingBriefingReferences(db, {
+      spaceId: input.spaceId,
+      sessionId: run.session_id!,
+      currentMessageId: currentRef.id,
+      agentId: run.agent_id!,
+    });
+    if (pending.length) {
+      await db.query(
+        `SELECT id FROM messages WHERE space_id=$1 AND session_id=$2 AND id=ANY($3::varchar[]) FOR SHARE`,
+        [input.spaceId, run.session_id, pending.map((message) => message.id)],
+      );
+    }
+    await this.lockBriefingReferences(db, input.spaceId, pending);
+    await assertBriefingReferencesDeliverable(db, input.spaceId, pending, destination);
+    const byId = new Map(pending.map((message) => [message.id, message.content]));
+    const inInstruction = briefingReferencesInRecipientInstruction(run.model_override_json);
+    for (const item of items) {
+      if (inInstruction || item.acquisition !== "direct" || byId.get(item.source_ref.id) !== contextItemText(item)) {
+        throw new HttpError(409, "Invocation Delivery briefing reference changed after planning");
+      }
+    }
+  }
+
+  /**
+   * Locks what briefing references rest on, in one order: the briefing rows,
+   * then each Source item with its connection and the attacher's
+   * subscriptions, then every other Source connection behind an analysis or
+   * signal — the same canonical Source locks a retrieved Source item takes.
+   */
+  private async lockBriefingReferences(db: Queryable, spaceId: string, messages: ReadonlyArray<{ id: string; metadata_json?: unknown }>): Promise<void> {
+    const closure = await lockBriefingReferenceClosure(db, spaceId, messages);
+    for (const attacher of closure.attachers) {
+      for (const itemId of closure.itemIds) await this.lockSourceItemDependencies(db, spaceId, itemId, attacher);
+      for (const connectionId of closure.connectionIds) await this.lockSourceConnectionDependencies(db, spaceId, connectionId, attacher);
     }
   }
 
@@ -666,6 +724,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     input: InvocationAttemptInput,
     item: ContextItem,
     run: { session_id: string | null },
+    destination: RetrievalEgressDestination,
   ): Promise<void> {
     if (!run.session_id) throw new HttpError(409, "Invocation Delivery continuity has no Session authority");
     await this.lockConversationSession(db, input, run.session_id);
@@ -744,6 +803,10 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       || stableStringArray(messageRefs(item)).join("\0") !== stableStringArray(rendered.messageRefs.map((ref) => ref.id)).join("\0")) {
       throw new HttpError(409, "Invocation Delivery continuity changed after planning");
     }
+    const replayed = new Set(rendered.messageRefs.map((ref) => ref.id));
+    const references = canonical.messages.filter((message) => replayed.has(message.id));
+    await this.lockBriefingReferences(db, input.spaceId, references);
+    await assertBriefingReferencesDeliverable(db, input.spaceId, references, destination);
   }
 
   private async lockConversationSession(

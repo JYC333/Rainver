@@ -29,6 +29,19 @@ export async function assertSourcePromptEgressAllowed(
   runtimeProfileId?:string,
 ): Promise<void> {
   const destination = await resolveAgentPromptEgressDestination(db, connection.space_id, agentId,runtimeProfileId);
+  await assertSourceEgressAllowedForDestination(db, connection, destination);
+}
+
+/**
+ * The same gate for a caller that already holds the authorized destination of
+ * the model call — a Run whose Delivery fixed it (`runtimeContext/runDestination.ts`),
+ * which an editable runtime Profile no longer describes.
+ */
+export async function assertSourceEgressAllowedForDestination(
+  db: Queryable,
+  connection: SourceConnectionRow,
+  destination: RetrievalEgressDestination,
+): Promise<void> {
   const governance = normalizeSourceConnectionReadGovernance(connection);
   const retrievalSettings = await readSpaceRetrievalSettings(db, connection.space_id);
   if (destination === "external_provider" && !retrievalSettings.externalEgressEnabled) {

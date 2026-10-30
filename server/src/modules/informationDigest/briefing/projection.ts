@@ -79,7 +79,7 @@ export async function projectBriefing(
     visibility,
     hidden_units: shown.units - shown.shown,
     overview: shown.overview,
-    highlights: shown.highlights as BriefingHighlight[],
+    highlights: shown.highlights as Array<BriefingHighlight & { index: number }>,
     open_questions: shown.open_questions,
     evidence,
     context: shown.withheld ? [] : row.context_json

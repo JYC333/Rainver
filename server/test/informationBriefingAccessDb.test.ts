@@ -143,8 +143,8 @@ describe("Briefing Runs on the production orchestrator", () => {
     const run = await runOf(requested.briefing.id);
     expect(run.contract_snapshot_json).toMatchObject({ policy_context_json: { managed_execution: "information_briefing", credential_pre_authorized: false, failure_policy: "fail_fast" } });
     await db.pool.query(`UPDATE source_connections SET status='archived' WHERE id=$1`, [CONNECTION]);
-    // The real orchestrator: the guard refuses before any Host or model is involved.
-    const response = await buildRunOrchestration(config()).orchestration.executeRun({ run_id: run.id, space_id: SPACE, worker_id: "briefing-guard-check" });
+    // The real orchestrator, as the agent-run job worker calls it: the guard refuses before any Host or model is involved.
+    const response = await buildRunOrchestration(config()).orchestration.executeRun({ run_id: run.id, space_id: SPACE, worker_id: "briefing-guard-check", command_source: "job" });
     expect(response).toMatchObject({ status: "failed", error_code: "briefing_access_changed" });
     const terminal = (await w.runs().getRun(SPACE, run.id))!;
     expect(terminal.status).toBe("failed");

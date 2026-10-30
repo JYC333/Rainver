@@ -112,7 +112,18 @@ allocating a distinct attempt. Source reauthorization locks the canonical root,
 content grant, Project/Folder/share scope, Source connection/subscription, and
 Evidence provenance dependencies before re-running the authoritative read and
 source-policy predicates; concurrent revocation therefore fails closed before
-Delivery persistence. It writes the immutable
+Delivery persistence. A briefing reference carried by a Room turn first locks
+its whole authorization closure, in this order:
+reference messages → briefing rows → audience (`lockProjectAudience`, or a
+personal owner's Reading opt-in shared lock) → context roots (Tasks, Goals) →
+scope signals → content grants and subscriptions → Source items and
+connections.
+
+It is then re-verified against the destination the Delivery is authorized for
+(`informationDigest/briefing/referenceDelivery.ts`). Project membership writers
+take `lockProjectAudienceForChange` (`FOR NO KEY UPDATE` on the Project row),
+which conflicts with the Delivery's Project share lock, so a newly inserted
+member cannot slip past a Delivery that rests on the whole audience. It writes the immutable
 Window Plan reconciliation, content-free Delivery metadata, and protocol-safe
 snapshot together. Optional
 raw replay is encrypted separately and joins that transaction only when the

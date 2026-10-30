@@ -1,7 +1,7 @@
 # 共用简报底座与项目闭环实施计划
 
 日期：2026-10-30。
-状态：P1（共用底座＋项目闭环）已提交（c7db1db5）；P2 个人整体已在工作区实施，待双审（§9.4）；P3 通知／跟进／采纳未实施。项目闭环先交付，个人整体随后接入。
+状态：P1 已提交（c7db1db5），P2 已提交（97e08875）；P3 通知／追问／采纳已在工作区实施，待双审（§9.5），之后进行整体审核。项目闭环先交付，个人整体随后接入。
 
 ## 1. 用户目标与交付顺序
 
@@ -238,6 +238,47 @@ guide／链接检查。每批提交前运行必要的完整套件；不反复执
   未保留的回补仍受完整顺序限制。仍保持每个 scope 只有一个 Run。
 - 迁移：重新生成未发布的 0007，新增 `comparison_json`、`request_json`。
 
+### 9.5 P3 通知、追问、采纳（2026-10-30，以代码为准）
+
+- 通知：在发布当前 attempt 的结算事务内判断。仅当 delta 中有受众当前可读、经校验为 new／update 的重点时，
+  才对每位当前受众写入一条私有 Inbox 指针（`OperationalAlertService`，kind `briefing_changes`）。
+  每个 scope 每人最多一条，后续变化更新同一条。标题为通用文字，行上不带 Project，
+  内容不写正文、标签或项目名，打开时由简报页重新授权。baseline、no-new、仅 ongoing、失败、
+  迟到 attempt 与重放都不通知。
+- 追问：先只读准备预览，再沿现有 Thread Reference 的 hold → 草稿 → 显式发送 → attach 路径，
+  新增 `briefing_highlight` grain。attach 时重新授权：整版闭包与重点依赖、房间 Agent 各运行时的出网许可；
+  项目重点只进同项目 Room，个人重点只进仅本人可读的 Room；不可披露，确认也不能扩大受众。
+- 采纳：先预览，再确认；经规范 `createTask` 写入并产生 `task.created` 事件，校验写权限并锁定项目。
+  确认绑定预览 hash，期间变化返回 409，撤权返回 403。按（简报, 重点）幂等。项目重点生成共享任务，
+  个人重点只生成本人私有任务。不写 Memory／Knowledge。
+- Reuse Check：复用 Activity Inbox 指针（B24A）、Thread References 及其 composer hold／draft、
+  规范 Task writer 与 ProjectWork 事件、内核 `authorizeVersion`。未新建通知系统、调度或依赖，没有迁移。
+- 复审修复 1（F1–F5）：
+  - 采纳先校验 scope 与写权，再按 key 查已有 Task；只经规范 Task 读门禁（`findReadableTask`）返回或预告。
+    读不到的已有 Task 返回 409，不重复创建。
+  - 出网分两道：attach 时，Agent 有效但没有启用 Profile 即拒绝；每次 Delivery 时，planner 与 gateway
+    再按 Run 实际执行的 Agent／Profile，走唯一 Source 出网门禁复验（`referenceDelivery.ts`）。
+  - 新 vendor 会话的首轮把附加的重点作为独立的不可信 reference 项送达；续聊仍在 Room 增量中送达。
+  - Web 动作按（scope, briefing, 稳定 index）归属，忙碌状态归属于发起它的请求。
+  - copy-once 合同来自 protocol `threadReferences` 与 rooms 指南，不是 ADR 0018。
+  - P3 仍待复审，本计划尚未完成。
+- 复审修复 2（R1、R2 与类型）：
+  - 引用的出网判定改用 Delivery 自己授权的目标：由 Run 持久化的 adapter／ModelProvider 推出，
+    经 `runDestination.ts` 与 gateway `authorizeEgress` 共用同一分类。
+    不再按可编辑的 live Profile 判定；Source 同意仍走唯一门禁。
+  - Delivery 事务先以 `FOR SHARE` 依序锁定：引用消息 → 简报行 → 闭包内的 Source item
+    （含其连接与附加者订阅）→ 其余连接；锁后重验，持有到提交。撤权要么先提交、交付被拒，
+    要么等待交付提交。
+- 复审修复 3（R2 完整闭包）：
+  - Delivery 锁住完整授权闭包，依序为：简报行 → 受众 → 上下文根 → 范围信号 → 授权与订阅 → Source。
+    - 受众：项目简报锁项目行、成员、用户与 Space 成员；个人简报锁本人 Reading opt-in 的共享 advisory 锁，以及所选项目的受众。
+    - 上下文根：Task 与个人 Goal。
+  - 项目成员写者 `addMember`／`removeMember` 在同一事务内先取 `lockProjectAudienceForChange`，
+    与 Delivery 的项目共享锁互斥，新成员不能绕过。
+  - 个人 Goal 删除与 `addMember` 两类写者均已有真实 PG 双向测试。
+  - 修正已提交 P1/P2 测试的 4 处类型错误，不改产品行为。
+- 未验：真实模型质量、真实 Room 中 Agent 对 reference 的回答、worker 重启。
+
 ### 9.4 P2 个人整体（2026-10-30，以代码为准）
 
 - 个人 adapter 真实取材：本人 Following；订阅频道送达的条目（`subscription` lens，有已有分析才算 ready）；
@@ -251,7 +292,7 @@ guide／链接检查。每批提交前运行必要的完整套件；不反复执
   项目与个人各自只绑定 API 与 Reader 返回路径。
 - Reuse Check：沿用 Reading 偏好、订阅、Following 与项目可读性的现有谓词，以及个人每日 Digest Automation；
   不新建订阅开关、调度器或依赖；没有新增迁移。
-- 未做：P3 通知、追问、显式采纳；真实模型质量与真实实例。
+- 当轮未做（P3 后续见 §9.5）：真实模型质量与真实实例仍未验证。
 
 ### 9.3 最终窄修（2026-10-30，以代码为准）
 

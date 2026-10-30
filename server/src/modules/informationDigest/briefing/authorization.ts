@@ -2,7 +2,7 @@ import type { BriefingHighlight } from "@rainver/protocol";
 import type { Queryable } from "../../routeUtils/common.js";
 import { collectingKey, collectingRefs, materialRevisions, readableCollecting } from "./candidates.js";
 import { contextSourceKey, signalKey, type BriefingContextEntry, type BriefingDeps, type BriefingScopeAdapter } from "./contract.js";
-import { sourceEgressAllowed, type BriefingExecution } from "./execution.js";
+import { sourceEgressAllowed, type BriefingEgress } from "./execution.js";
 import type { BriefingInputRow, BriefingRow } from "./repository.js";
 import { highlightDependencies } from "./result.js";
 
@@ -68,7 +68,7 @@ export async function authorizeVersion(
   adapter: BriefingScopeAdapter,
   row: Pick<BriefingRow, "space_id" | "context_json" | "comparison_json">,
   inputs: BriefingInputRow[],
-  options: { egress?: BriefingExecution; revisions?: boolean } = {},
+  options: { egress?: BriefingEgress; revisions?: boolean } = {},
 ): Promise<VersionAuthorization> {
   const material = inputs.filter((input) => input.ref_kind === "source_item" && input.ref_key && input.status === "included");
   const deps = material.map((input) => ({ key: input.ref_key!, deps: inputDeps(input) }));
@@ -136,7 +136,8 @@ export function visibleResult(
   const units = result ? 1 + result.highlights.length + result.open_questions.length : 0;
   if (!result) return { overview: null, highlights: [], open_questions: [], withheld: false, units, shown: 0 };
   if (!visible(result.overview.refs)) return { overview: null, highlights: [], open_questions: [], withheld: true, units, shown: 0 };
-  const highlights = result.highlights.filter((highlight) => visible(highlightDependencies(highlight)));
+  const highlights = result.highlights.map((highlight, index) => ({ ...highlight, index }))
+    .filter((highlight) => visible(highlightDependencies(highlight)));
   const questions = result.open_questions.filter((question) => visible(question.refs));
   return { overview: result.overview, highlights, open_questions: questions, withheld: false, units, shown: 1 + highlights.length + questions.length };
 }

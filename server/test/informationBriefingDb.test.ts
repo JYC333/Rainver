@@ -527,7 +527,7 @@ describe("Briefing versions: frozen inputs, reuse and change detection", () => {
     if (!db.available) return ctx.skip();
     await material("Report");
     const published = await publish();
-    const serial = [];
+    const serial: Awaited<ReturnType<ReturnType<typeof service>["request"]>>[] = [];
     for (let i = 0; i < 3; i += 1) serial.push(await service().request(adapter(), OWNER, manual));
     expect(serial.map((result) => result.created)).toEqual([true, false, false]);
     expect(new Set(serial.map((result) => result.briefing.id)).size).toBe(1);
@@ -671,7 +671,7 @@ describe("Briefing versions: frozen inputs, reuse and change detection", () => {
       unverified: false, summary: "S".repeat(600), excerpt: "E".repeat(400), annotation: null,
       signals: ["A", "B", "C"].map((letter, index) => ({
         lens: { kind: "following" as const, label: "L".repeat(80) }, text: letter.repeat(280), activity_at: now, change_at: null,
-        dep: { kind: "goal_item" as const, id: `${i}-${index}`, item_id: `item-${i}`, connection_id: null, revision: "x" },
+        dep: { kind: "goal_item" as const, id: `${i}-${index}`, item_id: `item-${i}`, connection_id: null, revision: "x", at: null },
       })),
     });
     const big = { ...adapter(), candidates: async () => ({ rows: Array.from({ length: 45 }, (_, i) => candidate(i)), not_shared_ids: [] }) };

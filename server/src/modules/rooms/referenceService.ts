@@ -13,6 +13,7 @@ import type { ServerConfig } from "../../config.js";
 import type { Pool, PoolClient } from "../../db/pool.js";
 import type { ThreadReferencePick } from "@rainver/protocol";
 import { ensureImportedHistorySummary } from "../importedSessions/summary.js";
+import { resolveBriefingHighlightReference } from "../informationDigest/briefing/followUp.js";
 import { HttpError } from "../routeUtils/common.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { PgRoomRepository, type RoomRecord } from "./repository.js";
@@ -96,7 +97,14 @@ export class RoomReferenceService {
     const budget = Math.max(1, Math.floor(REFERENCE_BATCH_TOKEN_BUDGET / input.references.length));
     const resolved = [];
     for (const pick of input.references) {
-      resolved.push(await resolveThreadReference(client, identity, pick, room.project_id, budget));
+      resolved.push(pick.kind === "briefing_highlight"
+        ? await resolveBriefingHighlightReference(client, identity, pick, room, budget)
+        : await resolveThreadReference(client, identity, pick, room.project_id, budget));
+    }
+    // Content whose audience may never grow is refused, not confirmed, when the target reaches further.
+    const fixed = resolved.filter((reference) => reference.disclosable === false);
+    if ((await disclosureGainedBy(client, identity.spaceId, room, identity.userId, fixed)).length > 0) {
+      throw new HttpError(409, "This content can only be discussed where its own audience already reads it", { code: "briefing_reference_scope_mismatch" });
     }
     // One check over the whole batch: attaching three references where two
     // disclose should ask once, naming everyone who gains access.

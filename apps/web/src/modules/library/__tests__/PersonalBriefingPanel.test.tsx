@@ -1,12 +1,15 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { Briefing, BriefingOverviewResponse } from '@rainver/protocol'
+import type { Briefing, BriefingAdoptionPreview, BriefingOverviewResponse } from '@rainver/protocol'
 import { PersonalBriefingPanel } from '../briefing/PersonalBriefingPanel'
 import { personalBriefingsApi } from '../../../api/client'
 
+vi.mock('../../../core/spaceNav', () => ({ useSpaceNavigate: () => vi.fn() }))
 vi.mock('../../../api/client', () => ({
-  personalBriefingsApi: { overview: vi.fn(), get: vi.fn(), generate: vi.fn(), cancel: vi.fn(), setDaily: vi.fn() },
+  personalBriefingsApi: { overview: vi.fn(), get: vi.fn(), generate: vi.fn(), cancel: vi.fn(), setDaily: vi.fn(), followUp: vi.fn(), previewAdoption: vi.fn(), adopt: vi.fn() },
+  projectsApi: { list: vi.fn(), mainlineRoom: vi.fn() },
+  roomsApi: { create: vi.fn() },
 }))
 const api = vi.mocked(personalBriefingsApi)
 const ITEM = '11111111-1111-4111-8111-111111111111'
@@ -22,7 +25,7 @@ function briefing(overrides: Partial<Briefing> = {}): Briefing {
     highlights: [{
       title: 'Gripper launch', what_changed: 'Two outlets report one launch.', novelty: 'baseline', importance: 'high', why_it_matters: 'It is your topic.',
       impact: { assessment: 'affects', text: 'Bears on your focus.', context_refs: ['C1'] }, suggested_action: 'watch',
-      statements: [{ kind: 'fact', text: 'Launched.', refs: ['S1'] }], contradictions: null, refs: ['S1'], source_domains: 1, rests_on_unverified: false,
+      statements: [{ kind: 'fact', text: 'Launched.', refs: ['S1'] }], contradictions: null, refs: ['S1'], source_domains: 1, rests_on_unverified: false, index: 0,
     }],
     open_questions: [],
     evidence: [{ key: 'S1', source_item_id: ITEM, title: 'Launch report', source_domain: 'news.test', occurred_at: null, delta_class: 'baseline', unverified: false, lenses: [{ kind: 'following', label: 'Soft grippers' }, { kind: 'corpus', label: 'Project "Robotics": Corpus' }] }],
@@ -91,4 +94,60 @@ it('drops a late reply from the previous Space', async () => {
   expect(await screen.findByText('No briefing yet.')).toBeInTheDocument()
   expect(screen.queryByText('Your topics and one Project point the same way.')).not.toBeInTheDocument()
   expect(api.overview).toHaveBeenLastCalledWith('b')
+})
+
+const adoptionOf = (b: Briefing, index: number): BriefingAdoptionPreview => ({
+  briefing_id: b.id, highlight: index, project_id: null, visibility: 'private', title: `Task from ${b.id}`, description: `Draft of ${b.id}#${index}`, preview_hash: `${b.id}${index}`.padEnd(64, '0'), existing_task_id: null,
+})
+
+it('keeps a pending action with its highlight by stable index when the visible set changes on a re-read', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  const first = briefing().highlights[0]!
+  // Highlight 0 is withheld from this reader at first; the only visible card is highlight 1.
+  const partial = briefing({ visibility: 'partial', hidden_units: 1, highlights: [{ ...first, title: 'Second highlight', index: 1 }] })
+  const restored = briefing({ highlights: [{ ...first, title: 'First highlight', index: 0 }, { ...first, title: 'Second highlight', index: 1 }] })
+  // A version still running keeps the panel re-reading.
+  const running = briefing({ id: 'p2', version: 2, status: 'queued', outcome: null, overview: null, highlights: [], evidence: [], run_status: 'running' })
+  api.overview.mockResolvedValueOnce(overview(partial, [running, partial])).mockResolvedValue(overview(restored, [running, restored]))
+  let finish: ((value: BriefingAdoptionPreview) => void) | undefined
+  api.previewAdoption.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+  api.adopt.mockResolvedValue({ created: true, task: { id: 't1', title: 'Second highlight', project_id: null } })
+  render(panel())
+  fireEvent.click(await screen.findByRole('button', { name: 'Show full briefing' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Adopt as Task' }))
+  expect(api.previewAdoption).toHaveBeenLastCalledWith('s', 'p1', 1)
+  // The re-read shows highlight 0 again, ahead of it.
+  await act(async () => { await vi.advanceTimersByTimeAsync(4100) })
+  expect(await screen.findByText('First highlight')).toBeInTheDocument()
+  await act(async () => { finish?.(adoptionOf(partial, 1)) })
+  expect(await screen.findByTestId('adoption-preview')).toHaveTextContent('Draft of p1#1')
+  fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+  await waitFor(() => expect(api.adopt).toHaveBeenCalledTimes(1))
+  expect(api.adopt).toHaveBeenCalledWith('s', 'p1', 1, adoptionOf(partial, 1).preview_hash)
+})
+
+it('switching to another version in history drops a pending preview of the one left and acts on the version shown', async () => {
+  const older = briefing({ id: 'p0', version: 1, highlights: [{ ...briefing().highlights[0]!, title: 'Older highlight', index: 0 }] })
+  const latest = briefing({ id: 'p1', version: 2 })
+  api.overview.mockResolvedValue(overview(latest, [latest, older]))
+  api.get.mockResolvedValue(older)
+  let finish: ((value: BriefingAdoptionPreview) => void) | undefined
+  api.previewAdoption.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+  render(panel())
+  fireEvent.click(await screen.findByRole('button', { name: 'Show full briefing' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Adopt as Task' }))
+  expect(api.previewAdoption).toHaveBeenLastCalledWith('s', 'p1', 0)
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'p0' } })
+  expect(await screen.findByText('Older highlight')).toBeInTheDocument()
+  // The newer version's preview lands after the switch: it may not open over, or drive, the older one.
+  await act(async () => { finish?.(adoptionOf(latest, 0)) })
+  expect(screen.queryByTestId('adoption-preview')).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Adopt as Task' })).toBeEnabled()
+  api.previewAdoption.mockResolvedValueOnce(adoptionOf(older, 0))
+  fireEvent.click(screen.getByRole('button', { name: 'Adopt as Task' }))
+  expect(await screen.findByTestId('adoption-preview')).toHaveTextContent('Draft of p0#0')
+  api.adopt.mockResolvedValue({ created: true, task: { id: 't0', title: 'Older highlight', project_id: null } })
+  fireEvent.click(screen.getByRole('button', { name: 'Create Task' }))
+  await waitFor(() => expect(api.adopt).toHaveBeenCalledWith('s', 'p0', 0, adoptionOf(older, 0).preview_hash))
+  expect(api.adopt).toHaveBeenCalledTimes(1)
 })

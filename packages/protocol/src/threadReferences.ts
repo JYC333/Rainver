@@ -29,6 +29,8 @@ export const THREAD_REFERENCE_SOURCE_KINDS = [
   "messages",
   "imported_session",
   "imported_records",
+  // One highlight of a briefing (`id` the briefing, `highlight` its index), copied with its evidence.
+  "briefing_highlight",
 ] as const;
 export const ThreadReferenceSourceKindSchema = z.enum(THREAD_REFERENCE_SOURCE_KINDS);
 export type ThreadReferenceSourceKind = z.infer<typeof ThreadReferenceSourceKindSchema>;
@@ -41,6 +43,8 @@ export const ThreadReferencePickSchema = z.object({
   kind: ThreadReferenceSourceKindSchema,
   id: IdSchema,
   item_ids: z.array(IdSchema).max(200).optional(),
+  /** `briefing_highlight` only: the highlight's index in its version. */
+  highlight: z.number().int().nonnegative().max(32).optional(),
 }).strict();
 export type ThreadReferencePick = z.infer<typeof ThreadReferencePickSchema>;
 
@@ -108,6 +112,12 @@ export const ThreadReferenceProvenanceSchema = z.object({
    */
   source_room_id: IdSchema.nullable(),
   source_title: z.string().nullable(),
+  /**
+   * `briefing_highlight` only: the highlight's index in that briefing
+   * version, so each Delivery can re-verify the copy against the execution
+   * it actually reaches (its dependencies and their Source egress).
+   */
+  highlight: z.number().int().nonnegative().max(32).optional(),
   item_ids: z.array(IdSchema),
   trust: z.enum(["domain_approved", "external_untrusted"]),
   /** Set when the copy was fitted to the context budget. */

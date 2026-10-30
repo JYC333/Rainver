@@ -320,8 +320,149 @@ which stay as they are. Plan: `.agent/plans/shared-briefing-and-project-loop.md`
 
   `apps/web/src/modules/projects/ProjectBriefingPanel.tsx` binds the panel to
   a Project in its Sources digest tab.
-- **Not yet built.** Notifications, Room follow-up and Task adoption (P3).
-  Output quality with real models (event grouping,
+- **Change notices** (`notifications.ts`): built in the settlement
+  transaction that publishes the current attempt; a replay, a failed attempt
+  or a late attempt never reaches it. A notice is sent only for a delta with
+  a highlight the whole audience may read now whose validated novelty is
+  `new` or `update`. A baseline, a "nothing new" check, an `ongoing`-only
+  version or a withheld change sends nothing.
+
+  Each current audience member (Project readers; a personal briefing's owner)
+  gets one private Inbox pointer through `OperationalAlertService` (kind
+  `briefing_changes`). It is keyed `briefing:<scope_key>:<user>`, so a later
+  meaningful version updates the same notice: at most one live notice per
+  scope per person.
+
+  The title and message are generic. The Project, briefing and version live
+  only in the pointer payload, never the notice's `project_id`, so a person
+  who loses access sees no name or text. The Inbox links to the briefing
+  surface, which re-authorizes on open (B24A).
+- **Follow-up** (`followUp.ts`, `highlight.ts`): `POST …/:briefingId/highlights/:index/follow-up`
+  returns the exact text and writes nothing. The web panel holds a
+  `briefing_highlight` Thread Reference and opens a draft:
+  - a Project highlight goes to that Project's mainline Room;
+  - a personal highlight goes to a new private Room (`personal: true`) in a
+    Project the reader picks.
+
+  At the explicit send, `RoomReferenceService.attach` resolves the reference
+  again under the attacher, with these gates:
+  - the whole briefing (comparison closure included) and every dependency of
+    the highlight must still stand;
+  - its Sources must consent to every enabled runtime Profile of the Room's
+    active Agents. An active Agent with no enabled Profile has no execution to
+    check, so the attach fails closed (`briefing_reference_execution_unresolved`,
+    409). A Room with no Agent takes it as a draft only people read;
+  - a Project highlight is accepted only into a Room of the same Project;
+  - a personal highlight is accepted only into a Room whose audience is its
+    owner alone;
+  - the content is non-disclosable: a wider target is refused
+    (`briefing_reference_scope_mismatch`) even with a disclosure
+    confirmation.
+
+  The copy is a system-role `reference` message fenced as untrusted, with
+  provenance (briefing, highlight index, evidence item ids). For people it is
+  then that conversation's own content, as every reference is: copied once,
+  not re-read (the contract of protocol `threadReferences.ts` and
+  [Rooms](rooms.md) "Thread References"; ADR 0018 governs Room audience and
+  visibility, not model egress).
+
+  Model egress is a separate gate, applied at every Delivery that carries the
+  copy (`referenceDelivery.ts`). Attach time cannot know where the text will
+  go: an Agent or Profile may be added, enabled, switched or edited before
+  the send. The Runtime Context planner (`PgDirectProvider`, and
+  `PgCheckpointContinuityProvider` for provider-backed continuity) and the
+  Invocation gateway re-authorize each briefing reference the Delivery would
+  carry, as its attacher reads it.
+  - **Against what.** The model destination the Delivery is authorized for,
+    never the live, editable runtime Profile. It is derived from the Run's own
+    persisted adapter and ModelProvider (`runtimeContext/runDestination.ts`).
+    The gateway uses the destination its own `authorizeEgress` computed under
+    its locks. The planner uses the same classifier without locks.
+  - **Through what.** The one Source consent gate, entered with that
+    destination (`assertSourceEgressAllowedForDestination`; the Profile-based
+    `assertSourcePromptEgressAllowed` resolves a destination and calls it).
+  - **Locks.** Inside the Delivery transaction the gateway first locks the
+    reference messages, then the whole authorization closure of the copy
+    (`lockBriefingReferenceClosure`). The closure is what `authorizedHighlight`
+    reads for the overview, the highlight's refs and the comparison closure of
+    earlier versions. Everything is locked `FOR SHARE` or on the shared side of
+    an advisory lock, in this order:
+    1. the briefing rows;
+    2. the audience. For a Project briefing, the whole Project audience
+       (`projects/access.ts`, `lockProjectAudience`): the Project row, every
+       `project_members` row, then the `users` and `space_memberships` rows of
+       its owner and members. For a personal briefing, the owner's Reading
+       opt-ins (`lockReadingPreferencesShared`, the shared side of the lock
+       `ReadingPreferences.set` takes), the audience of each opted-in Project,
+       and the owner's `users` and Space membership rows;
+    3. context roots: the cited Tasks and personal Following Goals. A Brief
+       version is held through the Project row;
+    4. scope signals: Following goal items with their Goal and binding,
+       monitoring decisions with their Project links, Corpus entries, channel
+       item links with their channel;
+    5. `content_access_grants` on those Tasks, Source items and Source
+       connections, and every user's subscriptions to those connections;
+    6. then, through the gateway's canonical Source locks (as for a retrieved
+       Source item), each Source item with its connection and the attacher's
+       subscriptions, then every other Source connection.
+
+    Only then does it re-verify. The locks are held until the Delivery and its
+    Snapshot commit. A revocation through any canonical writer either commits
+    first and the Delivery is refused, or waits for the Delivery's commit.
+  - **Membership fence.** A new Project member is an insert, which no row lock
+    on existing members would see. Every Project membership writer
+    (`PgProjectRepository.addMember` / `removeMember`) therefore takes
+    `lockProjectAudienceForChange` (`FOR NO KEY UPDATE` on the Project row) in
+    the same transaction as its write. That lock conflicts with the Delivery's
+    Project share lock, so a membership change and a Delivery resting on the
+    whole audience are serialized either way.
+  - **Refusal.** A refusal throws before an envelope is planned or a Delivery
+    accepted. A turn with no known destination carries none
+    (`briefing_reference_execution_unresolved`).
+  - Which references a vendor CLI turn carries: those attached after the
+    Agent's last reply, before the current message.
+  - A resumed session reads them in the Room increment of its recipient
+    instruction.
+  - A fresh session is sent no transcript, so each copy is its own required
+    `room_briefing_reference` item (reference data, `external_untrusted`).
+    The gateway checks that item equals the stored copy.
+  - The transcript is never replayed, and nothing relies on the Agent calling
+    `conversation.read`.
+- **Adoption** (`adoption.ts`):
+  - `POST …/highlights/:index/adoption/preview` drafts the Task and writes
+    nothing. It needs write access: a Project writer, or for a personal
+    briefing its owner.
+  - `POST …/highlights/:index/adoption {preview_hash}` re-authorizes and
+    re-drafts the highlight in one transaction and refuses
+    (`briefing_adoption_changed`, 409) when anything changed since the
+    preview. The Task is created through `PgTaskRepository.createTask`, which
+    writes the Task and its `task.created` event, with the Project lock and
+    writer check.
+  - A Project highlight becomes a shared Task of that Project. A personal one
+    becomes its owner's private Task with no Project, never a shared one.
+  - Scope first: preview and confirm verify that the briefing belongs to the
+    route's scope (Space, Project or owner) and that the caller may write
+    there, with the Project lock, before anything is looked up by its id.
+    Someone outside the scope gets 404 at both.
+  - Idempotent per (briefing, highlight) under an advisory lock and
+    `metadata_json.briefing_adoption.key`. An existing Task is returned, and
+    named in the preview's `existing_task_id`, only through the canonical Task
+    read gate (`PgTaskRepository.findReadableTask`, the gate `getTask` uses).
+    If one exists that the caller cannot read, confirm answers 409
+    `briefing_adoption_exists` and creates no second Task. Provenance records the briefing,
+    version, highlight, refs, evidence item ids and context sources. No
+    Memory or Knowledge is written; afterwards the Task follows ordinary Task
+    sharing.
+- **Web actions** (`library/briefing/HighlightActions.tsx`): each set of
+  actions belongs to one highlight: scope, briefing id and the highlight's
+  stable `index` (never its position among the highlights this reader
+  sees). The Panel keys the actions and the View keys the cards by it. A
+  change of owner drops open previews, results and the busy state, and
+  invalidates pending replies. A preview acts only for the highlight it was
+  made for. The busy state belongs to the request that set it: closing a
+  dialog releases it, and an earlier request finishing late does not release
+  a newer one.
+- **Not verified.** Output quality with real models (event grouping,
   contradiction handling, false merges) and real instances are unverified.
   A synthetic published Project Instruction was checked with the production
   planner in two setups: the briefing Run's closed setup, and a legitimately
@@ -337,7 +478,7 @@ which stay as they are. Plan: `.agent/plans/shared-briefing-and-project-loop.md`
 - `apps/web/src/modules/library/InterestProfileControls.tsx`
 - `apps/web/src/modules/projects/ProjectDigestPage.tsx`
 - `server/test/informationDigestDb.test.ts`
-- `server/test/informationBriefingDb.test.ts`, `informationBriefingAccessDb.test.ts`, `informationBriefingDependencyDb.test.ts`, `informationBriefingPersonalDb.test.ts` (fixture `server/test/support/briefingFixture.ts`)
+- `server/test/informationBriefingDb.test.ts`, `informationBriefingAccessDb.test.ts`, `informationBriefingDependencyDb.test.ts`, `informationBriefingPersonalDb.test.ts`, `informationBriefingActionsDb.test.ts` (fixture `server/test/support/briefingFixture.ts`)
 - `apps/web/src/modules/projects/ProjectBriefingPanel.tsx`
 - `server/test/interestProfileDb.test.ts`
 

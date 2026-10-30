@@ -12,6 +12,7 @@ import { personalBriefingScope } from "./personalScope.js";
 import { PgBriefingRepository, type BriefingRow } from "./repository.js";
 import { BriefingOutputError, parseBriefingOutput, validateBriefing, type ManifestRef } from "./result.js";
 import { resumeHeldDays } from "./service.js";
+import { isMeaningfulChange, notifyMeaningfulChange } from "./notifications.js";
 
 /** The version and attempt a Run executes, from its immutable contract. */
 export function briefingRunContext(run: Pick<RunRecord, "contract_snapshot_json">): { id: string; attempt: number; scope_key: string } | null {
@@ -164,7 +165,9 @@ async function settleVersion(db: Queryable, run: RunRecord, context: NonNullable
       });
       return adapter;
     }
-    await repository.settle(row.space_id, row.id, run.id, { status: "ready", result: validated as unknown as Record<string, unknown> });
+    const published = await repository.settle(row.space_id, row.id, run.id, { status: "ready", result: validated as unknown as Record<string, unknown> });
+    // Only this transition notifies: a replay, a late attempt or a failure never reaches here with `published`.
+    if (published && isMeaningfulChange(row, validated, authorization.allowed)) await notifyMeaningfulChange(tx, adapter, row);
     return adapter;
   });
 }

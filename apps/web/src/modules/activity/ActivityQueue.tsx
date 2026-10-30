@@ -101,6 +101,14 @@ function projectSourceCollectionPointer(record: ActivityInboxRecord): ProjectSou
   return { projectId, date: stringValue(metadata?.local_date) }
 }
 
+/** A briefing's "new changes" notice: a pointer to the briefing surface, which re-authorizes on open. */
+function briefingChangesPath(record: ActivityInboxRecord): string | null {
+  const metadata = recordValue(record.metadata_json)
+  if (stringValue(metadata?.pointer_type) !== 'briefing_changes') return null
+  const projectId = stringValue(metadata?.project_id)
+  return projectId ? `/projects/${encodeURIComponent(projectId)}/sources?tab=digest` : '/library/reading'
+}
+
 function agentPersonaPointer(record: ActivityInboxRecord): AgentPersonaPointer | null {
   const metadata = recordValue(record.metadata_json)
   if (stringValue(metadata?.pointer_type) !== 'agent_persona_revision') return null
@@ -275,7 +283,8 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
         const recommendation = sourceRecommendationPointer(r)
         const projectCollection = projectSourceCollectionPointer(r)
         const persona = agentPersonaPointer(r)
-        const targetPath = briefing
+        const briefingChanges = briefingChangesPath(r)
+        const targetPath = briefingChanges ?? (briefing
           ? `/library/digests/${briefing.connectionId}/${briefing.date}`
           : recommendation
             ? `/sources?view=pending&connection_id=${encodeURIComponent(recommendation.connectionId)}`
@@ -283,7 +292,7 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
               ? `/projects/${encodeURIComponent(projectCollection.projectId)}/sources${projectCollection.date ? `?date=${encodeURIComponent(projectCollection.date)}` : ''}`
               : persona
                 ? `/memory/${encodeURIComponent(persona.memoryId)}`
-              : `/activity/${r.id}`
+              : `/activity/${r.id}`)
         return (
           <Card key={r.id}>
             <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-3">

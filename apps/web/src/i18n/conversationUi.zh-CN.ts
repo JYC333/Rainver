@@ -347,6 +347,7 @@ export const conversationUiZhCN = {
         messages_one: '{{count}} 条消息',
         messages_other: '{{count}} 条消息',
         thread: '一个对话',
+        briefing_highlight: '一条简报重点及其证据',
       },
       picks_dropped: '{{error}} — 消息未发送，所选内容已被移除。再次发送即可单独发布这条消息。',
       proposal_gone: '该提案已不可用',

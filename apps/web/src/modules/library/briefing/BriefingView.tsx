@@ -9,7 +9,12 @@ import { useAppTranslation } from '../../../i18n'
  * the caller decides where evidence opens. Every visible sentence carries its
  * citations; withheld and hidden parts are stated, never silently dropped.
  */
-export function BriefingView({ briefing, evidenceHref }: { briefing: Briefing; evidenceHref: (evidence: BriefingEvidence) => string }) {
+export function BriefingView({ briefing, evidenceHref, highlightActions }: {
+  briefing: Briefing
+  evidenceHref: (evidence: BriefingEvidence) => string
+  /** Explicit actions on one highlight (follow-up, adoption), when the surface offers them. */
+  highlightActions?: (highlight: Briefing['highlights'][number]) => React.ReactNode
+}) {
   const { t } = useAppTranslation()
   const evidence = new Map(briefing.evidence.map(entry => [entry.key, entry]))
   const context = new Map(briefing.context.map(entry => [entry.key, entry]))
@@ -30,7 +35,7 @@ export function BriefingView({ briefing, evidenceHref }: { briefing: Briefing; e
       {briefing.highlights.length > 0 ? (
         <section aria-label={t('briefing.highlights')} className="space-y-3">
           <h3 className="text-sm font-semibold">{t('briefing.highlights')}</h3>
-          {briefing.highlights.map((highlight, index) => <HighlightCard key={index} highlight={highlight} refs={refs} personal={briefing.scope_type === 'personal'} />)}
+          {briefing.highlights.map(highlight => <HighlightCard key={`${briefing.id}:${highlight.index}`} highlight={highlight} refs={refs} personal={briefing.scope_type === 'personal'} actions={highlightActions?.(highlight)} />)}
         </section>
       ) : null}
       {briefing.open_questions.length > 0 ? (
@@ -72,7 +77,7 @@ export function BriefingView({ briefing, evidenceHref }: { briefing: Briefing; e
   )
 }
 
-function HighlightCard({ highlight, refs, personal }: { highlight: BriefingHighlight; refs: (keys: string[]) => React.ReactNode; personal: boolean }) {
+function HighlightCard({ highlight, refs, personal, actions }: { highlight: BriefingHighlight; refs: (keys: string[]) => React.ReactNode; personal: boolean; actions?: React.ReactNode }) {
   const { t } = useAppTranslation()
   return (
     <Card className="space-y-2 p-3">
@@ -100,6 +105,7 @@ function HighlightCard({ highlight, refs, personal }: { highlight: BriefingHighl
       </p>
       {highlight.contradictions ? <p className="text-sm break-words"><span className="font-medium">{t('briefing.contradictions')}: </span>{highlight.contradictions}</p> : null}
       <p className="text-xs text-muted-foreground">{t(`briefing.action.${highlight.suggested_action}`)}</p>
+      {actions}
     </Card>
   )
 }

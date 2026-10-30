@@ -17,7 +17,7 @@ const coverage={since:null,cutoff:'2026-10-30T08:00:00.000Z',candidates:4,includ
 const base={id:'brief-1',version:1,kind:'manual',status:'queued',outcome:null,comparison:'baseline',period_date:null,cutoff_at:'2026-10-30T08:00:00.000Z',created_at:'2026-10-30T08:00:00.000Z',completed_at:null,checked_at:null,error_code:null,scope_type:'project',previous_briefing_id:null,run_status:'running',coverage,visibility:'visible',hidden_units:0,overview:null,highlights:[],open_questions:[],evidence:[],context:[{key:'C1',kind:'project_goal',label:'Project goal'}],context_outdated:false}
 const ready={...base,status:'ready',outcome:'briefing',run_status:'succeeded',completed_at:'2026-10-30T08:02:00.000Z',
  overview:{text:'Synthetic fixture: two reports describe one gripper launch; a recall notice is unconfirmed.',refs:['S1','S2']},
- highlights:[{title:'Fixture gripper launch',what_changed:'A fixture vendor announced a soft gripper with a very-long-unbroken-identifier-fixture-gripper-model-x1000-to-check-wrapping.',novelty:'baseline',importance:'high',why_it_matters:'Fragile-item picking is the open risk in the fixture goal.',impact:{assessment:'affects',text:'Bears on the fixture picking goal.',context_refs:['C1']},suggested_action:'watch',statements:[{kind:'fact',text:'The fixture gripper was announced.',refs:['S1']},{kind:'inference',text:'It could replace the fixture prototype.',refs:['S1','C1']},{kind:'open_question',text:'Is the fixture price public?',refs:['S2']}],contradictions:'The fixture recall notice conflicts with the launch report.',refs:['S1','S2'],source_domains:2,rests_on_unverified:true}],
+ highlights:[{title:'Fixture gripper launch',what_changed:'A fixture vendor announced a soft gripper with a very-long-unbroken-identifier-fixture-gripper-model-x1000-to-check-wrapping.',novelty:'baseline',importance:'high',why_it_matters:'Fragile-item picking is the open risk in the fixture goal.',impact:{assessment:'affects',text:'Bears on the fixture picking goal.',context_refs:['C1']},suggested_action:'watch',statements:[{kind:'fact',text:'The fixture gripper was announced.',refs:['S1']},{kind:'inference',text:'It could replace the fixture prototype.',refs:['S1','C1']},{kind:'open_question',text:'Is the fixture price public?',refs:['S2']}],contradictions:'The fixture recall notice conflicts with the launch report.',refs:['S1','S2'],source_domains:2,rests_on_unverified:true,index:0}],
  open_questions:[{text:'Does the fixture recall affect the same model?',refs:['S2']}],
  evidence:[{key:'S1',source_item_id:ITEM,title:'Fixture launch report',source_domain:'news.fixture.test',occurred_at:'2026-10-29T10:00:00.000Z',delta_class:'baseline',unverified:false,lenses:[{kind:'corpus',label:'Project Corpus'}]},{key:'S2',source_item_id:'22222222-2222-4222-8222-222222222222',title:'Fixture recall notice',source_domain:'agent.fixture.test',occurred_at:null,delta_class:'unknown_time',unverified:true,lenses:[{kind:'following',label:'Fixture topic'}]}]}
 // A sealed day held while a manual version runs; the server then starts and finishes it.
@@ -31,6 +31,7 @@ const check={...base,coverage:{...coverage,candidates:0,included:0,merged_duplic
 test('Project briefing: writer generates, sees progress, then reads a cited briefing on phone and desktop',async()=>{
  const page=await browser.newPage({viewport:{width:390,height:900},serviceWorkers:'block'})
  let latest=null,polls=0
+ const actions=[]
  const writes=[]
  try{
   await page.route('**/api/v1/**',async route=>{
@@ -48,6 +49,10 @@ test('Project briefing: writer generates, sees progress, then reads a cited brie
     const published=latest===check?ready:latest?.outcome==='briefing'?latest:null
     return route.fulfill({json:{can_generate:true,daily_enabled:false,latest,latest_briefing:published,history:[latest,published].filter((b,i,all)=>b&&all.findIndex(o=>o?.id===b.id)===i).map(summary)}})
    }
+   if(path.endsWith('/highlights/0/adoption/preview')){actions.push('adoption-preview');return route.fulfill({json:{briefing_id:'brief-1',highlight:0,project_id:'project-fixture',visibility:'space_shared',title:'Fixture gripper launch',description:'Synthetic fixture: what changed: a soft gripper was announced [S1]',preview_hash:'f'.repeat(64),existing_task_id:null}})}
+   if(path.endsWith('/highlights/0/adoption')){actions.push('adopt:'+route.request().postDataJSON().preview_hash.length);return route.fulfill({status:201,json:{created:true,task:{id:'task-fixture',title:'Fixture gripper launch',project_id:'project-fixture'}}})}
+   if(path.endsWith('/highlights/0/follow-up')){actions.push('follow-up');return route.fulfill({json:{briefing_id:'brief-1',highlight:0,scope_type:'project',project_id:'project-fixture',title:'Fixture gripper launch',preview:'Synthetic fixture: Fixture gripper launch — high importance\n[S1] Fixture launch report (news.fixture.test)'}})}
+   if(path==='/projects/project-fixture/mainline-room'){actions.push('mainline');return route.fulfill({json:{room:{id:'room-fixture'}}})}
    if(method!=='GET'){writes.push(path);return route.fulfill({status:404,json:{detail:'Not part of the browser fixture'}})}
    let data
    if(path==='/me')data={id:'user-fixture',name:'Tester',default_space_id:'space-fixture',instance_role:'member'}
@@ -75,6 +80,7 @@ test('Project briefing: writer generates, sees progress, then reads a cited brie
   await panel.getByText('Rests on agent-provided material that nobody verified.',{exact:true}).waitFor()
   assert.equal(await panel.getByRole('link',{name:'Fixture launch report',exact:true}).getAttribute('href'),`/library/items/${ITEM}?from=project&returnTo=%2Fprojects%2Fproject-fixture%2Fsources%3Ftab%3Ddigest`)
   await mkdir('/tmp/rainver-briefing-p1',{recursive:true})
+  await mkdir('/tmp/rainver-briefing-p3',{recursive:true})
   for(const width of [390,1280]){
    await page.setViewportSize({width,height:1000})
    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))
@@ -84,6 +90,30 @@ test('Project briefing: writer generates, sees progress, then reads a cited brie
    assert.ok(box&&box.x>=0&&box.x+box.width<=width+1,`panel fits ${width}: ${JSON.stringify(box)}`)
    await panel.screenshot({path:`/tmp/rainver-briefing-p1/briefing-${width}.png`})
   }
+  // Adopt: a preview first, the Task only on Create; then Ask: the exact text first, then only a held draft pick.
+  await page.setViewportSize({width:390,height:900})
+  await panel.getByRole('button',{name:'Adopt as Task',exact:true}).click()
+  const dialog=page.getByRole('dialog')
+  await dialog.getByTestId('adoption-preview').getByText(/soft gripper was announced/).waitFor()
+  assert.deepEqual(actions,['adoption-preview'])
+  await page.evaluate(()=>Promise.all(document.getAnimations().map(animation=>animation.finished.catch(()=>{}))))
+  await page.screenshot({path:'/tmp/rainver-briefing-p3/adopt-preview-390.png'})
+  await dialog.getByRole('button',{name:'Create Task',exact:true}).click()
+  await dialog.getByRole('status').getByText('Task created').waitFor()
+  assert.deepEqual(actions,['adoption-preview','adopt:64'])
+  await page.keyboard.press('Escape')
+  await page.setViewportSize({width:1280,height:1000})
+  await panel.getByRole('button',{name:'Ask about this',exact:true}).click()
+  await page.getByRole('dialog').getByTestId('follow-up-preview').getByText(/Fixture launch report/).waitFor()
+  await page.evaluate(()=>Promise.all(document.getAnimations().map(animation=>animation.finished.catch(()=>{}))))
+  await page.screenshot({path:'/tmp/rainver-briefing-p3/follow-up-preview-1280.png'})
+  const errorsBeforeDraft=errors.length
+  await page.getByRole('dialog').getByRole('button',{name:'Open draft',exact:true}).click()
+  await page.waitForURL(url=>url.pathname.endsWith('/projects/project-fixture/rooms')&&url.searchParams.get('room')==='room-fixture'&&url.searchParams.get('new')==='1')
+  assert.deepEqual(actions,['adoption-preview','adopt:64','follow-up','mainline'])
+  assert.equal(errors.length,errorsBeforeDraft)
+  await page.goto(baseUrl+'/spaces/space-fixture/projects/project-fixture/sources?tab=digest')
+  await panel.getByText(ready.overview.text).waitFor()
   // A later check found nothing new: it is the latest version, and the last real briefing stays readable under it.
   latest=check
   await page.reload()

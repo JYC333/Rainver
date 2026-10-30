@@ -494,6 +494,16 @@ export class PgTaskRepository {
     return taskOut(created);
   }
 
+  /**
+   * The Task as this reader may see it, or null, through the same read gate
+   * as `getTask`, without recording a detail read: for a caller that only
+   * needs to point at a Task it may already reach (inside its transaction).
+   */
+  async findReadableTask(identity: SpaceUserIdentity, taskId: string, db: Queryable = this.pool) {
+    const row = await getVisibleTaskRow(db, identity, taskId);
+    return row ? taskOut(row) : null;
+  }
+
   async getTask(identity: SpaceUserIdentity, taskId: string) {
     const row = await getVisibleTaskRow(this.pool, identity, taskId);
     if (!row) return null;
