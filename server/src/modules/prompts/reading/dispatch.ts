@@ -1,3 +1,5 @@
+import {generationOf} from './generationContract.js';
+import {assertGenerationDispatch,assertGenerationReadable} from './generationAuthority.js';
 import {getDbPool} from '../../../db/pool.js';
 import type {ServerConfig} from '../../../config.js';
 import type {RunRecord} from '../../runs/repository.js';
@@ -8,6 +10,8 @@ import {readingMethodOf,assertFrozenReadingMethod} from './runtime.js';
 import {trialContext,assertReadingTrialRun,assertReadingTrialReadable} from './trials.js';
 import {readingProjectContext,assertReadingAudience,assertReadingRunEgress} from '../../sources/index.js';
 export async function readingRunDependencies(db:Queryable,run:RunRecord){
+ const generation=generationOf(run);
+ if(generation)return {itemId:generation.item_id,projectId:generation.project_id,artifactId:null,caseId:null,connectionId:(await db.query<{connection_id:string|null}>(`SELECT connection_id FROM source_items WHERE id=$1 AND space_id=$2`,[generation.item_id,run.space_id])).rows[0]?.connection_id??null};
  const trial=trialContext(run);const method=readingMethodOf(run);if(!trial&&!method)return null;
  const workflow=(run.contract_snapshot_json as {workflow_input_json?:{material_processing?:{item_id:string};source_goal?:{goal_id?:string;project_id?:string|null;source_connection_id?:string}}})?.workflow_input_json;
  if(trial){const row=(await db.query<{eval_suite_ref_json:{item_id:string;project_id:string|null;case_id:string}}>(`SELECT eval_suite_ref_json FROM evolvable_asset_evaluation_runs WHERE id=$1 AND space_id=$2`,[trial.evaluation_id,run.space_id])).rows[0];if(!row)throw new HttpError(403,'Trial missing');return {itemId:row.eval_suite_ref_json.item_id,projectId:row.eval_suite_ref_json.project_id,artifactId:((await db.query<{input_json:{authority_proof?:{artifact_id?:string}}}>(`SELECT input_json FROM evaluation_cases WHERE id=$1 AND space_id=$2`,[row.eval_suite_ref_json.case_id,run.space_id])).rows[0]?.input_json.authority_proof?.artifact_id)??null,caseId:row.eval_suite_ref_json.case_id,connectionId:(await db.query<{connection_id:string|null}>(`SELECT connection_id FROM source_items WHERE id=$1 AND space_id=$2`,[row.eval_suite_ref_json.item_id,run.space_id])).rows[0]?.connection_id??null};}
@@ -16,6 +20,7 @@ export async function readingRunDependencies(db:Queryable,run:RunRecord){
  return {itemId:workflow?.material_processing?.item_id??null,projectId:goal?.project_id??method!.project_id,connectionId:connection??null,artifactId:null,caseId:null};
 }
 export async function assertReadingRunDispatch(db:Queryable,run:RunRecord){
+ if(generationOf(run)){await assertGenerationDispatch(db,run);return;}
  if(trialContext(run)){await assertReadingTrialRun(db,run);return;}
  const frozen=readingMethodOf(run);if(!frozen)return;
  await assertClosedReadingContext(db,run.space_id,run.id,frozen.project_id);
@@ -27,9 +32,21 @@ export async function assertReadingRunDispatch(db:Queryable,run:RunRecord){
  await assertReadingRunEgress(db,run,deps.connectionId);
 }
 export async function readingRunReadable(db:Queryable,run:RunRecord,viewerUserId?:string){
- if(viewerUserId && (trialContext(run)||readingMethodOf(run)) && viewerUserId!==run.instructed_by_user_id)return false;
- try{if(trialContext(run))await assertReadingTrialReadable(db,run);else if(readingMethodOf(run)){const deps=await readingRunDependencies(db,run);const identity={spaceId:run.space_id,userId:run.instructed_by_user_id!};await readingProjectContext(db,identity,deps!.projectId);await assertReadingAudience(db,identity,null,deps!.itemId,deps!.connectionId);await assertReadingRunEgress(db,run,deps!.connectionId);}return true;}
+ if(viewerUserId && (trialContext(run)||readingMethodOf(run)||generationOf(run)) && viewerUserId!==run.instructed_by_user_id)return false;
+ try{if(generationOf(run))await assertGenerationReadable(db,{spaceId:run.space_id,userId:viewerUserId??run.instructed_by_user_id!},run);else if(trialContext(run))await assertReadingTrialReadable(db,run);else if(readingMethodOf(run)){const deps=await readingRunDependencies(db,run);const identity={spaceId:run.space_id,userId:run.instructed_by_user_id!};await readingProjectContext(db,identity,deps!.projectId);await assertReadingAudience(db,identity,null,deps!.itemId,deps!.connectionId);await assertReadingRunEgress(db,run,deps!.connectionId);}return true;}
  catch(e){if(e instanceof HttpError&&[403,404,409,422].includes(e.statusCode))return false;throw e;}
 }
 
-export async function assertReadingDispatch(config:ServerConfig,run:RunRecord){if(!trialContext(run)&&!readingMethodOf(run))return;if(!config.databaseUrl)throw new HttpError(403,'Reading execution requires canonical storage');await assertReadingRunDispatch(getDbPool(config.databaseUrl),run);}
+export async function assertReadingDispatch(config:ServerConfig,run:RunRecord){if(!trialContext(run)&&!readingMethodOf(run)&&!generationOf(run))return;if(!config.databaseUrl)throw new HttpError(403,'Reading execution requires canonical storage');await assertReadingRunDispatch(getDbPool(config.databaseUrl),run);}
+
+/** Private candidate provenance must also guard later comparisons made with that strategy. Published method text follows the accepted deployment's scope. */
+export async function readingDependencyRuns(db:Queryable,run:RunRecord):Promise<RunRecord[]>{
+ const runs=[run];
+ const trial=trialContext(run);
+ if(trial){
+  const versions=(await db.query<{content_json:unknown;status:string}>(`SELECT v.content_json,v.status FROM evolvable_asset_versions v JOIN evolvable_asset_evaluation_runs e ON v.id=e.candidate_version_id WHERE e.id=$1 AND e.space_id=$2`,[trial.evaluation_id,run.space_id])).rows;
+  const {generationVersionRefs}=await import('./generationContract.js');
+  for(const v of versions)if(!['approved','deprecated'].includes(v.status))for(const id of generationVersionRefs(v.content_json)){const parent=await new (await import('../../runs/repository.js')).PgRunRepository(db).getRun(run.space_id,id);if(!parent||!generationOf(parent))throw new HttpError(403,'Candidate provenance missing');runs.push(parent);}
+ }
+ return runs;
+}

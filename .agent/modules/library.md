@@ -588,3 +588,8 @@ existing asset maintainers can edit/trial/request activation. The simple workspa
 retains the advanced prompt page via a disclosure, without a new top-level nav.
 See [Reading methods](../architecture/READING_METHODS.md) for version freezing,
 private paired Runs, human judgment, proposals, rollback and verification limits.
+
+The Reading method workspace leads with a description-driven candidate generation
+using an explicitly selected owned execution configuration; manual editing remains
+in an advanced disclosure. Generation only saves a draft: the existing explicit
+comparison and human approval path still controls activation. Logs are not inputs.

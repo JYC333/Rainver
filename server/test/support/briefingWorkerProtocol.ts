@@ -1,7 +1,7 @@
 /** The IPC protocol between a test and `briefingWorkerProcess.mjs`. */
 export type Frame = Record<string, unknown> & { type: string; run_id?: string; launch_id?: string };
 export type WorkerCommand =
-  | { cmd: "policy"; prompt?: { answer: string } | "hold"; terminate?: "ack" | "drop" }
+  | { cmd: "policy"; prompt?: { answer: string } | "hold"; terminate?: "ack" | "drop"; adapterOutput?: Record<string,unknown>|null }
   | { cmd: "answer"; runId: string; text: string }
   | { cmd: "complete"; runId: string; launchId: string; exitCode: number }
   | { cmd: "disconnect" }

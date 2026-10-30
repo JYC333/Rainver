@@ -1,6 +1,6 @@
 import type { PromptResolveResult } from "@rainver/protocol";
 import { PromptAssetContentSchema } from "@rainver/protocol";
-import { assetAllowsUserScope } from "../evolution/assetAccess.js";
+import { assetAllowsUserScope,canViewVersionScope } from "../evolution/assetAccess.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { sha256, sha256Json } from "./hash.js";
 import { missingRequiredVariables, renderPromptMessages, renderPromptTemplate } from "./renderer.js";
@@ -161,6 +161,7 @@ async function resolveViaDeploymentRefs(
     if (!version || !canUseVersionForResolution(version, input, allowUserDeployment)) {
       throw new HttpError(422, `Active ${label} ${attempt.scopeType} deployment references a missing, non-approved, or non-visible prompt version`);
     }
+    if(version.status!=="approved" && !await canViewVersionScope(db,{spaceId:input.spaceId,userId:input.userId},version))throw new HttpError(404,"Prompt version not found");
     return resolved(version, [`${label}:${attempt.scopeType}:${version.id}`], null);
   }
 

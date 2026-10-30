@@ -1,9 +1,10 @@
+import {registerReadingGenerationSettlement} from './reading/generation.js';
 import type { ServerModule } from "../../gateway/routeRegistry.js";
 import { registerRoutes } from "./routes.js";
 
 import {registerReadingMethodRoutes} from './reading/routes.js';
 import {registerReadingTrialSettlement} from './reading/trials.js';
-export const promptsModule: ServerModule = { name: "prompts", registerRoutes: (app,context)=>{registerReadingTrialSettlement();registerRoutes(app,context);registerReadingMethodRoutes(app,context);} };
+export const promptsModule: ServerModule = { name: "prompts", registerRoutes: (app,context)=>{registerReadingTrialSettlement();registerReadingGenerationSettlement();registerRoutes(app,context);registerReadingMethodRoutes(app,context);} };
 
 export { __setPromptRepositoryFactoryForTests } from "./routes.js";
 export { PromptRepository } from "./repository.js";

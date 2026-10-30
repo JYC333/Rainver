@@ -1,3 +1,4 @@
+import {startReadingGeneration,readReadingGeneration,cancelReadingGeneration} from './generation.js';
 import type {FastifyInstance} from 'fastify';
 import type {ModuleContext} from '../../../gateway/routeRegistry.js';
 import {dbPool,resolveIdentity,sendRouteError,jsonBody,query,params,HttpError} from '../../routeUtils/common.js';
@@ -11,6 +12,9 @@ export function registerReadingMethodRoutes(app:FastifyInstance,context:ModuleCo
  register('get','',async(i,r)=>readingWorkspace(db(),i,id(query(r).item_id),typeof query(r).project_id==='string'?String(query(r).project_id):null,false,context.config,typeof query(r).artifact_id==='string'?String(query(r).artifact_id):undefined));
  register('get','/entry',(i,r)=>readingEntryScope(db(),i,typeof query(r).project_id==='string'?String(query(r).project_id):null));
  register('post','/initialize',i=>initializeReading(db(),context.config,i));
+ register('post','/generations',(i,r)=>startReadingGeneration(db(),i,jsonBody(r)));
+ register('get','/generations/:id',(i,r)=>readReadingGeneration(db(),i,id(params(r).id)));
+ register('post','/generations/:id/cancel',(i,r)=>cancelReadingGeneration(db(),context.config,i,id(params(r).id)));
  register('post','/drafts',(i,r)=>saveReadingDraft(db(),i,jsonBody(r)));
  register('post','/samples',(i,r)=>{const b=jsonBody(r);return saveReadingSample(db(),i,id(b.item_id),typeof b.project_id==='string'?b.project_id:null,b.sample,context.config);});
  register('get','/samples/:id',(i,r)=>readReadingSample(db(),i,id(params(r).id)));

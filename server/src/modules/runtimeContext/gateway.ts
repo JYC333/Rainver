@@ -607,8 +607,8 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
   }
 
   private async authorizeReadingMethod(db:Queryable,input:InvocationAttemptInput,request:{contract_snapshot_json?:unknown}):Promise<void>{
-    const workflow=(request.contract_snapshot_json as {workflow_input_json?:{reading_method?:unknown;reading_method_trial?:unknown}}|null)?.workflow_input_json;
-    if(!workflow?.reading_method&&!workflow?.reading_method_trial)return;
+    const workflow=(request.contract_snapshot_json as {workflow_input_json?:{reading_method?:unknown;reading_method_trial?:unknown;reading_method_generation?:unknown}}|null)?.workflow_input_json;
+    if(!workflow?.reading_method&&!workflow?.reading_method_trial&&!workflow?.reading_method_generation)return;
     const {PgRunRepository}=await import('../runs/repository.js');
     const full=await new PgRunRepository(db).getRun(input.spaceId,input.invocationId);if(!full)throw new HttpError(403,'Reading Run missing');
     await this.lockReadingRunAuthority(db,full);
@@ -617,16 +617,28 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
 
   /** Same canonical Source/Project ACL locks at Delivery and Source commit boundaries. */
   async lockReadingRunAuthority(db:Queryable,full:import('../runs/repository.js').RunRecord):Promise<void>{
-    const reading=await import('../prompts/reading/dispatch.js');const deps=await reading.readingRunDependencies(db,full);if(!deps)return;
+    const reading=await import('../prompts/reading/dispatch.js');
+    const generation=await import('../prompts/reading/generationContract.js');
+    const ref=generation.generationOf(full);
+    const runs=await reading.readingDependencyRuns(db,full);
+    if(ref||runs.length>1){
+      const {readingAsset}=await import('../prompts/reading/access.js');
+      const asset=await readingAsset(db,{spaceId:full.space_id,userId:full.instructed_by_user_id!},false);
+      await (await import('../evolution/assetLocks.js')).lockEvolutionAssets(db,[asset.id]);
+    }
+    const dependencies=[];
+    for(const run of runs){const deps=await reading.readingRunDependencies(db,run);if(deps)dependencies.push(deps);}
     const spaceId=full.space_id;
     const {lockProjectAudience,projectReaderIds}=await import('../projects/access.js');
-    if(deps.projectId)await lockProjectAudience(db,spaceId,deps.projectId);
-    const readers=deps.projectId?await projectReaderIds(db,spaceId,deps.projectId):[full.instructed_by_user_id!];
-    if(deps.caseId)await db.query(`SELECT id FROM evaluation_cases WHERE id=$1 AND space_id=$2 FOR SHARE`,[deps.caseId,spaceId]);
-    for(const reader of readers.sort()){
-      if(deps.itemId){await this.lockSourceItemDependencies(db,spaceId,deps.itemId,reader);await this.lockContentAclDependencies(db,spaceId,'source_item',deps.itemId,reader);}
-      if(deps.connectionId){await this.lockSourceConnectionDependencies(db,spaceId,deps.connectionId,reader);await this.lockContentAclDependencies(db,spaceId,'source_connection',deps.connectionId,reader);}
-      if(deps.artifactId)await this.lockContentAclDependencies(db,spaceId,'artifact',deps.artifactId,reader);
+    for(const id of [...new Set(dependencies.map(d=>d.projectId).filter((id):id is string=>!!id))].sort())await lockProjectAudience(db,spaceId,id);
+    for(const deps of dependencies.sort((a,b)=>(a.itemId??a.connectionId??'').localeCompare(b.itemId??b.connectionId??''))){
+      const readers=deps.projectId?await projectReaderIds(db,spaceId,deps.projectId):[full.instructed_by_user_id!];
+      if(deps.caseId)await db.query(`SELECT id FROM evaluation_cases WHERE id=$1 AND space_id=$2 FOR SHARE`,[deps.caseId,spaceId]);
+      for(const reader of readers.sort()){
+        if(deps.itemId){await this.lockSourceItemDependencies(db,spaceId,deps.itemId,reader);await this.lockContentAclDependencies(db,spaceId,'source_item',deps.itemId,reader);}
+        if(deps.connectionId){await this.lockSourceConnectionDependencies(db,spaceId,deps.connectionId,reader);await this.lockContentAclDependencies(db,spaceId,'source_connection',deps.connectionId,reader);}
+        if(deps.artifactId)await this.lockContentAclDependencies(db,spaceId,'artifact',deps.artifactId,reader);
+      }
     }
 
   }

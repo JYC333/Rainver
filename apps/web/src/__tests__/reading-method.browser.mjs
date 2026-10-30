@@ -10,7 +10,7 @@ const space='method-space',project='method-project',item='method-item'
 const baseline='Investigate capabilities with actual primary documentation and explain integration costs.'
 const exampleResult='# Mechanism\nBounded retries need a stable idempotency key.\n\nEvidence: [documentation](https://example.org/flow/docs/retries).\n\nUnknown: retention duration. This is synthetic output for UI wiring, not a model-quality pass.'
 async function fixture(page){
- const state={item_id:item,item_title:'Shallow homepage result',project_id:project,project_name:'Warehouse project',can_manage:true,initialized:true,effective_version_id:'v1',effective_version:1,effective_scope:'system',method:baseline,result_provenance:null,versions:[],cases:[],trials:[],runtimes:[{agent_id:'a',runtime_profile_id:'r',name:'Synthetic Analyst · Local',usable:true,reason:null}]}
+ const state={item_id:item,item_title:'Shallow homepage result',project_id:project,project_name:'Warehouse project',can_manage:true,initialized:true,effective_content_hash:'b'.repeat(64),generations:[],effective_version_id:'v1',effective_version:1,effective_scope:'system',method:baseline,result_provenance:null,versions:[],cases:[],trials:[],runtimes:[{agent_id:'a',runtime_profile_id:'r',name:'Synthetic Analyst · Local',usable:true,reason:null}]}
  const writes=[]
  await page.route('**/api/v1/**',async route=>{const request=route.request(),url=new URL(request.url()),path=url.pathname.replace('/api/v1',''),method=request.method(),json=data=>route.fulfill({json:data});if(method!=='GET')writes.push(path)
   if(path===`/sources/items/${item}/processing`)return json({status:'idle',can_prepare:true})
@@ -26,6 +26,17 @@ async function fixture(page){
   if(path==='/plugins/effective')return json({plugins:{}})
   if(path==='/prompts/reading-method/entry')return json({can_manage:true,project_id:project})
   if(path==='/prompts/reading-method'&&method==='GET')return state.error?route.fulfill({status:503,json:{detail:'Synthetic retryable failure'}}):json(state)
+  if(path==='/prompts/reading-method/generations'){
+   const b=request.postDataJSON();assert.equal(b.source_kind,'description');assert.equal(b.parent_version_id,'v1');assert.equal(b.parent_content_hash,'b'.repeat(64));assert.ok(!('raw_log' in b));
+   if(state.generationFailure)return route.fulfill({status:503,json:{detail:'Synthetic generation failure; description retained'}});
+   const g={id:'generation-fixture',status:'queued',visibility:'visible',stale:false,description:b.description,parent_version_id:'v1',candidate_version_id:null,candidate_version:null,method:null,baseline_method:baseline,summary:null,changes:[],execution_name:'Synthetic Analyst · Local',seconds:null,cost_usd:null};state.generations=[g];return json(g)
+  }
+  if(path==='/prompts/reading-method/generations/generation-fixture/cancel'){state.generations[0].status='cancelled';return json(state.generations[0])}
+  if(path===`/prompts/reading-method/generations/${state.generations?.[0]?.id}`){
+   const g=state.generations[0];
+   if(state.generationReady&&g.status==='queued'){Object.assign(g,{status:'ready',candidate_version_id:'v2',candidate_version:2,method:baseline+' Inspect primary examples and report limitations.',summary:'Added documentation evidence and explicit unknowns.',changes:['Inspect primary API examples.','State adaptation costs and unknowns.'],seconds:3});state.versions=[{id:'v2',version:2,status:'draft',content_hash:'a'.repeat(64),method:g.method,reason:g.description}];}
+   return json(g)
+  }
   if(path==='/prompts/reading-method/drafts'){const b=request.postDataJSON();state.versions=[{id:'v2',version:2,status:'draft',content_hash:'a'.repeat(64),method:b.method,reason:b.reason}];return json({id:'v2'})}
   if(path==='/prompts/reading-method/samples'){state.cases=[{id:'sample',name:'Homepage + docs'}];return json({id:'sample'})}
   if(path==='/prompts/reading-method/trials'){state.trials=[{id:'pair',candidate_version_id:'v2',baseline_version_id:'v1',status:'passed',stale:false,visibility:'visible',judgment:null,reason:null,case_name:'Homepage + docs',baseline:{run_id:'old',status:'succeeded',text:'# Homepage\nOnly a generic product overview.',seconds:2,cost_usd:null},candidate:{run_id:'new',status:'succeeded',text:exampleResult,seconds:3,cost_usd:null}}];return json(state.trials[0])}
@@ -46,7 +57,7 @@ for(const theme of ['dark','light'])for(const locale of ['en','zh-CN'])for(const
  await page.goto(`${base}/spaces/${space}/library/items/${item}`)
  await page.getByRole('link',{name:text('改进结果：调整此条目的阅读方法','Improve result: adjust the reading method for this item')}).waitFor();await mkdir('/tmp/reading-method-browser',{recursive:true});await page.screenshot({path:`/tmp/reading-method-browser/reader-entry-${theme}-${locale}-${width}.png`,fullPage:true});
  await page.getByRole('link',{name:text('改进结果：调整此条目的阅读方法','Improve result: adjust the reading method for this item')}).click()
- await page.getByRole('button',{name:text('修改方法','Edit method'),exact:true}).click()
+ await page.getByText(text('高级：手动编辑','Advanced: edit manually'),{exact:true}).click()
  await page.getByLabel(text('本次问题／改进说明','Problem / reason for change')).fill(text('主页没有机制证据','Missing mechanism evidence'))
  await page.getByLabel(text('阅读方法','Reading method'),{exact:true}).fill(baseline+' Read the actual retry example and identify a counterexample.')
  await page.getByRole('button',{name:text('保存草稿（不影响正式运行）','Save draft (production unchanged)')}).click()
@@ -69,7 +80,7 @@ for(const theme of ['dark','light'])for(const locale of ['en','zh-CN'])for(const
  Object.assign(state,{effective_version_id:'v2',effective_version:2,effective_scope:'project',method:state.versions[0].method})
  await page.getByRole('button',{name:text('决定后刷新生效版本','Refresh effective version after decision')}).click()
  await page.getByText(/(?:当前生效|Effective) v2/).waitFor()
- await page.getByRole('heading',{name:text('项目相关功能调查','Project-related functional investigation'),exact:true}).scrollIntoViewIfNeeded()
+ await page.getByRole('heading',{name:text('阅读方法','Reading method'),exact:true}).scrollIntoViewIfNeeded()
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false)
  await mkdir('/tmp/reading-method-browser',{recursive:true});await page.screenshot({path:`/tmp/reading-method-browser/${theme}-${locale}-${width}.png`,fullPage:true})
  await page.getByRole('tab',{name:text('历史','History'),exact:true}).click()
@@ -88,7 +99,46 @@ for(const theme of ['dark','light'])for(const locale of ['en','zh-CN'])for(const
  const geometry=await improve.evaluate((element)=>{const primary=[...element.parentElement.querySelectorAll('a')].find(e=>e.textContent==='Open Reader'||e.textContent==='打开阅读器');const style=getComputedStyle(element),ps=getComputedStyle(primary),r=element.getBoundingClientRect(),p=primary.getBoundingClientRect();return {font:style.fontSize,primaryFont:ps.fontSize,height:r.height,primaryHeight:p.height,underline:style.textDecorationLine,order:!!(primary.compareDocumentPosition(element)&Node.DOCUMENT_POSITION_FOLLOWING),rem:parseFloat(getComputedStyle(document.documentElement).fontSize),width:r.width,textHeight:style.lineHeight,primary:p.toJSON(),entry:r.toJSON()}})
  assert.equal(geometry.font,geometry.primaryFont);assert.equal(geometry.order,true);assert.equal(geometry.underline,'none');assert.ok(Math.abs(geometry.height-geometry.primaryHeight)<2);assert.ok(geometry.height>= (width===390?44:geometry.rem*1.75));
  await improve.focus();await page.screenshot({path:`/tmp/reading-method-browser/card-${theme}-${locale}-${width}.png`,fullPage:true});console.log(JSON.stringify({theme,locale,width,parent,geometry}));
- const original=new URL(await open.getAttribute('href'),base);await improve.press('Enter');await page.getByRole('button',{name:cn?'修改方法':'Edit method',exact:true}).waitFor();assert.equal(await page.locator('select').count(),0);
+ const original=new URL(await open.getAttribute('href'),base);await improve.press('Enter');await page.getByRole('heading',{name:cn?'阅读方法':'Reading method',exact:true}).waitFor();assert.equal(await page.locator('select').count(),0);
  await page.getByRole('link',{name:cn?'← 返回正文':'← Back to reading'}).click();await page.waitForURL(u=>u.pathname.includes('/library/items/'));const arrived=new URL(page.url());assert.equal(arrived.searchParams.get('from'),original.searchParams.get('from'));assert.equal(arrived.searchParams.get('returnTo'),original.searchParams.get('returnTo'));
  }finally{await page.close()}
 })
+
+for(const [theme,locale,width] of [['dark','zh-CN',390],['dark','en',1280],['light','en',390],['light','zh-CN',1280]])test(`description revision ${theme} ${locale} ${width}`,async()=>{
+ const page=await browser.newPage({viewport:{width,height:950},serviceWorkers:'block'}),cn=locale==='zh-CN',text=(zh,en)=>cn?zh:en;
+ await page.addInitScript(({theme,locale})=>{localStorage.setItem('rainver:theme',theme);localStorage.setItem('rainver:locale',locale);localStorage.setItem('project.sidecar.method-project.open','false')},{theme,locale});
+ const {state,writes}=await fixture(page);state.project_name=cn?'多仓库跨团队机器人调查与运行方式改进项目（合成范围名称）':'Warehouse coordination, robotics investigation and operations improvement (synthetic scope)';await mkdir('/tmp/reading-description-browser',{recursive:true});
+ try{
+  const parent=theme==='light'?'/library/digests?date=2026-10-28':'/library/reading';
+  await page.goto(`${base}/spaces/${space}${parent}`);
+  const open=page.getByRole('link',{name:text('打开阅读器','Open Reader'),exact:true}).first();await open.waitFor();const original=new URL(await open.getAttribute('href'),base);
+  const improve=page.getByRole('link',{name:text('改进结果：调整此条目的阅读方法','Improve result: adjust the reading method for this item')});await improve.waitFor();await page.screenshot({path:`/tmp/reading-description-browser/entry-${theme}-${locale}-${width}.png`,fullPage:true});await improve.click();
+  const title=page.getByRole('heading',{name:text('阅读方法','Reading method'),exact:true});await title.waitFor();
+  const header=await title.evaluate(el=>{const r=el.getBoundingClientRect();let p=el.parentElement;const clips=[];while(p){const a=p.getBoundingClientRect(),s=getComputedStyle(p);if(s.overflowX!=='visible'&&r.right>a.right+1)clips.push(p.tagName);p=p.parentElement;}return {width:r.width,left:r.left,right:r.right,viewport:innerWidth,clips}});assert.ok(header.left>=0&&header.right<=width);assert.deepEqual(header.clips,[]);const scopeGeometry=await title.locator('..').locator('p').evaluate(p=>({scroll:p.scrollWidth,width:p.clientWidth,height:p.clientHeight,line:parseFloat(getComputedStyle(p).lineHeight)}));assert.ok(scopeGeometry.scroll<=scopeGeometry.width+1);if(width===390)assert.ok(scopeGeometry.height>=scopeGeometry.line*2-1);
+  assert.equal(await page.locator('select').count(),0);assert.equal(await page.getByLabel(text('本次问题／改进说明','Problem / reason for change')).count(),0);
+  const input=page.getByLabel(text('哪里不好，希望怎样改？','What went wrong, and what should change?'));await input.fill(text('现在只改写主页，希望调查相关文档与API示例，解释证据、机制与未知。','It only rewrites the homepage. Investigate relevant documentation and API examples, explaining evidence and unknowns.'));
+  const choose=async()=>{await page.getByRole('button',{name:text('生成执行配置','Generation execution configuration')}).click();await page.getByRole('option',{name:'Synthetic Analyst · Local',exact:true}).click();};await choose();
+  await page.screenshot({path:`/tmp/reading-description-browser/form-${theme}-${locale}-${width}.png`,fullPage:true});
+  if(width===390){
+   state.generationFailure=true;await page.getByRole('button',{name:text('生成候选版本','Generate candidate version'),exact:true}).click();await page.getByRole('alert').waitFor();assert.ok((await input.inputValue()).length>5);await page.screenshot({path:`/tmp/reading-description-browser/failure-${theme}-${locale}-${width}.png`,fullPage:true});state.generationFailure=false;
+  }
+  await page.getByRole('button',{name:text('生成候选版本','Generate candidate version'),exact:true}).click();await page.getByRole('button',{name:text('取消生成','Cancel generation'),exact:true}).waitFor();
+  // Refresh restores the canonical in-flight record, without POSTing a second Run.
+  const count=writes.filter(p=>p==='/prompts/reading-method/generations').length;await page.reload();await page.getByRole('button',{name:text('取消生成','Cancel generation'),exact:true}).waitFor();assert.equal(writes.filter(p=>p==='/prompts/reading-method/generations').length,count);
+  await page.getByRole('button',{name:text('取消生成','Cancel generation'),exact:true}).click();await page.getByText(text('生成状态: 已取消','Generation: Cancelled'),{exact:true}).waitFor();
+  await choose();await page.getByRole('button',{name:text('生成候选版本','Generate candidate version'),exact:true}).click();await page.getByRole('button',{name:text('取消生成','Cancel generation'),exact:true}).waitFor();state.generationReady=true;await page.getByRole('button',{name:text('刷新生成状态','Refresh generation'),exact:true}).click();await page.getByText('Added documentation evidence and explicit unknowns.',{exact:true}).waitFor();
+  assert.equal(writes.filter(p=>p==='/prompts/reading-method/trials').length,0);assert.equal(writes.filter(p=>p==='/prompts/reading-method/promote').length,0);assert.equal(state.effective_version_id,'v1');
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),false);await page.getByText('Added documentation evidence and explicit unknowns.',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:`/tmp/reading-description-browser/ready-${theme}-${locale}-${width}.png`,fullPage:true});
+  await page.getByText(text('高级：手动编辑','Advanced: edit manually'),{exact:true}).click();const manual=page.getByLabel(text('阅读方法','Reading method'),{exact:true});await manual.waitFor();assert.match(await manual.inputValue(),/Inspect primary examples/);await manual.scrollIntoViewIfNeeded();await page.screenshot({path:`/tmp/reading-description-browser/manual-${theme}-${locale}-${width}.png`,fullPage:true});
+  await page.getByRole('link',{name:text('← 返回正文','← Back to reading'),exact:true}).click();await page.waitForURL(u=>u.pathname.includes('/library/items/'));const returned=new URL(page.url());assert.equal(returned.searchParams.get('from'),original.searchParams.get('from'));assert.equal(returned.searchParams.get('returnTo'),original.searchParams.get('returnTo'));
+ }catch(error){await page.screenshot({path:`/tmp/reading-description-browser/FAILED-${theme}-${locale}-${width}.png`,fullPage:true});console.error((await page.locator('body').innerText()).slice(0,1800));throw error;}finally{await page.close();}
+});
+test('degraded generation retry localized state sample',async()=>{
+ const page=await browser.newPage({viewport:{width:390,height:950},serviceWorkers:'block'});await page.addInitScript(()=>{localStorage.setItem('rainver:locale','zh-CN');localStorage.setItem('rainver:theme','dark')});const {state}=await fixture(page);
+ state.generations=[{id:'old-degraded',status:'degraded',visibility:'visible',stale:false,description:'希望查找实际文档和机制证据。',parent_version_id:'v1',candidate_version_id:null,candidate_version:null,method:null,baseline_method:baseline,summary:null,changes:[],execution_name:'Synthetic Analyst · Local',seconds:2,cost_usd:null}];
+ try{
+  await page.goto(`${base}/spaces/${space}/library/items/${item}`);await page.getByRole('link',{name:'改进结果：调整此条目的阅读方法'}).click();await page.getByText('生成状态: 生成未完成，需明确重试',{exact:true}).waitFor();await page.getByRole('button',{name:'刷新生成状态'}).click();await page.getByRole('button',{name:'生成执行配置'}).click();await page.getByRole('option',{name:'Synthetic Analyst · Local',exact:true}).click();
+  await page.getByText('生成状态: 生成未完成，需明确重试',{exact:true}).scrollIntoViewIfNeeded();await page.screenshot({path:'/tmp/reading-description-browser/degraded-zh-CN-390.png',fullPage:true});
+  const sent=page.waitForRequest(r=>r.method()==='POST'&&r.url().endsWith('/reading-method/generations'));await page.getByRole('button',{name:'生成候选版本',exact:true}).click();assert.equal((await sent).postDataJSON().retry_of,'old-degraded');await page.getByRole('button',{name:'取消生成',exact:true}).waitFor();state.generationReady=true;await page.getByRole('button',{name:'刷新生成状态'}).click();await page.getByText('Added documentation evidence and explicit unknowns.',{exact:true}).waitFor();assert.equal(state.generations[0].id,'generation-fixture');
+ }finally{await page.close()}
+});

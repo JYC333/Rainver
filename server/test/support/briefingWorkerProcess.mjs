@@ -18,6 +18,15 @@ const config = loadConfig({
   RAINVER_HOME: process.env.BRIEFING_WORKER_HOME,
   JOBS_WORKER_CONCURRENCY: "1",
 });
+// Optional synthetic adapter-result fields, after real ACP completion and before
+// orchestration's actual materializer/status calculation. Never replaces either.
+import { RunOrchestrationService } from "../../dist/modules/runs/orchestrationService.js";
+let adapterOutput = null;
+const originalInvoke = RunOrchestrationService.prototype.invokeAdapter;
+RunOrchestrationService.prototype.invokeAdapter = async function (...args) {
+  const result = await originalInvoke.apply(this,args);
+  return adapterOutput ? {...result,output_json:{...result.output_json,...adapterOutput}} : result;
+};
 const report = (message) => process.send?.(message);
 
 let promptPolicy = "hold";
@@ -87,6 +96,7 @@ const orchestration = buildRunOrchestration(config).orchestration;
 
 process.on("message", async (message) => {
   if (message.cmd === "policy") {
+    if (Object.hasOwn(message,"adapterOutput")) adapterOutput=message.adapterOutput;
     if (message.prompt) promptPolicy = message.prompt;
     if (message.terminate) terminatePolicy = message.terminate;
   } else if (message.cmd === "answer") {

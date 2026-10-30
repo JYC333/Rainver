@@ -4312,6 +4312,9 @@ export const sourceGoalsApi={
 
 // Reading method workspace: all writes remain explicit; GET never starts a trial.
 export const readingMethodsApi={
+ generate:(body:unknown)=>post<import('@rainver/protocol').ReadingMethodGenerationView>('/prompts/reading-method/generations',body),
+ generation:(id:string)=>get<import('@rainver/protocol').ReadingMethodGenerationView>(`/prompts/reading-method/generations/${encodeURIComponent(id)}`),
+ cancelGeneration:(id:string)=>post<import('@rainver/protocol').ReadingMethodGenerationView>(`/prompts/reading-method/generations/${encodeURIComponent(id)}/cancel`,{}),
  readSample:(id:string)=>get<{name:string;pages:Array<{url:string;text:string}>}>(`/prompts/reading-method/samples/${encodeURIComponent(id)}`),
  entry:(projectId?:string|null)=>get<{can_manage:boolean;project_id:string|null}>(`/prompts/reading-method/entry?${new URLSearchParams(projectId?{project_id:projectId}:{})}`),
  context:(itemId:string,projectId?:string|null,artifactId?:string|null)=>get<import('@rainver/protocol').ReadingMethodContext>(`/prompts/reading-method?${new URLSearchParams({item_id:itemId,...(projectId?{project_id:projectId}:{}),...(artifactId?{artifact_id:artifactId}:{})})}`),

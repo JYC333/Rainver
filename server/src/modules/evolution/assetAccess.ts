@@ -216,8 +216,9 @@ export async function canViewScopedRef(
 export async function canViewVersionScope(
   db: Queryable,
   identity: SpaceUserIdentity,
-  row: { space_id: string | null; scope_type: string; scope_id: string | null },
+  row: { space_id: string | null; scope_type: string; scope_id: string | null; content_json?:unknown;status?:string },
 ): Promise<boolean> {
+  if (!['approved','deprecated'].includes(row.status??'') && (row.content_json as {reading_generation?:unknown}|null)?.reading_generation && !await (await import('../prompts/reading/generationAuthority.js')).readingGeneratedVersionReadable(db,identity,row.content_json)) return false;
   if (row.space_id === null) return row.scope_type === "system";
   if (row.space_id !== identity.spaceId) return false;
   return canViewScopedRef(db, identity, row.scope_type, row.scope_id);

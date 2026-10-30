@@ -3187,4 +3187,4 @@ function scenarioToolAllowanceFromSnapshot(value: unknown): string[] | undefined
 }
 
 /** Only the new reading-owned contracts need the extra private-input read gate. */
-function isReadingMethodRun(run:{contract_snapshot_json?:unknown}):boolean{const input=(run.contract_snapshot_json as {workflow_input_json?:{reading_method?:unknown;reading_method_trial?:unknown}}|null)?.workflow_input_json;return !!(input?.reading_method||input?.reading_method_trial);}
+function isReadingMethodRun(run:{contract_snapshot_json?:unknown}):boolean{const input=(run.contract_snapshot_json as {workflow_input_json?:{reading_method?:unknown;reading_method_trial?:unknown;reading_method_generation?:unknown}}|null)?.workflow_input_json;return !!(input?.reading_method||input?.reading_method_trial||input?.reading_method_generation);}

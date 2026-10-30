@@ -82,6 +82,13 @@ Runs retain their admitted version while new Runs select the new effective one.
 
 ## Verification boundary
 
+The person retired the MVP implementation plan on 2026-10-30 after local
+implementation, independent reviews and full-suite validation, accepting that
+real-model quality, actual charges and live remote-Host acceptance remain
+unverified. These are no longer retirement gates for this MVP; retirement does
+not mark them passed or authorize a real run. The delivered plan and validation
+record remain in commit `f58d9632`; subsequent issues are handled as discovered.
+
 Real PG and synthetic Host-worker tests validate preparation, real paired Runs,
 Delivery, settlement, proposal application in an isolated test DB, readback,
 rollback, frozen versions and content-write isolation. Chromium synthetic APIs
@@ -137,3 +144,67 @@ HTML labels (their accessible names are explicit), so choosing a dropdown option
 cannot reactivate its trigger via label activation. Reading touch rules apply on
 coarse pointers/narrow screens; desktop retains shared compact density. Visual
 acceptance includes the parent Reading/Digest card, not just the destination.
+
+## Description-driven revisions
+
+The default current-method view accepts **a description of what went wrong and
+what should change**, plus an explicitly selected owned Agent/Profile. The
+`POST /prompts/reading-method/generations` contract accepts only
+`source_kind: description`; log ids, raw logs, attachments and arbitrary context
+fields are refused. No logs, original Run replies, article bodies, Project brief,
+Memory, retrieval or implicit Project instructions are loaded into this prompt.
+A future log input must declare its own authorized evidence-provider contract;
+there is no inactive log tab or placeholder provider.
+
+A generation is one private canonical Run + ordinary `agent_run` Job, not an
+Evolution dry-run planner or a second scheduler/evaluation store. Its immutable
+workflow input freezes the effective parent id/hash, bounded description, item
+and scope authorization, execution fingerprint/session selections and prompt
+hash. Work Context has null Project, retrieval disabled and no pins; the item and
+Project remain authorization dependencies, not model context. Existing runtime,
+credential and actual-destination Source egress gates remain authoritative. This
+is no additional credential approval or OS isolation claim.
+
+The server permits one in-flight generation and three explicit generations per
+person per Space per rolling day, one attempt and 180 seconds per Run, subject
+to tighter canonical limits. Same frozen requests reuse their Run. Retry names a
+failed/cancelled predecessor, consumes the same bounded allowance and never
+creates a background loop. The UI restores the owned in-flight record on refresh,
+shows progress, preserves descriptions on ordinary failure, and can stop the
+owned work after input withdrawal. Session/scope/unmount guards reject late UI
+responses; no description is put in browser storage.
+
+Accepted Delivery locks and rechecks the complete Source/Project authority and
+actual execution destination. Terminal reconciliation shares the canonical asset
+lock, Source/Project locks and current Run lock. It uses the current terminal
+attempt, validates `reading_method_revision.v1` (`method` 40–12000 characters,
+explanation ≤1600 and 1–8 bounded changes), verifies the effective parent still
+matches and creates exactly one **scoped draft** with generation-Run provenance.
+Invalid, cancelled, stale or withdrawn output creates no candidate. SQL/runtime
+failures remain owed to canonical settlement rather than becoming success. A
+completed Run is not by itself a generated/valid candidate; the public generation
+view reports the actual draft result. Model explanations are not quality checks.
+
+Private generated candidates and manual descendants retain generation authority
+through generic version/render, staging resolution, later comparison Delivery and
+Run reads. The description and model explanation stay only on the private Run,
+never in the shared version body. Accepted promotion publishes the strategy text
+to its explicitly approved scope; it does not publish the private generation
+feedback/explanation. A new revision of that published method starts from its
+strategy, without inheriting private input from the earlier generation. Withdrawal hides the entire
+feedback/method/explanation, while routine authorized history changes are marked
+historical. Generated content cannot be edited in place: **Advanced: edit
+manually** saves an immutable child (of the selected candidate or effective
+method), preserving provenance and invalidating comparisons for the old version.
+The original manual API remains available. Generation never starts a two-Run
+comparison or creates/decides a proposal; the person explicitly continues through
+comparison, human judgment, proposal and effective-version readback. No Reader,
+Digest, annotation, reading state, Following cursor, notification, Task or Memory
+is changed by generation.
+
+A generation Run that ends `degraded` (for example because extra artifacts or
+proposals were refused) saves no draft, even with otherwise valid strategy JSON.
+It remains an unsuccessful terminal result: the person may explicitly retry it
+with `retry_of`, subject to the same ownership, input, permission and daily limits.
+Duplicate retries reuse one Run; a successful retry becomes the latest result for
+the unchanged description. It is never reclassified as a quality pass.

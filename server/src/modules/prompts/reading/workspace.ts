@@ -1,3 +1,4 @@
+import {listReadingGenerations} from './generation.js';
 import type {ReadingMethodContext} from '@rainver/protocol';
 import {ReadingMethodDraftSchema,ReadingMethodSampleSchema} from '@rainver/protocol';
 import {HttpError,withDbTransaction,type Pool,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
@@ -43,6 +44,8 @@ export async function readingWorkspace(db:Queryable,identity:SpaceUserIdentity,i
  }
 
  if(!canManage)return base;
+ base.generations=await listReadingGenerations(db,identity,itemId,ctx.projectId);
+ base.effective_content_hash=base.effective_version_id?(await db.query<{content_hash:string}>(`SELECT content_hash FROM evolvable_asset_versions WHERE id=$1`,[base.effective_version_id])).rows[0]?.content_hash??null:null;
  const versions=await new PromptRepository(db).listVersions(identity,READING_METHOD_KEY);
  base.versions=versions.filter(v=>v.scope_type===(ctx.projectId?'project':'space')&&v.scope_id===(ctx.projectId??identity.spaceId)).map(v=>({id:String(v.id),version:Number(v.version),status:String(v.status),content_hash:String(v.content_hash),method:String((v.content as {template?:string})?.template??''),reason:((v.content as {reading_reason?:string})?.reading_reason)??null}));
  base.cases=(await db.query<{id:string;name:string}>(`SELECT id,name,(input_json->>'context_hash'<>$5 OR input_json->>'authority'<>$6) AS stale FROM evaluation_cases WHERE space_id=$1 AND asset_id=$2 AND created_by_user_id=$3 AND status='active' AND input_json->>'reading_item_id'=$4 ORDER BY created_at DESC LIMIT 20`,[identity.spaceId,asset.id,identity.userId,itemId,sha256Json(ctx.context),ctx.authority])).rows;
@@ -64,9 +67,10 @@ export async function saveReadingDraft(db:Pool,identity:SpaceUserIdentity,raw:un
  return withDbTransaction(db,async tx=>{
   const ctx=await readingItemContext(tx,identity,input.item_id,input.project_id);const asset=await readingAsset(tx,identity);await lockEvolutionAssets(tx,[asset.id]);
   const current=await freezeReadingMethod(tx,{...identity,projectId:ctx.projectId},ctx.context);
-  if(current.frozen.version_id!==input.parent_version_id)throw new HttpError(409,'Effective method changed; reload before cloning');
-  const parent=(await tx.query(`SELECT content_json FROM evolvable_asset_versions WHERE id=$1 AND asset_id=$2`,[input.parent_version_id,asset.id])).rows[0];
-  return new PromptRepository(tx).createVersion(identity,READING_METHOD_KEY,{parent_version_id:input.parent_version_id,scope_type:ctx.projectId?'project':'space',scope_id:ctx.projectId??identity.spaceId,content_json:{...parent.content_json,template:input.method,messages:undefined,reading_reason:input.reason}});
+  if(current.frozen.version_id!==input.parent_version_id){const candidate=await (await import('./access.js')).readingCandidate(tx,identity,input.parent_version_id,ctx.projectId);readingStrategy(candidate.version.content);}
+  const parent=(await tx.query(`SELECT content_json,status FROM evolvable_asset_versions WHERE id=$1 AND asset_id=$2`,[input.parent_version_id,asset.id])).rows[0];
+  const inherited={...(parent.content_json as Record<string,unknown>)};if(['approved','deprecated'].includes(String(parent.status))){delete inherited.reading_generation;delete inherited.reading_change_summary;delete inherited.reading_changes;}
+  return new PromptRepository(tx).createVersion(identity,READING_METHOD_KEY,{parent_version_id:input.parent_version_id,scope_type:ctx.projectId?'project':'space',scope_id:ctx.projectId??identity.spaceId,content_json:{...inherited,template:input.method,messages:undefined,reading_reason:input.reason}});
  });
 }
 export async function saveReadingSample(db:Pool,identity:SpaceUserIdentity,itemId:string,projectId:string|null,raw:unknown,config:ServerConfig){

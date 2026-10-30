@@ -1,3 +1,4 @@
+import {generationOf} from '../prompts/reading/generationContract.js';
 import { createHash, randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
 import { copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
@@ -113,6 +114,14 @@ export class RunMaterializationService {
   } = {}): Promise<RunMaterializationResult> {
     const items: RunMaterializationItemSummary[] = [];
     const errors: string[] = [];
+    // This consumer only creates its validated method draft at domain settlement.
+    // Model output is data, never authority to materialize files/proposals/delegation.
+    if(generationOf(input.run)){
+      const output=recordValue(input.adapterResult.output_json);
+      const attempted=[input.adapterResult.produced_artifact_paths,input.adapterResult.exchange_artifact_paths,output.artifacts,output.proposed_changes,output.activities].some(value=>arrayValue(value).length>0);
+      return {items:[],errors:attempted?['Reading method generation cannot materialize artifacts, proposals or activities']:[]};
+    }
+
 
     for (const [index, entry] of arrayValue(
       (input.adapterResult as { produced_artifact_paths?: unknown }).produced_artifact_paths,
@@ -191,7 +200,7 @@ export class RunMaterializationService {
 
   async finalizeRun(run: RunRecord): Promise<RunMaterializationItemSummary> {
     try {
-      if (run.execution_kind === "agent" && (run.status === "succeeded" || run.status === "degraded")) {
+      if (!generationOf(run) && run.execution_kind === "agent" && (run.status === "succeeded" || run.status === "degraded")) {
         const delegated = await this.runtimeDelegationMaterializer.materialize({
           run,
           output_json: runOutputResult(run.output_json),
