@@ -134,7 +134,14 @@ source pipeline, subscription model, data model, and API.
   previous or next day up to the latest complete one, and say whether the
   snapshot was scheduled or a backfill. A missing day shows the server's
   explanation and, for a complete day the reader may write, a "Backfill this
-  day" action; viewing never generates. `/library/digests` also shows the
+  day" action; viewing never generates. Stepping to another day keeps the page
+  frame: the navigation moves to the day asked for at once, the earlier day
+  stays dimmed and inert under a status line naming both days (backfill not
+  offered), and it is replaced when the day lands. A day that cannot be read is
+  named in an alert and no earlier content stays under it. On the personal page
+  the daily edition lands, fails and retries on its own, without waiting for
+  Source briefings, the profile or the Project list. Kept content is dropped on
+  a scope change or logout. `/library/digests` also shows the
   reader's own Source annotation failure episodes (`AnnotationRecoveryNotice`):
   a relative and absolute next-retry time only while an automatic retry is
   scheduled, the waiting condition otherwise, and "Retry now".

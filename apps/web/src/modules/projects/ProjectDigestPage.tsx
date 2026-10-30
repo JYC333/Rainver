@@ -7,10 +7,11 @@ import { Button } from '../../components/ui/button'
 import { Skeleton } from '../../components/ui/skeleton'
 import { Card } from '../../components/ui/card'
 import { useSpace } from '../../contexts/SpaceContext'
+import { registerInMemoryResidue, sessionEpoch } from '../../lib/sessionResidue'
 import { errMsg } from '../../lib/utils'
 import type { InformationDigestLookup } from '../../types/api'
 import { InformationDigestView } from '../library/InformationDigestView'
-import { DigestDayNav, DigestMissing, DigestProvenance } from '../library/DigestDay'
+import { DigestDayError, DigestDayNav, DigestDayPending, DigestMissing, DigestProvenance } from '../library/DigestDay'
 import { useAppTranslation } from '../../i18n'
 import { ProjectBriefingPanel } from './ProjectBriefingPanel'
 
@@ -27,29 +28,44 @@ function ScopedProjectDigest() {
   const day = /^\d{4}-\d{2}-\d{2}$/.test(params.get('date') ?? '') ? params.get('date') : null
   const setDay = (value: string) => { const next = new URLSearchParams(params); next.set('date', value); setParams(next) }
   const [latestDay, setLatestDay] = useState<string | null>(null)
-  const [lookup, setLookup] = useState<InformationDigestLookup | null>(null)
+  // What is on screen, with the day it answers. It stays while another day is
+  // fetched, so the page keeps its frame, but it is that earlier day's until
+  // the new one lands: `stale` from the very render the URL changes.
+  const [loaded, setLoaded] = useState<{ day: string | null; lookup: InformationDigestLookup } | null>(null)
+  // The day and timezone last known, for the day navigation when no content is shown.
+  const [frame, setFrame] = useState<{ date: string; timezone: string } | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [loading, setLoading] = useState(true)
+  const lookup = loaded?.lookup ?? null
+  const stale = loaded !== null && loaded.day !== day
   const digest = lookup?.status === 'available' ? lookup.digest : null
 
-  // Only the latest request lands, so fast prev/next cannot show a stale day.
+  // Only the latest request of this login lands, so fast prev/next cannot show a stale day.
   const loadRequest = useRef(0)
+  const epoch = useRef(sessionEpoch())
+  // Kept content must not outlive the session it was read in.
+  useEffect(() => registerInMemoryResidue(() => { setLoaded(null); setFrame(null) }), [])
   const load = useCallback(async () => {
     if (!activeSpaceId || !projectId) return
     const request = ++loadRequest.current
-    setLoading(true); setLookup(null); setError(null)
+    const live = () => request === loadRequest.current && sessionEpoch() === epoch.current
+    setLoading(true); setError(null)
     try {
       const next = await informationDigestsApi.project(activeSpaceId, projectId, day ?? undefined)
-      if (request !== loadRequest.current) return
-      setLookup(next)
-      if (day === null) setLatestDay(next.status === 'available' ? next.digest.digest_date : next.digest_date)
+      if (!live()) return
+      const answered = next.status === 'available' ? next.digest : next
+      setLoaded({ day, lookup: next })
+      setFrame({ date: answered.digest_date, timezone: answered.timezone })
+      if (day === null) setLatestDay(answered.digest_date)
     } catch (error) {
-      if (request === loadRequest.current) { setLookup(null); setError(error); toast.error(errMsg(error)) }
+      if (live()) { setLoaded(null); setError(error); toast.error(errMsg(error)) }
     } finally {
-      if (request === loadRequest.current) setLoading(false)
+      if (live()) setLoading(false)
     }
   }, [activeSpaceId, projectId, day])
   const shownDay = lookup ? (lookup.status === 'available' ? lookup.digest.digest_date : lookup.digest_date) : null
+  // The day asked for steers the navigation, so stepping quickly counts from it.
+  const navDay = day ?? shownDay ?? frame?.date ?? null
 
   useEffect(() => { void load(); return () => { loadRequest.current++ } }, [load])
 
@@ -63,24 +79,26 @@ function ScopedProjectDigest() {
         <Button variant="outline" onClick={load} disabled={loading}><RefreshCw className="size-4" />{t('reading.refresh')}</Button>
       </div>
       {activeSpaceId && projectId ? <ProjectBriefingPanel key={`${activeSpaceId}:${projectId}`} spaceId={activeSpaceId} projectId={projectId} /> : null}
-      {error != null && <div role="alert"><p>{errMsg(error)}</p><Button onClick={load}>{t('reading.retry')}</Button></div>}
-      {loading && !lookup ? <div className="space-y-3"><Skeleton className="h-32" /><Skeleton className="h-32" /></div> : null}
-      {lookup && shownDay ? (
+      {error != null && <DigestDayError date={navDay} error={error} onRetry={load} />}
+      {loading && !lookup && !frame ? <div className="space-y-3"><Skeleton className="h-32" /><Skeleton className="h-32" /></div> : null}
+      {navDay && frame ? (
         <DigestDayNav
-          date={shownDay}
-          timezone={lookup.status === 'available' ? lookup.digest.timezone : lookup.timezone}
-          canGoForward={latestDay !== null && shownDay < latestDay}
+          date={navDay}
+          timezone={frame.timezone}
+          canGoForward={latestDay !== null && navDay < latestDay}
           onSelect={setDay}
         />
       ) : null}
+      {stale || (loading && !lookup && frame) ? <DigestDayPending date={day} shown={shownDay} /> : null}
+      <div inert={stale} aria-busy={stale} className={stale ? 'space-y-6 opacity-50' : 'space-y-6'} data-testid="digest-day-content">
       {lookup?.status === 'missing' ? (
-        <DigestMissing missing={lookup} onBackfill={async (date) => {
+        <DigestMissing key={lookup.digest_date} missing={lookup} onBackfill={stale || loading ? undefined : async (date) => {
           if (!activeSpaceId) return
           const request = loadRequest.current
           try {
             const result = await informationDigestsApi.backfillProject(activeSpaceId, projectId, date)
-            if (request !== loadRequest.current) return
-            setLookup({ status: 'available', digest: result.digest })
+            if (request !== loadRequest.current || sessionEpoch() !== epoch.current) return
+            setLoaded({ day, lookup: { status: 'available', digest: result.digest } })
             toast.success(result.created ? t('digest_reports.backfill_done') : t('digest_reports.backfill_existing'))
           } catch (error) {
             toast.error(errMsg(error))
@@ -97,7 +115,8 @@ function ScopedProjectDigest() {
           </div>
         </Card>
       ) : null}
-      {digest ? <InformationDigestView digest={digest} project reading /> : null}
+      {digest ? <InformationDigestView key={digest.id} digest={digest} project reading /> : null}
+      </div>
     </div>
   )
 }

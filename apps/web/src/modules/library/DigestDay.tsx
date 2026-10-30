@@ -57,6 +57,33 @@ export function DigestDayNav({ date, timezone, onSelect, canGoForward }: {
   )
 }
 
+/**
+ * A day being fetched. While `shown` is still on screen it is named, so the
+ * earlier day's content is never read as the day asked for. No date means the
+ * latest complete day was asked for.
+ */
+export function DigestDayPending({ date, shown }: { date: string | null; shown: string | null }) {
+  const { t, locale } = useAppTranslation()
+  const asked = date ? t('digest_reports.loading_day', { date: formatDigestDate(date, locale) }) : t('digest_reports.loading_latest')
+  return (
+    <p role="status" data-testid="digest-day-pending" className="text-xs text-muted-foreground">
+      {asked}{shown && shown !== date ? ` ${t('digest_reports.still_showing', { date: formatDigestDate(shown, locale) })}` : ''}
+    </p>
+  )
+}
+
+/** A day that could not be read: named, so nothing earlier passes for it. */
+export function DigestDayError({ date, error, onRetry }: { date: string | null; error: unknown; onRetry: () => void }) {
+  const { t, locale } = useAppTranslation()
+  return (
+    <div role="alert">
+      {date ? <p className="text-sm font-medium">{t('digest_reports.load_failed', { date: formatDigestDate(date, locale) })}</p> : null}
+      <p>{errMsg(error)}</p>
+      <Button onClick={onRetry}>{t('reading.retry')}</Button>
+    </div>
+  )
+}
+
 /** How the shown snapshot came to be: the day's scheduled pass, or a later backfill. */
 export function DigestProvenance({ digest }: { digest: InformationDigest }) {
   const { t, locale } = useAppTranslation()

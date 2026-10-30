@@ -7,6 +7,7 @@ import { BookOpen, CheckCircle2, ExternalLink, Library, RefreshCw, Search, XCirc
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { informationDigestsApi, projectsApi, sourcesApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
+import { registerInMemoryResidue, sessionEpoch } from '../../lib/sessionResidue'
 import { errMsg } from '../../lib/utils'
 import type { InformationDigestLookup, InterestProfileSnapshot, Project, SourceChannel, SourceItem, SourcePostProcessingBriefingDaySummary } from '../../types/api'
 import { Card } from '../../components/ui/card'
@@ -24,7 +25,7 @@ import {
   type ItemFilter,
 } from '../sources/sourcePageModel'
 import { InformationDigestView } from './InformationDigestView'
-import { AnnotationRecoveryNotice, DigestDayNav, DigestMissing, DigestProvenance } from './DigestDay'
+import { AnnotationRecoveryNotice, DigestDayError, DigestDayNav, DigestDayPending, DigestMissing, DigestProvenance } from './DigestDay'
 import { useAppTranslation } from '../../i18n'
 import { InterestProfileControls } from './InterestProfileControls'
 import { formatCalendarDay } from '../../i18n/format'
@@ -377,71 +378,82 @@ function ScopedLibraryDigestsPage() {
   const [briefings, setBriefings] = useState<SourcePostProcessingBriefingDaySummary[]>([])
   const [briefingTotal, setBriefingTotal] = useState(0)
   const [briefingOffset, setBriefingOffset] = useState(0)
+  // Only the daily edition's read: Refresh, Retry and backfill never wait on the history.
   const [loading, setLoading] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
   const { t } = useAppTranslation()
   // The shown day; null asks for the latest complete day of the digest's timezone.
   const day = /^\d{4}-\d{2}-\d{2}$/.test(params.get('date') ?? '') ? params.get('date') : null
   const setDay = (value: string) => { const next = new URLSearchParams(params); next.set('date', value); setParams(next) }
   const [latestDay, setLatestDay] = useState<string | null>(null)
   const [dailyError, setDailyError] = useState<unknown>(null)
-  const [daily, setDaily] = useState<InformationDigestLookup | null>(null)
+  // What is on screen, with the day it answers. It stays while another day is
+  // fetched, so the page keeps its frame, but it is that earlier day's until
+  // the new one lands: `stale` from the very render the URL changes.
+  const [loaded, setLoaded] = useState<{ day: string | null; lookup: InformationDigestLookup } | null>(null)
+  // The day and timezone last known, for the day navigation when no content is shown.
+  const [frame, setFrame] = useState<{ date: string; timezone: string } | null>(null)
+  const daily = loaded?.lookup ?? null
+  const stale = loaded !== null && loaded.day !== day
   const shownDay = daily ? (daily.status === 'available' ? daily.digest.digest_date : daily.digest_date) : null
+  // The day asked for steers the navigation, so stepping quickly counts from it.
+  const navDay = day ?? shownDay ?? frame?.date ?? null
   const [profile, setProfile] = useState<InterestProfileSnapshot | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
 
-  // Fast prev/next fires overlapping loads: only the latest may land, so the
-  // day shown is always the day asked for.
+  // Fast prev/next fires overlapping loads: only the latest of this login may
+  // land, so the day shown is always the day asked for.
   const loadRequest = useRef(0)
+  const epoch = useRef(sessionEpoch())
+  // Kept content must not outlive the session it was read in.
+  useEffect(() => registerInMemoryResidue(() => { setLoaded(null); setFrame(null) }), [])
   const load = useCallback(async () => {
     const request = ++loadRequest.current
+    const live = () => request === loadRequest.current && sessionEpoch() === epoch.current
     if (!activeSpaceId) {
       setBriefings([])
       setBriefingTotal(0)
       setProjects([])
       setLoading(false)
+      setHistoryLoading(false)
       return
     }
     setLoading(true)
-    setDaily(null); setDailyError(null)
-    try {
-      const [briefingResult, dailyResult, profileResult, projectResult] = await Promise.allSettled([
-        sourcesApi.briefings({ limit: BRIEF_PAGE_SIZE, offset: briefingOffset }),
-        informationDigestsApi.personal(activeSpaceId, day ?? undefined),
-        informationDigestsApi.profile(activeSpaceId),
-        projectsApi.list({ status: 'active', limit: 200 }),
-      ])
-      if (request !== loadRequest.current) return
-      if (briefingResult.status === 'fulfilled') {
-        setBriefings(briefingResult.value.items)
-        setBriefingTotal(briefingResult.value.total)
-      } else {
+    setHistoryLoading(true)
+    setDailyError(null)
+    // Each read lands alone: a slow one holds up none of the others, and the
+    // daily edition answers on its own. All of them answer to the same guard.
+    const land = <T,>(read: Promise<T>, done: (value: T) => void, failed: (error: unknown) => void) =>
+      read.then(value => { if (live()) done(value) }).catch(error => { if (live()) failed(error) })
+    await Promise.all([
+      land(sourcesApi.briefings({ limit: BRIEF_PAGE_SIZE, offset: briefingOffset }), value => {
+        setBriefings(value.items)
+        setBriefingTotal(value.total)
+      }, error => {
         setBriefings([])
         setBriefingTotal(0)
-        toast.error(errMsg(briefingResult.reason))
-      }
-      if (dailyResult.status === 'fulfilled') {
-        setDaily(dailyResult.value)
-        const result = dailyResult.value
-        if (day === null) setLatestDay(result.status === 'available' ? result.digest.digest_date : result.digest_date)
-      } else {
+        toast.error(errMsg(error))
+      }).finally(() => { if (live()) setHistoryLoading(false) }),
+      land(informationDigestsApi.personal(activeSpaceId, day ?? undefined), lookup => {
+        const answered = lookup.status === 'available' ? lookup.digest : lookup
+        setLoaded({ day, lookup })
+        setFrame({ date: answered.digest_date, timezone: answered.timezone })
+        if (day === null) setLatestDay(answered.digest_date)
+      }, error => {
         // The day could not be read: say so rather than keep showing the
         // previous day under the newly selected one.
-        setDaily(null)
-        setDailyError(dailyResult.reason)
-        toast.error(errMsg(dailyResult.reason))
-      }
-      if (profileResult.status === 'fulfilled') setProfile(profileResult.value)
-      setProjects(projectResult.status === 'fulfilled' ? projectResult.value.items : [])
-    } catch (e) {
-      if (request === loadRequest.current) toast.error(errMsg(e))
-    } finally {
-      if (request === loadRequest.current) setLoading(false)
-    }
+        setLoaded(null)
+        setDailyError(error)
+        toast.error(errMsg(error))
+      }).finally(() => { if (live()) setLoading(false) }),
+      land(informationDigestsApi.profile(activeSpaceId), setProfile, () => {}),
+      land(projectsApi.list({ status: 'active', limit: 200 }), value => setProjects(value.items), () => setProjects([])),
+    ])
   }, [activeSpaceId, briefingOffset, day])
 
   useEffect(() => { void load(); return () => { loadRequest.current++ } }, [load])
 
-  const firstLoad = loading && briefings.length === 0
+  const firstLoad = historyLoading && briefings.length === 0
 
   return (
     <section className="space-y-6">
@@ -460,23 +472,25 @@ function ScopedLibraryDigestsPage() {
 
 
       <Link className="text-sm underline" to="/library/reading">{t('reading.mine')}</Link>
-      {dailyError != null && <div role="alert"><p>{errMsg(dailyError)}</p><Button onClick={load}>{t('reading.retry')}</Button></div>}
-      {daily && shownDay && (
+      {dailyError != null && <DigestDayError date={navDay} error={dailyError} onRetry={load} />}
+      {navDay && frame && (
         <DigestDayNav
-          date={shownDay}
-          timezone={daily.status === 'available' ? daily.digest.timezone : daily.timezone}
-          canGoForward={latestDay !== null && shownDay < latestDay}
+          date={navDay}
+          timezone={frame.timezone}
+          canGoForward={latestDay !== null && navDay < latestDay}
           onSelect={setDay}
         />
       )}
+      {(stale || (loading && !daily && frame)) && <DigestDayPending date={day} shown={shownDay} />}
+      <div inert={stale} aria-busy={stale} className={stale ? 'space-y-6 opacity-50' : 'space-y-6'} data-testid="digest-day-content">
       {daily?.status === 'missing' && (
-        <DigestMissing missing={daily} onBackfill={async (date) => {
+        <DigestMissing key={daily.digest_date} missing={daily} onBackfill={stale || loading ? undefined : async (date) => {
           if (!activeSpaceId) return
           const request = loadRequest.current
           try {
             const result = await informationDigestsApi.backfillPersonal(activeSpaceId, date)
-            if (request !== loadRequest.current) return
-            setDaily({ status: 'available', digest: result.digest })
+            if (request !== loadRequest.current || sessionEpoch() !== epoch.current) return
+            setLoaded({ day, lookup: { status: 'available', digest: result.digest } })
             toast.success(result.created ? t('digest_reports.backfill_done') : t('digest_reports.backfill_existing'))
           } catch (error) {
             toast.error(errMsg(error))
@@ -484,7 +498,7 @@ function ScopedLibraryDigestsPage() {
         }} />
       )}
       {daily?.status === 'available' && <DigestProvenance digest={daily.digest} />}
-      {daily?.status === 'available' && <InformationDigestView reading digest={daily.digest} projects={projects} onFileToProject={async (itemId, sourceItemId, projectId) => {
+      {daily?.status === 'available' && <InformationDigestView key={daily.digest.id} reading digest={daily.digest} projects={projects} onFileToProject={async (itemId, sourceItemId, projectId) => {
         try {
           await projectsApi.addCorpusItem(projectId, {
             source_item_id: sourceItemId,
@@ -500,11 +514,14 @@ function ScopedLibraryDigestsPage() {
         if (!activeSpaceId) return
         try {
           const result = await informationDigestsApi.serendipityFeedback(activeSpaceId, itemId, feedback)
-          setDaily(current => current?.status === 'available' ? {
-            status: 'available',
-            digest: {
-              ...current.digest,
-              items: current.digest.items.map(item => item.id === itemId ? { ...item, serendipity_feedback: result.feedback } : item),
+          setLoaded(current => current?.lookup.status === 'available' ? {
+            ...current,
+            lookup: {
+              status: 'available',
+              digest: {
+                ...current.lookup.digest,
+                items: current.lookup.digest.items.map(item => item.id === itemId ? { ...item, serendipity_feedback: result.feedback } : item),
+              },
             },
           } : current)
           toast.success(result.blocked ? 'Direction blocked' : 'Feedback saved')
@@ -512,6 +529,7 @@ function ScopedLibraryDigestsPage() {
           toast.error(errMsg(error))
         }
       }} />}
+      </div>
 
       <details className="rounded-lg border border-border bg-card p-4"><summary className="cursor-pointer text-sm font-medium">{t('monitoring.readingPreferences')}</summary><div className="mt-4 space-y-4">
         {activeSpaceId && <AnnotationRecoveryNotice spaceId={activeSpaceId} />}

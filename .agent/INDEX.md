@@ -278,6 +278,7 @@ Planned work has one durable routing entry per purpose:
 |---|---|
 | [plans/backlog.md](plans/backlog.md) | Work pulled on demand |
 | [plans/shared-briefing-and-project-loop.md](plans/shared-briefing-and-project-loop.md) | Shared briefing: stages and remaining execution/carry/limits fixes committed, independently reviewed and full-suite tested; real-model quality and live Host acceptance await authorization; token/currency hard caps absent |
+| [plans/reading-method-evolution-mvp.md](plans/reading-method-evolution-mvp.md) | Reading method MVP: contextual improvement entry, versioned investigation, controlled comparison, approval and rollback; Codex implementation with Claude and Antigravity review |
 | [tasks/deferred-register.md](tasks/deferred-register.md) | Deferred work, triggers, and outstanding acceptance gates |
 | [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | Deferred unattended execution specification |
 | [plans/unimplemented-from-guides.md](plans/unimplemented-from-guides.md) | Designs removed from current-state guides; inventory only, not a pull queue |
