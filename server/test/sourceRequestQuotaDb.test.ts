@@ -63,3 +63,52 @@ it("does not rewrite an unchanged cooldown refusal",async()=>{
  expect((await admitSourceRequest(db.pool,key,policy)).allowed).toBe(false);
  expect((await db.pool.query(`SELECT xmin::text FROM source_request_quota_state WHERE group_key=$1`,[key])).rows[0].xmin).toBe(before);
 });
+
+describe("Cooldown clock: one DB sample for the whole write", () => {
+  const stored = async (keys: string[]) => (await db.pool.query<{ group_key: string; micros: string }>(
+    `SELECT group_key, (extract(epoch FROM cooldown_until) * 1000000)::bigint::text AS micros FROM source_request_quota_state WHERE group_key = ANY($1::text[])`, [keys],
+  )).rows;
+  const dbNowMs = async () => new Date((await db.pool.query<{ now: Date }>(`SELECT clock_timestamp() AS now`)).rows[0]!.now).getTime();
+
+  it("stores an in-range HTTP date exactly, to the microsecond, for one group and for several", async () => {
+    for (let round = 0; round < 25; round += 1) {
+      const until = new Date(Date.now() + 120_000 + round * 1000); until.setUTCMilliseconds(0);
+      const keys = [group(), group(), group()];
+      const returned = await coolDownSourceRequests(db.pool, keys, until.toUTCString());
+      expect(returned).toBe(until.toISOString());
+      for (const row of await stored(keys)) expect(row.micros).toBe(String(until.getTime() * 1000));
+    }
+  });
+
+  it("gives every group of one write the same instant for a relative or fallback cooldown", async () => {
+    for (const header of ["120", null, "not a date"]) {
+      const keys = [group(), group(), group(), group()];
+      await coolDownSourceRequests(db.pool, keys, header);
+      expect(new Set((await stored(keys)).map((row) => row.micros)).size).toBe(1);
+    }
+  });
+
+  it("keeps the bounds: 1 s at least, 24 h at most, 60 s when missing or invalid, and never shortens", async () => {
+    const until = async (header: string | null, key = group()) => {
+      const before = await dbNowMs();
+      const at = new Date(await coolDownSourceRequests(db.pool, key, header)).getTime();
+      return { before, after: await dbNowMs(), at };
+    };
+    const within = ({ before, after, at }: { before: number; after: number; at: number }, seconds: number) => {
+      expect(at).toBeGreaterThanOrEqual(before + seconds * 1000);
+      expect(at).toBeLessThanOrEqual(after + seconds * 1000 + 1);
+    };
+    within(await until("0"), 1);
+    within(await until(new Date(Date.now() - 3_600_000).toUTCString()), 1);
+    within(await until(new Date(Date.now() + 3 * 86_400_000).toUTCString()), 86_400);
+    within(await until("999999"), 86_400);
+    within(await until(null), 60);
+    within(await until("soon"), 60);
+
+    const key = group();
+    const long = await coolDownSourceRequests(db.pool, key, "3600");
+    const date = new Date(Date.now() + 120_000); date.setUTCMilliseconds(0);
+    expect(await coolDownSourceRequests(db.pool, key, date.toUTCString())).toBe(long);
+    expect(await coolDownSourceRequests(db.pool, key, "1")).toBe(long);
+  });
+});

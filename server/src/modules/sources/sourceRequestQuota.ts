@@ -65,8 +65,11 @@ export async function admitSourceRequestGroups(pool: Pool, groups: readonly { ke
 }
 
 /** Explicit 1s..24h cooldown; invalid/missing headers default to 60s.
- * Parse and clamp with the DB clock, never with a worker's clock. Sorted locks
- * atomically extend account and all endpoint groups without shortening them. */
+ * Parse and clamp with the DB clock, never with a worker's clock: one sample
+ * per write (a materialized CTE, `clock_timestamp()` being volatile), for all
+ * groups, and the clamp compares timestamps, so an in-range HTTP date is stored
+ * exactly as given. Sorted locks atomically extend account and all endpoint
+ * groups without shortening them. */
 export const SOURCE_MAX_COOLDOWN_SECONDS = 86_400;
 export async function coolDownSourceRequests(pool: Pool, keys: string | readonly string[], retryAfter: string | null): Promise<string> {
   const groups = [...new Set(typeof keys === "string" ? [keys] : keys)].sort();
@@ -79,10 +82,11 @@ export async function coolDownSourceRequests(pool: Pool, keys: string | readonly
       await db.query(`INSERT INTO source_request_quota_state (group_key, windows_json) VALUES ($1,'{}'::jsonb) ON CONFLICT DO NOTHING`, [key]);
       await db.query(`SELECT group_key FROM source_request_quota_state WHERE group_key=$1 FOR UPDATE`, [key]);
     }
-    const result=await db.query<{cooldown_until:string}>(`UPDATE source_request_quota_state SET cooldown_until=GREATEST(cooldown_until,
-      clock_timestamp() + GREATEST(1,LEAST(86400,COALESCE($2::double precision,
-        extract(epoch FROM ($3::timestamptz-clock_timestamp())),60))) * interval '1 second')
-      WHERE group_key=ANY($1::text[]) RETURNING cooldown_until`, [groups, delta, Number.isFinite(date) ? new Date(date).toISOString() : null]);
+    const result=await db.query<{cooldown_until:string}>(`WITH clock AS MATERIALIZED (SELECT clock_timestamp() AS now)
+      UPDATE source_request_quota_state SET cooldown_until=GREATEST(cooldown_until,
+        GREATEST(clock.now + interval '1 second', LEAST(clock.now + interval '86400 seconds',
+          COALESCE(clock.now + $2::double precision * interval '1 second', $3::timestamptz, clock.now + interval '60 seconds'))))
+      FROM clock WHERE group_key=ANY($1::text[]) RETURNING cooldown_until`, [groups, delta, Number.isFinite(date) ? new Date(date).toISOString() : null]);
     return new Date(Math.max(...result.rows.map(row=>new Date(row.cooldown_until).getTime()))).toISOString();
   });
 }

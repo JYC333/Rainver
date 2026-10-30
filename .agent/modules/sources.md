@@ -1220,7 +1220,8 @@ remain server-owned. Sources broker scopes credentials by exact route on every
 hop, requires HTTPS for credentials, combines registry/request cancellation,
 preserves binary bytes, and exposes only bounded incremental metadata. Account
 and endpoint admission/cooldown are durable and atomic (429 and eligible 503 only,
-1s..24h). Current create/scan/repair flows have not enabled free generation; old
+1s..24h). A cooldown takes one DB clock sample per write for all its groups, and
+an in-range HTTP date is stored exactly as given. Current create/scan/repair flows have not enabled free generation; old
 Legacy Level 3 remains frozen. The foundation itself added no goal UI; the
 current goal model and conversation consumer are described in SOURCE_GOALS.
 They reuse the existing scheduler and never add a second scheduler.
