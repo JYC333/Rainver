@@ -373,18 +373,19 @@ describe("A Source revocation and a Delivery carrying its text are linearized", 
     const turn = await sendAndPrepare(room, conversation, "Explain this highlight");
     const order: string[] = [];
     const hook = pausingBeforeDeliveryInsert();
-    const delivering = turn.deliver(hook.pool as Pool).then((result) => { order.push("delivery committed"); return result; });
+    const delivering = turn.deliver(hook.pool as Pool);
     const deliveryPid = await hook.atInsert;
     const revoker = await db.pool.connect();
     try {
       const revokerPid = Number((await revoker.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
       const revoking = revoker.query(`UPDATE source_connections SET consent_json=${DENY_ALL} WHERE id=$1`, [CONNECTION])
-        .then(() => { order.push("revocation committed"); });
+        .then(async () => { order.push(`revocation committed, ${await turn.accepted()} Delivery already committed`); });
       expect(await blockedBy(revokerPid, deliveryPid)).toBe(true);
       hook.release();
       const delivered = await delivering;
       await revoking;
-      expect(order).toEqual(["delivery committed", "revocation committed"]);
+      // Read from the database when the writer returned: the Delivery had already committed.
+      expect(order).toEqual(["revocation committed, 1 Delivery already committed"]);
       expect(delivered.ok).toBe(true);
       expect(await turn.accepted()).toBe(1);
     } finally {
@@ -472,14 +473,14 @@ describe("A Delivery's whole context and audience are linearized with their cano
     const { goal, turn } = await personalReference();
     const order: string[] = [];
     const hook = pausingBeforeDeliveryInsert();
-    const delivering = turn.deliver(hook.pool).then((result) => { order.push("delivery committed"); return result; });
+    const delivering = turn.deliver(hook.pool);
     const deliveryPid = await hook.atInsert;
-    const stopping = stopGoal(db.pool, goal).then(() => { order.push("goal deleted"); });
+    const stopping = stopGoal(db.pool, goal).then(async () => { order.push(`goal deleted, ${await turn.accepted()} Delivery already committed`); });
     await waitingOn(deliveryPid);
     hook.release();
     const delivered = await delivering;
     await stopping;
-    expect(order).toEqual(["delivery committed", "goal deleted"]);
+    expect(order).toEqual(["goal deleted, 1 Delivery already committed"]);
     expect(delivered.ok).toBe(true);
     if (delivered.ok) expect(JSON.stringify(delivered.value.message_blocks)).toContain("PRIVATE_FOCUS_CONTEXT");
     expect(await turn.accepted()).toBe(1);
@@ -513,14 +514,14 @@ describe("A Delivery's whole context and audience are linearized with their cano
     const turn = await sendAndPrepare(room, conversation, "Explain this highlight");
     const order: string[] = [];
     const hook = pausingBeforeDeliveryInsert();
-    const delivering = turn.deliver(hook.pool).then((result) => { order.push("delivery committed"); return result; });
+    const delivering = turn.deliver(hook.pool);
     const deliveryPid = await hook.atInsert;
-    const joining = joinProject(db.pool).then(() => { order.push("member added"); });
+    const joining = joinProject(db.pool).then(async () => { order.push(`member added, ${await turn.accepted()} Delivery already committed`); });
     await waitingOn(deliveryPid);
     hook.release();
     const delivered = await delivering;
     await joining;
-    expect(order).toEqual(["delivery committed", "member added"]);
+    expect(order).toEqual(["member added, 1 Delivery already committed"]);
     expect(delivered.ok).toBe(true);
     expect(await turn.accepted()).toBe(1);
     expect(await turn.deliver()).toMatchObject(withheldNow);

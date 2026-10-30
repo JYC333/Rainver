@@ -6,7 +6,7 @@ import type { BriefingDeps, BriefingSignalDep } from "./contract.js";
 import { lockProjectAudience } from "../../projects/access.js";
 import { lockReadingPreferencesShared, ReadingPreferences } from "../readingPreferences.js";
 import { authorizedHighlight } from "./highlight.js";
-import { PgBriefingRepository } from "./repository.js";
+import { PgBriefingRepository, type BriefingRow } from "./repository.js";
 import { highlightDependencies, type ValidatedBriefing } from "./result.js";
 import { adapterForRow } from "./settlement.js";
 
@@ -107,7 +107,47 @@ export async function lockBriefingReferenceClosure(
   spaceId: string,
   messages: ReadonlyArray<{ id: string; metadata_json?: unknown }>,
 ): Promise<{ attachers: string[]; itemIds: string[]; connectionIds: string[] }> {
-  const references = messages.filter(isBriefingReference).map(referenceOf);
+  return lockBriefingClosure(db, spaceId, messages.filter(isBriefingReference).map(referenceOf).map((reference) => ({
+    briefingId: reference.briefingId,
+    viewer: reference.attacher,
+    refs: (row: BriefingRow) => {
+      const result = row.result_json as ValidatedBriefing | null;
+      const highlight = row.status === "ready" ? result?.highlights[reference.index] : undefined;
+      return result && highlight ? new Set([...result.overview.refs, ...highlightDependencies(highlight)]) : null;
+    },
+  })));
+}
+
+/**
+ * The same closure for a whole version a Run is generating: everything
+ * `authorizeVersion` reads for it — every included input and context entry,
+ * and the comparison closure — for its requester. Locked by the Delivery of
+ * that Run (`runtimeContext/gateway.ts`) before it re-authorizes the version.
+ */
+export async function lockBriefingVersionClosure(
+  db: Queryable,
+  spaceId: string,
+  briefingId: string,
+  requester: string,
+): Promise<{ attachers: string[]; itemIds: string[]; connectionIds: string[] }> {
+  const repository = new PgBriefingRepository(db);
+  const inputs = await repository.inputs(briefingId);
+  return lockBriefingClosure(db, spaceId, [{
+    briefingId,
+    viewer: requester,
+    refs: (row: BriefingRow) => new Set([
+      ...inputs.filter((input) => input.ref_kind === "source_item" && input.ref_key && input.status === "included").map((input) => input.ref_key!),
+      ...row.context_json.map((entry) => entry.key),
+    ]),
+  }]);
+}
+
+async function lockBriefingClosure(
+  db: Queryable,
+  spaceId: string,
+  targets: ReadonlyArray<{ briefingId: string; viewer: string; refs: (row: BriefingRow) => Set<string> | null }>,
+): Promise<{ attachers: string[]; itemIds: string[]; connectionIds: string[] }> {
+  const references = targets;
   const repository = new PgBriefingRepository(db);
   const items = new Set<string>();
   const connections = new Set<string>();
@@ -121,12 +161,10 @@ export async function lockBriefingReferenceClosure(
   }
   for (const reference of references) {
     const row = await repository.get(spaceId, reference.briefingId);
-    const result = row?.result_json as ValidatedBriefing | null | undefined;
-    const highlight = result?.highlights[reference.index];
-    if (!row || !result || !highlight) continue; // re-verification refuses it
+    const refs = row ? reference.refs(row) : null;
+    if (!row || !refs) continue; // re-verification refuses it
     if (row.scope_type === "project" && row.project_id) projects.add(row.project_id);
     if (row.scope_type === "personal" && row.owner_user_id) owners.add(row.owner_user_id);
-    const refs = new Set([...result.overview.refs, ...highlightDependencies(highlight)]);
     const closure = comparisonClosure((row.comparison_json ?? []) as ComparisonEntry[]);
     const deps: BriefingDeps[] = (await repository.inputs(row.id))
       .filter((input) => input.ref_kind === "source_item" && input.ref_key && refs.has(input.ref_key))
@@ -205,7 +243,7 @@ export async function lockBriefingReferenceClosure(
       ORDER BY subscription.id FOR SHARE OF subscription, channel`,
     sorted(connections),
   );
-  const attachers = sorted(references.map((reference) => reference.attacher));
+  const attachers = sorted(references.map((reference) => reference.viewer));
   return { attachers, itemIds: sorted(items), connectionIds: sorted(connections) };
 }
 

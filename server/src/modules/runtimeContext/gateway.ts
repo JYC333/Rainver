@@ -54,7 +54,7 @@ import { trimContextText } from "./windowPlanner.js";
 import { PgRuntimeContextAcquisitionRepository } from "./acquisitionRepository.js";
 import { PgRuntimeSkillProvider } from "../skills/runtimeSkillProvider.js";
 import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
-import { assertBriefingReferencesDeliverable, lockBriefingReferenceClosure, pendingBriefingReferences } from "../informationDigest/briefing/referenceDelivery.js";
+import { assertBriefingReferencesDeliverable, lockBriefingReferenceClosure, lockBriefingVersionClosure, pendingBriefingReferences } from "../informationDigest/briefing/referenceDelivery.js";
 import { classifyRunDestination, loadRunProvider } from "./runDestination.js";
 import {
   loadConversationInputResourceDescriptors,
@@ -243,6 +243,8 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       model_override_json: unknown;
       runtime_profile_id: string | null;
       runtime_profile_snapshot_json: unknown;
+      contract_snapshot_json: unknown;
+      root_run_id: string | null;
       agent_id: string | null;
       project_id: string | null;
       project_folder_id: string | null;
@@ -251,7 +253,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     }>(
       `SELECT run.runtime_key,run.model_provider_id,run.owner_user_id,run.instructed_by_user_id,
               run.prompt,run.instruction,run.delegation_id,run.error_json,run.run_group_id,
-              run.session_id,run.model_override_json,run.runtime_profile_id,run.runtime_profile_snapshot_json,run.agent_id,run.project_id,
+              run.session_id,run.model_override_json,run.runtime_profile_id,run.runtime_profile_snapshot_json,run.contract_snapshot_json,run.root_run_id,run.agent_id,run.project_id,
               run.project_folder_id,run.capability_id,run.capabilities_json
          FROM execution_control_snapshots control_row
          JOIN runs run ON run.id=control_row.run_id AND run.space_id=control_row.space_id
@@ -433,11 +435,14 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       project_id?: string | null;
       capability_id?: string | null;
       capabilities_json?: unknown;
+      contract_snapshot_json?: unknown;
+      root_run_id?: string | null;
     },
   ): Promise<void> {
     const decisions = new Map(input.envelope.window_plan.decisions.map((decision) => [decision.item_id, decision.decision]));
     const accepted = input.envelope.items.filter((item) => decisions.get(item.id) !== "blocked");
     await this.authorizeBriefingReferences(db, input, accepted, run, egress.destination);
+    await this.authorizeBriefingGeneration(db, input, run, egress.destination);
     for (const item of accepted) {
       if (item.acquisition === "direct" && item.source_ref.type === "message") {
         await this.authorizeMessageSource(db, input, item, run);
@@ -560,6 +565,44 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       for (const itemId of closure.itemIds) await this.lockSourceItemDependencies(db, spaceId, itemId, attacher);
       for (const connectionId of closure.connectionIds) await this.lockSourceConnectionDependencies(db, spaceId, connectionId, attacher);
     }
+  }
+
+  /**
+   * A briefing Run's request carries the version's frozen material. Its
+   * Delivery re-authorizes that version on the destination this Delivery is
+   * authorized for (`authorizeEgress`: the Run's own adapter and ModelProvider,
+   * never the live, editable Profile), after locking the version's whole
+   * closure — briefing row, audience, context roots, signals, grants and
+   * subscriptions, then its Source items and connections — held to commit.
+   * The same rule as the orchestrator's dispatch guard
+   * (`informationDigest/briefing/settlement.ts`, `assertBriefingVersionDispatchable`).
+   */
+  private async authorizeBriefingGeneration(
+    db: Queryable,
+    input: InvocationAttemptInput,
+    run: { prompt: string | null; instruction: string | null; contract_snapshot_json?: unknown; root_run_id?: string | null },
+    destination: RetrievalEgressDestination,
+  ): Promise<void> {
+    const settlement = await import("../informationDigest/briefing/settlement.js");
+    const context = settlement.briefingRunContext(run);
+    if (!context) return;
+    const requester = (await db.query<{ requested_by_user_id: string }>(
+      `SELECT requested_by_user_id FROM information_briefings WHERE space_id=$1 AND id=$2`,
+      [input.spaceId, context.id],
+    )).rows[0]?.requested_by_user_id;
+    if (requester) {
+      const closure = await lockBriefingVersionClosure(db, input.spaceId, context.id, requester);
+      for (const itemId of closure.itemIds) await this.lockSourceItemDependencies(db, input.spaceId, itemId, requester);
+      for (const connectionId of closure.connectionIds) await this.lockSourceConnectionDependencies(db, input.spaceId, connectionId, requester);
+    }
+    await settlement.assertBriefingVersionDispatchable(db, {
+      id: input.invocationId,
+      space_id: input.spaceId,
+      prompt: run.prompt,
+      instruction: run.instruction,
+      contract_snapshot_json: run.contract_snapshot_json,
+      root_run_id: run.root_run_id ?? null,
+    }, { destination });
   }
 
   private async authorizePersonalMemoryGrant(

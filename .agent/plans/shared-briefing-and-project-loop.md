@@ -1,7 +1,13 @@
 # 共用简报底座与项目闭环实施计划
 
 日期：2026-10-30。
-状态：P1 已提交（c7db1db5），P2 已提交（97e08875）；P3 通知／追问／采纳已在工作区实施，待双审（§9.5），之后进行整体审核。项目闭环先交付，个人整体随后接入。
+状态：
+- 已提交：P1（c7db1db5）、P2（97e08875）、P3（379a98c1）。各阶段均经双审与提交前完整套件。
+- 整体审：发现 O1（生成链路的出网目标）与 O2（无发布正文时 pending 未顺延），已在工作区修复（§9.6）。
+  - O1 已通过复核。
+  - O2 主路径已通过；“失败尝试遮盖 pending”一项已修，待窄复核。
+- 未验：真实模型质量、worker 重启与远端 ACK；token／金额无硬上限。
+- 本计划尚未完成，不退役。
 
 ## 1. 用户目标与交付顺序
 
@@ -161,7 +167,7 @@ P1a 与 P1b 作为同一首批实施任务推进：不交付一个只有表和�
 - [x] 状态：采集完成但综合失败、部分覆盖、无材料与无重要变化有不同反馈。（服务端状态/outcome/coverage + Web 单测）
 - [x] 页面：390／1280px 可读，引用可回看；无额外材料卡字段；切篇／切 scope 不串回包。（`project-briefing.browser.mjs` 真 Chromium，路由 mock 合成数据；`ProjectBriefingPanel.test.tsx` scope/卸载/登出守卫）
 - [x] 历史：原 Digest 快照不改；人工当前版本与封存日、backfill 区分。（每日经现有 Automation、重放复用、blocked 日、日期顺序 422）
-- [ ] 个人：P2 检验真实选材而非仅通过 schema；多个来源／项目视角可整体归纳。（P2 工作区已测：真实 PG 正反选材——本人 Following、订阅已有分析、opt-in 可读项目，排除他人话题、未选项目、他 Space；同一 capture 多视角合并，不同 URL 同事件可由单个重点归并（结构可表达，非真实模型判对）；opt-out／撤权／删项目后在派发、发布、读取及跨代对照中撤回；delta／no-new／迟到分析；与项目隔离；个人每日 Automation 碰撞保留与恢复；Chromium 390／1280。待双审后勾选）
+- [x] 个人：P2 检验真实选材而非仅通过 schema；多个来源／项目视角可整体归纳。（P2 已提交并通过阶段双审（97e08875），已测：真实 PG 正反选材——本人 Following、订阅已有分析、opt-in 可读项目，排除他人话题、未选项目、他 Space；同一 capture 多视角合并，不同 URL 同事件可由单个重点归并（结构可表达，非真实模型判对）；opt-out／撤权／删项目后在派发、发布、读取及跨代对照中撤回；delta／no-new／迟到分析；与项目隔离；个人每日 Automation 碰撞保留与恢复；Chromium 390／1280。模型能否正确归纳多视角属“质量”项，仍未勾）
 - [ ] 质量：受控真实模型运行另记授权、成本、引用支持情况和误归并，不用 mock 通过冒充。
 
 实现时按 [TESTING_STRATEGY](../architecture/TESTING_STRATEGY.md) 使用 familygroup、
@@ -261,7 +267,7 @@ guide／链接检查。每批提交前运行必要的完整套件；不反复执
   - 新 vendor 会话的首轮把附加的重点作为独立的不可信 reference 项送达；续聊仍在 Room 增量中送达。
   - Web 动作按（scope, briefing, 稳定 index）归属，忙碌状态归属于发起它的请求。
   - copy-once 合同来自 protocol `threadReferences` 与 rooms 指南，不是 ADR 0018。
-  - P3 仍待复审，本计划尚未完成。
+  - P3 此后通过阶段双审，已提交（379a98c1）。
 - 复审修复 2（R1、R2 与类型）：
   - 引用的出网判定改用 Delivery 自己授权的目标：由 Run 持久化的 adapter／ModelProvider 推出，
     经 `runDestination.ts` 与 gateway `authorizeEgress` 共用同一分类。
@@ -302,6 +308,27 @@ guide／链接检查。每批提交前运行必要的完整套件；不反复执
 - 面板：对 queued 及可恢复保留状态（scope_busy、earlier_day_pending）做有界只读轮询，
   覆盖最新、已选和历史中的版本；每 4 秒一次，不重入，每次挂载最多 30 分钟。需人处理的拒绝不轮询。
   所有人可见只读刷新；有版本进行中时 Generate 不可用。
+
+### 9.6 整体审修复（O1、O2；工作区，待窄复核）
+
+- **O1 生成链路的出网目标。**
+  - 简报生成 Run 一旦绑定 adapter（`runtime_key`，调用 ModelProvider 时含 provider），dispatch guard
+    （`assertBriefingDispatch`）就按该固定绑定判定 Source 出网，经 `runtimeContext/runDestination.ts`
+    使用与 Delivery egress authority 相同的分类，不再采用可编辑的 live Profile。
+    仅在尚未绑定时，校验候选 Profile。
+  - 该 Run 请求的 Delivery 也重验：gateway 先锁住版本完整闭包，再以自身授权的
+    `egress.destination` 走同一规则（`assertBriefingVersionDispatchable`）。
+  - 请求 hash、attempt、scope、closed Work Context、revision 等守卫不变。
+- **O2 无发布正文时的 pending 顺延。**
+  - 比较只走已发布正文链。待处理材料另由 `pendingSince` 收集：取比较基准之后（无基准则全部）、
+    当前截止时间之前同一 scope 的版本中最新状态仍为 pending 的条目，经 scope 自身门禁重新授权。
+  - 上限 200；超出部分计入 coverage `truncated`，`complete=false`，并保持 pending。
+  - 只按已结算（ready）版本中的最新状态判断。尝试收录（included）后失败、取消或仍在运行，
+    均不算已处理：材料保持 pending，同一请求走该版本的冻结重试，最多 3 次，之后明确返回
+    `briefing_attempts_exhausted`。只有发布正文后（该版本成为比较基准），材料才离开顺延。
+  - 重复检查仍幂等；不改已封存日／backfill。
+- 真实模型质量、worker 重启、远端 ACK、token／金额硬上限仍未验，不能以次数限制冒充金额限制。
+  已进入 vendor 会话的上下文无法远程撤回。
 
 ## 10. 实现前置约束与需试验参数
 

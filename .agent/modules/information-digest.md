@@ -190,7 +190,26 @@ which stay as they are. Plan: `.agent/plans/shared-briefing-and-project-loop.md`
     (body or analysis revision), `evidenced_change`, `unknown_time`, and
     `background` (comparison material that is never news).
   - Pending inputs are carried to the next version: not analysed, truncated,
-    egress-refused, and not shared with the whole audience (bounded at 200).
+    egress-refused, and not shared with the whole audience. What is compared
+    and what is carried are kept apart:
+    - comparison follows the published chain alone;
+    - carry takes the comparison base's own pending inputs, plus what later
+      unpublished versions of the scope recorded as pending
+      (`PgBriefingRepository.pendingSince`), up to the cutoff. These are the
+      versions after the base, or every version when nothing is published
+      yet, such as a sealed no-run day whose material was refused.
+    - An item counts by its latest state in a settled (`ready`) version.
+      An attempt that admitted it (`included`) but failed, was cancelled or
+      is still running has not processed it, so it stays pending. The next
+      identical request is then the same version's frozen retry, within its
+      3 attempts; after those, it is an explicit `briefing_attempts_exhausted`.
+      Material leaves the carry once a published version briefs it, because
+      that version becomes the comparison base.
+    - Carried items are re-offered as pins through the scope's own candidate
+      gates, which re-authorize them. An item that left the scope is not
+      carried.
+    - The carry is bounded at 200. Pending material beyond the bound is
+      counted in `coverage.truncated` (`complete` false) and stays pending.
   - The candidate window includes body and analysis changes of in-scope items,
     so a revision is found without new membership activity.
   - The previous published version's still-readable highlights, and their
@@ -252,8 +271,22 @@ which stay as they are. Plan: `.agent/plans/shared-briefing-and-project-loop.md`
   - the current attempt and its `request_hash`;
   - that the requester can still write;
   - the closed Work Context (`briefing_context_widened`);
-  - the dependency authorization with egress (`briefing_access_changed`);
+  - the dependency authorization with egress (`briefing_access_changed`).
+    Egress is judged on where the Run will actually send it. Once the Run is
+    bound to its adapter (`runtime_key`, and a ModelProvider when it calls
+    one), that binding fixes the destination
+    (`runtimeContext/runDestination.ts`, the classification the Delivery's
+    egress authority uses). The live runtime Profile no longer counts: a
+    canonical edit may have changed it since. Only before binding is the
+    candidate Profile checked;
   - unchanged revisions and context (`briefing_inputs_changed`).
+
+  The last check is the Delivery of the Run's request. The Invocation gateway
+  locks the version's whole closure, the same closure as a briefing
+  reference's (`lockBriefingVersionClosure`). It then re-runs these checks
+  (`assertBriefingVersionDispatchable`) on the destination that Delivery is
+  authorized for, so a Source that refuses that destination leaves no
+  accepted Delivery.
 
   A refusal is a `RunPreparationError` with that code. The Supervisor's
   managed fail-fast rule leaves the Run terminal, never `waiting_for_review`,

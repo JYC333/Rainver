@@ -94,7 +94,8 @@ export interface BriefingManifest {
 const DELTA_PRIORITY: Record<BriefingDeltaClass, number> = {
   evidenced_change: 0, revised: 1, new_publication: 2, newly_found: 3, unknown_time: 4, baseline: 5, background: 6,
 };
-const PENDING: ReadonlySet<string> = new Set(["not_ready", "truncated", "egress_refused", "not_shared"]);
+export const PENDING_INPUT_STATUSES = ["not_ready", "truncated", "egress_refused", "not_shared"] as const;
+const PENDING: ReadonlySet<string> = new Set(PENDING_INPUT_STATUSES);
 const EMPTY_DEPS: BriefingDeps = { items: [], annotations: [], signals: [] };
 
 /**
@@ -126,6 +127,12 @@ export async function buildManifest(
   input: {
     cutoff: string;
     previous: PreviousVersion | null;
+    /**
+     * Material still to be briefed that later unpublished versions recorded
+     * (`PgBriefingRepository.pendingSince`), carried like the comparison
+     * base's own; `overflow` of them did not fit the carry bound this time.
+     */
+    pending?: { itemIds: string[]; overflow: number };
     label: string;
     egressAllowed: (connectionId: string) => Promise<boolean>;
   },
@@ -133,10 +140,13 @@ export async function buildManifest(
   const { cutoff, previous } = input;
   const since = previous?.cutoff_at
     ?? new Date(Date.parse(cutoff) - BRIEFING_LIMITS.baselineWindowDays * 86_400_000).toISOString();
-  const carryItemIds = previous
-    ? [...new Set(previous.inputs.filter((row) => PENDING.has(row.status)).flatMap((row) => row.item_ids.length ? row.item_ids : [row.source_item_id!]))]
-      .slice(0, BRIEFING_LIMITS.maxCarry)
-    : [];
+  const pendingIds = [...new Set([
+    ...(previous ? previous.inputs.filter((row) => PENDING.has(row.status)).flatMap((row) => row.item_ids.length ? row.item_ids : [row.source_item_id!]) : []),
+    ...(input.pending?.itemIds ?? []),
+  ])];
+  const carryItemIds = pendingIds.slice(0, BRIEFING_LIMITS.maxCarry);
+  // Pending material beyond the carry bound is not dropped silently: it is counted as left out, and stays pending.
+  const carryOverflow = pendingIds.length - carryItemIds.length + (input.pending?.overflow ?? 0);
   const comparisonHighlights = (previous?.highlights ?? []).slice(0, BRIEFING_LIMITS.maxComparisonHighlights);
   const backgroundFamilies = new Set(comparisonHighlights.flatMap((highlight) => highlight.families).slice(0, BRIEFING_LIMITS.maxBackgroundFamilies));
   const backgroundItemIds = previous
@@ -288,14 +298,14 @@ export async function buildManifest(
     included: sent.length,
     merged_duplicates: mergedDuplicates,
     not_ready: count("not_ready"),
-    truncated: count("truncated"),
+    truncated: count("truncated") + carryOverflow,
     egress_refused: count("egress_refused"),
     not_shared_with_audience: count("not_shared"),
     carried_from_previous: carriedCount,
     unchanged_since_previous: unchanged,
     background: sent.filter((row) => row.delta_class === "background").length,
     context_changed: contextChanged,
-    complete: count("not_ready") + count("truncated") + count("egress_refused") + count("not_shared") === 0,
+    complete: count("not_ready") + count("truncated") + count("egress_refused") + count("not_shared") + carryOverflow === 0,
   };
   const previousText = wantBackground ? comparisonText() : null;
   const prompt = renderFrame({

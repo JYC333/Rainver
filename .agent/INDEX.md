@@ -277,7 +277,7 @@ Planned work has one durable routing entry per purpose:
 | Document | Holds |
 |---|---|
 | [plans/backlog.md](plans/backlog.md) | Work pulled on demand |
-| [plans/shared-briefing-and-project-loop.md](plans/shared-briefing-and-project-loop.md) | Proposed shared briefing foundation; Project loop first, personal rollup follows |
+| [plans/shared-briefing-and-project-loop.md](plans/shared-briefing-and-project-loop.md) | Shared briefing: Project loop, personal rollup and P3 notices/follow-ups/adoption committed; overall-review fixes pending; model quality unverified |
 | [tasks/deferred-register.md](tasks/deferred-register.md) | Deferred work, triggers, and outstanding acceptance gates |
 | [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | Deferred unattended execution specification |
 | [plans/unimplemented-from-guides.md](plans/unimplemented-from-guides.md) | Designs removed from current-state guides; inventory only, not a pull queue |

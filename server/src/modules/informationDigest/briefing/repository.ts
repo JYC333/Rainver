@@ -150,6 +150,54 @@ export class PgBriefingRepository {
     return result.rows.map((row) => ({ ...row, item_ids: row.item_ids?.length ? row.item_ids : row.source_item_id ? [row.source_item_id] : [] }));
   }
 
+  /**
+   * Material this scope recorded as still to be briefed (`statuses`: not
+   * ready, truncated, refused, not shared) and not processed since, from the
+   * versions after the comparison base (`after`, its cutoff; every version
+   * when there is none) up to `cutoff`. An item counts by its latest state in
+   * a settled (`ready`) version only: an attempt that admitted it (`included`)
+   * but failed, was cancelled or is still running has not processed it, so it
+   * stays pending — and the next identical request retries that version's
+   * frozen request within its attempt budget. Material leaves the carry once
+   * a published version briefs it (it then becomes the comparison base).
+   * Newest first; `limit` ids, with how many more there are. Read-only: the
+   * next version re-offers them through the scope's own gates, which
+   * re-authorize each.
+   */
+  async pendingSince(
+    scope: BriefingScope,
+    after: string | null,
+    cutoff: string,
+    statuses: readonly string[],
+    limit: number,
+  ): Promise<{ itemIds: string[]; overflow: number }> {
+    const result = await this.db.query<{ item_id: string; total: number }>(
+      `WITH recorded AS (
+         SELECT DISTINCT ON (member.item_id) member.item_id, input.status, briefing.cutoff_at, briefing.version
+           FROM information_briefing_inputs input
+           JOIN information_briefings briefing ON briefing.id = input.briefing_id AND briefing.space_id = input.space_id
+           CROSS JOIN LATERAL (
+             SELECT jsonb_array_elements_text(input.analysis_json->'item_ids') AS item_id
+              WHERE jsonb_typeof(input.analysis_json->'item_ids') = 'array' AND jsonb_array_length(input.analysis_json->'item_ids') > 0
+             UNION ALL
+             SELECT input.source_item_id
+              WHERE input.source_item_id IS NOT NULL
+                AND (jsonb_typeof(input.analysis_json->'item_ids') IS DISTINCT FROM 'array' OR jsonb_array_length(input.analysis_json->'item_ids') = 0)
+           ) member
+          WHERE briefing.space_id = $1 AND briefing.scope_key = $2 AND briefing.status = 'ready' AND input.ref_kind = 'source_item'
+            AND briefing.cutoff_at <= $4::timestamptz AND ($3::timestamptz IS NULL OR briefing.cutoff_at > $3::timestamptz)
+          ORDER BY member.item_id, briefing.cutoff_at DESC, briefing.version DESC
+       )
+       SELECT item_id, count(*) OVER ()::int AS total FROM recorded
+        WHERE status = ANY($5::varchar[])
+        ORDER BY cutoff_at DESC, version DESC, item_id
+        LIMIT $6`,
+      [scope.spaceId, scope.key, after, cutoff, [...statuses], limit],
+    );
+    const total = result.rows[0]?.total ?? 0;
+    return { itemIds: result.rows.map((row) => row.item_id), overflow: Math.max(0, total - result.rows.length) };
+  }
+
   /** Every reading family a published version of this scope already briefed, with its latest briefed revision. */
   async knownFamilies(scope: BriefingScope, cutoff: string): Promise<Map<string, string | null>> {
     const known = await this.db.query<{ family_key: string; content_revision: string | null }>(

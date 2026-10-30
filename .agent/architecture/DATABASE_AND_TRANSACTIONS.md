@@ -123,7 +123,10 @@ It is then re-verified against the destination the Delivery is authorized for
 (`informationDigest/briefing/referenceDelivery.ts`). Project membership writers
 take `lockProjectAudienceForChange` (`FOR NO KEY UPDATE` on the Project row),
 which conflicts with the Delivery's Project share lock, so a newly inserted
-member cannot slip past a Delivery that rests on the whole audience. It writes the immutable
+member cannot slip past a Delivery that rests on the whole audience. A
+briefing generation Run's request Delivery takes the same closure locks for
+its whole version before it re-authorizes the version on its authorized
+destination. It writes the immutable
 Window Plan reconciliation, content-free Delivery metadata, and protocol-safe
 snapshot together. Optional
 raw replay is encrypted separately and joins that transaction only when the
