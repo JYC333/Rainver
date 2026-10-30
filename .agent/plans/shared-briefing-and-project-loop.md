@@ -2,12 +2,12 @@
 
 日期：2026-10-30。
 状态：
-- 已提交：P1（c7db1db5）、P2（97e08875）、P3（379a98c1）。各阶段均经双审与提交前完整套件。
-- 整体修复已提交：d3a308ca。O1（生成链路的出网目标）、O2（无正文 pending 顺延及失败／取消后重试）均通过 Codex 复核；Antigravity 整体 UX 审核通过。
-- 本次授权的代码实施、阶段双审、整体审核与合成验证已完成。修后 Node 24／真实隔离 PG 的完整 server：512 文件、5873 项通过，5 项条件跳过，性能门槛通过；Web 无改动，复用 P3 完整结果：239 文件、2156 项通过，性能门槛通过。
-- 未验：真实模型质量、真实 live Host 远端 smoke；当前没有 token／金额硬上限。
-  worker 进程重启与停止 ACK 已用真实子进程与合成 Host 验证（§9.7）。
-- 本计划保留为实施与验收记录，不退役；§7 的真实综合质量和完整执行验收未勾项继续保留，不以合成验证代替。
+- 已提交：P1（c7db1db5）、P2（97e08875）、P3（379a98c1），各阶段均经独立双审及提交前完整套件；第一轮整体修复为 d3a308ca。
+- 剩余验收代码已提交：1102eb0f（真实隔离 worker 恢复／停止 ACK、完整回复通道、持久 pending、预算展示、质量入口）；完整门槛发现的 Source 冷却时间漂移独立修复为 6ca515db。
+- 本批代码复核通过：Codex 长回复／规模／临时失权恢复与时钟窄复核通过，Antigravity 预算 UI／质量入口复审通过。修后独占 Node 24 完整门槛：server 515 文件、5898 项通过，5 项条件跳过；Web 239 文件、2156 项通过；两套性能门槛均通过（§9.10）。
+- 待授权与未验：真实模型综合质量／实际费用、真实 live Host 远端 smoke。worker 进程重启与停止 ACK 已由真实子进程、隔离 PG 和合成 Host 验证（§9.8）。
+- 当前没有 token／金额硬上限；界面已显示实际次数、时长与输入限制，并明确费用未知。次数不等于金额。
+- 本计划保留，尚未完成全部验收，不退役、不迁 backlog；§7 的综合、质量和完整执行验收未勾项继续保留。
 
 ## 1. 用户目标与交付顺序
 
@@ -172,9 +172,9 @@ P1a 与 P1b 作为同一首批实施任务推进：不交付一个只有表和�
     - 停止 ACK 丢失：保持 cancelling，重启后重发并确认→cancelled；
     - 停止 ACK 迟到→cancelled，之后的输出不发布；
     - Host 断线后在宽限期内重连：一次发布。
-  - 修复两处真实缺陷：CLI 回复读自 canonical `summary`；job 结束的 Run 由恢复流程最终化。
+  - 修复两处真实缺陷：CLI 完整回复经合同声明的结构化通道保留，summary 只作回退；job 结束的 Run 由恢复流程最终化。
   - 未测：真实 live Host／远端 daemon smoke。
-  - 有限预算可见：已实现。生成前在共享面板显示服务器实际执行的限制（overview DTO `limits`，取自 `BRIEFING_LIMITS` 与本 scope 近 24 小时实际 Run 数），并明确运行中没有 token／金额上限、费用取决于运行时。token／金额上限本身仍不存在，见 §9.7。
+  - 有限预算可见：已实现。生成前在共享面板显示服务器实际执行的限制（overview DTO `limits`，取自 `BRIEFING_LIMITS` 与本 scope 近 24 小时实际 Run 数），并明确运行中没有 token／金额上限、费用取决于运行时。token／金额上限本身仍不存在，见 §9.8。
 - [x] 状态：采集完成但综合失败、部分覆盖、无材料与无重要变化有不同反馈。（服务端状态/outcome/coverage + Web 单测）
 - [x] 页面：390／1280px 可读，引用可回看；无额外材料卡字段；切篇／切 scope 不串回包。（`project-briefing.browser.mjs` 真 Chromium，路由 mock 合成数据；`ProjectBriefingPanel.test.tsx` scope/卸载/登出守卫）
 - [x] 历史：原 Digest 快照不改；人工当前版本与封存日、backfill 区分。（每日经现有 Automation、重放复用、blocked 日、日期顺序 422）
@@ -341,14 +341,14 @@ guide／链接检查。每批提交前运行必要的完整套件；不反复执
 - 真实模型质量、worker 重启、远端 ACK 仍未验；当前没有 token／金额硬上限，不能以次数限制冒充金额限制。
   已进入 vendor 会话的上下文无法远程撤回。
 
-### 9.7 本次授权工作的最终验证记录
+### 9.7 第一轮整体修复验证记录（d3a308ca，历史证据）
 
 - Claude 实施，Codex／Antigravity 各阶段独立审核后提交；整体审发现的问题继续由 Claude 修复，Codex 最终窄复核 19/19 通过。无 UI 增量，保留 Antigravity 整体 UX PASS。
 - 修后主 Agent 独占运行 `REQUIRE_TEST_POSTGRES=true vitest run --maxWorkers=4`（server，Node 24），exit 0，76.63 秒；512 文件通过、1 文件条件跳过，5873 项通过、5 项条件跳过。日志 `/tmp/shared-briefing-overall-server-final.log`。
 - Web 完整结果复用 `/tmp/shared-briefing-P3-web-full.log`，239 文件／2156 项通过；本次整体修复未改 Web 或 protocol。两套完整性能门槛均通过。
 - 实际生产代码链验证止于合成材料的 accepted Delivery 准备，未实际发送供应商；没有操作运行实例、调用真实模型、push 或部署。真实模型综合／引用支持／价值、worker 重启、远端 ACK、200 条 carry 的真实规模均未验；已经进入 vendor 会话的内容不能远程撤回。
 
-### 9.7 剩余验收推进（2026-10-30，工作区）
+### 9.8 剩余验收推进（2026-10-30，1102eb0f）
 
 - 进程级恢复与停止 ACK：见 §7「执行」。工作进程运行构建后的 `dist`（与 `node dist/index.js` 同一产物），
   `buildServer` 注册全部模块；未启动调度器的其他任务。租约过期以回拨持久化心跳表示（等价于 600 s 回收阈值）。
@@ -376,7 +376,7 @@ guide／链接检查。每批提交前运行必要的完整套件；不反复执
   - 提供已授权的真实模型回复后，再走真实 parse／validate／settle 并记录合同结果。
   - 尚无真实模型运行（等待授权），质量项不勾选；结构占位回复不能作为质量证据。
 
-### 9.8 剩余验收修复 1（R1、R2、预算可见性、个人质量入口；工作区，待复审）
+### 9.9 剩余验收修复（R1、R2、F1、预算可见性、个人质量入口；1102eb0f，复核通过）
 
 - R1 长回复：`canonicalRunOutput` 按 Run 合同声明的 `structured_output_json.schema`，把回复中的
   `information_briefing.v1` 对象（整段 JSON 或最后一个 fenced 块，上限 262,144 字符）保存为
@@ -397,6 +397,17 @@ guide／链接检查。每批提交前运行必要的完整套件；不反复执
 - 预算可见性：见 §7「执行」。
 - 质量入口：personal 与 baseline／delta 共用 settle-and-record，写入真实 contract.json；
   每次重写请求时先删除本 case 旧的 contract.json；合成的合法／非法回复仅作接线验证，不能作为质量结论。
+
+### 9.10 本批完整门槛与仍待验收项
+
+- 复核：Codex F1 最终窄核 16/16、Source 时钟窄核 10/10；Antigravity 预算 UI／个人质量入口复审通过。前序长回复、1205 条跨发布及真实 worker 进程验证的证据范围保留。
+- server：Node 24，`REQUIRE_TEST_POSTGRES=true vitest run --maxWorkers=4`，真实隔离 PG，exit 0，90.55 秒；515 文件通过、1 文件条件跳过，5898 项通过、5 项条件跳过。日志 `/tmp/shared-briefing-remaining-server-final.log`。
+- Web：同一 Node 版本独占 `vitest run`，exit 0，30.03 秒；239 文件、2156 项通过。日志 `/tmp/shared-briefing-remaining-web-full.log`。两套完整性能门槛均通过，未并发运行。
+- 首次 server full 的 HTTP-date 冷却时间提前 1 ms 失败保留在 `/tmp/shared-briefing-remaining-server-full.log`，没有改写为通过。6ca515db 改为取锁后单次物化 DB 时钟、按时间戳钳制；日期精度、各组共享基准、1s–24h／默认 60s 及不缩短由真实 PG 验证。原日期精确断言未放宽。
+- protocol 315 项、含 tests 的 server 类型检查、Web 类型检查／构建及两条 Chromium 合成旅程均已通过，见本批实现／修复报告。schema 与迁移 0000–0007 未改动。
+- 综合／质量入口已能导出固定合成语料请求、引用对照及人工量表，导入 baseline／delta／personal 回复后记录实际合同结算；未提供真实模型回复时仍为 NOT EVALUATED，placeholder 和合成接线验证不得评分为真实质量通过。
+- 尚需明确授权的真实模型调用配置与费用上限、真实远端 Host 验收目标；此前禁止操作真实模型／运行实例的约束未因开发 Agent 重新登录而解除。没有操作实例 DB、读取私文或凭证、调用真实模型、push 或部署。任务及计划保留未完验收项。
+- 真实 token／金额硬上限当前不存在；已进入 vendor 会话的内容不可远程撤回。
 
 ## 10. 实现前置约束与需试验参数
 
