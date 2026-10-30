@@ -80,6 +80,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/PROJECT_WORK.md](architecture/PROJECT_WORK.md) | Current-state Project advancement: the four state axes, the five Loop stages, the append-only work event stream and its single writer, Run settlement, and who a held Task interrupts |
 | [architecture/ONTOLOGY.md](architecture/ONTOLOGY.md) | Current-state ontology layer: Entity registry and Interfaces, which domains join the ontology and why, `space_objects` root contract, link-type endpoints and per-edge governance, the single write path and its guards |
 | [architecture/CLAIM_FACT_ATOM_MODEL.md](architecture/CLAIM_FACT_ATOM_MODEL.md) | Current-state model for `space_objects`, global claims/facts/takes, claim evidence, claim relations, and FK-backed `object_relations` |
+| [architecture/READING_METHODS.md](architecture/READING_METHODS.md) | Versioned Reading investigation, private canonical two-Run comparisons, method workspace, approval and rollback |
 | [architecture/SOURCE_MATERIAL_PROCESSING.md](architecture/SOURCE_MATERIAL_PROCESSING.md) | Unified material submission, new and saved-link preparation, Source-owner retention review, shared document writer and Reader progress |
 | [architecture/SOURCE_GOALS.md](architecture/SOURCE_GOALS.md) | Goal collection backend: versions, preview/start, Agent-bound repair, quotas, cursor/coverage and acceptance limits |
 | [architecture/SOURCE_CONNECTOR_CONSENT.md](architecture/SOURCE_CONNECTOR_CONSENT.md) | Source/connector consent and policy: owner/subject/readers/agents, egress class, retention, trust, proposal-gated derived writes |
@@ -170,6 +171,7 @@ are source of truth for active nav and routes. For UI decisions, see the module 
 | [architecture/FRONTEND_INFORMATION_ARCHITECTURE.md](architecture/FRONTEND_INFORMATION_ARCHITECTURE.md) | Frontend role, dogfooding loop, home direction, module visibility, empty-state policy |
 | [architecture/MANUAL_ACCEPTANCE_TASK_PLAN_WORKFLOW.md](architecture/MANUAL_ACCEPTANCE_TASK_PLAN_WORKFLOW.md) | Clickable manual acceptance paths for Task planning, Agent Plans, and fixed Workflow Automation |
 | [modules/product-shell.md](modules/product-shell.md) | Shell, global rail, scene sidebar, floating capture |
+| [architecture/UI_STYLE_GUIDE.md](architecture/UI_STYLE_GUIDE.md) | Visual style: existing themes/tokens, shared controls, action hierarchy, responsive sizing and entry-level visual acceptance |
 | [modules/frontend-layout.md](modules/frontend-layout.md) | Rail, scene sidebar, main outlet, mobile tab bar |
 | [modules/client-server-protocol.md](modules/client-server-protocol.md) | REST, host WebSocket, turn SSE. There is no offline queue |
 | [modules/activity-inbox.md](modules/activity-inbox.md) | Activity inbox UI and quick capture |
@@ -278,7 +280,7 @@ Planned work has one durable routing entry per purpose:
 |---|---|
 | [plans/backlog.md](plans/backlog.md) | Work pulled on demand |
 | [plans/shared-briefing-and-project-loop.md](plans/shared-briefing-and-project-loop.md) | Shared briefing: stages and remaining execution/carry/limits fixes committed, independently reviewed and full-suite tested; real-model quality and live Host acceptance await authorization; token/currency hard caps absent |
-| [plans/reading-method-evolution-mvp.md](plans/reading-method-evolution-mvp.md) | Reading method MVP: contextual improvement entry, versioned investigation, controlled comparison, approval and rollback; Codex implementation with Claude and Antigravity review |
+| [plans/reading-method-evolution-mvp.md](plans/reading-method-evolution-mvp.md) | Reading method MVP: implementation, independent reviews and full suites passed locally; real-model quality and live acceptance remain unverified; changes not committed or deployed |
 | [tasks/deferred-register.md](tasks/deferred-register.md) | Deferred work, triggers, and outstanding acceptance gates |
 | [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | Deferred unattended execution specification |
 | [plans/unimplemented-from-guides.md](plans/unimplemented-from-guides.md) | Designs removed from current-state guides; inventory only, not a pull queue |
@@ -317,7 +319,7 @@ Read cross-cutting policies when triggered even if the selected bundle omits the
 |---|---|
 | Security / access change | `security-access` bundle: `SECURITY_AND_ACCESS_BOUNDARIES.md`, `POLICY_ENFORCEMENT_INVENTORY.md`, `TESTING_STRATEGY.md`, `BOUNDARIES.md` |
 | Backend domain change | `backend-domain` bundle: relevant domain doc + `DATABASE_AND_TRANSACTIONS.md` + `BOUNDARIES.md` |
-| Frontend / home / UI change | `frontend-product` bundle: `product-shell.md`, `frontend-layout.md`, `client-server-protocol.md`, module doc |
+| Frontend / home / UI change | `frontend-product` bundle: `UI_STYLE_GUIDE.md`, `product-shell.md`, `frontend-layout.md`, `client-server-protocol.md`, module doc |
 | Any new subsystem, shared mechanism, or new dependency | `REUSE_AND_DEPENDENCY_POLICY.md` + the owning module doc |
 | Testing change | `TESTING_STRATEGY.md` + the specific test file's domain doc |
 | Host daemon / pairing / host transport | `host-daemon`; add `imported-cli-history` for imports or `project-folder-artifact` for folder access |

@@ -81,3 +81,5 @@ export const runtimeContextModule: ServerModule = {
   name: "runtime_context",
   registerRoutes,
 };
+
+export {lockReadingRunAuthority} from './gateway.js';

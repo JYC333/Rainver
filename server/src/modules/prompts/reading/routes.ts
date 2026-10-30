@@ -1,0 +1,23 @@
+import type {FastifyInstance} from 'fastify';
+import type {ModuleContext} from '../../../gateway/routeRegistry.js';
+import {dbPool,resolveIdentity,sendRouteError,jsonBody,query,params,HttpError} from '../../routeUtils/common.js';
+import {readingWorkspace,initializeReading,saveReadingDraft,saveReadingSample,readReadingSample,readingEntryScope} from './workspace.js';
+import {startReadingTrial,readReadingTrial,judgeReadingTrial,cancelReadingTrial} from './trials.js';
+import {proposeReadingMethod,rollbackReadingMethod} from './commands.js';
+export function registerReadingMethodRoutes(app:FastifyInstance,context:ModuleContext){
+ const base='/api/v1/prompts/reading-method';const db=()=>dbPool(context.config);
+ const register=(method:'get'|'post',path:string,action:(identity:{spaceId:string;userId:string},r:Parameters<typeof query>[0])=>Promise<unknown>)=>app[method](base+path,async(r,reply)=>{const identity=await resolveIdentity(context.config,r,reply);if(!identity)return reply;try{return reply.send(await action(identity,r));}catch(e){return sendRouteError(reply,e);}});
+ const id=(v:unknown)=>{if(typeof v!=='string'||!v)throw new HttpError(422,'item_id is required');return v;};
+ register('get','',async(i,r)=>readingWorkspace(db(),i,id(query(r).item_id),typeof query(r).project_id==='string'?String(query(r).project_id):null,false,context.config,typeof query(r).artifact_id==='string'?String(query(r).artifact_id):undefined));
+ register('get','/entry',(i,r)=>readingEntryScope(db(),i,typeof query(r).project_id==='string'?String(query(r).project_id):null));
+ register('post','/initialize',i=>initializeReading(db(),context.config,i));
+ register('post','/drafts',(i,r)=>saveReadingDraft(db(),i,jsonBody(r)));
+ register('post','/samples',(i,r)=>{const b=jsonBody(r);return saveReadingSample(db(),i,id(b.item_id),typeof b.project_id==='string'?b.project_id:null,b.sample,context.config);});
+ register('get','/samples/:id',(i,r)=>readReadingSample(db(),i,id(params(r).id)));
+ register('post','/trials',(i,r)=>startReadingTrial(db(),context.config,i,jsonBody(r)));
+ register('get','/trials/:id',(i,r)=>readReadingTrial(db(),i,id(params(r).id)));
+ register('post','/trials/:id/judgment',(i,r)=>judgeReadingTrial(db(),i,id(params(r).id),jsonBody(r)));
+ register('post','/trials/:id/cancel',(i,r)=>cancelReadingTrial(db(),context.config,i,id(params(r).id)));
+ register('post','/promote',async(i,r)=>{const b=jsonBody(r);return proposeReadingMethod(db(),i,id(b.version_id),id(b.evaluation_id),typeof b.project_id==='string'?b.project_id:null);});
+ register('post','/rollback',async(i,r)=>{const b=jsonBody(r);return rollbackReadingMethod(db(),i,id(b.item_id),typeof b.project_id==='string'?b.project_id:null,id(b.expected_version_id));});
+}

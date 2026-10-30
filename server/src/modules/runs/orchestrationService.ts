@@ -883,6 +883,7 @@ export class RunOrchestrationService {
       }
       await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,run);
       await (await import('../informationDigest/briefing/settlement.js')).assertBriefingDispatch(this.config, run);
+      await (await import('../prompts/reading/dispatch.js')).assertReadingDispatch(this.config,run);
       const running = await this.repository.markRunRunning({
         run_id: run.id,
         space_id: run.space_id,
@@ -1041,6 +1042,7 @@ export class RunOrchestrationService {
 
       await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,effectiveRun);
       await (await import('../informationDigest/briefing/settlement.js')).assertBriefingDispatch(this.config, effectiveRun);
+      await (await import('../prompts/reading/dispatch.js')).assertReadingDispatch(this.config,effectiveRun);
       preparedRuntime = await this.prepareRuntimeContext(
         effectiveRun,
         effectiveInput,
@@ -1077,6 +1079,7 @@ export class RunOrchestrationService {
       try {
         await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,effectiveRun);
         await (await import('../informationDigest/briefing/settlement.js')).assertBriefingDispatch(this.config, effectiveRun);
+      await (await import('../prompts/reading/dispatch.js')).assertReadingDispatch(this.config,effectiveRun);
         adapterResult = await this.invokeAdapter(
           effectiveRun,
           {
@@ -2926,7 +2929,7 @@ export class RunOrchestrationService {
       return;
     }
     try {
-      await mergeRunQuota(getDbPool(this.config.databaseUrl), {
+      await mergeRunQuota(getDbPool(this.config.databaseUrl!), {
         hostId,
         runtimeKey: adapterResult.runtime_key,
         installation,

@@ -1,3 +1,5 @@
+// Permission-gated maintenance links are covered by their own journey tests.
+vi.mock('../../prompts/ReadingMethodEntry',()=>({ReadingMethodEntry:()=>null}))
 import { render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'

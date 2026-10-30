@@ -65,6 +65,7 @@ frontend-product:
     - .agent/architecture/FRONTEND_INFORMATION_ARCHITECTURE.md
     - .agent/modules/product-shell.md
     - .agent/modules/frontend-layout.md
+    - .agent/architecture/UI_STYLE_GUIDE.md
     - .agent/modules/client-server-protocol.md
     - .agent/modules/activity-inbox.md
     - .agent/modules/library.md
@@ -427,6 +428,7 @@ mobile:
   docs:
     - .agent/modules/mobile-client.md
     - .agent/modules/frontend-layout.md
+    - .agent/architecture/UI_STYLE_GUIDE.md
     - .agent/modules/spaced-repetition.md
     - .agent/modules/activity-inbox.md
     - .agent/BOUNDARIES.md
@@ -504,3 +506,26 @@ host-daemon:
     - packages/outbound-guard/src   # the block list its egress proxy judges by
     - server/src/modules/hosts
     - packages/protocol/src/hostWire.ts
+
+reading-method:
+  docs:
+    - .agent/architecture/READING_METHODS.md
+    - .agent/architecture/SOURCE_MATERIAL_PROCESSING.md
+    - .agent/architecture/SOURCE_GOALS.md
+    - .agent/architecture/EVOLUTION_SIGNAL_SYSTEM.md
+    - .agent/modules/library.md
+    - .agent/modules/runtime-context.md
+    - .agent/BOUNDARIES.md
+    - .agent/architecture/REUSE_AND_DEPENDENCY_POLICY.md
+    - .agent/architecture/TESTING_STRATEGY.md
+    - .agent/COMMANDS.md
+  code_roots:
+    - server/src/modules/prompts
+    - server/src/modules/evolution
+    - server/src/modules/sources/materialProcessing
+    - server/src/modules/sources/readingMethods
+    - server/src/modules/sources/goals
+    - server/src/modules/runtimeContext
+    - apps/web/src/modules/prompts
+    - apps/web/src/modules/library
+    - packages/protocol/src/readingMethod.ts

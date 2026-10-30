@@ -13,7 +13,7 @@
  * Runs.
  */
 
-type ManagedExecutionKind = "source_goal" | "source_post_processing" | "source_annotation" | "project_research" | "information_briefing";
+type ManagedExecutionKind = "reading_method_trial" | "source_goal" | "source_post_processing" | "source_annotation" | "project_research" | "information_briefing";
 export type CredentialSetupKind =
   | "source_post_processing"
   | "daily_report"
@@ -25,7 +25,7 @@ export type CredentialSetupKind =
 type ManagedExecutionFailurePolicy = "fail_fast";
 
 /** The one trigger origin each kind's authorization covers. */
-const PRE_AUTHORIZED_ORIGIN: Readonly<Record<ManagedExecutionKind | CredentialSetupKind, "job" | "system">> = {
+const PRE_AUTHORIZED_ORIGIN: Readonly<Partial<Record<ManagedExecutionKind | CredentialSetupKind, "job" | "system">>> = {
   source_goal: "system",
   source_post_processing: "job",
   source_annotation: "job",
@@ -106,7 +106,8 @@ export function isManagedFailFastRun(input: ManagedRunPolicyInput): boolean {
   const policy = managedExecutionPolicyFromContract(input.contract_snapshot_json);
   if (!policy) return false;
   return (
-    (input.trigger_origin === "job" && policy.managed_execution === "source_post_processing")
+    (input.trigger_origin === "manual" && policy.managed_execution === "reading_method_trial")
+    || (input.trigger_origin === "job" && policy.managed_execution === "source_post_processing")
     // A briefing owns its failure: requested now or scheduled, its version settles failed, never a review hold.
     || ((input.trigger_origin === "job" || input.trigger_origin === "manual") && policy.managed_execution === "information_briefing")
     || (input.trigger_origin === "system" && (policy.managed_execution === "project_research" || policy.managed_execution === "source_goal"))
@@ -125,7 +126,7 @@ export function credentialPolicyMetadata(
 }
 
 function isManagedExecutionKind(value: unknown): value is ManagedExecutionKind {
-  return value === "source_goal" || value === "source_post_processing" || value === "source_annotation" || value === "project_research"
+  return value === "reading_method_trial" || value === "source_goal" || value === "source_post_processing" || value === "source_annotation" || value === "project_research"
     || value === "information_briefing";
 }
 

@@ -56,3 +56,9 @@ it('bounds goal repair credential authorization to its server-managed system ori
  expect(allowsManagedCredentialUse('system',createManagedExecutionPolicy('source_goal',false))).toBe(false);
  expect(isManagedFailFastRun({trigger_origin:'system',contract_snapshot_json:{policy_context_json:context}})).toBe(true);
 });
+
+it('reading comparisons fail fast but never create standing credential authority',()=>{
+ const policy=createManagedExecutionPolicy('reading_method_trial',false);
+ expect(isManagedFailFastRun({trigger_origin:'manual',contract_snapshot_json:{policy_context_json:policy}})).toBe(true);
+ for(const origin of ['manual','job','system'])expect(allowsManagedCredentialUse(origin,{...policy,credential_pre_authorized:true})).toBe(false);
+});

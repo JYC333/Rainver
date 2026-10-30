@@ -1053,3 +1053,17 @@ per-Source latest-finished-check meaning and does not claim recent publication.
 Reuse: existing membership/audit provenance, Reading ACL/collection gate,
 existing Badge and metadata row; no schema migration, client timestamp or
 second freshness store.
+
+
+### Reading-method integration and layered readers
+
+Agent-native collection uses the versioned investigation strategy without changing
+its requester/Source consent or per-reader full/summary projection contract.
+A Project's private brief/constraints/instructions may influence saved material
+only when the connection and canonical output item belong to that Project.
+Otherwise collection continues as ordinary evidence-led reading using the
+Space/system method, with an explicit missing-Project-context note and a null
+Project in both Run and closed WorkContext. It does not request wider Source
+sharing or secretly inject Project instructions. Actual Source revocation still
+fails existing preflight; ordinary layered readership is not authority revocation.
+Delivery and final writer check frozen context, actual egress and output scope.

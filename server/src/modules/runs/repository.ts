@@ -1127,6 +1127,7 @@ export class PgRunRepository {
     );
     if (decision === "deny") return null;
     const run = await this.getRun(spaceId, runId);
+    if(run && isReadingMethodRun(run) && !await (await import('../prompts/reading/dispatch.js')).readingRunReadable(this.db,run,userId))return null;
     return run ? { ...run, effective_access_level: decision } : null;
   }
 
@@ -1184,7 +1185,9 @@ export class PgRunRepository {
         LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
       params,
     );
-    return this.withRunsUsage(result.rows);
+    const readable:VisibleRunRecord[]=[];
+    for(const run of result.rows)if(!isReadingMethodRun(run)||await (await import('../prompts/reading/dispatch.js')).readingRunReadable(this.db,run,filters.user_id))readable.push(run);
+    return this.withRunsUsage(readable);
   }
 
   /** For read models that need their own query against this repository's connection. */
@@ -3182,3 +3185,6 @@ function scenarioToolAllowanceFromSnapshot(value: unknown): string[] | undefined
   );
   return normalized.length === allowance.length ? [...new Set(normalized)] : [];
 }
+
+/** Only the new reading-owned contracts need the extra private-input read gate. */
+function isReadingMethodRun(run:{contract_snapshot_json?:unknown}):boolean{const input=(run.contract_snapshot_json as {workflow_input_json?:{reading_method?:unknown;reading_method_trial?:unknown}}|null)?.workflow_input_json;return !!(input?.reading_method||input?.reading_method_trial);}

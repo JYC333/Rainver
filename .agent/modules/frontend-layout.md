@@ -5,7 +5,9 @@
 generic three-panel `PanelLayout`.
 
 ## Purpose
-Describe the layout the web app actually uses.
+Describe the layout the web app actually uses. Visual styling and review follow
+[UI Style Guide](../architecture/UI_STYLE_GUIDE.md), including shared controls,
+card action hierarchy, theme tokens and entry-level browser acceptance.
 
 ## Current pattern
 

@@ -1,7 +1,7 @@
 # Reading 阅读方法改进 MVP
 
 日期：2026-10-30。
-状态：用户同意先做 MVP，并要求先写计划、提交现有改动，再由 Codex 实施，Claude 与 Antigravity 独立审查。本文是实施约束，不表示功能已交付。
+状态：A+B 代码实施、Claude 技术与 Antigravity 产品独立复审及 primary 修后完整套件均通过；开发基线 52f0a456；用户现已授权本批本地提交，未部署。真实模型质量、实际费用及真实运行验收仍未完成；本文保留未验项，尚未退役。
 
 ## 1. 目标与首版范围
 
@@ -85,20 +85,20 @@ Reading 的入口是上下文入口；完整编辑、试跑、对比、申请启
 | B：端到端工作台 | Reading 上下文入口、简单页眉、编辑／试跑／对比／提案启用／历史回滚 | 项目冷启动至申请启用、决定后读回、新 Run 使用及回滚完整可达；中英 390／1280，权限与状态正确 |
 | C：整体复核 | Codex 实施，Claude 技术与 Antigravity 产品独立审查，按具体反例窄修 | 所有阻塞闭环；稳定后 primary 独占 server full maxWorkers=4 与 Web full，协议／types／build／Chromium 按改动完成 |
 
-阶段是交付检查点，不要求用户重复批准已授权的可逆 IDE 实施。当前用户只明确要求先提交已有改动；MVP 后续提交另按明确授权，不擅 push／deploy。
+阶段是交付检查点，不要求用户重复批准已授权的可逆 IDE 实施。用户已在代码与 UI 验证完成后明确授权本批本地提交；不擅 push／deploy。
 
 ## 7. 验收清单
 
-- [ ] Reading 的入口只携带已授权上下文，未知历史归属不假报版本。
-- [ ] 页眉显示实际范围、生效版和单个下一步，普通路径无需内部 ID／JSON。
-- [ ] 保存草稿不改正式行为；候选修改令旧比较失效；生产不使用未批准版本。
-- [ ] 同样例新旧试跑确有两个被记录的 Run／版本，不能手填 passed 假冒执行。
-- [ ] 未读资料、反例、失败和未知费用准确展示；结构合格与质量更好分别判断。
-- [ ] 当前范围的提案决定／实际生效／新 Run／回滚真实接通，重复或并发安全。
-- [ ] Source／项目／材料失权在读取、试跑外发、结果保存及结果读取重验；个人私文不扩大受众。
-- [ ] 取消、排队、重启／迟到回包按既有生命周期收敛；无额外背景循环。
-- [ ] 原日期切换修复、Reader／注解／既有 prompt consumers 不回退。
-- [ ] 独立双审、适当完整套件、类型／构建、390／1280 Chromium 与 owning guides 收口。
+- [x] Reading 的入口只携带已授权上下文，未知历史归属不假报版本。
+- [x] 页眉显示实际范围、生效版和单个下一步，普通路径无需内部 ID／JSON。
+- [x] 保存草稿不改正式行为；候选修改令旧比较失效；生产不使用未批准版本。
+- [x] 同样例新旧试跑确有两个被记录的 Run／版本，不能手填 passed 假冒执行。
+- [x] 未读资料、反例、失败和未知费用准确展示；结构合格与质量更好分别判断。
+- [x] 当前范围的提案决定／实际生效／新 Run／回滚真实接通，重复或并发安全。
+- [x] Source／项目／材料失权在读取、试跑外发、结果保存及结果读取重验；个人私文不扩大受众。
+- [x] 取消、排队、重启／迟到回包按既有生命周期收敛；无额外背景循环。
+- [x] 原日期切换修复、Reader／注解／既有 prompt consumers 不回退。
+- [x] 独立双审、适当完整套件、类型／构建、390／1280 Chromium 与 owning guides 收口。（本地合成验证范围，最终证据见 §11）
 - [ ] 真实模型质量／真实运行验收另记授权、配置、成本和结论；合成测试不能冒充。
 
 ## 8. 验证、安全与计划收尾
@@ -112,3 +112,48 @@ Reading 的入口是上下文入口；完整编辑、试跑、对比、申请启
 更新实际 owning guides 与 INDEX，状态按证据勾选。计划仅在承诺范围及验收完成，或用户明确调整验收范围后退役，不将未验项搬 backlog 假完成。
 
 相关现有设计：[Library](../modules/library.md)、[Information Digest](../modules/information-digest.md)、[Source material processing](../architecture/SOURCE_MATERIAL_PROCESSING.md)、[Source goals](../architecture/SOURCE_GOALS.md)、[Evolution signals](../architecture/EVOLUTION_SIGNAL_SYSTEM.md)、[BOUNDARIES](../BOUNDARIES.md)。
+
+## 9. MVP 实施锁定设计（工作区；Codex）
+
+- 方法资产：`reading.project_investigation`（catalog/prompts/reading_project_investigation.yaml），`prompt_type: text`。正式入口 `sources/goals/nativeSearch.queueNativeSearch` 与 `sources/materialProcessing/items.start` 均在同一准入事务调用 prompts 的阅读方法适配，production resolver 保持 approved-only。Run contract 的 `workflow_input_json.reading_method` 保存真实 provenance、模板 hash、渲染 hash、项目上下文 hash；正文直接进入冻结 Run 请求，恢复不重新选择版本。不存在代码正文 fallback；未显式 sync/deploy 时报可操作初始化错误。
+- 不新建表：草稿/候选仍在 evolvable_asset_versions；样例仍为 evaluation_cases；一对试跑仍为 evolvable_asset_evaluation_runs（evaluator `reading_method_pair.v1`），suite ref 固定 case/材料/上下文/执行配置及两个 Run id，metrics 只存人工结论，不手填结构 passed。结果从其真实 Run canonical output 读取。采用受控离线证据样例（主页+主文档/示例），无隐式实时 fetch，严格同输入；页内明确离线比较与真实取材的区别。
+- 试跑是 canonical Run+agent_run Job、closed WorkContext、无 Source 写入 action。既有 Run finalization reconciler 投影评估终态（CAS）；同版本/样例/输入/执行 hash 的重复启动幂等。取消走 canonical cancel。候选试跑的维护/Source/材料/项目完整受众与实际目的地 egress 在准备、派发/Delivery、保存和读取重验；正式采集沿原requester及canonical产物作用域门禁；失权隐藏整份对比。只准既有 asset 维护者使用候选，不开放普通用户生产解析。
+- 前端 `/prompts?reading_method=1&item_id=…&project_id=…` 为简单工作台；旧高级 PromptLibraryPage 保留 `/prompts?advanced=1`。Reader/Reading 入口仅在服务器返回 can_manage 后提供。版本修改创建新 immutable child 草稿，旧比较绑定旧hash；启用仍创建既有 promotion proposal，由人决定，刷新读回 production resolution；回滚走既有 prompt repository。
+- Reuse Check：现有 prompts/evolution/Run/Job/Source writer/usage/WorkContext 已覆盖机制；无新增依赖、模型SDK、调度/评测平台或 schema。外部 commodity 框架不接管领域权限和提案；采用现有能力的窄适配。当前完整调查正文沿 Source material writer 进入Reader，中立annotation/closedbriefing不改，DailyBriefing短片段限制继续明示。
+
+
+## 10. A+B 实施与交审状态（2026-10-30）
+
+上述已勾选项限本地真实 PG、合成 worker/ACP Host、组件及 Chromium 的实际验证范围；不表示真实模型的调查质量已经合格，也不是独立审查或全量套件的替代。
+
+- A 已实施：两条正式 Source 调查入口消费同一批准方法；准入冻结方法、hash、provenance 与授权项目上下文。Source material writer 与 native goal 手动恢复／物化均重验，最终 Reader artifact 保留实际 Run 的方法归属；无归属旧结果继续未知。中立 annotation、closed briefing 及其片段限制未扩大。
+- B 已实施：现有 `/prompts` 的上下文工作台提供可读编辑、显式样例／Agent 配置、两个 canonical Runs 的对比、人评、申请启用、决定后 resolver 读回与回滚。原高级界面、asset/tab 深链可达。Reader 返回保留原日期／来源／列表上下文，避免改变 Serendipity 的兴趣语义。
+- 试跑沿现有表，不加 schema／迁移／依赖。每人每 Space 一组进行中、滚动一日三组、每 Run 一 attempt／180 秒、最终请求 48k 字符；既有更紧预算仍有效，无 token／金额硬 cap。配置在准入冻结，改变配置后派发拒绝；基线部署变化使旧比较仅作历史，不能据此批准新内容。
+- 样例只接受 server-owned 虚构主页＋文档 fixture，或当前真实保留 Reader 正文的精确片段／支持 URL；须有完整 Source 存储同意和完整受众读权。规范样例 proof 不能由旧通用评估 API 伪造。试跑的 case／artifact／Project audience／Source 规范锁贯穿 Delivery commit；派发、结果读取、人评与提案应用均重验，不另开复制私文或自动检索通道。
+- 配对 Run 仍私有，WorkContext 绑定项目策略／指令版本、关闭自动检索与 pins，无 Source 写工具；这不是 paired-native OS 隔离承诺。退出维护／Source 权限后仍可停止自己准确归属的试跑，不返回被撤销文本。并发试跑／启用复用 canonical asset lock；Run finalization reconciler 投影 pair，旧回包不覆盖新状态。
+- 已通过合成 worker 两 Run 的实际 Delivery/settlement、隔离库提案应用／生效读回／新 Run／回滚、Source 双向并发锁、撤权零 Delivery、worker SIGKILL／租约回收／迟到完成／显式重试，以及中英 390／1280 完整页面旅程。详细命令、退出状态、日志和截图写在 `/tmp/reading-method-mvp-Codex-implementation.md`。
+- C 已完成：Claude 技术与 Antigravity 产品独立复审、具体反例窄修及 primary 独占 server full maxWorkers=4 → Web full（含性能），最终证据见 §11。用户已授权本地提交，未 push／deploy。
+- 真实产品模型／远程 Host／真实费用／语义质量验收未执行，原 Task8325 的真实模型/live Host 验收也未完成；需原有独立授权配置，不移至 backlog 假作退役。
+
+
+## 10.1 双审 fixes1 首次交接记录（后续复审见 §11）
+
+首轮双审指出 F1 历史新鲜度与权限混淆、F2 每卡重探测、F3 采集全受众门禁回退；首轮绿灯未覆盖这些反例，不作通过依据。现将历史读取与严格执行校验拆开，正常输入修订保留 stale 历史；scope-only 入口按挂载作用域共享；Source 采集恢复原分层读者语义，项目上下文只进入相同 canonical Project 的产物，否则 Run/WorkContext 不注入项目而进行普通阅读。该次交接时真实模型质量、完整门槛和独立复审尚未完成；后两项已在 §11 闭环。报告 `/tmp/reading-method-mvp-fixes1-Codex.md` 记录本次正确预期正反验证，不代表计划退役。
+
+## 11. 最终代码复核与完整门槛（2026-10-30）
+
+- Claude 技术增量复审与 Antigravity 产品复审均 PASS：`/tmp/reading-method-mvp-rereview-Claude.md`、`/tmp/reading-method-mvp-rereview-Antigravity.md`。首轮 F1–F3 失败证据及修复记录保留，不将首轮审查改写为通过。
+- primary Node 24 独占 server 完整套件：`REQUIRE_TEST_POSTGRES=true vitest run --maxWorkers=4`，exit 0，105.62 秒；517 文件通过、1 文件条件跳过，5917 项通过、5 项条件跳过；性能门槛通过。日志 `/tmp/reading-method-mvp-server-full.log`。
+- server 结束后独占 Web 完整套件：`vitest run`，exit 0，28.01 秒；242 文件、2176 项全部通过；性能门槛通过。日志 `/tmp/reading-method-mvp-web-full.log`。两套未并发。
+- 协议 318 项、server 含 tests 类型检查、Web 类型检查／构建、中英 390／1280 Chromium 四条合成旅程及指南检查已通过，复用修后报告 `/tmp/reading-method-mvp-fixes1-Codex.md` 的实际命令／日志；没有将重叠验证累计成独立覆盖数。
+- 全部验证使用隔离 PG／合成运行时与浏览器接口；IDE 没有调用真实产品模型、操作真实实例／用户提案或读取私文凭证。模型语义质量、真实费用与 live Host 未验，无 token／金额硬上限，不承诺已进入 vendor 会话的内容可撤回。
+- 普通采集在 Source 与 Goal 不同 Project 时使用无 Project 注入的 Run／WorkContext，保留 Goal 访问依赖及原分层读者语义；此类 Run 不在按 Project 字段过滤的通用运行列表中，追溯仍由 Goal／材料归属提供。现有试跑工作台仍保留完整受众的样例门禁。
+- 本批没有 schema、迁移、依赖或 lockfile 变化；既有 0000–0007 未改。用户已授权提交本次 MVP 与后续 UI／规范改动；不 push／deploy。计划不退役，未验项未迁 backlog。
+
+
+## 12. UI 规范与提交前收口（2026-10-30）
+
+- 补齐 UI_STYLE_GUIDE，接入 AGENTS／CLAUDE、INDEX 与相关前端 context bundles。入口使用共享小号次要按钮，阅读操作优先；工作台使用共享控件、主题边框与中英字典。摘要卡不显示不可用入口，可访问名称包含可见标签。
+- Claude 技术与 Antigravity 视觉双审 PASS，真实父卡入口和目的地均经截图检查。明暗主题、中英、390／1280 共 16 条 Chromium 合成旅程通过；最后两项窄修后类型／构建及两条入口抽样通过。
+- 最终 Web 完整套件 242 文件、2178 项通过，性能预算通过；指南 8 项通过，diff 检查通过。后端未因 UI 调整而改变，复用 §11 修后全量验证。
+- 计划剩余项仍为 §7 最后一项：真实模型对实际资料的调查质量、实际运行环境及费用验收。当前合成试跑对照不能证明真实联网追查能力。完整调查证据接入 Daily Briefing 综合不在本首版承诺内，不能将材料阅读改进宣传为简报全面升级。

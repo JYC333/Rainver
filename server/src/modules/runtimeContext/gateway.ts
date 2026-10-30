@@ -443,6 +443,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     const accepted = input.envelope.items.filter((item) => decisions.get(item.id) !== "blocked");
     await this.authorizeBriefingReferences(db, input, accepted, run, egress.destination);
     await this.authorizeBriefingGeneration(db, input, run, egress.destination);
+    await this.authorizeReadingMethod(db,input,run);
     for (const item of accepted) {
       if (item.acquisition === "direct" && item.source_ref.type === "message") {
         await this.authorizeMessageSource(db, input, item, run);
@@ -603,6 +604,31 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       contract_snapshot_json: run.contract_snapshot_json,
       root_run_id: run.root_run_id ?? null,
     }, { destination });
+  }
+
+  private async authorizeReadingMethod(db:Queryable,input:InvocationAttemptInput,request:{contract_snapshot_json?:unknown}):Promise<void>{
+    const workflow=(request.contract_snapshot_json as {workflow_input_json?:{reading_method?:unknown;reading_method_trial?:unknown}}|null)?.workflow_input_json;
+    if(!workflow?.reading_method&&!workflow?.reading_method_trial)return;
+    const {PgRunRepository}=await import('../runs/repository.js');
+    const full=await new PgRunRepository(db).getRun(input.spaceId,input.invocationId);if(!full)throw new HttpError(403,'Reading Run missing');
+    await this.lockReadingRunAuthority(db,full);
+    await (await import('../prompts/reading/dispatch.js')).assertReadingRunDispatch(db,full);
+  }
+
+  /** Same canonical Source/Project ACL locks at Delivery and Source commit boundaries. */
+  async lockReadingRunAuthority(db:Queryable,full:import('../runs/repository.js').RunRecord):Promise<void>{
+    const reading=await import('../prompts/reading/dispatch.js');const deps=await reading.readingRunDependencies(db,full);if(!deps)return;
+    const spaceId=full.space_id;
+    const {lockProjectAudience,projectReaderIds}=await import('../projects/access.js');
+    if(deps.projectId)await lockProjectAudience(db,spaceId,deps.projectId);
+    const readers=deps.projectId?await projectReaderIds(db,spaceId,deps.projectId):[full.instructed_by_user_id!];
+    if(deps.caseId)await db.query(`SELECT id FROM evaluation_cases WHERE id=$1 AND space_id=$2 FOR SHARE`,[deps.caseId,spaceId]);
+    for(const reader of readers.sort()){
+      if(deps.itemId){await this.lockSourceItemDependencies(db,spaceId,deps.itemId,reader);await this.lockContentAclDependencies(db,spaceId,'source_item',deps.itemId,reader);}
+      if(deps.connectionId){await this.lockSourceConnectionDependencies(db,spaceId,deps.connectionId,reader);await this.lockContentAclDependencies(db,spaceId,'source_connection',deps.connectionId,reader);}
+      if(deps.artifactId)await this.lockContentAclDependencies(db,spaceId,'artifact',deps.artifactId,reader);
+    }
+
   }
 
   private async authorizePersonalMemoryGrant(
@@ -1358,3 +1384,6 @@ export function createProductionRuntimeContextInvocationGateway(
 }
 
 import { selectedSkillInstruction } from "../skills/selectedSkills.js";
+
+/** Caller must hold a transaction through the Source writer/Delivery commit. */
+export async function lockReadingRunAuthority(db:Queryable,run:import('../runs/repository.js').RunRecord){await new PgInvocationDeliveryAuthorizer().lockReadingRunAuthority(db,run);}

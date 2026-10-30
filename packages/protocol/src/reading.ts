@@ -58,6 +58,7 @@ export const ReadingContributionSchema = z.object({
 });
 export const ReadingItemSchema = z.object({
   key: z.string(),
+  material_project_id: IdSchema.nullable().optional(),
   source_item_id: IdSchema,
   source_item_ids: z.array(IdSchema),
   topic_change: z.object({id:IdSchema,goal_id:IdSchema,kind:z.enum(['release','update']),evidence_url:z.string().url()}).strict().optional(),

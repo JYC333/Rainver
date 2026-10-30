@@ -9,6 +9,7 @@ import { personalMaterialClause, projectMaterialRowsSql, projectReadingAudienceC
 
 const itemAccess = contentResourceDefinition('source_item')!;
 export interface ReadingRow {
+  material_project_id?:string|null;
   topic_change?:ReadingItem['topic_change'];
   result_provenance?:'agent_provided_unverified'|null;
   key: string; source_item_id: string; source_item_ids: string[]; title: string; source_uri: string | null;
@@ -112,6 +113,7 @@ export class ReadingRepository {
         SELECT reading_key AS key,min(available_at) AS available_at,
           (array_agg(id ORDER BY effective_level='full' DESC,kind='personal_digest' DESC NULLS LAST,available_at DESC,id))[1] AS source_item_id,
           array_agg(DISTINCT id ORDER BY id) AS source_item_ids,
+          (array_agg(CASE WHEN effective_level='full' THEN project_id END ORDER BY effective_level='full' DESC,kind='personal_digest' DESC NULLS LAST,available_at DESC,id))[1] AS material_project_id,
           CASE WHEN bool_or(metadata_json->>'result_provenance'='agent_provided_unverified') THEN 'agent_provided_unverified' ELSE NULL END AS result_provenance,
           (array_agg(title ORDER BY effective_level='full' DESC,kind='personal_digest' DESC NULLS LAST,available_at DESC,id))[1] AS title,
           (array_agg(CASE WHEN effective_level='full' THEN COALESCE(source_uri,CASE WHEN metadata_json ? 'page_change' THEN metadata_json->>'page_uri' END) END ORDER BY effective_level='full' DESC,kind='personal_digest' DESC NULLS LAST,available_at DESC,id))[1] AS source_uri,
@@ -182,7 +184,7 @@ export class ReadingRepository {
       ), change_deliveries AS MATERIALIZED (
         SELECT c.id,c.delivered_at AS available_at,'topic-change:'||c.id AS key,
          COALESCE(cs.read_status,'unread') AS read_status,COALESCE(cs.dismissed,0)=1 AS dismissed,
-         jsonb_build_object('key','topic-change:'||c.id,'source_item_id',i.id,'source_item_ids',jsonb_build_array(i.id),
+         jsonb_build_object('key','topic-change:'||c.id,'source_item_id',i.id,'source_item_ids',jsonb_build_array(i.id),'material_project_id',i.project_id,
           'title',i.title,'source_uri',i.source_uri,'occurred_at',i.occurred_at,'summary',NULL,'access_level','full',
           'result_provenance',i.metadata_json->>'result_provenance','available_at',c.delivered_at,'contributions','[]'::jsonb,'material_links','[]'::jsonb,
           'topic_change',jsonb_build_object('id',c.id,'goal_id',g.id,'kind',c.change_kind,'evidence_url',c.evidence_url),

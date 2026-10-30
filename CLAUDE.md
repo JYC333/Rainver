@@ -34,6 +34,9 @@ and the constraints affecting the work in a progress update.
 - Prefer a detailed domain bundle over a broad primary bundle; `default` is a
   fallback, not an addition. `docs` routes reading; `code_roots` scopes searches,
   not exhaustive file loading. If no bundle fits, use INDEX's module map.
+- For frontend presentation changes, read [UI_STYLE_GUIDE](.agent/architecture/UI_STYLE_GUIDE.md),
+  reuse shared controls and theme tokens, and verify the changed entry in its parent
+  surface as well as its destination. Passing tests or no overflow alone is not visual acceptance.
 - Read [BOUNDARIES](.agent/BOUNDARIES.md) for structure, ownership, API, security,
   policy, data-model, migration, or product-agent behavior changes.
 - Read [REUSE_AND_DEPENDENCY_POLICY](.agent/architecture/REUSE_AND_DEPENDENCY_POLICY.md)

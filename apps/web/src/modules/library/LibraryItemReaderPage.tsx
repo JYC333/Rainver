@@ -1,3 +1,4 @@
+import {ReadingMethodEntry} from '../prompts/ReadingMethodEntry'
 import {MaterialProcessingPanel} from './MaterialProcessingPanel'
 import {AgentSearchProvenance} from './AgentSearchProvenance'
 import { readingReturnTo } from './readingLinks'
@@ -155,6 +156,7 @@ export default function LibraryItemReaderPage() {
       {/* A short title for orientation; the full title is the body's heading. */}
       <p className="min-w-0 flex-1 truncate text-sm font-medium" title={document.title}>{document.title}</p>
       {safeHttpUrl(document.source_uri) && <Button variant="ghost" size="icon-sm" asChild><SafeExternalLink href={document.source_uri} aria-label={t('reading.openSource')}><ExternalLink className="size-4"/></SafeExternalLink></Button>}
+      <ReadingMethodEntry itemId={itemId} projectId={searchParams.get('projectId')} artifactId={document.artifact_id} readerHref={`${dayScoped?itemPath(itemId):`/library/items/${itemId}`}?${searchParams.toString()}`}/>
       <ReaderPanelToggle panelOpen={panelOpen} togglePanel={togglePanel} unsentComments={unsentComments}/>
     </header>}
     banner={<>{changeId&&<div className="mx-4 mt-3 rounded-lg border p-3"><Button disabled={changeBusy||changeAcknowledged} onClick={async()=>{if(!activeSpaceId)return;const scope=currentChange.current;setChangeBusy(true);try{await informationDigestsApi.readingState(activeSpaceId,itemId,{topic_change_id:changeId,read_status:'read'},searchParams.get('projectId')??undefined);if(currentChange.current===scope)setChangeAcknowledged(true)}catch(e){if(currentChange.current===scope)toast.error(errMsg(e))}finally{if(currentChange.current===scope)setChangeBusy(false)}}}>{t(changeAcknowledged?'reading.changeRead':'reading.markChangeRead')}</Button></div>}<MaterialProcessingPanel className="mx-4 mt-3" key={activeSpaceId+':'+itemId} itemId={itemId} spaceId={activeSpaceId??undefined} hasContent={!!document.plain_text.trim()} onReady={async()=>{await reloadDocument()}}/>{(document.reading_info||document.result_provenance==='agent_provided_unverified'||!document.plain_text.trim()) && <div role="status" className="mx-4 mt-3 space-y-2 rounded-lg border border-border bg-card px-3 py-2 text-sm">

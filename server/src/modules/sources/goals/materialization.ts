@@ -17,6 +17,8 @@ import type {GoalBindingRow} from './worker.js';
 export async function materializeGoalBatch(db:Pool,config:ServerConfig,g:GoalRow,b:GoalBindingRow,token:string,runId:string,run:GoalExecutionResult,history=false){
  const identity={spaceId:g.space_id,userId:g.owner_user_id};const output=CustomSourceHandlerOutputSchema.parse(run.output);
  return withDbTransaction(db,async tx=>{
+  const native=(await tx.query<{id:string}>(`SELECT result_json->>'native_run_id' AS id FROM source_goal_runs WHERE id=$1 AND space_id=$2`,[runId,g.space_id])).rows[0];
+  if(native?.id){const nativeRun=await new (await import('../../runs/repository.js')).PgRunRepository(tx).getRun(g.space_id,native.id);if(!nativeRun)throw new HttpError(409,'Native reading Run missing');await (await import('../../runtimeContext/index.js')).lockReadingRunAuthority(tx,nativeRun);await (await import('../../prompts/reading/dispatch.js')).assertReadingRunDispatch(tx,nativeRun);}
   const locked=await tx.query(`SELECT id FROM source_goal_bindings WHERE id=$1 AND lease_token=$2 AND lease_until>now() AND revision=$3 FOR UPDATE`,[b.id,token,b.revision]);if(!locked.rows[0])throw new HttpError(409,'Execution lease changed');
   const goal=await requireGoal(tx,identity,g.id,true);if(goal.status!=='running' || goal.active_version_id!==g.active_version_id)throw new Error('source_authority_revoked');
   const live=b.spec_json.implementation.kind==='agent_search'?await preflightGoalSource(tx,config,identity,await activeGoalIntent(tx,goal),b.spec_json):await requireGoalSource(tx,config,identity,await activeGoalIntent(tx,goal),b.spec_json);if(b.fixture_json?.authority_sha256 && b.fixture_json.authority_sha256!==goalSourceFingerprint(live))throw new Error('source_authority_revoked');

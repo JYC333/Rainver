@@ -9,3 +9,4 @@ export const sourcesModule: ServerModule = {
 export {canRequestGoalSourceActivation} from './goals/access.js';
 
 export {assertMaterialProcessingDispatch} from './materialProcessing/dispatch.js';
+export {readingItemContext,readingProjectContext,assertReadingAudience,assertReadingRunEgress} from './readingMethods/context.js';

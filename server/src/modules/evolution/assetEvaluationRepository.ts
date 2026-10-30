@@ -143,6 +143,8 @@ export class EvolvableAssetEvaluationRepository {
     );
     const out: Record<string, unknown>[] = [];
     for (const row of result.rows) {
+      // Reading pairs include private material context. Their narrow workspace owns revalidation.
+      if(row.evaluator_version === 'reading_method_pair.v1') continue;
       if (await canViewVersionRef(this.db, identity, row)) out.push(evaluationRunOut(row));
     }
     return out;
@@ -156,6 +158,7 @@ export class EvolvableAssetEvaluationRepository {
     options: { trustedExecutor?: boolean } = {},
   ): Promise<Record<string, unknown>> {
     const asset = await this.requireWritableAsset(identity, assetId);
+    if(asset.asset_key==='reading.project_investigation' && !options.trustedExecutor)throw new HttpError(403,'Reading comparisons must execute through the bounded trial endpoint');
     const version = await this.versionRow(assetId, versionId);
     if (!version) throw new HttpError(422, "versionId does not reference a version of this asset");
     await normalizeVersionScopeForWrite(this.db, identity, version.scope_type, version.scope_id);
@@ -278,7 +281,9 @@ export class EvolvableAssetEvaluationRepository {
     if (evaluationRunIds.length > 0 && evaluationRows.rows.length !== evaluationRunIds.length) {
       throw new HttpError(422, "evaluation_run_ids must reference evaluation runs of this candidate version's current content");
     }
+    if(asset.asset_key==='reading.project_investigation')await (await import('../prompts/reading/workspace.js')).assertReadingPromotion(this.db,identity,versionId,evaluationRunIds,{type:targetScopeType,id:normalizedTargetScopeId});
     const evaluationSummary = summarizeEvaluationRows(evaluationRows.rows);
+    if(asset.asset_key==='reading.project_investigation')evaluationSummary.latest_metrics={structure_only:true,human_reviewed:true};
     const caseCountResult = await this.db.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM evaluation_cases WHERE asset_id = $1 AND space_id = $2 AND status = 'active'`,
       [assetId, identity.spaceId],

@@ -171,3 +171,4 @@ export * from "./sourceExecution.js";
 export * from "./sourceGoals.js";
 
 export * from "./sourceMaterials.js";
+export * from './readingMethod.js';

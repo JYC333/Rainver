@@ -1,3 +1,4 @@
+import {syncBuiltinPrompts} from '../src/modules/prompts/index.js';
 import {ReadingService} from '../src/modules/informationDigest/readingService.js';
 import {requestGoalCheck} from '../src/modules/sources/goals/collectionQueue.js';
 import {safeBusinessCursor,validBusinessTime} from '../src/modules/sources/goals/watermark.js';
@@ -42,6 +43,7 @@ const executor:GoalExecutionPort={async execute(_identity,_goal,spec,cursor){if(
 beforeEach(async()=>{vi.restoreAllMocks();
  if(!db.available)return;
  await resetTables(db.pool,['source_request_quota_state','spaces','users','source_provider_connectors','source_providers','source_connectors'],{cascade:true});await seedCustomSourceWorld(db.pool,identity);await db.pool.query(`UPDATE spaces SET type='personal' WHERE id=$1`,[identity.spaceId]);
+ await syncBuiltinPrompts(db.pool,loadConfig({}).catalogRoot,['reading.project_investigation']);
  root=await mkdtemp(join(tmpdir(),'source-goals-test-'));config={...loadConfig({}),databaseUrl:db.connectionUri,rainverHome:root,artifactStorageRoot:join(root,'artifacts')};
  await upsertCustomSourceSpacePolicy(db.pool,identity.spaceId,{default_capture_policy:'reference_only',default_retention_policy:'metadata_only',same_envelope_repair_auto_apply:true});
  runId=randomUUID();await seedRun(db.pool,{id:runId,space:identity.spaceId,owner:identity.userId,agent:'goal-agent',version:'goal-agent-version'});
@@ -676,8 +678,8 @@ it.for(['article','repository'] as const)('Agent %s content survives real submis
  const result=await t.call(s.run,{id:'readable',name:'source.material.submit',arguments:{...s.input,items:[{...s.input.items[0],summary:'Robotics capabilities relevant to the goal',content}]}});expect(result).toMatchObject({ok:true});
  await db.pool.query("UPDATE runs SET status='succeeded' WHERE id=$1",[s.run.id]);expect((await real.read(identity,goalId)).previews[0].status).toBe('ready');
  await real.saveSample(identity,goalId,{version_id:v.id,preview_id:preview.id,idempotency_key:'readable-content'});
- const item=(await db.pool.query('SELECT * FROM source_items')).rows[0];expect(item).toMatchObject({content_state:'content_saved',retention_policy:'full_text',excerpt:'Robotics capabilities relevant to the goal'});expect(item.metadata_json).not.toHaveProperty('reading_info');
- const {PgReaderRepository}=await import('../src/modules/reader/repository.js');const doc=await new PgReaderRepository(db.pool,config).getDocument(identity,'source_item',item.id);expect(doc).toMatchObject({plain_text:text,result_provenance:'agent_provided_unverified',reading_info:{kind,format:content.format,sources:content.sources}});expect(JSON.stringify(doc?.content_json)).toContain('<script>literal, not HTML</script>');
+ const item=(await db.pool.query('SELECT * FROM source_items')).rows[0];expect(item).toMatchObject({content_state:'content_saved',retention_policy:'full_text',excerpt:'Robotics capabilities relevant to the goal'});expect(item.metadata_json).not.toHaveProperty('reading_info');expect(item.metadata_json.reading_method_provenance?.asset_key).toBe('reading.project_investigation');expect(item.metadata_json.reading_method_provenance?.version_id).toBe((s.run.contract_snapshot_json as {workflow_input_json:{reading_method:{version_id:string}}}).workflow_input_json.reading_method.version_id);
+ const {PgReaderRepository}=await import('../src/modules/reader/repository.js');const doc=await new PgReaderRepository(db.pool,config).getDocument(identity,'source_item',item.id);expect(doc).toMatchObject({plain_text:text,result_provenance:'agent_provided_unverified',reading_info:{kind,format:content.format,sources:content.sources}});expect(JSON.stringify(doc?.content_json)).toContain('<script>literal, not HTML</script>');const {readingWorkspace}=await import('../src/modules/prompts/reading/workspace.js');const methodView=await readingWorkspace(db.pool,identity,item.id,null,false,config,doc!.artifact_id!);expect(methodView.result_provenance?.version_id).toBe(item.metadata_json.reading_method_provenance.version_id);await expect(readingWorkspace(db.pool,identity,item.id,null,false,config,'wrong-artifact')).rejects.toMatchObject({statusCode:409});
  const snapshots=await db.pool.query('SELECT * FROM source_snapshots WHERE source_item_id=$1',[item.id]);expect(snapshots.rows).toHaveLength(1);expect(snapshots.rows[0].snapshot_type).toBe('extracted');
  await real.read(identity,goalId);expect((await db.pool.query('SELECT count(*)::int n FROM source_snapshots')).rows[0].n).toBe(1);
 });

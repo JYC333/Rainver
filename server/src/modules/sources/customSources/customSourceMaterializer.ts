@@ -172,7 +172,7 @@ export class CustomSourceMaterializationService {
         const { itemId, created } = await this.upsertItem(run, item, retentionPolicy, descriptor);
         itemIds.push(itemId);
         if(item.reading_content){
-          await saveSourceReadingDocument(this.db,{spaceId:run.spaceId,itemId,document:agentReadingDocument(item.reading_content,item.source_uri),agentProvided:true,summary:item.excerpt,metadata:agentReadingMetadata(item.reading_content)});
+          await saveSourceReadingDocument(this.db,{spaceId:run.spaceId,itemId,document:agentReadingDocument(item.reading_content,item.source_uri),agentProvided:true,summary:item.excerpt,metadata:{...agentReadingMetadata(item.reading_content),...(run.goal?.resultProvenance?{reading_method_provenance:item.metadata?.reading_method_provenance??null,agent_run_id:item.metadata?.agent_run_id??null}:{})}});
         }
         if (created) itemsCreated++;
         else itemsUpdated++;

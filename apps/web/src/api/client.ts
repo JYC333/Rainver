@@ -4309,3 +4309,18 @@ export const sourceGoalsApi={
  feedback:(id:string,body:import('@rainver/protocol').SourceGoalFeedbackRequest,options:RequestOptions={})=>post<{applied:boolean;duplicate:boolean;kind:string;affected:number}>(`/sources/goals/${encodeURIComponent(id)}/feedback`,body,options),
  follow:(id:string,body:import('@rainver/protocol').SourceGoalFollowRequest,options:RequestOptions={})=>post<{goal_id:string;status:string;activated:boolean;prepare:boolean;follow:import('@rainver/protocol').SourceGoalFollow}>(`/sources/goals/${encodeURIComponent(id)}/follow`,body,options),
 }
+
+// Reading method workspace: all writes remain explicit; GET never starts a trial.
+export const readingMethodsApi={
+ readSample:(id:string)=>get<{name:string;pages:Array<{url:string;text:string}>}>(`/prompts/reading-method/samples/${encodeURIComponent(id)}`),
+ entry:(projectId?:string|null)=>get<{can_manage:boolean;project_id:string|null}>(`/prompts/reading-method/entry?${new URLSearchParams(projectId?{project_id:projectId}:{})}`),
+ context:(itemId:string,projectId?:string|null,artifactId?:string|null)=>get<import('@rainver/protocol').ReadingMethodContext>(`/prompts/reading-method?${new URLSearchParams({item_id:itemId,...(projectId?{project_id:projectId}:{}),...(artifactId?{artifact_id:artifactId}:{})})}`),
+ initialize:()=>post('/prompts/reading-method/initialize',{}),
+ draft:(body:unknown)=>post<{id:string}>('/prompts/reading-method/drafts',body),
+ sample:(body:unknown)=>post<{id:string}>('/prompts/reading-method/samples',body),
+ trial:(body:unknown)=>post<import('@rainver/protocol').ReadingMethodTrialView>('/prompts/reading-method/trials',body),
+ judge:(id:string,body:unknown)=>post(`/prompts/reading-method/trials/${encodeURIComponent(id)}/judgment`,body),
+ cancel:(id:string)=>post(`/prompts/reading-method/trials/${encodeURIComponent(id)}/cancel`,{}),
+ promote:(body:unknown)=>post<{id:string;proposal_id?:string}>('/prompts/reading-method/promote',body),
+ rollback:(body:unknown)=>post('/prompts/reading-method/rollback',body),
+}

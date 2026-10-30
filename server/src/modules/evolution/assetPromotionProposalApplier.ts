@@ -71,6 +71,18 @@ async function applyEvolvableAssetVersionPromote(context: ProposalApplyContext):
   const asset = assetResult.rows[0];
   if (!asset) throw new HttpError(404, "Evolvable asset not found in this space");
   await assertCanWriteAssetOwnerScope(db, identity, asset);
+  const reading=(await db.query(`SELECT 1 FROM evolvable_assets WHERE id=$1 AND asset_key='reading.project_investigation'`,[payload.asset_id])).rows[0];
+  if(reading){
+    // The original trial owner must still have the frozen material/context. Approval is not an export grant.
+    const owner=(await db.query<{created_by_user_id:string}>(`SELECT created_by_user_id FROM evolvable_asset_evaluation_runs WHERE id=$1 AND space_id=$2`,[payload.evaluation_run_ids?.[0],spaceId])).rows[0];
+    if(!owner)throw new HttpError(409,'Reading comparison missing');
+    const ref=(await db.query<{eval_suite_ref_json:{baseline_run_id:string}}>(`SELECT eval_suite_ref_json FROM evolvable_asset_evaluation_runs WHERE id=$1 AND space_id=$2`,[payload.evaluation_run_ids?.[0],spaceId])).rows[0];
+    const run=ref?await new (await import('../runs/repository.js')).PgRunRepository(db).getRun(spaceId,ref.eval_suite_ref_json.baseline_run_id):null;
+    if(!run)throw new HttpError(409,'Reading comparison Run missing');
+    await (await import('../runtimeContext/index.js')).lockReadingRunAuthority(db,run);
+    await (await import('../prompts/reading/workspace.js')).assertReadingPromotion(db,{spaceId,userId:owner.created_by_user_id},payload.candidate_version_id,payload.evaluation_run_ids,{type:payload.target_scope_type,id:payload.target_scope_id??null});
+  }
+
 
   const candidateResult = await db.query<CandidateRow>(
     `SELECT id, status, space_id, scope_type, scope_id, content_hash

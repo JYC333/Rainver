@@ -1,3 +1,4 @@
+import {ReadingMethodEntry} from '../prompts/ReadingMethodEntry'
 import {ReadingStatusBadge} from './ReadingStatusBadge'
 import { toast } from 'sonner'
 import { sessionEpoch } from '../../lib/sessionResidue'
@@ -198,8 +199,8 @@ function ScopedReading({ spaceId, projectId }: { spaceId: string; projectId?: st
         {item.topics.filter(link => !topic || link.goal_id === topic).map(link => <TopicLinkSummary key={link.goal_id} link={link} />)}
         {item.material_links.length > 0 && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer hover:text-foreground">{t('reading.materialLinks')}</summary><ul>{item.material_links.map(link => <li key={`${link.kind}:${link.reference_id}`}><SpaceLink className="underline" to={`/projects/${link.project_id}/sources?view=all`}>{t(`reading.link_${link.kind}`)}</SpaceLink></li>)}</ul></details>}
         </>}
-        actions={<><Button size="sm" variant="ghost" className="reading-preview-trigger" onClick={() => setPreviewKey(item.key)} aria-label={t('reading.previewItem', { title: item.title })}>{t('reading.itemPreview')}</Button>
-          {item.access_level === 'full' ? <Button size="sm" variant="outline" asChild><SpaceLink to={itemHref(item)} onClick={() => remember(item)}>{t('reading.open')}</SpaceLink></Button> : <span className="text-xs text-muted-foreground">{t('reading.summaryOnly')}</span>}
+        actions={<>
+          {item.access_level === 'full' ? <Button size="sm" variant="outline" asChild><SpaceLink to={itemHref(item)} onClick={() => remember(item)}>{t('reading.open')}</SpaceLink></Button> : <span className="text-xs text-muted-foreground">{t('reading.summaryOnly')}</span>}{item.access_level === 'full' && <ReadingMethodEntry itemId={item.source_item_id} projectId={projectId??item.material_project_id} readerHref={itemHref(item)} onNavigate={()=>remember(item)}/>}<Button size="sm" variant="ghost" className="reading-preview-trigger" onClick={() => setPreviewKey(item.key)} aria-label={t('reading.previewItem', { title: item.title })}>{t('reading.itemPreview')}</Button>
           <Button size="sm" variant="ghost" disabled={feed.busy || feed.loading} onClick={() => void changePersonalState(item, 'read_status')}>{t(item.read_status === 'read' || item.read_status === 'discussed' ? 'reading.restore' : 'reading.markRead')}</Button>
           <Button size="sm" variant="ghost" disabled={feed.busy || feed.loading} onClick={() => void changePersonalState(item, 'dismissed')}>{t(item.dismissed ? 'reading.restoreQueue' : 'reading.dismiss')}</Button>
         </>}

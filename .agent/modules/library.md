@@ -577,3 +577,14 @@ as its topic links before loading latest audits, and retains material plus
 collecting-Source authorization. This is not publication age or since-last-visit
 state. No read acknowledgement is written by displaying it. See Source Goals'
 latest-collection contract for provenance and failure/empty-check semantics.
+
+## Reading method improvement
+
+Reading and digest cards and the Source Reader have a server-authorized **Improve
+this result** entry to the existing `/prompts` workspace. It verifies the material,
+Project and (for Reader) canonical shown artifact, then shows the actual effective
+method and recorded result provenance; historical unknowns are not guessed. Only
+existing asset maintainers can edit/trial/request activation. The simple workspace
+retains the advanced prompt page via a disclosure, without a new top-level nav.
+See [Reading methods](../architecture/READING_METHODS.md) for version freezing,
+private paired Runs, human judgment, proposals, rollback and verification limits.

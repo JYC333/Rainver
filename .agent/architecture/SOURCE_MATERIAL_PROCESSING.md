@@ -156,3 +156,36 @@ Reuse / Dependency Check: canonical Run/job admission, Source extraction records
 Source consent and egress, proposal applier, Source materializer, existing Reader
 JSON and read-version guards are reused. Existing HTML/PDF extractors remain
 valid deterministic executors. No new dependency, table or instance migration.
+
+## Versioned investigation method
+
+Saved-link preparation and Agent-native goal collection both resolve
+`reading.project_investigation` through the approved-only prompts resolver at
+Run admission. Its exact version, content/render hashes, resolution provenance
+and authorized Project-context hash are frozen in `workflow_input_json.reading_method`.
+A queued Run never selects a newer deployment on recovery. Missing catalog or
+production resolution is an explicit initialization error, not a hardcoded fallback.
+Catalog sync remains explicit; opening a Reader or the method workspace does not write.
+
+The strategy directs bounded primary-document/example investigation rather than
+homepage paraphrase. The existing submit schema, three-submission limit, egress,
+retention, URL limits, runtime permissions and ten-minute budget remain code-owned.
+Production investigation uses the requester’s existing Source/material access.
+Project context is injected only into material canonically bound to that Project;
+broader native collection stays ordinary reading with no Project WorkContext.
+Trial comparisons still require the complete current Project audience. Dispatch, accepted Delivery and final materialization recheck the
+frozen context and actual Run destination. Delivery/Source commit reuse the canonical
+Source ACL locks; a lost permission cannot be turned into a content write by replaying
+an accepted native-search batch. Work Context disables automatic retrieval and pins;
+formal Project Runs retain their canonically bound Project context/instructions.
+
+The canonical Source writer records the method provenance and originating Run on
+Reader artifacts and items. Reader's improvement entry checks the version actually
+shown (including extracted-snapshot fallback); unknown historical attribution stays
+unknown. Reprocessing still writes the material's own scope: a Project edition link
+does not turn a shared original into a privately Project-specific document.
+
+The controlled comparison workspace is described in [Reading methods](READING_METHODS.md).
+Its private trial Runs have no material-submit capability and cannot replace Reader
+content, annotations, reading state or Following cursors. Neutral annotations and
+closed briefing generation are unchanged; briefing excerpts remain bounded.
