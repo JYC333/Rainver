@@ -48,6 +48,13 @@
       "version": "7",
       "when": 1793310244344,
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793328614291,
+      "tag": "0007_information_briefings",
+      "breakpoints": true
     }
   ],
   "version": "7",

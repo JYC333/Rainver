@@ -1,3 +1,8 @@
+import type { ServerConfig } from "../../config.js";
+import { InformationBriefingService } from "./briefing/service.js";
+import { projectBriefingScope } from "./briefing/projectScope.js";
+import { dailyBriefingSetting } from "./briefing/schedule.js";
+import { projectBriefingLabel } from "./briefing/routes.js";
 import { getDbPool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import { PgAutomationRepository } from "../automations/repository.js";
@@ -98,6 +103,8 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
         : await new InformationDigestService(pool).scheduledProject(fireInput.spaceId, request.project_id!, fireInput.actorUserId, period, started.automationRunId)
       : null;
     const digest = generated?.digest ?? null;
+    // After the digest committed, outside its transaction: the day's briefing, when a writer enabled it.
+    const briefing = digest && request.scope === "project" ? await dailyBriefing(pool, config, automation, request.project_id!, digest) : null;
     await withTransaction(pool, async (client) => {
       await new PgAutomationRepository(client).completeNativeAutomationRun({
         automationRunId: started.automationRunId,
@@ -120,6 +127,7 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
               period_end_utc: period.endUtc,
               created: generated!.created,
               item_count: digest!.items.length,
+              ...(briefing ? { briefing } : {}),
             },
       });
       if (context.advanceSchedule) await new PgAutomationRepository(client).advanceSchedule(automation);
@@ -152,6 +160,37 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
     if (historySkipped) return {automation_run_id:started.automationRunId,target_type:TARGET_TYPE,skipped:true,reason:'monitoring_history_before_latest'};
     if (context.advanceSchedule) throw markAutomationScheduleHandled(error, "Information digest operation failed");
     throw error;
+  }
+}
+
+/**
+ * The sealed day's Project briefing, run as the writer who enabled it on
+ * their own Agent. A refusal is recorded on the day (`blocked`), never fails
+ * the digest, and is not retried in a loop.
+ */
+async function dailyBriefing(
+  pool: ReturnType<typeof getDbPool>,
+  config: ServerConfig,
+  automation: { id: string; space_id: string; config_json: Record<string, unknown> | null },
+  projectId: string,
+  digest: { id: string; digest_date: string; period_end_utc: string },
+): Promise<Record<string, unknown> | null> {
+  const setting = dailyBriefingSetting(automation.config_json);
+  if (!setting.enabled || !setting.user_id) return null;
+  try {
+    const { briefing } = await new InformationBriefingService(pool, config).requestDay(
+      projectBriefingScope(automation.space_id, projectId), setting.user_id, {
+        kind: "daily",
+        day: { date: digest.digest_date, digestId: digest.id, cutoff: new Date(digest.period_end_utc).toISOString() },
+        execution: { agent_id: setting.agent_id ?? undefined, runtime_profile_id: setting.runtime_profile_id ?? undefined },
+        origin: "job",
+        automationId: automation.id,
+        label: await projectBriefingLabel(pool, automation.space_id, projectId),
+      });
+    return { briefing_id: briefing.id, status: briefing.status, error_code: briefing.error_code };
+  } catch (error) {
+    const code = error instanceof HttpError ? (error.responseBody as { code?: string } | undefined)?.code : undefined;
+    return { status: "not_started", error_code: code ?? "briefing_request_failed" };
   }
 }
 

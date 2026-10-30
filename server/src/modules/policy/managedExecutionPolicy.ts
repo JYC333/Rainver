@@ -13,7 +13,7 @@
  * Runs.
  */
 
-type ManagedExecutionKind = "source_goal" | "source_post_processing" | "source_annotation" | "project_research";
+type ManagedExecutionKind = "source_goal" | "source_post_processing" | "source_annotation" | "project_research" | "information_briefing";
 export type CredentialSetupKind =
   | "source_post_processing"
   | "daily_report"
@@ -30,6 +30,8 @@ const PRE_AUTHORIZED_ORIGIN: Readonly<Record<ManagedExecutionKind | CredentialSe
   source_post_processing: "job",
   source_annotation: "job",
   project_research: "system",
+  // A scheduled briefing a Project writer enabled for their own Agent.
+  information_briefing: "job",
   daily_report: "job",
   imported_session_extraction: "job",
   inquiry_advice: "job",
@@ -105,6 +107,8 @@ export function isManagedFailFastRun(input: ManagedRunPolicyInput): boolean {
   if (!policy) return false;
   return (
     (input.trigger_origin === "job" && policy.managed_execution === "source_post_processing")
+    // A briefing owns its failure: requested now or scheduled, its version settles failed, never a review hold.
+    || ((input.trigger_origin === "job" || input.trigger_origin === "manual") && policy.managed_execution === "information_briefing")
     || (input.trigger_origin === "system" && (policy.managed_execution === "project_research" || policy.managed_execution === "source_goal"))
   );
 }
@@ -121,7 +125,8 @@ export function credentialPolicyMetadata(
 }
 
 function isManagedExecutionKind(value: unknown): value is ManagedExecutionKind {
-  return value === "source_goal" || value === "source_post_processing" || value === "source_annotation" || value === "project_research";
+  return value === "source_goal" || value === "source_post_processing" || value === "source_annotation" || value === "project_research"
+    || value === "information_briefing";
 }
 
 function isPreAuthorizableKind(value: unknown): value is ManagedExecutionKind | CredentialSetupKind {

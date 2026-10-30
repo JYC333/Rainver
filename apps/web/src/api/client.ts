@@ -1,5 +1,5 @@
 import type { ReaderDocumentNoteResponse, ReaderAnnotationRangeUpdate } from "@rainver/protocol"
-import type { ReaderAppearance, ReaderPositionResult, ReaderPositionWrite, ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol'
+import type { Briefing, BriefingGenerateResponse, BriefingOverviewResponse, ReaderAppearance, ReaderPositionResult, ReaderPositionWrite, ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol'
 import type { RunFilePreview } from "@rainver/protocol"
 import type { ProjectMonitoringState,ProjectMonitoringConfig,MonitoringVersion } from "@rainver/protocol";
 import { mergeAbortSignals } from '../lib/mergeAbortSignals'
@@ -2528,6 +2528,21 @@ export const activityApi = {
 }
 
 // ── Source / Evidence ────────────────────────────────────────────────────
+/** Project briefings: reads never generate; generating, cancelling and the daily setting need Project write access. */
+export const informationBriefingsApi = {
+  project: (spaceId: string, projectId: string, options: RequestOptions = {}) =>
+    get<BriefingOverviewResponse>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings`, options),
+  get: (spaceId: string, projectId: string, briefingId: string, options: RequestOptions = {}) =>
+    get<Briefing>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/${encodeURIComponent(briefingId)}`, options),
+  /** Briefs the current cut-off; an identical in-flight or unchanged request answers with the existing version. */
+  generate: (spaceId: string, projectId: string) =>
+    post<BriefingGenerateResponse>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings`, {}),
+  cancel: (spaceId: string, projectId: string, briefingId: string) =>
+    post<Briefing>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/${encodeURIComponent(briefingId)}/cancel`),
+  setDaily: (spaceId: string, projectId: string, daily_enabled: boolean) =>
+    put<{ daily_enabled: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/settings`, { daily_enabled }),
+}
+
 export const informationDigestsApi = {
   reading: (spaceId: string, input: Partial<ReadingQuery> = {}, projectId?: string, options: RequestOptions = {}) => {
     const search = new URLSearchParams()

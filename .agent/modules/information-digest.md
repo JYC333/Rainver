@@ -133,6 +133,173 @@ Source item only when every current Project reader has full access without
 relying on Space oversight; hydration rechecks the current reader so revoked
 consent or later membership changes fail closed.
 
+## Briefings (shared kernel; Project scope)
+
+`briefing/` synthesizes one evidence-backed briefing across a scope's sources.
+It is separate from the per-channel `batch_digest` and from monitoring limits,
+which stay as they are. Plan: `.agent/plans/shared-briefing-and-project-loop.md` §9.
+
+- **Kernel and adapters.** `contract.ts` defines `BriefingScopeAdapter`
+  (scope, audience, `canRead`/`canGenerate`, candidates, context,
+  `allowedItems`, `signalState`, `contextState`). `projectScope.ts` reads
+  Project Following goal items, Project monitoring decisions and the active
+  Corpus, plus the active brief version and at most 8 open Tasks. Every item
+  and Task must be fully readable by every current Project reader
+  (`everyReader` + `sourceItemFullContentReadClause`/`goalCollectionReadableSql`/content
+  access), so no member's private reading enters. Each scope signal carries
+  its collecting Source (Following binding, decision channel, Corpus entry).
+  `personalScope.ts` (audience = owner) is a P1 contract only: the personal
+  surface and selection are P2.
+- **Dependencies.** Every text that can reach the model is a dependency with a
+  revision and a Source connection: each family member item
+  (`content_hash:body_revision`), its annotation (hash of the summary, so an
+  in-place rewrite is a new revision), and each scope signal (hash of label
+  and text). They are frozen in `information_briefing_inputs.analysis_json.deps`.
+  `authorization.ts` is the one rule used before dispatch, at publication and
+  on every read. A ref stands only while every dependency is readable by the
+  whole current audience. Each annotation and scope signal is also gated on
+  its own collecting Source (`readableCollecting`: the canonical Source reader
+  gate plus full `source_connection` access, without oversight), at
+  preparation and in that same rule; a readable item never carries an analysis
+  or reason from a Source the audience cannot read. At dispatch, every
+  connection behind it must also still consent to the Run's model, and every
+  revision must be unchanged. `everyReader` treats a clause that evaluates to
+  NULL for a member as "may not read".
+- **Manifest.** `manifest.ts` freezes one version:
+  - Families merge by `readingFamilySql`: one capture, not one event. Different
+    URLs about one event stay separate inputs, and the model groups them.
+  - A member, annotation or signal whose own Source refuses the model
+    contributes nothing.
+  - Delta classes: `baseline`, `new_publication`, `newly_found`, `revised`
+    (body or analysis revision), `evidenced_change`, `unknown_time`, and
+    `background` (comparison material that is never news).
+  - Pending inputs are carried to the next version: not analysed, truncated,
+    egress-refused, and not shared with the whole audience (bounded at 200).
+  - The candidate window includes body and analysis changes of in-scope items,
+    so a revision is found without new membership activity.
+  - The previous published version's still-readable highlights, and their
+    material re-gated now, are sent as `<previous_briefing>` plus `background`
+    inputs. Each comparison text is frozen in `comparison_json` with its full
+    dependency closure: the dependencies of every S it cited there, the context
+    source of every C it cited (a done Task still shared with the Project is a
+    valid one), and the closure that version inherited, so it is transitive
+    across generations. If anything in a version's closure no longer stands,
+    nothing of that version stands: dispatch is refused, publication fails, and
+    reads withhold it. They are sent only when there is news, or when the Project context
+    changed: then impact is reassessed and the version is marked
+    `context_changed`. Overview prose is never replayed.
+  - The whole request (prompt + instruction) is held to 48,000 characters:
+    blocks are shortened over three levels, then the lowest-priority inputs are
+    truncated (and carried), and the total is asserted before the Run exists.
+- **Storage.** `information_briefings` holds versions per `scope_key`:
+  - one queued version per scope and a unique `request_key`;
+  - one live (queued/ready/blocked) version per sealed `period_date`, with
+    failed or cancelled days kept as history beside their replacement;
+  - `request_hash` of the exact frozen request, and a `checked_at` bookkeeping
+    time;
+  - a day's `(digest_id, space_id)` reference to its sealed digest uses NO
+    ACTION. A referenced digest is not deleted on its own (SET NULL would also
+    null the tenant column), and deleting the Project removes both through
+    their Project cascades.
+
+  `information_briefing_inputs` holds the frozen refs, revisions, delta classes
+  and dependencies. Migration `0007_information_briefings` is unpublished and
+  regenerated.
+- **Versions and reuse.** The comparison chain runs through the latest
+  published version only. The request key is the substantive state: the
+  published predecessor, input and context hashes, protocol and execution.
+  - The same state returns the same version. A "nothing new" check is reused
+    (`checked_at` is updated) instead of piling up empty versions, and the
+    overview keeps the last published briefing readable as `latest_briefing`.
+  - A failed version is retried only with its exact frozen request, read back
+    from its last Run and verified by `request_hash`. Otherwise it is
+    `409 briefing_version_stale`.
+  - Changed state is a new version.
+- **Execution.** `service.ts` locks the scope, reuses as above, and writes
+  `no_material`/`no_new_material` without a Run. Otherwise it creates a
+  canonical private Run (`createQueuedRunWithBudgetAdmission`) on the
+  requester's own usable Agent and profile:
+  - no tools, `max_attempts 1`, 900 s;
+  - scheduled runs also count against the Automation budget;
+  - managed policy `information_briefing` is fail-fast for both `manual` and
+    `job`; only `job` carries the credential pre-authorization.
+
+  The Run gets its own Work Context setup (scope = the Run) with retrieval off
+  and nothing pinned, so no requester Memory, Library or private material
+  joins a shared result. Then the attempt is CAS-started and `agent_run` is
+  enqueued. Limits: 40 news inputs + 12 background families, 3 attempts per
+  version, 6 Runs per scope per day. There is no token or currency cap during
+  a Run.
+- **Dispatch and settlement.** `orchestrationService` calls
+  `assertBriefingDispatch` at three points: before running, after runtime
+  preparation, and before the adapter. Each call checks:
+  - the current attempt and its `request_hash`;
+  - that the requester can still write;
+  - the closed Work Context (`briefing_context_widened`);
+  - the dependency authorization with egress (`briefing_access_changed`);
+  - unchanged revisions and context (`briefing_inputs_changed`).
+
+  A refusal is a `RunPreparationError` with that code. The Supervisor's
+  managed fail-fast rule leaves the Run terminal, never `waiting_for_review`,
+  and the reconciler `information_briefing` (canonical `runSettlement`,
+  replayed by recovery) fails the version, releasing the scope. Settlement
+  settles only the current attempt and validates the output against the
+  manifest:
+  - refs exist; facts cite material; `affects` needs context;
+  - `new` must cite new inputs, and `update` must cite revised or
+    evidenced-change inputs;
+  - background supports `ongoing` only.
+
+  It also refuses publication when the overview's dependencies are no longer
+  readable.
+- **Reads.** `projection.ts` re-authorizes on every GET (which never
+  generates). An overview whose dependencies are not readable withholds the
+  whole briefing; other dependent units are hidden and counted. Outdated
+  Project context is flagged. `source_domains` counts distinct domains, not
+  independent confirmation.
+- **Held sealed days.** A sealed day that cannot start now is held: a
+  `blocked` day row with its reason, its own date and cut-off, and its
+  deferred request (`request_json`: origin, Automation, execution, label).
+  Reasons are another version of the scope in flight
+  (`briefing_scope_busy`), an earlier day still held
+  (`briefing_earlier_day_pending`), or a blocking refusal. The in-flight
+  version is never taken as that day's result. Held days start earliest
+  first: when a version of the scope settles (the briefing projection calls
+  `resumeHeldDays` after its own transaction), on the next daily fire, or on
+  an explicit `POST {date}`. A day is held only if it passes the history
+  rule at that moment: no version of the scope, published or in flight, may
+  have a later cut-off, with the in-flight version excepted because it is
+  only a temporary wait. The blocking-refusal hold path makes the same check.
+  An out-of-order backfill is therefore `422 briefing_history_before_latest`
+  whether the scope is idle or busy, and leaves nothing to resume. Once held,
+  a day is ordered only against later sealed days, so a manual version
+  published while it waits cannot strand it. One Run per scope still holds.
+- **Panel progress.** `ProjectBriefingPanel` re-reads every 4 s while
+  anything is still moving on the server: a queued version, or a day held as
+  `briefing_scope_busy`/`briefing_earlier_day_pending`, whether it is the
+  latest, the selected one or in history. Re-reads are GET only: one at a
+  time, re-armed after each read lands, and capped at 30 minutes per mount or
+  manual refresh. A selected earlier version updates in place. Refusals that
+  need a person (quota, setup) do not poll. Everyone has a read-only Refresh,
+  and Generate stays disabled while any version is in flight.
+- **Routes.** `GET|POST /api/v1/spaces/:spaceId/projects/:projectId/information-briefings`,
+  `GET …/:briefingId`, `POST …/:briefingId/cancel`, `PUT …/settings`. Reads
+  need Project read access; POST, cancel and settings need write access. POST
+  `{date}` briefs a sealed digest day (`422 briefing_day_not_sealed`; days
+  stay in order, `422 briefing_history_before_latest`). Daily briefings ride on
+  the Project's existing digest Automation (`config_json.briefing`) as the
+  enabling writer; a day that cannot start is stored `blocked` with its reason.
+- **Web.** `apps/web/src/modules/library/briefing/BriefingView.tsx` (shared
+  display) and `apps/web/src/modules/projects/ProjectBriefingPanel.tsx` in the
+  Project Sources digest tab.
+- **Not in P1.** Notifications, Room follow-up and Task adoption (P3); the
+  personal surface (P2). Output quality with real models (event grouping,
+  contradiction handling, false merges) and real instances are unverified.
+  A synthetic published Project Instruction was checked with the production
+  planner in two setups: the briefing Run's closed setup, and a legitimately
+  re-bound Project setup with retrieval off and no pins. It was not injected
+  in either; other policies or explicit controls were not tested.
+
 ## Related files
 
 - `server/src/modules/informationDigest/`
@@ -142,6 +309,8 @@ consent or later membership changes fail closed.
 - `apps/web/src/modules/library/InterestProfileControls.tsx`
 - `apps/web/src/modules/projects/ProjectDigestPage.tsx`
 - `server/test/informationDigestDb.test.ts`
+- `server/test/informationBriefingDb.test.ts`, `server/test/informationBriefingAccessDb.test.ts` (fixture `server/test/support/briefingFixture.ts`)
+- `apps/web/src/modules/projects/ProjectBriefingPanel.tsx`
 - `server/test/interestProfileDb.test.ts`
 
 ## Related docs

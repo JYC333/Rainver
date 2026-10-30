@@ -881,6 +881,7 @@ export class RunOrchestrationService {
         };
       }
       await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,run);
+      await (await import('../informationDigest/briefing/settlement.js')).assertBriefingDispatch(this.config, run);
       const running = await this.repository.markRunRunning({
         run_id: run.id,
         space_id: run.space_id,
@@ -1038,6 +1039,7 @@ export class RunOrchestrationService {
       });
 
       await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,effectiveRun);
+      await (await import('../informationDigest/briefing/settlement.js')).assertBriefingDispatch(this.config, effectiveRun);
       preparedRuntime = await this.prepareRuntimeContext(
         effectiveRun,
         effectiveInput,
@@ -1073,6 +1075,7 @@ export class RunOrchestrationService {
       let adapterResult: RunAdapterResultEnvelope;
       try {
         await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,effectiveRun);
+        await (await import('../informationDigest/briefing/settlement.js')).assertBriefingDispatch(this.config, effectiveRun);
         adapterResult = await this.invokeAdapter(
           effectiveRun,
           {

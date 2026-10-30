@@ -12,6 +12,7 @@ import type { InformationDigestLookup } from '../../types/api'
 import { InformationDigestView } from '../library/InformationDigestView'
 import { DigestDayNav, DigestMissing, DigestProvenance } from '../library/DigestDay'
 import { useAppTranslation } from '../../i18n'
+import { ProjectBriefingPanel } from './ProjectBriefingPanel'
 
 export default function ProjectDigestPage() {
   const { projectId = '' } = useParams()
@@ -61,6 +62,7 @@ function ScopedProjectDigest() {
         </div>
         <Button variant="outline" onClick={load} disabled={loading}><RefreshCw className="size-4" />{t('reading.refresh')}</Button>
       </div>
+      {activeSpaceId && projectId ? <ProjectBriefingPanel key={`${activeSpaceId}:${projectId}`} spaceId={activeSpaceId} projectId={projectId} /> : null}
       {error != null && <div role="alert"><p>{errMsg(error)}</p><Button onClick={load}>{t('reading.retry')}</Button></div>}
       {loading && !lookup ? <div className="space-y-3"><Skeleton className="h-32" /><Skeleton className="h-32" /></div> : null}
       {lookup && shownDay ? (

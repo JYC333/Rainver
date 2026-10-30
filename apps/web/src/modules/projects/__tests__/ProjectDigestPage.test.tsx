@@ -9,7 +9,10 @@ import type { InformationDigest } from '../../../types/api'
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpaceId: 'space-1' }) }))
 vi.mock('../../../core/spaceNav', () => ({ SpaceLink: ({ to, children, ...props }: any) => <a href={to} {...props}>{children}</a> }))
-vi.mock('../../../api/client', () => ({ informationDigestsApi: { project: vi.fn(), backfillProject: vi.fn() } }))
+vi.mock('../../../api/client', () => ({
+  informationDigestsApi: { project: vi.fn(), backfillProject: vi.fn() },
+  informationBriefingsApi: { project: async () => ({ can_generate: false, daily_enabled: false, latest: null, history: [] }) },
+}))
 
 /** A history read that found the day's scheduled snapshot. */
 function available(digest: Omit<InformationDigest, 'timezone' | 'period_start_utc' | 'period_end_utc' | 'generation_kind' | 'generated_at'>) {

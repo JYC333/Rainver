@@ -160,6 +160,7 @@ export * from "./turnParts.js";
 // Instance update contracts (admin job + deployer pull loop)
 export * from "./deployment.js";
 export * from "./informationDigests.js";
+export * from "./informationBriefings.js";
 export * from "./agentAttention.js";
 export * from './projectInformationMonitoring.js';
 export * from './filePreviews.js';
