@@ -36,7 +36,7 @@ function briefing(overrides: Partial<Briefing> = {}): Briefing {
 }
 const summary = (b: Briefing) => ({ id: b.id, version: b.version, kind: b.kind, status: b.status, outcome: b.outcome, comparison: b.comparison, period_date: b.period_date, cutoff_at: b.cutoff_at, created_at: b.created_at, completed_at: b.completed_at, checked_at: b.checked_at, error_code: b.error_code })
 const overview = (latest: Briefing | null, canGenerate: boolean, latestBriefing: Briefing | null = latest?.outcome === 'briefing' ? latest : null): BriefingOverviewResponse => ({
-  can_generate: canGenerate, daily_enabled: false, latest, latest_briefing: latestBriefing,
+  can_generate: canGenerate, limits: { runs_per_day: 6, runs_in_last_day: 1, attempts_per_version: 3, run_seconds: 900, news_inputs: 40, background_families: 12, request_chars: 48000, carried_items: 200, token_cap: null, cost_cap: null }, daily_enabled: false, latest, latest_briefing: latestBriefing,
   history: [latest, latestBriefing].filter((b, i, all): b is Briefing => Boolean(b) && all.findIndex(o => o?.id === b!.id) === i).map(summary),
 })
 const panel = (projectId = 'p') => <MemoryRouter><ProjectBriefingPanel key={projectId} spaceId="s" projectId={projectId} /></MemoryRouter>
@@ -49,6 +49,8 @@ it('lets a reader read a cited briefing with honest wording, but offers no gener
   expect(await screen.findByText('One launch dominates.')).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Generate briefing' })).not.toBeInTheDocument()
   expect(screen.getByText('Only Project writers can generate briefings.')).toBeInTheDocument()
+  // Limits are what generating may use: shown to those who can generate.
+  expect(screen.queryByTestId('briefing-limits')).not.toBeInTheDocument()
   // A reader may ask about a highlight, but not adopt it as a Project Task.
   expect(screen.getByRole('button', { name: 'Ask about this' })).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Adopt as Task' })).not.toBeInTheDocument()
@@ -75,6 +77,12 @@ it('lets a writer generate, shows progress, and refreshes until the version sett
     api.project.mockResolvedValueOnce(overview(null, true)).mockResolvedValueOnce(overview(queued, true)).mockResolvedValue(overview(briefing(), true))
     api.generate.mockResolvedValue({ created: true, briefing: queued })
     render(panel())
+    // Before generating: the server's own limits, read with the overview, and no money claimed.
+    const limits = await screen.findByTestId('briefing-limits')
+    expect(limits).toHaveTextContent('Limits the server enforces: 1 of 6 runs started in the last 24 hours (retries count)')
+    for (const text of ['3 attempts per version', 'up to 15 minutes per run', 'up to 40 new items and 12 for comparison per version, 200 carried over', 'a request of at most 48,000 characters', 'There is no token or cost cap during a run']) {
+      expect(limits).toHaveTextContent(text)
+    }
     fireEvent.click(await screen.findByRole('button', { name: 'Generate briefing' }))
     expect(await screen.findByText('Synthesizing… (Run running)')).toBeInTheDocument()
     expect(api.generate).toHaveBeenCalledWith('s', 'p')

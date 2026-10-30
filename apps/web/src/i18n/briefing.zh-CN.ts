@@ -34,6 +34,15 @@ export const briefingZhCN = {
   daily: '每日简报',
   daily_on: '每份每日摘要生成后，以你的身份、用你的 Agent 生成。',
   daily_off: '已关闭：只在请求时生成简报。',
+  limits: {
+    title: '服务器实际执行的限制',
+    runs: '过去 24 小时已启动 {{used}} / {{max}} 次（重试也计入）',
+    attempts: '每个版本最多 {{count}} 次尝试',
+    time: '每次运行最长 {{minutes}} 分钟',
+    inputs: '每个版本最多 {{news}} 条新材料、{{background}} 组对照材料，另顺延 {{carried}} 条待处理',
+    size: '单次请求最多 {{chars}} 个字符',
+    no_cap: '运行中没有 token 或费用上限：费用取决于 Agent 的运行时，事先无法得知。',
+  },
   readers_only: '只有项目写入者可以生成简报。',
   empty: '还没有简报。',
   last_briefing: '最近一份简报',
@@ -56,6 +65,7 @@ export const briefingZhCN = {
   },
   error: {
     briefing_output_invalid: 'Agent 的回答没有正确引用证据，因此未发布。',
+    briefing_output_truncated: 'Agent 的回答超过了单次运行可保存的长度，且没有结构化简报，因此未发布。',
     briefing_access_changed: '综合之前或期间，材料的访问权限发生了变化。',
     briefing_execution_setup_required: '开启者没有可用的 Agent 运行时。',
     briefing_budget_exhausted: '本次运行的预算已用完。',

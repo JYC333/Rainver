@@ -5,7 +5,8 @@
 - 已提交：P1（c7db1db5）、P2（97e08875）、P3（379a98c1）。各阶段均经双审与提交前完整套件。
 - 整体修复已提交：d3a308ca。O1（生成链路的出网目标）、O2（无正文 pending 顺延及失败／取消后重试）均通过 Codex 复核；Antigravity 整体 UX 审核通过。
 - 本次授权的代码实施、阶段双审、整体审核与合成验证已完成。修后 Node 24／真实隔离 PG 的完整 server：512 文件、5873 项通过，5 项条件跳过，性能门槛通过；Web 无改动，复用 P3 完整结果：239 文件、2156 项通过，性能门槛通过。
-- 未验：真实模型质量、worker 重启与远端 ACK；当前没有 token／金额硬上限。
+- 未验：真实模型质量、真实 live Host 远端 smoke；当前没有 token／金额硬上限。
+  worker 进程重启与停止 ACK 已用真实子进程与合成 Host 验证（§9.7）。
 - 本计划保留为实施与验收记录，不退役；§7 的真实综合质量和完整执行验收未勾项继续保留，不以合成验证代替。
 
 ## 1. 用户目标与交付顺序
@@ -162,7 +163,18 @@ P1a 与 P1b 作为同一首批实施任务推进：不交付一个只有表和�
 - [x] 变化：基线不冒充新闻；重复／无增量不再推；新 revision 有变化；迟到分析不丢。（结构层已测：基线；无变化复用同一检查、不建 Run；正文／分析原地改写→`revised`；new_publication/newly_found；迟到分析与不可共享项跨多次检查顺延；上期重点＋材料作对照背景，背景只能 `ongoing`。真实模型是否正确判同事件未测，见“质量”）
 - [x] 项目：影响引用真实合成项目目标／约束；上下文缺失时明确不足。（合成项目目标 C1 进入 prompt 与投影；`affects` 无上下文被拒；UI 明示上下文不足；真实模型质量未验）
 - [x] 授权：来源撤权、成员新增、上下文变私有后，相关总览／重点均不可泄露。（已测：家族每个成员／注解／信号各自出网门禁与依赖；次要来源撤权或归档→dispatch 拒绝、读时 withheld；Task 移出项目并私有→dispatch 拒绝、发布拒绝、读时隐藏；无权新成员 withheld；简报 Run 关闭自动检索与 pin，合成私有 Memory 不进入真实规划上下文）
-- [ ] 执行：双击、并发生成、worker 重启、取消及旧 attempt 晚回各自收敛；有限预算可见。（已测：重复／串行／并发复用；双向锁交错只认当前 attempt；生产 `executeRun` 守卫拒绝→Run failed（非 waiting_for_review）→简报 failed→释放名额；整请求 48k 字符硬上限。未测：真实 worker 进程重启、远端取消 ACK；无 token／金额上限）
+- [ ] 执行：双击、并发生成、worker 重启、取消及旧 attempt 晚回各自收敛；有限预算可见。
+  - 已测：重复／串行／并发复用；双向锁交错只认当前 attempt；生产 `executeRun` 守卫拒绝→Run failed（非 waiting_for_review）→简报 failed→释放名额；整请求 48k 字符硬上限。
+  - 真实 worker 进程（`informationBriefingWorkerProcessDb`）：服务器自身的 `startJobsWorker` 跑在独立子进程中，连接隔离 PG 与合成 Host（daemon 线协议＋最小 ACP 代理，不调用模型），已验证：
+    - 端到端发布；
+    - 运行中 SIGKILL 后重启：回收任务、强制停止旧 launch、经 Host 确认后 orphaned→版本 failed、重试发布，旧 attempt 晚到的 complete 不改变结果；
+    - 领取后崩溃：job 耗尽→Run `run_abandoned`→恢复流程最终化→版本 failed、可重试；
+    - 停止 ACK 丢失：保持 cancelling，重启后重发并确认→cancelled；
+    - 停止 ACK 迟到→cancelled，之后的输出不发布；
+    - Host 断线后在宽限期内重连：一次发布。
+  - 修复两处真实缺陷：CLI 回复读自 canonical `summary`；job 结束的 Run 由恢复流程最终化。
+  - 未测：真实 live Host／远端 daemon smoke。
+  - 有限预算可见：已实现。生成前在共享面板显示服务器实际执行的限制（overview DTO `limits`，取自 `BRIEFING_LIMITS` 与本 scope 近 24 小时实际 Run 数），并明确运行中没有 token／金额上限、费用取决于运行时。token／金额上限本身仍不存在，见 §9.7。
 - [x] 状态：采集完成但综合失败、部分覆盖、无材料与无重要变化有不同反馈。（服务端状态/outcome/coverage + Web 单测）
 - [x] 页面：390／1280px 可读，引用可回看；无额外材料卡字段；切篇／切 scope 不串回包。（`project-briefing.browser.mjs` 真 Chromium，路由 mock 合成数据；`ProjectBriefingPanel.test.tsx` scope/卸载/登出守卫）
 - [x] 历史：原 Digest 快照不改；人工当前版本与封存日、backfill 区分。（每日经现有 Automation、重放复用、blocked 日、日期顺序 422）
@@ -335,6 +347,56 @@ guide／链接检查。每批提交前运行必要的完整套件；不反复执
 - 修后主 Agent 独占运行 `REQUIRE_TEST_POSTGRES=true vitest run --maxWorkers=4`（server，Node 24），exit 0，76.63 秒；512 文件通过、1 文件条件跳过，5873 项通过、5 项条件跳过。日志 `/tmp/shared-briefing-overall-server-final.log`。
 - Web 完整结果复用 `/tmp/shared-briefing-P3-web-full.log`，239 文件／2156 项通过；本次整体修复未改 Web 或 protocol。两套完整性能门槛均通过。
 - 实际生产代码链验证止于合成材料的 accepted Delivery 准备，未实际发送供应商；没有操作运行实例、调用真实模型、push 或部署。真实模型综合／引用支持／价值、worker 重启、远端 ACK、200 条 carry 的真实规模均未验；已经进入 vendor 会话的内容不能远程撤回。
+
+### 9.7 剩余验收推进（2026-10-30，工作区）
+
+- 进程级恢复与停止 ACK：见 §7「执行」。工作进程运行构建后的 `dist`（与 `node dist/index.js` 同一产物），
+  `buildServer` 注册全部模块；未启动调度器的其他任务。租约过期以回拨持久化心跳表示（等价于 600 s 回收阈值）。
+- 规模：205 条待处理项真实 PG：携带 200 条（上限），其余 5 条保持 pending，下次发布后继续携带；
+  已退出 scope 的项不再携带；发送 40 条；prompt ≤ 48k；已简报材料只作为背景返回。
+- 预算（审计结果，未新增上限）：
+  - 已强制：每 scope 每日 6 个 Run（含重试）；每版本 3 次尝试；Run `max_attempts=1`、`max_duration_seconds=900`
+    （服务端计时，超时即终止）；输入 40 条新闻＋12 个背景家族、携带 200 条、整请求 48k 字符；
+    定时运行另受 Automation 预算来源的 `max_runs` 约束。
+  - 不存在：运行中的 token／金额硬上限。规范 `max_cost` 仅由 Supervisor 在安排重试前按估算用量检查，
+    而简报 Run 为 fail-fast、不重试，因此对简报不起作用。ACP 的 `session/prompt` 没有 token 上限参数，
+    原生 CLI 的用量由其运行时自行控制；`effectiveMaxOutputTokens` 只作用于服务端直接调用 provider，
+    不适用于简报的 Agent 运行时。
+  - 最小可审方案（待用户确定金额，未实施）：准入时按规范用量账本，汇总该 scope 近 24 小时简报 Run 的
+    `estimated_cost_usd`，超过用户设定的上限即拒绝新 Run。这是事后估算的准入门，不是运行中硬上限，
+    也不能把次数当作金额。
+- Reuse Check：
+  - 复用服务器自身的 `buildServer`、`startJobsWorker`、`sharedHostConnectionRegistry`，以及既有的 daemon 线协议与 ACP 帧（同 `remoteHostCliAdapter` 测试）。
+  - 复用规范的回收、恢复、最终化流程。
+  - 未新增依赖（`tsx` 只是传递依赖，因此运行 `tsc` 构建后的 `dist`）、调度循环或计费框架。
+- 质量：固定合成语料（`test/support/briefingQualityCorpus.ts`）与评估入口
+  （`informationBriefingQualityHarnessDb`）。用例：同一事件不同 URL、矛盾报道、无关材料、项目目标影响、
+  上期重复与真实增量、个人跨主题 lens。
+  - 走真实 request／manifest／prompt；写出请求、引用对照、期望与人工量表。
+  - 提供已授权的真实模型回复后，再走真实 parse／validate／settle 并记录合同结果。
+  - 尚无真实模型运行（等待授权），质量项不勾选；结构占位回复不能作为质量证据。
+
+### 9.8 剩余验收修复 1（R1、R2、预算可见性、个人质量入口；工作区，待复审）
+
+- R1 长回复：`canonicalRunOutput` 按 Run 合同声明的 `structured_output_json.schema`，把回复中的
+  `information_briefing.v1` 对象（整段 JSON 或最后一个 fenced 块，上限 262,144 字符）保存为
+  `result.structured_output`。终态写入的 sanitize 只限制其中每个字符串，因此合法长回复完整保留。
+  settlement 依次读取 `output_text` → `structured_output` → 结构化 `result` → summary；
+  被截断的 summary 记为 `briefing_output_truncated`。evidence redaction 与 32k 上限不变。
+  - 已测：真实 worker 进程 41k 合法回复发布；同样长但引用不存在的回复→`briefing_output_invalid`；
+    长纯文本→`briefing_output_truncated`；prose summary 加结构化 result 的回复可以发布。
+- R2 持久 pending：按 scope 内已结算版本中每项的最新状态判断，不再以发布截止时间抹除；
+  按最旧优先每版顺延 200 条，未处理完的轮转到队尾。
+  缺席不等于退出：候选已按完整受众读权过滤，因此未返回的顺延项由 `adapter.scopeMembers`
+  （仅 id，同一信号查询关闭读门禁）判断。
+  - 仍属 scope、当前不可共享（Source 或条目暂不可读、失去已 opt-in 项目的读权）→ `not_shared`，保持 pending，
+    不读不发，`complete=false`，再次顺延时重新授权。
+  - 能证实已退出（Goal 删除或不再选入、Corpus 归档或排除、opt-out、退订、条目或 Source 删除）→ 永久 withdrawn。
+  移除 `maxCarryRecorded`。已测：1205 条经两次发布无一丢失；Source 临时私有→恢复后交付；
+  暂拒项不占住顺延额度；真正退出不再携带；个人失去项目读权保持 pending、opt-out 才退出。
+- 预算可见性：见 §7「执行」。
+- 质量入口：personal 与 baseline／delta 共用 settle-and-record，写入真实 contract.json；
+  每次重写请求时先删除本 case 旧的 contract.json；合成的合法／非法回复仅作接线验证，不能作为质量结论。
 
 ## 10. 实现前置约束与需试验参数
 

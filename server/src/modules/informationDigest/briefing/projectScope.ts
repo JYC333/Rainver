@@ -3,7 +3,7 @@ import { canReadProject, canWriteProject, projectReaderIds } from "../../project
 import { contentAccessLevelSql } from "../../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../../access/contentAccessRegistry.js";
 import { goalCollectionReadableSql } from "../../sources/goals/itemVisibility.js";
-import { contentChangedInWindowSql, everyReader, hydrateCandidates, sharedItems, type CandidateSignal } from "./candidates.js";
+import { contentChangedInWindowSql, everyReader, hydrateCandidates, liveScopeMembers, sharedItems, type CandidateSignal } from "./candidates.js";
 import {
   BRIEFING_LIMITS, contextSourceKey, signalKey, signalRevision,
   type BriefingContextEntry, type BriefingScopeAdapter, type BriefingSignalDep, type BriefingWindow,
@@ -19,17 +19,16 @@ const TASK_ACCESS = contentResourceDefinition("task")!;
  * its collecting Source. No member's private reading state is read.
  */
 export function projectBriefingScope(spaceId: string, projectId: string): BriefingScopeAdapter {
-  return {
-    scope: { type: "project", spaceId, projectId, ownerUserId: null, key: `project:${projectId}` },
-    audience: (db) => projectReaderIds(db, spaceId, projectId),
-    canRead: (db, userId) => canReadProject(db, spaceId, projectId, userId),
-    canGenerate: (db, userId) => canWriteProject(db, spaceId, projectId, userId),
-
-    async candidates(db: Queryable, window: BriefingWindow) {
-      const audience = await projectReaderIds(db, spaceId, projectId);
-      const inWindow = (column: string) => `(${column} > $4::timestamptz AND ${column} <= $5::timestamptz)`;
+  /**
+   * The scope's signals: one row per (item, lens). `gated` applies the
+   * Following collecting-Source gate for the whole audience. Without it the
+   * query answers membership alone (`scopeMembers`): the same conditions of
+   * selection, and no other reader-dependent filter exists here.
+   */
+  const signals = async (db: Queryable, audience: string[], window: BriefingWindow, gated: boolean) => {
+    const inWindow = (column: string) => `(${column} > $4::timestamptz AND ${column} <= $5::timestamptz)`;
       // One row per (item, lens); the kernel merges lenses and reading families.
-      const signals = await db.query<CandidateSignal>(
+      const rows = await db.query<CandidateSignal>(
         `WITH following AS (
            SELECT gi.source_item_id, 'following'::text AS lens_kind,
                   COALESCE(NULLIF(g.compatibility_json->>'display_title',''), g.intent_json->>'intent', 'Following') AS lens_label,
@@ -47,7 +46,7 @@ export function projectBriefingScope(spaceId: string, projectId: string): Briefi
             WHERE g.space_id = $1 AND g.project_id = $2 AND g.status <> 'deleted'
               AND gi.selection_status IN ('important', 'unjudged')
               AND gi.associated_at <= $5::timestamptz
-              AND ${everyReader("$3", (user) => goalCollectionReadableSql("membership", user))}
+              AND ${gated ? everyReader("$3", (user) => goalCollectionReadableSql("membership", user)) : "$3::varchar[] IS NOT NULL"}
          ), monitoring AS (
            SELECT d.source_item_id, 'monitoring'::text, 'Project monitoring'::text, d.reason,
                   GREATEST(pl.created_at, d.updated_at), NULL::timestamptz, 'decision'::text, d.id, dc.source_connection_id
@@ -74,7 +73,22 @@ export function projectBriefingScope(spaceId: string, projectId: string): Briefi
              OR ${contentChangedInWindowSql("rows.source_item_id", "$4", "$5")}`,
         [spaceId, projectId, audience, window.since, window.cutoff, window.pinnedItemIds],
       );
-      return hydrateCandidates(db, spaceId, audience, signals.rows);
+    return rows.rows;
+  };
+
+  return {
+    scope: { type: "project", spaceId, projectId, ownerUserId: null, key: `project:${projectId}` },
+    audience: (db) => projectReaderIds(db, spaceId, projectId),
+    canRead: (db, userId) => canReadProject(db, spaceId, projectId, userId),
+    canGenerate: (db, userId) => canWriteProject(db, spaceId, projectId, userId),
+
+    async candidates(db: Queryable, window: BriefingWindow) {
+      const audience = await projectReaderIds(db, spaceId, projectId);
+      return hydrateCandidates(db, spaceId, audience, await signals(db, audience, window, true));
+    },
+
+    async scopeMembers(db: Queryable, itemIds: string[], cutoff: string) {
+      return liveScopeMembers(db, spaceId, await signals(db, [], { since: cutoff, cutoff, pinnedItemIds: itemIds }, false));
     },
 
     async context(db: Queryable) {

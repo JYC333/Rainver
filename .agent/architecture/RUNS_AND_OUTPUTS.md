@@ -32,7 +32,16 @@ Adapter-native structured values and materialization summaries live under
 `result`; the top level contains only schema version, semantic status, bounded
 summary, result, and the validated output manifest. Workflow JSON Pointer
 bindings resolve against `result` and fail closed when the source Run has no
-canonical envelope.
+canonical envelope. The summary is evidence text, capped (32,000 characters,
+`evidenceRedaction.ts`), so it is not a lossless channel. When the Run's
+contract declares a structured output schema (`structured_output_json.schema`)
+and the adapter returned that object only inside its reply text, as a CLI
+runtime does, the execution owner keeps it as `result.structured_output`. The
+kept object is the reply as JSON, or its last fenced JSON block, whose `schema`
+is the declared one, at most 262,144 characters. The terminal writer's sanitize
+then bounds each string in it, not the object, so a long valid reply survives
+whole. Nothing is extracted without a declared schema, and redaction is not
+relaxed.
 
 ACP session and Agent events are normalized to `runtime_event.v1`. The shared
 ACP controller consumes protocol messages as they arrive; stdout/stderr
@@ -256,7 +265,11 @@ Run as ordinary queued work: `cancelJob` and `reclaimStuckJobs` end the Run
 behind a `provider_task_run` job exactly as they end an `agent_run`'s —
 through the Run repository's one terminal write, never by writing `runs`
 themselves; its Task is then settled from finalization
-(`PROJECT_WORK.md`, "Trigger") — and
+(`PROJECT_WORK.md`, "Trigger"). A Run ended this way (`run_abandoned`,
+`run_cancelled`) that nobody finalized is picked up by the orphan-finalization
+step of recovery (`listOrphanedRunIds`), so every domain's settlement
+reconciler runs for it (a briefing version is settled, not left queued
+behind its dead job) — and
 the handler settles the Run `failed` when its own last attempt throws — which
 is the only thing that finishes a Run the worker never dispatched, because
 `recoverStaleRuns` reclaims only rows that actually started.

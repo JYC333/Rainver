@@ -86,6 +86,18 @@ export class InformationBriefingService {
     const published = await repository.latestPublished(adapter.scope);
     return {
       can_generate: await adapter.canGenerate(this.db, viewerId),
+      limits: {
+        runs_per_day: BRIEFING_LIMITS.maxRunsPerScopePerDay,
+        runs_in_last_day: await repository.runsInLastDay(adapter.scope),
+        attempts_per_version: BRIEFING_LIMITS.maxAttemptsPerVersion,
+        run_seconds: BRIEFING_LIMITS.runSeconds,
+        news_inputs: BRIEFING_LIMITS.maxInputs,
+        background_families: BRIEFING_LIMITS.maxBackgroundFamilies,
+        request_chars: BRIEFING_LIMITS.promptChars,
+        carried_items: BRIEFING_LIMITS.maxCarry,
+        token_cap: null,
+        cost_cap: null,
+      },
       daily_enabled: dailyEnabled,
       latest,
       latest_briefing: !published ? null : published.id === latest?.id ? latest : await projectBriefing(this.db, repository, adapter, published),
@@ -273,11 +285,10 @@ async function decideRequest(tx: Queryable, adapter: BriefingScopeAdapter, userI
     const execution = await selectExecution(tx, adapter.scope.spaceId, userId, input.execution);
     const published = await repository.latestPublished(adapter.scope, cutoff);
     const previous = published ? await comparisonBase(tx, repository, adapter, published, cutoff, execution) : null;
-    // What is compared is the published chain alone; what is still to be
-    // briefed is also what later unpublished versions recorded as pending
-    // (a refused, not-ready or not-shared item of a no-run check), up to
-    // this cutoff and the carry bound — re-offered through the scope's gates.
-    const pending = await repository.pendingSince(adapter.scope, published?.cutoff_at ?? null, cutoff, PENDING_INPUT_STATUSES, BRIEFING_LIMITS.maxCarry);
+    // What is compared is the published chain alone; what is carried is every
+    // item still unresolved in this scope's settled versions, oldest first, up
+    // to the carry bound — re-offered through the scope's gates.
+    const pending = await repository.pendingSince(adapter.scope, cutoff, PENDING_INPUT_STATUSES, BRIEFING_LIMITS.maxCarry);
     const manifest = await buildManifest(tx, adapter, {
       cutoff,
       previous,

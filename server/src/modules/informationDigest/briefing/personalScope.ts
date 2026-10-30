@@ -2,7 +2,7 @@ import type { Queryable } from "../../routeUtils/common.js";
 import { canReadProject } from "../../projects/access.js";
 import { goalCollectionReadableSql } from "../../sources/goals/itemVisibility.js";
 import { ReadingPreferences } from "../readingPreferences.js";
-import { contentChangedInWindowSql, everyReader, hydrateCandidates, sharedItems, type CandidateSignal } from "./candidates.js";
+import { contentChangedInWindowSql, everyReader, hydrateCandidates, liveScopeMembers, sharedItems, type CandidateSignal } from "./candidates.js";
 import {
   BRIEFING_LIMITS, contextSourceKey, signalKey, signalRevision,
   type BriefingContextEntry, type BriefingScopeAdapter, type BriefingSignalDep, type BriefingWindow,
@@ -37,16 +37,28 @@ export function personalBriefingScope(spaceId: string, userId: string): Briefing
     const readable = await Promise.all(enabled.map(async (projectId) => (await canReadProject(db, spaceId, projectId, userId)) ? projectId : null));
     return readable.filter((projectId): projectId is string => Boolean(projectId));
   };
-  return {
-    scope: { type: "personal", spaceId, projectId: null, ownerUserId: userId, key: `personal:${userId}` },
-    audience: async () => audience,
-    canRead: async (_db, viewer) => viewer === userId,
-    canGenerate: async (_db, viewer) => viewer === userId,
-
-    async candidates(db: Queryable, window: BriefingWindow) {
-      const projects = await optedProjects(db);
+  /**
+   * The Projects this reader chose for their Reading and that still exist,
+   * whether or not they may read them today: losing access is not leaving.
+   */
+  const chosenProjects = async (db: Queryable) => {
+    const enabled = await new ReadingPreferences(db).enabled({ spaceId, userId });
+    if (enabled.length === 0) return [];
+    return (await db.query<{ id: string }>(
+      `SELECT id FROM projects WHERE space_id = $1 AND id = ANY($2::varchar[]) AND deleted_at IS NULL`,
+      [spaceId, enabled],
+    )).rows.map((row) => row.id);
+  };
+  /**
+   * The scope's signals: one row per (item, lens), through `projects`.
+   * `gated` applies the Following collecting-Source gate. Without it, and
+   * given `chosenProjects`, the query answers membership alone
+   * (`scopeMembers`): the reader's explicit selections — topics, opt-ins,
+   * subscriptions — and nothing that depends on current access.
+   */
+  const signals = async (db: Queryable, window: BriefingWindow, projects: string[], gated: boolean) => {
       const inWindow = (column: string) => `(${column} > $4::timestamptz AND ${column} <= $5::timestamptz)`;
-      const signals = await db.query<CandidateSignal>(
+      const rows = await db.query<CandidateSignal>(
         `WITH following AS (
            SELECT gi.source_item_id, 'following'::text AS lens_kind,
                   CASE WHEN g.project_id IS NULL THEN ${TOPIC("g")} ELSE ${PROJECT_LABEL("gp", TOPIC("g"))} END AS lens_label,
@@ -64,7 +76,7 @@ export function personalBriefingScope(spaceId: string, userId: string): Briefing
             WHERE g.space_id = $1 AND g.status <> 'deleted'
               AND ((g.project_id IS NULL AND g.owner_user_id = $2) OR g.project_id = ANY($7::varchar[]))
               AND gi.selection_status IN ('important', 'unjudged') AND gi.associated_at <= $5::timestamptz
-              AND ${everyReader("$3", (user) => goalCollectionReadableSql("membership", user))}
+              AND ${gated ? everyReader("$3", (user) => goalCollectionReadableSql("membership", user)) : "$3::varchar[] IS NOT NULL"}
          ), monitoring AS (
            SELECT d.source_item_id, 'monitoring'::text, ${PROJECT_LABEL("mp", "'monitoring'")}, d.reason,
                   GREATEST(pl.created_at, d.updated_at), NULL::timestamptz, 'decision'::text, d.id, dc.source_connection_id
@@ -100,7 +112,21 @@ export function personalBriefingScope(spaceId: string, userId: string): Briefing
              OR ${contentChangedInWindowSql("rows.source_item_id", "$4", "$5")}`,
         [spaceId, userId, audience, window.since, window.cutoff, window.pinnedItemIds, projects],
       );
-      return hydrateCandidates(db, spaceId, audience, signals.rows);
+    return rows.rows;
+  };
+
+  return {
+    scope: { type: "personal", spaceId, projectId: null, ownerUserId: userId, key: `personal:${userId}` },
+    audience: async () => audience,
+    canRead: async (_db, viewer) => viewer === userId,
+    canGenerate: async (_db, viewer) => viewer === userId,
+
+    async candidates(db: Queryable, window: BriefingWindow) {
+      return hydrateCandidates(db, spaceId, audience, await signals(db, window, await optedProjects(db), true));
+    },
+
+    async scopeMembers(db: Queryable, itemIds: string[], cutoff: string) {
+      return liveScopeMembers(db, spaceId, await signals(db, { since: cutoff, cutoff, pinnedItemIds: itemIds }, await chosenProjects(db), false));
     },
 
     async context(db: Queryable) {

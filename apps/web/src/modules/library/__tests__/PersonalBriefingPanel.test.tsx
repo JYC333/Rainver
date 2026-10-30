@@ -36,7 +36,7 @@ function briefing(overrides: Partial<Briefing> = {}): Briefing {
 }
 const summary = (b: Briefing) => ({ id: b.id, version: b.version, kind: b.kind, status: b.status, outcome: b.outcome, comparison: b.comparison, period_date: b.period_date, cutoff_at: b.cutoff_at, created_at: b.created_at, completed_at: b.completed_at, checked_at: b.checked_at, error_code: b.error_code })
 const overview = (latest: Briefing | null, history: Briefing[] = latest ? [latest] : []): BriefingOverviewResponse => ({
-  can_generate: true, daily_enabled: false, latest, latest_briefing: history.find(b => b.outcome === 'briefing') ?? null, history: history.map(summary),
+  can_generate: true, limits: { runs_per_day: 6, runs_in_last_day: 1, attempts_per_version: 3, run_seconds: 900, news_inputs: 40, background_families: 12, request_chars: 48000, carried_items: 200, token_cap: null, cost_cap: null }, daily_enabled: false, latest, latest_briefing: history.find(b => b.outcome === 'briefing') ?? null, history: history.map(summary),
 })
 const panel = (spaceId = 's') => <MemoryRouter><PersonalBriefingPanel key={spaceId} spaceId={spaceId} /></MemoryRouter>
 

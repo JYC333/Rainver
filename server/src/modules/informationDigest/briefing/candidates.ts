@@ -55,6 +55,25 @@ const annotationRevision = (summary: string | null) => sha256(summary ?? "").sli
  * when the whole audience may fully read it (no Space oversight); the others
  * are returned as `not_shared_ids` so they are carried, never sent.
  */
+/**
+ * Of a scope's unfiltered signals (`BriefingScopeAdapter.scopeMembers`), the
+ * items still members: not deleted, with at least one signal whose Source
+ * still exists (a deleted Source cannot come back; an archived or private one
+ * can). Ids only: no text of an item is read here.
+ */
+export async function liveScopeMembers(db: Queryable, spaceId: string, signals: CandidateSignal[]): Promise<Set<string>> {
+  if (signals.length === 0) return new Set();
+  const rows = await db.query<{ id: string }>(
+    `SELECT DISTINCT i.id
+       FROM unnest($2::varchar[], $3::varchar[]) AS signal(item_id, connection_id)
+       JOIN source_items i ON i.id = signal.item_id AND i.space_id = $1 AND i.deleted_at IS NULL
+       LEFT JOIN source_connections c ON c.id = signal.connection_id AND c.space_id = $1
+      WHERE signal.connection_id IS NULL OR c.deleted_at IS NULL AND c.id IS NOT NULL`,
+    [spaceId, signals.map((row) => row.source_item_id), signals.map((row) => row.connection_id)],
+  );
+  return new Set(rows.rows.map((row) => row.id));
+}
+
 export async function hydrateCandidates(
   db: Queryable,
   spaceId: string,

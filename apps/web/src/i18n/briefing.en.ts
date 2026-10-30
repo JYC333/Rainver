@@ -30,6 +30,15 @@ export const briefingEn = {
   daily: 'Daily briefing',
   daily_on: 'Generated after each daily digest, as you, on your Agent.',
   daily_off: 'Off: briefings are generated only on request.',
+  limits: {
+    title: 'Limits the server enforces',
+    runs: '{{used}} of {{max}} runs started in the last 24 hours (retries count)',
+    attempts: '{{count}} attempts per version',
+    time: 'up to {{minutes}} minutes per run',
+    inputs: 'up to {{news}} new items and {{background}} for comparison per version, {{carried}} carried over',
+    size: 'a request of at most {{chars}} characters',
+    no_cap: 'There is no token or cost cap during a run: the cost depends on the Agent\'s runtime and is not known in advance.',
+  },
   readers_only: 'Only Project writers can generate briefings.',
   empty: 'No briefing yet.',
   last_briefing: 'Last briefing',
@@ -52,6 +61,7 @@ export const briefingEn = {
   },
   error: {
     briefing_output_invalid: 'The Agent\'s answer did not cite its evidence correctly, so it was not published.',
+    briefing_output_truncated: 'The Agent\'s answer was longer than a run keeps and came without a structured briefing, so it was not published.',
     briefing_access_changed: 'Access to the material changed before or during the synthesis.',
     briefing_execution_setup_required: 'No usable Agent runtime is set up for the person who enabled it.',
     briefing_budget_exhausted: 'The budget for this run is exhausted.',

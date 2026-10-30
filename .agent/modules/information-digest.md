@@ -193,23 +193,44 @@ which stay as they are. Plan: `.agent/plans/shared-briefing-and-project-loop.md`
     egress-refused, and not shared with the whole audience. What is compared
     and what is carried are kept apart:
     - comparison follows the published chain alone;
-    - carry takes the comparison base's own pending inputs, plus what later
-      unpublished versions of the scope recorded as pending
-      (`PgBriefingRepository.pendingSince`), up to the cutoff. These are the
-      versions after the base, or every version when nothing is published
-      yet, such as a sealed no-run day whose material was refused.
-    - An item counts by its latest state in a settled (`ready`) version.
-      An attempt that admitted it (`included`) but failed, was cancelled or
-      is still running has not processed it, so it stays pending. The next
-      identical request is then the same version's frozen retry, within its
-      3 attempts; after those, it is an explicit `briefing_attempts_exhausted`.
-      Material leaves the carry once a published version briefs it, because
-      that version becomes the comparison base.
-    - Carried items are re-offered as pins through the scope's own candidate
-      gates, which re-authorize them. An item that left the scope is not
-      carried.
-    - The carry is bounded at 200. Pending material beyond the bound is
-      counted in `coverage.truncated` (`complete` false) and stays pending.
+    - carry takes what is still unresolved in the scope's settled (`ready`)
+      versions up to the cutoff (`PgBriefingRepository.pendingSince`). Each
+      item counts by its latest state there, whatever that version's cutoff,
+      so a publication never erases an item still pending:
+      - an attempt that admitted it (`included`) but failed, was cancelled
+        or is still running has not processed it. The next identical request
+        is that version's frozen retry, within 3 attempts, then an explicit
+        `briefing_attempts_exhausted`;
+      - a published version that sent it resolved it;
+      - an item that left the scope is withdrawn: a version that carried it
+        and found it no longer a member recorded `analysis_json.withdrawn`,
+        not counted in coverage, which resolves it.
+
+      Being left out of `candidates` does not mean leaving the scope, because
+      candidates are already filtered by what the whole audience may read. So
+      a carried item `candidates` did not return is classified by
+      `adapter.scopeMembers` (ids only, the adapter's own signal query with
+      its reader gate off, and an empty window, so only pins match):
+      - still a member, i.e. the scope's selection stands but a Source or
+        item is not readable by the whole audience now: `not_shared`.
+        Pending, never read or sent, `complete` false, and re-authorized
+        whenever it is carried again;
+      - no longer a member: withdrawn. Project: the Goal deleted or no longer
+        selecting it, the Corpus entry archived or excluded, the monitoring
+        decision dismissed or its Project link gone. Personal: the same,
+        plus a Reading opt-out, an unsubscribe, or a deleted Project. Either
+        scope: the item deleted, or every Source behind it deleted.
+
+      Losing read access to an opted-in Project is not an opt-out: the
+      personal scope answers membership from the opt-in itself, not from
+      "opted in and readable now".
+    - Oldest first, at most 200 per version. Each is re-offered as a pin
+      through the scope's own candidate gates, which re-authorize it. What a
+      version carries and leaves pending again (e.g. beyond the 40 sent) is
+      re-recorded with a newer state and goes to the back, so a backlog larger
+      than one carry is worked through in turn rather than dropped. The rest
+      is counted in `coverage.truncated` (`complete` false). Only ids are
+      read for this, never text.
   - The candidate window includes body and analysis changes of in-scope items,
     so a revision is found without new membership activity.
   - The previous published version's still-readable highlights, and their
@@ -288,7 +309,17 @@ which stay as they are. Plan: `.agent/plans/shared-briefing-and-project-loop.md`
   authorized for, so a Source that refuses that destination leaves no
   accepted Delivery.
 
-  A refusal is a `RunPreparationError` with that code. The Supervisor's
+  A refusal is a `RunPreparationError` with that code.
+
+  The model's reply is read from the Run's canonical output, in this order:
+  `result.output_text`; then `result.structured_output`, the reply's
+  `information_briefing.v1` object, which the canonical writer kept because
+  the briefing Run's contract declares that schema (see `RUNS_AND_OUTPUTS.md`);
+  then `result` itself when it is a briefing; then the envelope's `summary`.
+  The structured channel is what keeps a long valid reply whole, since the
+  summary is capped at 32,000 characters. A summary the redactor cut, with no
+  structured briefing, is refused as `briefing_output_truncated`, not taken
+  for the reply. The Supervisor's
   managed fail-fast rule leaves the Run terminal, never `waiting_for_review`,
   and the reconciler `information_briefing` (canonical `runSettlement`,
   replayed by recovery) fails the version, releasing the scope. Settlement
@@ -486,6 +517,21 @@ which stay as they are. Plan: `.agent/plans/shared-briefing-and-project-loop.md`
     version, highlight, refs, evidence item ids and context sources. No
     Memory or Knowledge is written; afterwards the Task follows ordinary Task
     sharing.
+- **Limits shown before generating.** The overview DTO carries `limits`
+  (`BriefingLimitsSchema`), filled from the server's own `BRIEFING_LIMITS`
+  and, for this scope, the Runs it started in the last 24 hours as of that
+  read:
+  - Runs per rolling 24 hours, retries included;
+  - attempts per version;
+  - the time limit of one Run;
+  - news inputs, background families and carried items per version;
+  - request characters.
+
+  `token_cap` and `cost_cap` are always null: there is no token or currency
+  cap during a Run, and the cost depends on the runtime. The shared
+  `BriefingPanel` shows them to those who may generate (Project and personal
+  alike); no number is copied into the web app. Counts are never presented as
+  money.
 - **Web actions** (`library/briefing/HighlightActions.tsx`): each set of
   actions belongs to one highlight: scope, briefing id and the highlight's
   stable `index` (never its position among the highlights this reader

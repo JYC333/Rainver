@@ -1,3 +1,4 @@
+import { BRIEFING_PROTOCOL_VERSION } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { getDbPool } from "../../../db/pool.js";
 import { HttpError, withQueryableTransaction, type Queryable } from "../../routeUtils/common.js";
@@ -183,8 +184,7 @@ async function settleVersion(db: Queryable, run: RunRecord, context: NonNullable
     }));
     let validated;
     try {
-      const output = runOutputResult(current.output_json);
-      const text = typeof output.output_text === "string" ? output.output_text : JSON.stringify(output);
+      const text = briefingReplyText(current.output_json);
       validated = validateBriefing(parseBriefingOutput(text), refs, row.comparison);
     } catch (error) {
       if (!(error instanceof BriefingOutputError)) throw error;
@@ -204,6 +204,35 @@ async function settleVersion(db: Queryable, run: RunRecord, context: NonNullable
     if (published && isMeaningfulChange(row, validated, authorization.allowed)) await notifyMeaningfulChange(tx, adapter, row);
     return adapter;
   });
+}
+
+/**
+ * The model's final reply in a terminal Run's canonical output
+ * (`runs/orchestrationResults.ts`, `canonicalRunOutput`), in this order:
+ * 1. `result.output_text`, when a result carries the reply itself;
+ * 2. `result.structured_output`, the reply's `information_briefing.v1`
+ *    object the canonical writer kept from the reply text because the Run's
+ *    contract declares that schema — the channel that keeps a long valid
+ *    reply whole (the summary is capped);
+ * 3. `result` itself, when it is a briefing object (a structured adapter);
+ * 4. the envelope's `summary`, the reply as text. A summary the evidence
+ *    redactor had to cut is not the reply: that is a truncated channel, not
+ *    an invalid output, and is refused as such.
+ */
+function briefingReplyText(outputJson: unknown): string {
+  const result = runOutputResult(outputJson);
+  if (typeof result.output_text === "string") return result.output_text;
+  const isBriefing = (value: unknown) => Boolean(value && typeof value === "object" && (value as { schema?: unknown }).schema === BRIEFING_PROTOCOL_VERSION);
+  if (isBriefing(result.structured_output)) return JSON.stringify(result.structured_output);
+  if (isBriefing(result)) return JSON.stringify(result);
+  const summary = (outputJson as { summary?: unknown } | null)?.summary;
+  if (typeof summary === "string" && summary.trim()) {
+    if (summary.endsWith("...[truncated]")) {
+      throw new BriefingOutputError(["the reply was longer than the Run summary keeps and carried no structured briefing"], "briefing_output_truncated");
+    }
+    return summary;
+  }
+  return JSON.stringify(result);
 }
 
 export function registerBriefingSettlement(): void {

@@ -60,6 +60,8 @@ export interface ManifestInput {
   lead: BriefingCandidate | null;
   /** Every Source item of the family (sent or not): carried forward when pending. */
   item_ids: string[];
+  /** A carried item no longer a member of the scope: resolved, not pending, not coverage. */
+  withdrawn?: boolean;
   unverified: boolean;
   lenses: BriefingLens[];
   signals: string[];
@@ -95,7 +97,6 @@ const DELTA_PRIORITY: Record<BriefingDeltaClass, number> = {
   evidenced_change: 0, revised: 1, new_publication: 2, newly_found: 3, unknown_time: 4, baseline: 5, background: 6,
 };
 export const PENDING_INPUT_STATUSES = ["not_ready", "truncated", "egress_refused", "not_shared"] as const;
-const PENDING: ReadonlySet<string> = new Set(PENDING_INPUT_STATUSES);
 const EMPTY_DEPS: BriefingDeps = { items: [], annotations: [], signals: [] };
 
 /**
@@ -140,13 +141,11 @@ export async function buildManifest(
   const { cutoff, previous } = input;
   const since = previous?.cutoff_at
     ?? new Date(Date.parse(cutoff) - BRIEFING_LIMITS.baselineWindowDays * 86_400_000).toISOString();
-  const pendingIds = [...new Set([
-    ...(previous ? previous.inputs.filter((row) => PENDING.has(row.status)).flatMap((row) => row.item_ids.length ? row.item_ids : [row.source_item_id!]) : []),
-    ...(input.pending?.itemIds ?? []),
-  ])];
-  const carryItemIds = pendingIds.slice(0, BRIEFING_LIMITS.maxCarry);
-  // Pending material beyond the carry bound is not dropped silently: it is counted as left out, and stays pending.
-  const carryOverflow = pendingIds.length - carryItemIds.length + (input.pending?.overflow ?? 0);
+  // What is still to be briefed, oldest first (`PgBriefingRepository.pendingSince`):
+  // this version carries up to the bound and re-authorizes each through the
+  // scope's own gates; the rest stays pending and is counted as left out.
+  const carryItemIds = [...new Set(input.pending?.itemIds ?? [])].slice(0, BRIEFING_LIMITS.maxCarry);
+  const carryOverflow = input.pending?.overflow ?? 0;
   const comparisonHighlights = (previous?.highlights ?? []).slice(0, BRIEFING_LIMITS.maxComparisonHighlights);
   const backgroundFamilies = new Set(comparisonHighlights.flatMap((highlight) => highlight.families).slice(0, BRIEFING_LIMITS.maxBackgroundFamilies));
   const backgroundItemIds = previous
@@ -232,7 +231,23 @@ export async function buildManifest(
       block: null,
     });
   }
-  for (const id of offered.not_shared_ids) staged.push(pending("not_shared", null, [id], []));
+  // A carried item `candidates` did not return is one of two things, and the
+  // absence alone does not say which, since candidates are already filtered
+  // by what the audience may read. Still a member of the scope: only not
+  // shareable now (a Source or item access narrowed) — pending, never read or
+  // sent, re-authorized when carried again. No longer a member (a Corpus
+  // entry archived, a Goal deleted or no longer selecting it, an opt-out, a
+  // deleted item or Source): it left the scope, recorded withdrawn so it is
+  // resolved rather than carried forever, and not counted as coverage.
+  const notShared = new Set(offered.not_shared_ids);
+  const returned = new Set(offered.rows.map((row) => row.source_item_id));
+  const absent = carryItemIds.filter((id) => !returned.has(id));
+  const members = absent.length ? await adapter.scopeMembers(db, absent, cutoff) : new Set<string>();
+  for (const id of absent) {
+    if (members.has(id)) notShared.add(id);
+    else { notShared.delete(id); staged.push({ ...pending("truncated", null, [id], []), withdrawn: true }); }
+  }
+  for (const id of notShared) staged.push(pending("not_shared", null, [id], []));
 
   const contextEntries = await adapter.context(db);
   const context = contextEntries.map((entry, index) => ({ ...entry, key: `C${index + 1}` }));
@@ -290,7 +305,7 @@ export async function buildManifest(
     ...staged.filter((row) => !sentSet.has(row) && row.delta_class !== "background")
       .sort((a, b) => (a.family_key ?? a.item_ids[0]!).localeCompare(b.family_key ?? b.item_ids[0]!)),
   ];
-  const count = (status: ManifestInputStatus) => inputs.filter((row) => row.status === status).length;
+  const count = (status: ManifestInputStatus) => inputs.filter((row) => row.status === status && !row.withdrawn).length;
   const coverage: BriefingCoverage = {
     since: previous ? since : null,
     cutoff,

@@ -261,17 +261,24 @@ export class PgRunRepository {
   }
 
   /**
-   * Orphaned Runs whose current attempt has no finalization yet. A Run the
-   * supervisor leaves orphaned keeps that status after it is finalized, so
-   * without the finalization filter a backlog of finished ones would fill
-   * every page and starve a newly orphaned Task Run of its only sweep.
+   * Runs whose execution owner went away before finalizing them, and whose
+   * current attempt has no finalization yet: orphaned Runs, and Runs their
+   * backing job ended (`jobs/repository.ts`, `endRunBehindJob`: a job whose
+   * retries were exhausted while stuck — `run_abandoned` — or that was
+   * cancelled before it ran — `run_cancelled`). Nothing else finalizes the
+   * latter, so without this their domain's settlement (a briefing version, a
+   * Task) would wait forever. A Run the supervisor leaves orphaned keeps that
+   * status after it is finalized, so without the finalization filter a
+   * backlog of finished ones would fill every page and starve a newly
+   * orphaned Task Run of its only sweep.
    */
   async listOrphanedRunIds(limit = 100): Promise<Array<{ id: string; space_id: string }>> {
     const result = await this.db.query<{ id: string; space_id: string }>(
       `SELECT r.id, r.space_id
          FROM runs r
-        WHERE r.status = 'orphaned'
-          AND r.error_json->>'error_code' = 'orphaned'
+        WHERE ((r.status = 'orphaned' AND r.error_json->>'error_code' = 'orphaned')
+            OR (r.status = 'failed' AND r.error_json->>'error_code' = 'run_abandoned')
+            OR (r.status = 'cancelled' AND r.error_json->>'error_code' = 'run_cancelled'))
           AND NOT EXISTS (
             SELECT 1 FROM run_finalizations f
              WHERE f.space_id = r.space_id AND f.run_id = r.id

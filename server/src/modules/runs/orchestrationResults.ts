@@ -113,10 +113,22 @@ export function canonicalRunOutput(input: {
   success: boolean;
   outputText: string;
   outputJson: unknown;
+  /**
+   * The structured output schema the Run's contract declares
+   * (`structured_output_json.schema`). When the adapter returned that object
+   * only inside its reply text — as every CLI runtime does — it is kept as
+   * `result.structured_output`, so a long but valid reply survives the
+   * summary's length cap: sanitizing bounds each string, not the object.
+   */
+  structuredSchema?: string | null;
 }): CanonicalRunOutput {
   const output = recordValue(input.outputJson);
   const manifest = normalizeOutputManifest(output.output_manifest);
   const { output_manifest: _manifest, ...result } = output;
+  if (input.structuredSchema && result.schema !== input.structuredSchema && result.structured_output === undefined) {
+    const structured = declaredStructuredOutput(input.outputText, input.structuredSchema);
+    if (structured) result.structured_output = structured;
+  }
   const semanticStatus = output.status === "rejected" ? "rejected" : input.success ? "succeeded" : "failed";
   return {
     schema_version: "run_output.v1",
@@ -125,6 +137,37 @@ export function canonicalRunOutput(input: {
     result: sanitizeEvidenceJson(result) as CanonicalRunOutput["result"],
     output_manifest: manifest,
   };
+}
+
+/** Bound on a structured output kept from reply text (serialized characters). */
+export const MAX_STRUCTURED_OUTPUT_CHARS = 262_144;
+
+/**
+ * The reply's object of the declared schema: the whole reply as JSON, or its
+ * last fenced JSON block that parses to an object whose `schema` is the
+ * declared one. Anything else — prose, another schema, an oversized object —
+ * yields nothing, and the domain judges the summary as before.
+ */
+export function declaredStructuredOutput(text: string, schema: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.length > MAX_STRUCTURED_OUTPUT_CHARS * 2) return null;
+  const candidates = [trimmed, ...[...trimmed.matchAll(/```(?:json)?\s*\n([\s\S]*?)\n```/g)].map((match) => match[1]!.trim()).reverse()];
+  for (const candidate of candidates) {
+    if (candidate.length > MAX_STRUCTURED_OUTPUT_CHARS) continue;
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && (parsed as { schema?: unknown }).schema === schema) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch { /* next candidate */ }
+  }
+  return null;
+}
+
+/** The structured output schema a Run's contract declares, if any. */
+export function declaredStructuredSchema(contract: unknown): string | null {
+  const schema = recordValue(recordValue(contract).structured_output_json).schema;
+  return typeof schema === "string" && schema ? schema : null;
 }
 
 export function runOutputResult(value: unknown): Record<string, unknown> {

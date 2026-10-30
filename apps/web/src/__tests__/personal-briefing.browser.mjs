@@ -44,7 +44,7 @@ test('Personal briefing above Reading: generate, follow progress, open the cited
       if (path === `/spaces/${spaceId}/information-briefings/personal` && method === 'POST') { writes.push(path); latest = queued; reads = 0; return json({ created: true, briefing: queued }) }
       if (path === `/spaces/${spaceId}/information-briefings/personal`) {
         if (latest?.status === 'queued' && ++reads >= 2) latest = ready
-        return json({ can_generate: true, daily_enabled: false, latest, latest_briefing: latest?.outcome === 'briefing' ? latest : null, history: latest ? [summary(latest)] : [] })
+        return json({ can_generate: true, limits: { runs_per_day: 6, runs_in_last_day: 2, attempts_per_version: 3, run_seconds: 900, news_inputs: 40, background_families: 12, request_chars: 48000, carried_items: 200, token_cap: null, cost_cap: null }, daily_enabled: false, latest, latest_briefing: latest?.outcome === 'briefing' ? latest : null, history: latest ? [summary(latest)] : [] })
       }
       if (method !== 'GET') { writes.push(path); return route.fulfill({ status: 404, json: { detail: 'Not part of the browser fixture' } }) }
       if (path === '/me') return json({ id: 'user-p', name: 'Tester', default_space_id: spaceId, instance_role: 'member' })
@@ -61,6 +61,21 @@ test('Personal briefing above Reading: generate, follow progress, open the cited
     await panel.getByText('No briefing yet.', { exact: true }).waitFor()
     await page.getByRole('link', { name: 'Synthetic reading item 1' }).waitFor()
     assert.equal(writes.length, 0, 'Opening Reading must not generate a briefing')
+    // Before generating: the server's own limits, and no money claimed.
+    const limits = panel.getByTestId('briefing-limits')
+    await limits.getByText('Limits the server enforces: 2 of 6 runs started in the last 24 hours (retries count)').waitFor()
+    await limits.locator('summary').click()
+    await limits.getByText('There is no token or cost cap during a run', { exact: false }).waitFor()
+    await mkdir('/tmp/rainver-briefing-limits', { recursive: true })
+    for (const width of [390, 1280]) {
+      await page.setViewportSize({ width, height: 900 })
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      const geometry = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))
+      assert.ok(geometry.scroll <= geometry.viewport + 1, JSON.stringify(geometry))
+      await panel.screenshot({ path: `/tmp/rainver-briefing-limits/personal-limits-${width}.png` })
+    }
+    await page.setViewportSize({ width: 390, height: 900 })
+    await limits.locator('summary').click()
     await panel.getByRole('button', { name: 'Generate briefing', exact: true }).click()
     await panel.getByText('Synthesizing… (Run running)', { exact: true }).waitFor()
     await panel.getByText(ready.overview.text).waitFor({ timeout: 15000 })

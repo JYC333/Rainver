@@ -101,6 +101,15 @@ export interface BriefingScopeAdapter {
   canGenerate(db: Queryable, userId: string): Promise<boolean>;
   /** Candidates every audience member may fully read; `not_shared_ids` are those left out for that reason (carried, never sent). */
   candidates(db: Queryable, window: BriefingWindow): Promise<{ rows: BriefingCandidate[]; not_shared_ids: string[] }>;
+  /**
+   * Of these items, those still in the scope as of `cutoff`, whether or not
+   * the audience may read them now: the scope's own selection (a Following
+   * still selecting them, an active Corpus entry or monitoring link, a
+   * Reading opt-in or subscription the person kept), with no read or Source
+   * gate applied. An item that is not a member has left the scope for good; a
+   * member that `candidates` withholds is only not shareable now. Ids only.
+   */
+  scopeMembers(db: Queryable, itemIds: string[], cutoff: string): Promise<Set<string>>;
   /** Context every audience member may read; bounded. */
   context(db: Queryable): Promise<BriefingContextEntry[]>;
   /** Of these items, those the current audience may still fully read. */
@@ -120,7 +129,7 @@ export const BRIEFING_LIMITS = {
   /** Previously briefed families re-sent as comparison background, and previous highlights shown. */
   maxBackgroundFamilies: 12,
   maxComparisonHighlights: 8,
-  /** Pending items carried forward at most (most recent first). */
+  /** Pending items carried into one version at most (oldest still unresolved first). */
   maxCarry: 200,
   baselineWindowDays: 14,
   maxContextTasks: 8,

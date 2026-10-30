@@ -42,12 +42,12 @@ test('Project briefing: writer generates, sees progress, then reads a cited brie
     sceneReads+=1
     const day=sceneReads<=1?heldDay:sceneReads===2?dayQueued:{...ready,id:'brief-day',version:4,kind:'daily',period_date:'2026-10-29',overview:{text:'Synthetic fixture: the held day, briefed.',refs:['S1']}}
     const history=[day,day.status==='blocked'?runningManual:{...runningManual,status:'ready',outcome:'briefing'},ready]
-    return route.fulfill({json:{can_generate:false,daily_enabled:true,latest:day,latest_briefing:day.outcome==='briefing'?day:ready,history:history.map(summary)}})
+    return route.fulfill({json:{can_generate:false,limits:{runs_per_day:6,runs_in_last_day:2,attempts_per_version:3,run_seconds:900,news_inputs:40,background_families:12,request_chars:48000,carried_items:200,token_cap:null,cost_cap:null},daily_enabled:true,latest:day,latest_briefing:day.outcome==='briefing'?day:ready,history:history.map(summary)}})
    }
    if(path.endsWith('/information-briefings')&&method==='GET'){
     if(latest&&latest.status==='queued'&&++polls>=2)latest=ready
     const published=latest===check?ready:latest?.outcome==='briefing'?latest:null
-    return route.fulfill({json:{can_generate:true,daily_enabled:false,latest,latest_briefing:published,history:[latest,published].filter((b,i,all)=>b&&all.findIndex(o=>o?.id===b.id)===i).map(summary)}})
+    return route.fulfill({json:{can_generate:true,limits:{runs_per_day:6,runs_in_last_day:2,attempts_per_version:3,run_seconds:900,news_inputs:40,background_families:12,request_chars:48000,carried_items:200,token_cap:null,cost_cap:null},daily_enabled:false,latest,latest_briefing:published,history:[latest,published].filter((b,i,all)=>b&&all.findIndex(o=>o?.id===b.id)===i).map(summary)}})
    }
    if(path.endsWith('/highlights/0/adoption/preview')){actions.push('adoption-preview');return route.fulfill({json:{briefing_id:'brief-1',highlight:0,project_id:'project-fixture',visibility:'space_shared',title:'Fixture gripper launch',description:'Synthetic fixture: what changed: a soft gripper was announced [S1]',preview_hash:'f'.repeat(64),existing_task_id:null}})}
    if(path.endsWith('/highlights/0/adoption')){actions.push('adopt:'+route.request().postDataJSON().preview_hash.length);return route.fulfill({status:201,json:{created:true,task:{id:'task-fixture',title:'Fixture gripper launch',project_id:'project-fixture'}}})}

@@ -168,8 +168,36 @@ export const BriefingSchema = BriefingSummarySchema.extend({
 }).strict();
 export type Briefing = z.infer<typeof BriefingSchema>;
 
+/**
+ * The limits the server actually enforces on generating this scope's
+ * briefings, as it reads them — shown before generating so the bounds are
+ * known. They are counts, sizes and times; none of them is money. There is
+ * no token or currency cap during a Run (`token_cap` / `cost_cap` are always
+ * null: the cost depends on the runtime and is not known in advance).
+ */
+export const BriefingLimitsSchema = z.object({
+  /** Runs this scope may start in a rolling 24 hours, retries included, and how many it started in the last 24 hours as of this read. */
+  runs_per_day: z.number().int().nonnegative(),
+  runs_in_last_day: z.number().int().nonnegative(),
+  /** Attempts of one version (a retry re-sends its frozen request). */
+  attempts_per_version: z.number().int().positive(),
+  /** Time limit of one Run, enforced by the server. */
+  run_seconds: z.number().int().positive(),
+  /** New material sent per version; previously briefed families re-sent as background. */
+  news_inputs: z.number().int().positive(),
+  background_families: z.number().int().nonnegative(),
+  /** Characters of the whole request (prompt and instruction). */
+  request_chars: z.number().int().positive(),
+  /** Still-unbriefed items carried into one version. */
+  carried_items: z.number().int().positive(),
+  token_cap: z.null(),
+  cost_cap: z.null(),
+}).strict();
+export type BriefingLimits = z.infer<typeof BriefingLimitsSchema>;
+
 export const BriefingOverviewResponseSchema = z.object({
   can_generate: z.boolean(),
+  limits: BriefingLimitsSchema,
   daily_enabled: z.boolean(),
   /** The newest version of any status, including a "nothing new" check or a failure. */
   latest: BriefingSchema.nullable(),

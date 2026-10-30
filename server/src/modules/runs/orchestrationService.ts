@@ -71,6 +71,7 @@ import { authorizeCredentialSpend, CredentialSpendDeniedError } from "../policy/
 import {
   adapterFailureEnvelope,
   canonicalRunOutput,
+  declaredStructuredSchema,
   semanticFailureErrorJson,
   semanticRunFailure,
   errorMessage,
@@ -1393,6 +1394,7 @@ export class RunOrchestrationService {
         output_json: canonicalRunOutput({
           success: adapterResult.success && !semanticFailure,
           outputText: adapterResult.output_text,
+          structuredSchema: declaredStructuredSchema(running.contract_snapshot_json ?? effectiveRun.contract_snapshot_json),
           outputJson: {
             ...recordValue(outputJsonWithVerification(
               outputJsonWithRuntimeUsage(adapterResult),

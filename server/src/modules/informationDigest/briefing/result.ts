@@ -16,8 +16,7 @@ export interface ValidatedBriefing {
 }
 
 export class BriefingOutputError extends Error {
-  readonly code = "briefing_output_invalid";
-  constructor(readonly issues: string[]) {
+  constructor(readonly issues: string[], readonly code: "briefing_output_invalid" | "briefing_output_truncated" = "briefing_output_invalid") {
     super(`The briefing did not meet its contract: ${issues.slice(0, 5).join("; ")}`);
     this.name = "BriefingOutputError";
   }

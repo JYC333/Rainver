@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { RefreshCw, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
-import type { Briefing, BriefingOverviewResponse } from '@rainver/protocol'
+import type { Briefing, BriefingLimits, BriefingOverviewResponse } from '@rainver/protocol'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Skeleton } from '../../../components/ui/skeleton'
@@ -15,7 +15,7 @@ const POLL_MS = 4000
 // At most 30 minutes of automatic re-reads per mount (or per manual refresh); then Refresh re-reads on demand.
 const MAX_POLLS = 450
 const KNOWN_ERRORS = new Set([
-  'briefing_output_invalid', 'briefing_access_changed', 'briefing_execution_setup_required', 'briefing_budget_exhausted',
+  'briefing_output_invalid', 'briefing_output_truncated', 'briefing_access_changed', 'briefing_execution_setup_required', 'briefing_budget_exhausted',
   'briefing_daily_limit', 'briefing_writer_required', 'briefing_cancelled', 'briefing_inputs_changed',
   'briefing_context_widened', 'briefing_version_stale', 'briefing_scope_busy', 'briefing_earlier_day_pending',
 ])
@@ -179,6 +179,7 @@ export function BriefingPanel({ api, evidenceHref, title, hint, readOnlyNote, te
           <span><span className="font-medium">{t('briefing.daily')}</span> — {overview.daily_enabled ? t('briefing.daily_on') : t('briefing.daily_off')}</span>
         </label>
       ) : overview ? <p className="text-xs text-muted-foreground">{readOnlyNote}</p> : null}
+      {overview?.can_generate ? <BriefingLimitsNote limits={overview.limits} /> : null}
       {error != null && !overview ? <div role="alert" className="text-sm">{errMsg(error)} <Button variant="ghost" size="sm" onClick={() => void load()}>{t('reading.retry')}</Button></div> : null}
       {!overview && error == null ? <Skeleton className="h-24" /> : null}
       {overview && !shown ? <p className="text-sm text-muted-foreground">{t('briefing.empty')}</p> : null}
@@ -226,6 +227,30 @@ export function BriefingPanel({ api, evidenceHref, title, hint, readOnlyNote, te
         </label>
       ) : null}
     </Card>
+  )
+}
+
+/**
+ * What generating may use, as the server enforces it (its own values, read
+ * with the overview): counts, sizes and times — never presented as money.
+ * There is no token or cost cap, and the note says so.
+ */
+function BriefingLimitsNote({ limits }: { limits: BriefingLimits }) {
+  const { t, locale } = useAppTranslation()
+  const number = (value: number) => value.toLocaleString(locale)
+  return (
+    <details className="text-xs text-muted-foreground" data-testid="briefing-limits">
+      <summary className="cursor-pointer select-none">
+        {t('briefing.limits.title')}: {t('briefing.limits.runs', { used: number(limits.runs_in_last_day), max: number(limits.runs_per_day) })}
+      </summary>
+      <ul className="mt-1 list-disc space-y-0.5 pl-5">
+        <li>{t('briefing.limits.attempts', { count: limits.attempts_per_version })}</li>
+        <li>{t('briefing.limits.time', { minutes: Math.round(limits.run_seconds / 60) })}</li>
+        <li>{t('briefing.limits.inputs', { news: number(limits.news_inputs), background: number(limits.background_families), carried: number(limits.carried_items) })}</li>
+        <li>{t('briefing.limits.size', { chars: number(limits.request_chars) })}</li>
+        <li>{t('briefing.limits.no_cap')}</li>
+      </ul>
+    </details>
   )
 }
 
