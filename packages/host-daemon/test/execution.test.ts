@@ -633,12 +633,13 @@ describe("handleLaunch with a provider binding", () => {
     const { frames, send, complete } = collectSend();
     process.env.ANTHROPIC_API_KEY = "sk-this-machine";
     process.env.CLAUDE_CODE_OAUTH_TOKEN = "machine-oauth";
+    process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = "/machine-private-login";
     try {
       await handleLaunch(
         {
           run_id: "run-bound",
           launch_id: "launch-21",workspace_location_id: "folder-1",
-          argv: ["sh", "-c", "printf '%s|%s|%s|%s\n' \"$ANTHROPIC_BASE_URL\" \"$ANTHROPIC_AUTH_TOKEN\" \"${ANTHROPIC_API_KEY:-none}\" \"${CLAUDE_CODE_OAUTH_TOKEN:-none}\"; cat \"$CODEX_HOME/config.toml\""],
+          argv: ["sh", "-c", "printf '%s|%s|%s|%s|%s\n' \"$ANTHROPIC_BASE_URL\" \"$ANTHROPIC_AUTH_TOKEN\" \"${ANTHROPIC_API_KEY:-none}\" \"${CLAUDE_CODE_OAUTH_TOKEN:-none}\" \"${CLAUDE_SECURESTORAGE_CONFIG_DIR:-none}\"; cat \"$CODEX_HOME/config.toml\""],
           provider_binding: {
             profile_key: "agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/location/cccccccc-cccc-4ccc-8ccc-cccccccccccc/codex_cli/provider-1",
             env: { ANTHROPIC_BASE_URL: "http://control-plane:8021/anthropic/l1", ANTHROPIC_AUTH_TOKEN: "lease-token" },
@@ -653,7 +654,7 @@ describe("handleLaunch with a provider binding", () => {
       );
       await complete();
       const output = frames.filter((f) => f.type === "output").map((f) => f.chunk).join("");
-      expect(output).toContain("http://control-plane:8021/anthropic/l1|lease-token|none|none");
+      expect(output).toContain("http://control-plane:8021/anthropic/l1|lease-token|none|none|none");
       // The placeholder is resolved against the real profile directory, which
       // is keyed by Agent × container × adapter × backend rather than by this
       // run — and never by adapter and provider alone. Two Agents on one
@@ -664,6 +665,7 @@ describe("handleLaunch with a provider binding", () => {
     } finally {
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
     }
   });
 
@@ -678,6 +680,7 @@ describe("handleLaunch with a provider binding", () => {
     const { frames, send, complete } = collectSend();
     const machineHome = process.env.HOME;
     process.env.RAINVER_TEST_TOOLCHAIN = "/opt/toolchain";
+    process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = "/wrong-login-store";
     process.env.XDG_DATA_HOME = "/home/someone/.local/share";
     process.env.ANTHROPIC_API_KEY = "sk-this-machine";
     try {
@@ -685,7 +688,7 @@ describe("handleLaunch with a provider binding", () => {
         {
           run_id: "run-unbound",
           launch_id: "launch-22",workspace_location_id: "folder-1",
-          argv: ["sh", "-c", "printf '%s|%s|%s|%s|%s\n' \"$CLAUDE_CONFIG_DIR\" \"$HOME\" \"${RAINVER_TEST_TOOLCHAIN:-none}\" \"${XDG_DATA_HOME:-none}\" \"${ANTHROPIC_API_KEY:-none}\""],
+          argv: ["sh", "-c", "printf '%s|%s|%s|%s|%s|%s\n' \"$CLAUDE_CONFIG_DIR\" \"$HOME\" \"${RAINVER_TEST_TOOLCHAIN:-none}\" \"${XDG_DATA_HOME:-none}\" \"${ANTHROPIC_API_KEY:-none}\" \"$CLAUDE_SECURESTORAGE_CONFIG_DIR\""],
           provider_binding: {
             profile_key: "agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/conversation/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/claude_code/ambient",
             env: {},
@@ -694,7 +697,7 @@ describe("handleLaunch with a provider binding", () => {
             profile_env: { CLAUDE_CONFIG_DIR: ".claude" },
             files: [],
             credential_source: "host_login",
-            login_link: null,
+            login_link: { home_subdir: ".claude", credential_file: ".credentials.json", shared_credential_env: "CLAUDE_SECURESTORAGE_CONFIG_DIR" },
           },
         },
         send,
@@ -711,8 +714,10 @@ describe("handleLaunch with a provider binding", () => {
       expect(output).toMatch(
         new RegExp(`/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/profiles/conversation/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/claude_code/ambient/\\.claude\\|${machineHome}\\|/opt/toolchain\\|none\\|none`),
       );
+      expect(output.trim().endsWith(`|${join(machineHome!, ".claude")}`)).toBe(true);
     } finally {
       delete process.env.RAINVER_TEST_TOOLCHAIN;
+      delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
       delete process.env.XDG_DATA_HOME;
       delete process.env.ANTHROPIC_API_KEY;
     }

@@ -161,17 +161,17 @@ export function runtimeProfileKey(
  * The profile frame for a run with no ModelProvider binding.
  *
  * An unbound run gets the same profile shape as a bound run, minus the lease:
- * no `files`, no `env`, only the state-root variables and a link to the one
- * credential file this installation was logged in with. Do not launch it on
- * the machine's own `~/.claude`; that shares one login and session store
- * across every Agent.
+ * no `files`, no `env`, only the state-root variables and a reference to this
+ * installation's login. A native credential-directory selector shares the
+ * vendor's store and refresh locks; other runtimes use a file link. Sessions
+ * and auto-memory stay in the Agent's own profile.
  *
- * The link, rather than a token in the environment: passing the credential
- * through `CLAUDE_CODE_OAUTH_TOKEN` or its equivalents would mean Rainver read
+ * A directory or file reference, rather than a token in the environment:
+ * passing the credential through `CLAUDE_CODE_OAUTH_TOKEN` or its equivalents would mean Rainver read
  * a credential and injected it into a subprocess, which is the shape
  * [ADR 0008](../../../../.agent/decisions/0008-credential-channel-isolation.md)
- * forbids. With a link the CLI opens its own file and neither the server nor
- * the daemon ever holds the bytes.
+ * forbids. With either reference the CLI opens its own file and neither the
+ * server nor the daemon ever holds the bytes.
  */
 export function buildUnboundRuntimeProfile(
   runtimeKey: string,
@@ -194,7 +194,11 @@ export function buildUnboundRuntimeProfile(
     profile_env: state.env,
     files: [],
     credential_source: "host_login",
-    login_link: { home_subdir: state.home_subdir, credential_file: state.credential_file },
+    login_link: {
+      home_subdir: state.home_subdir,
+      credential_file: state.credential_file,
+      ...(state.shared_credential_env ? { shared_credential_env: state.shared_credential_env } : {}),
+    },
   };
 }
 

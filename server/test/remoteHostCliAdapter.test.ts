@@ -906,6 +906,18 @@ describe("executeRemoteHostCliAdapter", () => {
 });
 
 describe("which runs get a runtime profile at all", () => {
+  it("uses Claude's native credential store while keeping sessions in each Agent's profile", () => {
+    const scope = { agent_id: "agent-1", container_kind: "conversation" as const, container_id: "conv-1" };
+    const frame = buildUnboundRuntimeProfile("claude_code", scope);
+    expect(frame.env).toEqual({});
+    expect(frame.profile_env).toEqual({ CLAUDE_CONFIG_DIR: ".claude" });
+    expect(frame.login_link).toEqual({
+      home_subdir: ".claude", credential_file: ".credentials.json",
+      shared_credential_env: "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+    });
+    expect(buildUnboundRuntimeProfile("codex_cli", scope).login_link).not.toHaveProperty("shared_credential_env");
+  });
+
   it("fails closed when a runtime cannot isolate its login and state", () => {
     setDynamicRuntimeAdapterSpecs([{
       ...getRuntimeAdapterSpec("claude_code")!,

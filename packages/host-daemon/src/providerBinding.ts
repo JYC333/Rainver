@@ -238,7 +238,11 @@ export async function materializeProviderBinding(
 ): Promise<Record<string, string>> {
   const root = resolve(profileRoot);
   await mkdir(root, { recursive: true, mode: 0o700 });
-  if (binding.login_link) await linkLoginCredential(root, binding.login_link, loginHome, log);
+  const login = binding.login_link;
+  if (login && binding.credential_source !== "host_login") {
+    throw new Error("A provider-bound runtime must not use the Host's login credential");
+  }
+  if (login && !login.shared_credential_env) await linkLoginCredential(root, login, loginHome, log);
 
   for (const file of binding.files) {
     const target = resolveInsideProfile(root, file.relative_path);
@@ -254,6 +258,16 @@ export async function materializeProviderBinding(
   const env: Record<string, string> = { ...binding.env };
   for (const [key, relative] of Object.entries(binding.profile_env)) {
     env[key] = relative === "." ? root : resolveInsideProfile(root, relative);
+  }
+  if (login?.shared_credential_env) {
+    if (!loginHome) throw new Error("Cannot locate this installation's shared login home");
+    const storage = resolveInsideProfile(resolve(loginHome), login.home_subdir);
+    resolveInsideProfile(storage, login.credential_file);
+    // Let the vendor own one credential store and its refresh locks. Linking
+    // only the file forks the login when an atomic write replaces the link;
+    // promoting the newest file can then spread a cleared invalid-grant stub.
+    // Old profile credentials are deliberately untouched and never promoted.
+    env[login.shared_credential_env] = storage;
   }
   return env;
 }

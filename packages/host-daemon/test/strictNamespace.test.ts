@@ -246,6 +246,19 @@ describe("planning a strict launch", () => {
     expect(plan().env.HOME).toBe("/runner/host/runs/run-1/home");
   });
 
+  it("keeps Claude's shared credential store read-only while its session profile stays writable", () => {
+    const loginHome = "/runner/host/managed-state/claude_code/home";
+    const storage = join(loginHome, ".claude");
+    const launch = plan({ loginHome, derivedEnv: {
+      CLAUDE_CONFIG_DIR: "/profile/.claude", CLAUDE_SECURESTORAGE_CONFIG_DIR: storage,
+    } });
+    expect(launch.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(storage);
+    expect(env(launch.args).CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(storage);
+    expect(binds(launch.args).get(loginHome)).toBe("read_only");
+    expect(binds(launch.args).get("/profile")).toBe("read_write");
+    expect(binds(launch.args).has(storage)).toBe(false);
+  });
+
   it("falls closed when the dispatch stated no isolation policy", () => {
     const { args } = plan({ isolation: undefined });
     expect(args).toContain("--unshare-net");

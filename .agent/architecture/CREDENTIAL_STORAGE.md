@@ -68,6 +68,14 @@ against that copy's own login (`packages/host-daemon/src/usageProbe.ts`); what
 reaches the control plane is a percentage and a reset time, cached per host ×
 adapter × installation in `host_runtime_usage` — never a credential.
 
+Claude CLI Runs share that installation's native credential directory through
+`CLAUDE_SECURESTORAGE_CONFIG_DIR`, while `CLAUDE_CONFIG_DIR` continues to isolate
+sessions and auto-memory by Agent × container. Credential writes and refresh
+locks therefore share one location; old profile credential files are not moved
+back based on modification time. No credential bytes pass through the daemon's
+profile materializer or environment. Strict Runs see the login HOME read-only;
+vendor login/helpers outside the namespace own renewal there.
+
 Managed subscription OAuth is also never pooled or rotated. Only the configured
 instance admin may connect, refresh quota, or disconnect it. The resulting
 provider remains owner-bound: another space member cannot list it, receive its

@@ -477,7 +477,7 @@ session a Conversation × Agent continues; nothing else keeps a copy that could
 disagree with it. The server does not materialize CLI state directories on a
 remote Host.
 
-### Login state: one per host × installation, shared by link
+### Login state: one per host × installation
 
 An Agent-managed login (a subscription, no ModelProvider binding) is the main
 path for CLI conversations — the driving need is that subscription quota is
@@ -488,11 +488,19 @@ logins by Agents × Rooms. So the login stays where it was:
   `~/.claude` / `~/.codex` / OpenCode data directory for `own`, the adapter's
   stable managed HOME for `managed:<version>` — and login happens there through the
   existing login stream;
-- when the daemon materializes a profile for an **unbound** run, it links
-  **only** the runtime's credential file (the `credential_file` under
-  `home_subdir` the adapter's state boundary names) from that login home into
-  the profile. Everything else in the profile — sessions, auto-memory,
-  settings — is the profile's own;
+- when the daemon materializes a profile for an **unbound** run, it references
+  that installation's login without reading credential bytes. Everything else
+  in the profile — sessions, auto-memory, settings — is the profile's own;
+- Claude declares `shared_credential_env: CLAUDE_SECURESTORAGE_CONFIG_DIR` in
+  its state boundary, carried in the launch's `login_link`. The daemon resolves
+  that directory under the installation's login HOME, while `CLAUDE_CONFIG_DIR`
+  still names the Agent × container profile. Claude reads, refreshes and locks
+  its credentials in that single shared store, including alongside native CLI
+  sessions and capability probes. A refresh's atomic rename cannot detach one
+  profile from the login. Old profile credential files and links are left
+  untouched but unused: their modification time must never promote a cleared
+  login stub over a valid installation login. Missing login state still prompts
+  for login; the daemon does not manufacture or migrate credentials;
 - a runtime that declares **no** state boundary (`credentials.state`) is not
   host-executable. Moving it into an empty profile would break
   authentication, while leaving it in the managed copy's shared home would mix
@@ -505,13 +513,15 @@ logins by Agents × Rooms. So the login stays where it was:
   product's state layout is known (Antigravity: `GEMINI_HOME`,
   `.gemini/antigravity-acp/acp_token.json`), logging in through ACP Agent
   Auth. The registry itself carries none of this, and nothing infers it;
-- a link, never a copy and never a token in the environment. Passing the
+- for runtimes without a separate credential-directory selector, a file link,
+  never a copy and never a token in the environment. Passing the
   credential through `CLAUDE_CODE_OAUTH_TOKEN` or its equivalents would mean
   Rainver read a credential and injected it into a subprocess, the shape
   [ADR 0008](../decisions/0008-credential-channel-isolation.md) forbids. A
   symlink is tried first and a hard link is the fallback, because Windows
   refuses `symlink` without Developer Mode;
-- missing login file → the profile is created without the link, and the first
+- for the file-link fallback, missing login file → the profile is created
+  without the link, and the first
   dispatch surfaces the runtime's own login prompt. That is the intended
   behavior. A symlink already at the target is removed then, because it points
   into a login home that has no credential any more (for example after logout)
@@ -532,11 +542,11 @@ logins by Agents × Rooms. So the login stays where it was:
   followed (relinked); a profile that refreshed itself later holds the live
   token and the login home the spent one, so the private file is **handed
   back** — renamed over the login home's credential (an inode move, no bytes
-  read) and the profile linked to it again. Claude Code does refresh by
-  temp-file rename on a paired host, and the rotated refresh token does
-  invalidate the siblings: without the hand-back every other profile asked
-  for a login again about once a day. A hand-back that fails (another
-  filesystem, an unwritable login home) leaves the profile its private copy
+  read) and the profile linked to it again. This fallback does not apply to
+  Claude: recency cannot distinguish a successful refresh from a newer cleared
+  credential, and its refresh lock must be shared with the credential store.
+  A hand-back that fails (another filesystem, an unwritable login home)
+  leaves the profile its private copy
   and logs, once per launch, that it no longer shares the login (a hard link
   to the same inode, the Windows fallback, is not divergence). A link that
   *fails* throws rather than leaving the run to discover it has no
@@ -545,6 +555,19 @@ logins by Agents × Rooms. So the login stays where it was:
   configuration and no login link, because linking the machine's subscription
   credential into a profile that is not using it puts a credential where it
   does not belong.
+
+The built-in strict Host still exposes the login HOME **read-only**. Selecting
+Claude's shared store does not grant a Run permission to acquire locks or write
+credentials there; renewal must happen outside the Run namespace, through the
+Host's vendor login/helpers. A trusted paired Host permits the owner's native
+CLI to renew its own login. Update both the control plane (which declares the
+selector) and the Host daemon (which applies it); an older daemon continues its
+old file-link behavior. This path requires a Claude version supporting the
+separate credential selector; it was verified with 2.1.312.
+
+Reuse / Dependency Check: reuse the adapter state boundary, Host profile
+materializer and Claude's native credential store and refresh locks. No OAuth
+client, credential parser, synchronizer, lock manager or dependency is added.
 
 ### Archiving what an Agent leaves behind
 

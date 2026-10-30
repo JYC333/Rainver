@@ -433,7 +433,7 @@ own login state and the machine's own environment, including `HOME`, so its
 is a **state root** of its own: every host-bound Agent run, bound or not, runs
 in a runtime profile keyed by Agent × container, reached through that
 runtime's own state-root variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, the XDG
-roots) rather than by moving `HOME`, with the machine's login linked into it.
+roots) rather than by moving `HOME`, with the machine's login referenced from it.
 That is a memory boundary, not a backend one — see B68. What such a run does
 drop is the vendor credential variables **the launched runtime reads** that a
 machine may have lying around, for this rule's own second reason: a leftover
@@ -462,8 +462,11 @@ ModelProvider or not, runs in a runtime profile keyed
 where the container is the Conversation for a Room turn, the owner for a direct
 chat, and the WorkspaceLocation otherwise. Two Agents on one machine, and one
 Agent in two Rooms, share none of it. The machine's login still serves them
-all: it stays in one login home per host × installation and is **linked** into
-each profile, and the profile is reached through that runtime's own state-root
+all: it stays in one login home per host × installation, reached through the
+vendor's separate credential-directory selector when declared, otherwise a
+credential-file link. A native selector shares the vendor's credential writes
+and refresh locks without sharing sessions or auto-memory. The profile is
+reached through that runtime's own state-root
 variable rather than by moving `HOME`, so an unbound run keeps the machine's
 git and ssh configuration — never copied, never passed through a subprocess
 environment

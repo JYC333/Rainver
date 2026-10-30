@@ -137,6 +137,14 @@ prefix first, so the working CLI stays available during download. Failed
 installation or validation retains the old copy; failed promotion restores it.
 Claude's Live login disables background self-updates for that subprocess and
 checks that the program still runs before reporting a successful login.
+Claude subscription Runs keep sessions and memory in each Agent's profile,
+while `CLAUDE_SECURESTORAGE_CONFIG_DIR` points at the installation's shared
+login directory so native credential writes and refresh locks stay together.
+Legacy profile credential files are preserved but no longer synchronized back
+by modification time. This requires the updated control plane and Host daemon,
+and a Claude version supporting that selector (verified with 2.1.312).
+The built-in Host keeps that directory read-only inside Runs; its vendor login
+and helpers renew credentials outside the Run namespace.
 Unsupported installation methods return an explanation rather than creating a
 managed copy or using sudo. The ACP adapter pack remains separately versioned.
 

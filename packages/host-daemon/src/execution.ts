@@ -856,8 +856,8 @@ export function strictBindsForRun(input: {
   // The Agent's own sessions and vendor memory (B68) — read-write, because
   // that is where this runtime keeps the conversation the next turn resumes.
   if (input.profileDir) binds.push({ path: input.profileDir, access: "read_write" });
-  // The profile links the credential file out of the login home, and a symlink
-  // whose target is outside the namespace resolves to nothing inside it.
+  // The profile references the login home's native credential store or links
+  // its credential file. Either reference must resolve inside the namespace.
   //
   // Read-only, and it stays read-only even though a runtime may want to
   // refresh its own token through that link: on a shared host this is the

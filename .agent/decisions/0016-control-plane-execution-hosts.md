@@ -375,9 +375,12 @@ with the executable. Agent sessions remain in their separate Agent profiles.
 host owner's action on a trusted host and an instance admin's on the built-in
 one; either way it is a terminal the daemon runs on a PTY and relays, the
 daemon initiates nothing, and it stores nothing beyond what the vendor CLI
-writes into that copy's HOME. A Run gets its Agent's profile with that copy's
-credential **linked** into it — never copied into a shared credential store,
-never handed to a subprocess as a token, and never brokered per Run.
+writes into that copy's HOME. A Run gets its Agent's profile and references
+that copy's login through the vendor's separate credential-directory selector
+when declared, otherwise a credential-file link. A native selector keeps the
+credential writes and refresh locks together while sessions and auto-memory
+remain in the Agent's profile. Credentials are never copied into a shared
+credential store, handed to a subprocess as a token, or brokered per Run.
 
 Enabling a registry agent for the deployment is instance-admin gated,
 separately from installing it on a host.
