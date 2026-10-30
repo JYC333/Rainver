@@ -23,6 +23,9 @@ source pipeline, subscription model, data model, and API.
 
 - Library shell (`/library`): Shell scene sidebar navigation for reading
   sections; defaults to `/library/reading` (the cross-day pending recommendation list). The navigation labels it Reading. All material uses `/library/reading?view=all`; legacy `/library/items` and type filters remain reachable under By type.
+- Personal briefing at the top of personal Reading (`PersonalBriefingPanel`,
+  owned by Information Digest's briefing kernel): collapsed to status and
+  overview so the list stays within reach; not shown in a Project's Reading.
 - Per-user item stream (`/library/items`): source-scanned items from sources
   the current user follows, items those sources delivered while the user
   followed them (historical eligibility, below), plus manually saved

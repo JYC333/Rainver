@@ -5,6 +5,10 @@ type Shape<T> = { [K in keyof T]: T[K] extends string ? string : Shape<T[K]> }
 /** 各简报范围共用的中文文案。 */
 export const briefingZhCN = {
   title: '简报',
+  personal_title: '我的简报',
+  personal_hint: '综合你的关注、你订阅的来源以及你加入阅读的项目。仅你可见。',
+  show_full: '展开完整简报',
+  hide_full: '收起',
   hint: '综合本项目的关注、监测与资料库。每条陈述都链接到它的证据。',
   generate: '生成简报',
   generating: '正在请求…',
@@ -60,6 +64,7 @@ export const briefingZhCN = {
   action: { act: '建议：行动', watch: '建议：关注', none: '无建议操作' },
   why: '为什么重要',
   impact: '对项目的影响',
+  impact_personal: '对你关注点的影响',
   impact_insufficient: '项目上下文不足，无法判断影响。',
   contradictions: '相互矛盾的报道',
   sources_one: '{{count}} 个来源域名',
@@ -68,6 +73,7 @@ export const briefingZhCN = {
   unverified_short: '未核实',
   evidence: '证据',
   context: '项目上下文',
+  context_personal: '你明确的关注点',
   delta: {
     baseline: '基线窗口内',
     new_publication: '新发布',

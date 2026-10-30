@@ -2543,6 +2543,20 @@ export const informationBriefingsApi = {
     put<{ daily_enabled: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/settings`, { daily_enabled }),
 }
 
+/** The caller's own personal briefing in this Space (never another person's). */
+export const personalBriefingsApi = {
+  overview: (spaceId: string, options: RequestOptions = {}) =>
+    get<BriefingOverviewResponse>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal`, options),
+  get: (spaceId: string, briefingId: string, options: RequestOptions = {}) =>
+    get<Briefing>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}`, options),
+  generate: (spaceId: string) =>
+    post<BriefingGenerateResponse>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal`, {}),
+  cancel: (spaceId: string, briefingId: string) =>
+    post<Briefing>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/cancel`),
+  setDaily: (spaceId: string, daily_enabled: boolean) =>
+    put<{ daily_enabled: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/settings`, { daily_enabled }),
+}
+
 export const informationDigestsApi = {
   reading: (spaceId: string, input: Partial<ReadingQuery> = {}, projectId?: string, options: RequestOptions = {}) => {
     const search = new URLSearchParams()

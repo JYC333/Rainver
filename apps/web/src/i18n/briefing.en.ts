@@ -1,6 +1,10 @@
 /** Briefing copy shared by every briefing scope. Merge as `briefing: briefingEn`. */
 export const briefingEn = {
   title: 'Briefing',
+  personal_title: 'My briefing',
+  personal_hint: 'A synthesis across your Following, your subscribed Sources and the Projects you added to your Reading. Only you see it.',
+  show_full: 'Show full briefing',
+  hide_full: 'Show less',
   hint: 'A synthesis across this Project\'s Following, monitoring and Corpus. Every statement links to its evidence.',
   generate: 'Generate briefing',
   generating: 'Requesting…',
@@ -56,6 +60,7 @@ export const briefingEn = {
   action: { act: 'Suggested: act', watch: 'Suggested: watch', none: 'No action suggested' },
   why: 'Why it matters',
   impact: 'Impact on the Project',
+  impact_personal: 'Impact on your focus',
   impact_insufficient: 'Not enough Project context to judge the impact.',
   contradictions: 'Conflicting reports',
   sources_one: '{{count}} source domain',
@@ -64,6 +69,7 @@ export const briefingEn = {
   unverified_short: 'Unverified',
   evidence: 'Evidence',
   context: 'Project context',
+  context_personal: 'Your stated focus',
   delta: {
     baseline: 'In the baseline window',
     new_publication: 'Newly published',

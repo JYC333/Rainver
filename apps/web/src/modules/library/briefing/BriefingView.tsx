@@ -30,7 +30,7 @@ export function BriefingView({ briefing, evidenceHref }: { briefing: Briefing; e
       {briefing.highlights.length > 0 ? (
         <section aria-label={t('briefing.highlights')} className="space-y-3">
           <h3 className="text-sm font-semibold">{t('briefing.highlights')}</h3>
-          {briefing.highlights.map((highlight, index) => <HighlightCard key={index} highlight={highlight} refs={refs} />)}
+          {briefing.highlights.map((highlight, index) => <HighlightCard key={index} highlight={highlight} refs={refs} personal={briefing.scope_type === 'personal'} />)}
         </section>
       ) : null}
       {briefing.open_questions.length > 0 ? (
@@ -59,8 +59,8 @@ export function BriefingView({ briefing, evidenceHref }: { briefing: Briefing; e
         </section>
       ) : null}
       {briefing.context.length > 0 ? (
-        <section aria-label={t('briefing.context')} className="space-y-1">
-          <h3 className="text-sm font-semibold">{t('briefing.context')}</h3>
+        <section aria-label={t(briefing.scope_type === 'personal' ? 'briefing.context_personal' : 'briefing.context')} className="space-y-1">
+          <h3 className="text-sm font-semibold">{t(briefing.scope_type === 'personal' ? 'briefing.context_personal' : 'briefing.context')}</h3>
           <ul className="flex flex-wrap gap-2 text-xs text-muted-foreground">
             {briefing.context.map(entry => <li key={entry.key} id={`briefing-ref-${entry.key}`}><span className="font-mono">[{entry.key}]</span> {entry.label}</li>)}
           </ul>
@@ -72,7 +72,7 @@ export function BriefingView({ briefing, evidenceHref }: { briefing: Briefing; e
   )
 }
 
-function HighlightCard({ highlight, refs }: { highlight: BriefingHighlight; refs: (keys: string[]) => React.ReactNode }) {
+function HighlightCard({ highlight, refs, personal }: { highlight: BriefingHighlight; refs: (keys: string[]) => React.ReactNode; personal: boolean }) {
   const { t } = useAppTranslation()
   return (
     <Card className="space-y-2 p-3">
@@ -94,7 +94,7 @@ function HighlightCard({ highlight, refs }: { highlight: BriefingHighlight; refs
       </ul>
       <p className="text-sm break-words"><span className="font-medium">{t('briefing.why')}: </span>{highlight.why_it_matters}</p>
       <p className="text-sm break-words">
-        <span className="font-medium">{t('briefing.impact')}: </span>
+        <span className="font-medium">{t(personal ? 'briefing.impact_personal' : 'briefing.impact')}: </span>
         {highlight.impact.assessment === 'insufficient_context' ? <span className="text-muted-foreground">{t('briefing.impact_insufficient')} </span> : null}
         {highlight.impact.text} {refs(highlight.impact.context_refs)}
       </p>

@@ -18,7 +18,7 @@ export interface BriefingScope {
   key: string;
 }
 
-export interface BriefingLens { kind: "following" | "monitoring" | "corpus"; label: string }
+export interface BriefingLens { kind: "following" | "monitoring" | "corpus" | "subscription"; label: string }
 
 /**
  * Dependencies: every record whose text can reach the model, with the
@@ -30,7 +30,8 @@ export interface BriefingItemDep { id: string; connection_id: string | null; rev
 /** `at`: when the analysis or judgment was made, for the collecting Source's reader-delivery window. */
 export interface BriefingAnnotationDep { id: string; item_id: string; connection_id: string | null; revision: string; at: string | null }
 export interface BriefingSignalDep {
-  kind: "goal_item" | "decision" | "corpus_item";
+  /** `subscription`: a subscribed channel delivered the item (id: the channel-item link). */
+  kind: "goal_item" | "decision" | "corpus_item" | "subscription";
   id: string;
   item_id: string;
   /** The Source that collected or judged it (a Following binding's Source, a decision's channel Source, a Corpus entry's Source). */
@@ -73,11 +74,11 @@ export interface BriefingCandidate {
 }
 
 export interface BriefingContextEntry {
-  kind: "project_goal" | "project_scope" | "project_success" | "project_constraints" | "project_focus" | "task";
+  kind: "project_goal" | "project_scope" | "project_success" | "project_constraints" | "project_focus" | "task" | "personal_focus";
   label: string;
   text: string;
   /** What the entry was read from, so a read can tell whether it is still shared and current. */
-  source: { type: "brief_version" | "task"; id: string; revision: string };
+  source: { type: "brief_version" | "task" | "goal"; id: string; revision: string };
 }
 
 export interface BriefingWindow {

@@ -1,7 +1,7 @@
 # 共用简报底座与项目闭环实施计划
 
 日期：2026-10-30。
-状态：P1（共用底座＋项目闭环）已在工作区实施，经首轮双审修复（§9.1），待复审与提交；P2 个人、P3 通知／跟进／采纳未实施。项目闭环先交付，个人整体随后接入。
+状态：P1（共用底座＋项目闭环）已提交（c7db1db5）；P2 个人整体已在工作区实施，待双审（§9.4）；P3 通知／跟进／采纳未实施。项目闭环先交付，个人整体随后接入。
 
 ## 1. 用户目标与交付顺序
 
@@ -161,7 +161,7 @@ P1a 与 P1b 作为同一首批实施任务推进：不交付一个只有表和�
 - [x] 状态：采集完成但综合失败、部分覆盖、无材料与无重要变化有不同反馈。（服务端状态/outcome/coverage + Web 单测）
 - [x] 页面：390／1280px 可读，引用可回看；无额外材料卡字段；切篇／切 scope 不串回包。（`project-briefing.browser.mjs` 真 Chromium，路由 mock 合成数据；`ProjectBriefingPanel.test.tsx` scope/卸载/登出守卫）
 - [x] 历史：原 Digest 快照不改；人工当前版本与封存日、backfill 区分。（每日经现有 Automation、重放复用、blocked 日、日期顺序 422）
-- [ ] 个人：P2 检验真实选材而非仅通过 schema；多个来源／项目视角可整体归纳。
+- [ ] 个人：P2 检验真实选材而非仅通过 schema；多个来源／项目视角可整体归纳。（P2 工作区已测：真实 PG 正反选材——本人 Following、订阅已有分析、opt-in 可读项目，排除他人话题、未选项目、他 Space；同一 capture 多视角合并，不同 URL 同事件可由单个重点归并（结构可表达，非真实模型判对）；opt-out／撤权／删项目后在派发、发布、读取及跨代对照中撤回；delta／no-new／迟到分析；与项目隔离；个人每日 Automation 碰撞保留与恢复；Chromium 390／1280。待双审后勾选）
 - [ ] 质量：受控真实模型运行另记授权、成本、引用支持情况和误归并，不用 mock 通过冒充。
 
 实现时按 [TESTING_STRATEGY](../architecture/TESTING_STRATEGY.md) 使用 familygroup、
@@ -237,6 +237,21 @@ guide／链接检查。每批提交前运行必要的完整套件；不反复执
   （`resumeHeldDays`）、下一次每日触发、或显式按日期重试。保留日只与更晚的封存日比较顺序；
   未保留的回补仍受完整顺序限制。仍保持每个 scope 只有一个 Run。
 - 迁移：重新生成未发布的 0007，新增 `comparison_json`、`request_json`。
+
+### 9.4 P2 个人整体（2026-10-30，以代码为准）
+
+- 个人 adapter 真实取材：本人 Following；订阅频道送达的条目（`subscription` lens，有已有分析才算 ready）；
+  明确 opt-in 个人阅读（`ReadingPreferences`）且当前可读的项目的 Following、可交付监测、Corpus，
+  lens 标注项目名。仅本人受众、当前 Space；不读其他成员状态；上下文只用本人 Following 主题
+  （`personal_focus`），冷启动可用，不读写 Memory／兴趣画像。
+- 撤回：`signalState` 只在项目仍 opt-in 且可读时承认项目来源信号。opt-out、撤权、删除后，
+  经内核唯一授权规则在派发、发布、读取及跨代对照中撤回。
+- 复用：manifest／request／Run／settlement／历史／每日／预算／授权／结果校验／BriefingView 不复制。
+  routes、每日设置与 Automation 钩子按 scope 泛化；面板按用途抽出 `BriefingPanel`，
+  项目与个人各自只绑定 API 与 Reader 返回路径。
+- Reuse Check：沿用 Reading 偏好、订阅、Following 与项目可读性的现有谓词，以及个人每日 Digest Automation；
+  不新建订阅开关、调度器或依赖；没有新增迁移。
+- 未做：P3 通知、追问、显式采纳；真实模型质量与真实实例。
 
 ### 9.3 最终窄修（2026-10-30，以代码为准）
 

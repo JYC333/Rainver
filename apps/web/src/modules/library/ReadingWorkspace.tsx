@@ -30,6 +30,7 @@ import { Input } from '../../components/ui/input'
 import { useReading } from './useReading'
 import { ProjectReadingPreference, ReadingPreferences } from './ReadingPreferences'
 import { ReadingError } from './ReadingError'
+import { PersonalBriefingPanel } from './briefing/PersonalBriefingPanel'
 
 const DENSITY_KEY = 'rainver:reading-density'
 function readDensity(): 'comfortable' | 'compact' {
@@ -154,6 +155,7 @@ function ScopedReading({ spaceId, projectId }: { spaceId: string; projectId?: st
       <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={feed.loading || feed.busy} onClick={() => void feed.reload()}><RefreshCw className="size-3.5" />{t('reading.refresh')}</Button><Button size="sm" variant="ghost" onClick={() => setPreferencesOpen(v => !v)} aria-expanded={preferencesOpen}><Settings2 className="size-3.5" />{t('reading.preferences')}</Button></div>
     </header>
     {preferencesOpen && <Card className="p-4">{projectId ? <ProjectReadingPreference key={`${spaceId}:${projectId}`} spaceId={spaceId} projectId={projectId} /> : <ReadingPreferences spaceId={spaceId} onChanged={() => void feed.reload()} />}</Card>}
+    {!projectId && <PersonalBriefingPanel key={spaceId} spaceId={spaceId} />}
     <nav className="flex flex-wrap items-center justify-between gap-3" aria-label={t('reading.views')}><div className="inline-flex flex-wrap items-center gap-1 rounded-lg bg-muted p-1">
       {(['pending','read','all'] as const).map(option => <Button key={option} size="sm" className={view === option ? 'bg-background text-foreground shadow-sm hover:bg-background' : undefined} variant="ghost" aria-current={view === option ? 'page' : undefined} onClick={() => changeParams('view', option)}>{t(`reading.${option}`)}</Button>)}</div><div className="flex flex-wrap gap-2">
       <Button size="sm" variant="ghost" asChild><SpaceLink to={projectId ? `${base}?tab=digest` : '/library/digests'}>{t('reading.editions')}</SpaceLink></Button>

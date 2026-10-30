@@ -110,13 +110,15 @@ export const BriefingEvidenceSchema = z.object({
   delta_class: BriefingDeltaClassSchema,
   /** Agent-provided material nobody verified independently. */
   unverified: z.boolean(),
-  lenses: z.array(z.object({ kind: z.enum(["following", "monitoring", "corpus"]), label: z.string() }).strict()),
+  /** Why the scope offers it: a Following topic, Project monitoring or Corpus (labelled with the Project in a personal briefing), or a subscribed Source. */
+  lenses: z.array(z.object({ kind: z.enum(["following", "monitoring", "corpus", "subscription"]), label: z.string() }).strict()),
 }).strict();
 export type BriefingEvidence = z.infer<typeof BriefingEvidenceSchema>;
 
 export const BriefingContextRefSchema = z.object({
   key: RefKeySchema,
-  kind: z.enum(["project_goal", "project_scope", "project_success", "project_constraints", "project_focus", "task"]),
+  /** `personal_focus`: a personal briefing's own Following topic, the only personal context it reads. */
+  kind: z.enum(["project_goal", "project_scope", "project_success", "project_constraints", "project_focus", "task", "personal_focus"]),
   label: z.string(),
 }).strict();
 export type BriefingContextRef = z.infer<typeof BriefingContextRefSchema>;

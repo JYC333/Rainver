@@ -148,8 +148,24 @@ which stay as they are. Plan: `.agent/plans/shared-briefing-and-project-loop.md`
   (`everyReader` + `sourceItemFullContentReadClause`/`goalCollectionReadableSql`/content
   access), so no member's private reading enters. Each scope signal carries
   its collecting Source (Following binding, decision channel, Corpus entry).
-  `personalScope.ts` (audience = owner) is a P1 contract only: the personal
-  surface and selection are P2.
+  `personalScope.ts` is the reader's own briefing in one Space; its audience
+  is the owner alone. It draws on what their Reading already uses:
+  - their personal Following;
+  - items their subscribed channels delivered (lens `subscription`; an
+    existing annotation makes them ready);
+  - the Following, deliverable monitoring and Corpus of each Project they opted
+    into Reading (`ReadingPreferences`) and may still read. Project lenses are
+    labelled `Project "<name>": …`; a readable Project is never included
+    without that opt-in.
+
+  It reads nothing about other members, and no other Space. Its only context
+  is their own Following topics (`personal_focus`, goal sources), so cold
+  start works; Memory and the interest profile are neither read nor written.
+  `signalState` admits a Project-derived signal only while that Project is
+  still opted in and readable. Opting out, losing access or deleting the
+  Project therefore withdraws, through the one authorization rule, every
+  version and later comparison resting on it, at dispatch, publication and
+  read.
 - **Dependencies.** Every text that can reach the model is a dependency with a
   revision and a Source connection: each family member item
   (`content_hash:body_revision`), its annotation (hash of the summary, so an
@@ -282,18 +298,30 @@ which stay as they are. Plan: `.agent/plans/shared-briefing-and-project-loop.md`
   manual refresh. A selected earlier version updates in place. Refusals that
   need a person (quota, setup) do not poll. Everyone has a read-only Refresh,
   and Generate stays disabled while any version is in flight.
-- **Routes.** `GET|POST /api/v1/spaces/:spaceId/projects/:projectId/information-briefings`,
-  `GET …/:briefingId`, `POST …/:briefingId/cancel`, `PUT …/settings`. Reads
-  need Project read access; POST, cancel and settings need write access. POST
-  `{date}` briefs a sealed digest day (`422 briefing_day_not_sealed`; days
-  stay in order, `422 briefing_history_before_latest`). Daily briefings ride on
-  the Project's existing digest Automation (`config_json.briefing`) as the
-  enabling writer; a day that cannot start is stored `blocked` with its reason.
-- **Web.** `apps/web/src/modules/library/briefing/BriefingView.tsx` (shared
-  display) and `apps/web/src/modules/projects/ProjectBriefingPanel.tsx` in the
-  Project Sources digest tab.
-- **Not in P1.** Notifications, Room follow-up and Task adoption (P3); the
-  personal surface (P2). Output quality with real models (event grouping,
+- **Routes.** `routes.ts` registers one set of handlers per scope:
+  - `…/projects/:projectId/information-briefings`: reads need Project read
+    access; POST, cancel and settings need write access;
+  - `/api/v1/spaces/:spaceId/information-briefings/personal`: always the
+    caller's own briefing.
+
+  Each has `GET`, `GET /:briefingId`, `POST` (`{date}` briefs a sealed digest
+  day of that scope: `422 briefing_day_not_sealed`, days in order),
+  `POST /:briefingId/cancel` and `PUT /settings`. Daily briefings ride on the
+  scope's existing digest Automation (`config_json.briefing`): the Project's,
+  run as the enabling writer, or the reader's personal one, run as its owner
+  only. A day that cannot start is held as above.
+- **Web.** Under `apps/web/src/modules/library/briefing/`:
+  - `BriefingView.tsx`: the shared display; impact and context labels follow
+    `scope_type`;
+  - `BriefingPanel.tsx`: the shared state, bounded polling, guards, status
+    and history, with a `collapsible` mode;
+  - `PersonalBriefingPanel.tsx`: at the top of personal Reading, collapsed;
+    evidence opens the Reader and returns to `/library/reading`.
+
+  `apps/web/src/modules/projects/ProjectBriefingPanel.tsx` binds the panel to
+  a Project in its Sources digest tab.
+- **Not yet built.** Notifications, Room follow-up and Task adoption (P3).
+  Output quality with real models (event grouping,
   contradiction handling, false merges) and real instances are unverified.
   A synthetic published Project Instruction was checked with the production
   planner in two setups: the briefing Run's closed setup, and a legitimately
@@ -309,7 +337,7 @@ which stay as they are. Plan: `.agent/plans/shared-briefing-and-project-loop.md`
 - `apps/web/src/modules/library/InterestProfileControls.tsx`
 - `apps/web/src/modules/projects/ProjectDigestPage.tsx`
 - `server/test/informationDigestDb.test.ts`
-- `server/test/informationBriefingDb.test.ts`, `server/test/informationBriefingAccessDb.test.ts` (fixture `server/test/support/briefingFixture.ts`)
+- `server/test/informationBriefingDb.test.ts`, `informationBriefingAccessDb.test.ts`, `informationBriefingDependencyDb.test.ts`, `informationBriefingPersonalDb.test.ts` (fixture `server/test/support/briefingFixture.ts`)
 - `apps/web/src/modules/projects/ProjectBriefingPanel.tsx`
 - `server/test/interestProfileDb.test.ts`
 

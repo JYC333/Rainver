@@ -13,6 +13,8 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), dismiss: v
 
 // Empty guidance has its own source/collection integration coverage.
 vi.mock('../ReadingStart', () => ({ ReadingStart: () => <p>No pending recommendations</p> }))
+// The personal briefing panel has its own component and browser coverage.
+vi.mock('../briefing/PersonalBriefingPanel', () => ({ PersonalBriefingPanel: ({ spaceId }: { spaceId: string }) => <section data-testid="personal-briefing">{spaceId}</section> }))
 let space = 'space-a'
 vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpaceId: space, preferredSpaceId: space }) }))
 vi.mock('../../../core/spaceNav', async () => {
@@ -27,6 +29,15 @@ function QueryLocation() { return <output data-testid="query">{useLocation().sea
 const ui = (projectId?: string) => <MemoryRouter><ReadingWorkspace projectId={projectId} /><QueryLocation /></MemoryRouter>
 beforeEach(() => { vi.clearAllMocks(); window.sessionStorage.clear(); window.localStorage.clear(); space = 'space-a'; vi.mocked(informationDigestsApi.reading).mockResolvedValue(page()); vi.mocked(informationDigestsApi.readingState).mockResolvedValue({updated:2}); vi.mocked(informationDigestsApi.readingPreference).mockResolvedValue({show_in_my_reading:false}) })
 describe('unified reading presentation', () => {
+  it('offers the personal briefing above personal Reading only, not in a Project\'s Reading', async () => {
+    const personal = render(ui())
+    expect(await screen.findByTestId('personal-briefing')).toHaveTextContent('space-a')
+    personal.unmount()
+    render(ui('project-1'))
+    await screen.findByRole('link', { name: item.title })
+    expect(screen.queryByTestId('personal-briefing')).not.toBeInTheDocument()
+  })
+
   it('renders server grouping, all original reasons and distinct initial/edition times, with Reader origin', async () => {
     render(ui())
     const link = await screen.findByRole('link', { name: item.title })

@@ -196,11 +196,13 @@ describe("Project briefing (shared kernel, real PostgreSQL)", () => {
     const personal = await buildManifest(db.pool, personalBriefingScope(SPACE, OWNER), options);
     const project = await buildManifest(db.pool, adapter(), options);
     // Same kernel and classification; different lenses and audience.
-    expect(personal.inputs.map((input) => [input.lead!.source_item_id, input.delta_class, input.lenses.map((lens) => lens.kind)]))
-      .toEqual([[shared, "baseline", ["following"]]]);
+    // The personal view also sees it through the reader's own subscription.
+    expect(personal.inputs.map((input) => [input.lead!.source_item_id, input.delta_class, input.lenses.map((lens) => lens.kind).sort()]))
+      .toEqual([[shared, "baseline", ["following", "subscription"]]]);
     expect(project.inputs.map((input) => [input.lead!.source_item_id, input.delta_class, input.lenses.map((lens) => lens.kind)]))
       .toEqual([[shared, "baseline", ["corpus"]]]);
-    expect(personal.context).toEqual([]);
+    // A personal briefing's only context is the reader's own stated topics.
+    expect(personal.context.map((entry) => [entry.kind, entry.label])).toEqual([["personal_focus", "Following: Personal robotics"]]);
     expect(project.context.map((entry) => entry.kind)).toEqual(["project_goal", "project_constraints"]);
     expect(await personalBriefingScope(SPACE, OWNER).canRead(db.pool, MEMBER)).toBe(false);
     expect(await adapter().audience(db.pool)).toEqual(expect.arrayContaining([OWNER, MEMBER]));
@@ -244,8 +246,8 @@ describe("Project briefing (shared kernel, real PostgreSQL)", () => {
       preflightSnapshot: { executable: true, target_type: "information_digest" },
     });
     // Only a writer may enable it, on their own validated Agent.
-    await expect(setDailyBriefing(db.pool, SPACE, PROJECT, MEMBER, { daily_enabled: true })).rejects.toMatchObject({ statusCode: 409 });
-    expect(await setDailyBriefing(db.pool, SPACE, PROJECT, OWNER, { daily_enabled: true })).toMatchObject({ enabled: true, user_id: OWNER, agent_id: AGENT });
+    await expect(setDailyBriefing(db.pool, adapter(), MEMBER, { daily_enabled: true })).rejects.toMatchObject({ statusCode: 403 });
+    expect(await setDailyBriefing(db.pool, adapter(), OWNER, { daily_enabled: true })).toMatchObject({ enabled: true, user_id: OWNER, agent_id: AGENT });
     registerInformationDigestAutomationTarget();
     const handler = automationTargetHandlerRegistry.get("information_digest")!;
     const fire = async () => {
@@ -297,7 +299,7 @@ describe("Sealed days held behind another version", () => {
       configJson: { target_type: "information_digest", scope: "project", operation: "daily", project_id: PROJECT, cron: "0 7 * * *", timezone: "UTC" },
       preflightSnapshot: { executable: true, target_type: "information_digest" },
     });
-    await setDailyBriefing(db.pool, SPACE, PROJECT, OWNER, { daily_enabled: true });
+    await setDailyBriefing(db.pool, adapter(), OWNER, { daily_enabled: true });
     registerInformationDigestAutomationTarget();
     const handler = automationTargetHandlerRegistry.get("information_digest")!;
     const fire = async () => {
