@@ -107,7 +107,7 @@ export default function ProjectAreaLayout() {
   return (
     <ProjectFolderConversationProvider key={projectId} projectId={projectId}>
       <div className="min-h-full lg:h-full lg:min-h-0 lg:overflow-hidden lg:grid lg:grid-cols-[220px_minmax(0,1fr)]">
-      <aside data-project-navigation className="border-b border-border bg-muted/20 p-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain lg:border-b-0 lg:border-r">
+      <aside data-project-navigation data-shell-chrome className="border-b border-border bg-muted/20 p-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain lg:border-b-0 lg:border-r">
         <div className="flex min-w-0 items-center justify-between gap-3 px-2 lg:mb-5">
           <p className="truncate font-semibold">{project?.name ?? 'Project'}</p>
           <button type="button" className="shrink-0 rounded border border-border px-3 py-1.5 text-xs lg:hidden" aria-expanded={navigationOpen} aria-controls="project-navigation-items" onClick={()=>setNavigationOpen(open=>!open)}>{t('monitoring.projectNavigation')} {navigationOpen ? '▴' : '▾'}</button>
@@ -194,7 +194,7 @@ export default function ProjectAreaLayout() {
           a private one. */}
       <div className="flex min-w-0 lg:min-h-0 lg:overflow-hidden">
         <main data-project-area-content className="min-w-0 flex-1 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain"><Outlet /></main>
-        <ProjectChatSidecar />
+        <div data-shell-chrome className="contents"><ProjectChatSidecar /></div>
       </div>
       </div>
     </ProjectFolderConversationProvider>

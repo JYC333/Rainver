@@ -51,6 +51,13 @@ Policy does not own proposal mutations. Authorization-request approval uses
 the same policy-audited ActionApprovalGrant creation authority as the public
 grant route.
 
+Owner-started Reading goal setup can request a pending Source activation review
+without a second Run grant merely to submit the proposal. The owning Sources
+check proves the current user-message/goal/Agent/Session/Project/cycle binding;
+only `source.channel.propose_activation` receives that request-only exception.
+Activation still requires the canonical proposal applier or an independently
+existing human grant. See [Source Goals](../architecture/SOURCE_GOALS.md#source-setup-confirmation).
+
 ## Key Models
 
 ```

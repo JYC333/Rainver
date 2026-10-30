@@ -12,7 +12,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
       expect(definition.id).toMatch(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/);
       expect(policyById.has(definition.policy_action)).toBe(true);
       expect(SystemActionDefinitionSchema.safeParse(definition).success).toBe(true);
-      if(!["source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate","authorization.request","input_resource.read","input_resource.search","conversation.search","source.channel.propose_activation","project.source.propose_bind","project.monitoring.propose","project.monitoring.propose_details","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.promote_knowledge","research.start_acquisition","research.cancel_acquisition","agent.delegate","task.create","task.report","task.handoff","task.advance_stage","task.complete","task.request_review","proposal.decide","inquiry.adopt_next_step","memory.remember","memory.revise","artifact.submit","handoff.write"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
+      if(!["source.material.submit","source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate","authorization.request","input_resource.read","input_resource.search","conversation.search","source.channel.propose_activation","project.source.propose_bind","project.monitoring.propose","project.monitoring.propose_details","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.promote_knowledge","research.start_acquisition","research.cancel_acquisition","agent.delegate","agent.cancel_run","task.create","task.report","task.handoff","task.advance_stage","task.complete","task.request_review","proposal.decide","inquiry.adopt_next_step","memory.remember","memory.revise","artifact.submit","handoff.write"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
     }
   });
 
@@ -180,6 +180,15 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
     expect(result.success ? "" : result.error.message).toMatch(/must not declare policy_resource/);
   });
 
+  it("requires a specific Room run and reason for cancellation", () => {
+    const cancel = SYSTEM_ACTION_REGISTRY.find(action => action.id === "agent.cancel_run")!;
+    expect(cancel.agent_tool_surface).toBe("delegation");
+    expect(cancel.input_schema?.safeParse({ run_id: "old-run", reason: "Person replaced it" }).success).toBe(true);
+    for (const invalid of [{}, { run_id: "old-run" }, { run_id: " ", reason: "Stop" }, { run_id: "old-run", reason: "Stop", space_id: "foreign" }]) {
+      expect(cancel.input_schema?.safeParse(invalid).success).toBe(false);
+    }
+  });
+
   it("uses a strict shared schema for agent.wait_for_results", () => {
     const definition = SYSTEM_ACTION_REGISTRY.find((action) => action.id === "agent.wait_for_results")!;
     expect(definition.input_schema.safeParse({}).success).toBe(true);
@@ -268,7 +277,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
 
 it("requires bound goal action inputs and never accepts credential or network grants",()=>{
  const actions=new Map(SYSTEM_ACTION_REGISTRY.map(a=>[a.id,a]));
- for(const id of ["source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate"] as const){
+ for(const id of ["source.material.submit","source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate"] as const){
   expect(actions.get(id)!.input_schema.safeParse({}).success).toBe(false);
  }
  expect(actions.get("source.goal.inspect")!.input_schema.safeParse({goal_id:"g",source_connection_id:"s",source_channel_id:"c",credential:"secret"}).success).toBe(false);

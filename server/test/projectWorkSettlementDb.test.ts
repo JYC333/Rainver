@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadConfig } from "../src/config.js";
-import { reconcileUnfinalizedTaskRuns, resumeUnsettledRuns } from "../src/modules/jobs/workerRuntime.js";
+import { reconcileUnfinalizedTaskRuns, resumeUnsettledRuns } from "../src/modules/runs/recovery.js";
 import { PostRunFinalizationService } from "../src/modules/runs/finalizationService.js";
 import { runFinalizationToOut } from "../src/modules/runs/runReadModel.js";
 import { settleTasksForRun } from "../src/modules/projectWork/settlement.js";
@@ -549,6 +549,38 @@ describe("run settlement", () => {
       },
     });
     expect(finalizedRuns).toEqual([cancelled]);
+    expect(await runs.listTaskRunsAwaitingFinalization()).toEqual([]);
+  });
+
+  it("recovers a Task's unfinalized retry even when an earlier attempt was finalized", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    const run = randomUUID();
+    await makeTask(task);
+    await makeRun(run, task, "queued", "2026-08-27T00:00:00.000Z");
+    const runs = new PgRunRepository(db.pool!);
+    await runs.markRunRunning({ space_id: SPACE, run_id: run, started_at: new Date().toISOString() });
+    await runs.markRunTerminal({ space_id: SPACE, run_id: run, status: "failed", completed_at: new Date().toISOString() });
+    const finalizer = new PostRunFinalizationService(runs);
+    expect((await finalizer.finalize(run, SPACE)).attempt_number).toBe(1);
+    expect(await runs.listTaskRunsAwaitingFinalization()).toEqual([]);
+
+    await runs.requeueRunForRetry({ space_id: SPACE, run_id: run, attempt_number: 2,
+      reason_code: "runtime_process_error", updated_at: new Date().toISOString() });
+    expect(await runs.listTaskRunsAwaitingFinalization()).toEqual([]);
+    // The retry's job is cancelled before dispatch, so only the recovery sweep
+    // can finalize this attempt. Attempt one's evidence cannot satisfy it.
+    await runs.markRunTerminal({ space_id: SPACE, run_id: run, status: "cancelled", completed_at: new Date().toISOString() });
+    expect(await runs.listTaskRunsAwaitingFinalization()).toEqual([{ id: run, space_id: SPACE }]);
+
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test" });
+    await reconcileUnfinalizedTaskRuns(config, runs, undefined, {
+      finalizeRun: async (target: RunRecord) => {
+        await finalizer.finalize(target.id, target.space_id);
+        return { kind: "activity", status: "succeeded" };
+      },
+    });
+    expect((await runs.listRunFinalizations(SPACE, run)).map((item) => item.attempt_number).sort()).toEqual([1, 2]);
     expect(await runs.listTaskRunsAwaitingFinalization()).toEqual([]);
   });
 

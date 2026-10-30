@@ -159,9 +159,16 @@ A summary viewer is withheld, on these surfaces:
   since a finding's reason quotes what two claims differ by and a
   `space_ops` report is persisted for the whole Space.
 - **Item↔source links and item `source_refs`:** the link quote and note, and
-  the evidence excerpt.
+  the evidence excerpt. Item↔source link lists also withhold the locator when
+  either endpoint is summary-only and omit links to unreadable endpoints.
 - **Activity:** `content` and `metadata_json`.
-- **Artifacts:** inline bodies and export.
+- **Inquiry:** Question/Hypothesis state and work notes; history, Steps,
+  Signals, advice, and attention-derived reasoning require full Thread access.
+  Titles/status metadata remain discoverable; retrieval returns only the root
+  summary to summary readers, after both Project and Thread read gates.
+- **Artifacts:** inline bodies and export. Source-derived copies also require
+  full access to their live item/snapshot origin for body reads, including
+  through Reader; historical artifact permissions do not bypass a demotion.
 - **Runs:**
   - `output_json`, and the turn / turn-stream body;
   - in `contract_snapshot_json`, the inputs the Run was given (workflow
@@ -1312,8 +1319,20 @@ revoked server-side otherwise reaches only the tab that happened to ask. The
 keep-list holds appearance and layout only; one entry, `rainver:scene-collapsed`,
 is a map keyed by scene id, which is safe while scene ids come from the static
 module registry and would not be if one ever became a Space or Project id.
+The Reader adds two layout entries, `rainver:reader-layout` (whether contents
+and inspector were open) and `rainver:reading-density`; its kept Reading list
+and return point live in sessionStorage, which keeps nothing, and the person's
+Reader appearance is server user settings with an in-memory copy registered
+like the drafts below.
 Clearing is deliberately lossy in the harmless direction: a person's Context
-Ops explain presets go with it. The browser treats server-authored in-app hrefs as
+Ops explain presets go with it. Authenticated state kept only in a tab's memory
+registers its own clearing with `registerInMemoryResidue` (`lib/sessionResidue.ts`),
+which the same logout/401/other-tab path runs. Unsent Reader comments use it:
+they are never written to browser storage, and clearing also drops in-flight
+send claims and advances a session epoch so a reply from the earlier session
+cannot alter the next person's drafts. Drafts are keyed by Space and document,
+not by user; isolation between accounts relies on this clearing path, which a
+sign-in as someone else without logout, 401 or another tab's logout would not run. The browser treats server-authored in-app hrefs as
 same-origin paths only, resolved through `URL` rather than judged as text:
 `/..//evil.example` passes every textual rule and the browser then collapses it
 to `//evil.example`. The same rule decides the OAuth `next` parameter
@@ -1448,16 +1467,19 @@ memory-maintenance scans still exclude only `highly_restricted` (ordinary
 workers do not receive structured `external_untrusted` (attach-time fence
 prose remains inside copied content); `recordDetailRead` is not on every
 detail surface; there is no Space leave/remove API (orphan private rows
-after a membership ends remain); Source `GET /jobs` and
-`GET /evidence-links` are Space-scoped metadata.
+after a membership ends remain); Source `GET /evidence-links` is Space-scoped
+metadata. Source Job lists and counts require full access to every named live
+Item/Connection parent. Manual execution applies the same parent gate without
+oversight and requires Connection management permission for scans.
 
 Agent version GET uses the same content gate as `GET /agents/:id`. Restore
 is owner-only for an owned Agent. Activity, Artifact, and Run-turn `/io`
 withhold `summary` bodies. `code_patch` rollback uses the same
 `proposal.apply` and `project_folder.write_patch` gates as accept. Stale
 `cancelling` recovery settles as `cancelled`, not a retryable `orphaned`.
-Current limits: Dev Vite bind-all (token still required); Reader artifact
-omitting `roomRunReadAccessSql`; `code_patch` payload bytes that live remote
+Reader Artifact bodies also enforce the Artifact's full level, Room Run gate,
+and current Source origin access. Current limits: Dev Vite bind-all (token
+still required); `code_patch` payload bytes that live remote
 browse would refuse; Learning Space-global `project_id IS NULL` visibility;
 Home summary counts as Space-wide oracles (the failed-Job error preview beside those
 counts is the viewer's own, as `GET /jobs/:id` is).

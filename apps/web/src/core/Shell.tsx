@@ -235,6 +235,8 @@ function ShellContent() {
     // Project shell names the Project, an Area names the object it is about.
     <ProjectCaptureTargetProvider>
     <div className="app-safe-shell fixed inset-0 flex overflow-hidden overscroll-none bg-background text-foreground">
+      {/* data-shell-chrome: what the Reader's focus mode hides (see index.css). */}
+      <div data-shell-chrome className="contents">
       <GlobalRail
         expanded={railExpanded}
         onToggle={() => setRailExpanded(v => !v)}
@@ -252,8 +254,10 @@ function ShellContent() {
           spaceId={preferredSpaceId}
         />
       )}
+      </div>
 
       <div className="flex-1 flex flex-col min-h-0 min-w-0">
+        <div data-shell-chrome className="contents">
         <SceneHeader
           title={title}
           isHome={isHome}
@@ -263,15 +267,16 @@ function ShellContent() {
         />
 
         {scene && <SceneTabs scene={scene} spaceId={preferredSpaceId} />}
+        </div>
 
         <main className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
           <Outlet />
         </main>
 
-        <MobileTabBar spaceId={preferredSpaceId} pendingReviewCount={pendingReviewCount} canManageSpace={canManageSpace} canManageInstance={canManageInstance} pluginModules={pluginNavItems} />
+        <div data-shell-chrome className="contents"><MobileTabBar spaceId={preferredSpaceId} pendingReviewCount={pendingReviewCount} canManageSpace={canManageSpace} canManageInstance={canManageInstance} pluginModules={pluginNavItems} /></div>
       </div>
 
-      <FloatingQuickCapture />
+      <div data-shell-chrome className="contents"><FloatingQuickCapture /></div>
 
       <Toaster
         theme={theme}

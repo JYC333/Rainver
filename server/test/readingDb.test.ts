@@ -24,6 +24,7 @@ import { PgInterestProfileRepository } from '../src/modules/interestProfile/repo
 import { ProjectCorpusRepository } from '../src/modules/projects/corpusRepository.js';
 import { PgReaderRepository } from '../src/modules/reader/repository.js';
 import { ReadingRepository } from '../src/modules/informationDigest/readingRepository.js';
+import { ReaderPositionStore } from '../src/modules/reader/positions.js';
 import { seedArxivSourceChain } from './support/researchSeeds.js';
 import { loadConfig } from '../src/config.js';
 import { ReadingPageSchema, ReadingStateResultSchema } from '@rainver/protocol';
@@ -325,6 +326,25 @@ describe('unified reading', () => {
     await repository.rows(identity,[],{view:'pending',limit:13,asOf:new Date().toISOString()});
     const plan=JSON.parse(plans[0])['QUERY PLAN'][0];
     console.info('Reading backlog EXPLAIN', {rows:75, execution_ms:plan['Execution Time'], planning_ms:plan['Planning Time']});
+  });
+  it('orders oldest first on request through every page, refuses a cursor of the other order, and shows each reader only their own progress', async () => {
+    const a=await item(),b=await item(),c=await item();
+    await digest([a],undefined,'2026-01-01');await digest([b],undefined,'2026-01-02');await digest([c],undefined,'2026-01-03');
+    expect((await list()).items.map(i=>i.source_item_id)).toEqual([c,b,a]);
+    const first=await service().list(identity,{view:'pending',limit:2,sort:'oldest'});
+    expect(first.items.map(i=>i.source_item_id)).toEqual([a,b]);
+    const rest=await service().list(identity,{view:'pending',limit:2,sort:'oldest',cursor:first.next_cursor!});
+    expect(rest.items.map(i=>i.source_item_id)).toEqual([c]);
+    await expect(service().list(identity,{view:'pending',limit:2,cursor:first.next_cursor!})).rejects.toMatchObject({statusCode:422});
+    await retainReaderBody(db.pool,{space,owner,item:b,text:'Body'});
+    const shown=await new PgReaderRepository(db.pool,config()).getDocument(identity,'source_item',b,{recordOpen:false});
+    const position={content_hash:shown!.content_hash,structure_hash:shown!.structure_hash,current:{anchor:{block_index:0,pm_pos:1,text_offset:0,quote:'x',before_context:''},progress:0.3},dwelled:true,client_at:new Date(Date.now()-1000).toISOString()};
+    await new ReaderPositionStore(db.pool,config()).write(identity,'source_item',b,position);
+    const mine=(await list()).items.find(i=>i.source_item_id===b);
+    expect(mine?.reading_progress).toEqual({current:0.3,furthest:0.3});
+    expect((await list()).items.find(i=>i.source_item_id===a)?.reading_progress).toBeNull();
+    // Progress is private and never read state.
+    expect(mine?.read_status).toBe('unread');
   });
   it('rejects a retained cursor in another Space even for the same user and reads that Space independently', async () => {
     const a=await item(),b=await item();await digest([a,b]);

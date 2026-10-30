@@ -41,6 +41,10 @@ run_package packages/outbound-guard pnpm run typecheck
 run_package packages/outbound-guard pnpm test
 run_package packages/outbound-guard pnpm run build
 
+run_package packages/reader-document pnpm run typecheck
+run_package packages/reader-document pnpm test
+run_package packages/reader-document pnpm run build
+
 echo "==> Database schema"
 run_package server pnpm run schema:check
 

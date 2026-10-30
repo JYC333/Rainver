@@ -1,8 +1,8 @@
 # Sources Custom Source Handlers
 
 Status: backend create-flow, proposal integration, scan jobs, and the Level 2
-Source Recipe path are implemented. The schema, read models, runner, deterministic handler
-generation, fixture tests, inside-envelope activation, handler-run history,
+Source Recipe path are implemented. The schema, read models, declarative interpreter, explicit pipeline
+version creation, fixture tests, inside-envelope activation, handler-run history,
 manual/scheduled scan queueing, trusted endpoint fetch path, Custom Source
 proposal payloads/appliers, Source Recipe plan/create/dry-run/activate
 services, Source Recipe proposal applier, recipe scan worker,
@@ -11,7 +11,7 @@ APIs/services. The web `/sources` area is `SourceChannelsPage` plus
 `/sources/:sourceId` (`SourceChannelDetailPage`); no page calls the Custom
 Source draft/handler or Source Recipe plan/create/dry-run/activate APIs. The
 web surfaces for this feature are `CustomSourceSpacePolicyPanel` (Space
-Settings) and `CustomSourceRunnerSettingsPanel` (Instance Settings).
+Settings) and `SourceExecutionSettingsPanel` (Instance Settings).
 Repair/rollback and credentialed source support are implemented backend-side
 (see "Repair" and "Credentialed Sources" below). Browser/Python handlers are
 not implemented. Goal repair is represented by lightweight source status, with no
@@ -19,32 +19,34 @@ code-approval UI. `/sources/access` now submits credentials through the existing
 encrypted Source credential endpoint; creation and editing use the shared goal
 conversation, not a direct Custom Source form.
 
-`typescript_node` identifies retained legacy Level 3 records. New goal-generated
-code uses exact-SHA isolated execution and never falls back to that runner. Existing
-`declarative_pipeline_v1` handler versions stay readable and executable and can
-be explicitly bridged into Level 2 `source_recipe_versions`. See "Declarative
-pipeline model" below for the Level 1/2/3 split: new configurable source
-creation goes through Level 2 Source Recipes, while generated/template handler
-expansion stays frozen as the Level 3 advanced fallback.
+`typescript_node` remains in persisted language enums so historical records can
+be read; its generator, source-artifact writer and execution implementation have
+been removed. Advanced handler creation requires an explicit declarative
+pipeline. New Goal-generated code uses exact-SHA isolated Host execution under
+ADR 0026. Declarative handler versions can be explicitly bridged into Level 2
+`source_recipe_versions` without activating the resulting recipe.
 
 ## Level 3 generated handlers
 
-Generated/template handler work (`typescript_node`) is **frozen** as the
-Level 3 advanced fallback:
+The old Level 3 code-template path is removed. There is no compatibility runner
+or generator. Retained handler versions, artifacts and run history remain
+readable. A legacy version cannot be fixture-tested or scanned, and repair
+refuses it before generating a replacement. Existing approvals or activation
+history do not restore execution. New generated Goal implementations use the
+separate isolated Host contract, not these retained handler versions.
 
-- No new handler languages (no Python, no browser automation, no shell
-  execution, no dependency installation, no free-form generated code).
-- Backend bug fixes and safety fixes remain allowed; existing Level 3 tests
-  stay.
-- Handler generation is not the main Custom Source customization path.
-  User-facing creation copy presents it as advanced; the Level 2 recipe path
-  (conversation-first Source creation) is the main path.
-- Broader generated-code execution is not supported.
 
+The contract validator also accepts an internal `metadataOnlyOrigins` input for
+trusted built-in search connector results used by Source Goals. Its caller must
+derive these from the system parser, never from Agent output or request JSON. It
+permits only metadata item links with no snapshots or evidence and does not
+change the approved network envelope. Ordinary recipe/declarative-handler callers
+omit it and retain strict provenance validation. See
+[Source Goals](SOURCE_GOALS.md#built-in-search-preview-and-visible-failure-feedback).
 
 ## Boundary
 
-Custom Source belongs to Sources. It extends `SourceConnection` with generated,
+Custom Source belongs to Sources. It extends `SourceConnection` with
 source-specific handler versions and handler runs. It does not create a general
 plugin marketplace, a capability marketplace, a runtime adapter catalog, or a
 Knowledge source creation flow.
@@ -71,39 +73,20 @@ must not introduce a second source creation path.
 
 ## Handler Contract
 
-A handler is untrusted source-specific code generated for one source
-connection. The server owns the contract.
+The shared input/output schemas describe retained history and the structured
+results produced by declarative pipelines and Source Recipes. They do not
+provide an executable-file contract for new handler code. New Goal code uses
+the separate ADR 0026 Host contract.
 
-The handler may read:
-
-- `input.json`
-- read-only fixture files supplied for test runs
-
-The handler may write:
-
-- `output.json`
-- files under the sandbox `files/` directory
-- stdout/stderr, captured by the runner and redacted before persistence
-
-The handler must not directly write:
-
-- database rows;
-- Memory;
-- Knowledge;
-- Wiki;
-- Tasks;
-- Project state;
-- policy;
-- credentials;
-- source repository files;
-- files outside `output.json` and sandbox `files/`.
-
-All handler output is untrusted until the server validates it. Only the server
-materializer may turn validated output into Sources rows and artifacts.
+The trusted interpreter receives structured input and may create bounded
+snapshot files in its temporary `files/` directory. The server validates all
+output before the materializer creates Sources rows and artifacts. Interpreter
+steps cannot directly mutate Memory, Knowledge, Wiki, Tasks, Project state,
+policy or credentials; those domains retain their own write authorities.
 
 ## Policy Envelope
 
-Every generated handler version has a policy envelope. The envelope includes:
+Every handler version has a policy envelope. The envelope includes:
 
 - allowed network origins;
 - capture and retention bounds;
@@ -174,52 +157,35 @@ The implemented settings API keeps that ownership split explicit:
 
 ## Runner Expectations
 
-The runner executes TypeScript/Node handlers. Python handlers are not implemented.
+Legacy `typescript_node` execution is permanently refused. Python handlers are
+not implemented. New Goal-generated code runs only through the isolated Host
+contract in [ADR 0026](../decisions/0026-sources-isolated-request-execution.md).
 
-Generated handler code runs in a separate process with a temporary sandbox, a
-minimal environment, no repository write access, and no ambient credentials. A
-worktree sandbox is not this boundary. `one_shot_docker` is not this boundary
-either. Do not treat it as active isolation for generated handler code.
+### Execution policy
 
-If runner support is disabled or unavailable, Custom Source execution fails
-closed.
+`sources/sourceExecutionPolicy.ts` owns `SourceExecutionSettings`,
+`SourceExecutionResult`, `effectiveSourceExecutionLimits` and
+`cleanupSourceExecutionFiles`, shared by the declarative interpreter and Source
+Recipes. The old runner module and class are removed, without an alias.
 
-### Runner
+`evaluateCustomSourceExecutionBlockReason` preserves instance/language and
+browser/shell/dependency denial checks, then rejects every non-declarative
+handler with `handler_language_removed`. The create-flow test and scan worker
+check admission before resolving credentials or fetching the endpoint. The
+shared `executeCustomSourceHandler` checks admission again and only dispatches
+the reviewed declarative interpreter; it never loads source-code artifacts.
+Activation, repair and rollback reject removed handler languages with 409;
+existing approval or activation history cannot override execution admission.
+The Goal executor uses its own isolated admission and may still use the
+`typescript_node` language setting; that setting does not restore the removed
+handler implementation.
 
-`server/src/modules/sources/customSources/customSourceRunner.ts` implements: separate
-OS-process execution (`node:child_process.spawn`, `shell: false`), a
-per-run temp sandbox directory with an `input.json` and a `files/`
-directory, a minimal explicit environment (no `process.env` inheritance),
-effective resource limits computed as `min(policy envelope, instance hard
-limit)` (instance always wins), a wall-clock timeout enforced with
-`SIGKILL`, a captured-log byte cap (UTF-8-safe — an incomplete trailing
-multi-byte sequence at the cut point is trimmed rather than decoded into a
-replacement character that could exceed the cap), secret-pattern log
-redaction, filesystem path guards on common `fs`/`fs/promises` read and
-write APIs, and an output.json size/path check (`lstat`/`realpath` before
-`readFile`, never loading an oversized or symlinked file into memory)
-before the contract validator ever sees it. Fail-closed checks run before
-any process is spawned: instance
-runner disabled, handler language not in the instance allowlist, or the
-policy envelope requesting browser automation, shell, or dependency
-installation (unconditionally refused, regardless of instance availability
-flags).
-
-Before loading the untrusted handler module, a generated per-run bootstrap
-script monkey-patches `node:net`/`node:tls`/`node:http`/`node:https`/
-`node:dgram`, `fetch`, `child_process`, `worker_threads.Worker`, and
-common `fs`/`fs.promises` entrypoints to throw unless the operation stays
-inside the declared handler contract (`input.json`, `output.json`, the
-handler entrypoint, and sandbox `files/`). **This is defense-in-depth, not
-OS-level network, process, or filesystem isolation** — a native addon, a
-raw syscall, process internals, or an unpatched file API could still reach
-outside the sandbox at the OS permission level. Do not describe this runner
-as OS-sandboxed. The same runner is used by
-fixture tests and live scan jobs and does not grant network access to the
-handler process. Trusted server code fetches `source_connections.endpoint_url`,
-enforces the handler policy envelope's allowed origins before each
-request/redirect, and passes the fetched HTML through
-`input.json.source.config.fetched_html`.
+Fixture/live tests and scheduled/manual scans of retained code versions record
+a blocked outcome in `source_handler_runs`. Paired extraction jobs fail and the
+scan worker advances the schedule to avoid tight retries. Legacy repair returns
+409 before generation, fetching or mutation. Retained history remains readable;
+no automatic migration or activation is performed. Declarative live requests
+retain the origin/redirect boundary.
 
 The contract validator (`customSourceContractValidator.ts`) rejects a
 snapshot `file_path` that is a symlink (`lstat`, not `stat`) and separately
@@ -231,8 +197,8 @@ sandbox `files/` root, before the materializer ever reads or copies it.
 
 `server/src/modules/sources/customSources/customSourceCreateFlowService.ts` implements the
 backend draft -> generate-handler -> test-handler -> activate flow. Handler
-generation is deterministic/template-based, not LLM-driven. Fixture testing
-uses the same runner/validator path as scans and records `source_handler_runs`
+creation validates an explicitly supplied pipeline; missing or unsupported
+`generation_mode` returns 422. Fixture testing uses the same interpreter/validator path as scans and records `source_handler_runs`
 outcomes.
 
 Inside-envelope activation sets the handler version `active`, supersedes the
@@ -254,18 +220,15 @@ failures, advances the `source_connection_scan` scheduler task even on failure
 to avoid tight retry loops, and materializes validated output through
 `CustomSourceMaterializationService`.
 
-Manual `POST /api/v1/sources/connections/:connectionId/scan` also creates the
+Manual `POST /api/v1/sources/channels/:channelId/scan` also creates the
 paired handler run for `generated_custom` connections rather than routing them
 through the built-in extraction worker.
 
 ## Declarative Pipeline Model
 
-A handler execution model, `language: "declarative_pipeline_v1"`,
-exists beside `typescript_node` rows. The `typescript_node` template
-generator's customization surface is a single CSS class name (list vs.
-single-page mode). It cannot paginate, follow a list
-item's own link, download a non-HTML asset, or capture per-item snapshots in
-list mode. New recipe-like sources are represented by
+`language: "declarative_pipeline_v1"` is the supported handler execution model.
+The step catalog supports list/single-page extraction, pagination, linked pages
+and assets. New recipe-like sources are represented by
 Level 2 `source_recipe_versions`. Any `declarative_pipeline_v1` handler
 versions created through advanced/admin paths remain readable Custom Source
 rows. The explicit bridge (`SourceRecipePipelineBridgeService`,
@@ -275,15 +238,12 @@ recipe source, and writes a draft `source_recipe_versions` row. It does not
 mutate that custom-source connection or auto-activate the recipe; the
 normal recipe dry-run/activate path still applies.
 
-Unlike `typescript_node` (generated code executed in a sandboxed child
-process because the code cannot be fully trusted), a `declarative_pipeline_v1`
-handler version has no generated/untrusted code at all — its
+A `declarative_pipeline_v1` handler version has no generated/untrusted code at all — its
 `manifest_json.pipeline` is a JSON step list interpreted in-process by a
 fixed, reviewed step catalog (`server/src/modules/sources/customSources/customSourcePipelineInterpreter.ts`).
 There is nothing to sandbox; every live network request still goes through
 the same origin-allowlist + redirect-revalidation guard
-(`fetchAllowedOriginResponse` in `customSourceEndpointFetch.ts`) the
-`typescript_node` mode's trusted pre-fetch already used. `browser_automation_enabled`,
+(`fetchAllowedOriginResponse` in `customSourceEndpointFetch.ts`). `browser_automation_enabled`,
 `shell_enabled`, and `dependency_installation_enabled` are structurally
 impossible for this model (a step interpreter has no shell or dynamic-code
 surface), not merely disabled by policy.
@@ -293,15 +253,12 @@ Step catalog (`packages/protocol/src/sourceCustomSourceHandlers.ts`,
 
 - `fetch_page` — fetch one URL into a named `html` variable. `url:
   "$source.endpoint_url"` is a sentinel meaning "use the already-fetched /
-  fixture-overridable primary endpoint HTML" (`handlerInput.source.config.fetched_html`,
-  the same value the `typescript_node` handler already reads) rather than a
+  fixture-overridable primary endpoint HTML" (`handlerInput.source.config.fetched_html`) rather than a
   live fetch; any other literal URL is a live fetch subject to the policy
   envelope's `allowed_network_origins`.
 - `extract_list` — split an `html` variable into repeated items by one CSS
-  class name, into a named `items` variable (same heuristic as the
-  `typescript_node` template's `splitBlocksByClass`, ported to real
-  TypeScript in `customSourceHtmlExtract.ts` since there is no child process
-  to serialize the logic into).
+  class name into a named `items` variable, using the trusted
+  `customSourceHtmlExtract.ts` implementation.
 - `extract_single` — one item from a whole `html` variable.
 - `follow_link` — for up to `max_follow` items in an `items` variable, fetch
   each item's own `source_uri`, overwrite its `title`/`excerpt` from the
@@ -328,35 +285,29 @@ combined; each individual fetch is capped at `max_download_bytes`. There is
 no separate cumulative-bytes-across-fetches limit. The worst case is
 `max_files * max_download_bytes`. Exceeding
 `max_output_bytes` on the final serialized output produces
-`output_too_large: true` with `raw_output_json: null`, exactly like the
-`typescript_node` runner.
+`output_too_large: true` with `raw_output_json: null` in the shared result contract.
 
 `mode: "test"` (fixture testing) is deliberately not fully live: only a
 `fetch_page` step targeting the primary-endpoint sentinel ever resolves to
 real content (the pre-fetched/fixture HTML). `follow_link`, `download_asset`,
 `paginate`, and any `fetch_page` with a literal URL are no-ops that record a
 diagnostic warning instead of performing a live fetch — a fixture test must
-stay offline and side-effect free, matching the expectation the
-`typescript_node` mode's fully network-blocked handler process already
-satisfies. This means a fixture test cannot exercise what a multi-fetch
+stay offline and side-effect free after primary input preparation. This means a fixture test cannot exercise what a multi-fetch
 pipeline actually does beyond page 1; only a live scan run does.
 
 Generation: `POST /api/v1/sources/custom-sources/:connectionId/generate-handler`
-accepts `generation_mode: "code_template" | "pipeline"` (default
-`"code_template"`, preserving existing behavior). `generation_mode: "pipeline"`
-requires a `pipeline` body field validated against
+requires explicit `generation_mode: "pipeline"`; omission, `code_template` and
+other values return 422. A `pipeline` body field is validated against
 `CustomSourcePipelineDefinitionSchema`; there is no template/LLM step here —
 the caller supplies the full pipeline definition. `entrypoint` is set to the
 constant `"pipeline"` (the column is `NOT NULL` but there is no source file to
 point at) and `handler_artifact_id` is `null`.
 
 Execution dispatch: `customSourceHandlerExecution.ts`'s
-`executeCustomSourceHandler` is the single branch point shared by
-`testHandler` and the scan worker's `runOne` — `typescript_node` resolves the
-stored source artifact and runs `CustomSourceRunner`; `declarative_pipeline_v1`
-parses `manifest_json.pipeline` and runs `runCustomSourcePipeline`. Both
-return the same `CustomSourceRunnerResult` shape, so the contract
-validator and materializer are shared by both models.
+`executeCustomSourceHandler` is shared by `testHandler` and the scan worker's
+`runOne`. After admission, it parses `manifest_json.pipeline` and runs
+`runCustomSourcePipeline`. The `SourceExecutionResult` shape feeds the shared
+contract validator and materializer. There is no code-artifact execution branch.
 
 Schema: `source_handler_versions.language`'s `CHECK` constraint in
 `server/migrations/0000_baseline.sql` allows both `typescript_node` and
@@ -407,18 +358,18 @@ web client declares these calls. No frontend page wires them.
 
 Status: implemented (`server/src/modules/sources/customSources/customSourceRepairService.ts`,
 `POST /api/v1/sources/custom-sources/:connectionId/repair` and `.../rollback`).
-Works identically for both handler execution models — repair calls
-`CustomSourceCreateFlowService.generateHandler`/`testHandler` internally, so
-it produces a `typescript_node` or `declarative_pipeline_v1` version
-depending on what the active version already is.
+Repair supports only `declarative_pipeline_v1`. It calls
+`CustomSourceCreateFlowService.generateHandler`/`testHandler` with explicit
+pipeline mode. A retained code handler returns 409 before generation or state
+changes; repair does not migrate legacy code.
 
 Repair creates a new handler version. It does not mutate the active version in
 place, and it never touches a connection that has no active handler version
 (422/409 — repair recovers a *running* source, it does not create one).
 
 Regeneration input is the active version's own `manifest_json` (its
-`list_selector`, or its `pipeline` definition) merged with any explicit
-overrides in the repair request body (`list_selector`, `pipeline`,
+`pipeline` definition) merged with any explicit
+overrides in the repair request body (`pipeline`,
 `capture_policy`, `retention_policy`, `fixture_html`) — a repair call with no
 overrides at all still re-fetches/re-tests live content, which is a
 meaningful repair attempt on its own for drift that is about site content
@@ -487,8 +438,7 @@ list, or any handler version DTO — ever returns the plaintext secret.
 A draft Custom Source references a credential by `credential_id` (a plain
 pointer, not the secret) via `POST /api/v1/sources/custom-sources/drafts`.
 `generateHandler` carries the connection's `credential_id` through to the
-new version's policy envelope as `credential_ref`, for both handler execution
-models. `credential_ref` is safe to expose in `input.json.policy.credential_ref`
+new declarative version's policy envelope as `credential_ref`. `credential_ref` is safe to expose in `input.json.policy.credential_ref`
 (the handler-visible contract) because it is only an opaque identifier — the
 handler itself never resolves it and never sees the secret.
 
@@ -496,8 +446,7 @@ Only the trusted fetch layer ever resolves the actual secret:
 `CustomSourceCredentialService.resolveCredentialHeader` decrypts it once per
 run/test and returns `{ header_name, header_value }`, which
 `fetchAllowedOriginResponse` (`customSourceEndpointFetch.ts`) injects as a
-request header on every live fetch it makes — the `typescript_node` mode's
-single trusted pre-fetch, and every fetch the `declarative_pipeline_v1`
+request header on the trusted primary pre-fetch and every fetch the `declarative_pipeline_v1`
 interpreter's steps make (`fetch_page`, `follow_link`, `download_asset`,
 `paginate`'s next-page fetch). The credential is still subject to the same
 `allowed_network_origins` allowlist as every other fetch — it is never sent
@@ -702,19 +651,20 @@ gated by `SERVER_CUSTOM_SOURCE_ARTIFACT_RETENTION_ENABLED`, default on, every
 prunes stored `typescript_node` handler-code artifacts
 (`pruneSupersededCustomSourceHandlerArtifacts`) for versions `superseded`
 longer than `SERVER_CUSTOM_SOURCE_ARTIFACT_RETENTION_DAYS` (default 30) —
-except each connection's single most-recently-superseded version, which
-`rollbackHandler`'s no-argument default targets, so a plain rollback is never
-broken by this job. Only the artifact (file + `artifacts` row) and
+except each connection's single most-recently-superseded version. Retaining
+an artifact preserves history; it does not make an old code version eligible
+for rollback or execution. Only the artifact (file + `artifacts` row) and
 `handler_artifact_id` are cleared; the `source_handler_versions` row itself
 is kept for audit/history. `declarative_pipeline_v1` versions have no
 artifact to prune (their pipeline definition lives in `manifest_json`).
 
-**Fail-closed behavior** (covered by the runner tests, listed here for
+**Fail-closed behavior** (covered by execution-policy and service tests, listed here for
 an operator's reference): runner disabled
 (`runner_disabled`), handler language not in the instance allowlist
 (`language_not_allowed`), and browser automation/shell/dependency
 installation requests (unconditionally refused regardless of instance
-availability flags) all record a `blocked` handler run with the reason as
+availability flags), and legacy code execution (`handler_language_removed`) all
+record a `blocked` handler run with the reason as
 `failure_class`, visible through `handler-runs` and
 `recent_run_status_counts`.
 
@@ -775,3 +725,11 @@ does not execute or rewrite versions. Credentials use the existing encrypted
 Source endpoint through the dedicated `/sources/access` page, never messages
 or generated code. New generated goal implementations retain exact-SHA isolated
 execution; unavailable isolation refuses rather than using the legacy runner.
+
+Retained `typescript_node` versions are refused at shared handler admission
+and dispatch boundaries. Scheduled/manual jobs and fixture/live tests cannot
+execute them; generation and repair cannot create replacement code versions. Existing registry/history and
+metadata-only mapping remain available; executing migrated code requires the
+new Goal's own exact-preview authorization and isolated Host path. Standard
+container acceptance remains subject to the separate
+[deployment enablement gate](../tasks/deferred-register.md#sources--deployment-enablement).

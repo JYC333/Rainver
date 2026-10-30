@@ -21,7 +21,7 @@ import {
   type ScopedSettingsRead,
 } from "../../settings/index.js";
 import { SOURCE_CAPTURE_POLICY_SET } from "../capturePolicy.js";
-import type { CustomSourceRunnerSettings } from "./customSourceRunner.js";
+import type { SourceExecutionSettings } from "../sourceExecutionPolicy.js";
 
 export const HANDLER_VERSION_COLUMNS = `id, space_id, source_connection_id, version_number, language, entrypoint, handler_artifact_id, manifest_json, input_schema_json, output_schema_json, policy_envelope_json, requested_capabilities_json, checksum, status, created_by_user_id, created_by_run_id, proposal_id, test_result_json, created_at, activated_at, superseded_at`;
 export const HANDLER_RUN_COLUMNS = `id, space_id, source_connection_id, handler_version_id, extraction_job_id, status, input_artifact_id, output_artifact_id, logs_artifact_id, failure_class, failure_detail_json, validation_result_json, resource_usage_json, created_at, started_at, completed_at`;
@@ -307,7 +307,7 @@ function runnerSettingsOut(
   config: ServerConfig,
   instanceRead: ScopedSettingsRead<CustomSourceInstanceRunnerSettings> | null,
   spaceRead: ScopedSettingsRead<CustomSourceSpacePolicySettings>,
-): CustomSourceRunnerSettings {
+): SourceExecutionSettings {
   const instanceSettings = instanceRead?.value ?? INSTANCE_SETTINGS_DEFAULTS;
   return {
     ...instanceRunnerSettingsOut(config, instanceRead),
@@ -354,7 +354,7 @@ export class PgCustomSourceHandlerRepository {
     return this.settingsStore.get(CUSTOM_SOURCE_INSTANCE_RUNNER_DEFINITION, "instance");
   }
 
-  async getRunnerSettingsForSpace(spaceId: string): Promise<CustomSourceRunnerSettings> {
+  async getRunnerSettingsForSpace(spaceId: string): Promise<SourceExecutionSettings> {
     const [instanceRead, spaceRead] = await Promise.all([
       this.getInstanceRunnerSettingsRead(),
       this.getSpacePolicySettings(spaceId),

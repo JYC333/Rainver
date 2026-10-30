@@ -250,6 +250,9 @@ function unavailableQuota(error: string): HostUsageQuota {
 }
 
 export class HostConnectionRegistry {
+  private readonly stoppingAttempts = new Map<string, {
+    hostId: string; runId: string; settle: (confirmed: boolean) => void;
+  }>();
   private readonly sourceExecutions = new Map<string, {
     hostId: string; execution: SourceExecution; abort: AbortController;
     broker: (request: SourceRequest, signal: AbortSignal) => Promise<SourceResponse>;
@@ -608,6 +611,25 @@ export class HostConnectionRegistry {
     }
     connection.sink.send({ type: "terminate", run_id: runId, force, ...(launchId ? { launch_id: launchId } : {}) });
     return true;
+  }
+
+  /** Recover a persisted dispatch after this server lost its in-process registry. */
+  stopAttempt(hostId: string, runId: string, launchId: string, timeoutMs = 10_000, force = true): Promise<boolean> {
+    const sink = this.connections.get(hostId)?.sink;
+    if (!sink) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => settle(false), timeoutMs);
+      timer.unref?.();
+      const settle = (confirmed: boolean) => {
+        clearTimeout(timer);
+        if (this.stoppingAttempts.get(launchId)?.settle === settle) this.stoppingAttempts.delete(launchId);
+        resolve(confirmed);
+      };
+      this.stoppingAttempts.get(launchId)?.settle(false);
+      this.stoppingAttempts.set(launchId, { hostId, runId, settle });
+      try { sink.send({ type: "terminate", run_id: runId, launch_id: launchId, force }); }
+      catch { settle(false); }
+    });
   }
 
   /**
@@ -1198,6 +1220,8 @@ export class HostConnectionRegistry {
 
   /** Routes a daemon's `complete` frame and clears the pending entry. */
   receiveComplete(hostId: string, runId: string, result: HostRunCompletion, launchId: string): void {
+    const stopping = this.stoppingAttempts.get(launchId);
+    if (stopping?.hostId === hostId && stopping.runId === runId) stopping.settle(true);
     const pending = this.currentDispatch(hostId, runId, launchId);
     if (!pending) return;
     if (pending.graceTimer) clearTimeout(pending.graceTimer);

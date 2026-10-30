@@ -12,6 +12,7 @@ import { scanPublicationWindowStart } from "../connectors/monitoringWindow.js";
 
 export interface SourceConnectorCapabilities {
   protocol: string;
+  native_runtime_support?: 'unknown';
   supports_search: boolean;
   supports_categories: boolean;
   supports_date_range: boolean;
@@ -251,6 +252,7 @@ export const sourceConnectorRegistry = new SourceConnectorRegistry();
 // Deliberately self-register at import: these handlers and their registry share
 // this file, so importing the registry cannot omit them and registration occurs
 // exactly once per process rather than once per Fastify app build.
+sourceConnectorRegistry.register({connectorKey:'agent_native_search',buildScanRequest(){throw new HttpError(409,'Native Agent search requires a canonical collection Run');},buildBackfillRequest(){throw new HttpError(409,'Native search history is unsupported');},parseResponse(){throw new HttpError(409,'Native search requires tool evidence');},getCapabilities(){return {protocol:'agent_native_search',native_runtime_support:'unknown',supports_search:true,supports_categories:false,supports_date_range:false,supports_all_history:false,supports_incremental:true,supports_conditional_requests:false,supports_page_size_narrowing:false,id_fields:['source_uri']};}});
 sourceConnectorRegistry.register(new ArxivConnectorHandler());
 sourceConnectorRegistry.register(new OpenAlexConnectorHandler());
 sourceConnectorRegistry.register(new SemanticScholarConnectorHandler());

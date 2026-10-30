@@ -5,7 +5,7 @@ them fast. Commands are in [`../COMMANDS.md`](../COMMANDS.md).
 
 ## Scope
 
-Seven Vitest suites, one per package, each run from its package root:
+Eight Vitest suites, one per package, each run from its package root:
 
 | Package | Tests | Notes |
 |---|---|---|
@@ -14,11 +14,18 @@ Seven Vitest suites, one per package, each run from its package root:
 | `packages/host-daemon/` | `test/**/*.test.ts` | Pure node |
 | `packages/agent-cli/` | `test/**/*.test.ts` | Spawns the command as a real child process against a stub control plane |
 | `packages/folder-read/` | `test/**/*.test.ts` | Path policy, reads, and git |
+| `packages/reader-document/` | `test/**/*.test.ts` | Reader tree normalization and the Markdown converter (pure) |
 | `packages/outbound-guard/` | `test/**/*.test.ts` | Outbound block list and fetch guard |
 | `apps/web/` | `src/**/*.test.{ts,tsx}` | jsdom by default; pure-logic files opt out |
 
 Web layout has a separate `pnpm run test:layout` Chromium check against the
-built app (`src/__tests__/conversation-layout.browser.mjs`). It uses Playwright
+built app (`src/__tests__/conversation-layout.browser.mjs`, and
+`src/__tests__/reader-layout.browser.mjs` for the shared Reader's typography,
+narrow widths, phone drawer and shortcuts, and
+`src/__tests__/reader-journeys.browser.mjs` for the Reader's end-to-end
+journeys over an in-memory fixture server and its long-document performance
+budget, measured under 4× CPU throttling as a low-end proxy; set
+`READER_PERF_OUT` to write the measurements). It uses Playwright
 Core with browser-local API fixtures to protect Room and Agent Work geometry,
 clipping ancestors and Streamdown CSS integration; jsdom cannot measure these.
 Browser setup and an optional hosted-build target are in COMMANDS.
@@ -28,6 +35,12 @@ database or network), route-style (status codes, response shapes, validation,
 side effects across a public boundary), or workflow-style (a multi-step product
 flow asserted on its durable result and audit trail). Pick by what the test
 protects, not by which file it happens to exercise.
+
+Real-Postgres file teardown also clears the composed auth runtime and Run
+finalization registry before dropping its database. Shared Vitest workers retain
+module state; a registered reconciler or auth repository from one file must not
+connect to that file's deleted database in a later suite. Production services
+and access checks are unchanged by this test-fixture cleanup.
 
 ## What To Test
 

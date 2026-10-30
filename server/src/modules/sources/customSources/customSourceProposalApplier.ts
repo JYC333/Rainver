@@ -14,6 +14,7 @@ import {
   upsertSourceChannelScanTask,
 } from "../sourceConnectionScheduler.js";
 import { resolveRequestedSourceSchedule } from "../sourceScheduleInput.js";
+import { assertDeclarativeHandlerVersion } from "./customSourceCreateFlowService.js";
 
 const CUSTOM_SOURCE_PROPOSAL_TYPES = [
   "custom_source_policy_delta",
@@ -66,6 +67,7 @@ async function applyCustomSourceProposal(
   const connection = await loadConnection(context, connectionId);
   const version = await loadHandlerVersion(context, connectionId, targetVersionId);
   validateVersionBinding(context, version);
+  assertDeclarativeHandlerVersion(version);
 
   if (proposalType === "custom_source_policy_delta") {
     await validatePolicyDeltaPayload(context, connection, version, payload);

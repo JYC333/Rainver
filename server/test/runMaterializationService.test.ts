@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadConfig } from "../src/config.js";
 import { RunMaterializationService } from "../src/modules/runs/materializationService.js";
+import { RunFinalizationBusyError } from "../src/modules/runs/finalizationErrors.js";
+import { requireFinalizedForPostRun } from "../src/modules/runs/finalizationOutcome.js";
+import { JobDeferredError } from "../src/modules/jobs/handlerRegistry.js";
 import type { AgentRunRecord, QueryResult, Queryable } from "../src/modules/runs/repository.js";
 import type { RunFinalizationRecord } from "../src/modules/runs/repository.js";
 
@@ -1011,6 +1014,16 @@ describe("RunMaterializationService", () => {
       project_id: "project-1",
       claim_text: "The retrieval embedding dimension is 2560.",
     });
+  });
+
+  it("defers completion on lock contention without treating it as a new model attempt", async () => {
+    const service = new RunMaterializationService(loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" }), new FakeDb(), {
+      async finalize(): Promise<RunFinalizationRecord> { throw new RunFinalizationBusyError(); },
+    });
+    const result = await service.finalizeRun(run({ status: "cancelled" }));
+    expect(result).toMatchObject({ error_code: "finalization_in_progress" });
+    expect(() => requireFinalizedForPostRun(result)).toThrow(JobDeferredError);
+    expect(() => requireFinalizedForPostRun({ status: "failed", error_code: "settlement_pending" })).not.toThrow();
   });
 
   it("returns a finalization materialization item for terminal runs", async () => {

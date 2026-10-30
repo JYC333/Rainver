@@ -28,7 +28,12 @@ it('upgrades retained material, private state, preferences and old daily snapsho
   expect(steps.pop()).toBe('');
   expect(steps).toHaveLength(18);
   steps.forEach((sql,i)=>writeFileSync(join(source,`${String(i+5).padStart(4,'0')}_historical_step.sql`),i===0?sql:sql.slice(1)));
-  expect(loadSquashPlan(source,migrations).suffix).toHaveLength(18);
+  // The squash target is the formal chain through 0005; later migrations
+  // append normally and are applied on the converted database below.
+  const formalChain=join(prefix,'formal');mkdirSync(formalChain);
+  for(const name of readdirSync(migrations).filter(n=>/^\d{4}_.*\.sql$/.test(n) && Number(n.slice(0,4))<=5)) cpSync(join(migrations,name),join(formalChain,name));
+  const later=readdirSync(migrations).filter(n=>/^\d{4}_.*\.sql$/.test(n) && Number(n.slice(0,4))>5).sort().map(n=>n.slice(0,4));
+  expect(loadSquashPlan(source,formalChain).suffix).toHaveLength(18);
   for(const name of readdirSync(source).filter(n=>/^\d{4}_.*\.sql$/.test(n) && Number(n.slice(0,4))<9)) cpSync(join(source,name),join(prefix,name));
   await migrate(db.pool,prefix);
   const space=randomUUID(),owner=randomUUID(),project=randomUUID(),identity={spaceId:space,userId:owner};
@@ -44,9 +49,10 @@ it('upgrades retained material, private state, preferences and old daily snapsho
   const before=(await db.pool.query('SELECT row_to_json(d) AS snapshot FROM information_digests d WHERE id=$1',[digest])).rows[0];
   // This pool belongs to an empty, disposable shared-test PostgreSQL database.
   // Production conversion still requires explicit offline/backup authorization.
-  const converted=await convertMigrationHistory(db.pool,source,migrations,{apply:true,offline:true,backupReference:'disposable-test-database'});
+  const converted=await convertMigrationHistory(db.pool,source,formalChain,{apply:true,offline:true,backupReference:'disposable-test-database'});
   expect(converted.state).toBe('converted');
   expect(converted.pending).toHaveLength(14);
+  expect((await migrate(db.pool,migrations)).applied).toEqual(later);
   expect((await db.pool.query('SELECT read_status,read_origin,read_body_revision FROM source_item_user_states WHERE source_item_id=$1',[sourceItemId])).rows[0]).toEqual({read_status:'read',read_origin:'library',read_body_revision:0});
   expect((await db.pool.query('SELECT row_to_json(d) AS snapshot FROM information_digests d WHERE id=$1',[digest])).rows[0]).toEqual(before);
   expect(await new ReadingPreferences(db.pool).get(identity,project)).toEqual({show_in_my_reading:true});

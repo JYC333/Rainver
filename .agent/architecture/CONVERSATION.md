@@ -419,6 +419,12 @@ Missing Run relations remain ungrouped until loaded. Persisted message order
 is unchanged; each Run's own reply replaces its live row without duplication.
 The delegated-by label follows Run identity rather than the display anchor.
 
+The current-activity companion refreshes all known nonterminal Runs, including
+ones no longer referenced by the latest message page. Each authorized Run has
+its own Stop, so an older quota/dependency wait can be ended without stopping its
+replacement. Distinct active turns stay visible; repeated Agent names include
+creation time. A new message alone does not cancel earlier authorized work.
+
 A message sent while a turn is running is not refused: the composer sends it
 with `queue: true` (unless it has attachments), and a 202 shows it at the end
 of the transcript as "will be sent when the current turn ends" with Cancel for
@@ -591,7 +597,14 @@ collects it on exit, using the existing Run output upload and artifact
 retention/ACL. No manual Task declaration, report manager or download step is
 required. These previews remain with Run history under existing storage
 lifecycle; they are not a new permanent Knowledge object or an arbitrary host
-file server. Previously unpublished `/tmp` files must be provided again.
+file server. Previously unpublished `/tmp` files must be provided again. Output references are scoped to the
+message's producing Run, not a global alias. When sharing an earlier result in
+a new reply, re-copy still-authorized files into the current output directory;
+verify existence and collection limits before linking, without claiming an
+upload acknowledgement before collection. HTML is inert source text, not a
+rendered report or a gallery: use direct raster links for visual comparisons.
+Prompt guidance lives in the generated Work Skill, not repository AGENTS files;
+path/Run/artifact authorization remains enforced by the preview API.
 
 The browser reads only on click, in the source conversation's Space, and opens
 a closable Dialog without changing the current route. PNG/JPEG/GIF/WebP bytes
@@ -629,3 +642,13 @@ consumers without a parts callback (for example Notebook). Only the goal surface
 explicitly sets false. Missing callbacks are not a signal to alter consumer UI.
 Goal dispatch stores stable typed/code categories and emits the existing error
 envelope; frontend code mapping precedes legacy detail-message fallback.
+
+Source goal setup reuses the existing default assistant (normally OpenCode) or
+explicitly selected Agent/Profile and model/mode picker. Agent-assisted search and
+approved API sources are explicit paths; neither replaces the other silently.
+Agent results are labelled Agent-provided and not independently verified. Search
+capability, supplier usage and cost may be unknown; existing execution/fee gates
+apply. Canonical Run progress survives leaving Reading. The sole result-submission
+action, rather than conversation text or a tool name, records a collection sample.
+Missing API credentials are questions with the existing secure settings route,
+never requests to paste keys into chat. See [SOURCE_GOALS](SOURCE_GOALS.md).

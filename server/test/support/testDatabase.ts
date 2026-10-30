@@ -1,5 +1,7 @@
 import { Pool } from "pg";
 import { closeDbPool } from "../../src/db/pool.js";
+import { setAuthRuntimeForComposition } from "../../src/modules/auth/identity.js";
+import { runFinalizationReconcilerRegistry } from "../../src/modules/runs/finalizationReconcilerRegistry.js";
 import { afterAll, beforeAll, beforeEach } from "vitest";
 import {
   getTestPostgres,
@@ -62,6 +64,10 @@ export function useTestDatabase(
   });
 
   afterAll(async () => {
+    // Shared Vitest workers keep modules between files. Composition-owned
+    // services must not retain this file's connection after its DB is dropped.
+    setAuthRuntimeForComposition(null);
+    runFinalizationReconcilerRegistry.__resetForTests();
     await pool?.end();
     // Services under test reach the same database through `getDbPool`;
     // its cached pool would block the DROP behind `stop()`.

@@ -3,10 +3,18 @@ import { getDbPool } from "../../db/pool.js";
 import { PgHostThreadRepository } from "./threadRepository.js";
 import { runOutputResult } from "../runs/orchestrationResults.js";
 import { PgSessionRepository } from "../sessions/repository.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
+
+export type HostThreadSettlement = Awaited<ReturnType<PgHostThreadRepository["settleRunOutcome"]>>;
 
 /**
- * Post-terminal hook for a host-thread Run, called from the `agent_run` job
- * handler. It records the vendor session the run came back with, and says so
+ * Durable host-thread settlement step, shared by every terminal entrypoint.
+ * Two obligations, decided independently in one transaction
+ * (`PgHostThreadRepository.settleRunOutcome`): the outcome is recorded only if
+ * no newer Run reported (an older turn re-admitted after a newer one finished
+ * must not replace its session), while the Run's own dispatch claim is
+ * released whenever the Run is hard terminal — a refused outcome never
+ * strands the thread. It records the vendor session the run came back with, and says so
  * in the Room when a resume was attempted and came back empty — a context
  * reset is something the person needs to know about, because the Agent has
  * forgotten what they were doing.
@@ -18,10 +26,9 @@ export async function recordHostThreadOutcome(
   resumeAttempted: boolean,
   identity: { digest: string; sent: boolean } | null = null,
   standing: { digest: string; sent: boolean } | null = null,
-): Promise<void> {
-  if (!config.databaseUrl) return;
+): Promise<HostThreadSettlement> {
+  if (!config.databaseUrl) return { outcome_recorded: false, claim: "not_held" };
   const pool = getDbPool(config.databaseUrl);
-  const threads = new PgHostThreadRepository(pool);
   const result = runOutputResult(completedRun.output_json);
   const rawSessionId = result.external_session_id;
   const externalSessionId = typeof rawSessionId === "string" && rawSessionId ? rawSessionId : null;
@@ -34,28 +41,31 @@ export async function recordHostThreadOutcome(
     || completedRun.status === "succeeded"
     || completedRun.status === "degraded"
   );
-  await threads.recordRunOutcome(threadId, {
-    lastRunId: completedRun.id,
-    vendorSessionId: externalSessionId,
-    // A resume was attempted and proved broken: the runtime refused the
-    // session (`runtime_session_invalid`), or finished a turn without handing
-    // one back. Nothing else says so. A Run that failed before the runtime
-    // tried — the host offline, a launch that waited out its budget behind
-    // another writer, a person's stop — produces no session id either, but
-    // the session it would have resumed is still there. Not attempting a
-    // resume at all (a thread's first-ever dispatch) never counts.
-    sessionReset,
-    // A completed turn is the proof the prompt reached the runtime. A failed
-    // or cancelled Run may have died before it; it then records nothing, and
-    // the next turn sends the identity block again — the safe direction.
-    landed: Boolean(externalSessionId)
-      && (completedRun.status === "succeeded" || completedRun.status === "degraded"),
-    identity,
-    standing,
-    contextWindow: contextWindowFrom(result.context_window),
+  const settlement = await withQueryableTransaction(pool, async (tx) => {
+    const threads = new PgHostThreadRepository(tx);
+    return threads.settleRunOutcome(threadId, {
+      lastRunId: completedRun.id,
+      vendorSessionId: externalSessionId,
+      // A resume was attempted and proved broken: the runtime refused the
+      // session (`runtime_session_invalid`), or finished a turn without handing
+      // one back. Nothing else says so. A Run that failed before the runtime
+      // tried — the host offline, a launch that waited out its budget behind
+      // another writer, a person's stop — produces no session id either, but
+      // the session it would have resumed is still there. Not attempting a
+      // resume at all (a thread's first-ever dispatch) never counts.
+      sessionReset,
+      // A completed turn is the proof the prompt reached the runtime. A failed
+      // or cancelled Run may have died before it; it then records nothing, and
+      // the next turn sends the identity block again — the safe direction.
+      landed: Boolean(externalSessionId)
+        && (completedRun.status === "succeeded" || completedRun.status === "degraded"),
+      identity,
+      standing,
+      contextWindow: contextWindowFrom(result.context_window),
+    });
   });
 
-  if (sessionReset) {
+  if (settlement.outcome_recorded && sessionReset) {
     const conversation = await pool.query<{
       space_id: string;
       room_id: string;
@@ -107,6 +117,7 @@ export async function recordHostThreadOutcome(
       }
     }
   }
+  return settlement;
 }
 
 function contextWindowFrom(value: unknown): { used: number; size: number } | null {

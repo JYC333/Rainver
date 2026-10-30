@@ -35,7 +35,8 @@ durable position on this boundary.
 8. `.agent/decisions/` — accepted architectural decisions
 
 Node-only shared workspace helpers live in their owning package (for example
-`packages/folder-read/src/` and `packages/outbound-guard/src/`); they are not
+`packages/folder-read/src/` and `packages/outbound-guard/src/`; `packages/reader-document/src/`
+is browser-safe shared Reader document logic); they are not
 browser-safe protocol contracts.
 
 Docs in `.agent/architecture/` describe **current state**, not target-state speculation. Temporary
@@ -79,6 +80,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/PROJECT_WORK.md](architecture/PROJECT_WORK.md) | Current-state Project advancement: the four state axes, the five Loop stages, the append-only work event stream and its single writer, Run settlement, and who a held Task interrupts |
 | [architecture/ONTOLOGY.md](architecture/ONTOLOGY.md) | Current-state ontology layer: Entity registry and Interfaces, which domains join the ontology and why, `space_objects` root contract, link-type endpoints and per-edge governance, the single write path and its guards |
 | [architecture/CLAIM_FACT_ATOM_MODEL.md](architecture/CLAIM_FACT_ATOM_MODEL.md) | Current-state model for `space_objects`, global claims/facts/takes, claim evidence, claim relations, and FK-backed `object_relations` |
+| [architecture/SOURCE_MATERIAL_PROCESSING.md](architecture/SOURCE_MATERIAL_PROCESSING.md) | Unified material submission, new and saved-link preparation, Source-owner retention review, shared document writer and Reader progress |
 | [architecture/SOURCE_GOALS.md](architecture/SOURCE_GOALS.md) | Goal collection backend: versions, preview/start, Agent-bound repair, quotas, cursor/coverage and acceptance limits |
 | [architecture/SOURCE_CONNECTOR_CONSENT.md](architecture/SOURCE_CONNECTOR_CONSENT.md) | Source/connector consent and policy: owner/subject/readers/agents, egress class, retention, trust, proposal-gated derived writes |
 | [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md) | Data classification, offline write rules, sync schema guidelines |

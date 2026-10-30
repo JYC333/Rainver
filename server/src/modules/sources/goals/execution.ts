@@ -1,3 +1,7 @@
+import {safeBusinessCursor} from './watermark.js';
+import {preflightGoalSource} from './preflight.js';
+import {queueNativeSearch} from './nativeSearch.js';
+import {trustedSearchMetadataOrigins} from './validation.js';
 import {goalResponseDiagnostic} from './diagnostics.js';
 import {createHash,randomUUID} from 'node:crypto';
 import {mkdtemp,rm} from 'node:fs/promises';
@@ -11,24 +15,28 @@ import {sourceQuotaGroup} from '../sourceRequestQuota.js';
 import {PgCustomSourceHandlerRepository} from '../customSources/customSourceHandlerRepository.js';
 import {CustomSourceCredentialService} from '../customSources/customSourceCredentialService.js';
 import {validateCustomSourceHandlerOutput} from '../customSources/customSourceContractValidator.js';
-import {effectiveCustomSourceLimits} from '../customSources/customSourceRunner.js';
+import {effectiveSourceExecutionLimits} from '../sourceExecutionPolicy.js';
 import {sourceConnectorRegistry} from '../catalog/sourceConnectorRegistry.js';
 import {runSourceRecipe} from '../sourceRecipes/recipeInterpreter.js';
 import {sharedHostConnectionRegistry} from '../../hosts/connectionRegistry.js';
-import {requireGoal,requireGoalSource,requireAuthorRun,goalSourceFingerprint,type GoalRow} from './access.js';
+import {requireGoal,requireAuthorRun,goalSourceFingerprint,type GoalRow} from './access.js';
 import type {GoalExecutionPort,GoalExecutionResult} from './service.js';
 import type {OutboundGuard} from '../outboundUrlSafety.js';
 export class SourceGoalExecutor implements GoalExecutionPort {
  constructor(readonly db:Pool,readonly config:ServerConfig,readonly guard?:OutboundGuard){}
  async execute(identity:SpaceUserIdentity,g:GoalRow,spec:SourceGoalBindingSpec,cursor:Record<string,unknown>,signal:AbortSignal,offlineFixture?:unknown,inspectOnly=false):Promise<GoalExecutionResult>{
-  const c=await requireGoalSource(this.db,this.config,identity,g,spec);if(g.execution_authority && goalSourceFingerprint(c)!==g.execution_authority)throw new Error('source_authority_revoked');const settings=await new PgCustomSourceHandlerRepository(this.db,this.config).getEffectiveSettings(identity);
+  cursor=safeBusinessCursor(cursor);
+  if(spec.implementation.kind==='agent_search'){signal.throwIfAborted();if(offlineFixture||inspectOnly)throw new Error('source_native_inspect_refused');return queueNativeSearch(this.db,this.config,identity,g,spec,cursor);}
+  const c=await preflightGoalSource(this.db,this.config,identity,g,spec);if(g.execution_authority && goalSourceFingerprint(c)!==g.execution_authority)throw new Error('source_authority_revoked');const settings=await new PgCustomSourceHandlerRepository(this.db,this.config).getEffectiveSettings(identity);
   if(!settings.runner.runner_enabled)throw new Error('source_runner_disabled');
   const version=await this.db.query(`SELECT policy_envelope_json FROM source_recipe_versions WHERE id=$1 AND source_connection_id=$2 AND status='active' UNION ALL SELECT policy_envelope_json FROM source_handler_versions WHERE id=$3 AND source_connection_id=$2 AND status='active'`,[c.active_recipe_version_id,c.id,c.active_handler_version_id]);
   const connector=sourceConnectorRegistry.get(c.connector_key);
+  if(c.connector_key==='brave_web_search_api'&&!c.credential_id)throw new Error('source_credential_unavailable');
+  if(connector.getCapabilities().supports_search&&(!c.provider_query_json||!Object.keys(c.provider_query_json as object).length))throw new Error('source_search_query_unavailable');
   const channel={endpoint_url:c.endpoint_url,compiled_query:c.provider_query_json};
   const initialRequest=connector.buildScanRequest(channel,{});
   const endpoint=new URL(initialRequest.url);
-  const defaults={allowed_network_origins:[endpoint.origin],capture_policy:c.capture_policy,retention_policy:'metadata_only',credential_ref:c.credential_id,limits:{timeout_ms:10000,max_download_bytes:1048576,max_output_bytes:1048576,max_items:g.budget_json.items_per_source,max_files:1,max_evidence_items:100,log_max_bytes:0}};
+  const defaults={allowed_network_origins:[endpoint.origin],capture_policy:c.capture_policy,retention_policy:'metadata_only',credential_ref:c.credential_id,limits:{timeout_ms:10000,max_download_bytes:1048576,max_output_bytes:1048576,max_items:g.budget_json.items_per_source,max_files:1,max_evidence_items:100,log_max_bytes:1}};
   const envelope=SourcePolicyEnvelopeSchema.parse(version.rows[0]?.policy_envelope_json??defaults);
   // Existing approvals define reach. Goal/repair JSON cannot author an envelope.
   if(!envelope.allowed_network_origins.includes(endpoint.origin))throw new Error('source_scope_refused');
@@ -36,7 +44,7 @@ export class SourceGoalExecutor implements GoalExecutionPort {
   if(c.credential_id && !settings.space.credentialed_sources_allowed)throw new Error('source_credential_scope_changed');
   if(spec.implementation.kind==='isolated' && !settings.runner.allowed_languages.includes('typescript_node'))throw new Error('source_language_refused');
   if(c.credential_id)await new CustomSourceCredentialService(this.db,this.config).requireOwnCredential(identity,c.credential_id);
-  const limits=effectiveCustomSourceLimits(settings.runner,envelope.limits);
+  const limits=effectiveSourceExecutionLimits(settings.runner,envelope.limits);
   if(settings.space.allowed_domains.length && !settings.space.allowed_domains.some(d=>endpoint.hostname===d || endpoint.hostname.endsWith('.'+d)))throw new Error('source_scope_refused');
   if(settings.runner.network_hard_deny_rules.length)throw new Error('source_network_policy_requires_review');
   let authorizeHost:undefined|(()=>Promise<void>);
@@ -47,7 +55,7 @@ export class SourceGoalExecutor implements GoalExecutionPort {
    const current=await requireGoal(this.db,identity,g.id,true);
    if(g.execution_repair_binding&&current.active_version_id!==g.active_version_id)throw new Error('source_authority_revoked');
    if(['paused','deleted'].includes(current.status))throw new Error('source_authority_revoked');
-   const live=await requireGoalSource(this.db,this.config,identity,current,spec);
+   const live=await preflightGoalSource(this.db,this.config,identity,{...current,execution_search_path:g.execution_search_path},spec);
    if(goalSourceFingerprint(live)!==goalSourceFingerprint(c))throw new Error('source_authority_revoked');
   };
   const broker=createSourceRequestBroker(this.db,{
@@ -90,6 +98,7 @@ export class SourceGoalExecutor implements GoalExecutionPort {
     const handler=connector;
     if(cursor.__goal_history===true && !handler.getCapabilities().supports_date_range && !handler.getCapabilities().supports_all_history)throw new Error('source_history_unavailable');
     const request=cursor.__goal_history===true?handler.buildBackfillRequest(channel,{...((cursor.__goal_window??{}) as Record<string,unknown>),from:(cursor.__goal_window as {since?:unknown})?.since,to:(cursor.__goal_window as {until?:unknown})?.until,max_items:g.budget_json.items_per_source},cursor):handler.buildScanRequest(channel,{...cursor,last_published_at:cursor.watermark??cursor.last_published_at});
+    if(!offlineFixture)await handler.prepareRequest?.();
     const response=await fetch(request.url,signal);const text=Buffer.from(response.body_base64,'base64').toString('utf8');
     if(inspectOnly){output={contract_version:'custom_source.handler_output.v1',items:[]};}
     else if(spec.implementation.kind==='connector'){
@@ -103,8 +112,8 @@ export class SourceGoalExecutor implements GoalExecutionPort {
      if(run.status!=='succeeded')throw new Error('source_parser_failed');output=JSON.parse(run.raw_output_json!);nextCursor={...((output as {cursor?:Record<string,unknown>}).cursor??{}),...(run.warnings.includes('source_recipe_items_truncated')?{coverage:'recipe_truncated',unrecoverable_remainder:true}:{})};
     }
    }
-   if(!inspectOnly){const checked=await validateCustomSourceHandlerOutput({raw:output,limits:{...limits,max_items:Math.max(limits.max_items,(output as {items:unknown[]}).items?.length??0)},allowedNetworkOrigins:envelope.allowed_network_origins,sandboxFilesRoot:filesRoot});if(!checked.ok)throw new Error('source_parser_validation_failed');}
-   await authorize();return {selection,output,fixture:{responses:captures},source_kind:captures[0]?.content_type.includes("json")?"api":captures[0]?.content_type.includes("html")?"html":captures[0]?.content_type.includes("xml")?"feed":c.connector_key,cursor:nextCursor,filesRoot,envelope,cleanup:()=>rm(filesRoot,{recursive:true,force:true})};
+   if(!inspectOnly){const checked=await validateCustomSourceHandlerOutput({raw:output,limits:{...limits,max_items:Math.max(limits.max_items,(output as {items:unknown[]}).items?.length??0)},allowedNetworkOrigins:envelope.allowed_network_origins,metadataOnlyOrigins:trustedSearchMetadataOrigins(c.connector_key,spec.implementation,output),sandboxFilesRoot:filesRoot});if(!checked.ok)throw new Error('source_parser_validation_failed');}
+   await authorize();return {selection,output,fixture:{responses:captures},source_kind:spec.implementation.kind==='connector'&&connector.getCapabilities().supports_search?'search':captures[0]?.content_type.includes("json")?"api":captures[0]?.content_type.includes("html")?"html":captures[0]?.content_type.includes("xml")?"feed":c.connector_key,cursor:nextCursor,filesRoot,envelope,cleanup:()=>rm(filesRoot,{recursive:true,force:true})};
   }catch(error){if(error instanceof Error && captures.length)Object.defineProperty(error,'sourceDiagnostic',{value:{capture_policy:envelope.capture_policy,retention_policy:envelope.retention_policy,code:/^source_[a-z_]+$/.test(error.message)?error.message:'source_execution_failed',responses:captures.map(goalResponseDiagnostic),fixture:{responses:captures}},enumerable:false});await rm(filesRoot,{recursive:true,force:true});if(signal.aborted)throw new SourceRequestError(signal.reason?.name==='TimeoutError'?'source_timeout':'source_cancelled');throw error;}
  }
 }

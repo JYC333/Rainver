@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunInputEnvelope } from "@rainver/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository.js";
 import { contractRecord, createRunContractSnapshot } from "../src/modules/runs/contractSnapshot.js";
 import type { AgentRunRecord, RunRecord } from "../src/modules/runs/repository.js";
@@ -22,6 +22,9 @@ import {
   runToOut,
   verificationResultToOut,
 } from "../src/modules/runs/runReadModel.js";
+import { RunRecoveryLoop } from "../src/modules/jobs/runRecoveryLoop.js";
+import { RunRecoveryService } from "../src/modules/runs/recovery.js";
+import { runJobWorkerPool } from "../src/modules/jobs/workerPool.js";
 import { resetTables } from "./support/resetTables.js";
 import { ensureDefaultRuntimeProfile, seedRun, seedServerHost, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { loadConfig } from "../src/config.js";
@@ -961,5 +964,105 @@ describe("what a sibling Agent is told this Run was asked", () => {
     expect(runAssignedTask({ prompt: "Run the weekly digest", model_override_json: null }))
       .toBe("Run the weekly digest");
     expect(runAssignedTask({ prompt: null, model_override_json: null })).toBeNull();
+  });
+});
+
+describe("runRecoveryLoop", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("keeps business lanes available while exactly one recovery pass is blocked", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const recover = vi.fn(() => blocked);
+    const errors = vi.fn();
+    const recovery = new RunRecoveryLoop(recover, 1, errors);
+    recovery.start();
+    let completed = 0;
+    const worker = { processOne: async () => {
+      completed += 1;
+      return { status: "completed" as const, job_id: String(completed) };
+    } };
+    await runJobWorkerPool([worker, worker], {
+      stopped: () => completed >= 8,
+      pollIntervalMs: 1,
+      postWakeRecheckMs: 1,
+    });
+    expect(completed).toBeGreaterThanOrEqual(8);
+    expect(recover).toHaveBeenCalledOnce();
+    let stopped = false;
+    const stopping = recovery.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    release();
+    await stopping;
+    recovery.start();
+    expect(recover).toHaveBeenCalledOnce();
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  it("retries failed recovery after its interval without overlapping passes", async () => {
+    vi.useFakeTimers();
+    const recover = vi.fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("temporary failure"))
+      .mockResolvedValue(undefined);
+    const errors = vi.fn();
+    const recovery = new RunRecoveryLoop(recover, 100, errors);
+    recovery.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(errors).toHaveBeenCalledOnce();
+    expect(recovery.lastCompletedAt).toBeNull();
+    recovery.start();
+    expect(recover).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(recover).toHaveBeenCalledTimes(2);
+    expect(recovery.lastCompletedAt).not.toBeNull();
+    await recovery.stop();
+  });
+
+  it("isolates a failing recovery step and a failing Run so the rest of the pass still runs", async () => {
+    const calls: string[] = [];
+    const runs = {
+      listCancellingAgentRuns: async () => { calls.push("cancellation"); throw new Error("cancellation query failed"); },
+      recoverStaleRuns: async () => { calls.push("stale"); return 0; },
+      listOrphanedRunIds: async () => { calls.push("orphaned"); return [{ id: "bad", space_id: "s" }, { id: "good", space_id: "s" }]; },
+      getRun: async (_space: string, id: string) => { calls.push(`get:${id}`); if (id === "bad") throw new Error("row unreadable"); return null; },
+      listTerminalChatRunsAwaitingCompletion: async () => { calls.push("chat"); return [{ id: "bad", space_id: "s" }, { id: "good", space_id: "s" }]; },
+      listWaitingRoomChatRunsAwaitingReply: async () => { calls.push("waiting"); return [{ id: "bad", space_id: "s" }, { id: "good", space_id: "s" }]; },
+      listTaskRunsAwaitingFinalization: async () => { calls.push("task"); return [{ id: "bad", space_id: "s" }, { id: "good", space_id: "s" }]; },
+      listUnsettledFinalizations: async () => { calls.push("settlement"); return [{ run_id: "bad", space_id: "s" }, { run_id: "good", space_id: "s" }]; },
+    } as unknown as PgRunRepository;
+    const warnings: string[] = [];
+    await new RunRecoveryService(loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" }), runs)
+      .recover({ warn: message => warnings.push(message) });
+    expect(calls).toEqual(["cancellation", "stale", "orphaned", "get:bad", "get:good",
+      "chat", "get:bad", "get:good", "waiting", "get:bad", "get:good",
+      "task", "get:bad", "get:good", "settlement", "get:bad", "get:good"]);
+    expect(warnings).toEqual([
+      expect.stringContaining("recovery step cancellation_intent failed: cancellation query failed"),
+      expect.stringContaining("orphaned Run bad finalization failed: row unreadable"),
+      expect.stringContaining("chat Run bad completion deferred: row unreadable"),
+      expect.stringContaining("waiting Room Run bad reply deferred: row unreadable"),
+      expect.stringContaining("Task Run bad finalization deferred: row unreadable"),
+      expect.stringContaining("Run bad recovery failed: row unreadable"),
+    ]);
+  });
+
+  it("reports a stalled pass once and starts no second pass beside it", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const recover = vi.fn(() => new Promise<void>(resolve => { release = resolve; }));
+    const stalls: number[] = [];
+    const recovery = new RunRecoveryLoop(recover, 100, vi.fn(), { afterMs: 1_000, report: ms => stalls.push(ms) });
+    recovery.start();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(stalls).toEqual([1_000]);
+    expect(recover).toHaveBeenCalledOnce();
+    release();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(recover).toHaveBeenCalledTimes(2);
+    release();
+    await recovery.stop();
+    expect(stalls).toEqual([1_000]);
   });
 });

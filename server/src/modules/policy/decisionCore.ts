@@ -833,6 +833,16 @@ const ruleManagedSystemActionGrant: Rule = (ctx) => {
   if (ctx.surface !== "managed_run_system_action_gateway") return null;
   const actionId = str(ctx.action_id);
   if (!REQUESTABLE_SYSTEM_ACTIONS.has(actionId)) return null;
+  if (actionId === "source.channel.propose_activation" && ctx.source_goal_setup_request === true) {
+    return makeDecision({
+      decision: "allow",
+      message: "Goal setup may submit a Source for review; activation still requires approval.",
+      risk_level: "medium",
+      reason_code: "source_goal_setup_proposal_allowed",
+      policy_rule_id: "source_goal_setup_proposal_allowed",
+      audit_code: "source_goal_setup_proposal_allowed",
+    });
+  }
   if (ctx.has_action_approval_grant === true) {
     return makeDecision({
       decision: "allow",

@@ -14,6 +14,7 @@ function sourcesConfig(): ServerConfig {
     port: 8010,
     logLevel: "silent",
     requestTimeoutMs: 1000,
+    jobsWorkerConcurrency: 8,
     catalogRoot: "/tmp/catalog",
     runEventStreamPollIntervalMs: 1000,
     runEventStreamPageLimit: 100,

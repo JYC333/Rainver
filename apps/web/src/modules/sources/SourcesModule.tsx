@@ -3,8 +3,6 @@ import { Routes, Route } from 'react-router-dom'
 import { Skeleton } from '../../components/ui/skeleton'
 
 const AccessPage=lazy(()=>import('./SourceAccessPage'))
-const GoalPage=lazy(()=>import('./SourceGoalPage'))
-const GoalList=lazy(()=>import('./SourceGoalsList'))
 const SourcesPage = lazy(() => import('./SourceChannelsPage'))
 const SourceDetailPage = lazy(() => import('./SourceChannelDetailPage'))
 
@@ -21,8 +19,6 @@ export default function SourcesModule() {
   return (
     <Routes>
       <Route path="access" element={<Suspense fallback={<PageFallback />}><AccessPage /></Suspense>} />
-      <Route path="goals" element={<Suspense fallback={<PageFallback />}><GoalList /></Suspense>} />
-      <Route path="goals/:goalId" element={<Suspense fallback={<PageFallback />}><GoalPage /></Suspense>} />
       <Route index element={<Suspense fallback={<PageFallback />}><SourcesPage /></Suspense>} />
       <Route path=":sourceId" element={<Suspense fallback={<PageFallback />}><SourceDetailPage /></Suspense>} />
     </Routes>

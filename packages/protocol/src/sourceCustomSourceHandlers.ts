@@ -1,16 +1,17 @@
+import {SourceMaterialReadingContentSchema} from './sourceMaterials.js';
 /**
  * Source Custom Source handler contracts.
  *
- * Custom Source extends the Source `SourceConnection` model with generated,
+ * Custom Source extends the Source `SourceConnection` model with
  * source-specific handler versions and handler runs. See
  * `.agent/architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md` for the product
  * boundary. These schemas cover:
  *
  * - The handler version / handler run wire DTOs (server-owned persistence).
  * - The policy envelope shape attached to each handler version.
- * - The server-owned handler input/output sandbox contract
+ * - The server-owned structured input/output contract
  *   (`custom_source.handler_input.v1` / `custom_source.handler_output.v1`)
- *   that generated handler code reads and writes.
+ *   used by declarative execution and retained historical records.
  * - The Space/Instance Custom Source settings read model.
  *
  * Handler output is untrusted until the server validates it against
@@ -26,12 +27,12 @@ const JsonObjectSchema = z.record(z.unknown());
 export const CUSTOM_SOURCE_HANDLER_KIND_VALUES = ["built_in", "generated_custom"] as const;
 
 /**
- * Level 3 generated-handler language identifiers. `typescript_node` is the
- * generated-code fallback. `declarative_pipeline_v1` remains readable on
- * existing handler versions and can be explicitly bridged into Level 2
- * Source Recipes; normal source creation should write `source_recipe_versions`
- * instead of new pipeline-as-handler rows. See
- * `.agent/architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md`.
+ * Persisted handler language identifiers. `typescript_node` is retained for
+ * historical DTOs and shared isolated-Goal settings; its old handler generator
+ * and executor are removed. Only explicit `declarative_pipeline_v1` pipelines
+ * can be created/executed through the handler APIs, and can be bridged into
+ * Level 2 Source Recipes. New Goal code uses the separate isolated Host contract.
+ * See `.agent/architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md`.
  */
 export const CUSTOM_SOURCE_HANDLER_LANGUAGE_VALUES = ["typescript_node", "declarative_pipeline_v1"] as const;
 
@@ -81,7 +82,7 @@ export const CUSTOM_SOURCE_RETENTION_POLICY_VALUES = [
 ] as const;
 export type CustomSourceRetentionPolicy = (typeof CUSTOM_SOURCE_RETENTION_POLICY_VALUES)[number];
 
-/** Resource/output limits enforced by the runner and the contract validator. */
+/** Resource/output limits enforced by execution policy and the contract validator. */
 export const CustomSourcePolicyLimitsSchema = z
   .object({
     timeout_ms: z.number().int().positive(),
@@ -407,8 +408,8 @@ const CustomSourceHandlerOutputEvidenceSchema = z
 
 /**
  * One produced source item. Shared output shape across implementation levels:
- * Level 3 generated/template handlers emit these via `output.json`, and Level 2
- * recipe execution (`sourceRecipes.ts`) produces the same shape, so the
+ * Declarative handlers and Level 2 recipes (`sourceRecipes.ts`) produce this
+ * shape; historical generated-handler output remains readable. The
  * server-side contract validator and Source materializer are shared.
  */
 export const CustomSourceHandlerOutputItemSchema = z
@@ -420,6 +421,7 @@ export const CustomSourceHandlerOutputItemSchema = z
     author: z.string().nullish(),
     excerpt: z.string().nullish(),
     metadata: JsonObjectSchema.nullish(),
+    reading_content: SourceMaterialReadingContentSchema.nullish(),
     snapshots: z.array(CustomSourceHandlerOutputSnapshotSchema).default([]),
     evidence: z.array(CustomSourceHandlerOutputEvidenceSchema).default([]),
   })

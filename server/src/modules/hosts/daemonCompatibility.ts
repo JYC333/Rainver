@@ -5,6 +5,7 @@
  * Older daemons would silently write base64 as UTF-8 or leave Skill links unresolved.
  *
  * 0.4.3 adds owner-authorized global CLI Skill scan/read frames.
+ * 0.4.4 confirms exact-attempt absence when recovering a lost server worker.
  *
  * 0.4.0 was the oldest daemon that merges a done Task's branch (ADR 0016 §11): `task_merge_prepare`,
  * `_continue`, `_abort` and `_finish`, and a conflict-resolution Run launched
@@ -19,7 +20,7 @@
  * depend on a field an older daemon does not read, and bump the daemon's own
  * `package.json` version with it.
  */
-export const MIN_HOST_DAEMON_VERSION = "0.4.3";
+export const MIN_HOST_DAEMON_VERSION = "0.4.4";
 
 const RELEASE_TRIPLE = /^(\d+)\.(\d+)\.(\d+)/;
 

@@ -1,9 +1,9 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { TWO_ARTICLE_HTML } from "./support/customSourceFixtures.js";
+import { TWO_ARTICLE_HTML, CUSTOM_SOURCE_LIST_PIPELINE } from "./support/customSourceFixtures.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { seedLegacyCustomSourceVersion, seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadConfig, type ServerConfig } from "../src/config.js";
@@ -48,36 +48,13 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (artifactStorageRoot) await rm(artifactStorageRoot, { recursive: true, force: true });
 });
 
 const FIXTURE_HTML = TWO_ARTICLE_HTML;
 
-async function createActiveConnection(): Promise<{ connectionId: string; activeVersionId: string }> {
-  const connection = await createFlow!.createDraft(IDENTITY, {
-    name: "Example Source",
-    endpoint_url: "https://example.com/list",
-    config: { list_selector: "article" },
-  });
-  const connectionId = connection.source_connection_id;
-  const version = await createFlow!.generateHandler(IDENTITY, connectionId, {});
-  await createFlow!.testHandler(IDENTITY, connectionId, {
-    handler_version_id: version.id,
-    fixture_html: FIXTURE_HTML,
-  });
-  const activation = await createFlow!.activateHandler(IDENTITY, connectionId, { handler_version_id: version.id });
-  expect(activation.status).toBe("active");
-  return { connectionId, activeVersionId: version.id };
-}
-
-const PIPELINE = {
-  pipeline_version: "custom_source.pipeline.v1",
-  steps: [
-    { type: "fetch_page", url: "$source.endpoint_url", bind: "list_page" },
-    { type: "extract_list", input: "list_page", selector: { css_class: "article" }, bind: "items" },
-  ],
-  output: { items_var: "items" },
-};
+const PIPELINE = CUSTOM_SOURCE_LIST_PIPELINE;
 
 async function createActivePipelineConnection(): Promise<{ connectionId: string; activeVersionId: string }> {
   const connection = await createFlow!.createDraft(IDENTITY, {
@@ -139,6 +116,31 @@ describe("CustomSourceRepairService.repairHandler (declarative_pipeline_v1)", ()
 });
 
 describe("CustomSourceRepairService.repairHandler", () => {
+  it("rejects repair of a removed handler language before creating candidates or changing repair state", async ctx => {
+    if (!db.available) return ctx.skip();
+    const connection = await createFlow!.createDraft(IDENTITY, {
+      name: "Retained legacy source", endpoint_url: "https://example.com/list", config: { list_selector: "article" },
+    });
+    const version = await seedLegacyCustomSourceVersion(db.pool, IDENTITY, connection.id, { status: "active" });
+    // Model a version that was activated before legacy execution was frozen.
+    await db.pool.query("UPDATE source_handler_versions SET status='active', activated_at=now(), test_result_json='{\"status\":\"succeeded\"}' WHERE id=$1", [version.id]);
+    await db.pool.query("UPDATE source_connections SET active_handler_version_id=$2, status='active' WHERE id=$1", [connection.id, version.id]);
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { same_envelope_repair_auto_apply: true });
+    const fetch = vi.spyOn(globalThis, "fetch");
+
+    await expect(repairService!.repairHandler(IDENTITY, connection.id, {}))
+      .rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("language has been removed") });
+    expect(fetch).not.toHaveBeenCalled();
+    expect((await db.pool.query("SELECT active_handler_version_id, repair_status FROM source_connections WHERE id=$1", [connection.id])).rows[0])
+      .toMatchObject({ active_handler_version_id: version.id, repair_status: "ok" });
+    expect((await db.pool.query("SELECT id FROM source_handler_versions WHERE source_connection_id=$1", [connection.id])).rows)
+      .toEqual([{ id: version.id }]);
+    expect((await db.pool.query("SELECT id FROM source_items WHERE connection_id=$1", [connection.id])).rows).toEqual([]);
+    expect((await db.pool.query("SELECT id FROM proposals")).rows).toEqual([]);
+    expect((await db.pool.query("SELECT id FROM artifacts")).rows).toEqual([]);
+    expect((await db.pool.query("SELECT id FROM source_handler_runs WHERE source_connection_id=$1", [connection.id])).rows).toEqual([]);
+  });
+
   it("rejects repair for a connection with no active handler version", async () => {
     if (!db.available) return;
     const connection = await createFlow!.createDraft(IDENTITY, {
@@ -153,7 +155,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
 
   it("rejects a repair call while one is already in progress for the same connection", async () => {
     if (!db.available) return;
-    const { connectionId } = await createActiveConnection();
+    const { connectionId } = await createActivePipelineConnection();
     await db.pool.query(`UPDATE source_connections SET repair_status = 'repair_pending' WHERE id = $1`, [connectionId]);
 
     await expect(
@@ -164,7 +166,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
 
   it("auto-activates an unchanged-envelope repair when Space policy allows it", async () => {
     if (!db.available) return;
-    const { connectionId, activeVersionId } = await createActiveConnection();
+    const { connectionId, activeVersionId } = await createActivePipelineConnection();
     await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { same_envelope_repair_auto_apply: true });
 
     const result = await repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML });
@@ -190,7 +192,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
 
   it("creates a custom_source_repair_activation proposal when the envelope is unchanged but Space policy disallows auto-apply", async () => {
     if (!db.available) return;
-    const { connectionId, activeVersionId } = await createActiveConnection();
+    const { connectionId, activeVersionId } = await createActivePipelineConnection();
     // same_envelope_repair_auto_apply defaults to false.
 
     const result = await repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML });
@@ -239,7 +241,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
 
   it("ends the repair when its proposal is rejected, so the connection can be repaired again", async () => {
     if (!db.available) return;
-    const { connectionId } = await createActiveConnection();
+    const { connectionId } = await createActivePipelineConnection();
     const result = await repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML });
     if (result.status !== "pending_approval") throw new Error("expected a repair proposal");
 
@@ -257,7 +259,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
 
   it("routes a permission-broadening repair through custom_source_policy_delta, not custom_source_repair_activation", async () => {
     if (!db.available) return;
-    const { connectionId, activeVersionId } = await createActiveConnection();
+    const { connectionId, activeVersionId } = await createActivePipelineConnection();
     await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { same_envelope_repair_auto_apply: true });
 
     // capture_policy broadens extract_text -> archive_original
@@ -285,7 +287,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
 
   it("marks repair_status back to repair_required when the regenerated version fails its fixture test", async () => {
     if (!db.available) return;
-    const { connectionId } = await createActiveConnection();
+    const { connectionId } = await createActivePipelineConnection();
 
     const result = await repairService!.repairHandler(IDENTITY, connectionId, {
       fixture_html: `<div class="article"><a href="https://evil.example/x">Bad</a><p>x</p></div>`,
@@ -303,13 +305,13 @@ describe("CustomSourceRepairService.repairHandler", () => {
 describe("CustomSourceRepairService.rollbackHandler", () => {
   it("404s when there is no superseded version to roll back to", async () => {
     if (!db.available) return;
-    const { connectionId } = await createActiveConnection();
+    const { connectionId } = await createActivePipelineConnection();
     await expect(repairService!.rollbackHandler(IDENTITY, connectionId, {})).rejects.toThrow(HttpError);
   });
 
   it("rolls back to the most recently superseded version", async () => {
     if (!db.available) return;
-    const { connectionId, activeVersionId } = await createActiveConnection();
+    const { connectionId, activeVersionId } = await createActivePipelineConnection();
     await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { same_envelope_repair_auto_apply: true });
     const repaired = await repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML });
     expect(repaired.status).toBe("active");
@@ -335,8 +337,8 @@ describe("CustomSourceRepairService.rollbackHandler", () => {
 
   it("rejects rolling back to a draft/never-active version", async () => {
     if (!db.available) return;
-    const { connectionId } = await createActiveConnection();
-    const draftVersion = await createFlow!.generateHandler(IDENTITY, connectionId, {});
+    const { connectionId } = await createActivePipelineConnection();
+    const draftVersion = await createFlow!.generateHandler(IDENTITY, connectionId, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     await expect(
       repairService!.rollbackHandler(IDENTITY, connectionId, { target_version_id: draftVersion.id }),
     ).rejects.toThrow(HttpError);
@@ -344,7 +346,7 @@ describe("CustomSourceRepairService.rollbackHandler", () => {
 
   it("cross-space connection access 404s", async () => {
     if (!db.available) return;
-    const { connectionId } = await createActiveConnection();
+    const { connectionId } = await createActivePipelineConnection();
     await expect(
       repairService!.repairHandler({ spaceId: "space-b", userId: "user-2" }, connectionId, {}),
     ).rejects.toThrow(HttpError);
@@ -359,7 +361,7 @@ describe("Custom Source connection authority", () => {
 
   it("lets readers read a connection's handlers and only its owner or a Space admin change them", async () => {
     if (!db.available) return;
-    const { connectionId } = await createActiveConnection();
+    const { connectionId } = await createActivePipelineConnection();
     await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { same_envelope_repair_auto_apply: true });
     const repaired = await repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML });
     expect(repaired.status).toBe("active");

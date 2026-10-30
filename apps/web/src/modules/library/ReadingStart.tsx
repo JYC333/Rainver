@@ -1,3 +1,4 @@
+import {readingGoalPath,readingGoalsPath} from '../sources/sourceGoalNavigation'
 import {useEffect,useState} from 'react'
 import {useAppTranslation} from '../../i18n'
 import {SpaceLink} from '../../core/spaceNav'
@@ -29,9 +30,9 @@ export function ReadingStart({spaceId,projectId,view,onChanged}:{spaceId:string;
   <p className="text-muted-foreground">{phase?t(`reading.start${phase}Hint`):t('sourceGoals.examples')}</p>
   {phase&&<h3 className="font-medium">{t('sourceGoals.question')}</h3>}
   <div className="flex flex-wrap gap-2">
-   <Button asChild><SpaceLink to={`/sources/goals/new${projectId?`?project_id=${projectId}`:''}`}>{t('sourceGoals.begin')}</SpaceLink></Button>
+   <Button asChild><SpaceLink to={readingGoalPath(projectId,'new')}>{t('sourceGoals.begin')}</SpaceLink></Button>
    <Button variant="outline" onClick={()=>setSave(true)}>{t('reading.startSaveArticle')}</Button>
-   <Button variant="outline" asChild><SpaceLink to={projectId?`/projects/${projectId}/sources?tab=settings`:'/sources/goals'}>{t('sourceGoals.continue')}</SpaceLink></Button>
+   <Button variant="outline" asChild><SpaceLink to={readingGoalsPath(projectId)}>{t('sourceGoals.continue')}</SpaceLink></Button>
   </div>
   {save&&<SaveReadingUrlDialog spaceId={spaceId} projectId={projectId} onClose={changed=>{setSave(false);if(changed){setAttempt(n=>n+1);onChanged()}}}/>}
  </Card>

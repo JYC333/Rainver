@@ -5,3 +5,7 @@ export const sourcesModule: ServerModule = {
   name: "sources",
   registerRoutes,
 };
+
+export {canRequestGoalSourceActivation} from './goals/access.js';
+
+export {assertMaterialProcessingDispatch} from './materialProcessing/dispatch.js';

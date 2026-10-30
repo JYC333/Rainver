@@ -24,10 +24,12 @@ RUN corepack enable
 WORKDIR /repo
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY packages/protocol/package.json ./packages/protocol/
+COPY packages/reader-document/package.json ./packages/reader-document/
 COPY server/package.json ./server/
 COPY apps/web/package.json ./apps/web/
 RUN pnpm install --frozen-lockfile \
     --filter @rainver/protocol \
+    --filter @rainver/reader-document \
     --filter @rainver/web
 
 WORKDIR /repo/packages/protocol
@@ -35,11 +37,16 @@ COPY packages/protocol/tsconfig.json packages/protocol/tsconfig.build.json ./
 COPY packages/protocol/src ./src
 RUN pnpm run build
 
+WORKDIR /repo/packages/reader-document
+COPY packages/reader-document/tsconfig.json packages/reader-document/tsconfig.build.json ./
+COPY packages/reader-document/src ./src
+RUN pnpm run build
+
 WORKDIR /repo/apps/web
 
 RUN mkdir -p node_modules/.cache/rainver \
     && sha256sum /repo/package.json /repo/pnpm-workspace.yaml /repo/pnpm-lock.yaml \
-      /repo/packages/protocol/package.json /repo/server/package.json package.json \
+      /repo/packages/protocol/package.json /repo/packages/reader-document/package.json /repo/server/package.json package.json \
       | sha256sum \
       | awk '{print $1}' > node_modules/.cache/rainver/package-inputs.sha256
 

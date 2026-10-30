@@ -43,6 +43,12 @@ Knowledge has no scene sidebar; sub-areas switch via
 `KnowledgeSectionHeader`. There is no `CommandPalette`, Project Folder
 switcher, or `RuntimeStatusBar`.
 
+Shell chrome (rail, scene sidebar, header and tabs, mobile tab bar, floating
+capture) and the Project area's navigation and side chat are wrapped in
+`data-shell-chrome` (`display: contents`, so layout is unchanged). The Reader's
+focus mode sets `html[data-reader-focus]`, which hides exactly those; the
+Reader removes it when focus mode ends or the Reader unmounts.
+
 ## Related Files
 - `apps/web/src/core/Shell.tsx`
 - `apps/web/src/core/navigation.tsx`

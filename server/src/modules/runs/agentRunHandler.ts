@@ -12,7 +12,6 @@ import {
 import type { JobHandlerResult } from "../jobs/handlerRegistry.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { finalizeChatTurn } from "./chatTurnFinalizer.js";
-import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
 import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 import { protocolRunStatus } from "./orchestrationResults.js";
 import { withDbTransaction } from "../routeUtils/common.js";
@@ -29,7 +28,7 @@ import { owedSettleSql } from "../hosts/taskBranchRequests.js";
 import { UNDER_WAY_MERGE_STATUSES } from "../hosts/taskMerges.js";
 import type { RunRecord } from "./runRepositoryTypes.js";
 import type { Queryable } from "../routeUtils/common.js";
-import { finalizedForPostRun } from "./finalizationOutcome.js";
+import { finalizedForPostRun, requireFinalizedForPostRun } from "./finalizationOutcome.js";
 
 export function registerAgentRunHandler(
   registry: JobHandlerRegistry,
@@ -202,6 +201,7 @@ async function handleAgentRun(
       timeout_ms: numberValue(job.payload.timeout_ms),
     });
   } catch (error) {
+    if (error instanceof JobDeferredError) throw error;
     if (job.attempts >= job.max_attempts) {
       const current = await repository.getRun(job.space_id, runId);
       const terminal = current && isTerminalRun(current.status)
@@ -222,20 +222,11 @@ async function handleAgentRun(
           });
       if (terminal) {
         const finalization = await materializer.finalizeRun(terminal);
+        requireFinalizedForPostRun(finalization);
         if (finalizedForPostRun(finalization)) {
           const currentTerminal = await repository.getRun(job.space_id, runId);
           if (currentTerminal && isTerminalRun(currentTerminal.status)) {
             await orchestration.reconcileTerminalDelegation(currentTerminal);
-            if (hostThread.thread_id) {
-              await recordHostThreadOutcome(
-                config,
-                hostThread.thread_id,
-                currentTerminal,
-                hostThread.resume_attempted,
-                hostThread.identity,
-                hostThread.standing,
-              );
-            }
             await finalizeChatTurn(config, repository, currentTerminal);
             // The domain reconcilers ride on every terminal Run, this one
             // included: a standing batch whose Run was orphaned here would
@@ -260,11 +251,7 @@ async function handleAgentRun(
   let completedRun = await repository.getRun(job.space_id, runId);
   if (completedRun && isTerminalRun(completedRun.status)) {
     const finalization = await materializer.finalizeRun(completedRun);
-    if (!finalizedForPostRun(finalization)) {
-      throw new Error(
-        finalization.error_message ?? "Run finalization reconciliation failed.",
-      );
-    }
+    requireFinalizedForPostRun(finalization);
     completedRun = await repository.getRun(job.space_id, runId);
     if (completedRun) {
       result = { ...result, status: protocolRunStatus(completedRun.status) };
@@ -272,20 +259,6 @@ async function handleAgentRun(
   }
   if (completedRun && isTerminalRun(completedRun.status)) {
     await orchestration.reconcileTerminalDelegation(completedRun);
-  }
-  // Task-thread outcome recording (vendor session id, session_reset) happens
-  // here, gated on the run carrying a thread. Before chat finalization:
-  // releasing the thread's dispatch lock must not depend on message
-  // materialization succeeding.
-  if (completedRun && isTerminalRun(completedRun.status) && hostThread.thread_id) {
-    await recordHostThreadOutcome(
-      config,
-      hostThread.thread_id,
-      completedRun,
-      hostThread.resume_attempted,
-      hostThread.identity,
-      hostThread.standing,
-    );
   }
   if (completedRun) {
     await finalizeChatTurn(config, repository, completedRun);

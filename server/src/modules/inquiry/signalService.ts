@@ -402,7 +402,7 @@ export class InquirySignalService {
          JOIN space_objects so ON so.id = s.thread_id AND so.space_id = s.space_id
          LEFT JOIN inquiry_signal_candidates c ON c.id = s.candidate_id
         WHERE s.space_id = $1 AND s.project_id = $2
-          AND ${threadReadableSql("so", "$3", "read")}${clause}
+          AND ${threadReadableSql("so", "$3", "read_content")}${clause}
         ORDER BY s.created_at DESC`,
       params,
     );
@@ -431,7 +431,7 @@ export class InquirySignalService {
       `SELECT * FROM inquiry_signal_candidates WHERE space_id = $1 AND project_id = $2${clause} ORDER BY created_at DESC`,
       params,
     );
-    return this.filterReadableCandidates(identity, projectId, rows.rows, "read");
+    return this.filterReadableCandidates(identity, projectId, rows.rows, "read_content");
   }
 
   async getCandidate(identity: SpaceUserIdentity, projectId: string, candidateId: string): Promise<Record<string, unknown>> {
@@ -441,7 +441,7 @@ export class InquirySignalService {
       [candidateId, identity.spaceId, projectId],
     );
     if (!row.rows[0]) throw new HttpError(404, "Candidate not found");
-    if (!(await readableThreadIds(this.db, identity, [row.rows[0].thread_id], "read")).has(row.rows[0].thread_id)) {
+    if (!(await readableThreadIds(this.db, identity, [row.rows[0].thread_id], "read_content")).has(row.rows[0].thread_id)) {
       throw new HttpError(404, "Candidate not found");
     }
     const signals = await this.db.query<SignalRow>(
@@ -697,7 +697,7 @@ export class InquirySignalService {
       status: packet.rows[0].status,
       created_at: dateIso(packet.rows[0].created_at),
       closed_at: dateIso(packet.rows[0].closed_at),
-      candidates: await this.filterReadableCandidates(identity, projectId, candidates.rows, "read"),
+      candidates: await this.filterReadableCandidates(identity, projectId, candidates.rows, "read_content"),
     };
   }
 
@@ -769,7 +769,7 @@ export class InquirySignalService {
     const listed = (key: string) => (Array.isArray(content[key]) ? content[key] as unknown[] : []).filter(isRecord);
     const threadIds = BRIEF_THREAD_LISTS.flatMap((key) => listed(key).map((entry) => entry.thread_id))
       .filter((id): id is string => typeof id === "string");
-    const readable = await readableThreadIds(this.db, identity, threadIds, "read");
+    const readable = await readableThreadIds(this.db, identity, threadIds, "read_content");
     const out: Record<string, unknown> = { ...content };
     for (const key of BRIEF_THREAD_LISTS) {
       out[key] = listed(key).filter((entry) => typeof entry.thread_id === "string" && readable.has(entry.thread_id));

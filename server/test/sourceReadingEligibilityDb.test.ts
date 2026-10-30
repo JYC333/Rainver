@@ -14,6 +14,7 @@ import { openSubscriptionWindow } from "../src/modules/sources/channels/subscrip
 import { PgReaderRepository } from "../src/modules/reader/repository.js";
 import { PgArtifactRepository } from "../src/modules/artifacts/repository.js";
 import { materializeExternalDiscovery } from "../src/modules/sources/externalDiscoveryMaterializer.js";
+import { readerContentFromFetchedText } from "../src/modules/sources/contentParsing.js";
 
 // Real-Postgres coverage for reading eligibility (plan P07): what a reader may
 // still open after leaving a source, what counts as their interest evidence,
@@ -316,27 +317,63 @@ describe("reading eligibility across every reading path", () => {
     expect(await readerServes(OWNER, item)).toBe(false);
   });
 
-  it("serves a Source-derived artifact only while its item is readable", async (ctx) => {
+  it.for(["item", "snapshot"])("keeps a Source-derived artifact behind its %s access level and consent", async (origin, ctx) => {
     if (!db.available) return ctx.skip();
     const item = await seedItem();
     const artifactId = randomUUID();
+    const content = JSON.stringify(readerContentFromFetchedText("Full extracted text", "text/plain", "https://example.com/article"));
     await db.pool.query(
       `INSERT INTO artifacts (
          id, space_id, artifact_type, title, content, mime_type, exportable, export_formats_json, preview,
          metadata_json, created_at, updated_at, visibility, access_level, owner_user_id, trust_level
-       ) VALUES ($1,$2,'source_reader_document','Extracted','Full extracted text','application/json',true,'["application/json"]'::jsonb,false,
+       ) VALUES ($1,$2,'source_reader_document','Extracted',$4,'application/json',true,'["application/json"]'::jsonb,false,
          '{}'::jsonb, now(), now(), 'space_shared', 'full', $3, 'medium')`,
-      [artifactId, SPACE, OWNER],
+      [artifactId, SPACE, OWNER, content],
     );
-    await db.pool.query(`UPDATE source_items SET extracted_artifact_id = $2 WHERE id = $1`, [item, artifactId]);
+    const snapshotId = randomUUID();
+    if (origin === "item") {
+      await db.pool.query(`UPDATE source_items SET extracted_artifact_id = $2 WHERE id = $1`, [item, artifactId]);
+    } else {
+      await db.pool.query(
+        `INSERT INTO source_snapshots (id, space_id, connection_id, source_item_id, artifact_id, snapshot_type,
+          capture_method, trust_level, captured_at, created_at, updated_at, owner_user_id, visibility, access_level)
+         VALUES ($1,$2,$3,$4,$5,'extracted','manual','normal',now(),now(),now(),$6,'space_shared','full')`,
+        [snapshotId, SPACE, CONNECTION, item, artifactId, OWNER],
+      );
+    }
     const artifacts = new PgArtifactRepository(db.pool, { artifactStorageRoot: "/nonexistent", sandboxRoot: "/nonexistent" });
-    await expect(artifacts.getVisible(SPACE, READER, artifactId)).resolves.not.toBeNull();
+    await expect(artifacts.getVisible(SPACE, READER, artifactId, true)).resolves.toMatchObject({ content });
+    await expect(artifacts.exportVisible(SPACE, READER, artifactId)).resolves.toMatchObject({ body: Buffer.from(content) });
+    const reader = new PgReaderRepository(db.pool, config);
+    const readDocument = () => reader.getDocument(identity(READER), origin === "item" ? "source_item" : "source_snapshot", origin === "item" ? item : snapshotId);
+    await expect(readDocument()).resolves.toMatchObject({ plain_text: "Full extracted text" });
+
+    await db.pool.query(`UPDATE source_items SET access_level = 'summary' WHERE id = $1`, [item]);
+    await expect(artifacts.getVisible(SPACE, READER, artifactId, true)).resolves.toMatchObject({ content: null });
+    await expect(artifacts.exportVisible(SPACE, READER, artifactId)).resolves.toBeNull();
+    await expect(readDocument()).resolves.toBeNull();
+    await expect(artifacts.exportVisible(SPACE, OWNER, artifactId)).resolves.not.toBeNull();
+    await db.pool.query(`UPDATE source_items SET access_level = 'full' WHERE id = $1`, [item]);
+    if (origin === "snapshot") {
+      await db.pool.query(`UPDATE source_snapshots SET access_level = 'summary' WHERE id = $1`, [snapshotId]);
+      await expect(artifacts.getVisible(SPACE, READER, artifactId, true)).resolves.toMatchObject({ content: null });
+      await expect(artifacts.exportVisible(SPACE, READER, artifactId)).resolves.toBeNull();
+      await db.pool.query(`UPDATE source_snapshots SET visibility = 'private' WHERE id = $1`, [snapshotId]);
+      await expect(artifacts.getVisible(SPACE, READER, artifactId, true)).resolves.toBeNull();
+      await db.pool.query(`UPDATE source_snapshots SET visibility = 'space_shared', access_level = 'full' WHERE id = $1`, [snapshotId]);
+    }
+    await db.pool.query(`UPDATE artifacts SET access_level = 'summary' WHERE id = $1`, [artifactId]);
+    const withheldDocument = await readDocument();
+    if (origin === "item") expect(withheldDocument?.plain_text).toBe("Delivered text for the reader.");
+    else expect(withheldDocument).toBeNull();
+    await db.pool.query(`UPDATE artifacts SET access_level = 'full' WHERE id = $1`, [artifactId]);
 
     // Narrowing the connection withdraws the copy with the item.
     await db.pool.query(`UPDATE source_connections SET visibility = 'private' WHERE id = $1`, [CONNECTION]);
     await expect(artifacts.getVisible(SPACE, READER, artifactId)).resolves.toBeNull();
-    const listed = await artifacts.listVisible(SPACE, READER, { artifactType: "source_reader_document" } as never);
-    expect((listed as { items: Array<{ id: string }> }).items.map((row) => row.id)).not.toContain(artifactId);
+    const listed = await artifacts.listVisible(SPACE, READER, { artifactType: "source_reader_document", limit: 50, offset: 0 });
+    expect(listed.items.map((row) => row.id)).not.toContain(artifactId);
+    expect(listed.total).toBe(0);
   });
 
   it("gives a discovery its own personal copy of a URL another member saved privately", async (ctx) => {

@@ -5,7 +5,7 @@ import { ArrowLeft } from 'lucide-react'
 import { toast } from 'sonner'
 import { artifactsApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
-import { errMsg } from '../../lib/utils'
+import { errMsg, isNotFoundError } from '../../lib/utils'
 import type { Artifact } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
@@ -22,10 +22,19 @@ function fmt(dt: string | null | undefined) {
 export default function ArtifactDetailPage() {
   const { artifactId = '' } = useParams()
   const [searchParams] = useSearchParams()
+  const { activeSpaceId, userId } = useSpace()
+  return <ArtifactDetail key={`${activeSpaceId}:${userId}:${artifactId}:${searchParams.get('project_folder_id') ?? ''}`} />
+}
+
+function ArtifactDetail() {
+  const { artifactId = '' } = useParams()
+  const [searchParams] = useSearchParams()
   const { activeSpaceId, activeSpaceName } = useSpace()
   const projectFolderId = searchParams.get('project_folder_id') ?? ''
   const [a, setA] = useState<Artifact | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [readVersion, setReadVersion] = useState(0)
   const listHref = `/artifacts${projectFolderId ? `?project_folder_id=${encodeURIComponent(projectFolderId)}` : ''}`
 
   useEffect(() => {
@@ -38,12 +47,13 @@ export default function ArtifactDetailPage() {
     let cancelled = false
     ;(async () => {
       setLoading(true)
+      setError(null)
       try {
         const r = await artifactsApi.get(artifactId, { project_folder_id: projectFolderId || undefined })
         if (!cancelled) setA(r)
       } catch (e) {
         if (!cancelled) {
-          toast.error(errMsg(e))
+          if (!isNotFoundError(e)) setError(errMsg(e))
           setA(null)
         }
       } finally {
@@ -51,7 +61,7 @@ export default function ArtifactDetailPage() {
       }
     })()
     return () => { cancelled = true }
-  }, [artifactId, activeSpaceId, projectFolderId])
+  }, [artifactId, activeSpaceId, projectFolderId, readVersion])
 
   async function exportArt() {
     if (!a) return
@@ -59,7 +69,12 @@ export default function ArtifactDetailPage() {
       await artifactsApi.export(a.id, { project_folder_id: projectFolderId || undefined })
       toast.success('Download started')
     } catch (e) {
-      toast.error(errMsg(e))
+      if (isNotFoundError(e)) {
+        setA(null)
+        setError(null)
+        setLoading(true)
+        setReadVersion(current => current + 1)
+      } else toast.error(errMsg(e))
     }
   }
 
@@ -72,8 +87,9 @@ export default function ArtifactDetailPage() {
       {loading && <Skeleton className="h-40 w-full" />}
 
       {!loading && !a && (
-        <Card className="p-8 text-center text-sm text-muted-foreground">
-          {activeSpaceId ? 'Artifact not found.' : 'Select an operational space to inspect this artifact.'}
+        <Card role={error ? 'alert' : undefined} className="p-8 text-center text-sm text-muted-foreground">
+          {!activeSpaceId ? 'Select an operational space to inspect this artifact.'
+            : error ? `Artifact unavailable: ${error}` : 'Artifact not found or not accessible.'}
         </Card>
       )}
 

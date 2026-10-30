@@ -472,6 +472,11 @@ async function seedConversation(
   return conversation;
 }
 
+/** A finished turn's host-thread settlement step, as `runs/runSettlement.ts` runs it. */
+function settleThreadTurn(threadId: string, input: Parameters<PgHostThreadRepository["settleRunOutcome"]>[1]) {
+  return withDbTransaction(db.pool, (tx) => new PgHostThreadRepository(tx).settleRunOutcome(threadId, input));
+}
+
 async function releaseConversationTurn(runId: string): Promise<void> {
   const thread = await db.pool.query<{ id: string }>(
     `SELECT id FROM host_threads
@@ -480,7 +485,7 @@ async function releaseConversationTurn(runId: string): Promise<void> {
     [runId],
   );
   if (thread.rows[0]) {
-    await new PgHostThreadRepository(db.pool).recordRunOutcome(thread.rows[0].id, {
+    await settleThreadTurn(thread.rows[0].id, {
       lastRunId: runId,
       vendorSessionId: null,
       sessionReset: false,
@@ -2347,7 +2352,7 @@ describe("Room workflow (real Postgres)", () => {
         `UPDATE runs SET status = $2, ended_at = now(), updated_at = now() WHERE id = $1`,
         [run.runId, landed ? "succeeded" : "failed"],
       );
-      await new PgHostThreadRepository(db.pool).recordRunOutcome(run.thread_id, {
+      await settleThreadTurn(run.thread_id, {
         lastRunId: run.runId,
         vendorSessionId: "vendor-standing",
         sessionReset: false,
@@ -2425,7 +2430,7 @@ describe("Room workflow (real Postgres)", () => {
            FROM runs WHERE id = $1`,
         [firstRunId],
       )).rows[0]!;
-      await new PgHostThreadRepository(db.pool).recordRunOutcome(thread.id, {
+      await settleThreadTurn(thread.id, {
         lastRunId: firstRunId,
         vendorSessionId: "vendor-live",
         sessionReset: false,
@@ -2493,7 +2498,7 @@ describe("Room workflow (real Postgres)", () => {
 
       await dispatchQueuedRoomRuns([summary.id]);
       await db.pool.query(`UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now() WHERE id = $1`, [summary.id]);
-      await new PgHostThreadRepository(db.pool).recordRunOutcome(thread.id, {
+      await settleThreadTurn(thread.id, {
         lastRunId: summary.id, vendorSessionId: "vendor-live", sessionReset: false, landed: true,
         contextWindow: { used: 52_000, size: 200_000 },
       });
@@ -2600,7 +2605,7 @@ describe("Room workflow (real Postgres)", () => {
       }>(`SELECT * FROM room_discussions WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1`, [sessionId])).rows[0];
     }
 
-    async function roomWithSpecialist(title: string, specialistName = "Research Specialist", additionalAgentIds: readonly string[] = []) {
+    async function roomWithSpecialist(title: string, specialistName = "Research Specialist", additionalAgentIds: readonly string[] = [], execution?: Parameters<typeof seedConversation>[3]) {
       const owner = { spaceId: "space-1", userId: "user-1" };
       const now = new Date().toISOString();
       await seedSpecialist(now, "agent-2", "version-2", specialistName);
@@ -2620,7 +2625,7 @@ describe("Room workflow (real Postgres)", () => {
           [randomUUID(), created.room.id, agentId, now],
         );
       }
-      const conversation = await seedConversation(owner, created.room.id, title);
+      const conversation = await seedConversation(owner, created.room.id, title, execution);
       const manager = (await db.pool.query<{ name: string }>(`SELECT name FROM agents WHERE id = 'agent-1'`)).rows[0]!.name;
       return { owner, created, conversation, manager };
     }
@@ -2723,6 +2728,143 @@ describe("Room workflow (real Postgres)", () => {
       // The saved choice stays; it applies again if the runtime offers it again.
       expect(await configRepository.sessionConfig("space-1", conversation.id, "agent-1"))
         .toEqual([{ id: "model", type: "select", category: "model", value: "fable" }]);
+    });
+
+    it("runs read-only reviews by different Agents together, then the writer alone, and never widens a read-only Run", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Parallel reviews", "Reviewer A", ["agent-3", "agent-4"]);
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      const repo = new PgRunRepository(db.pool);
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Have the team review the change, then fix it." });
+      const manager = sent.run_ids[0]!;
+      await dispatchQueuedRoomRuns([manager]);
+      const caller = (await repo.getAgentRun("space-1", manager))!;
+      const binding = (await resolveAgentDelegationToolBinding(config, caller, { pool: db.pool }))!;
+      const delegate = async (target: string, access?: "read" | "write") => (await runAgentRoomToolCall({ id: randomUUID(), name: "agent.delegate",
+        arguments_json: JSON.stringify({ target_agent_id: target, instruction: `Task for ${target}.`, ...(access ? { workspace_access: access } : {}) }) },
+      binding, caller)).modelResult as { ok: boolean; child_run_id: string; error?: string };
+      const reviewA = await delegate("agent-2", "read");
+      const reviewB = await delegate("agent-3", "read");
+      const writer = await delegate("agent-4");
+      expect([reviewA.ok, reviewB.ok, writer.ok]).toEqual([true, true, true]);
+      // The same Agent keeps one vendor thread: a second turn for it waits for the first, it is not run beside it.
+      expect(await delegate("agent-2", "read")).toMatchObject({ ok: false, error: expect.stringMatching(/already handling another Room turn/) });
+      const reviewRow = (id: string) => db.pool.query<{ contract_snapshot_json: Record<string, unknown>; prompt: string; model_override_json: Record<string, unknown> }>(
+        "SELECT contract_snapshot_json, prompt, model_override_json FROM runs WHERE id = $1", [id]).then(r => r.rows[0]!);
+      expect((await reviewRow(reviewA.child_run_id)).contract_snapshot_json.workspace_access).toBe("read");
+      expect((await reviewRow(reviewA.child_run_id)).prompt).toContain("[Read-only review]");
+      expect((await reviewRow(writer.child_run_id)).contract_snapshot_json).not.toHaveProperty("workspace_access");
+      expect((await reviewRow(writer.child_run_id)).prompt).not.toContain("[Read-only review]");
+      const jobFor = async (id: string) => (await db.pool.query(
+        "SELECT 1 FROM jobs WHERE job_type = 'agent_run' AND payload_json->>'run_id' = $1 AND status IN ('pending','claimed','running')", [id])).rowCount === 1;
+      // The manager yields: both reviews are admitted at once, the writer is not.
+      expect((await runAgentRoomToolCall({ id: randomUUID(), name: "agent.wait_for_results", arguments_json: "{}" }, binding, caller)).modelResult)
+        .toMatchObject({ status: "waiting" });
+      // What orchestration does once the parked parent's process has ended.
+      await new AgentGroupRunLifecycleProjector(db.pool, config, fixedQuota(0)).queueDelegatedChildren((await repo.getRun("space-1", manager))!);
+      expect([await jobFor(reviewA.child_run_id), await jobFor(reviewB.child_run_id), await jobFor(writer.child_run_id)]).toEqual([true, true, false]);
+      await dispatchQueuedRoomRuns([reviewA.child_run_id, reviewB.child_run_id]);
+      expect((await repo.getRun("space-1", reviewA.child_run_id))!.status).toBe("running");
+      expect((await repo.getRun("space-1", reviewB.child_run_id))!.status).toBe("running");
+      // One review ending does not let the writer in beside the other.
+      await completeChild(reviewA.child_run_id);
+      expect(await jobFor(writer.child_run_id)).toBe(false);
+      await completeChild(reviewB.child_run_id);
+      expect(await jobFor(writer.child_run_id)).toBe(true);
+
+      // A review never gets more than its parent: as a read-only Run it delegates only reviews.
+      await dispatchQueuedRoomRuns([writer.child_run_id]);
+      const reviewer = (await repo.getAgentRun("space-1", reviewA.child_run_id))!;
+      await expect(groupService.spawnChildRun(owner, {
+        space_id: "space-1", group_id: reviewer.run_group_id!, parent_run_id: reviewer.id, root_run_id: reviewer.root_run_id!,
+        requesting_agent_id: "agent-2", target_agent_id: "agent-3", manager_user_id: "user-1", instruction: "Fix it.", workspace_access: "write",
+      })).rejects.toMatchObject({ statusCode: 403 });
+
+      async function completeChild(runId: string) {
+        await db.pool.query(`UPDATE runs SET status = 'succeeded', output_json = $2::jsonb, ended_at = now(), updated_at = now() WHERE id = $1`,
+          [runId, JSON.stringify({ schema_version: "run_output.v1", status: "succeeded", summary: "Looks fine.", result: {}, output_manifest: [] })]);
+        await new AgentGroupRunLifecycleProjector(db.pool, config, fixedQuota(0)).markDelegatedRunTerminal((await repo.getRun("space-1", runId))!);
+      }
+    });
+
+    it("admits a review held at the quota line beside a review that is already running", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Held review", "Reviewer A", ["agent-3"]);
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      const repo = new PgRunRepository(db.pool);
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Review it twice." });
+      const manager = sent.run_ids[0]!;
+      await dispatchQueuedRoomRuns([manager]);
+      const caller = (await repo.getAgentRun("space-1", manager))!;
+      const binding = (await resolveAgentDelegationToolBinding(config, caller, { pool: db.pool }))!;
+      const review = async (target: string) => ((await runAgentRoomToolCall({ id: randomUUID(), name: "agent.delegate",
+        arguments_json: JSON.stringify({ target_agent_id: target, instruction: "Review.", workspace_access: "read" }) }, binding, caller))
+        .modelResult as { child_run_id: string }).child_run_id;
+      const first = await review("agent-2");
+      const second = await review("agent-3");
+      await runAgentRoomToolCall({ id: randomUUID(), name: "agent.wait_for_results", arguments_json: "{}" }, binding, caller);
+      // Both held at the subscription reserve line; then the first is let through.
+      await new AgentGroupRunLifecycleProjector(db.pool, config, fixedQuota(100)).queueDelegatedChildren((await repo.getRun("space-1", manager))!);
+      expect(await quotaMarker(first)).not.toBeNull();
+      expect(await quotaMarker(second)).not.toBeNull();
+      await withDbTransaction(db.pool, client => admitAgentOriginRun(client, { spaceId: "space-1", runId: first,
+        job: { user_id: "user-1", agent_id: "agent-2", project_folder_id: null, payload: { run_id: first } }, source: fixedQuota(0) }));
+      await dispatchQueuedRoomRuns([first]);
+      // Re-evaluated while the first review runs, the second joins it rather than waiting for it.
+      await new AgentGroupRunLifecycleProjector(db.pool, config, fixedQuota(0)).queueDelegatedChildren((await repo.getRun("space-1", manager))!);
+      expect((await repo.getRun("space-1", first))!.status).toBe("running");
+      expect((await db.pool.query(
+        "SELECT 1 FROM jobs WHERE job_type = 'agent_run' AND payload_json->>'run_id' = $1 AND status IN ('pending','claimed','running')", [second])).rowCount).toBe(1);
+    });
+
+    for (const inherited of [false, true]) it(`rejects an unsupported read-only Host before creating a child (${inherited ? "inherited" : "explicit"})`, async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      await db.pool.query(`INSERT INTO hosts (id,owner_user_id,machine_id,name,kind,environment_kind,status,capabilities_json,last_heartbeat_at,created_at,updated_at)
+        SELECT 'host-readonly-native','user-1',machine_id,'Native review Host','remote','linux_native',status,capabilities_json,last_heartbeat_at,created_at,updated_at FROM hosts WHERE id='host-1'`);
+      await db.pool.query("UPDATE agent_runtime_profiles SET execution_host_id='host-readonly-native' WHERE id='runtime-cli'");
+      const { owner, created, conversation } = await roomWithSpecialist("Unsupported review Host", "Reviewer", [], { hostId: "host-readonly-native", primary: { kind: "managed" } });
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      const repo = new PgRunRepository(db.pool);
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Review without changing files." });
+      const manager = sent.run_ids[0]!;
+      await dispatchQueuedRoomRuns([manager]);
+      // Isolated fixture only. Same native Host kind as the reported incident.
+      if (inherited) await db.pool.query("UPDATE runs SET contract_snapshot_json=contract_snapshot_json||'{\"workspace_access\":\"read\"}'::jsonb WHERE id=$1", [manager]);
+      const caller = (await repo.getAgentRun("space-1", manager))!;
+      const binding = (await resolveAgentDelegationToolBinding(config, caller, { pool: db.pool }))!;
+      const snapshot = async () => (await db.pool.query(`SELECT
+        (SELECT count(*) FROM runs) AS runs,
+        (SELECT count(*) FROM run_delegations) AS delegations,
+        (SELECT count(*) FROM agent_run_messages) AS messages,
+        (SELECT count(*) FROM jobs) AS jobs,
+        (SELECT jsonb_agg(jsonb_build_object('id',id,'claim',dispatch_lock_id) ORDER BY id) FROM host_threads) AS claims`)).rows[0];
+      const before = await snapshot();
+      const result = await runAgentRoomToolCall({ id: randomUUID(), name: "agent.delegate", arguments_json: JSON.stringify({
+        target_agent_id: "agent-2", instruction: "Read-only review.", ...(inherited ? {} : { workspace_access: "read" }),
+      }) }, binding, caller);
+      expect(result.modelResult).toMatchObject({ ok: false });
+      expect(JSON.stringify(result.modelResult)).toContain("server Host");
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("inherits a read-only parent's access when the child omits its mode", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Inherited review");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Review without editing." });
+      const manager = sent.run_ids[0]!;
+      await dispatchQueuedRoomRuns([manager]);
+      await db.pool.query("UPDATE runs SET contract_snapshot_json=contract_snapshot_json||'{\"workspace_access\":\"read\"}'::jsonb WHERE id=$1", [manager]);
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
+      const child = await groupService.spawnChildRun(owner, {
+        space_id: "space-1", group_id: group.id, parent_run_id: manager, root_run_id: group.root_run_id!,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1",
+        instruction: "Inspect the implementation.",
+      });
+      const run = (await new PgRunRepository(db.pool).getRun("space-1", child.child_run_id!))!;
+      expect(run.contract_snapshot_json).toMatchObject({ workspace_access: "read" });
+      // Adapter routing resolves the immutable read ceiling at admission.
+      expect(run.required_sandbox_level).toBe("none");
+      expect(run.prompt).toContain("[Read-only review]");
     });
 
     it("replays a retried delegation even when the group has no fan-out left", async (ctx) => {
@@ -3944,6 +4086,67 @@ describe("Room workflow (real Postgres)", () => {
       }
     });
 
+    it("lists and cancels an old quota-held Room run across turns without reviving it", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Cancel old quota work");
+      await seedQuota(100, new Date(Date.now() + 2 * 3600_000).toISOString());
+      const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
+      const repo = new PgRunRepository(db.pool);
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", first.task_group_ids[0]!))!;
+      const spawned = await groupService.spawnChildRun(owner, {
+        space_id: "space-1", group_id: group.id, parent_run_id: first.run_ids[0]!, root_run_id: group.root_run_id!,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Check the release.",
+      });
+      const held = { id: spawned.child_run_id! };
+      // Model the admission boundary before execution: the child has not
+      // started, and the subscription gate parks its original job.
+      await db.pool.query("DELETE FROM jobs WHERE job_type='agent_run' AND payload_json->>'run_id'=$1", [held.id]);
+      await withDbTransaction(db.pool, client => admitAgentOriginRun(client, {
+        spaceId: "space-1", runId: held.id,
+        job: { user_id: "user-1", agent_id: "agent-2", project_folder_id: null, payload: { run_id: held.id } }, source: fixedQuota(100),
+      }));
+      await dispatchQueuedRoomRuns([first.run_ids[0]!]);
+      const oldCaller = (await repo.getAgentRun("space-1", first.run_ids[0]!))!;
+      const oldBinding = (await resolveAgentDelegationToolBinding(config, oldCaller, { pool: db.pool }))!;
+      expect((await runAgentRoomToolCall({ id: randomUUID(), name: "agent.wait_for_results", arguments_json: "{}" }, oldBinding, oldCaller)).modelResult).toMatchObject({ status: "waiting" });
+      expect(await quotaMarker(held!.id)).not.toBeNull();
+      // ACP yields after the wait action; the parked caller lets go of its
+      // thread (as quota admission's releaseDispatchLock does for a parked Run).
+      // Terminal settlement would not: the caller has not ended.
+      await db.pool.query("UPDATE host_threads SET dispatch_lock_id = NULL WHERE dispatch_lock_id = $1", [oldCaller.id]);
+      const replacement = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Stop the old specialist and continue here." });
+      const caller = (await repo.getAgentRun("space-1", replacement.run_ids[0]!))!;
+      expect(caller.run_group_id).not.toBe(first.task_group_ids[0]);
+      const binding = (await resolveAgentDelegationToolBinding(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), caller, { pool: db.pool }))!;
+      const invoke = (name: string, input: unknown) => runAgentRoomToolCall({ id: randomUUID(), name, arguments_json: JSON.stringify(input) }, binding, caller);
+      const listed = await invoke("agent.list_runs", {});
+      expect(listed.modelResult).toMatchObject({ ok: true, runs: expect.arrayContaining([expect.objectContaining({ run_id: held!.id, status: "queued" })]) });
+      // Lookup/cancel cannot use the current executing Run as a target.
+      expect((await invoke("agent.cancel_run", { run_id: caller.id, reason: "wrong target" })).modelResult).toMatchObject({ ok: false });
+      const other = await seedConversation(owner, created.room.id, "Other conversation");
+      const foreign = await service.sendMessage(owner, created.room.id, other.id, { content: "Independent work." });
+      expect((await invoke("agent.cancel_run", { run_id: foreign.run_ids[0], reason: "wrong conversation" })).modelResult).toMatchObject({ ok: false });
+      await db.pool.query("UPDATE runs SET instructed_by_user_id='user-2' WHERE id=$1", [held.id]);
+      expect((await invoke("agent.cancel_run", { run_id: held.id, reason: "Another person's work" })).modelResult).toMatchObject({ ok: false });
+      await db.pool.query("UPDATE runs SET instructed_by_user_id='user-1' WHERE id=$1", [held.id]);
+      // Stop the obsolete waiting coordinator first, then its held child;
+      // settlement of the child must not reawaken the cancelled coordinator.
+      expect((await invoke("agent.cancel_run", { run_id: oldCaller.id, reason: "Replaced coordination" })).modelResult).toMatchObject({ status: "cancelled" });
+      const stopped = await invoke("agent.cancel_run", { run_id: held!.id, reason: "Person replaced quota-limited work" });
+      expect(stopped.modelResult).toMatchObject({ ok: true, status: "cancelled" });
+      expect((await repo.getRun("space-1", caller.id))!.status).toBe("queued");
+      expect((await repo.getRun("space-1", foreign.run_ids[0]!))!.status).toBe("queued");
+      await releaseHeldRuns(db.pool, { source: fixedQuota(0) });
+      expect((await repo.getRun("space-1", held!.id))!.status).toBe("cancelled");
+      expect(await hasRunJob(held!.id)).toBe(false);
+      expect((await repo.getRun("space-1", oldCaller.id))!.status).toBe("cancelled");
+      expect((await invoke("agent.cancel_run", { run_id: held!.id, reason: "Idempotent repeat" })).modelResult).toMatchObject({ status: "cancelled" });
+      await db.pool.query("UPDATE room_user_members SET status='removed' WHERE room_id=$1 AND user_id='user-1'", [created.room.id]);
+      expect((await invoke("agent.list_runs", {})).modelResult).toMatchObject({ ok: false });
+      expect((await invoke("agent.cancel_run", { run_id: held.id, reason: "Revoked Room access" })).modelResult).toMatchObject({ ok: false });
+    });
+
     it("lets a person speak while Agents wait for the window, and admits them once that turn is over", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Quota hold and a person");
@@ -4994,7 +5197,7 @@ describe("Room workflow (real Postgres)", () => {
     );
     // The first turn opened the vendor session the second resumes; a thread
     // with no session is replayed from scratch instead.
-    await new PgHostThreadRepository(db.pool).recordRunOutcome(thread.rows[0]!.id, {
+    await settleThreadTurn(thread.rows[0]!.id, {
       lastRunId: first.run_ids[0]!,
       vendorSessionId: "vendor-room-1",
       sessionReset: false,
@@ -5061,7 +5264,7 @@ describe("Room workflow (real Postgres)", () => {
       `UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now() WHERE id = $1`,
       [delegated.child_run_id],
     );
-    await new PgHostThreadRepository(db.pool).recordRunOutcome(delegatedThread.rows[0]!.id, {
+    await settleThreadTurn(delegatedThread.rows[0]!.id, {
       lastRunId: delegated.child_run_id!,
       vendorSessionId: null,
       sessionReset: false,
@@ -5101,7 +5304,7 @@ describe("Room workflow (real Postgres)", () => {
       `UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now() WHERE id = $1`,
       [second.run_ids[0]],
     );
-    await new PgHostThreadRepository(db.pool).recordRunOutcome(thread.rows[0]!.id, {
+    await settleThreadTurn(thread.rows[0]!.id, {
       lastRunId: second.run_ids[0]!,
       vendorSessionId: null,
       sessionReset: false,

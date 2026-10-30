@@ -1,0 +1,37 @@
+{
+  "name": "@rainver/reader-document",
+  "version": "0.1.0",
+  "description": "The Reader document tree shared by the server's canonical reading writer and the web Reader: its node/mark whitelist, a normalizer that degrades unsupported content instead of rejecting the document, and the one markdown-it based Markdown converter.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "dist"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "markdown-it": "^14.3.0"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^22.0.0",
+    "typescript": "^7.0.0",
+    "vitest": "^4.1.11"
+  }
+}

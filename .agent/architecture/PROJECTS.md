@@ -1333,6 +1333,16 @@ whatever the Project has come to hold.
 Inquiry is a Project-owned domain with Question/Hypothesis Threads, typed
 relations plus an acyclic primary-parent tree, protected cognitive Iterations,
 Definition/Structure/Lifecycle/Work commands, Focus Sets, and Steps.
+Project readability and the Thread root's content permission both apply.
+Summary readers retain title/status metadata and retrieval of the root summary;
+Question/Hypothesis state, work notes, history, Steps, Signals, advice, and
+attention-derived reasoning require full access. Thread serialization computes
+the acting user's effective level for read and write responses alike.
+The Inquiry UI keeps a summary Thread's header and personal Focus control,
+without requesting or rendering its body workspace. A demotion or denied
+refresh clears prior body state and open body-action dialogs. Changing the
+user, Space, or Project resets the workspace so earlier reads cannot restore
+the previous scope's list or selected Thread.
 
 A Step is one attempt at advancing a Thread: its kind, that it was started,
 what it produced, and which round it belonged to. The Next Focus vocabulary is

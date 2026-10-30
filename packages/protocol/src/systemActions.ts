@@ -1,3 +1,4 @@
+import {SourceMaterialSubmissionSchema} from './sourceMaterials.js';
 import {SourceGoalVersionWriteSchema,SourceGoalRepairSchema} from './sourceGoals.js';
 import { ProposeProjectMonitoringSchema } from "./projectInformationMonitoring.js";
 import { z } from "zod";
@@ -5,6 +6,8 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import type { PolicyActionId } from "./policy.js";
 import {
   AgentWaitForResultsInputSchema,
+  AgentListRunsInputSchema,
+  AgentCancelRunInputSchema,
   RuntimeDelegationOutputItemSchema,
 } from "./agentGroupRuns.js";
 import {
@@ -296,6 +299,7 @@ const proposalInputs:Record<string,z.ZodType>={
   "source.goal.sources":z.object({goal_id:z.string().min(1)}).strict(),
   "source.goal.inspect":z.object({goal_id:z.string().min(1),source_connection_id:z.string().min(1),source_channel_id:z.string().min(1)}).strict(),
   "source.goal.write_version":SourceGoalVersionWriteSchema,
+  "source.material.submit":SourceMaterialSubmissionSchema,
   "source.goal.repair_candidate":SourceGoalRepairSchema.extend({goal_id:z.string().min(1)}),
   "source.channel.propose_activation": z.object({
     provider_key: z.string().min(1),
@@ -467,6 +471,8 @@ export const SYSTEM_ACTION_REGISTRY = [
   // anything while Path B is strict.
   action("agent.delegate", "Delegate to an agent", "agent_groups", "AgentGroupRunService.spawnChildRun", "run.spawn_child", "durable", { agentToolSurface: "delegation", policyAdapter: "agent_delegate", inputSchema: RuntimeDelegationOutputItemSchema }),
   action("agent.wait_for_results", "Wait for agent results", "agent_groups", "AgentGroupRunService.waitForResults", "runtime.execute", "none", { policyResource: { resource_type: "run", resource_id_fallback: "run", check_action_approval_grant: false }, agentToolSurface: "delegation", policyAdapter: "declared_resource", inputSchema: AgentWaitForResultsInputSchema }),
+  action("agent.list_runs", "List Room runs", "agent_groups", "RoomRunControl.dispatch", "runtime.execute", "none", { policyResource: { resource_type: "run", resource_id_fallback: "run", check_action_approval_grant: false }, agentToolSurface: "delegation", policyAdapter: "declared_resource", inputSchema: AgentListRunsInputSchema }),
+  action("agent.cancel_run", "Cancel a Room run", "agent_groups", "RoomRunControl.dispatch", "runtime.execute", "durable", { policyResource: { resource_type: "run", resource_id_fallback: "run", check_action_approval_grant: false }, agentToolSurface: "delegation", policyAdapter: "declared_resource", inputSchema: AgentCancelRunInputSchema }),
   httpAction("source.recipe.plan", "Plan a Source recipe", "sources", "SourceRecipeService.planSource", "source.recipe.create", "none"),
   httpAction("source.recipe.create", "Create a Source recipe draft", "sources", "SourceRecipeService.createSource", "source.recipe.create", "draft"),
   httpAction("source.recipe.dry_run", "Dry-run a Source recipe", "sources", "SourceRecipeService.dryRunRecipeVersion", "source.recipe.dry_run", "none"),
@@ -477,6 +483,7 @@ export const SYSTEM_ACTION_REGISTRY = [
   agentAction("source.goal.read", "Read collection goal", "sources", "SourceGoalService.read", "source.goal.manage", "none", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("source.goal.sources", "List authorized collection sources", "sources", "SourceGoalActions.sources", "source.goal.manage", "none", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("source.goal.inspect", "Inspect untrusted source documentation", "sources", "SourceGoalActions.inspect", "source.goal.manage", "durable", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
+  agentAction("source.material.submit", "Submit Agent-provided search results (not independently verified)", "sources", "SourceMaterialSubmission.submit", "source.goal.manage", "durable", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("source.goal.write_version", "Write immutable collection plan candidate", "sources", "SourceGoalService.writeVersion", "source.goal.manage", "draft", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("source.goal.repair_candidate", "Validate bounded source repair candidate", "sources", "SourceGoalRepairService.candidate", "source.goal.manage", "durable", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   gatedProposalAction("source.channel.propose_activation", "Propose Source Channel activation", "sources", "SourceChannelService.proposeActivation", "source.connection.manage", "source_channel_activation", "money"),

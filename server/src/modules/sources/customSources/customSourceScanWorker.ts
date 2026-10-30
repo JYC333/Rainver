@@ -9,7 +9,7 @@ import {
   PgCustomSourceHandlerRepository,
   type HandlerVersionRow,
 } from "./customSourceHandlerRepository.js";
-import { cleanupSandbox, evaluateCustomSourceRunnerBlockReason } from "./customSourceRunner.js";
+import { cleanupSourceExecutionFiles, evaluateCustomSourceExecutionBlockReason } from "../sourceExecutionPolicy.js";
 import { executeCustomSourceHandler } from "./customSourceHandlerExecution.js";
 import { CustomSourceMaterializationService } from "./customSourceMaterializer.js";
 import { emitSourcePostProcessingEvent } from "../postProcessing/eventEmitter.js";
@@ -138,8 +138,8 @@ async function runOne(db: Queryable, config: ServerConfig, run: QueuedRunRow, gu
     if (!version) throw new Error(`Handler version ${run.handler_version_id} not found`);
     const policyEnvelope = version.policy_envelope_json as CustomSourcePolicyEnvelope;
     const settings = await new PgCustomSourceHandlerRepository(db, config).getRunnerSettingsForSpace(run.space_id);
-    const blockReason = evaluateCustomSourceRunnerBlockReason(settings, policyEnvelope);
-    const credential = await new CustomSourceCredentialService(db, config).resolveCredentialHeader(
+    const blockReason = evaluateCustomSourceExecutionBlockReason(settings, policyEnvelope);
+    const credential = blockReason ? null : await new CustomSourceCredentialService(db, config).resolveCredentialHeader(
       run.space_id,
       policyEnvelope.credential_ref,
     );
@@ -174,7 +174,7 @@ async function runOne(db: Queryable, config: ServerConfig, run: QueuedRunRow, gu
 
     const runnerResult = blockReason
       ? ({ status: "blocked", reason: blockReason } as const)
-      : await executeCustomSourceHandler(db, config, settings, { version, policyEnvelope, handlerInput, credential, guard });
+      : await executeCustomSourceHandler(settings, { version, policyEnvelope, handlerInput, credential, guard });
 
     if (runnerResult.status === "blocked") {
       await db.query(
@@ -229,7 +229,7 @@ async function runOne(db: Queryable, config: ServerConfig, run: QueuedRunRow, gu
         });
       }
     } finally {
-      await cleanupSandbox(runnerResult.sandbox_files_root).catch(() => undefined);
+      await cleanupSourceExecutionFiles(runnerResult.sandbox_files_root).catch(() => undefined);
     }
   } catch (error) {
     await db.query(

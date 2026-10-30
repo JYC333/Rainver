@@ -23,8 +23,8 @@ describe('markdownToProseMirrorJson', () => {
     const linkPara = doc.content?.[0]
     const linkText = linkPara?.content?.find(n => n.text === 'a link')
     expect(linkText?.marks).toEqual([{ type: 'link', attrs: { href: 'https://example.com/x' } }])
-    const imagePara = doc.content?.[1]
-    expect(imagePara?.content?.[0]).toMatchObject({
+    // Images are block nodes in the Reader schema, not inline content of a paragraph.
+    expect(doc.content?.[1]).toMatchObject({
       type: 'image',
       attrs: { src: 'https://example.com/img.png', alt: 'alt text' },
     })

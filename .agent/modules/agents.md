@@ -118,6 +118,11 @@ Rules:
   per-recipient host thread and vendor session (`modules/rooms.md`), so which
   Agent and runtime a turn runs against remains a per-conversation, per-user
   choice without making the Room session a vendor-state authority.
+  Stops share `runs/executionControl.ts`; terminal cleanup shares the durable
+  `runs/runSettlement.ts` ledger. Recovery has one background owner outside
+  the job lanes. Missing local process state never confirms a persisted Host
+  launch's exit, and finalization contention defers completion without another
+  model attempt. See [RUNS_AND_OUTPUTS](../architecture/RUNS_AND_OUTPUTS.md).
   A `system_assistant`-kind Agent (system/space-owned, `owner_user_id` NULL,
   minted lazily from the internal `personal_assistant` seed on a Room's **first
   message**) is the immutable manager execution identity for Room turns. There

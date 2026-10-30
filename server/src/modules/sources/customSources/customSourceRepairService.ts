@@ -12,6 +12,7 @@ import {
 import {
   CustomSourceCreateFlowService,
   activateCustomSourceHandlerVersion,
+  assertDeclarativeHandlerVersion,
   customSourceProposalPayload,
   customSourceProposalReviewText,
   customSourceProposalRisk,
@@ -61,8 +62,9 @@ export class CustomSourceRepairService {
       throw new HttpError(409, "A repair is already in progress for this Custom Source");
     }
     const activeVersion = await this.requireHandlerVersion(identity, connectionId, connection.active_handler_version_id);
+    assertDeclarativeHandlerVersion(activeVersion);
     const activeEnvelope = envelopeOf(activeVersion);
-    const manifest = (activeVersion.manifest_json ?? {}) as { list_selector?: string | null; pipeline?: unknown };
+    const manifest = (activeVersion.manifest_json ?? {}) as { pipeline?: unknown };
 
     await this.setRepairStatus(identity, connectionId, "repair_pending");
 
@@ -74,15 +76,11 @@ export class CustomSourceRepairService {
     // connection row. Falling back to the connection here would silently
     // regenerate a different envelope than the one actually active.
     const generateBody: Record<string, unknown> = {
-      generation_mode: activeVersion.language === "declarative_pipeline_v1" ? "pipeline" : "code_template",
+      generation_mode: "pipeline",
+      pipeline: body.pipeline ?? manifest.pipeline,
       capture_policy: optionalString(body.capture_policy) ?? activeEnvelope.capture_policy,
       retention_policy: optionalString(body.retention_policy) ?? activeEnvelope.retention_policy,
     };
-    if (activeVersion.language === "declarative_pipeline_v1") {
-      generateBody.pipeline = body.pipeline ?? manifest.pipeline;
-    } else {
-      generateBody.list_selector = optionalString(body.list_selector) ?? manifest.list_selector ?? null;
-    }
 
     let newVersion;
     try {
@@ -285,6 +283,7 @@ export class CustomSourceRepairService {
       ? await this.requireHandlerVersion(identity, connectionId, targetVersionId)
       : await this.mostRecentlySupersededVersion(identity, connectionId);
     if (!target) throw new HttpError(404, "No previous handler version available to roll back to");
+    assertDeclarativeHandlerVersion(target);
     if (target.status !== "superseded" || !target.activated_at) {
       throw new HttpError(409, "Rollback target must be a previously active (superseded) handler version");
     }

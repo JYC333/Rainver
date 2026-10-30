@@ -13,7 +13,8 @@ import {
 } from "../routeUtils/common.js";
 import { getDbPool } from "../../db/pool.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
-import { assertThreadReadable, threadReadableSql } from "./threadAccess.js";
+import { assertThreadReadable, threadAccessLevelSql, threadReadableSql } from "./threadAccess.js";
+import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
 import { RetrievalProjectionService } from "../retrieval/index.js";
 import { inquiryRetrievalRegistry } from "./retrievalAdapter.js";
@@ -61,7 +62,7 @@ interface ThreadRow {
   updated_at: unknown;
 }
 
-function threadToOut(row: ThreadRow): Record<string, unknown> {
+function threadToOut(row: WithAccessLevel<ThreadRow>): Record<string, unknown> {
   return {
     id: row.id,
     space_id: row.space_id,
@@ -74,8 +75,8 @@ function threadToOut(row: ThreadRow): Record<string, unknown> {
     primary_parent_id: row.primary_parent_id,
     owner_user_id: row.owner_user_id,
     next_focus_kind: row.next_focus_kind,
-    next_focus_note: row.next_focus_note,
-    blocked_reason: row.blocked_reason,
+    next_focus_note: bodyWithheld(row.effective_access_level) ? null : row.next_focus_note,
+    blocked_reason: bodyWithheld(row.effective_access_level) ? null : row.blocked_reason,
     version: row.version,
     created_from: row.created_from,
     created_by_user_id: row.created_by_user_id,
@@ -148,11 +149,11 @@ export class InquiryThreadService {
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       if (producerIdempotencyKey) {
-        const existing = await db.query<ThreadRow>(
-          `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM}
+        const existing = await db.query<WithAccessLevel<ThreadRow>>(
+          `SELECT ${THREAD_COLUMNS}, ${threadAccessLevelSql("so", "$4")} AS effective_access_level FROM ${THREAD_FROM}
             WHERE t.space_id=$1 AND t.project_id=$2 AND t.producer_idempotency_key=$3
             LIMIT 1`,
-          [identity.spaceId, projectId, producerIdempotencyKey],
+          [identity.spaceId, projectId, producerIdempotencyKey, identity.userId],
         );
         if (existing.rows[0]) {
           if (existing.rows[0].kind !== kind || existing.rows[0].statement !== statement) {
@@ -185,9 +186,9 @@ export class InquiryThreadService {
          ) VALUES ($1, $2, $3, $4, $5, 'active', 'backlog', 0, $6, 'user', $7)`,
         [threadId, identity.spaceId, projectId, kind, statement, primaryParentId, producerIdempotencyKey],
       );
-      const inserted = await db.query<ThreadRow>(
-        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
-        [threadId, identity.spaceId],
+      const inserted = await db.query<WithAccessLevel<ThreadRow>>(
+        `SELECT ${THREAD_COLUMNS}, ${threadAccessLevelSql("so", "$3")} AS effective_access_level FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+        [threadId, identity.spaceId, identity.userId],
       );
       if (kind === "question") {
         await db.query(
@@ -240,11 +241,11 @@ export class InquiryThreadService {
 
   async listThreads(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    const rows = await this.db.query<ThreadRow>(
+    const rows = await this.db.query<WithAccessLevel<ThreadRow>>(
       // Project membership is necessary but not sufficient. A Thread is an
       // ontology object: the root's visibility is what decides who sees it.
       // Do not add a `visibility` column nothing enforces.
-      `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM}
+      `SELECT ${THREAD_COLUMNS}, ${threadAccessLevelSql("so", "$3")} AS effective_access_level FROM ${THREAD_FROM}
         WHERE t.space_id = $1 AND t.project_id = $2
           AND ${contentReadSql("space_object", "so", "$3")}
         ORDER BY so.created_at ASC, t.object_id ASC`,
@@ -259,10 +260,10 @@ export class InquiryThreadService {
     if (!row) throw new HttpError(404, "Thread not found");
 
     const [questionState, hypothesisState, relations, noteLinks, decisionCases, personalFocus] = await Promise.all([
-      row.kind === "question"
+      row.kind === "question" && !bodyWithheld(row.effective_access_level)
         ? this.db.query(`SELECT * FROM inquiry_question_states WHERE thread_id = $1`, [threadId]).then((r) => r.rows[0] ?? null)
         : Promise.resolve(null),
-      row.kind === "hypothesis"
+      row.kind === "hypothesis" && !bodyWithheld(row.effective_access_level)
         ? this.db.query(`SELECT * FROM inquiry_hypothesis_states WHERE thread_id = $1`, [threadId]).then((r) => r.rows[0] ?? null)
         : Promise.resolve(null),
       this.db.query(
@@ -458,9 +459,9 @@ export class InquiryThreadService {
       );
       if (!changed.rows[0]) throw new HttpError(404, "Thread not found");
       await db.query(TOUCH_THREAD_ROOT_SQL, [now, threadId, identity.spaceId]);
-      const updated = await db.query<ThreadRow>(
-        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
-        [threadId, identity.spaceId],
+      const updated = await db.query<WithAccessLevel<ThreadRow>>(
+        `SELECT ${THREAD_COLUMNS}, ${threadAccessLevelSql("so", "$3")} AS effective_access_level FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+        [threadId, identity.spaceId, identity.userId],
       );
       await this.recordStructureEvent(
         db,
@@ -602,8 +603,8 @@ export class InquiryThreadService {
 
   async listPersonalFocus(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    const rows = await this.db.query<ThreadRow>(
-      `SELECT ${threadColumns("t")} FROM ${THREAD_FROM}
+    const rows = await this.db.query<WithAccessLevel<ThreadRow>>(
+      `SELECT ${threadColumns("t")}, ${threadAccessLevelSql("so", "$3")} AS effective_access_level FROM ${THREAD_FROM}
          JOIN inquiry_thread_personal_focus f ON f.thread_id = t.object_id
         WHERE t.space_id = $1 AND t.project_id = $2 AND f.user_id = $3
           AND ${threadReadableSql("so", "$3", "read")}
@@ -652,9 +653,9 @@ export class InquiryThreadService {
     projectId: string,
     threadId: string,
     viewerUserId: string,
-  ): Promise<ThreadRow | null> {
-    const row = await this.db.query<ThreadRow>(
-      `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM}
+  ): Promise<WithAccessLevel<ThreadRow> | null> {
+    const row = await this.db.query<WithAccessLevel<ThreadRow>>(
+      `SELECT ${THREAD_COLUMNS}, ${threadAccessLevelSql("so", "$4")} AS effective_access_level FROM ${THREAD_FROM}
         WHERE t.object_id = $1 AND t.space_id = $2 AND t.project_id = $3
           AND ${contentReadSql("space_object", "so", "$4")}`,
       [threadId, spaceId, projectId, viewerUserId],

@@ -129,6 +129,7 @@ export class AgentGroupRuntimeDelegationMaterializer
           reason: entry.reason ?? "runtime_delegation_output",
           budget_json: objectValue(entry.budget),
           context_policy_json: objectValue(entry.context),
+          workspace_access: entry.workspace_access ?? null,
           tool_call_id: toolCallId,
         },
       );

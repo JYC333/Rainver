@@ -6,8 +6,11 @@ import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
 import { InquirySignalService } from "../src/modules/inquiry/signalService.js";
+import { InquiryAdviceService } from "../src/modules/inquiry/adviceService.js";
+import type { ServerConfig } from "../src/config.js";
 import { InquiryGraphService } from "../src/modules/inquiry/graphService.js";
-import { inquiryRetrievalAdapter } from "../src/modules/inquiry/retrievalAdapter.js";
+import { inquiryRetrievalAdapter, inquiryRetrievalRegistry } from "../src/modules/inquiry/retrievalAdapter.js";
+import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
 
 // Real-Postgres coverage for the unified read plane: the Inquiry
 // retrieval adapter feeding `retrieval_objects`, and the Inquiry/Combined
@@ -126,6 +129,78 @@ describe("Inquiry unified read plane (real Postgres)", () => {
     expect(asOwner).not.toBeNull();
     const asOutsider = await inquiryRetrievalAdapter.revalidate(db.pool, SPACE, "inquiry_thread", thread.id as string, OUTSIDER);
     expect(asOutsider).toBeNull();
+  });
+
+  it("withholds Thread bodies from summary-only readers across retrieval and direct reads", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1, $2, $3, 'member', 'active', now(), now())`,
+      [randomUUID(), SPACE, OUTSIDER],
+    );
+    await db.pool.query(
+      `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'viewer', 'active', now(), now())`,
+      [randomUUID(), SPACE, PROJECT, OUTSIDER],
+    );
+    const thread = await new InquiryThreadService(db.pool).createThread(identity(), PROJECT, {
+      kind: "question", statement: "Caching investigation",
+    });
+    await new InquiryIterationService(db.pool).recordIteration(identity(), PROJECT, thread.id as string, {
+      change_summary: "Private measurements", current_answer_summary: "Confidential latency measurements",
+      known_gaps: "Confidential customer impact", answer_state: "partial",
+    });
+    await db.pool.query(`UPDATE space_objects SET access_level = 'summary', summary = 'Public investigation overview' WHERE id = $1`, [thread.id]);
+    expect(await inquiryRetrievalAdapter.revalidate(db.pool, SPACE, "inquiry_thread", thread.id as string, OUTSIDER))
+      .toEqual({ title: "Caching investigation", text: "Public investigation overview" });
+    const payloads: unknown[] = [];
+    const search = new RetrievalSearchService(db.pool, inquiryRetrievalRegistry, { synthesizer: {
+      synthesize: async (_space, _viewer, _query, candidates) => { payloads.push(candidates); return null; },
+    } });
+    const response = await search.buildBrief({ spaceId: SPACE, viewerUserId: OUTSIDER, query: "Caching investigation", mode: "exact" });
+    expect(payloads).toHaveLength(1);
+    expect(JSON.stringify([response, payloads])).not.toContain("Confidential");
+    expect(JSON.stringify(payloads)).toContain("Public investigation overview");
+    expect((await inquiryRetrievalAdapter.revalidate(db.pool, SPACE, "inquiry_thread", thread.id as string, OWNER))?.text)
+      .toContain("Confidential latency measurements");
+
+    await new InquiryIterationService(db.pool).updateWork(identity(), PROJECT, thread.id as string, {
+      next_focus_kind: "synthesize", next_focus_note: "Confidential next action",
+    });
+    const threads = new InquiryThreadService(db.pool);
+    const iterations = new InquiryIterationService(db.pool);
+    const visible = await threads.getThread(outsiderIdentity(), PROJECT, thread.id as string);
+    expect(visible.statement).toBe("Caching investigation");
+    expect(visible.question_state).toBeNull();
+    expect(JSON.stringify([visible, await threads.listThreads(outsiderIdentity(), PROJECT)]))
+      .not.toContain("Confidential");
+    for (const read of ["listIterations", "listRevisions", "listSteps", "listWorkEvents"] as const) {
+      await expect(iterations[read](outsiderIdentity(), PROJECT, thread.id as string)).rejects.toMatchObject({ statusCode: 404 });
+    }
+    expect(await iterations.listOpenProjectSteps(outsiderIdentity(), PROJECT)).toEqual([]);
+    const advice = new InquiryAdviceService(db.pool, { databaseUrl: "postgres://unused" } as ServerConfig);
+    await expect(advice.getAdvice(outsiderIdentity(), PROJECT, thread.id as string))
+      .rejects.toMatchObject({ statusCode: 404 });
+    expect(await advice.getAdvice(identity(), PROJECT, thread.id as string)).toBeNull();
+    expect((await threads.getThread(identity(), PROJECT, thread.id as string)).question_state)
+      .toMatchObject({ current_answer_summary: "Confidential latency measurements" });
+    await threads.setPersonalFocus(outsiderIdentity(), PROJECT, thread.id as string, true);
+    const focused = await threads.listPersonalFocus(outsiderIdentity(), PROJECT);
+    expect(focused).toHaveLength(1);
+    expect(JSON.stringify(focused)).not.toContain("Confidential");
+
+    const corpusItem = await createCorpusItem();
+    await db.pool.query(`UPDATE space_objects SET visibility = 'space_shared'
+      WHERE id = (SELECT object_id FROM project_corpus_items WHERE id = $1)`, [corpusItem]);
+    const signals = new InquirySignalService(db.pool);
+    const signal = await signals.createSignal(identity(), PROJECT, thread.id as string, {
+      corpus_item_id: corpusItem, classification: "contradicts",
+    });
+    expect(await signals.listAllSignals(identity(), PROJECT)).toHaveLength(1);
+    expect(await signals.listAllSignals(outsiderIdentity(), PROJECT)).toEqual([]);
+    expect(await signals.listCandidates(outsiderIdentity(), PROJECT)).toEqual([]);
+    await expect(signals.getCandidate(outsiderIdentity(), PROJECT, signal.candidate_id as string))
+      .rejects.toMatchObject({ statusCode: 404 });
   });
 
   it("drops a superseded Thread from the read plane", async () => {

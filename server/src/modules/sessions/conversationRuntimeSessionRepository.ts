@@ -20,8 +20,10 @@ import type { Queryable } from "../routeUtils/common.js";
  * running, or queued with its job enqueued, does. Its terminal predecessors
  * also do not block it: their results are passed by the group's lifecycle
  * projector before chat completion (including an internal handoff that has
- * no visible reply). A new human turn still waits for chat completion.
- * Callers hold
+ * no visible reply). A read-only review being admitted is not blocked by
+ * another review of its own group (they run together; a writer of the group
+ * is kept out by the group's FIFO). A new human turn still waits for chat
+ * completion. Callers hold
  * `lockConversation`.
  */
 export async function conversationTurnTaken(
@@ -86,6 +88,12 @@ export async function conversationTurnTaken(
               OR run.status = 'waiting_for_dependency'
               OR run.status IN ('succeeded', 'degraded')
               OR run.id IN (SELECT id FROM jobless)
+              -- Read-only reviews of one group run together: one admitted
+              -- does not hold the turn against another review.
+              OR (run.contract_snapshot_json->>'workspace_access' = 'read'
+                AND EXISTS (SELECT 1 FROM runs admitting
+                             WHERE admitting.space_id = $1 AND admitting.id = $3::varchar
+                               AND admitting.contract_snapshot_json->>'workspace_access' = 'read'))
             )
           )
      ) AS active`,

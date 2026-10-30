@@ -565,6 +565,48 @@ export const sourcePostProcessingItemDecisions = pgTable("source_post_processing
 	check("ck_source_post_processing_item_decisions_review_status", sql`(review_status)::text = ANY (ARRAY[('pending'::character varying)::text, ('accepted'::character varying)::text, ('ignored'::character varying)::text, ('queued'::character varying)::text, ('proposed'::character varying)::text, ('rerun'::character varying)::text, ('dismissed'::character varying)::text])`),
 ]);
 
+/**
+ * A person's private place in a Reader document: where they were last
+ * (`current_*`) and how far they have actually read (`furthest_*`), each with
+ * the document version (text and structure hash) it was taken on. Never read
+ * by anyone else and never touches read status, reading origin or topic
+ * confirmations. Access is the document's own Reader gate on every request.
+ */
+export const readerPositions = pgTable("reader_positions", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	userId: varchar("user_id", { length: 36 }).notNull(),
+	documentType: varchar("document_type", { length: 32 }).notNull(),
+	documentId: varchar("document_id", { length: 36 }).notNull(),
+	contentHash: varchar("content_hash", { length: 128 }).notNull(),
+	structureHash: varchar("structure_hash", { length: 128 }).notNull(),
+	currentJson: jsonb("current_json").notNull(),
+	currentProgress: doublePrecision("current_progress").notNull(),
+	currentClientAt: timestamp("current_client_at", { withTimezone: true, mode: 'string' }).notNull(),
+	furthestJson: jsonb("furthest_json"),
+	furthestProgress: doublePrecision("furthest_progress").default(0).notNull(),
+	resetClientAt: timestamp("reset_client_at", { withTimezone: true, mode: 'string' }),
+	// Incremented on every change; replies are ordered by it, not by when they arrive.
+	revision: integer().default(0).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	uniqueIndex("uq_reader_positions_user_document").using("btree", table.spaceId.asc().nullsLast(), table.userId.asc().nullsLast(), table.documentType.asc().nullsLast(), table.documentId.asc().nullsLast()),
+	foreignKey({
+			columns: [table.spaceId],
+			foreignColumns: [spaces.id],
+			name: "reader_positions_space_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.userId],
+			foreignColumns: [users.id],
+			name: "reader_positions_user_id_fkey"
+		}).onDelete("cascade"),
+	check("ck_reader_positions_document_type", sql`document_type IN ('source_item', 'source_snapshot', 'research_report', 'research_notebook')`),
+	check("ck_reader_positions_current_json", sql`jsonb_typeof(current_json) = 'object'::text`),
+	check("ck_reader_positions_progress", sql`current_progress >= 0 AND current_progress <= 1 AND furthest_progress >= 0 AND furthest_progress <= 1`),
+]);
+
 export const readerAnnotations = pgTable("reader_annotations", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),

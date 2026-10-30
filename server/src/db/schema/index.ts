@@ -91,3 +91,5 @@ export * from "./agentAttention.js";
 export * from './projectInformationMonitoring.js';
 
 export * from "./sourceGoals.js";
+
+export * from "./readerNotes.js";

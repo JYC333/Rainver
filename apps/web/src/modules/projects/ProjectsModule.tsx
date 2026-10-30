@@ -7,6 +7,8 @@ import { Skeleton } from '../../components/ui/skeleton'
 // route on navigation. Do not import them eagerly: the project detail
 // page would then fetch and parse every other sub-route before its own
 // data requests.
+const GoalPage=lazy(()=>import('../sources/SourceGoalPage'))
+const GoalList=lazy(()=>import('../sources/SourceGoalsList'))
 const ProjectsPage = lazy(() => import('./ProjectsPage'))
 const ProjectDetailPage = lazy(() => import('./ProjectDetailPage'))
 const SourcesAreaPage = lazy(() => import('./SourcesAreaPage'))
@@ -41,6 +43,8 @@ export default function ProjectsModule() {
       <Route index element={<Suspense fallback={<PageFallback />}><ProjectsPage /></Suspense>} />
       <Route path=":projectId" element={<Suspense fallback={<PageFallback />}><ProjectAreaLayout /></Suspense>}>
         <Route index element={<Suspense fallback={<PageFallback />}><ProjectDetailPage /></Suspense>} />
+        <Route path="sources/goals" element={<Suspense fallback={<PageFallback />}><GoalList /></Suspense>} />
+        <Route path="sources/goals/:goalId" element={<Suspense fallback={<PageFallback />}><GoalPage /></Suspense>} />
         <Route path="sources" element={<Suspense fallback={<PageFallback />}><SourcesAreaPage /></Suspense>} />
         {/* `digest` and `raw` redirect to Sources tabs. */}
         <Route path="digest" element={<Navigate to="../sources?tab=digest" replace />} />

@@ -1,3 +1,4 @@
+import {seedNativeSearchCatalog} from '../modules/sources/catalog/nativeSearchCatalog.js';
 import type { Pool } from "./pool.js";
 import { syncBuiltinPrompts } from "../modules/prompts/builtins.js";
 import { syncBuiltinSkillPackages } from "../modules/skills/builtinPackages.js";
@@ -8,6 +9,7 @@ interface Logger {
 }
 
 export async function runBuiltInSeeds(pool: Pool, log: Logger, catalogRoot: string): Promise<void> {
+  await seedNativeSearchCatalog(pool);
   const error = log.error ?? ((error: unknown, msg: string) => console.error(msg, error));
   try {
     await syncBuiltinSkillPackages(pool, undefined, { error });

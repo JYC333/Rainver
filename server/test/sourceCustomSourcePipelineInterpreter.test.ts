@@ -6,7 +6,7 @@ import type {
   CustomSourcePipelineDefinition,
   } from "@rainver/protocol";
 import { runCustomSourcePipeline } from "../src/modules/sources/customSources/customSourcePipelineInterpreter.js";
-import type { CustomSourceRunnerSettings } from "../src/modules/sources/customSources/customSourceRunner.js";
+import type { SourceExecutionSettings } from "../src/modules/sources/sourceExecutionPolicy.js";
 import { publicAddressGuard } from "./support/outboundGuard.js";
 
 const ORIGIN = "https://sources.example";
@@ -14,7 +14,7 @@ const ORIGIN = "https://sources.example";
 const policyEnvelope = (overrides: Parameters<typeof customSourcePolicyEnvelope>[0] = {}) =>
   customSourcePolicyEnvelope({ allowed_network_origins: [ORIGIN], language: "declarative_pipeline_v1", ...overrides });
 
-const instanceSettings = (overrides: Partial<CustomSourceRunnerSettings> = {}) =>
+const instanceSettings = (overrides: Partial<SourceExecutionSettings> = {}) =>
   runnerSettings({ allowed_languages: ["declarative_pipeline_v1"], ...overrides });
 
 function handlerInput(

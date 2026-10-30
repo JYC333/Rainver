@@ -60,6 +60,35 @@ describe('ArtifactsPage', () => {
     expect(toast.success).not.toHaveBeenCalled()
   })
 
+  it('does not offer export for an artifact whose body is withheld', async () => {
+    vi.mocked(artifactsApi.list).mockResolvedValue({ items: [{ ...artifact('summary', 'Summary only', 'context_brief'), exportable: false }], total: 1, limit: 100, offset: 0 })
+    renderPage()
+    const button = await screen.findByRole('button', { name: 'Export' })
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(artifactsApi.export).not.toHaveBeenCalled()
+  })
+
+  it('removes the stale artifact when export reports revoked access', async () => {
+    vi.mocked(artifactsApi.export).mockRejectedValue(Object.assign(new Error('Access denied'), { status: 404 }))
+    renderPage()
+    const button = await screen.findByRole('button', { name: 'Export' })
+    vi.mocked(artifactsApi.list).mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 })
+    fireEvent.click(button)
+    await waitFor(() => expect(screen.queryByText('Context brief')).not.toBeInTheDocument())
+    expect(artifactsApi.list).toHaveBeenCalledTimes(2)
+  })
+
+  it('refreshes a downgraded row to readable summary metadata with export disabled', async () => {
+    vi.mocked(artifactsApi.export).mockRejectedValue(Object.assign(new Error('Access denied'), { status: 404 }))
+    renderPage()
+    const button = await screen.findByRole('button', { name: 'Export' })
+    vi.mocked(artifactsApi.list).mockResolvedValue({ items: [{ ...artifact('a-1', 'Context brief', 'context_brief'), exportable: false }], total: 1, limit: 100, offset: 0 })
+    fireEvent.click(button)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Export' })).toBeDisabled())
+    expect(screen.getByText('Context brief')).toBeInTheDocument()
+  })
+
   it('filters the list to the generated report type, writes it to the URL, and ignores the stale unfiltered reload', async () => {
     let answerUnfiltered: (value: unknown) => void = () => {}
     let unfilteredCalls = 0

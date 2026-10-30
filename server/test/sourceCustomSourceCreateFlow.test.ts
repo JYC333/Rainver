@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { TWO_ARTICLE_HTML, customSourcePolicyEnvelope } from "./support/customSourceFixtures.js";
+import { CUSTOM_SOURCE_LIST_PIPELINE, TWO_ARTICLE_HTML, customSourcePolicyEnvelope } from "./support/customSourceFixtures.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { seedLegacyCustomSourceVersion, seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadConfig, type ServerConfig } from "../src/config.js";
 import {
   CustomSourceCreateFlowService,
+  customSourceProposalPayload,
   evaluateCustomSourceActivation,
 } from "../src/modules/sources/customSources/customSourceCreateFlowService.js";
 import { SourceRecipeCreateService } from "../src/modules/sources/sourceRecipes/recipeCreateService.js";
@@ -20,11 +21,11 @@ import { HttpError } from "../src/modules/routeUtils/common.js";
 import { activateCustomSourceHandlerVersion } from "../src/modules/sources/customSources/customSourceCreateFlowService.js";
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
+import { insertProposalRow } from "../src/modules/proposals/reviewPackets.js";
 
-// Real-Postgres + real-child-process integration tests for the Custom Source
-// create flow (draft -> generate -> test -> activate/approval), matching the
-// project-wide preference for real DB/process tests over fakes
-// (TESTING_STRATEGY.md).
+// Real-Postgres integration tests for the declarative Custom Source create
+// flow (draft -> generate -> test -> activate/approval) and the frozen legacy
+// runner boundary.
 // The suite skips when that database is unreachable. CI sets
 // REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
@@ -51,13 +52,14 @@ beforeEach(async () => {
     ...loadConfig({}),
     databaseUrl: db.connectionUri,
     artifactStorageRoot,
-    customSourceAllowedLanguages: ["typescript_node"],
+    customSourceAllowedLanguages: ["typescript_node", "declarative_pipeline_v1"],
   };
   service = new CustomSourceCreateFlowService(db.pool, config);
 });
 
 afterEach(async () => {
   if (artifactStorageRoot) await rm(artifactStorageRoot, { recursive: true, force: true });
+  vi.restoreAllMocks();
 });
 
 const FIXTURE_HTML = TWO_ARTICLE_HTML;
@@ -90,7 +92,54 @@ async function setInstanceRunnerEnabled(enabled: boolean) {
   );
 }
 
-describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)", () => {
+describe("CustomSourceCreateFlowService (real Postgres + declarative pipeline)", () => {
+  it.each([undefined, "code_template", "unknown"])("rejects generation mode %s without creating versions or artifacts", async generationMode => {
+    if (!db.available) return;
+    const connection = await createDraftConnection();
+    await expect(service!.generateHandler(IDENTITY, connection.id, { generation_mode: generationMode }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    expect((await db.pool.query("SELECT id FROM source_handler_versions")).rows).toEqual([]);
+    expect((await db.pool.query("SELECT id FROM artifacts")).rows).toEqual([]);
+  });
+
+  it("rejects direct activation of a previously tested removed-language version", async () => {
+    if (!db.available) return;
+    const connection = await createDraftConnection();
+    const version = await seedLegacyCustomSourceVersion(db.pool, IDENTITY, connection.id);
+    await expect(service!.activateHandler(IDENTITY, connection.id, { handler_version_id: version.id }))
+      .rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("language has been removed") });
+    expect((await db.pool.query("SELECT status, active_handler_version_id FROM source_connections WHERE id=$1", [connection.id])).rows[0])
+      .toEqual({ status: "paused", active_handler_version_id: null });
+    expect((await db.pool.query("SELECT id FROM proposals")).rows).toEqual([]);
+  });
+
+  it("rejects an old pending activation proposal before changing its historical target", async () => {
+    if (!db.available) return;
+    const connection = await createDraftConnection();
+    const version = await seedLegacyCustomSourceVersion(db.pool, IDENTITY, connection.id, { status: "pending_approval" });
+    const envelope = await db.pool.query<{ policy_envelope_json: ReturnType<typeof customSourcePolicyEnvelope> }>(
+      "SELECT policy_envelope_json FROM source_handler_versions WHERE id=$1", [version.id],
+    );
+    const proposal = await insertProposalRow(db.pool, {
+      spaceId: IDENTITY.spaceId, proposalType: "custom_source_policy_delta", title: "Historical activation",
+      payload: customSourceProposalPayload({ proposalType: "custom_source_policy_delta", connectionId: connection.id,
+        handlerVersionId: version.id, currentHandlerVersionId: null, currentEnvelope: null,
+        proposedEnvelope: envelope.rows[0]!.policy_envelope_json, deltas: ["historical origin approval"], requestedByUserId: IDENTITY.userId }),
+      createdByUserId: IDENTITY.userId, riskLevel: "high", rationale: "Historical fixture", visibility: "space_shared",
+    });
+    await db.pool.query("UPDATE source_handler_versions SET proposal_id=$2 WHERE id=$1", [version.id, proposal.id]);
+    const schedulesBefore = await db.pool.query("SELECT * FROM scheduler_tasks ORDER BY id");
+
+    await expect(createDefaultProposalApplierRegistry().apply({ config: config!, db: db.pool,
+      proposal: { ...proposal, payload_json: proposal.payload_json as Record<string, unknown> }, userId: IDENTITY.userId }))
+      .rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("language has been removed") });
+    expect((await db.pool.query("SELECT status FROM source_handler_versions WHERE id=$1", [version.id])).rows[0])
+      .toEqual({ status: "pending_approval" });
+    expect((await db.pool.query("SELECT status, active_handler_version_id FROM source_connections WHERE id=$1", [connection.id])).rows[0])
+      .toEqual({ status: "paused", active_handler_version_id: null });
+    expect((await db.pool.query("SELECT * FROM scheduler_tasks ORDER BY id")).rows).toEqual(schedulesBefore.rows);
+  });
+
   it("createDraft rejects a raw credential_ref — a credential must be created first and referenced by credential_id", async () => {
     if (!db.available) return;
     await expect(createDraftConnection({ credential_ref: "cred-1" })).rejects.toThrow(HttpError);
@@ -156,7 +205,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     if (!db.available) return;
     const connection = await createDraftConnection();
 
-    const version = await service!.generateHandler(IDENTITY, connection.id, {});
+    const version = await service!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     expect(version.status).toBe("draft");
     expect(version.version_number).toBe(1);
 
@@ -197,8 +246,8 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   it("activates one handler version when another was activated while this one was being checked", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    const first = await service!.generateHandler(IDENTITY, connection.id, {});
-    const second = await service!.generateHandler(IDENTITY, connection.id, {});
+    const first = await service!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
+    const second = await service!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     for (const version of [first, second]) {
       await service!.testHandler(IDENTITY, connection.id, { handler_version_id: version.id, fixture_html: FIXTURE_HTML });
     }
@@ -225,7 +274,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   it("testHandler fails closed when the instance runner setting is disabled", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    const version = await service!.generateHandler(IDENTITY, connection.id, {});
+    const version = await service!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     await setInstanceRunnerEnabled(false);
 
     const outcome = await service!.testHandler(IDENTITY, connection.id, {
@@ -239,10 +288,33 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     expect(outcome.test_result).toMatchObject({ status: "blocked", reason: "runner_disabled" });
   });
 
+  it.each(["fixture", "live"] as const)("blocks legacy Node %s tests before any HTTP request", async mode => {
+    if (!db.available) return;
+    const connection = await createDraftConnection();
+    const version = await seedLegacyCustomSourceVersion(db.pool, IDENTITY, connection.id);
+    expect(version.language).toBe("typescript_node");
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Legacy runner must not fetch"));
+
+    const outcome = await service!.testHandler(IDENTITY, connection.id, {
+      handler_version_id: version.id,
+      ...(mode === "fixture" ? { fixture_html: FIXTURE_HTML } : {}),
+    });
+
+    expect(outcome.run).toMatchObject({ status: "blocked", failure_class: "handler_language_removed" });
+    expect(outcome.version.status).toBe("test_failed");
+    expect(outcome.test_result).toMatchObject({ status: "blocked", reason: "handler_language_removed" });
+    expect(fetch).not.toHaveBeenCalled();
+    const persisted = await db.pool.query<{ status: string; failure_class: string }>(
+      `SELECT status, failure_class FROM source_handler_runs WHERE id = $1`, [outcome.run.id],
+    );
+    expect(persisted.rows[0]).toEqual({ status: "blocked", failure_class: "handler_language_removed" });
+    await expect(service!.activateHandler(IDENTITY, connection.id, { handler_version_id: version.id })).rejects.toThrow(HttpError);
+  });
+
   it("testHandler refuses to retest active handler versions", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    const version = await service!.generateHandler(IDENTITY, connection.id, {});
+    const version = await service!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     await service!.testHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
       fixture_html: FIXTURE_HTML,
@@ -267,7 +339,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   it("recordTestOutcome refuses to overwrite a version that stopped being testable mid-run", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    const version = await service!.generateHandler(IDENTITY, connection.id, {});
+    const version = await service!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     const runId = randomUUID();
     await db.pool.query(
       `INSERT INTO source_handler_runs (
@@ -303,7 +375,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   it("activation is blocked without a preceding successful test", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    const version = await service!.generateHandler(IDENTITY, connection.id, {});
+    const version = await service!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     await expect(
       service!.activateHandler(IDENTITY, connection.id, { handler_version_id: version.id }),
     ).rejects.toThrow(HttpError);
@@ -312,7 +384,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   it("policy-delta activation creates a pending proposal and the proposal applier activates it", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    const version = await service!.generateHandler(IDENTITY, connection.id, {});
+    const version = await service!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     await service!.testHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
       fixture_html: FIXTURE_HTML,
@@ -398,7 +470,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   it("custom source proposal applier rejects non-pending and tampered handler versions", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    const version = await service!.generateHandler(IDENTITY, connection.id, {});
+    const version = await service!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     await service!.testHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
       fixture_html: FIXTURE_HTML,
@@ -457,7 +529,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   it("proposal apply service accepts a Custom Source proposal and persists the accepted result", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    const version = await service!.generateHandler(IDENTITY, connection.id, {});
+    const version = await service!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     await service!.testHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
       fixture_html: FIXTURE_HTML,
@@ -503,7 +575,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   it("rejecting a Custom Source proposal releases the handler version back to draft", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    const version = await service!.generateHandler(IDENTITY, connection.id, {});
+    const version = await service!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     await service!.testHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
       fixture_html: FIXTURE_HTML,
@@ -546,7 +618,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
       config: { list_selector: "article" },
     });
     const connectionId = connection.source_connection_id;
-    const version = await service!.generateHandler(memberIdentity, connectionId, {});
+    const version = await service!.generateHandler(memberIdentity, connectionId, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     await service!.testHandler(memberIdentity, connectionId, {
       handler_version_id: version.id,
       fixture_html: FIXTURE_HTML,
@@ -576,11 +648,8 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   it("a failing fixture test marks the version test_failed and still blocks activation", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    const version = await service!.generateHandler(IDENTITY, connection.id, {});
-    // Single-page generation was requested via list_selector above; force a
-    // list-mode handler to see zero items (no matching blocks) — this still
-    // produces a *succeeded* run with 0 items, so instead exercise a genuine
-    // validation failure: fixture HTML containing an out-of-origin link.
+    const version = await service!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
+    // Exercise output validation with an extracted out-of-origin link.
     const outcome = await service!.testHandler(IDENTITY, connection.id, {
       handler_version_id: version.id,
       fixture_html: `<div class="article"><a href="https://evil.example/x">Bad</a><p>x</p></div>`,
@@ -597,19 +666,12 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     if (!db.available) return;
     const connection = await createDraftConnection();
     await expect(
-      service!.generateHandler({ spaceId: "space-b", userId: "user-2" }, connection.id, {}),
+      service!.generateHandler({ spaceId: "space-b", userId: "user-2" }, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE }),
     ).rejects.toThrow(HttpError);
   });
 
   describe("generation_mode: 'pipeline' compatibility bridge", () => {
-    const PIPELINE = {
-      pipeline_version: "custom_source.pipeline.v1",
-      steps: [
-        { type: "fetch_page", url: "$source.endpoint_url", bind: "list_page" },
-        { type: "extract_list", input: "list_page", selector: { css_class: "article" }, bind: "items" },
-      ],
-      output: { items_var: "items" },
-    };
+    const PIPELINE = CUSTOM_SOURCE_LIST_PIPELINE;
 
     it("rejects generation_mode 'pipeline' without a valid pipeline definition", async () => {
       if (!db.available) return;
@@ -627,13 +689,7 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
 
     it("full happy path with a declarative pipeline handler: draft -> generate -> test (fixture) -> activate", async () => {
       if (!db.available) return;
-      // The shared `config`/`service!` fixture restricts allowed_languages to
-      // ["typescript_node"] (see beforeEach) to keep the existing
-      // code-template tests' fail-closed behavior obvious; this test needs a
-      // service that also allows declarative_pipeline_v1.
-      const permissiveConfig = { ...config!, customSourceAllowedLanguages: ["typescript_node", "declarative_pipeline_v1"] };
-      const permissiveService = new CustomSourceCreateFlowService(db.pool, permissiveConfig);
-
+      const permissiveService = service!;
       const connection = await createDraftConnection();
       const version = await permissiveService.generateHandler(IDENTITY, connection.id, {
         generation_mode: "pipeline",

@@ -9,7 +9,7 @@ import { emitSourcePostProcessingEvent } from "../postProcessing/eventEmitter.js
 import { enqueueItemsForAnnotation } from "../../sourceAnnotation/index.js";
 import { fetchCustomSourceEndpointHtml } from "../customSources/customSourceEndpointFetch.js";
 import type { OutboundGuard } from "../outboundUrlSafety.js";
-import { cleanupSandbox } from "../customSources/customSourceRunner.js";
+import { cleanupSourceExecutionFiles } from "../sourceExecutionPolicy.js";
 import {
   listDueSourceChannelScanTasks,
   rescheduleSourceChannelScanAfterRun,
@@ -306,7 +306,7 @@ async function runOne(db: Queryable, config: ServerConfig, job: PendingRecipeJob
         });
       }
     } finally {
-      await cleanupSandbox(runResult.sandbox_files_root).catch(() => undefined);
+      await cleanupSourceExecutionFiles(runResult.sandbox_files_root).catch(() => undefined);
     }
   } catch (error) {
     await failJob(db, job, error instanceof Error ? error.message : String(error));

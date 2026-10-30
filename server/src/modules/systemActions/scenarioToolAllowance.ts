@@ -94,6 +94,8 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   // collect it can only say "I've asked" and end the turn.
   "agent.delegate",
   "agent.wait_for_results",
+  "agent.list_runs",
+  "agent.cancel_run",
   // The Project write surface. Without these an Agent can describe a
   // decomposition in a reply but not create it, which is the gap between
   // sounding like it advanced the work and having advanced it.

@@ -265,6 +265,10 @@ export type SendAgentRunGroupMessageResponse = z.infer<
   typeof SendAgentRunGroupMessageResponseSchema
 >;
 
+/** What a delegated child may do in the Conversation's workspace. */
+export const DelegationWorkspaceAccessSchema = z.enum(["read", "write"]);
+export type DelegationWorkspaceAccess = z.infer<typeof DelegationWorkspaceAccessSchema>;
+
 export const SpawnChildRunRequestSchema = z
   .object({
     space_id: IdSchema,
@@ -279,6 +283,7 @@ export const SpawnChildRunRequestSchema = z
     reason: z.string().nullish(),
     budget_json: TraceSafeObjectSchema.nullish(),
     context_policy_json: TraceSafeObjectSchema.nullish(),
+    workspace_access: DelegationWorkspaceAccessSchema.nullish(),
   })
   .strict();
 
@@ -298,6 +303,13 @@ export const RuntimeDelegationOutputItemSchema = z
     reason: z.string().min(1).nullish(),
     budget: TraceSafeObjectSchema.nullish(),
     context: TraceSafeObjectSchema.nullish(),
+    /**
+     * `read`: the child reviews its workspace and may not write it (a
+     * read-only review). Omitted means `write`, the existing behaviour. A
+     * child never gets more than its parent: a read-only parent can only
+     * delegate `read`.
+     */
+    workspace_access: DelegationWorkspaceAccessSchema.nullish(),
   })
   .strict();
 export type RuntimeDelegationOutputItem = z.infer<
@@ -365,3 +377,10 @@ export const AgentRunGroupTraceSchema = z
   })
   .strict();
 export type AgentRunGroupTrace = z.infer<typeof AgentRunGroupTraceSchema>;
+
+/** Content-free discovery and targeted cancellation inside the current Room task. */
+export const AgentListRunsInputSchema = z.object({}).strict();
+export const AgentCancelRunInputSchema = z.object({
+  run_id: z.string().trim().min(1),
+  reason: z.string().trim().min(1).max(1000),
+}).strict();

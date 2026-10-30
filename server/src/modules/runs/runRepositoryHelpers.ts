@@ -98,7 +98,16 @@ export function resolveSandboxLevelForRuntime(input: {
   configuredLevel: string | null | undefined;
   riskLevel: string | null | undefined;
   projectFolderId: string | null | undefined;
+  /**
+   * The contract's workspace access. `read` is a ceiling on what the Run may
+   * do, not a floor: it resolves to `read_only` whatever the Folder baseline
+   * (`worktree`) or risk would raise it to — critical included, whose
+   * `one_shot_docker` a daemon Run carries as a read-write workspace
+   * (`dispatchIsolation`); only `read_only` binds the workspace read-only.
+   */
+  workspaceAccess?: "read" | "write";
 }): string | null {
+  if (input.workspaceAccess === "read") return "read_only";
   if (
     isVendorCliAdapter(input.runtimeKey) &&
     typeof input.riskLevel === "string" &&

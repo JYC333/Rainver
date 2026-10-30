@@ -1,3 +1,4 @@
+import { readOnlyWorkspaceHostRefusal } from "./workspaceAccessPolicy.js";
 import { isAbsolute, relative as relativePath, resolve, sep } from "node:path";
 import type {
   InvocationDelivery,
@@ -21,6 +22,8 @@ import { serializeCalls } from "../routeUtils/common.js";
 import { AgentGroupRunLifecycleProjector } from "../agentGroups/lifecycleProjector.js";
 import type { CliProcessRegistry } from "./localCliExecution.js";
 import { PgRunRepository } from "./repository.js";
+import { RunExecutionControl } from "./executionControl.js";
+import { JobDeferredError } from "../jobs/handlerRegistry.js";
 import { dispatchesToHostDaemon } from "./runRemoteness.js";
 import type { VerificationTarget } from "./verification/types.js";
 import { PgHostRepository } from "../hosts/repository.js";
@@ -31,6 +34,7 @@ import type {
   RunStepInput,
   RunStepRecord,
   RunTerminalUpdate,
+  RunAttemptRecord,
 } from "./repository.js";
 import {
   EPHEMERAL_CLEANUP_KIND,
@@ -62,6 +66,7 @@ import { RuntimeContextPolicyRepository } from "../policy/runtimeContextPolicyRe
 import { PgRouteDecisionRepository } from "../routing/repository.js";
 import { RunApprovalRequiredError, RunPreparationError } from "./orchestrationErrors.js";
 import { resolveSandboxLevelForRuntime } from "./runRepositoryHelpers.js";
+import { contractWorkspaceAccess } from "./contractSnapshot.js";
 import { authorizeCredentialSpend, CredentialSpendDeniedError } from "../policy/credentialSpend.js";
 import {
   adapterFailureEnvelope,
@@ -80,7 +85,7 @@ import {
   terminalStatusFromAdapter,
   toRunPreparationError,
 } from "./orchestrationResults.js";
-import { explicitRunTimeLimit, invokeWithinTimeLimit, type RuntimeStopOutcome } from "./runTimeLimit.js";
+import { explicitRunTimeLimit, invokeWithinTimeLimit } from "./runTimeLimit.js";
 import type {
   VerificationEnginePort,
   VerificationResultRecord,
@@ -101,15 +106,14 @@ import {
   recordUsageObservation,
 } from "../usage/service.js";
 import type { UsageObservation } from "../usage/types.js";
-import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
 import { mergeRunQuota } from "../hosts/usageService.js";
-import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 import { redactEvidenceText } from "./evidenceRedaction.js";
 import { resolveExecutionHost } from "./executionHostResolution.js";
 import { finalizedForPostRun } from "./finalizationOutcome.js";
 
 export interface RunExecutionRepositoryPort {
   getRun(spaceId: string, runId: string): Promise<RunRecord | null>;
+  getLatestRunAttempt?(spaceId: string, runId: string): Promise<RunAttemptRecord | null>;
   resolveRunActorId(
     run: Pick<RunRecord, "space_id" | "instructed_by_user_id">,
     commandSource: string,
@@ -194,7 +198,7 @@ export interface RunExecutionRepositoryPort {
     worker_id: string;
     job_id?: string | null;
   }): Promise<boolean>;
-  releaseExecutionLock(runId: string): Promise<void>;
+  releaseExecutionLock(runId: string, workerId?: string): Promise<void>;
   markRunWaitingForReview(input: {
     run_id: string;
     space_id: string;
@@ -541,6 +545,7 @@ export class RunOrchestrationService {
   private builtinHostIdPromise: Promise<string> | null = null;
   private readonly builtinHostResolver: (() => Promise<string>) | null;
   private readonly hostKindResolver: ((input: { executionHostId: string | null; workspaceLocationId: string | null; projectFolderId: string | null; spaceId: string }) => Promise<{ hostKind: HostKind; hostId: string; workspaceLocationId: string | null }>) | null;
+  private readonly executionControl: RunExecutionControl;
 
   constructor(
     private readonly config: ServerConfig,
@@ -567,6 +572,17 @@ export class RunOrchestrationService {
       ?? (repository instanceof PgRunRepository && config.databaseUrl
         ? (input) => resolveExecutionHost(getDbPool(config.databaseUrl!), input)
         : null);
+    this.executionControl = new RunExecutionControl(repository, async run => {
+      const profile = recordValue(run.runtime_profile_snapshot_json);
+      const pinnedHost = stringConfigValue(profile.execution_host_id);
+      const resolved = await this.hostKindResolver?.({
+        executionHostId: pinnedHost,
+        workspaceLocationId: run.workspace_location_id ?? null,
+        projectFolderId: run.project_folder_id,
+        spaceId: run.space_id,
+      });
+      return resolved?.hostId || pinnedHost || await this.builtinHostId();
+    }, adapters.processRegistry, adapters.hostCli?.connectionRegistry);
     this.usageRecorder = adapters.usageRecorder
       ?? (repository instanceof PgRunRepository && config.databaseUrl
         ? (observation) => recordUsageObservation(config, observation)
@@ -674,13 +690,22 @@ export class RunOrchestrationService {
     let step: RunStepRecord | null = null;
     let preparedRuntime: PreparedRuntimeContext | null = null;
     let dependencyWaited = false;
+    let interruptedAttemptNumber: number | null = null;
     const releaseExecutionAuthority = async (): Promise<void> => {
       await this.cleanupRuntimeContext(preparedRuntime, run);
       if (!executionLockHeld) return;
-      await this.repository.releaseExecutionLock(run.id);
+      await this.repository.releaseExecutionLock(run.id, input.worker_id);
       executionLockHeld = false;
     };
     try {
+      if (run.status === "running" || run.status === "cancelling") {
+        // Taking this lock means the old worker's lease was reclaimed. Its ACP
+        // controller cannot be resumed by replaying preparation on a running Run.
+        const stopped = await this.executionControl.stop(run, true);
+        if (!stopped.confirmed_exit) throw new JobDeferredError("Waiting for the interrupted Run attempt to confirm exit", 30_000);
+        interruptedAttemptNumber = stopped.attempt_number;
+        throw new RunPreparationError("orphaned", "The previous worker lost this Run's execution controller; its Host attempt has stopped.");
+      }
       let effectiveBindings = this.workContextResolver
         ? await this.workContextResolver(run)
         : undefined;
@@ -855,6 +880,7 @@ export class RunOrchestrationService {
           error: dispatchContract.error_message ?? "Run contract rejected dispatch.",
         };
       }
+      await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,run);
       const running = await this.repository.markRunRunning({
         run_id: run.id,
         space_id: run.space_id,
@@ -1011,6 +1037,7 @@ export class RunOrchestrationService {
         },
       });
 
+      await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,effectiveRun);
       preparedRuntime = await this.prepareRuntimeContext(
         effectiveRun,
         effectiveInput,
@@ -1045,6 +1072,7 @@ export class RunOrchestrationService {
       }
       let adapterResult: RunAdapterResultEnvelope;
       try {
+        await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,effectiveRun);
         adapterResult = await this.invokeAdapter(
           effectiveRun,
           {
@@ -1492,6 +1520,9 @@ export class RunOrchestrationService {
         ),
       };
     } catch (error) {
+      // An offline Host or a missing exit confirmation is a wait, never proof
+      // that the old process stopped. Keep the Run and return the job attempt.
+      if (error instanceof JobDeferredError) throw error;
       const completedAt = new Date().toISOString();
       const message = errorMessage(error);
       if (error instanceof RunApprovalRequiredError) {
@@ -1511,6 +1542,7 @@ export class RunOrchestrationService {
       }
       const errorCode =
         error instanceof RunPreparationError ? error.code : "run_orchestration_failed";
+      const failureStatus = errorCode === "orphaned" ? "orphaned" : "failed";
       if (step) {
         await this.updateRunStepStatusBestEffort({
           step_id: step.id,
@@ -1525,6 +1557,7 @@ export class RunOrchestrationService {
       await this.appendRunEventBestEffort({
         run_id: run.id,
         space_id: run.space_id,
+        attempt_number: interruptedAttemptNumber,
         event_type: "adapter_completed",
         status: "failed",
         step_id: step?.id ?? null,
@@ -1538,7 +1571,8 @@ export class RunOrchestrationService {
       let failedRun = await this.repository.publishRunTerminal({
         run_id: run.id,
         space_id: run.space_id,
-        status: "failed",
+        status: failureStatus,
+        expected_attempt_number: interruptedAttemptNumber,
         output_text: "",
         output_json: canonicalRunOutput({
           success: false,
@@ -1559,6 +1593,7 @@ export class RunOrchestrationService {
             run_id: run.id,
             space_id: run.space_id,
             status: "cancelled",
+            expected_attempt_number: interruptedAttemptNumber,
             output_text: "",
             output_json: canonicalRunOutput({
               success: false,
@@ -1574,9 +1609,14 @@ export class RunOrchestrationService {
           });
         }
       }
+      if (!failedRun && errorCode === "orphaned") {
+        const current = await this.repository.getRun(run.space_id, run.id);
+        return { run_id: run.id, status: protocolRunStatus(current?.status ?? run.status),
+          skipped: true, skip_reason: "interrupted_attempt_already_settled" };
+      }
       if (failedRun) executionLockHeld = false;
       const finalization = await this.finalizeTerminalRunBestEffort(
-        failedRun ?? { ...run, status: "failed", ended_at: completedAt },
+        failedRun ?? { ...run, status: failureStatus, ended_at: completedAt },
       );
       const current = this.adapters.materializer
         ? await this.repository.getRun(run.space_id, run.id)
@@ -1625,7 +1665,6 @@ export class RunOrchestrationService {
     space_id: string;
     requested_by_user_id?: string | null;
     reason?: string | null;
-    terminate_process?: boolean;
   }): Promise<RunJobResult> {
     const requestedAt = new Date().toISOString();
     const run = await this.repository.getRun(input.space_id, input.run_id);
@@ -1681,16 +1720,15 @@ export class RunOrchestrationService {
     }
 
     // Cancellation is a two-phase state transition. The run remains
-    // cancelling until the child process has confirmed exit or escalation has
-    // been attempted, so a late adapter result cannot be mistaken for a clean
+    // cancelling until the Host process has confirmed exit, so a late
+    // adapter result cannot be mistaken for a clean
     // cancellation.
     const {
       process_terminated: processTerminated,
       confirmed_exit: confirmedExit,
       force_kill_escalated: forceKillEscalated,
-    } = input.terminate_process !== false
-      ? await this.stopRuntimeProcess(run.id)
-      : { process_terminated: false, confirmed_exit: true, force_kill_escalated: false };
+      attempt_number: stoppedAttemptNumber,
+    } = await this.executionControl.stop(run);
 
     if (!confirmedExit) {
       return {
@@ -1705,6 +1743,7 @@ export class RunOrchestrationService {
       run_id: run.id,
       space_id: run.space_id,
       status: "cancelled",
+      expected_attempt_number: stoppedAttemptNumber,
       output_text: "",
       output_json: canonicalRunOutput({
         success: false,
@@ -1730,17 +1769,6 @@ export class RunOrchestrationService {
         skipped: true,
         skip_reason: "run_already_terminal",
       };
-    }
-    const cancelledHostThread = hostThreadDispatchInputs(updated);
-    if (cancelledHostThread.thread_id) {
-      await recordHostThreadOutcome(
-        this.config,
-        cancelledHostThread.thread_id,
-        updated,
-        cancelledHostThread.resume_attempted,
-        cancelledHostThread.identity,
-        cancelledHostThread.standing,
-      ).catch(() => undefined);
     }
     const finalization = await this.finalizeTerminalRunBestEffort(
       updated ?? { ...run, status: "cancelled", ended_at: new Date().toISOString() },
@@ -1806,12 +1834,20 @@ export class RunOrchestrationService {
     // `worktree` and `one_shot_docker` are not daemon workspace kinds. The
     // daemon's workspace is the Location, and the namespace is the isolation.
     // They are carried, and only `read_only` changes what a daemon Run gets.
+    const workspaceAccess = contractWorkspaceAccess(run.contract_snapshot_json);
     const requiredSandboxLevel = resolveSandboxLevelForRuntime({
       runtimeKey: run.runtime_key,
       configuredLevel: run.required_sandbox_level,
       riskLevel,
       projectFolderId: run.project_folder_id,
+      workspaceAccess,
     });
+    // Read-only is a guarantee only where something enforces it: the strict
+    // server Host binds the workspace read-only. A paired Host runs natively
+    // and cannot hold the process to it, so a review there is refused rather
+    // than run writable under a read-only label.
+    const readOnlyRefusal = readOnlyWorkspaceHostRefusal(workspaceAccess, run.runtime_key, hostKind);
+    if (readOnlyRefusal) throw new RunPreparationError("workspace_read_only_unenforceable", readOnlyRefusal);
     if (requiredSandboxLevel === "one_shot_docker" && isVendorCliAdapter(run.runtime_key)) {
       const spec = getRuntimeAdapterSpec(run.runtime_key);
       if (!spec?.sandbox.supports_one_shot_docker) {
@@ -2364,36 +2400,6 @@ export class RunOrchestrationService {
     });
   }
 
-  /**
-   * Stop a Run's runtime process the way an explicit stop does: ask it to
-   * exit, wait, escalate to a forced stop, wait again.
-   */
-  private async stopRuntimeProcess(runId: string): Promise<RuntimeStopOutcome> {
-    const registry = this.adapters.processRegistry;
-    if (!registry) return { process_terminated: false, confirmed_exit: true, force_kill_escalated: false };
-    let processTerminated = false;
-    let confirmedExit = true;
-    let forceKillEscalated = false;
-    try {
-      processTerminated = registry.terminate(runId);
-      if (processTerminated && registry.waitForExit) {
-        confirmedExit = await registry.waitForExit(runId, 5_000);
-        if (!confirmedExit) {
-          forceKillEscalated = registry.forceTerminate?.(runId) ?? false;
-          confirmedExit = await registry.waitForExit(runId, 2_000);
-        }
-      }
-    } catch {
-      processTerminated = false;
-      confirmedExit = false;
-    }
-    return {
-      process_terminated: processTerminated,
-      confirmed_exit: confirmedExit,
-      force_kill_escalated: forceKillEscalated,
-    };
-  }
-
   private async invokeAdapter(
     run: AgentRunRecord,
     input: RunExecutionInput,
@@ -2416,7 +2422,7 @@ export class RunOrchestrationService {
         run,
         limit,
         invoke: (deadline) => this.invokeAdapterUnbounded(run, { ...cancellable, deadline_signal: deadline }),
-        stop: () => this.stopRuntimeProcess(run.id),
+        stop: () => this.executionControl.stop(run),
       });
     } finally {
       invocation?.close();

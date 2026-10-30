@@ -53,7 +53,7 @@ export type SessionOut = z.infer<typeof SessionOutSchema>;
  * own Run.
  */
 
-const ActionPreviewSchema = z.object({
+export const ActionPreviewSchema = z.object({
   action_id: z.string(),
   tool_call_id: z.string().nullish(),
   status: z.enum(["proposed", "auto_applied", "completed", "failed", "rejected"]),
@@ -127,6 +127,8 @@ export const ConversationMessageMetadataSchema = z.object({
   source_goal_message_key:z.string().max(128).nullish(),
   source_goal_dispatch_pending:z.boolean().nullish(),
   source_goal_paused_request:z.boolean().nullish(),
+  source_goal_search_path:z.enum(['agent','api']).optional(),
+  source_goal_session_config:z.array(RuntimeSessionConfigSelectionSchema).max(32).nullish(),
   source_goal_cycle:z.number().int().nonnegative().nullish(),
   source_goal_dispatch_failed:z.boolean().nullish(),
   source_goal_dispatch_error:z.string().regex(/^source_goal_[a-z_]+$/).nullish(),

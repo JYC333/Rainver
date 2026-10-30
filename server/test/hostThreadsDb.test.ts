@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
-import { seedAgentWithVersion, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { seedAgentWithVersion, seedRun, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { PgAgentRepository } from "../src/modules/agents/repository.js";
 import { loadConfig } from "../src/config.js";
 import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
@@ -14,6 +14,15 @@ import { PgRoomRepository } from "../src/modules/rooms/repository.js";
 import { PgWorkspaceLocationRepository } from "../src/modules/projectFolders/workspaceLocations.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 import { isTerminalRunStatus } from "../src/modules/runs/orchestrationResults.js";
+import { buildRunOrchestration } from "../src/modules/runs/orchestrationFactory.js";
+import { PostRunFinalizationService } from "../src/modules/runs/finalizationService.js";
+import { runSettlement } from "../src/modules/runs/runSettlement.js";
+import { PgRunSupervisor } from "../src/modules/runs/supervisor.js";
+import { HostThreadClaimHeldError } from "../src/modules/runs/runSettlement.js";
+import { resumeUnsettledRuns } from "../src/modules/runs/recovery.js";
+import { RunMaterializationService } from "../src/modules/runs/materializationService.js";
+import { enqueueWhenTurnFree, holdInterruptedRun } from "../src/modules/rooms/quotaGate.js";
+import { withDbTransaction } from "../src/modules/routeUtils/common.js";
 
 const SPACE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OWNER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -30,6 +39,18 @@ const OTHER_TASK = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const DISPATCH_PROFILE = "aaaa1111-1111-4111-8111-111111111111";
 
 const db = useTestDatabase(import.meta.filename);
+
+let endedRuns = 0;
+/** A Run that ended on the thread, as settlement sees it: a real row, on this thread, hard terminal. Created in order. */
+async function endedRunOnThread(threadId: string, run: { status: string; error_json?: unknown }) {
+  const id = randomUUID();
+  endedRuns += 1;
+  await seedRun(db.pool, { id, space: SPACE, owner: OWNER, agent: AGENT, version: VERSION, existingAgent: true,
+    now: new Date(Date.UTC(2026, 9, 1, 0, 0, endedRuns)).toISOString() });
+  await db.pool.query("UPDATE runs SET status=$2, error_json=$3, host_task_thread_id=$4, ended_at=now() WHERE id=$1",
+    [id, run.status, JSON.stringify(run.error_json ?? null), threadId]);
+  return { id, ...run };
+}
 let roomId = "";
 
 beforeEach(async () => {
@@ -362,17 +383,17 @@ describe("host_threads owner constraints", () => {
     )).rows[0];
     // Failed before the runtime tried: a launch that waited out its budget,
     // a person's stop. The session is still there.
-    for (const run of [
-      { id: randomUUID(), status: "failed", error_json: { error_code: "runtime_timeout" } },
-      { id: randomUUID(), status: "cancelled", error_json: { error_code: "run_cancelled" } },
+    for (const ended of [
+      { status: "failed", error_json: { error_code: "runtime_timeout" } },
+      { status: "cancelled", error_json: { error_code: "run_cancelled" } },
     ]) {
-      await recordHostThreadOutcome(config, thread.id, run, true);
+      await recordHostThreadOutcome(config, thread.id, await endedRunOnThread(thread.id, ended), true);
       expect(await vendorSession()).toMatchObject({ status: "active", vendor_session_id: "vendor-live" });
     }
     // The runtime refused the session.
-    await recordHostThreadOutcome(config, thread.id, {
-      id: randomUUID(), status: "failed", error_json: { error_code: "runtime_session_invalid" },
-    }, true);
+    await recordHostThreadOutcome(config, thread.id, await endedRunOnThread(thread.id, {
+      status: "failed", error_json: { error_code: "runtime_session_invalid" },
+    }), true);
     expect(await vendorSession()).toMatchObject({ status: "session_reset", vendor_session_id: null });
   });
 
@@ -397,14 +418,15 @@ describe("host_threads owner constraints", () => {
       [CONVERSATION],
     )).rows.map((row) => row.run_id);
     // The thread keeps its id across resets, so each reset is a new fact.
-    const first = randomUUID();
-    const second = randomUUID();
-    await recordHostThreadOutcome(config, thread.id, { id: first, status: "failed", error_json: { error_code: "runtime_session_invalid" } }, true);
+    const invalid = { status: "failed", error_json: { error_code: "runtime_session_invalid" } };
+    const first = await endedRunOnThread(thread.id, invalid);
+    await recordHostThreadOutcome(config, thread.id, first, true);
     await repository.recordRunOutcome(thread.id, { lastRunId: randomUUID(), vendorSessionId: "vendor-again", sessionReset: false });
-    await recordHostThreadOutcome(config, thread.id, { id: second, status: "failed", error_json: { error_code: "runtime_session_invalid" } }, true);
+    const second = await endedRunOnThread(thread.id, invalid);
+    await recordHostThreadOutcome(config, thread.id, second, true);
     // The same Run reported twice is still one reset.
-    await recordHostThreadOutcome(config, thread.id, { id: second, status: "failed", error_json: { error_code: "runtime_session_invalid" } }, true);
-    expect(await notices()).toEqual([first, second]);
+    await recordHostThreadOutcome(config, thread.id, second, true);
+    expect(await notices()).toEqual([first.id, second.id]);
   });
 
   it("gives every Agent × container its own runtime profile, and the machine's own to none of them", async (ctx) => {
@@ -987,6 +1009,114 @@ describe("admitting a Run onto a Task thread", () => {
     expect(await runsOnThread(threadId)).toBe("1");
   });
 
+  it("releases a cancelled Run's dispatch claim so the next conversation turn can start", async () => {
+    const threadId = await seedDispatchableThread();
+    await dispatch(threadId);
+    const row = (await db.pool.query<{ id: string }>("SELECT id FROM runs WHERE host_task_thread_id=$1", [threadId])).rows[0]!;
+    await db.pool.query("UPDATE host_threads SET dispatch_lock_id=$2 WHERE id=$1", [threadId, row.id]);
+    const { orchestration: service } = buildRunOrchestration(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
+    await expect(service.cancelRun({ space_id: SPACE, run_id: row.id, requested_by_user_id: OWNER }))
+      .resolves.toMatchObject({ status: "cancelled" });
+    expect((await db.pool.query("SELECT dispatch_lock_id FROM host_threads WHERE id=$1", [threadId])).rows)
+      .toEqual([{ dispatch_lock_id: null }]);
+    await dispatch(threadId);
+    expect(await runsOnThread(threadId)).toBe("2");
+  });
+
+  it("recovers a legacy settled Run's dispatch claim even after chat completion", async () => {
+    const threadId = await seedDispatchableThread();
+    await dispatch(threadId);
+    const repository = new PgRunRepository(db.pool);
+    const row = (await db.pool.query<{ id: string }>("SELECT id FROM runs WHERE host_task_thread_id=$1", [threadId])).rows[0]!;
+    await db.pool.query("UPDATE host_threads SET dispatch_lock_id=$2 WHERE id=$1", [threadId, row.id]);
+    await repository.markRunTerminal({ run_id: row.id, space_id: SPACE, status: "cancelled", completed_at: new Date().toISOString() });
+    // Old finalizers completed evaluation/chat without durably tracking release.
+    await new PostRunFinalizationService(repository).finalize(row.id, SPACE);
+    expect((await repository.getLatestRunFinalization(SPACE, row.id))?.settled_at).toBeTruthy();
+    await repository.appendRunEvent({ space_id: SPACE, run_id: row.id, event_type: "chat_completed", status: "succeeded" });
+    expect(await repository.listUnsettledFinalizations()).toContainEqual({ run_id: row.id, space_id: SPACE });
+
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    await new PostRunFinalizationService(repository, undefined, undefined, undefined, runSettlement(config, db.pool)).finalize(row.id, SPACE);
+    expect((await repository.getLatestRunFinalization(SPACE, row.id))?.settlement_json).toMatchObject({ completed: expect.arrayContaining(["host_thread"]) });
+    expect(await repository.listUnsettledFinalizations()).toEqual([]);
+    await dispatch(threadId);
+    expect(await runsOnThread(threadId)).toBe("2");
+  });
+
+  it("retries a failed Host release without replaying completed settlement steps", async () => {
+    const threadId = await seedDispatchableThread();
+    await dispatch(threadId);
+    const repository = new PgRunRepository(db.pool);
+    const row = (await db.pool.query<{ id: string }>("SELECT id FROM runs WHERE host_task_thread_id=$1", [threadId])).rows[0]!;
+    await db.pool.query("UPDATE host_threads SET dispatch_lock_id=$2 WHERE id=$1", [threadId, row.id]);
+    await repository.markRunTerminal({ run_id: row.id, space_id: SPACE, status: "cancelled", completed_at: new Date().toISOString() });
+    // A new required step can also be owed by a legacy completed record.
+    await new PostRunFinalizationService(repository).finalize(row.id, SPACE);
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    const release = runSettlement(config, db.pool).reconcilers((await repository.getRun(SPACE, row.id))!)[0]!;
+    let unavailable = true;
+    let projections = 0;
+    const finalizer = new PostRunFinalizationService(repository, undefined, undefined, undefined, {
+      reconcilers: () => [
+        { key: release.key, settle: async run => {
+          if (unavailable) throw new Error("Host thread store temporarily unavailable");
+          await release.settle(run);
+        } },
+        { key: "independent_projection", settle: async () => { projections += 1; } },
+      ],
+    });
+    await expect(finalizer.finalize(row.id, SPACE)).rejects.toMatchObject({ code: "settlement_pending", reconcilerKey: "host_thread" });
+    expect((await repository.getLatestRunFinalization(SPACE, row.id))?.settled_at).toBeNull();
+    expect((await db.pool.query("SELECT dispatch_lock_id FROM host_threads WHERE id=$1", [threadId])).rows[0].dispatch_lock_id).toBe(row.id);
+    unavailable = false;
+    await finalizer.finalize(row.id, SPACE);
+    expect(projections).toBe(1);
+    expect((await repository.getLatestRunFinalization(SPACE, row.id))?.settled_at).toBeTruthy();
+    await dispatch(threadId);
+  });
+
+  it("adds Host release when a previously settled review hold is cancelled", async () => {
+    const threadId = await seedDispatchableThread();
+    await dispatch(threadId);
+    const repository = new PgRunRepository(db.pool);
+    const row = (await db.pool.query<{ id: string }>("SELECT id FROM runs WHERE host_task_thread_id=$1", [threadId])).rows[0]!;
+    await db.pool.query("UPDATE host_threads SET dispatch_lock_id=$2 WHERE id=$1", [threadId, row.id]);
+    await db.pool.query(`UPDATE runs SET status='running',started_at=now(),
+      runtime_profile_id=p.id,runtime_key=p.runtime_key,runtime_profile_snapshot_json=to_jsonb(p)
+      FROM agent_runtime_profiles p WHERE runs.id=$1 AND p.id=$2`, [row.id, DISPATCH_PROFILE]);
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    await repository.markRunTerminal({ run_id: row.id, space_id: SPACE, status: "failed",
+      error_json: { error_code: "credentials_missing" }, completed_at: new Date().toISOString() });
+    const before = await new PostRunFinalizationService(repository, undefined, undefined, undefined,
+      runSettlement(config, db.pool), new PgRunSupervisor(db.pool)).finalize(row.id, SPACE);
+    expect((await repository.getRun(SPACE, row.id))?.status).toBe("waiting_for_review");
+    expect((await repository.getLatestRunFinalization(SPACE, row.id))?.settlement_json).toMatchObject({ completed: expect.not.arrayContaining(["host_thread"]) });
+    const { orchestration } = buildRunOrchestration(config);
+    await expect(orchestration.cancelRun({ space_id: SPACE, run_id: row.id, requested_by_user_id: OWNER })).resolves.toMatchObject({ status: "cancelled" });
+    expect(await repository.getLatestRunFinalization(SPACE, row.id)).toMatchObject({ id: before.id,
+      settlement_json: { completed: expect.arrayContaining(["host_thread"]) } });
+    expect((await new PgHostThreadRepository(db.pool).getById(threadId))?.dispatch_lock_id).toBeNull();
+  });
+
+  it("keeps a newer turn's claim and session when an old settlement is replayed", async () => {
+    const threadId = await seedDispatchableThread();
+    await dispatch(threadId);
+    const repository = new PgRunRepository(db.pool);
+    const first = (await db.pool.query<{ id: string }>("SELECT id FROM runs WHERE host_task_thread_id=$1", [threadId])).rows[0]!.id;
+    await repository.markRunTerminal({ run_id: first, space_id: SPACE, status: "cancelled", completed_at: new Date().toISOString() });
+    await dispatch(threadId);
+    const second = (await db.pool.query<{ id: string }>("SELECT id FROM runs WHERE host_task_thread_id=$1 AND id<>$2", [threadId, first])).rows[0]!.id;
+    await db.pool.query("UPDATE host_threads SET last_run_id=$2,dispatch_lock_id=$2,vendor_session_id='new-session' WHERE id=$1", [threadId, second]);
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    const old = { id: first, status: "succeeded", output_json: { schema_version: "run_output.v1", result: { external_session_id: "old-session" } } };
+    await recordHostThreadOutcome(config, threadId, old, true);
+    expect((await new PgHostThreadRepository(db.pool).getById(threadId))?.dispatch_lock_id).toBe(second);
+    await db.pool.query("UPDATE host_threads SET dispatch_lock_id=NULL WHERE id=$1", [threadId]);
+    await recordHostThreadOutcome(config, threadId, old, true);
+    expect(await new PgHostThreadRepository(db.pool).getById(threadId)).toMatchObject({ last_run_id: second, vendor_session_id: "new-session" });
+  });
+
   it("does not let one Task borrow another Task's host thread", async (ctx) => {
     if (!db.available) return ctx.skip();
     const threadId = await seedDispatchableThread();
@@ -1061,5 +1191,174 @@ describe("admitting a Run onto a Task thread", () => {
     for (const status of ["queued", "running", "cancelling"]) {
       expect(isTerminalRunStatus(status), status).toBe(false);
     }
+  });
+});
+
+/**
+ * A Room Agent's older turn A is held for quota (releasing its claim), the
+ * person's newer turn B claims the same Conversation × Agent thread and
+ * finishes, then A is admitted again and ends last. A's settlement must
+ * release A's own claim without replacing B's session, and never another
+ * Run's claim.
+ */
+describe("host thread settlement after a held turn ends last", () => {
+  const output = (session: string) => ({ schema_version: "run_output.v1", result: { external_session_id: session } });
+  const job = { user_id: OWNER, agent_id: AGENT, project_folder_id: FOLDER, payload: {} as Record<string, unknown> };
+
+  async function heldThenReadmitted(options: { finishNewer?: boolean } = {}) {
+    const threads = new PgHostThreadRepository(db.pool);
+    const runs = new PgRunRepository(db.pool);
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    const thread = await threads.createForConversationAgent({ executionHostId: HOST, workspaceMode: "location",
+      workspaceLocationId: LOCATION, spaceId: SPACE, sessionId: CONVERSATION, agentId: AGENT,
+      runtimeKey: "claude_code", runtimeInstallation: "own", createdByUserId: OWNER });
+    const older = randomUUID();
+    const newer = randomUUID();
+    for (const [id, now] of [[older, "2026-10-01T00:00:00.000Z"], [newer, "2026-10-01T00:00:01.000Z"]] as const) {
+      await seedRun(db.pool, { id, space: SPACE, owner: OWNER, agent: AGENT, version: VERSION, existingAgent: true, now });
+      await db.pool.query("UPDATE runs SET host_task_thread_id=$2, session_id=$3 WHERE id=$1", [id, thread.id, CONVERSATION]);
+    }
+    await db.pool.query("UPDATE runs SET status='queued' WHERE id=$1", [older]);
+    const claimA = randomUUID();
+    expect(await threads.claimConversationDispatch(thread.id, claimA)).toBe(true);
+    await threads.recordConversationDispatch(thread.id, { lastRunId: older, sessionId: CONVERSATION, dispatchLockId: claimA });
+    const heldJob = { ...job, payload: { run_id: older } };
+    await holdInterruptedRun(db.pool, SPACE, older, { window: "session", resets_at: null, utilization: 99,
+      account_label: "fixture", login: { host_id: HOST, runtime_key: "claude_code", installation: "own" },
+      held_at: new Date().toISOString(), job: heldJob });
+    expect((await threads.getById(thread.id))?.dispatch_lock_id).toBeNull();
+    const claimB = randomUUID();
+    expect(await threads.claimConversationDispatch(thread.id, claimB)).toBe(true);
+    await threads.recordConversationDispatch(thread.id, { lastRunId: newer, sessionId: CONVERSATION, dispatchLockId: claimB });
+    if (options.finishNewer !== false) {
+      await runs.markRunTerminal({ run_id: newer, space_id: SPACE, status: "succeeded", completed_at: new Date().toISOString() });
+      await db.pool.query("UPDATE runs SET output_json=$2 WHERE id=$1", [newer, output("session-b")]);
+      await recordHostThreadOutcome(config, thread.id, (await runs.getRun(SPACE, newer))!, false);
+      expect(await threads.getById(thread.id)).toMatchObject({ dispatch_lock_id: null, last_run_id: newer, vendor_session_id: "session-b" });
+      expect(await withDbTransaction(db.pool, tx => enqueueWhenTurnFree(tx, { spaceId: SPACE, runId: older, job: heldJob }))).toBe("admitted");
+      expect((await threads.getById(thread.id))?.dispatch_lock_id).toBe(older);
+    }
+    const finalizer = () => new PostRunFinalizationService(runs, undefined, undefined, undefined, runSettlement(config, db.pool));
+    return { threads, runs, config, thread, older, newer, finalizer };
+  }
+
+  it("releases the older turn's own claim while keeping the newer turn's session and identity", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const { threads, runs, thread, older, newer, finalizer } = await heldThenReadmitted();
+    await db.pool.query("UPDATE host_threads SET identity_digest='identity-b', identity_digest_run_id=$2 WHERE id=$1", [thread.id, newer]);
+    await runs.markRunTerminal({ run_id: older, space_id: SPACE, status: "failed",
+      error_json: { error_code: "runtime_timeout" }, completed_at: new Date().toISOString() });
+    // A came back with its own session: it must not replace the newer turn's.
+    await db.pool.query("UPDATE runs SET output_json=$2 WHERE id=$1", [older, output("session-a")]);
+    await finalizer().finalize(older, SPACE);
+    expect(await threads.getById(thread.id)).toMatchObject({ dispatch_lock_id: null, last_run_id: newer,
+      vendor_session_id: "session-b", identity_digest: "identity-b", identity_digest_run_id: newer });
+    const ledger = await runs.getLatestRunFinalization(SPACE, older);
+    expect(ledger?.settled_at).toBeTruthy();
+    expect(ledger?.settlement_json).toMatchObject({ completed: expect.arrayContaining(["host_thread"]) });
+    expect((await runs.listUnsettledFinalizations()).some(row => row.run_id === older)).toBe(false);
+    // The Agent takes the next turn.
+    expect(await threads.claimConversationDispatch(thread.id, randomUUID())).toBe(true);
+  });
+
+  it("never releases a newer turn's claim or a pending admission nonce when an older result is refused", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const { threads, runs, thread, older, newer, finalizer } = await heldThenReadmitted({ finishNewer: false });
+    // B is running and holds the thread; A is cancelled while held.
+    await runs.markRunTerminal({ run_id: older, space_id: SPACE, status: "cancelled", completed_at: new Date().toISOString() });
+    await finalizer().finalize(older, SPACE);
+    expect(await threads.getById(thread.id)).toMatchObject({ dispatch_lock_id: newer, last_run_id: newer });
+    // An admission in progress holds a nonce, not a Run id: untouched as well.
+    const nonce = randomUUID();
+    await db.pool.query("UPDATE host_threads SET dispatch_lock_id=$2 WHERE id=$1", [thread.id, nonce]);
+    expect(await withDbTransaction(db.pool, tx => new PgHostThreadRepository(tx).settleRunOutcome(thread.id,
+      { lastRunId: older, vendorSessionId: null, sessionReset: false }))).toEqual({ outcome_recorded: false, claim: "not_held" });
+    expect((await threads.getById(thread.id))?.dispatch_lock_id).toBe(nonce);
+  });
+
+  it("keeps a claim its Run holds while not ended, and leaves that settlement owed", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const { threads, runs, config, thread, older } = await heldThenReadmitted();
+    // Re-admitted A is queued again (as a Supervisor successor attempt leaves it): its claim is live.
+    expect(await withDbTransaction(db.pool, tx => new PgHostThreadRepository(tx).settleRunOutcome(thread.id,
+      { lastRunId: older, vendorSessionId: null, sessionReset: false }))).toMatchObject({ claim: "run_not_terminal" });
+    expect((await threads.getById(thread.id))?.dispatch_lock_id).toBe(older);
+    // A settlement pass holding a stale terminal view of the Run does not complete the step.
+    const stale = { ...(await runs.getRun(SPACE, older))!, status: "failed" as const };
+    const step = runSettlement(config, db.pool).reconcilers(stale).find(entry => entry.key === "host_thread")!;
+    await expect(step.settle(stale)).rejects.toBeInstanceOf(HostThreadClaimHeldError);
+    expect((await threads.getById(thread.id))?.dispatch_lock_id).toBe(older);
+  });
+
+  it("writes nothing for a terminal snapshot once the same Run's successor attempt is queued", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const threads = new PgHostThreadRepository(db.pool);
+    const runs = new PgRunRepository(db.pool);
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    const thread = await threads.createForConversationAgent({ executionHostId: HOST, workspaceMode: "location",
+      workspaceLocationId: LOCATION, spaceId: SPACE, sessionId: CONVERSATION, agentId: AGENT,
+      runtimeKey: "claude_code", runtimeInstallation: "own", createdByUserId: OWNER });
+    const id = randomUUID();
+    await seedRun(db.pool, { id, space: SPACE, owner: OWNER, agent: AGENT, version: VERSION, existingAgent: true });
+    await db.pool.query("UPDATE runs SET status='failed', host_task_thread_id=$2, session_id=$3, output_json=$4 WHERE id=$1",
+      [id, thread.id, CONVERSATION, output("stale-session")]);
+    const nonce = randomUUID();
+    expect(await threads.claimConversationDispatch(thread.id, nonce)).toBe(true);
+    await threads.recordConversationDispatch(thread.id, { lastRunId: id, sessionId: CONVERSATION, dispatchLockId: nonce });
+    const stale = (await runs.getRun(SPACE, id))!;
+    // The Supervisor retry writer queues attempt 2 while a terminal snapshot is still in hand.
+    expect((await runs.requeueRunForRetry({ run_id: id, space_id: SPACE, updated_at: new Date().toISOString(),
+      reason_code: "runtime_timeout", attempt_number: 2 }))?.status).toBe("queued");
+    await db.pool.query(`UPDATE host_threads SET vendor_session_id='current-session', identity_digest='current-identity',
+      identity_digest_run_id=$2, context_tokens=1200, context_window_tokens=200000 WHERE id=$1`, [thread.id, id]);
+    const before = await threads.getById(thread.id);
+    const step = runSettlement(config, db.pool).reconcilers(stale).find(entry => entry.key === "host_thread")!;
+    await expect(step.settle(stale)).rejects.toBeInstanceOf(HostThreadClaimHeldError);
+    expect((await runs.getRun(SPACE, id))?.status).toBe("queued");
+    const after = await threads.getById(thread.id);
+    for (const field of ["dispatch_lock_id", "last_run_id", "vendor_session_id", "identity_digest", "identity_digest_run_id",
+      "context_tokens", "context_window_tokens", "status", "retired_vendor_session_ids", "updated_at"] as const) {
+      expect(after?.[field], field).toEqual(before?.[field]);
+    }
+    expect(after).toMatchObject({ dispatch_lock_id: id, vendor_session_id: "current-session", identity_digest: "current-identity" });
+  });
+
+  it("converges once under repeated and concurrent settlement", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const { threads, runs, thread, older, newer, finalizer } = await heldThenReadmitted();
+    await runs.markRunTerminal({ run_id: older, space_id: SPACE, status: "cancelled", completed_at: new Date().toISOString() });
+    const results = await Promise.allSettled([finalizer().finalize(older, SPACE), finalizer().finalize(older, SPACE), finalizer().finalize(older, SPACE)]);
+    expect(results.some(result => result.status === "fulfilled")).toBe(true);
+    for (const result of results) {
+      if (result.status === "rejected") expect(result.reason).toMatchObject({ code: "finalization_in_progress" });
+    }
+    await finalizer().finalize(older, SPACE);
+    await finalizer().finalize(older, SPACE);
+    expect(await threads.getById(thread.id)).toMatchObject({ dispatch_lock_id: null, last_run_id: newer, vendor_session_id: "session-b" });
+    const ledgers = await runs.listRunFinalizations(SPACE, older);
+    expect(ledgers).toHaveLength(1);
+    expect(ledgers[0]?.settled_at).toBeTruthy();
+  });
+
+  it("repairs a ledger that recorded the step done while the claim is still held", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const { threads, runs, config, thread, older } = await heldThenReadmitted();
+    await runs.markRunTerminal({ run_id: older, space_id: SPACE, status: "cancelled", completed_at: new Date().toISOString() });
+    // As the previous step left it: the outcome was refused and the step recorded done.
+    await new PostRunFinalizationService(runs, undefined, undefined, undefined, {
+      reconcilers: () => [{ key: "host_thread", settle: async () => {} }],
+    }).finalize(older, SPACE);
+    expect((await runs.getLatestRunFinalization(SPACE, older))).toMatchObject({ settled_at: expect.anything(),
+      settlement_json: { completed: ["host_thread"] } });
+    expect((await threads.getById(thread.id))?.dispatch_lock_id).toBe(older);
+    expect((await runs.listUnsettledFinalizations()).some(row => row.run_id === older)).toBe(true);
+    // The recovery sweep through the canonical finalization entry, twice.
+    const materializer = RunMaterializationService.fromConfig(config);
+    await resumeUnsettledRuns(config, runs, undefined, materializer);
+    await resumeUnsettledRuns(config, runs, undefined, materializer);
+    expect((await threads.getById(thread.id))?.dispatch_lock_id).toBeNull();
+    expect((await runs.getLatestRunFinalization(SPACE, older))?.settled_at).toBeTruthy();
+    expect((await runs.listUnsettledFinalizations()).some(row => row.run_id === older)).toBe(false);
+    expect(await threads.claimConversationDispatch(thread.id, randomUUID())).toBe(true);
   });
 });

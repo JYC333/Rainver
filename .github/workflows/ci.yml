@@ -66,6 +66,17 @@ jobs:
       - name: Test outbound-guard
         run: pnpm --filter @rainver/outbound-guard test
 
+      # The Reader document tree and Markdown converter shared by the server's
+      # reading writer and the web Reader; both typecheck against its build.
+      - name: Build reader-document
+        run: pnpm --filter @rainver/reader-document build
+
+      - name: Typecheck reader-document
+        run: pnpm --filter @rainver/reader-document typecheck
+
+      - name: Test reader-document
+        run: pnpm --filter @rainver/reader-document test
+
       - name: Test deployer boundary
         run: python3 -m unittest discover -s deployer -p 'test_*.py'
 

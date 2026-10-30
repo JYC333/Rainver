@@ -196,6 +196,14 @@ dispatch schema is `AgentWaitForResultsInputSchema`, and
 `agentWaitForResultsToolDefinition()` derives the model-facing JSON Schema
 from it before adding descriptions and dynamic room context.
 
+`agent.list_runs` and `agent.cancel_run` likewise derive their schemas from
+`AgentListRunsInputSchema` / `AgentCancelRunInputSchema`. They use the delegation
+surface and the declared-resource adapter with the calling Run as policy resource;
+the Room control executor additionally rechecks the caller and target's canonical
+Run access/command standing, same instructing person and Room conversation before
+using the canonical cancellation orchestrator. They are included in new Room
+scenario grants, never retroactively added to existing Run snapshots.
+
 Dynamic tool presentation has two bounded exceptions:
 
 - **Retrieval's eight actions** keep `objectInput` in the registry — a
@@ -714,9 +722,11 @@ existing passing assessment session when one exists) → `AdaptiveQueryOrchestra
 .evaluate` → `ResearchMonitorMaterializer.materialize` (source-channel
 materialization plus strategy activation in one call) →
 `ProjectResearchOrchestrator.startInitialIntake`. Providers, candidate budget,
-and execution model are server-derived defaults, not caller-supplied — the
-action's only input is `thread_id` (plus an optional `intent_note`);
-auto-selecting these per invocation is not implemented. The Manager Agent chooses
+and execution model are server-derived defaults, not caller-supplied.
+Alongside `thread_id` and optional `intent_note`, callers can provide `max_items`
+and `since` to bound acquisition; these do not select the query candidate budget
+or provider/model. Auto-selecting those defaults per invocation is not
+implemented. The Manager Agent chooses
 between `agent.delegate` (an ad hoc specialist investigation) and this action
 (a tracked, monitored acquisition Workflow) from context; the two are not
 mutually exclusive and no server code intercepts a phrasing to force one.
@@ -944,3 +954,22 @@ instruction to execute an explicitly requested search on an accepted question
 remains in force. Monitoring uses human Run now or a confirmed P2 daily schedule;
 visiting the new Research choice page starts neither. See the
 [Research retention boundaries](PROJECTS.md#deep-research-compatibility-and-retirement).
+
+### Bound material submission
+
+Sources collection and saved-material processing Runs grant only `source.material.submit`. The
+strict registry schema describes Agent-provided (not independently verified)
+links, observation times and explicit failure/coverage. The Sources executor
+rechecks the canonical collection/Run/Space/owner/Profile/version/deadline and
+checks current Source retention before storing an attributed reading-content or
+link-only submission for the existing settlement/materializer.
+For explicitly registered invalid-input executors, the gateway checks registry,
+actor/visibility/idempotency, policy and executor availability before invoking
+bounded domain correction. Other actions keep their existing invalid-input path.
+Malformed collection input consumes the same Run's finite correction allowance and
+returns field paths; it does not create another Run. Final chat and native tool
+names cannot substitute for this action. See
+[Source goals](SOURCE_GOALS.md#selected-agent-assisted-search).
+
+See [Source material processing](SOURCE_MATERIAL_PROCESSING.md) for the common
+processing-ID contract, goal/item binding and Source-wide retention proposal.

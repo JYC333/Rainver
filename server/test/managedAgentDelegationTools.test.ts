@@ -207,7 +207,7 @@ describe("ACP agent delegation tools", () => {
       service: { async spawnChildRun() { throw new Error("delegate should not be called"); } },
     });
 
-    expect(binding?.toolDefinitions.map((tool) => tool.name)).toEqual(["agent.wait_for_results"]);
+    expect(binding?.toolDefinitions.map((tool) => tool.name)).toEqual(["agent.wait_for_results", "agent.list_runs", "agent.cancel_run"]);
     const invalid = await runAgentRoomToolCall({
       id: "wait-call-invalid",
       name: "agent.wait_for_results",

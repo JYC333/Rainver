@@ -191,6 +191,21 @@ describe("agent group run contracts", () => {
     ).toBe(false);
   });
 
+  it("accepts only explicit read/write workspace access across both delegation inputs", () => {
+    const spawn = { space_id: "space-1", group_id: "group-1", parent_run_id: "parent",
+      root_run_id: "root", requesting_agent_id: "manager", target_agent_id: "reviewer",
+      manager_user_id: "user-1", instruction: "Inspect." };
+    for (const workspace_access of ["read", "write"] as const) {
+      expect(SpawnChildRunRequestSchema.parse({ ...spawn, workspace_access }).workspace_access).toBe(workspace_access);
+      expect(RuntimeDelegationsOutputSchema.parse({ delegations: [{ target_agent_id: "reviewer",
+        instruction: "Inspect.", workspace_access }] }).delegations[0]?.workspace_access).toBe(workspace_access);
+    }
+    expect(SpawnChildRunRequestSchema.safeParse({ ...spawn, workspace_access: "admin" }).success).toBe(false);
+    expect(RuntimeDelegationsOutputSchema.safeParse({ delegations: [{ target_agent_id: "reviewer",
+      instruction: "Inspect.", workspace_access: "admin" }] }).success).toBe(false);
+    expect(SpawnChildRunRequestSchema.parse(spawn).workspace_access).toBeUndefined();
+  });
+
   it("models structured runtime delegation output without free-text parsing", () => {
     const output = RuntimeDelegationsOutputSchema.parse({
       delegations: [

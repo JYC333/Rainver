@@ -423,7 +423,7 @@ function isLaunching(runId: string): boolean {
  * lost, and every `artifact.submit` declaration would read "declared but
  * not delivered".
  */
-const finishingRuns = new Set<string>();
+const finishingRuns = new Map<string, string>();
 let registrationRevoked = false;
 
 /** A release updater may restart the daemon only after all Run work is settled. */
@@ -563,7 +563,7 @@ export async function sweepStaleRunProfiles(): Promise<number> {
   // run's directory mid-launch.
   return sweepOrphanedRunDirectories(
     join(configDir(), "runs"),
-    new Set([...[...activeLaunches.values()].map(({ runId }) => runId), ...launchingRuns.values(), ...finishingRuns]),
+    new Set([...[...activeLaunches.values()].map(({ runId }) => runId), ...launchingRuns.values(), ...finishingRuns.values()]),
   );
 }
 
@@ -1035,13 +1035,50 @@ function releaseHeldLeases(frame: Pick<LaunchFrame, "launch_id">, hold: LaunchHo
 
 /**
  * Whether a Run may write its workspace, which is what its Location's lease
- * serializes. The dispatch's `sandbox_mode` says so; a strict host that was
- * told nothing binds the workspace read-only (`DEFAULT_STRICT_ISOLATION`),
- * while a paired host that was told nothing runs natively and may write.
+ * serializes. Only a strict host's namespace can make a workspace read-only
+ * (`--ro-bind`): there the dispatch's `sandbox_mode` decides, and a dispatch
+ * that says nothing is read-only (`DEFAULT_STRICT_ISOLATION`). A paired host
+ * runs natively and cannot hold a process to `read_only`, so whatever it was
+ * told its Run may write, and takes the writer's lease — a `read_only` label it
+ * cannot enforce must not let it run beside a writer.
  */
 export function launchMayWrite(isolation: HostLaunchIsolation | undefined, strict: boolean): boolean {
-  const mode = isolation?.sandbox_mode ?? (strict ? DEFAULT_STRICT_ISOLATION.sandbox_mode : "read_write");
-  return mode !== "read_only";
+  if (!strict) return true;
+  return (isolation?.sandbox_mode ?? DEFAULT_STRICT_ISOLATION.sandbox_mode) !== "read_only";
+}
+
+/**
+ * The leases one launch takes. A writer holds exclusively its Task worktree
+ * key, or else its Location, and each attachment granted `write`. A reader
+ * (strict, read-only namespace) holds its Location and every attachment
+ * shared — each is bound read-only, a `write` grant included — so readers run
+ * together and no writer runs beside them.
+ */
+export function launchLeasePlan(
+  frame: Pick<LaunchFrame, "isolation" | "workspace_access">,
+  strict: boolean,
+  locationId: string | null,
+  taskKey: string | null,
+): { exclusive: string[]; shared: string[] } {
+  if (!launchMayWrite(frame.isolation, strict)) {
+    return {
+      exclusive: taskKey ? [taskKey] : [],
+      shared: [
+        ...(locationId && !taskKey ? [locationId] : []),
+        ...(frame.workspace_access ?? []).map((attachment) => attachment.workspace_location_id),
+      ],
+    };
+  }
+  return {
+    exclusive: [
+      ...(taskKey ? [taskKey] : []),
+      ...(locationId && !taskKey ? [locationId] : []),
+      ...(frame.workspace_access ?? [])
+        .filter((attachment) => attachment.access_mode === "write")
+        .map((attachment) => attachment.workspace_location_id),
+    ],
+    shared: [],
+  };
 }
 
 async function launchRun(
@@ -1123,19 +1160,10 @@ async function launchRun(
   const taskKey = locationId && taskId && taskRepository ? taskLeaseKey(locationId, taskId) : null;
   // Every Location this Run may write — its own, unless it runs in its Task
   // worktree, and each attachment granted `write` — and the Task worktree's
-  // own lease. Taken together, in sorted order.
-  const mayWrite = launchMayWrite(frame.isolation, config.trust === "strict");
-  const leaseIds = [
-    ...(taskKey ? [taskKey] : []),
-    ...(mayWrite
-      ? [
-        ...(locationId && !taskKey ? [locationId] : []),
-        ...(frame.workspace_access ?? [])
-          .filter((attachment) => attachment.access_mode === "write")
-          .map((attachment) => attachment.workspace_location_id),
-      ]
-      : []),
-  ];
+  // own lease, exclusively; a read-only Run's Locations shared. Taken
+  // together, in sorted order.
+  const leasePlan = launchLeasePlan(frame, config.trust === "strict", locationId ?? null, taskKey);
+  const leaseIds = [...leasePlan.exclusive, ...leasePlan.shared];
   if (stoppedLaunches.has(frame.launch_id)) {
     sendStoppedBeforeStart(frame, send);
     return;
@@ -1146,10 +1174,10 @@ async function launchRun(
     // behind a Run that has not chosen a copy and may not for a long time. A
     // stop meanwhile reaches it through the lease queue instead.
     launchingRuns.delete(frame.launch_id);
-    const outcome = await acquireLocationLeases(leaseIds, { runId: frame.run_id, launchId: frame.launch_id }, () => {
+    const outcome = await acquireLocationLeases(leasePlan.exclusive, { runId: frame.run_id, launchId: frame.launch_id }, () => {
       waitingSent = true;
       send({ type: "waiting_for_workspace", run_id: frame.run_id, launch_id: frame.launch_id });
-    });
+    }, leasePlan.shared);
     launchingRuns.set(frame.launch_id, frame.run_id);
     if (outcome === "cancelled") {
       send({
@@ -1645,7 +1673,7 @@ async function launchRun(
       if (activeLaunches.get(active.launchId)?.active === active) activeLaunches.delete(active.launchId);
       // Held until the directory is gone, so a reconnect mid-upload cannot
       // sweep the outputs this block is still reading.
-      finishingRuns.add(frame.run_id);
+      finishingRuns.set(frame.launch_id, frame.run_id);
 
       let diff: string | null = null;
       let gitAfter: Awaited<ReturnType<typeof captureGitHead>> = null;
@@ -1677,6 +1705,8 @@ async function launchRun(
             truncated: false,
             ...(gitBefore ? { git_before: gitBefore } : {}),
             ...(gitAfter ? { git_after: gitAfter } : {}),
+            // The version a review read: the whole directory as it started.
+            ...(!taskWorktree && baselineTree && /^[0-9a-f]{40,64}$/.test(baselineTree) ? { workspace_tree_before: baselineTree } : {}),
           });
         }
       } catch (error) {
@@ -1702,7 +1732,7 @@ async function launchRun(
           log(`run ${frame.run_id}: run directory cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
         });
       }
-      finishingRuns.delete(frame.run_id);
+      finishingRuns.delete(frame.launch_id);
       // Read before revoking, and revoked here rather than on the child's exit:
       // a connection opened just before the process ended is still this Run's.
       // Not revoked at all when a newer attempt owns the id — the same
@@ -1748,21 +1778,31 @@ function sendStoppedBeforeStart(frame: Pick<LaunchFrame, "run_id" | "launch_id">
   });
 }
 
-export function handleTerminate(frame: TerminateFrame, log: (line: string) => void = () => {}): void {
+export function handleTerminate(frame: TerminateFrame, log: (line: string) => void = () => {}, send?: (frame: HostDaemonFrame) => void): void {
   // A launch queued for its Locations has no process to signal; stopping it
   // means taking it out of the queue, which completes it. A stop that names
   // its attempt reaches only that attempt; one that does not reaches every
   // attempt of the run, queued and running alike.
-  cancelLeaseWaits(frame.run_id, frame.launch_id);
+  let found = cancelLeaseWaits(frame.run_id, frame.launch_id);
   // An attempt still being prepared has neither a queue place nor a process:
   // it is marked, and stops itself before it waits or spawns.
   for (const [launchId, runId] of launchingRuns) {
-    if (runId === frame.run_id && (!frame.launch_id || launchId === frame.launch_id)) stoppedLaunches.add(launchId);
+    if (runId === frame.run_id && (!frame.launch_id || launchId === frame.launch_id)) {
+      found = true;
+      stoppedLaunches.add(launchId);
+    }
   }
   for (const { runId, active } of activeLaunches.values()) {
     if (runId !== frame.run_id || (frame.launch_id && active.launchId !== frame.launch_id)) continue;
+    found = true;
     active.terminationRequested = true;
     terminateWithEscalation(active.child, frame.force === true, log);
+  }
+  // A daemon restart may already have removed this attempt. Confirm absence
+  // only for an exact nonce, and never while its exit cleanup still holds leases.
+  if (!found && frame.launch_id && finishingRuns.get(frame.launch_id) !== frame.run_id) {
+    send?.({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id,
+      exit_code: 1, timed_out: false, error: "This Run attempt is no longer present on this host." });
   }
 }
 

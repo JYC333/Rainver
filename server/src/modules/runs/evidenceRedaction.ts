@@ -78,8 +78,7 @@ const SECRET_VALUE_PATTERNS = [
   // The lookbehind is load-bearing, not style. Do not write it as a leading
   // `[\w.-]*`. That form is quadratic: at every start position the engine
   // consumes to the end of the line and backtracks one character at a time,
-  // so 64 KiB of one line — which a Custom Source handler can print, and
-  // which `customSourceRunner` passes here whole — takes seconds on the
+  // so 64 KiB of one line received from an external runtime takes seconds on the
   // single event loop. Anchored, the same input is unmeasurable.
   //
   // A value that is exactly one of the words a process uses to say a credential

@@ -32,6 +32,10 @@ no automatic generation, assessment, or card-generation path.
   no Domain; the existing Focus Area endpoint enforces the owner/ownerless
   readable-content write rule. Filing does not change content access or the
   Note/Wiki write lifecycle (ADR 0015).
+- Wiki detail and Knowledge Sources lists reset with their user/Space/object
+  scope and discard earlier responses. A not-found response from an item
+  command or its relation read clears the previously shown item and relations;
+  a Sources request failure is presented separately from an empty list.
 - `NotesPage` and `NoteEditor` are **route-agnostic**. The page takes a
   `NotesSurfaceScope` (`basePath`, `tabsScopeKey`, `renderHeader`) and the editor
   takes `noteId` + `onNoteResolved` as props — no `useParams`, no
@@ -482,6 +486,11 @@ return 404 and must not reveal existence.
 
 Relation reads first require the requested item to be visible to the viewer, then omit any relation where either endpoint is not visible to the viewer.
 
+Item↔source link lists check both endpoints on every read, in either direction.
+If either endpoint is no longer readable, the link is omitted. If either is
+summary-only, the link's locator, quote and note are withheld; an earlier grant
+or the other endpoint's full access cannot expose them.
+
 Relation apply uses the same endpoint visibility authority: private endpoints
 require their owner, selected-user endpoints require an active grant, and shared
 endpoints remain collaborative within the current scope.
@@ -779,3 +788,15 @@ One read and one write check, and both are the module's own.
   deletes `object_relations` with a purged note as an endpoint and clears
   `source_object_id` on edges that only cite one, since those foreign keys have
   no `ON DELETE` and one surviving edge would fail every later purge.
+
+
+Reader's document-note entry is a consumer of canonical Notes creation and the
+existing Notes editor, not a quote annotation or a second note writer. A separate
+`reader_document_notes` row holds only the private owner/document/Note identifiers
+because source items/snapshots/reports are not valid generic `note_links` root
+endpoints. Notes still resolve through the access-owned Personal Space creation
+context, begin private with no copied article body/title, and use NoteWriter for
+root, initial revision, blocks, Inbox and indexing. Renaming preserves the typed
+association. Reader enforces both current document and Note access before giving
+its link; it opens the Note's actual Space. Deleting a document cannot delete the
+Note, while purging the Note root removes its navigational binding by foreign key.

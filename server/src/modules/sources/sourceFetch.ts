@@ -111,8 +111,13 @@ function pdfUrlExtension(value: string): boolean {
   return urlExtension(value) === ".pdf";
 }
 
+/**
+ * Text by URL when the response declares no usable media type. Kept in step
+ * with `fetchedTextSyntax`: a `.md`/`.markdown` body is decodable text here
+ * and Markdown there; an explicit media type always wins over the extension.
+ */
 function textUrlExtension(value: string): boolean {
-  return [".atom", ".htm", ".html", ".json", ".rss", ".txt", ".xhtml", ".xml"].includes(urlExtension(value));
+  return [".atom", ".htm", ".html", ".json", ".markdown", ".md", ".rss", ".txt", ".xhtml", ".xml"].includes(urlExtension(value));
 }
 
 function urlExtension(value: string): string {

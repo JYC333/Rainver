@@ -1,19 +1,20 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import SourceChannelsPage from '../SourceChannelsPage'
-import { sourcesApi } from '../../../api/client'
+import { ApiRequestError, sourcesApi } from '../../../api/client'
+import { toast } from 'sonner'
 import i18n from '../../../i18n'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }))
 
-vi.mock('../../../contexts/SpaceContext', () => ({
-  useSpace: () => ({ activeSpaceId: 'space-1', activeSpaceName: 'Space One' }),
-}))
+const scope = vi.hoisted(() => ({ activeSpaceId: 'space-1', activeSpaceName: 'Space One', userId: 'user-1' }))
+vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => scope }))
 
-vi.mock('../../../api/client', () => ({
+vi.mock('../../../api/client', async importOriginal => ({
+  ApiRequestError: (await importOriginal<typeof import('../../../api/client')>()).ApiRequestError,
   sourcesApi: {
     providers: vi.fn(),
     channels: vi.fn(),
@@ -88,7 +89,7 @@ function renderPage(initialEntry = '/sources') {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
-        <Route path="/sources" element={<SourceChannelsPage />} /><Route path="/sources/goals/new" element={<h1>Goal setup</h1>}/>
+        <Route path="/sources" element={<SourceChannelsPage />} /><Route path="/library/reading/goals/new" element={<h1>Goal setup</h1>}/>
       </Routes>
     </MemoryRouter>,
   )
@@ -97,6 +98,7 @@ function renderPage(initialEntry = '/sources') {
 describe('Sources page', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    scope.activeSpaceId = 'space-1'
     vi.mocked(sourcesApi.providers).mockResolvedValue(providers)
     vi.mocked(sourcesApi.channels).mockResolvedValue([source()])
     vi.mocked(sourcesApi.recommendations).mockResolvedValue([])
@@ -106,6 +108,43 @@ describe('Sources page', () => {
       provider_key: 'arxiv', compiled_query: 'all:"agent memory"', approximate_hit_count: 42,
       samples: [{ title: 'Agent memory systems', source_uri: 'https://arxiv.org/abs/1', occurred_at: '2026-07-18T00:00:00Z' }],
     })
+  })
+
+  it('does not restore a previous Space list when its request arrives after switching', async () => {
+    let resolve!: (rows: Awaited<ReturnType<typeof sourcesApi.channels>>) => void
+    vi.mocked(sourcesApi.channels).mockReturnValueOnce(new Promise(done => { resolve = done })).mockResolvedValue([])
+    const { rerender } = render(<MemoryRouter><SourceChannelsPage /></MemoryRouter>)
+    await waitFor(() => expect(sourcesApi.channels).toHaveBeenCalledTimes(1))
+    scope.activeSpaceId = 'space-2'
+    rerender(<MemoryRouter><SourceChannelsPage /></MemoryRouter>)
+    await act(async () => { resolve([source({ name: 'Previous private monitor' })]) })
+    expect(screen.queryByText('Previous private monitor')).not.toBeInTheDocument()
+    expect(sourcesApi.channels).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([403, 404])('refreshes stale source rows after a scan job is denied with %s', async status => {
+    renderPage()
+    await screen.findByText('Agent memory')
+    vi.mocked(sourcesApi.scanChannel).mockResolvedValue({ id: 'job-1' } as never)
+    vi.mocked(sourcesApi.runJob).mockRejectedValueOnce(new ApiRequestError('Access changed', status))
+    vi.mocked(sourcesApi.channels).mockResolvedValueOnce([])
+
+    fireEvent.click(screen.getByRole('button', { name: /Scan now/ }))
+
+    await waitFor(() => expect(screen.queryByText('Agent memory')).not.toBeInTheDocument())
+    expect(toast.error).toHaveBeenCalledWith('Access changed')
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it('clears loaded sources when refresh is denied after Space membership is revoked', async () => {
+    renderPage()
+    await screen.findByText('Agent memory')
+    vi.mocked(sourcesApi.channels).mockRejectedValueOnce(new ApiRequestError('Space access revoked', 403))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+
+    await waitFor(() => expect(screen.queryByText('Agent memory')).not.toBeInTheDocument())
+    expect(toast.error).toHaveBeenCalledWith('Space access revoked')
   })
 
   it('presents sources instead of exposing the internal channel model', async () => {

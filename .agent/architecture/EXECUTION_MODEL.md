@@ -28,12 +28,16 @@ finalization boundary after a Run reaches a terminal state. Idempotent per
 `(run_id, attempt_number, finalizer_version)`, so a successful retry receives a
 fresh evaluation and downstream projection. Records run evaluation outcome,
 task evaluation bridge result, and skipped reasons. Its evidence is
-append-only. Its completion gate is `settled_at`: set once, after delegation
+append-only. Its completion gate is `settled_at`: set after delegation
 reconciliation, the Supervisor decision and every settlement reconciler (the
 Plan and Workflow graphs, then each registered domain reconciler) have
 committed. `settlement_json.completed` records the reconcilers already done
 and `last_failure` the one a pass is still owed, so a resumed settlement does
-only what is left.
+only what is left. Completed step keys only accumulate, except that a step
+whose completion is visible in state (`owed`, e.g. the Host-thread claim) is
+reopened when that state shows it unmet; a later terminal transition or newly
+required step can add obligations and reopen the gate without changing the
+evaluation evidence.
 
 **RunAttempt** — one physical runtime execution under a logical Run. A queued
 execution Run creates queued attempt 1 atomically; Supervisor retries create
@@ -83,7 +87,8 @@ pause evidence; a dispatch that finds no reusable attempt backfills one marked
    resumes the same Attempt, and it must retain the pause evidence.
 10. Finalization/evaluation/verification evidence is append-only per
     `(run_id, attempt_number)`. The finalization completion gate is the sole
-    allowed monotonic metadata update and never rewrites evaluation evidence.
+    allowed metadata update; completed step keys accumulate and never rewrite
+    evaluation evidence.
 
 **RunSupervisorDecision** — an idempotent durable policy decision for a terminal
 attempt. It aggregates `token_usage_events` across the logical Run,
@@ -173,6 +178,27 @@ only inside sentences route the full turn to the manager (`agent_coordination`)
 with those agents as coordination targets to delegate to; the person can
 switch either route in the composer (`modules/rooms.md`, "Addressing and
 routing a message").
+
+### Explicit read-only review delegation
+
+`agent.delegate` and structured runtime delegations accept optional
+`workspace_access: "read" | "write"`. Omission preserves write behavior, except
+that a read-only parent passes its read ceiling to its children. An explicit
+write request under a read parent is refused. This access is captured in the
+immutable Run contract and resolved to `read_only` at runtime admission,
+independent of risk, Folder defaults or saved vendor session permissions.
+Task titles and instruction prose never determine permissions.
+
+Different Agents' read-only children in the same Room are admitted together;
+a writer waits for earlier children, and later readers cannot overtake it.
+Same-Agent vendor threads and Host capacity retain their existing gates.
+Only a strict server Host can enforce this mode; a paired native Host fails
+closed. The Host uses shared read / exclusive write Location leases and OS
+read-only mounts, not a second scheduler or a prompt-only convention. See
+[Host leases and review basis](../modules/hosts.md#location-lease-task-worktrees-and-git_after).
+There is no new Task-form toggle: request read-only delegation explicitly;
+the Agent tool schema exposes the access choice. Review reports are ordinary
+outputs, while source diff collection is disabled for read-only Runs.
 
 **Artifact** — durable output produced by a run. Stored under `artifact_storage_root`. Exportable within the owning space. `storage_path` is always relative to `artifact_storage_root`.
 
@@ -724,7 +750,8 @@ continue instruction (`modules/rooms.md`).
 **Finalized** means the canonical materializer has reconciled durable
 runtime-output delegation, `PostRunFinalizationService` has performed
 deterministic evaluation and Supervisor handling, and the Run is **settled**:
-every settlement reconciler — Plan graph, Workflow graph, then each one in
+every settlement reconciler — hard-terminal Host-thread release, Plan graph,
+Workflow graph, then each one in
 `runFinalizationReconcilerRegistry` (project work, autonomy, follow-up Tasks)
 — has completed and `settled_at` is set. A reconciler that fails does not
 stop the others; it leaves the finalization unsettled with its key and error
@@ -733,8 +760,8 @@ code, finalization answers `settlement_pending`, and the worker sweep
 runs only the reconcilers not yet completed. Settlement never re-runs the
 Agent, a model call, or output materialization: a terminal Run's job retry and
 the sweep both reach finalization of the existing attempt. Owed settlement is
-not a failed `agent_run` job: the job still records the host thread outcome,
-finalizes the chat turn and enqueues the terminal domain reconcilers, once,
+not a failed `agent_run` job: the job still finalizes the chat turn and enqueues
+the terminal domain reconcilers, once,
 and the sweep finishes settlement on its own; any other finalization failure
 fails the job before those steps, and its retry runs them. The finalization
 read model separates the two: the Agent finished, and `settlement.status` is
@@ -762,15 +789,19 @@ Automation should create Runs and call `POST /runs/{id}/finalize` after the run 
 `RunMaterializationService.finalizeRun` is the canonical entry. It replays
 runtime-output delegation idempotently, then invokes
 `PostRunFinalizationService` for evaluation, task bridging, Supervisor policy,
-and the monotonic completion gate. API, worker, recovery, and explicit
+and the durable completion gate. A later cancellation of a review hold, or a
+new required settlement step, can add work to a previously settled record;
+the next pass records that work and any failure durably. API, worker, recovery, and explicit
 finalization use this same entry. A PostgreSQL session advisory lock keyed by
 space, Run, Attempt, and finalizer version serializes the evidence-writing
 boundary, preventing concurrent recovery/API calls from creating duplicate
 evaluations before the finalization uniqueness check. Contenders use
 `pg_try_advisory_lock` on short-lived dedicated lock connections; an
-unacquired contender closes that connection before retrying. Neither lock
-owners nor waiters consume the business-pool connections needed by
-finalization dependencies.
+unacquired contender closes that connection and returns
+`finalization_in_progress` immediately (HTTP 409 for explicit finalization).
+The job defers completion without consuming an execution retry; recovery
+skips busy Runs and continues its pass. Lock ownership consumes no
+business-pool connection needed by finalization dependencies.
 
 ### API
 
@@ -836,7 +867,11 @@ remaining domain reconciliation owed by that attempt.
 
 ### Non-terminal rejection
 
-Calling `POST /finalize` on a non-terminal run (queued, running, waiting_for_review) returns HTTP 422.
+Calling `POST /finalize` on a non-terminal Run (including `queued`, `running`
+and `waiting_for_review`) returns HTTP 422. Internally, recovery may replay
+owed settlement for a `waiting_for_review` Run with an existing current-attempt
+finalization. A policy pause without that record remains ineligible; replay
+neither approves the hold nor starts another execution attempt.
 
 ## RunEvaluation — Deterministic Harness Evaluation (Internal Primitive)
 
@@ -1094,9 +1129,13 @@ implemented. No proposal type auto-applies without user acceptance.
 
 Background execution uses a bounded job worker pool rather than awaiting one
 Run before claiming the next job. `JOBS_WORKER_CONCURRENCY` defaults to 8
-(range 1–64); each lane has a distinct queue owner identity. Startup recovery
-runs once before the lanes start, maintenance reserves one interval across
-lanes, and shutdown wakes idle lanes and awaits active handlers. This removes
+(range 1–64); each lane has a distinct queue owner identity. `RunRecoveryLoop`
+starts maintenance on its own timer and permits no overlapping passes.
+Recovery is never awaited or scheduled by a business lane. The
+Runs-owned recovery service restores missing cancellation jobs, reclaims stale
+preparation and replays finalization/settlement, isolating each step and Run;
+a pass running past ten minutes is logged, not abandoned. Shutdown wakes idle lanes and
+awaits active handlers and the recovery owner. This removes
 cross-session and cross-CLI queue serialization, while conversation dispatch
 locks, host capacity (`BUILTIN_HOST_MAX_CONCURRENT_RUNS`) and checkout write
 leases remain independent protections. A host waiting for capacity or a shared

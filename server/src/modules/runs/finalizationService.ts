@@ -108,7 +108,16 @@ interface RunEstimatedCostReader {
  * for. Each is keyed so a resumed settlement skips the ones already done.
  */
 export interface RunSettlementPort {
-  reconcilers(): ReadonlyArray<{ key: string; settle(run: RunRecord): Promise<void> }>;
+  reconcilers(run: RunRecord): ReadonlyArray<{
+    key: string;
+    settle(run: RunRecord): Promise<void>;
+    /**
+     * For a step whose completion is visible in state: true when the
+     * obligation is still unmet although the ledger records it done. Such a
+     * step runs again; the ledger keys otherwise only accumulate.
+     */
+    owed?(run: RunRecord): Promise<boolean>;
+  }>;
 }
 
 /**
@@ -139,7 +148,10 @@ export class PostRunFinalizationService {
     if (!run) {
       throw new RunNotFoundError(`Run '${runId}' not found in space '${spaceId}'`);
     }
-    if (!TERMINAL_STATUSES.has(run.status)) {
+    // A Supervisor hold may still owe settlement from its terminal attempt.
+    // Only an existing finalization may resume below; a policy pause must
+    // never create evaluation evidence or settle unfinished execution.
+    if (!TERMINAL_STATUSES.has(run.status) && run.status !== "waiting_for_review") {
       throw new NonTerminalRunError(
         `Run '${runId}' is not terminal (status='${run.status}'); finalization requires a terminal status: succeeded, failed, degraded, or cancelled.`,
       );
@@ -206,7 +218,7 @@ export class PostRunFinalizationService {
       if (isSupervisableStatus(run.status)) {
         await this.superviseBestEffort(run, repeatedEvaluation, attemptNumber);
       }
-      if (!existing.settled_at) {
+      if (!existing.settled_at || await this.settlementOwed(run, existing)) {
         const currentRun = await this.repository.getRun(spaceId, runId);
         await this.settle(currentRun ?? run, existing);
       }
@@ -309,12 +321,15 @@ export class PostRunFinalizationService {
     // The earlier finalization can close its own completion gate: it owes
     // no domain reconciliation once superseded, and must not look pending.
     const reconcilers = await this.currentAttemptNumber(run) === finalization.attempt_number
-      ? this.settlement?.reconcilers() ?? [] : [];
+      ? this.settlement?.reconcilers(run) ?? [] : [];
     const recorded = recordValue(finalization.settlement_json).completed;
     const completed = new Set(Array.isArray(recorded) ? recorded.filter((key): key is string => typeof key === "string") : []);
     let failure: { key: string; error_code: string; message: string } | null = null;
-    for (const { key, settle } of reconcilers) {
-      if (completed.has(key)) continue;
+    for (const { key, settle, owed } of reconcilers) {
+      if (completed.has(key)) {
+        if (!await owed?.(run)) continue;
+        completed.delete(key);
+      }
       try {
         await settle(run);
         completed.add(key);
@@ -335,6 +350,16 @@ export class PostRunFinalizationService {
       at: new Date().toISOString(),
     });
     if (failure) throw new RunSettlementPendingError(failure.key);
+  }
+
+  /** A settled record still owes a step it lacks, or one whose obligation state shows unmet. */
+  private async settlementOwed(run: RunRecord, finalization: RunFinalizationRecord): Promise<boolean> {
+    const recorded = recordValue(finalization.settlement_json).completed;
+    const completed = new Set(Array.isArray(recorded) ? recorded : []);
+    for (const step of this.settlement?.reconcilers(run) ?? []) {
+      if (!completed.has(step.key) || await step.owed?.(run)) return true;
+    }
+    return false;
   }
 
   private async estimatedCostBestEffort(spaceId: string, runId: string): Promise<number | null> {

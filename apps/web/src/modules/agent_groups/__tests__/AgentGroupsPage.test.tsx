@@ -2624,6 +2624,29 @@ describe('Rooms page', () => {
     expect(roomsApi.discussions).not.toHaveBeenCalled()
   })
 
+  it('reconciles an old waiting run even after its message leaves the latest page', async () => {
+    vi.mocked(roomsApi.get).mockResolvedValue(detailWithReviewer)
+    const message = (id: string, runId: string) => ({
+      id, space_id: 'space-1', session_id: 'session-1', user_id: 'user-1', sender_agent_id: null,
+      role: 'user' as const, content: id, metadata_json: { run_ids: [runId] }, created_at: '2026-09-24T10:00:00.000Z',
+    })
+    vi.mocked(roomsApi.messages).mockResolvedValueOnce({ items: [message('old-request', 'old-wait')], task_group_ids: [], limit: 50, offset: 0 })
+      .mockResolvedValue({ items: [message('replacement-request', 'replacement')], task_group_ids: [], limit: 50, offset: 0 })
+    let oldReads = 0
+    vi.mocked(runsApi.get).mockImplementation(async id => ({
+      id, agent_id: 'agent-1', status: id === 'old-wait' ? (++oldReads === 1 ? 'waiting_for_dependency' : 'cancelled') : 'running',
+    }) as Run)
+    vi.mocked(runsApi.streamTurn).mockImplementation(() => new Promise(() => {}))
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    expect(await screen.findByRole('status', { name: 'Current activity' })).toHaveTextContent('Waiting for other Agents')
+    await waitFor(() => {
+      const activity = screen.getByRole('status', { name: 'Current activity' })
+      expect(activity).toHaveTextContent('Working')
+      expect(activity).not.toHaveTextContent('Waiting for other Agents')
+      expect(oldReads).toBeGreaterThan(1)
+    }, { timeout: 6500 })
+  })
+
   it.each([
     { childStatus: 'succeeded', childState: 'done', awaitingAnswer: false, folded: true },
     { childStatus: 'failed', childState: 'failed', awaitingAnswer: false, folded: false },

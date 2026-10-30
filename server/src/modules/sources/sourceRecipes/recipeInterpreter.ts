@@ -30,7 +30,7 @@ import {
 } from "../customSources/customSourceHtmlExtract.js";
 import { parseFeed, type ParsedFeedItem } from "../feedParser.js";
 import { sha256 } from "../sourceRepositoryMappers.js";
-import { effectiveCustomSourceLimits, type CustomSourceRunnerSettings } from "../customSources/customSourceRunner.js";
+import { effectiveSourceExecutionLimits, type SourceExecutionSettings } from "../sourceExecutionPolicy.js";
 
 /**
  * Level 2 Source recipe interpreter: executes a `source.recipe.v1` definition
@@ -119,14 +119,14 @@ interface SourceRecipeRunResult {
 }
 
 export async function runSourceRecipe(
-  settings: CustomSourceRunnerSettings,
+  settings: SourceExecutionSettings,
   input: SourceRecipeRunInput,
 ): Promise<SourceRecipeRunResult> {
   const sandboxRoot = join(tmpdir(), `source-recipe-${randomUUID()}`);
   const filesRoot = join(sandboxRoot, "files");
   await mkdir(filesRoot, { recursive: true });
 
-  const limits = effectiveCustomSourceLimits(settings, input.policyEnvelope.limits);
+  const limits = effectiveSourceExecutionLimits(settings, input.policyEnvelope.limits);
   const ctx: RecipeContext = {
     vars: new Map(),
     controlledFetch:input.controlledFetch,

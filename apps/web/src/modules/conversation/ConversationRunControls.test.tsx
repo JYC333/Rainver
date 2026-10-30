@@ -86,6 +86,33 @@ describe('ConversationRunControls', () => {
     runsApiMock.authorizationRequests.mockResolvedValue([])
   })
 
+  it('stops the selected old waiting run without stopping the replacement', async () => {
+    const changed = vi.fn()
+    runsApiMock.stop.mockResolvedValue({})
+    runsApiMock.get.mockResolvedValue(run({ id: 'old-wait', status: 'cancelled' }))
+    render(<ConversationScope spaceId="space-1" actionUserId="owner">
+      <ConversationActivity runs={[
+        run({ id: 'old-wait', status: 'waiting_for_dependency', instructed_by_user_id: 'owner' }),
+        run({ id: 'replacement', status: 'running', instructed_by_user_id: 'owner' }),
+      ]} turns={{}} agentName={() => 'Assistant'} onChanged={changed} />
+    </ConversationScope>)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Stop' })[0]!)
+    await waitFor(() => expect(changed).toHaveBeenCalledWith(expect.objectContaining({ id: 'old-wait', status: 'cancelled' })))
+    expect(runsApiMock.stop).toHaveBeenCalledTimes(1)
+    expect(runsApiMock.stop).toHaveBeenCalledWith('old-wait', expect.objectContaining({ spaceId: 'space-1' }))
+  })
+
+  it('does not offer per-run stop to another person or in read-only mode', () => {
+    const { rerender } = render(<ConversationScope spaceId="space-1" actionUserId="viewer">
+      <ConversationActivity runs={[run({ status: 'queued', instructed_by_user_id: 'owner' })]} turns={{}} agentName={() => 'Claude'} />
+    </ConversationScope>)
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
+    rerender(<ConversationScope spaceId="space-1" actionUserId="owner">
+      <ConversationActivity runs={[run({ status: 'queued', instructed_by_user_id: 'owner' })]} turns={{}} agentName={() => 'Claude'} allowCommands={false} />
+    </ConversationScope>)
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
+  })
+
   const quotaRun = (automatic = true) => run({ status: 'queued', owner_user_id: 'owner', output_json: {
     waiting_for_quota: { resets_at: '2026-10-22T00:00:00Z', recovery: {
       auto_continue: automatic, refused_at: '2026-10-21T22:00:00Z', intent_at: '2026-10-21T22:00:00Z',

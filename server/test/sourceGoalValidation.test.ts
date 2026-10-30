@@ -2,7 +2,7 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {goalResponseDiagnostic} from '../src/modules/sources/goals/diagnostics.js';
 import {expect,it} from 'vitest';
-import {SourceGoalBudgetSchema,SourceGoalPlanSchema} from '@rainver/protocol';
+import {SourceGoalBudgetSchema,SourceGoalPlanSchema,SourceGoalVersionWriteSchema} from '@rainver/protocol';
 import {validateGoalSample} from '../src/modules/sources/goals/validation.js';
 const options={budget:SourceGoalBudgetSchema.parse({}),includes:['robotics'],excludes:['advert']};
 const item={external_id:'one',title:'Robotics update',source_uri:'https://fixture.test/one',published_at:'2026-10-26T00:00:00Z',snapshots:[],evidence:[]};
@@ -70,3 +70,35 @@ it('supports bounded XML schema synthesis while refusing entities, unsupported m
 });
 
 it('keeps transient proof implementation identity stable across JSONB key reordering',()=>{expect(repairImplementationHash({kind:'isolated',code:'parser',sha256:'sha'})).toBe(repairImplementationHash({code:'parser',sha256:'sha',kind:'isolated'}));expect(repairImplementationHash({kind:'isolated',code:'parser',sha256:'sha'})).not.toBe(repairImplementationHash({kind:'isolated',code:'different',sha256:'sha'}));});
+
+import {trustedSearchMetadataOrigins} from '../src/modules/sources/goals/validation.js';
+it('permits undated search metadata only explicitly and never grants generated-code result origins',()=>{
+ const raw=output([{...item,published_at:null}]);expect(validateGoalSample(raw,options).ok).toBe(false);expect(validateGoalSample(raw,{...options,allowUndated:true}).ok).toBe(true);expect(validateGoalSample(output([{...item,published_at:'not-a-date'}]),{...options,allowUndated:true}).ok).toBe(false);
+ expect(trustedSearchMetadataOrigins('brave_web_search_api',{kind:'connector'},raw)).toEqual(['https://fixture.test']);expect(trustedSearchMetadataOrigins('brave_web_search_api',{kind:'isolated'},raw)).toEqual([]);expect(trustedSearchMetadataOrigins('custom_source',{kind:'connector'},raw)).toEqual([]);
+});
+
+import {validateCustomSourceHandlerOutput} from '../src/modules/sources/customSources/customSourceContractValidator.js';
+import {sourcePolicyEnvelope} from './support/customSourceFixtures.js';
+it('keeps search metadata-link permission separate from network, file and generated output authority',async()=>{
+ const base={raw:output([item]),limits:sourcePolicyEnvelope().limits,allowedNetworkOrigins:['https://api.search.test'],sandboxFilesRoot:'/tmp/no-search-files'};expect((await validateCustomSourceHandlerOutput(base)).ok).toBe(false);expect((await validateCustomSourceHandlerOutput({...base,metadataOnlyOrigins:['https://fixture.test']})).ok).toBe(true);
+ const snapshot={...item,snapshots:[{snapshot_type:'raw_html',file_path:'missing.txt',mime_type:'text/plain'}]};const checked=await validateCustomSourceHandlerOutput({...base,raw:output([snapshot]),metadataOnlyOrigins:['https://fixture.test']});expect(checked.ok).toBe(false);if(!checked.ok)expect(checked.errors.join(' ')).toContain('source_uri is outside');
+});
+
+it('upstream continuation reads only explicit connector contracts',async()=>{
+ const {upstreamContinuation}=await import('../src/modules/sources/goals/selection.js');
+ expect(upstreamContinuation({cursor:'next'})).toBe('more');expect(upstreamContinuation({cursor:null})).toBe('done');expect(upstreamContinuation({cursor:''})).toBe('done');
+ expect(upstreamContinuation({offset:20})).toBe('more');expect(upstreamContinuation({offset:null})).toBe('done');
+ expect(upstreamContinuation({more_results_available:true})).toBe('more');expect(upstreamContinuation({more_results_available:false})).toBe('done');
+ expect(upstreamContinuation({token:'x',watermark:'2026-10-26T00:00:00Z'})).toBe('unknown');expect(upstreamContinuation({})).toBe('unknown');
+});
+
+it('accepts bounded short planning titles and remains compatible with untitled plans',()=>{
+ const source={source_connection_id:'one',source_channel_id:'a',reason:'coverage',supports_history:false,implementation:{kind:'connector'}};
+ const plan={summary:'A plan',sources:[source],limitations:[]};
+ expect(SourceGoalPlanSchema.parse({...plan,title:'  Robotics  '}).title).toBe('Robotics');
+ const native={goal_id:'goal',expected_revision:0,plan:{...plan,title:'Robotics',sources:[{reason:'Coverage',supports_history:false,implementation:{kind:'agent_search',query:'robotics research'}}]}};
+ expect(SourceGoalVersionWriteSchema.parse(native).plan.title).toBe('Robotics');
+ expect(SourceGoalPlanSchema.safeParse(plan).success).toBe(true);
+ expect(SourceGoalPlanSchema.safeParse({...plan,title:'x'.repeat(61)}).success).toBe(false);
+ expect(SourceGoalPlanSchema.safeParse({...plan,title:'  '}).success).toBe(false);
+});

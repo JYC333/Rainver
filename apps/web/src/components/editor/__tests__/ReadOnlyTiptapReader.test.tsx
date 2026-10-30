@@ -37,13 +37,14 @@ describe('ReadOnlyTiptapReader', () => {
   })
 
   it('draws an annotation in its stored color but never lets the color add CSS', async () => {
+    // Placed by their quotes: a stored range is never painted unchecked.
     const annotation = (id: string, color: string, from: number, to: number) => ({
       id, space_id: 'space-1', project_id: null, document_type: 'source_item' as const, document_id: 'doc-1',
-      annotation_type: 'highlight' as const, quote_text: '', color, label: null,
+      annotation_type: 'highlight' as const, quote_text: 'Alpha beta'.slice(from - 1, to - 1), color, label: null,
       visibility: 'space_shared' as const, status: 'active' as const, anchor_state: 'verified' as const,
       created_by_user_id: 'user-2', created_at: '', updated_at: '',
       anchor_json: {
-        schema_version: 1 as const, normalizer: 'v1', quote_text: '', before_context: '', after_context: '',
+        schema_version: 1 as const, normalizer: 'v1', quote_text: 'Alpha beta'.slice(from - 1, to - 1), before_context: '', after_context: '',
         text_range: { start: 0, end: 0, unit: 'utf16' as const }, tiptap_range: { from, to },
       },
     })

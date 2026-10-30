@@ -1,3 +1,4 @@
+import * as readerDocuments from '../src/modules/sources/materialProcessing/documents.js';
 import { jobOut } from '../src/modules/sources/sourceRepositoryMappers.js';
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -481,6 +482,7 @@ describe("SourceExtractionWorker connection_scan", () => {
   });
 
   it("runs extract_text follow-up jobs after a successful full-text scan", async () => {
+    const savedDocument = vi.spyOn(readerDocuments, "saveSourceReadingDocument").mockResolvedValue({artifactId:"00000000-0000-4000-8000-000000000001",snapshotId:"00000000-0000-4000-8000-000000000002",contentHash:"body-hash"});
     const db = new ScanDb({
       connectorKey: "rss",
       capturePolicy: "extract_text",
@@ -504,9 +506,7 @@ describe("SourceExtractionWorker connection_scan", () => {
       call.sql.includes("SET status = $3") && call.params[0] !== "job-1"
     );
     expect(childFinish?.params[2]).toBe("succeeded");
-    const artifactInsert = db.calls.find((call) => call.sql.includes("INSERT INTO artifacts"));
-    expect(artifactInsert?.sql).toContain("'source_reader_document'");
-    expect(artifactInsert?.params).toContain(JSON.stringify(["json"]));
+    expect(savedDocument).toHaveBeenCalledWith(db,expect.objectContaining({document:expect.objectContaining({plain_text:expect.stringContaining('Full article text.')})}));
     const evidenceInsert = db.calls.find(call => call.sql.includes("INSERT INTO extracted_evidence"));
     expect(evidenceInsert?.sql).toContain("RETURNING id");
     expect(evidenceInsert?.params.slice(1, 8)).toEqual([
@@ -772,6 +772,7 @@ describe("SourceExtractionWorker connection_scan", () => {
   });
 
   it("retries failed extract_text jobs on manual not-modified scans", async () => {
+    vi.spyOn(readerDocuments, "saveSourceReadingDocument").mockResolvedValue({artifactId:"00000000-0000-4000-8000-000000000001",snapshotId:"00000000-0000-4000-8000-000000000002",contentHash:"body-hash"});
     const db = new ScanDb({
       connectorKey: "rss",
       capturePolicy: "extract_text",

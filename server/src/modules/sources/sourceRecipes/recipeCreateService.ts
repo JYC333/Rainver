@@ -27,7 +27,7 @@ import {
 } from "../capturePolicy.js";
 import { evaluateCustomSourceActivation } from "../customSources/customSourceCreateFlowService.js";
 import { fetchAllowedOriginResponse, guardedResponseText } from "../customSources/customSourceEndpointFetch.js";
-import { cleanupSandbox } from "../customSources/customSourceRunner.js";
+import { cleanupSourceExecutionFiles } from "../sourceExecutionPolicy.js";
 import { getSourceChannelScanTask } from "../sourceConnectionScheduler.js";
 import { resolveRequestedSourceSchedule } from "../sourceScheduleInput.js";
 import { analyzeSourceRecipe } from "./primitiveRegistry.js";
@@ -111,7 +111,7 @@ export class SourceRecipeCreateService {
       sourceName: optionalString(body.name) ?? endpointUrl,
       primaryEndpointContent: contentSample,
     });
-    await cleanupSandbox(preview.sandbox_files_root).catch(() => undefined);
+    await cleanupSourceExecutionFiles(preview.sandbox_files_root).catch(() => undefined);
 
     return {
       source_type: sourceType,

@@ -23,6 +23,10 @@ in `SourceGoalPage.tsx`, goal management and explicit legacy-source compatibilit
 mapping. See [Source Goals](../architecture/SOURCE_GOALS.md) for authority,
 API, runtime, repair, coverage and remaining deployment acceptance boundaries.
 
+See [Source material processing](../architecture/SOURCE_MATERIAL_PROCESSING.md) for
+the unified query/saved-link submission, content writer, recovery and Source-owner
+text-storage decision.
+
 ## Purpose
 
 Sources is the canonical boundary for raw source material before it becomes
@@ -64,6 +68,14 @@ The normal Sources frontend should not render source item feeds, extracted
 evidence feeds, or run-history tables. It may show scan/configuration status
 needed to manage subscriptions; detailed run rows remain backend audit/state
 for jobs, rules, and troubleshooting.
+When a Source management action receives 403/404, the UI drops the previous
+Source state and rereads the currently authorized list. A successful read can
+restore a Source whose management permission alone was denied. A read denied
+with 401/403/404 also clears prior state; an ordinary refresh network failure
+keeps the last readable snapshot for retry.
+Source management pages reset for the current user and Space, and the detail
+page also resets for its Source, so earlier reads cannot repopulate a different
+scope.
 
 ## Owns
 
@@ -395,10 +407,14 @@ Capture policy behavior:
   HTML/PDF snapshot, and derive reader text from that archived copy.
 
 Custom Source backend support is implemented for draft connection creation,
-deterministic handler generation, fixture testing, inside-envelope activation,
+explicit declarative pipeline creation, fixture testing, inside-envelope activation,
 manual and scheduled scan queueing, handler-run history, and trusted endpoint
-fetching into the handler input. `typescript_node` remains the generated-code
-Level 3 fallback. `declarative_pipeline_v1` handler versions stay
+fetching into the handler input. Retained `typescript_node` Level 3 versions
+are readable but execution is permanently blocked (`handler_language_removed`);
+the old generator, code-artifact writer and runner have been removed. Handler
+creation requires explicit `generation_mode: "pipeline"`; old-code repair returns
+409 before generating or mutating anything. No setting, historical approval or
+rollback restores code execution. `declarative_pipeline_v1` handler versions stay
 readable and executable. An operator can explicitly bridge one
 into a new paused Level 2 recipe source and draft `source_recipe_versions`
 row. New normal source creation uses Source Recipes, not pipeline-as-handler
@@ -415,10 +431,9 @@ deltas create a `source_recipe_activation` proposal; accepting the proposal
 activates the recipe version through the proposal applier, and rejecting it
 releases the version back to draft. Manual and scheduled recipe scans enqueue
 Sources extraction jobs and materialize validated recipe output through the
-shared Sources materializer. Source Detail presents product tabs
-(Overview, Plan, Preview, Post-processing, Advanced). It keeps handler
-versions, raw JSON, and policy/sandbox details under Advanced; user-facing item
-reading and brief review happen in Library.
+shared Sources materializer. Source Detail manages origin and monitor settings;
+handler/recipe authoring APIs remain backend-only. User-facing item reading and
+brief review happen in Library.
 
 Manual URL source capture is a separate item creation route. It can optionally attach
 the saved URL to a `SourceConnection` and queue content extraction. A manually
@@ -631,6 +646,14 @@ owns that job, the rule cursor, and the run audit rows:
   destination against the source connection's consent and egress policy. A
   denied source egress, including the space external-egress switch for external
   providers, fails the post-processing run before source content leaves Sources.
+- Both window-selected and explicitly named post-processing inputs revalidate
+  the viewer's current full-content access through the canonical Source item
+  gate, including the live connection and current or historical reading
+  eligibility. Withdrawal of the connection removes those inputs; a stored
+  item id or copied visibility is not continuing permission to process it.
+  Oversight is excluded from both visibility and effective-level checks:
+  an administrator's audit access cannot upgrade a summary-only input for
+  copying into derived content.
 - Post-processing agent output is consumed as structured
   `source_post_processing.result.v1`; invalid structure fails the run and does
   not advance the rule cursor. A run's outputs (digest and summary artifacts,
@@ -801,21 +824,21 @@ owner/admin maintenance uses the Sources-owned
 
 ## Custom Source Boundary
 
-Custom Source extends `SourceConnection` with generated, source-specific
+Custom Source extends `SourceConnection` with source-specific
 handler versions. A handler run is a controlled way to produce candidate Sources
 output, not a way to mutate core product state.
 
-Generated/template handler expansion (`typescript_node`) is frozen as the
-Level 3 advanced fallback — no new handler languages or arbitrary code
-execution features; bug/safety fixes only. See
-[Sources Custom Source Handlers](../architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md#level-3-generated-handlers)
-for the Level 1/2/3 split.
+The old `typescript_node` handler generator and executor are removed; their
+persisted language value and historical records remain readable. Fixture/live
+tests and scheduled/manual scans refuse these versions before credential
+resolution or endpoint fetch. Repair refuses them before generation or state
+changes. New Goal-generated code uses only the isolated Host contract in ADR
+0026; declarative pipelines remain executable. Shared execution settings, limits,
+result types and temporary-file cleanup live in `sources/sourceExecutionPolicy.ts`.
+See [Sources Custom Source Handlers](../architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md#level-3-generated-handlers).
 
-Handler code may only read `input.json`, write `output.json`, write files under
-sandbox `files/`, and emit captured logs. It must not write
-database rows, Memory, Knowledge, Wiki, Tasks, Project state, policy,
-credentials, source repository files, or files outside `output.json` and
-sandbox `files/`.
+The interpreter's output may include bounded snapshot files, never direct writes
+to Memory, Knowledge, Wiki, Tasks, Project state, policy or credentials.
 
 The server validates handler output and materializes only accepted data into
 Sources-owned tables and artifacts.
@@ -824,6 +847,13 @@ Sources-owned tables and artifacts.
 
 Source consent and source policy govern readers, subjects, agents, model
 egress, retention, derived writes, trust, and allowed import targets.
+
+Extraction Job metadata can contain source content. Its list and total use
+the same current full-content gate on every named Item/Connection parent;
+jobs with no authorizable parent are hidden. Manual execution checks that gate
+without oversight before starting and again before returning the result, and
+connection scans additionally require the existing connection-management
+authority. Knowing a job id or belonging to its Space is not sufficient.
 
 Custom Source policy adds a handler policy envelope for network origins,
 credentials, runtime language, browser automation, shell, dependency
@@ -869,7 +899,8 @@ Policy envelope behavior:
   place) from the active version's manifest plus overrides; auto-activates
   only when the envelope is unchanged and Space policy allows same-envelope
   repair auto-apply, otherwise creates a proposal. Rollback activates a
-  previously-active version directly, no proposal.
+  previously-active declarative version directly, no proposal; removed code
+  versions are rejected before activation.
 - Source Recipe: dry-run-tested recipe versions activate directly when the
   policy envelope is within bounds; envelope broadening creates a
   `source_recipe_activation` proposal and binds the recipe version to it until
@@ -889,8 +920,8 @@ Policy envelope behavior:
 - Source-derived Memory and Knowledge writes remain proposal-gated.
 - Evidence selected for run context goes through `EvidenceLink`; Knowledge
   `Source` is not selected directly into run context.
-- Generated handler execution fails closed when runner support is unavailable or
-  disabled.
+- Legacy generated handler execution is always blocked; new Goal-generated
+  code fails closed when its isolated Host capability or policy is unavailable.
 - Source Recipe execution uses server-owned primitives, not untrusted code, and
   still fails closed through the same policy/output validation boundary.
 
@@ -1164,8 +1195,8 @@ ScheduleRuleFields and MonitoringScheduleFields frontend authoring components
 are removed. Backend taxonomy, compilers/search, legacy APIs, Source display,
 subscriptions, history and necessary operational settings remain available.
 See [SOURCE_GOALS](../architecture/SOURCE_GOALS.md) for canonical Session/Run
-association, server-authoritative preview/start, compatibility mapping and the
-single scheduler owner. No real instance migration occurs from opening a page.
+association, one follow confirmation (with optional preview and manual save),
+compatibility mapping and the single scheduler owner. No real instance migration occurs from opening a page.
 
 ### Isolated Sources execution foundation
 

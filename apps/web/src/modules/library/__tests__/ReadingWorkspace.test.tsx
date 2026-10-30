@@ -1,33 +1,39 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { toast } from 'sonner'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReadingItem, ReadingPage } from '@rainver/protocol'
 import ReadingWorkspace, { ReadingPreview } from '../ReadingWorkspace'
-import { informationDigestsApi } from '../../../api/client'
+import { sourceGoalsApi,informationDigestsApi } from '../../../api/client'
 import { useReading } from '../useReading'
 import { ProjectReadingPreference } from '../ReadingPreferences'
+import { readingReturnTo } from '../readingLinks'
+
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() } }))
 
 // Empty guidance has its own source/collection integration coverage.
 vi.mock('../ReadingStart', () => ({ ReadingStart: () => <p>No pending recommendations</p> }))
 let space = 'space-a'
 vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpaceId: space, preferredSpaceId: space }) }))
 vi.mock('../../../core/spaceNav', async () => {
-  const { Link } = await import('react-router-dom')
-  return { SpaceLink: Link }
+  const { Link, useNavigate } = await import('react-router-dom')
+  return { SpaceLink: Link, useSpaceNavigate: useNavigate }
 })
-vi.mock('../../../api/client', () => ({ informationDigestsApi: { reading: vi.fn(), readingState: vi.fn(), readingPreference: vi.fn(), setReadingPreference: vi.fn() }, projectsApi: { list: vi.fn().mockResolvedValue({ items: [{ id: 'project-a', name: 'Project A' }] }) }, projectMonitoringApi: { state: vi.fn().mockResolvedValue({ active: null, latest_run: null }) } }))
-const item: ReadingItem = { key: 'server-group', source_item_id: 'article', source_item_ids: ['article','copy'], title: 'A retained recommendation', summary: 'Frozen summary', source_uri: null, occurred_at: '2026-01-01T00:00:00Z', access_level: 'full', reader_origin: 'project', read_status: 'unread', dismissed: false, available_at: '2026-01-02T00:00:00Z', contributions: [{ delivery_id: 'first', source_item_id:'article',kind:'project_initial',project_id:'project-a',project_name:'Project A',digest_id:null,digest_date:null,timezone:null,available_at:'2026-01-02T00:00:00Z',position:0,section:null,summary:null,rationale:'Original initial reason' }, { delivery_id:'daily',source_item_id:'copy',kind:'personal_digest',project_id:null,project_name:null,digest_id:'edition',digest_date:'2026-01-03',timezone:'Asia/Shanghai',available_at:'2026-01-04T00:00:00Z',position:0,section:'interest',summary:null,rationale:'Original daily reason' }], material_links:[] }
+vi.mock('../../../api/client', () => ({ sourceGoalsApi:{list:vi.fn().mockResolvedValue({goals:[]})},informationDigestsApi: { reading: vi.fn(), readingState: vi.fn(), readingPreference: vi.fn(), setReadingPreference: vi.fn() }, projectsApi: { list: vi.fn().mockResolvedValue({ items: [{ id: 'project-a', name: 'Project A' }] }) }, projectMonitoringApi: { state: vi.fn().mockResolvedValue({ active: null, latest_run: null }) } }))
+const item: ReadingItem = { key: 'server-group', source_item_id: 'article', source_item_ids: ['article','copy'], title: 'A retained recommendation', summary: 'Frozen summary', source_uri: null, occurred_at: '2026-01-01T00:00:00Z', access_level: 'full', reader_origin: 'project', read_status: 'unread', dismissed: false, available_at: '2026-01-02T00:00:00Z', contributions: [{ delivery_id: 'first', source_item_id:'article',kind:'project_initial',project_id:'project-a',project_name:'Project A',digest_id:null,digest_date:null,timezone:null,available_at:'2026-01-02T00:00:00Z',position:0,section:null,summary:null,rationale:'Original initial reason' }, { delivery_id:'daily',source_item_id:'copy',kind:'personal_digest',project_id:null,project_name:null,digest_id:'edition',digest_date:'2026-01-03',timezone:'Asia/Shanghai',available_at:'2026-01-04T00:00:00Z',position:0,section:'interest',summary:null,rationale:'Original daily reason' }], material_links:[], topics:[] }
 const page = (items: ReadingItem[] = [item], next_cursor: string | null = null): ReadingPage => ({ items, total: items.length, next_cursor })
 function deferred<T>() { let resolve!: (v:T) => void; const promise = new Promise<T>(r => { resolve = r }); return { promise, resolve } }
 function QueryLocation() { return <output data-testid="query">{useLocation().search}</output> }
 const ui = (projectId?: string) => <MemoryRouter><ReadingWorkspace projectId={projectId} /><QueryLocation /></MemoryRouter>
-beforeEach(() => { vi.clearAllMocks(); space = 'space-a'; vi.mocked(informationDigestsApi.reading).mockResolvedValue(page()); vi.mocked(informationDigestsApi.readingState).mockResolvedValue({updated:2}); vi.mocked(informationDigestsApi.readingPreference).mockResolvedValue({show_in_my_reading:false}) })
+beforeEach(() => { vi.clearAllMocks(); window.sessionStorage.clear(); window.localStorage.clear(); space = 'space-a'; vi.mocked(informationDigestsApi.reading).mockResolvedValue(page()); vi.mocked(informationDigestsApi.readingState).mockResolvedValue({updated:2}); vi.mocked(informationDigestsApi.readingPreference).mockResolvedValue({show_in_my_reading:false}) })
 describe('unified reading presentation', () => {
   it('renders server grouping, all original reasons and distinct initial/edition times, with Reader origin', async () => {
     render(ui())
     const link = await screen.findByRole('link', { name: item.title })
     expect(link).toHaveAttribute('href', expect.stringContaining('from=project'))
-    expect(screen.getAllByText('Original initial reason')).toHaveLength(1)
+    expect(screen.getByText('Original initial reason')).not.toBeVisible()
+    fireEvent.click(screen.getByText('Why this is here'))
+    expect(screen.getByText('Original initial reason')).toBeVisible()
     expect(screen.getByText('Original daily reason')).toBeInTheDocument()
     expect(screen.getByRole('link', {name:/Edition:.*Asia\/Shanghai/})).toHaveAttribute('href','/library/digests?date=2026-01-03')
     expect(informationDigestsApi.reading).toHaveBeenCalledWith('space-a',expect.objectContaining({view:'pending'}),undefined,expect.objectContaining({signal:expect.any(AbortSignal)}))
@@ -210,3 +216,217 @@ it('keeps the current reading mounted during post-save refresh and clears it on 
   await screen.findByRole('alert')
   expect(screen.queryByText(item.title)).not.toBeInTheDocument()
 })
+
+it('keeps goal management accessible without expanding saved setup cards',async()=>{vi.mocked(sourceGoalsApi.list).mockResolvedValueOnce({goals:[{id:'saved-goal',space_id:space,project_id:null,status:'needs_information',intent_json:{intent:'Follow agent products'},execution:{phase:'failed'}}]} as never);render(ui());await screen.findByRole('link',{name:'Following (0)'});expect(screen.getByRole('link',{name:'Following (0)'})).toHaveAttribute('href','/library/reading/goals');expect(screen.queryByText('Follow agent products')).not.toBeInTheDocument()});
+it('M2: Reading card labels Agent submissions without claiming independent verification',async()=>{
+ vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([{...item,result_provenance:'agent_provided_unverified'}]));render(ui());await screen.findByText('Agent-provided · Not independently verified');expect(screen.getByRole('link',{name:item.title})).toBeInTheDocument();
+});
+
+it('keeps many goals in one toolbar destination with following count',async()=>{
+ vi.mocked(sourceGoalsApi.list).mockResolvedValue({goals:Array.from({length:30},(_,n)=>({id:'g'+n,space_id:space,project_id:null,status:n<28?'running':'paused',compatibility_json:n===0?{execution_mode:'manual'}:{},intent_json:{intent:'Long objective '+n},execution:{phase:n===0?'working':n===1?'queued':'plan_ready'}}))} as never);
+ render(ui());await screen.findByRole('link',{name:'Following (27)'});expect(screen.getAllByRole('link',{name:'Following (27)'})).toHaveLength(1);expect(screen.queryByText(/Long objective/)).not.toBeInTheDocument();const tools=screen.getByRole('navigation',{name:'Reading views'});expect(within(tools).getByRole('link',{name:'Following (27)'})).toBeInTheDocument();expect(within(tools).getByRole('link',{name:'Source management'})).toBeInTheDocument();
+});
+
+const topicGoal=(id:string,intent:string,state:Record<string,unknown>,over:Record<string,unknown>={})=>({id,space_id:space,project_id:null,status:'running',intent_json:{intent},compatibility_json:{},follow_state:{intent:'following',phase:'scheduled',...state},...over})
+it('counts confirmed following, including background preparation, but never drafts, paused or manual-save topics',async()=>{
+ vi.mocked(sourceGoalsApi.list).mockResolvedValue({goals:[topicGoal('a','Preparing topic',{phase:'preparing'},{status:'draft'}),topicGoal('b','Followed topic',{}),topicGoal('c','Paused topic',{intent:'paused',phase:'stopped'},{status:'paused'}),topicGoal('d','Draft topic',{intent:'unconfirmed',phase:'none'},{status:'preview_ready'}),topicGoal('e','Manual topic',{},{compatibility_json:{execution_mode:'manual'}})]} as never)
+ render(ui());expect(await screen.findByRole('link',{name:'Following (2)'})).toBeInTheDocument()
+})
+it('filters Reading by one topic with important updates by default, shows why, and returns from Reader to the same filter',async()=>{
+ vi.mocked(sourceGoalsApi.list).mockResolvedValue({goals:[topicGoal('topic-a','Robot learning',{}),topicGoal('topic-b','Other topic',{})]} as never)
+ const linked={...item,topics:[{goal_id:'topic-a',project_id:null,title:'Robot learning',selection_status:'important' as const,selection_reason:'A new benchmark result',judged_by:'collection_agent' as const,delivery_kind:'new_publication' as const,change_evidence_url:null},{goal_id:'topic-b',project_id:null,title:'Other topic',selection_status:'not_selected' as const,selection_reason:null,judged_by:null,delivery_kind:'baseline' as const,change_evidence_url:null}]}
+ vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([linked]))
+ render(ui());await screen.findByRole('link',{name:item.title});expect(screen.getByRole('link',{name:'Robot learning'})).toHaveAttribute('href','/library/reading/goals/topic-a');expect(screen.getByRole('link',{name:'Other topic'})).toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'Topic'}));fireEvent.click(await screen.findByRole('option',{name:'Robot learning'}))
+ await waitFor(()=>expect(informationDigestsApi.reading).toHaveBeenLastCalledWith('space-a',expect.objectContaining({view:'pending',topic:'topic-a',topic_selection:'important'}),undefined,expect.anything()))
+ expect(screen.getByTestId('query')).toHaveTextContent('?topic=topic-a')
+ await waitFor(()=>expect(screen.queryByRole('link',{name:'Other topic'})).not.toBeInTheDocument());expect(screen.getByText('A new benchmark result')).toBeInTheDocument();expect(screen.getByText('New')).toBeInTheDocument()
+ expect(screen.getByRole('link',{name:item.title}).getAttribute('href')).toContain('returnTo=%2Flibrary%2Freading%3Ftopic%3Dtopic-a')
+ fireEvent.click(screen.getByRole('button',{name:'All collected'}));await waitFor(()=>expect(informationDigestsApi.reading).toHaveBeenLastCalledWith('space-a',expect.objectContaining({topic:'topic-a',topic_selection:'all'}),undefined,expect.anything()))
+ expect(screen.getByTestId('query')).toHaveTextContent('?topic=topic-a&topic_selection=all')
+ fireEvent.click(screen.getByRole('button',{name:'Read'}));await waitFor(()=>expect(screen.getByRole('link',{name:item.title}).getAttribute('href')).toContain('returnTo=%2Flibrary%2Freading%3Fview%3Dread%26topic%3Dtopic-a%26topic_selection%3Dall'))
+})
+it('shows a topic-specific empty state instead of first-use guidance',async()=>{
+ vi.mocked(sourceGoalsApi.list).mockResolvedValue({goals:[topicGoal('topic-a','Robot learning',{})]} as never);vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([]))
+ render(<MemoryRouter initialEntries={['/?topic=topic-a']}><ReadingWorkspace/></MemoryRouter>)
+ expect(await screen.findByText('No important updates yet. Switch to All collected to see other matching material.')).toBeInTheDocument();expect(screen.queryByText('No pending recommendations')).not.toBeInTheDocument()
+})
+it('returns from Reader to the submitted search, and the return path passes the bounded check', async () => {
+ render(<MemoryRouter initialEntries={['/?view=all&q=%E6%9C%BA%E5%99%A8+%E5%AD%A6%E4%B9%A0+%26+C%2B%2B']}><ReadingWorkspace/></MemoryRouter>)
+ const href = (await screen.findByRole('link', { name: item.title })).getAttribute('href')!
+ const returnTo = new URL(href, 'https://local.test').searchParams.get('returnTo')!
+ expect(new URLSearchParams(returnTo.split('?')[1]).get('q')).toBe('机器 学习 & C++')
+ expect(readingReturnTo(returnTo)).toBe(returnTo)
+})
+
+describe('Stage 3 list controls', () => {
+  const second: ReadingItem = { ...item, key: 'second', source_item_id: 'second', source_item_ids: ['second'], title: 'Second recommendation' }
+  it('sorts oldest first as a server query that the Reader returns to', async () => {
+    vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([item, second]))
+    render(ui())
+    await screen.findByRole('link', { name: item.title })
+    fireEvent.click(screen.getByRole('button', { name: 'Sort' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Oldest first' }))
+    await waitFor(() => expect(informationDigestsApi.reading).toHaveBeenLastCalledWith('space-a', expect.objectContaining({ sort: 'oldest' }), undefined, expect.anything()))
+    expect(screen.getByTestId('query')).toHaveTextContent('?sort=oldest')
+    const href = (await screen.findByRole('link', { name: item.title })).getAttribute('href') ?? ''
+    const returnTo = new URLSearchParams(href.split('?')[1]).get('returnTo')
+    expect(returnTo).toBe('/library/reading?sort=oldest')
+    expect(readingReturnTo(returnTo)).toBe(returnTo)
+  })
+
+  it('moves between rows with the arrow keys and remembers a compact list', async () => {
+    vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([item, second]))
+    const { unmount } = render(ui())
+    await screen.findByRole('link', { name: item.title })
+    const [first, next] = screen.getAllByRole('listitem').filter(row => row.hasAttribute('data-reading-row'))
+    first.focus()
+    fireEvent.keyDown(first, { key: 'ArrowDown' })
+    expect(next).toHaveFocus()
+    fireEvent.keyDown(next, { key: 'Home' })
+    expect(first).toHaveFocus()
+    fireEvent.click(screen.getByRole('button', { name: 'Compact' }))
+    expect(screen.getByRole('button', { name: 'Compact' })).toHaveAttribute('aria-pressed', 'true')
+    unmount()
+    render(ui())
+    await screen.findByRole('link', { name: item.title })
+    expect(screen.getByRole('button', { name: 'Compact' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('comes back to the opened item after the Reader, reloading as many rows as were open', async () => {
+    const many = Array.from({ length: 30 }, (_, n) => ({ ...item, key: `row-${n}`, source_item_id: `row-${n}`, source_item_ids: [`row-${n}`], title: `Row ${n}` }))
+    const later = { ...item, key: 'row-40', source_item_id: 'row-40', source_item_ids: ['row-40'], title: 'Row 40' }
+    window.sessionStorage.setItem('rainver:reading-return', JSON.stringify({ spaceId: 'space-a', returnTo: '/library/reading', key: 'row-40', loaded: 45, at: Date.now() }))
+    vi.mocked(informationDigestsApi.reading).mockResolvedValueOnce(page(many, 'c1')).mockResolvedValueOnce(page([...many, later], null))
+    render(ui())
+    await screen.findByRole('link', { name: 'Row 40' })
+    expect(informationDigestsApi.reading).toHaveBeenLastCalledWith('space-a', expect.objectContaining({ limit: 45 }), undefined, expect.anything())
+    await waitFor(() => expect(screen.getByRole('listitem', { name: 'Row 40' })).toHaveFocus())
+  })
+
+  it('says so when the opened item is no longer in the list', async () => {
+    window.sessionStorage.setItem('rainver:reading-return', JSON.stringify({ spaceId: 'space-a', returnTo: '/library/reading', key: 'gone', loaded: 1, at: Date.now() }))
+    render(ui())
+    expect(await screen.findByText(/no longer in this list/)).toBeInTheDocument()
+  })
+
+  it('labels the list search as a search of this list, not of the text or the document', async () => {
+    render(ui())
+    expect(await screen.findByRole('textbox', { name: 'Search this list’s titles, summaries and sources (not full text)' })).toBeInTheDocument()
+  })
+})
+
+describe('Reading item preview', () => {
+  it('previews the focused row from authorized list data, while preserving the Reader link', async () => {
+    render(ui())
+    const row = await screen.findByRole('listitem', { name: item.title })
+    fireEvent.focus(row)
+    const preview = within(screen.getByRole('complementary', { name: 'Preview' }))
+    expect(preview.getByRole('heading', { name: item.title })).toBeInTheDocument()
+    expect(preview.getByText('Original initial reason')).toBeInTheDocument()
+    expect(preview.getByRole('link', { name: 'Open article' })).toHaveAttribute('href', expect.stringContaining('/library/items/article'))
+  })
+
+  it('never offers full-text navigation from a summary-only preview and clears on query changes', async () => {
+    vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([{ ...item, access_level: 'summary' }]))
+    render(ui())
+    fireEvent.focus(await screen.findByRole('listitem', { name: item.title }))
+    const preview = within(screen.getByRole('complementary', { name: 'Preview' }))
+    expect(preview.queryByRole('link', { name: 'Open article' })).not.toBeInTheDocument()
+    expect(preview.getByText('Only the summary is available; full text cannot be opened.')).toBeInTheDocument()
+    vi.mocked(informationDigestsApi.reading).mockImplementation(() => new Promise(() => {}))
+    fireEvent.click(screen.getByRole('button', { name: 'Read' }))
+    await waitFor(() => expect(preview.queryByRole('heading', { name: item.title })).not.toBeInTheDocument())
+  })
+})
+
+
+describe('Reading state undo', () => {
+  it('keeps Undo available after failure and prevents Sonner from closing it early', async () => {
+    render(ui())
+    fireEvent.click(await screen.findByRole('button', { name: 'Mark read' }))
+    await waitFor(() => expect(toast.success).toHaveBeenCalled())
+    const options = vi.mocked(toast.success).mock.calls[0][1] as unknown as { action: { onClick: (event: { preventDefault: () => void }) => Promise<void> } }
+    vi.mocked(informationDigestsApi.readingState).mockRejectedValueOnce(new Error('offline'))
+    const preventDefault = vi.fn()
+    await act(async () => options.action.onClick({ preventDefault }))
+    expect(preventDefault).toHaveBeenCalledOnce()
+    expect(toast.dismiss).not.toHaveBeenCalled()
+    await act(async () => options.action.onClick({ preventDefault }))
+    expect(informationDigestsApi.readingState).toHaveBeenCalledTimes(3)
+    expect(toast.dismiss).toHaveBeenCalledOnce()
+  })
+
+  it('an old Undo cannot bypass a currently pending mutation', async () => {
+    const other = { ...item, key: 'second', source_item_id: 'second', title: 'Second' }
+    vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([item, other]))
+    render(ui())
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Mark read' }))[0])
+    await waitFor(() => expect(toast.success).toHaveBeenCalled())
+    const options = vi.mocked(toast.success).mock.calls[0][1] as unknown as { action: { onClick: () => Promise<void> } }
+    const pending = deferred<{ updated: number }>()
+    vi.mocked(informationDigestsApi.readingState).mockReturnValueOnce(pending.promise)
+    fireEvent.click(screen.getAllByRole('button', { name: 'Mark read' })[1])
+    await act(async () => options.action.onClick())
+    expect(informationDigestsApi.readingState).toHaveBeenCalledTimes(2)
+    await act(async () => pending.resolve({ updated: 1 }))
+    await act(async () => options.action.onClick())
+    expect(informationDigestsApi.readingState).toHaveBeenCalledTimes(3)
+  })
+
+  it('undoes setting aside through the state API', async () => {
+    render(ui())
+    fireEvent.click(await screen.findByRole('button', { name: 'Set aside for me' }))
+    await waitFor(() => expect(toast.success).toHaveBeenCalled())
+    const options = vi.mocked(toast.success).mock.calls[0][1] as unknown as { action: { onClick: () => Promise<void> } }
+    await act(async () => options.action.onClick())
+    expect(informationDigestsApi.readingState).toHaveBeenLastCalledWith('space-a', 'article', { dismissed: false }, undefined)
+  })
+
+  it('undoes a confirmed read state through the real state API, once', async () => {
+    render(ui())
+    fireEvent.click(await screen.findByRole('button', { name: 'Mark read' }))
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Marked as read', expect.anything()))
+    const options = vi.mocked(toast.success).mock.calls[vi.mocked(toast.success).mock.calls.length - 1]?.[1] as unknown as { action: { onClick: () => Promise<void> } }
+    await act(async () => { await options.action.onClick(); await options.action.onClick() })
+    expect(informationDigestsApi.readingState).toHaveBeenCalledTimes(2)
+    expect(informationDigestsApi.readingState).toHaveBeenLastCalledWith('space-a', 'article', { read_status: item.read_status }, undefined)
+  })
+  it('offers no successful undo notification for a refused update', async () => {
+    vi.mocked(informationDigestsApi.readingState).mockRejectedValueOnce(new Error('denied'))
+    render(ui())
+    fireEvent.click(await screen.findByRole('button', { name: 'Mark read' }))
+    await screen.findByRole('alert')
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+})
+
+
+it('does not apply an old undo after leaving and returning to the same list view', async () => {
+  render(ui())
+  fireEvent.click(await screen.findByRole('button', { name: 'Mark read' }))
+  await waitFor(() => expect(toast.success).toHaveBeenCalled())
+  const options = vi.mocked(toast.success).mock.calls[0][1] as unknown as { action: { onClick: () => Promise<void> } }
+  fireEvent.click(screen.getByRole('button', { name: 'Read' }))
+  await waitFor(() => expect(screen.getByTestId('query')).toHaveTextContent('view=read'))
+  fireEvent.click(screen.getByRole('button', { name: 'To read' }))
+  await waitFor(() => expect(screen.getByTestId('query')).not.toHaveTextContent('view=read'))
+  await act(async () => { await options.action.onClick() })
+  expect(informationDigestsApi.readingState).toHaveBeenCalledTimes(1)
+})
+
+it('main Reading replaces only unread arrival status, keeping the existing metadata badge count',async()=>{
+ const link={goal_id:'topic-a',project_id:null,title:'Following',selection_status:'important' as const,selection_reason:null,judged_by:'collection_agent' as const,delivery_kind:'unknown_freshness' as const,new_in_latest_collection:true,change_evidence_url:null};
+ const row=(key:string,read_status:ReadingItem['read_status'],fresh:boolean):ReadingItem=>({...item,key,source_item_id:key,source_item_ids:[key],title:key,contributions:[],topics:[{...link,new_in_latest_collection:fresh}],read_status,result_provenance:'agent_provided_unverified'});
+ vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([row('Latest article','unread',true),row('Older article','unread',false),row('Opened article','skimmed',true),row('Read article','read',true)]));render(ui());
+ const fresh=await screen.findByRole('listitem',{name:'Latest article'});const old=screen.getByRole('listitem',{name:'Older article'});
+ expect(within(fresh).getByText('Just collected')).toBeVisible();expect(within(fresh).queryByText('Unread')).not.toBeInTheDocument();expect(within(old).getByText('Unread')).toBeVisible();
+ expect(fresh.querySelectorAll('[class*="rounded-full"]').length).toBe(old.querySelectorAll('[class*="rounded-full"]').length);
+ expect(within(screen.getByRole('listitem',{name:'Opened article'})).queryByText('Just collected')).not.toBeInTheDocument();expect(within(screen.getByRole('listitem',{name:'Read article'})).queryByText('Just collected')).not.toBeInTheDocument();
+ expect(fresh.querySelector('details')).not.toHaveAttribute('open');
+});
+it('a filtered Reading topic does not borrow a new-arrival marker from another topic',async()=>{
+ const base={project_id:null,title:'Following',selection_status:'important' as const,selection_reason:null,judged_by:null,delivery_kind:'baseline' as const,change_evidence_url:null};
+ vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([{...item,topics:[{...base,goal_id:'topic-a'},{...base,goal_id:'topic-b',new_in_latest_collection:true}]}]));
+ render(<MemoryRouter initialEntries={['/?topic=topic-a']}><ReadingWorkspace/></MemoryRouter>);const card=await screen.findByRole('listitem',{name:item.title});expect(within(card).getByText('Unread')).toBeVisible();expect(within(card).queryByText('Just collected')).not.toBeInTheDocument();
+});

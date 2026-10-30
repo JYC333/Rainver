@@ -7,7 +7,7 @@ import {
   type GuardedResponse,
   type OutboundGuard,
 } from "../outboundUrlSafety.js";
-import { effectiveCustomSourceLimits, type CustomSourceRunnerSettings } from "./customSourceRunner.js";
+import { effectiveSourceExecutionLimits, type SourceExecutionSettings } from "../sourceExecutionPolicy.js";
 
 /**
  * Shared by the create-flow test path and the scan worker's live path — both
@@ -38,14 +38,14 @@ interface CustomSourceFetchOptions {
 
 export async function fetchCustomSourceEndpointHtml(
   endpointUrl: string | null,
-  settings: CustomSourceRunnerSettings,
+  settings: SourceExecutionSettings,
   /** Shared envelope fields — both the Level 3 handler envelope and the Level 2 recipe envelope satisfy this. */
   policyEnvelope: SourcePolicyEnvelope,
   credential: CustomSourceFetchCredential | null = null,
   guard?: OutboundGuard,
 ): Promise<string> {
   if (!endpointUrl) return "";
-  const maxBytes = effectiveCustomSourceLimits(settings, policyEnvelope.limits).max_download_bytes;
+  const maxBytes = effectiveSourceExecutionLimits(settings, policyEnvelope.limits).max_download_bytes;
   const response = await fetchAllowedOriginResponse(endpointUrl, policyEnvelope.allowed_network_origins, {
     credential,
     maxDownloadBytes: maxBytes,
@@ -56,11 +56,8 @@ export async function fetchCustomSourceEndpointHtml(
 }
 
 /**
- * Shared by every Custom Source code path that ever performs a live fetch —
- * the code-template mode's single pre-fetch (`fetchCustomSourceEndpointHtml`
- * above) and the declarative pipeline interpreter's `fetch_page`/
- * `follow_link`/`download_asset`/`paginate` steps
- * (`customSourcePipelineInterpreter.ts`), plus the Recipe interpreter.
+ * Shared live-fetch boundary for endpoint prefetch, declarative pipeline
+ * fetch/follow/download/pagination steps, and the Recipe interpreter.
  */
 export async function fetchAllowedOriginResponse(
   url: string,

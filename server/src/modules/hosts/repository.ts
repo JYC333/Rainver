@@ -421,7 +421,9 @@ export class PgHostRepository {
   ): Promise<{ ok: true; run: RunForUpload } | { ok: false; reason: HostUploadRefusal }> {
     const run = await tx.query<RunForUpload>(
       `SELECT r.id, r.space_id, r.owner_user_id, r.project_id, r.project_folder_id,
-              r.workspace_location_id
+              r.workspace_location_id,
+              (r.required_sandbox_level = 'read_only'
+                OR r.contract_snapshot_json->>'workspace_access' = 'read') AS read_only
          FROM runs r
          LEFT JOIN workspace_locations wl ON wl.id = r.workspace_location_id
          LEFT JOIN agent_runtime_profiles arp
@@ -484,6 +486,13 @@ export class PgHostRepository {
       // Recorded first and on its own: a Run whose diff could not be captured
       // still left its checkout somewhere.
       if (input.git_after) await this.recordGitAfter(tx, run, input.git_after);
+      // A read-only review changed nothing it can own: any difference in its
+      // directory is someone else's, so it is never stored as this Run's
+      // change. What it records is the version it read.
+      if (run.read_only) {
+        await this.recordReviewBasis(tx, run, input);
+        return { ok: true, result: { artifact_id: null } };
+      }
       if (input.diff === null) return { ok: true, result: { artifact_id: null } };
       const id = randomUUID();
       const now = new Date().toISOString();
@@ -515,6 +524,35 @@ export class PgHostRepository {
       );
       return { ok: true, result: { artifact_id: id } };
     });
+  }
+
+  /**
+   * The version a read-only review read, on the Run as `output_json.review_basis`:
+   * the HEAD and the whole-directory tree id when it started, and whether the
+   * directory differed when it ended (`changed_during_review`; null when that
+   * could not be read). On the strict Host a review holds its Location shared
+   * for its whole run, so no writer runs beside it and the flag stays false;
+   * it is recorded rather than assumed.
+   */
+  private async recordReviewBasis(tx: Queryable, run: RunForUpload, input: HostRunDiffUpload): Promise<void> {
+    const basis = {
+      workspace_location_id: run.workspace_location_id ?? null,
+      head: input.git_before?.head ?? null,
+      branch: input.git_before?.branch ?? null,
+      tree: input.workspace_tree_before ?? null,
+      changed_during_review: input.diff === null ? null : input.diff.trim().length > 0,
+      launch_id: input.launch_id,
+      observed_at: new Date().toISOString(),
+    };
+    await tx.query(
+      `UPDATE runs
+          SET output_json = jsonb_set(
+                CASE WHEN jsonb_typeof(output_json) = 'object' THEN output_json ELSE '{}'::jsonb END,
+                '{review_basis}', $3::jsonb, true),
+              updated_at = now()
+        WHERE space_id = $1 AND id = $2`,
+      [run.space_id, run.id, JSON.stringify(basis)],
+    );
   }
 
   /**
@@ -642,6 +680,8 @@ interface RunForUpload {
   project_folder_id: string | null;
   /** The Location it executed in; null for a managed workspace. */
   workspace_location_id?: string | null;
+  /** A read-only review: its upload records the version read, never a change of its own. */
+  read_only?: boolean;
 }
 
 const MAX_DIFF_BYTES = 1_048_576;

@@ -1,7 +1,10 @@
+import { ReaderDocumentNotes } from "./documentNotes.js";
+import { replaceAnnotationRange } from "./annotationRange.js";
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
 import { PgAnnotationRepository, PgCommentRepository, PgReaderActionRepository, PgReaderRepository } from "./repository.js";
+import { ReaderAppearanceSettings, ReaderPositionStore } from "./positions.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const readerRepo = () => new PgReaderRepository(dbPool(context.config), context.config);
@@ -21,6 +24,37 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return doc ? reply.send(doc) : reply.code(404).send({ detail: "Document not found or not accessible" });
     } catch (error) { return sendRouteError(reply, error); }
   });
+  // A person's private reading position; never part of read status or reading origin.
+  app.get(`${base}/documents/:documentType/:documentId/position`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try { const p = params(request); return reply.send({ position: await new ReaderPositionStore(dbPool(context.config)).get(identity, p.documentType ?? "", p.documentId ?? ""), accepted: true }); }
+    catch (error) { return sendRouteError(reply, error); }
+  });
+  app.put(`${base}/documents/:documentType/:documentId/position`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try { const p = params(request); return reply.send(await new ReaderPositionStore(dbPool(context.config), context.config).write(identity, p.documentType ?? "", p.documentId ?? "", jsonBody(request))); }
+    catch (error) { return sendRouteError(reply, error); }
+  });
+  app.get(`${base}/preferences/appearance`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try { return reply.send(await new ReaderAppearanceSettings(dbPool(context.config)).get(identity)); }
+    catch (error) { return sendRouteError(reply, error); }
+  });
+  app.put(`${base}/preferences/appearance`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try { return reply.send(await new ReaderAppearanceSettings(dbPool(context.config)).set(identity, jsonBody(request))); }
+    catch (error) { return sendRouteError(reply, error); }
+  });
+  app.get(`${base}/documents/:documentType/:documentId/note`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try { const p = params(request); return reply.send(await new ReaderDocumentNotes(dbPool(context.config)).get(identity, p.documentType ?? "", p.documentId ?? "")); }
+    catch (error) { return sendRouteError(reply, error); }
+  });
+  app.post(`${base}/documents/:documentType/:documentId/note`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try { const p = params(request); return reply.send(await new ReaderDocumentNotes(dbPool(context.config)).create(identity, p.documentType ?? "", p.documentId ?? "", jsonBody(request))); }
+    catch (error) { return sendRouteError(reply, error); }
+  });
   app.get(`${base}/documents/:documentType/:documentId/annotations`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try { const p = params(request); return reply.send({ items: await annotationRepo().listAnnotations(identity, p.documentType ?? "", p.documentId ?? "") }); }
@@ -34,6 +68,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.patch(`${base}/annotations/:annotationId`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try { return reply.send(await annotationRepo().updateAnnotation(identity, params(request).annotationId ?? "", jsonBody(request))); }
+    catch (error) { return sendRouteError(reply, error); }
+  });
+  app.patch(`${base}/annotations/:annotationId/range`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try { return reply.send(await replaceAnnotationRange(dbPool(context.config), context.config, identity, params(request).annotationId ?? "", jsonBody(request))); }
     catch (error) { return sendRouteError(reply, error); }
   });
   app.delete(`${base}/annotations/:annotationId`, async (request, reply) => {

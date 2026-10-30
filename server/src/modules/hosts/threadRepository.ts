@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
+import { HARD_TERMINAL_RUN_STATUSES } from "../runs/orchestrationResults.js";
 
 /**
  * A host thread pins a run-file-lifecycle conversation to one
@@ -551,6 +552,14 @@ export class PgHostThreadRepository {
     return result.rows[0] ?? null;
   }
 
+  /**
+   * Records what a finished Run says about the thread's vendor session,
+   * identity, standing context and occupancy. False when that is not the
+   * thread's latest word: a newer Run already reported, a handoff rotated the
+   * session, or another turn holds the thread. It never touches the dispatch
+   * claim — releasing the Run's own claim is `settleRunOutcome`'s, which
+   * applies whether or not this outcome is recorded.
+   */
   async recordRunOutcome(
     threadId: string,
     input: {
@@ -569,7 +578,7 @@ export class PgHostThreadRepository {
       /** Context occupancy the runtime reported at the end of the Run. */
       contextWindow?: { used: number; size: number } | null;
     },
-  ): Promise<void> {
+  ): Promise<boolean> {
     // A reset clears the stale vendor session id. Do not COALESCE-preserve
     // it. Every later dispatch would retry the same broken `--resume <id>`
     // instead of starting fresh, which is what `session_reset` means.
@@ -599,7 +608,7 @@ export class PgHostThreadRepository {
     }
     const identitySent = Boolean(input.identity?.sent && input.landed && !input.sessionReset);
     const standingSent = Boolean(input.standing?.sent && input.landed && !input.sessionReset);
-    await this.db.query(
+    const recorded = await this.db.query(
       `UPDATE host_threads
           SET last_run_id = $2::varchar,
               retired_vendor_session_ids = CASE
@@ -643,9 +652,17 @@ export class PgHostThreadRepository {
                 ELSE context_window_tokens END,
               vendor_session_id = CASE WHEN $4::boolean THEN NULL ELSE COALESCE($3::varchar, vendor_session_id) END,
               status = CASE WHEN $4::boolean THEN 'session_reset' ELSE 'active' END,
-              dispatch_lock_id = CASE WHEN dispatch_lock_id = $2::varchar THEN NULL ELSE dispatch_lock_id END,
               updated_at = now()
         WHERE id = $1 AND status <> 'closed'
+          AND (dispatch_lock_id IS NULL OR dispatch_lock_id = $2::varchar)
+          -- Replaying an old settlement must not replace a newer turn's
+          -- session, identity or context occupancy after its claim released.
+          AND NOT EXISTS (
+            SELECT 1 FROM runs current_run JOIN runs reported_run ON reported_run.id = $2::varchar
+             WHERE current_run.id = host_threads.last_run_id
+               AND current_run.id <> reported_run.id
+               AND current_run.created_at >= reported_run.created_at
+          )
           -- A handoff turn whose document rotated this thread (the rotation
           -- runs where the next turn is admitted, which usually comes first)
           -- reports on a session that is already retired, however late its
@@ -667,6 +684,55 @@ export class PgHostThreadRepository {
         standingSent ? input.standing!.digest : null,
       ],
     );
+    return recorded.rowCount === 1;
+  }
+
+  /**
+   * Settles a finished Run on its thread: two obligations decided separately.
+   * Locks are taken Run row first (FOR SHARE), then the thread row — the order
+   * quota admission takes them — so a Supervisor successor attempt (which
+   * moves the Run back to queued) cannot interleave.
+   * - Nothing is written unless the Run, under that lock, is hard terminal and
+   *   on this thread. Then the outcome is written only when it is the
+   *   thread's latest word (`recordRunOutcome`); a refused outcome does not
+   *   affect the claim.
+   * - The Run's own dispatch claim (`dispatch_lock_id` = its id, on its own
+   *   thread) is released only while the Run is hard terminal. Another Run's
+   *   claim, a pending admission nonce, or a claim the Run holds while not
+   *   ended is never touched.
+   * Call inside a transaction.
+   */
+  async settleRunOutcome(
+    threadId: string,
+    input: Parameters<PgHostThreadRepository["recordRunOutcome"]>[1],
+  ): Promise<{ outcome_recorded: boolean; claim: "released" | "not_held" | "run_not_terminal" }> {
+    const run = await this.db.query<{ status: string }>(
+      `SELECT status FROM runs WHERE id = $1 AND host_task_thread_id = $2 FOR SHARE`,
+      [input.lastRunId, threadId],
+    );
+    // Refused before any write: a Run that is not ended (a Supervisor successor
+    // attempt queued it again) or not on this thread says nothing about the
+    // thread now — a terminal snapshot taken earlier must not leave its session,
+    // identity or occupancy behind.
+    if (!run.rows[0] || !(HARD_TERMINAL_RUN_STATUSES as readonly string[]).includes(run.rows[0].status)) {
+      return { outcome_recorded: false, claim: await this.holdsDispatchClaim(threadId, input.lastRunId) ? "run_not_terminal" : "not_held" };
+    }
+    const outcomeRecorded = await this.recordRunOutcome(threadId, input);
+    const released = await this.db.query(
+      `UPDATE host_threads SET dispatch_lock_id = NULL, updated_at = now()
+        WHERE id = $1 AND dispatch_lock_id = $2`,
+      [threadId, input.lastRunId],
+    );
+    return { outcome_recorded: outcomeRecorded, claim: (released.rowCount ?? 0) > 0 ? "released" : "not_held" };
+  }
+
+  /** Whether the Run still holds this thread's dispatch claim. */
+  async holdsDispatchClaim(threadId: string, runId: string): Promise<boolean> {
+    const held = await this.db.query(
+      `SELECT 1 FROM host_threads WHERE id = $1 AND dispatch_lock_id = $2`,
+      [threadId, runId],
+    );
+    return (held.rowCount ?? 0) > 0;
   }
 
   /**

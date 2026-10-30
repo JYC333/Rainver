@@ -16,6 +16,8 @@ import {
   handleStdin,
   handleStdinClose,
   handleTerminate,
+  launchLeasePlan,
+  launchMayWrite,
   managedToolTreeForLaunch,
   REMOTE_CWD_PLACEHOLDER,
   resolveAcpEntrypoint,
@@ -26,6 +28,7 @@ import {
   substituteAcpInput,
   substituteStructuredInputResources,
 } from "../src/execution.js";
+import { acquireLocationLeases, cancelLeaseWaits, isLeaseBusy, releaseLocationLeases } from "../src/locationLease.js";
 
 let configDir: string;
 let workspaceDir: string;
@@ -100,6 +103,53 @@ const AGENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const CONV = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 describe("handleLaunch", () => {
+  it("waits for an exited attempt's cleanup instead of confirming it absent mid-upload", async () => {
+    let uploading!: () => void;
+    const uploadStarted = new Promise<void>(resolve => { uploading = resolve; });
+    let releaseUpload!: () => void;
+    let released = false;
+    const server = createServer((_request, response) => {
+      if (released) { response.end("{}"); return; }
+      releaseUpload = () => { released = true; response.end("{}"); };
+      uploading();
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as { port: number };
+    await saveConfig({ server_url: `http://127.0.0.1:${address.port}`, host_id: "host-1", trust: "trusted",
+      token: "secret-token", workspaces: { "folder-1": workspaceDir } });
+    const current = collectSend();
+    try {
+      await handleLaunch({ run_id: "finishing", launch_id: "finishing-1", workspace_location_id: "folder-1", argv: ["true"] }, current.send, () => {});
+      await uploadStarted;
+      const acknowledgement = collectSend();
+      handleTerminate({ run_id: "finishing", launch_id: "finishing-1", force: true }, () => {}, acknowledgement.send);
+      expect(acknowledgement.frames).toEqual([]);
+      releaseUpload();
+      expect(await current.complete()).toMatchObject({ launch_id: "finishing-1", exit_code: 0 });
+    } finally {
+      releaseUpload?.();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it("confirms an absent exact attempt without terminating a newer attempt of the same Run", async () => {
+    const current = collectSend();
+    await handleLaunch({ run_id: "recovered", launch_id: "new", workspace_location_id: "folder-1",
+      argv: ["node", "-e", "setInterval(() => {}, 1000)"] }, current.send, () => {});
+    await waitFor(() => frameIndex(current.frames, "launched") >= 0);
+    const stopped = collectSend();
+    handleTerminate({ run_id: "recovered", launch_id: "absent-old", force: true }, () => {}, stopped.send);
+    expect(await stopped.complete()).toMatchObject({ run_id: "recovered", launch_id: "absent-old", exit_code: 1 });
+    expect(frameIndex(current.frames, "complete")).toBe(-1);
+    handleTerminate({ run_id: "recovered", launch_id: "new", force: true }, () => {}, stopped.send);
+    expect(stopped.frames).toHaveLength(1);
+    expect((await current.complete()).exit_code).not.toBe(0);
+    // A subsequent writer can take the Location after the stopped attempt.
+    const next = collectSend();
+    await handleLaunch({ run_id: "after-recovery", launch_id: "after-recovery-1", workspace_location_id: "folder-1", argv: ["true"] }, next.send, () => {});
+    expect((await next.complete()).exit_code).toBe(0);
+  });
+
   it("resolves authorized logical input resources and rejects traversal or ungranted Locations", () => {
     expect(resolveInputResourcePaths([
       {
@@ -1056,15 +1106,20 @@ describe("Location lease", () => {
     expect(await first.complete()).toMatchObject({ exit_code: 0 });
   });
 
-  it("does not make a read-only Run wait for a writer", async () => {
+  it("makes a paired host's read-only Run wait for a writer: it runs natively and could write", async () => {
+    const order: string[] = [];
+    const record = (collector: ReturnType<typeof collectSend>) => (frame: Record<string, unknown>) => {
+      order.push(`${String(frame.run_id)}:${String(frame.type)}`);
+      collector.send(frame);
+    };
     const writer = collectSend();
     await handleLaunch(
       { run_id: "lease-writer-3", launch_id: "lease-launch-3", workspace_location_id: "folder-1", argv: ["sh", "-c", "sleep 0.4"] },
-      writer.send,
+      record(writer),
       () => {},
     );
     const reader = collectSend();
-    await handleLaunch(
+    const readerLaunch = handleLaunch(
       {
         run_id: "lease-reader-1",
         launch_id: "lease-launch-4",
@@ -1072,15 +1127,88 @@ describe("Location lease", () => {
         isolation: { sandbox_mode: "read_only", egress_profile: "none" },
         argv: ["sh", "-c", "true"],
       },
-      reader.send,
+      record(reader),
       () => {},
     );
-    expect(frameIndex(reader.frames, "launched")).toBe(0);
-    expect(frameIndex(reader.frames, "waiting_for_workspace")).toBe(-1);
-    // Launched while the writer still runs.
-    expect(frameIndex(writer.frames, "complete")).toBe(-1);
     await reader.complete();
+    await readerLaunch;
+    expect(frameIndex(reader.frames, "waiting_for_workspace")).toBe(0);
+    expect(order.indexOf("lease-reader-1:launched")).toBeGreaterThan(order.indexOf("lease-writer-3:complete"));
     await writer.complete();
+  });
+
+  it("plans a strict read-only launch as a reader of its Location and every attachment, and a paired one as a writer", () => {
+    const frame = {
+      isolation: { sandbox_mode: "read_only" as const, egress_profile: "none" as const },
+      workspace_access: [
+        { workspace_location_id: "attached-write", access_mode: "write" as const },
+        { workspace_location_id: "attached-read", access_mode: "read" as const },
+      ],
+    };
+    expect(launchLeasePlan(frame, true, "primary", null)).toEqual({ exclusive: [], shared: ["primary", "attached-write", "attached-read"] });
+    expect(launchLeasePlan(frame, false, "primary", null)).toEqual({ exclusive: ["primary", "attached-write"], shared: [] });
+    // A strict dispatch that says nothing is read-only; one that writes holds its writes exclusively.
+    expect(launchLeasePlan({}, true, "primary", null)).toEqual({ exclusive: [], shared: ["primary"] });
+    expect(launchLeasePlan({ ...frame, isolation: { sandbox_mode: "read_write", egress_profile: "none" } }, true, "primary", null))
+      .toEqual({ exclusive: ["primary", "attached-write"], shared: [] });
+    expect(launchMayWrite({ sandbox_mode: "read_only", egress_profile: "none" }, false)).toBe(true);
+  });
+
+  it("runs readers of one Location together, keeps a writer out until they end, and keeps a later reader behind a waiting writer", async () => {
+    const events: string[] = [];
+    const take = (id: string, exclusive: boolean) => acquireLocationLeases(exclusive ? ["loc"] : [], { runId: id, launchId: id },
+      () => events.push(`${id}:waiting`), exclusive ? [] : ["loc"]).then((outcome) => { events.push(`${id}:${outcome}`); return outcome; });
+    await take("reader-1", false);
+    await take("reader-2", false);
+    expect(events).toEqual(["reader-1:acquired", "reader-2:acquired"]);
+    const writer = take("writer-1", true);
+    const lateReader = take("reader-3", false);
+    await Promise.resolve();
+    expect(events).toEqual(["reader-1:acquired", "reader-2:acquired", "writer-1:waiting", "reader-3:waiting"]);
+    releaseLocationLeases(["loc"], "reader-1");
+    await Promise.resolve();
+    expect(events).not.toContain("writer-1:acquired");
+    releaseLocationLeases(["loc"], "reader-2");
+    await writer;
+    expect(events).not.toContain("reader-3:acquired");
+    // A release by an attempt that holds nothing hands nothing on.
+    releaseLocationLeases(["loc"], "reader-2");
+    expect(events).not.toContain("reader-3:acquired");
+    releaseLocationLeases(["loc"], "writer-1");
+    await lateReader;
+    expect(events.slice(-1)).toEqual(["reader-3:acquired"]);
+    expect(isLeaseBusy("loc")).toBe(true);
+    releaseLocationLeases(["loc"], "reader-3");
+    expect(isLeaseBusy("loc")).toBe(false);
+  });
+
+  it("lets readers behind a writer that stopped waiting take the Location the other readers hold", async () => {
+    const events: string[] = [];
+    await acquireLocationLeases([], { runId: "r1", launchId: "r1" }, () => {}, ["loc-c"]);
+    const writer = acquireLocationLeases(["loc-c"], { runId: "w1", launchId: "w1" }, () => events.push("w1:waiting"));
+    const reader = acquireLocationLeases([], { runId: "r2", launchId: "r2" }, () => events.push("r2:waiting"), ["loc-c"])
+      .then((outcome) => { events.push(`r2:${outcome}`); });
+    await Promise.resolve();
+    expect(cancelLeaseWaits("w1")).toBe(true);
+    expect(await writer).toBe("cancelled");
+    await reader;
+    expect(events).toEqual(["w1:waiting", "r2:waiting", "r2:acquired"]);
+    releaseLocationLeases(["loc-c"], "r1");
+    releaseLocationLeases(["loc-c"], "r2");
+    expect(isLeaseBusy("loc-c")).toBe(false);
+  });
+
+  it("takes mixed reader and writer leases in one sorted order so two launches cannot deadlock", async () => {
+    // A writes b and reads a; B writes a and reads b. Sorted order: both ask for `a` first.
+    await acquireLocationLeases(["lease-b"], { runId: "A", launchId: "A" }, () => {}, ["lease-a"]);
+    let bDone = false;
+    const b = acquireLocationLeases(["lease-a"], { runId: "B", launchId: "B" }, () => {}, ["lease-b"]).then((outcome) => { bDone = true; return outcome; });
+    await Promise.resolve();
+    expect(bDone).toBe(false);
+    releaseLocationLeases(["lease-a", "lease-b"], "A");
+    expect(await b).toBe("acquired");
+    releaseLocationLeases(["lease-a", "lease-b"], "B");
+    expect(isLeaseBusy("lease-a") || isLeaseBusy("lease-b")).toBe(false);
   });
 
   it("stops a queued launch on terminate without ever starting it", async () => {
@@ -1158,9 +1286,11 @@ describe("Location lease", () => {
       record(second),
       () => {},
     );
-    // A read grant on the same Location waits for nobody.
+    // On a paired host a read-only label is not enforced, so it waits like a
+    // writer of its own Location (held by the first writer) — strict reviews
+    // are the readers (`launchLeasePlan`).
     const reader = collectSend();
-    await handleLaunch(
+    const readerLaunch = handleLaunch(
       {
         run_id: "attach-reader",
         launch_id: "attach-launch-3",
@@ -1172,13 +1302,14 @@ describe("Location lease", () => {
       reader.send,
       () => {},
     );
-    expect(frameIndex(reader.frames, "waiting_for_workspace")).toBe(-1);
     await second.complete();
     await secondLaunch;
     expect(second.frames[0]).toMatchObject({ type: "waiting_for_workspace" });
     expect(order.indexOf("attached-own-writer:launched")).toBeGreaterThan(order.indexOf("attach-writer:complete"));
     await first.complete();
     await reader.complete();
+    await readerLaunch;
+    expect(reader.frames[0]).toMatchObject({ type: "waiting_for_workspace" });
   });
 
   it("stops only the named attempt when a terminate carries its launch id", async () => {

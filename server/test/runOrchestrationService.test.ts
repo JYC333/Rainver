@@ -23,7 +23,7 @@ import type { PreparedRunSandbox, RunSandboxManagerPort } from "../src/modules/p
 import { LocalCliProcessRegistry, type CliCommandExecutor, type CliStdioController } from "../src/modules/runs/localCliExecution.js";
 import { explicitRunTimeLimit, invokeWithinTimeLimit } from "../src/modules/runs/runTimeLimit.js";
 import { isRetryableRunErrorCode } from "../src/modules/runs/retryPolicy.js";
-import { NO_PROVIDER_BINDINGS, type RemoteHostCliAdapterDeps } from "../src/modules/runs/remoteHostCliAdapter.js";
+import { dispatchIsolation, NO_PROVIDER_BINDINGS, type RemoteHostCliAdapterDeps } from "../src/modules/runs/remoteHostCliAdapter.js";
 import type { TaskRunSettlementInput } from "../src/modules/runs/taskRunSettlement.js";
 
 function config(withDatabase = false) {
@@ -1967,6 +1967,53 @@ describe("RunOrchestrationService", () => {
     // mattering.
     expect(repo.run.required_sandbox_level).toBe("one_shot_docker");
     expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
+  });
+
+  it("keeps a review read-only on the strict Host whatever the Folder or risk would raise it to", async () => {
+    const repo = new FakeRepo();
+    repo.run = run({
+      runtime_key: "codex_cli",
+      model_provider_id: null,
+      required_sandbox_level: "worktree",
+      project_folder_id: "workspace-1",
+      contract_snapshot_json: { risk_level: "critical", workspace_access: "read", source: { kind: "direct", id: null } },
+    });
+    const service = orchestration(repo, {
+      policyEnforcer: allowPolicy,
+      hostKindResolver: onBuiltinHost,
+      ...daemonCli({
+        async runCommand(input) {
+          await completeCodexProtocol(input.stdio_controller, "review ok");
+          return { returncode: 0, stdout: "review ok", stderr: "", timed_out: false };
+        },
+      }),
+    });
+    await service.executeRun({ run_id: "run-1", space_id: "space-1", worker_id: "worker-1", command_source: "job" });
+    // Critical would be `one_shot_docker`, which a daemon carries read-write.
+    expect(repo.run.required_sandbox_level).toBe("read_only");
+    expect(dispatchIsolation(repo.run).sandbox_mode).toBe("read_only");
+    expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
+  });
+
+  it("refuses a review on a paired Host, which runs natively and cannot keep it from writing", async () => {
+    const repo = new FakeRepo();
+    repo.run = run({
+      runtime_key: "codex_cli",
+      model_provider_id: null,
+      required_sandbox_level: "none",
+      project_folder_id: "workspace-1",
+      contract_snapshot_json: { workspace_access: "read", source: { kind: "direct", id: null } },
+    });
+    let launched = false;
+    const service = orchestration(repo, {
+      policyEnforcer: allowPolicy,
+      hostKindResolver: async () => ({ hostKind: "remote" as const, hostId: "host-2", workspaceLocationId: "location-2" }),
+      ...daemonCli({ async runCommand() { launched = true; return { returncode: 0, stdout: "", stderr: "", timed_out: false }; } }),
+    });
+    const result = await service.executeRun({ run_id: "run-1", space_id: "space-1", worker_id: "worker-1", command_source: "job" });
+    expect(result).toMatchObject({ error_code: "workspace_read_only_unenforceable" });
+    expect(launched).toBe(false);
+    expect(repo.terminalUpdates[0]?.status).toBe("failed");
   });
 
   it("ignores caller-supplied executable path overrides", async () => {

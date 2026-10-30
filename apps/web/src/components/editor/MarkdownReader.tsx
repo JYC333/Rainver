@@ -24,7 +24,9 @@ export function MarkdownReader({ markdown, className }: MarkdownReaderProps) {
     <ReadOnlyTiptapReader
       contentJson={doc as unknown as Record<string, unknown>}
       normalizedText={normalizedText}
-      className={className}
+      // Summaries and digests sit inside cards, not the Reader column: they
+      // keep a compact fixed size instead of inheriting the card's.
+      className={className ? `reader-markdown ${className}` : 'reader-markdown'}
     />
   )
 }

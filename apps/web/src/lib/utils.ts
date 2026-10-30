@@ -45,6 +45,7 @@ export function errBody(e: unknown): ApiErrorDetails | null {
 
 export function isNotFoundError(e: unknown): boolean {
   if (!(e instanceof Error)) return false
+  if ('status' in e && e.status === 404) return true
   const m = e.message.toLowerCase()
   return m.includes('404') || m.includes('not found') || m.includes('not accessible')
 }

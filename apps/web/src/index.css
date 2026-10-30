@@ -373,24 +373,111 @@ pre {
 
 /* ── Source Reader workspace ──────────────────────────────────────────────── */
 
-/* Centered long-form reading column. */
+/* The document pane is the size container, so the column answers to the width
+   left after Shell navigation and the inspector, not to the viewport. */
+.reader-document-shell {
+  container-type: inline-size;
+}
+
+/* Centered long-form reading column. Typography starting points (18px desktop,
+   17px narrow, line-height 1.75, ~0.9em paragraph gap) are design defaults to
+   calibrate, not a copy of another product. The measure is in em so it keeps
+   roughly 38 CJK characters / 70 Latin characters per line at any size. */
 .reader-column {
-  max-width: 72ch;
+  --reader-font-size: 18px;
+  width: 100%;
+  max-width: var(--reader-measure, 38em);
+  font-size: var(--reader-font-size);
+  font-family: var(--reader-font-family, inherit);
+  padding-inline: clamp(1rem, 5cqi, 2.5rem);
+  padding-block: 2rem 4rem;
+  overflow-wrap: anywhere;
+}
+
+@container (max-width: 560px) {
+  .reader-column {
+    --reader-font-size: 17px;
+    padding-block: 1.25rem 3rem;
+  }
+}
+
+/* Full title and source metadata above the body; never part of the anchored tree. */
+.reader-lead {
+  margin-bottom: 1.75em;
+}
+
+.reader-lead-compact {
+  margin-bottom: 0.75em;
+}
+
+.reader-lead-compact .reader-lead-meta {
+  margin-top: 0;
+}
+
+.reader-lead-title {
+  font-size: 1.6em;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
+.reader-lead-meta {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+@container (max-width: 560px) {
+  .reader-lead-title {
+    font-size: 1.4em;
+  }
+}
+
+/* MarkdownReader (digests, summaries) renders the same surface inside cards. */
+.reader-markdown {
+  font-size: 15px;
+  overflow-wrap: anywhere;
 }
 
 /* .reader-surface is the read-only ProseMirror element itself. */
 .reader-surface {
-  font-size: 15px;
-  line-height: 1.82;
+  font-size: 1em;
+  line-height: var(--reader-line-height, 1.75);
   outline: none;
 }
 
-.reader-surface > * + * {
-  margin-top: 1.45em;
+/* Paragraph and list resets stay at class specificity (:where) and come before
+   the sibling spacing rule, so top-level blocks still get their gap while
+   nested paragraphs (list items, cells, quotes) start flush. */
+.reader-surface :where(p) {
+  margin: 0;
 }
 
-.reader-surface p {
-  margin: 0;
+.reader-surface :where(ul, ol) {
+  margin-block: 0;
+}
+
+.reader-surface > * + * {
+  margin-top: 0.9em;
+}
+
+/* Headings separate sections: more room above, a tight join to their body. */
+.reader-surface > :is(h1, h2, h3, h4, h5, h6):not(:first-child) {
+  margin-top: 1.6em;
+}
+
+.reader-surface > :is(h1, h2, h3, h4, h5, h6) + * {
+  margin-top: 0.5em;
+}
+
+.reader-surface blockquote > * + * {
+  margin-top: 0.6em;
 }
 
 .reader-surface a {
@@ -401,15 +488,18 @@ pre {
 
 /* Blocks are annotation targets: hover reveals them without turning
    paragraphs into heavy cards. Negative inline margins keep text aligned. */
-.reader-surface > * {
+.reader-column .reader-surface > * {
   border-radius: calc(var(--radius) - 2px);
   padding-inline: 0.625rem;
   margin-inline: -0.625rem;
   transition: background-color 120ms ease;
 }
 
-.reader-surface > *:hover {
-  background: color-mix(in oklch, var(--foreground) 4%, transparent);
+/* Only a real pointer hovers; a touch tap must not leave a block lit. */
+@media (hover: hover) and (pointer: fine) {
+  .reader-column .reader-surface > *:hover {
+    background: color-mix(in oklch, var(--foreground) 4%, transparent);
+  }
 }
 
 /* "[ref-N]" citation tokens decorated by the reader; click jumps to the
@@ -429,22 +519,33 @@ pre {
   transition: background-color 600ms ease;
 }
 
-.reader-surface h1,
-.reader-surface h2,
-.reader-surface h3 {
+.reader-surface :is(h1, h2, h3, h4, h5, h6) {
   font-weight: 650;
-  line-height: 1.3;
+  line-height: 1.35;
 }
 
-.reader-surface h1 { font-size: 1.5rem; }
-.reader-surface h2 { font-size: 1.25rem; }
-.reader-surface h3 { font-size: 1.05rem; }
+.reader-surface h1 { font-size: 1.45em; }
+.reader-surface h2 { font-size: 1.3em; }
+.reader-surface h3 { font-size: 1.15em; }
+.reader-surface h4 { font-size: 1.05em; }
+.reader-surface h5,
+.reader-surface h6 { font-size: 1em; }
 
+/* List indent on the reading side (logical, so right-to-left text indents on
+   the right). The marker sits outside the item, inside this indent. */
 .reader-surface ul,
 .reader-surface ol {
-  padding-left: 1.55rem;
-  margin-block: 0;
+  padding-inline-start: 1.55rem;
 }
+
+/* A top-level list is also a hover block (padding and negative margin of
+   0.625rem, see above); that rule is more specific than the list indent and
+   would cut it to 0.625rem, leaving markers at the screen edge on a phone.
+   Restore the indent on top of the block's own inset. */
+.reader-column .reader-surface > :is(ul, ol) {
+  padding-inline-start: calc(1.55rem + 0.625rem);
+}
+
 
 .reader-surface ul { list-style: disc; }
 .reader-surface ol { list-style: decimal; }
@@ -535,35 +636,169 @@ pre {
   border-radius: calc(var(--radius) - 2px);
   background: var(--muted);
   padding: 0.9rem;
+  position: relative;
+}
+
+/* Copy button on a code block: a widget outside the document tree. */
+.reader-surface .reader-code-copy {
+  float: right;
+  position: sticky;
+  left: 100%;
+  margin: -0.4rem -0.4rem 0 0.5rem;
+  min-height: 2rem;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--background);
+  color: var(--muted-foreground);
+  font-family: var(--font-sans, inherit);
+  font-size: 0.75rem;
+  user-select: none;
+}
+.reader-surface .reader-code-copy:hover { color: var(--foreground); }
+
+/* An image the Reader shows can be opened larger. */
+.reader-surface img[data-reader-image] { cursor: zoom-in; }
+
+/* In-document find. */
+.reader-find-match {
+  background: color-mix(in srgb, #f59e0b 35%, transparent);
+  border-radius: 2px;
+}
+.reader-find-current {
+  background: color-mix(in srgb, #f59e0b 75%, transparent);
+  box-shadow: 0 0 0 1px #b45309;
+}
+
+/* Reading progress over the text: current position and furthest read. */
+.reader-progress {
+  position: sticky;
+  top: 0;
+  z-index: 21;
+  height: 3px;
+  margin-bottom: -3px;
+  background: transparent;
+  pointer-events: none;
+}
+.reader-progress-current {
+  height: 100%;
+  background: color-mix(in oklch, var(--primary) 70%, transparent);
+  transform-origin: left center;
+}
+.reader-progress-furthest {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 7px;
+  background: var(--foreground);
+  opacity: 0.55;
+}
+
+/* Contents list. */
+.reader-outline {
+  width: var(--reader-outline-width, 248px);
+  flex-shrink: 0;
+}
+.reader-outline-overlay {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: min(280px, 100%);
+  box-shadow: 8px 0 24px rgb(0 0 0 / 0.2);
+  z-index: 30;
+}
+
+/* Page colours of the reading pane only; the app keeps its theme around it. */
+.reader-document-shell[data-reader-theme="light"] {
+  --background: #ffffff; --foreground: #1f2328; --muted: #f3f4f6; --muted-foreground: #57606a; --border: #d0d7de;
+  background: var(--background); color: var(--foreground);
+}
+.reader-document-shell[data-reader-theme="sepia"] {
+  --background: #f6efe1; --foreground: #3b2f22; --muted: #ece2cd; --muted-foreground: #6b5a45; --border: #d8c9ab;
+  background: var(--background); color: var(--foreground);
+}
+.reader-document-shell[data-reader-theme="dark"] {
+  --background: #16181d; --foreground: #d7dae0; --muted: #23262d; --muted-foreground: #9aa1ad; --border: #343842;
+  background: var(--background); color: var(--foreground);
+}
+
+/* Focus mode: the app's navigation steps aside for this Reader. */
+html[data-reader-focus] [data-shell-chrome] { display: none !important; }
+html[data-reader-focus] :has(> [data-project-navigation]) { grid-template-columns: minmax(0, 1fr) !important; }
+.reader-focus-mode .reader-tools {
+  opacity: 0.35;
+  transition: opacity 150ms ease;
+}
+.reader-focus-mode .reader-tools:hover,
+.reader-focus-mode .reader-tools:focus-within { opacity: 1; }
+.reader-focus-exit {
+  position: fixed;
+  right: calc(1rem + var(--app-safe-right));
+  bottom: calc(1rem + var(--app-safe-bottom));
+  z-index: 40;
+}
+
+/* Touch: Reader and Reading controls get a 44 CSS-pixel hit area (in px, so a
+   smaller root font cannot shrink it); icons keep their size. Desktop with a
+   fine pointer keeps the compact controls. */
+@media (pointer: coarse), (max-width: 768px) {
+  .reader-tools,
+  .reader-workspace > header {
+    flex-wrap: wrap;
+  }
+  :is(.reader-tools, .reader-selection-toolbar, .reader-find-bar, .reader-outline, .reader-inspector, .reader-popover-panel, .reading-touch) :is(button, a[href], [role="button"]),
+  .reader-workspace > header :is(button, a[href]),
+  .reader-focus-exit {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* Visible keyboard focus on everything the Reader makes focusable. */
+.reader-workspace :is(button, a, [tabindex="0"]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
 }
 
 /* Inline annotation decorations. The decoration sets
    --reader-annotation-color per annotation type or stored color. */
 .reader-highlight {
   --reader-annotation-color: #fde047;
-  background: color-mix(in srgb, var(--reader-annotation-color) 28%, transparent);
-  border-bottom: 2px solid color-mix(in srgb, var(--reader-annotation-color) 60%, transparent);
+  background: color-mix(in srgb, var(--reader-annotation-color) 24%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--reader-annotation-color) 50%, transparent);
   border-radius: 2px;
-  padding-block: 0.1em;
+  padding-block: 0;
   cursor: pointer;
   transition: background-color 120ms ease;
 }
 
 .reader-highlight:hover {
-  background: color-mix(in srgb, var(--reader-annotation-color) 42%, transparent);
+  background: color-mix(in srgb, var(--reader-annotation-color) 34%, transparent);
+}
+
+/* The text a jump from the notebook landed on. */
+.reader-highlight-flash { animation: reader-flash 1.2s ease-out 1; }
+@keyframes reader-flash {
+  0%, 30% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--reader-annotation-color) 90%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
 }
 
 .reader-highlight-selected {
-  background: color-mix(in srgb, var(--reader-annotation-color) 55%, transparent);
-  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--reader-annotation-color) 85%, transparent);
+  background: color-mix(in srgb, var(--reader-annotation-color) 34%, transparent);
+  box-shadow: none;
 }
 
-/* Keyboard paragraph-focus indicator (Readwise-style block focus). */
-.reader-surface > .reader-block-focused {
-  background: color-mix(in oklch, var(--primary) 7%, transparent);
-  box-shadow:
-    inset 2.5px 0 0 var(--primary),
-    0 0 0 1px color-mix(in oklch, var(--primary) 22%, transparent);
+/* A reading position, not a selected card: keep the text aligned and quiet.
+   Match the column specificity so pointer hover cannot wash out keyboard focus. */
+.reader-column .reader-surface > .reader-block-focused {
+  background: color-mix(in oklch, var(--foreground) 4%, transparent);
+  box-shadow: none;
+}
+
+/* Native text selection is transient; saved annotations keep their own color. */
+.reader-surface ::selection {
+  background: color-mix(in oklch, var(--primary) 22%, transparent);
+  color: inherit;
 }
 
 /* Floating selection toolbar. */
@@ -576,7 +811,7 @@ pre {
   border-radius: var(--radius);
   background: var(--popover);
   color: var(--popover-foreground);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.06), 0 8px 24px rgb(0 0 0 / 0.10);
   z-index: 50;
 }
 
@@ -584,28 +819,45 @@ pre {
   position: fixed;
 }
 
-/* Fallback when no usable selection rect exists (and small viewports). */
+/* Fallback when no usable selection rect exists (keyboard block selection). */
 .reader-selection-toolbar-docked {
   position: fixed;
-  bottom: 1rem;
+  bottom: calc(1rem + var(--reader-keyboard-inset, 0px));
   left: 50%;
   transform: translateX(-50%);
 }
 
 .reader-inspector {
-  width: 360px;
+  width: var(--reader-inspector-width, 320px);
   flex-shrink: 0;
 }
 
-/* Mobile: single-column reader, inspector becomes a bottom sheet. */
+/* A Reader too narrow for text and a docked panel lays the panel over the text. */
+.reader-inspector-overlay {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  width: min(320px, 100%);
+  box-shadow: -8px 0 24px rgb(0 0 0 / 0.2);
+  z-index: 30;
+}
+
+/* Mobile: single-column reader; the inspector is an on-demand bottom drawer.
+   ReaderWorkspace publishes the soft-keyboard overlap (visualViewport) as
+   --reader-keyboard-inset and the visible height as --reader-visual-height,
+   so the comment field and its button stay above the keyboard. */
 @media (max-width: 768px) {
   .reader-inspector {
     position: fixed;
     inset-inline: 0;
-    bottom: 0;
+    top: auto;
+    bottom: var(--reader-keyboard-inset, 0px);
     width: auto;
     height: auto;
-    max-height: 65vh;
+    max-height: min(65dvh, calc(var(--reader-visual-height, 100dvh) - var(--app-safe-top) - 1rem));
+    padding-bottom: max(0px, calc(var(--app-safe-bottom) - var(--reader-keyboard-inset, 0px)));
+    padding-inline: var(--app-safe-left) var(--app-safe-right);
+    overscroll-behavior: contain;
     border-left: none;
     border-top: 1px solid var(--border);
     border-top-left-radius: var(--radius-lg);
@@ -614,7 +866,9 @@ pre {
     z-index: 40;
   }
 
+  /* Above the bottom navigation and the home indicator. */
   .reader-selection-toolbar-docked {
+    bottom: calc(4.5rem + var(--app-safe-bottom) + var(--reader-keyboard-inset, 0px));
     max-width: calc(100vw - 2rem);
   }
 }
@@ -645,3 +899,34 @@ pre {
     max-width: calc(100vw - var(--app-safe-left) - var(--app-safe-right));
   }
 }
+
+/* Less motion where the person asked for it: no flashes, fades or smooth transitions in the Reader. */
+@media (prefers-reduced-motion: reduce) {
+  .reader-workspace *, .reader-workspace *::before, .reader-workspace *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .reader-highlight-flash { animation: none; outline: 2px solid var(--reader-annotation-color); }
+}
+
+/* Docked panel boundaries: keyboard focusable; never a mobile drawer handle. */
+.reader-panel-resize { flex: 0 0 6px; cursor: col-resize; touch-action: none; user-select: none; }
+.reader-panel-resize:hover, .reader-panel-resize:focus-visible { background: color-mix(in oklch, var(--primary) 30%, transparent); }
+@media (max-width: 768px) { .reader-panel-resize { display: none; } }
+
+/* Preview follows the Reading container, not the viewport beside Project panes. */
+.reading-with-preview { container-type: inline-size; }
+.reading-preview-layout { display: grid; min-width: 0; gap: 1rem; }
+.reading-item-preview, .reading-preview-trigger { display: none; }
+@container (min-width: 980px) {
+  .reading-preview-layout { grid-template-columns: minmax(0, 1fr) minmax(280px, 320px); }
+  .reading-item-preview { display: block; position: sticky; top: 1rem; }
+  .reading-preview-trigger { display: inline-flex; }
+  [data-reading-row][data-preview-selected] { box-shadow: 0 0 0 1px var(--ring); }
+}
+
+/* Enable horizontal article gestures only on top-level prose, never an ancestor
+   of a horizontally scrolling table/code area. Vertical pan and pinch remain. */
+.reader-swipe-enabled .reader-surface > :is(p, h1, h2, h3, h4, h5, h6) { touch-action: pan-y pinch-zoom; }

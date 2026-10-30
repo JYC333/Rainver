@@ -1,8 +1,9 @@
+import {readingGoalPath} from './sourceGoalNavigation'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, BookOpen, Globe2, Pause, Play, Plus, RefreshCw, Rss, Settings2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { sourcesApi } from '../../api/client'
+import { ApiRequestError, sourcesApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Badge } from '../../components/ui/badge'
@@ -39,6 +40,12 @@ function statusLabel(status: SourceChannel['status'] | 'mixed') {
 
 /** A source detail page manages one origin and all of its independent monitors. */
 export default function SourceChannelDetailPage() {
+  const { sourceId } = useParams<{ sourceId: string }>()
+  const { activeSpaceId, userId } = useSpace()
+  return <ScopedSourceChannelDetail key={`${activeSpaceId}:${userId}:${sourceId}`} />
+}
+
+function ScopedSourceChannelDetail() {
   const navigate=useSpaceNavigate()
   const { sourceId } = useParams<{ sourceId: string }>()
   const { activeSpaceId } = useSpace()
@@ -59,6 +66,7 @@ export default function SourceChannelDetailPage() {
       const direct = channelRows.filter(channel => channel.source_connection_id === sourceId)
       setChannels(direct)
     } catch (error) {
+      if (error instanceof ApiRequestError && [401, 403, 404].includes(error.status)) setChannels([])
       setLoadError(errMsg(error))
     } finally {
       setLoading(false)
@@ -85,6 +93,10 @@ export default function SourceChannelDetailPage() {
       await load()
     } catch (error) {
       toast.error(errMsg(error))
+      if (error instanceof ApiRequestError && [403, 404].includes(error.status)) {
+        setChannels([])
+        await load()
+      }
     } finally {
       setBusyMonitorId(null)
     }
@@ -97,6 +109,10 @@ export default function SourceChannelDetailPage() {
       await load()
     } catch (error) {
       toast.error(errMsg(error))
+      if (error instanceof ApiRequestError && [403, 404].includes(error.status)) {
+        setChannels([])
+        await load()
+      }
     } finally {
       setBusyMonitorId(null)
     }
@@ -151,7 +167,7 @@ export default function SourceChannelDetailPage() {
             <h2 className="text-lg font-semibold">Monitors</h2>
             <p className="text-sm text-muted-foreground">{t('sourceGoals.legacy')}</p>
           </div>
-          <Button onClick={() => navigate(`/sources/goals/new${source.project_id?`?project_id=${source.project_id}`:''}`)}><Plus className="size-4 mr-2" />{t('sourceGoals.begin')}</Button>
+          <Button onClick={() => navigate(readingGoalPath(source.project_id,'new'))}><Plus className="size-4 mr-2" />{t('sourceGoals.begin')}</Button>
         </div>
 
         <div className="space-y-3">
@@ -169,8 +185,8 @@ export default function SourceChannelDetailPage() {
                     </div>
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
-                        {monitor.goal_id&&<Button size="sm" variant="outline" onClick={()=>navigate(`/sources/goals/${monitor.goal_id}`)}>{t('sourceGoals.ownerControl')}</Button>}
-                    <Button size="sm" variant="outline" onClick={() => navigate(monitor.goal_id?`/sources/goals/${monitor.goal_id}`:`/sources/goals/new?channel_id=${monitor.id}${monitor.project_id?`&project_id=${monitor.project_id}`:''}`)}><Settings2 className="size-4 mr-1" />{t('sourceGoals.adjust')}</Button>
+                        {monitor.goal_id&&<Button size="sm" variant="outline" onClick={()=>navigate(readingGoalPath(monitor.project_id,monitor.goal_id!))}>{t('sourceGoals.ownerControl')}</Button>}
+                    <Button size="sm" variant="outline" onClick={() => navigate(monitor.goal_id?readingGoalPath(monitor.project_id,monitor.goal_id!):`${readingGoalPath(monitor.project_id,'new')}?channel_id=${encodeURIComponent(monitor.id)}`)}><Settings2 className="size-4 mr-1" />{t('sourceGoals.adjust')}</Button>
                     <Button size="sm" variant="outline" onClick={() => void toggle(monitor)} disabled={busy||!!monitor.goal_id}>{monitor.status === 'active' ? <Pause className="size-4" /> : <Play className="size-4" />}{monitor.status === 'active' ? 'Pause' : 'Resume'}</Button>
                     <Button size="sm" variant="outline" onClick={() => void scan(monitor)} disabled={busy||!!monitor.goal_id}><RefreshCw className="size-4 mr-1" />Scan now</Button>
                   </div>

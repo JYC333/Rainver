@@ -11,7 +11,7 @@ import {
   type SourceRecipeRunInput,
 } from "../src/modules/sources/sourceRecipes/recipeInterpreter.js";
 import { validateCustomSourceHandlerOutput } from "../src/modules/sources/customSources/customSourceContractValidator.js";
-import type { CustomSourceRunnerSettings } from "../src/modules/sources/customSources/customSourceRunner.js";
+import type { SourceExecutionSettings } from "../src/modules/sources/sourceExecutionPolicy.js";
 import { publicAddressGuard } from "./support/outboundGuard.js";
 
 const ORIGIN = "https://sources.example";
@@ -19,7 +19,7 @@ const ORIGIN = "https://sources.example";
 const policyEnvelope = (overrides: Parameters<typeof sourcePolicyEnvelope>[0] = {}) =>
   sourcePolicyEnvelope({ allowed_network_origins: [ORIGIN], ...overrides });
 
-const instanceSettings = (overrides: Partial<CustomSourceRunnerSettings> = {}) =>
+const instanceSettings = (overrides: Partial<SourceExecutionSettings> = {}) =>
   runnerSettings({ allowed_languages: ["declarative_pipeline_v1"], ...overrides });
 
 function runInput(

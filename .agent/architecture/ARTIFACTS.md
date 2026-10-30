@@ -44,6 +44,15 @@ artifact's production context remains unchanged.
   managed artifact storage when `storage_path` is present.
 - Artifact Detail exposes identity, scope, permissions, producing Run, storage
   provenance, and export. It does not act as a domain report renderer.
+- Browser export keeps the response status for access-refusal handling and
+  checks the requesting session before accepting the response and again before
+  saving the file. Logout or cancellation prevents a late response from
+  triggering a download.
+- List and detail Export controls follow `exportable`. An export refusal
+  clears stale data and rereads the current metadata: summary-only content can
+  remain visible with Export disabled, while a revoked object shows the
+  not-found/not-accessible state. A transient detail read failure has its own
+  error state rather than claiming that the object is missing.
 
 ## Sources
 
@@ -59,6 +68,12 @@ artifact's production context remains unchanged.
   only while the Reader would open that item (`sourceDerivedArtifactReadableClause`
   in `sources/sourceItemAccess.ts`), not by the visibility copied onto the
   artifact at capture.
+  Inline content and export also require full access to the current origin
+  item or snapshot; a snapshot path checks the snapshot's own visibility and
+  level as well as its item's. Summary-only origins leave artifact metadata
+  readable but withhold the body. Reader document loading applies these same
+  origin gates plus the artifact's own full-content and Room gates, so opening
+  a document cannot bypass an export refusal.
 
 ## Storage Rules
 

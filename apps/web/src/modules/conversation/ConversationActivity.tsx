@@ -1,8 +1,11 @@
-import { CirclePause, Loader2 } from 'lucide-react'
+import { CirclePause, Loader2, Square } from 'lucide-react'
 import type { Run, RunTurn } from '../../types/api'
 import { useAppTranslation } from '../../i18n'
 import { useConversationScope } from './ConversationScope'
 import { RunQuotaRecoveryControls, runQuotaRecovery } from '../runs/RunQuotaRecoveryControls'
+
+import { useRunActions } from '../runs/useRunActions'
+import { Button } from '../../components/ui/button'
 
 /** A compact, persistent companion to the chronological Room/Project transcript. */
 export function ConversationActivity({ runs, turns, agentName, onChanged, allowCommands = true }: {
@@ -12,7 +15,7 @@ export function ConversationActivity({ runs, turns, agentName, onChanged, allowC
   onChanged?: (run: Run) => void
   allowCommands?: boolean
 }) {
-  const { t } = useAppTranslation()
+  const { t, locale } = useAppTranslation()
   const scope = useConversationScope()
   if (!runs.length) return null
   return (
@@ -20,7 +23,7 @@ export function ConversationActivity({ runs, turns, agentName, onChanged, allowC
       className="max-h-28 shrink-0 space-y-1 overflow-y-auto border-t border-border bg-card px-3 py-2 text-xs">
       {runs.map(run => {
         if (runQuotaRecovery(run)) return <div key={run.id} className="space-y-1">
-          <span>{agentName(run.id) ?? t('conversation_ui.surface.agent')}</span>
+          <div className="flex items-center gap-2"><span className="flex-1">{agentName(run.id) ?? t('conversation_ui.surface.agent')}</span>{allowCommands && (!scope.actionUserId || run.owner_user_id === scope.actionUserId || run.instructed_by_user_id === scope.actionUserId) && <ActivityStop run={run} onChanged={onChanged} />}</div>
           <RunQuotaRecoveryControls run={run} scope={scope}
             canControl={allowCommands && (!scope.actionUserId || run.owner_user_id === scope.actionUserId || run.instructed_by_user_id === scope.actionUserId)}
             onChanged={onChanged} />
@@ -37,9 +40,25 @@ export function ConversationActivity({ runs, turns, agentName, onChanged, allowC
           : t('conversation_ui.turn.working')
         return <div key={run.id} className="flex items-center gap-2">
           {idle ? <CirclePause className="size-3 shrink-0" /> : <Loader2 className="size-3 shrink-0 animate-spin" />}
-          <span>{agentName(run.id) ?? t('conversation_ui.surface.agent')} · {label}</span>
+          <span className="min-w-0 flex-1 break-words">{agentName(run.id) ?? t('conversation_ui.surface.agent')} · {label}
+            {runs.filter(candidate => candidate.agent_id === run.agent_id).length > 1 && run.created_at && <time dateTime={run.created_at} className="ml-2 text-muted-foreground">{new Date(run.created_at).toLocaleString(locale)}</time>}
+          </span>
+          {allowCommands && (!scope.actionUserId || run.owner_user_id === scope.actionUserId || run.instructed_by_user_id === scope.actionUserId) && <ActivityStop run={run} onChanged={onChanged} />}
         </div>
       })}
     </div>
   )
+}
+
+/** Keep each command bound to its exact Run, including older held turns. */
+function ActivityStop({ run, onChanged }: { run: Run; onChanged?: (run: Run) => void }) {
+  const scope = useConversationScope()
+  const { t } = useAppTranslation()
+  const actions = useRunActions(run.id, scope, next => onChanged?.(next))
+  return <div className="shrink-0">
+    <Button type="button" size="sm" variant="outline" className="h-6 px-2" disabled={Boolean(actions.busy) || run.status === 'cancelling'} onClick={() => void actions.perform({ kind: 'stop' })}>
+      <Square className="mr-1 size-3" />{t(run.status === 'cancelling' ? 'conversation_ui.run.stopping' : 'conversation_ui.run.stop')}
+    </Button>
+    {(actions.error || actions.refreshError) && <span role="alert" className="text-destructive">{actions.error || actions.refreshError}</span>}
+  </div>
 }

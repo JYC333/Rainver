@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { resolveAgentActorId } from "../src/db/actorResolver.js";
-import { reconcileTerminalChatRuns } from "../src/modules/jobs/workerRuntime.js";
+import { reconcileTerminalChatRuns } from "../src/modules/runs/recovery.js";
 import { MAX_CHAT_FINALIZATION_ATTEMPTS } from "../src/modules/runs/chatTurnFinalizer.js";
 import {
   PgRunRepository,

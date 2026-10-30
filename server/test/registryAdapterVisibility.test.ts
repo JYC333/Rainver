@@ -8,6 +8,7 @@ import { acpRuntimeProbes, ownCopyCandidates } from "../src/modules/hosts/runtim
 import { MAX_REGISTRY_ID_LENGTH, parseEntry } from "../src/modules/acpAgents/registry.js";
 import { buildUnboundRuntimeProfile } from "../src/modules/runs/remoteProviderBinding.js";
 import { RuntimeKeySchema } from "@rainver/protocol";
+import type { EnabledAcpAgent } from "../src/modules/acpAgents/settings.js";
 
 /**
  * An ACP agent enabled from the registry is a runtime adapter like any other,
@@ -26,7 +27,7 @@ const CURSOR = {
   distribution: { kind: "npx", package: "cursor@1", args: [], env: {} },
   enabled_at: "2026-09-07T01:18:48.823Z",
   enabled_by_user_id: null,
-} as never;
+} satisfies EnabledAcpAgent;
 
 describe("a registry ACP agent is a runtime adapter everywhere", () => {
   afterEach(() => setDynamicRuntimeAdapterSpecs([]));
@@ -79,9 +80,9 @@ describe("a registry ACP agent is a runtime adapter everywhere", () => {
         kind: "binary",
         platforms: { "linux-x86_64": { archive: "https://x/agy.zip", cmd: "./agy", args: [], sha256: null, env: {} } },
       },
-    } as never;
-    const uvx = { ...CURSOR, id: "pyagent", version: "0.9.0", distribution: { kind: "uvx", package: "pyagent", args: [], env: {} } } as never;
-    const npx = { ...CURSOR, id: "cursor", version: "2026.09.02", distribution: { kind: "npx", package: "cursor@2026.09.01", args: [], env: {} } } as never;
+    } satisfies EnabledAcpAgent;
+    const uvx = { ...CURSOR, id: "pyagent", version: "0.9.0", distribution: { kind: "uvx", package: "pyagent", args: [], env: {} } } satisfies EnabledAcpAgent;
+    const npx = { ...CURSOR, id: "cursor", version: "2026.09.02", distribution: { kind: "npx", package: "cursor@2026.09.01", args: [], env: {} } } satisfies EnabledAcpAgent;
     setDynamicRuntimeAdapterSpecs([binary, uvx, npx].map(acpAgentRuntimeAdapterSpec));
     const probes = acpRuntimeProbes();
     const probe = (key: string) => probes.find((candidate) => candidate.runtime_key === key);
@@ -127,7 +128,7 @@ describe("a registry ACP agent is a runtime adapter everywhere", () => {
     // it, an unbound Run gets a per-Agent profile whose state-root variable
     // points inside and whose credential is linked from the login home —
     // the same contract the builtins declare beside their CLI login command.
-    const antigravity = { ...CURSOR, id: "antigravity-acp", name: "Google Antigravity" } as never;
+    const antigravity = { ...CURSOR, id: "antigravity-acp", name: "Google Antigravity" } satisfies EnabledAcpAgent;
     setDynamicRuntimeAdapterSpecs([acpAgentRuntimeAdapterSpec(CURSOR), acpAgentRuntimeAdapterSpec(antigravity)]);
     const scope = { agent_id: "agent-1", container_kind: "conversation" as const, container_id: "conv-1" };
 

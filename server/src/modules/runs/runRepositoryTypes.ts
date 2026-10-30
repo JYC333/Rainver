@@ -342,6 +342,8 @@ export class RunCreateValidationError extends Error {
 export interface RunTerminalUpdate {
   run_id: string;
   space_id: string;
+  /** Recovery must not terminalize a successor attempt admitted while it waited for Host exit. */
+  expected_attempt_number?: number | null;
   status: "succeeded" | "failed" | "degraded" | "cancelled" | "orphaned";
   output_text?: string | null;
   output_json?: unknown;
@@ -351,6 +353,7 @@ export interface RunTerminalUpdate {
 }
 
 export interface RunAttemptRecord {
+  launch_id: string | null;
   id: string;
   space_id: string;
   run_id: string;

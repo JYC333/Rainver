@@ -14,6 +14,12 @@ import { EvolutionSignalEmitter } from "../src/modules/evolution/signalEmitters.
 import { insertProposalRow } from "../src/modules/proposals/reviewPackets.js";
 import { seedServerHost } from "./support/domainSeeds.js";
 import { settleTasksForRun } from "../src/modules/projectWork/settlement.js";
+import { RunOrchestrationService } from "../src/modules/runs/orchestrationService.js";
+import { HostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
+import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
+import { loadConfig } from "../src/config.js";
+import { RunRecoveryService, resumeUnsettledRuns } from "../src/modules/runs/recovery.js";
+import { RunMaterializationService } from "../src/modules/runs/materializationService.js";
 
 const SPACE = "81111111-1111-4111-8111-111111111111";
 const PROJECT = "81111111-1111-4111-8111-111111111112";
@@ -589,7 +595,12 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
         new EvolutionSignalEmitter(constrainedPool),
         new PgUsageRepository(constrainedPool),
       ).finalize(runId, SPACE);
-      await Promise.all([finalize(), finalize(), finalize(), finalize()]);
+      const results = await Promise.allSettled([finalize(), finalize(), finalize(), finalize()]);
+      expect(results.some(result => result.status === "fulfilled")).toBe(true);
+      for (const result of results) {
+        if (result.status === "rejected") expect(result.reason).toMatchObject({ code: "finalization_in_progress" });
+      }
+      await finalize();
     } finally {
       await constrainedPool.end();
     }
@@ -1015,6 +1026,8 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     const grant = { run_id: runId, space_id: SPACE, granted_by_user_id: USER, granted_at: new Date().toISOString() };
     expect(await repository.grantRunApprovalAndRequeue(grant)).toBeNull();
     expect((await repository.getRun(SPACE, runId))?.status).toBe("waiting_for_review");
+    await expect(new PostRunFinalizationService(repository).finalize(runId, SPACE)).rejects.toBeInstanceOf(NonTerminalRunError);
+    expect(await repository.getLatestRunFinalization(SPACE, runId)).toBeNull();
 
     await repository.releaseExecutionLock(runId);
     expect((await repository.grantRunApprovalAndRequeue(grant))?.status).toBe("queued");
@@ -1063,6 +1076,54 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     )).rows[0]?.count).toBe("0");
     expect((await repository.getRun(SPACE, runId))?.status).toBe("queued");
     expect(await repository.getLatestRunAttempt(SPACE, runId)).toMatchObject({ attempt_number: 2, status: "queued" });
+  });
+
+  it("resumes owed settlement after the Supervisor holds a failed Run for review", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const runId = await seedRun({ max_attempts: 1 });
+    const repository = new PgRunRepository(db.pool);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    await repository.markRunTerminal({ run_id: runId, space_id: SPACE, status: "failed",
+      error_json: { error_code: "credentials_missing" }, completed_at: new Date().toISOString() });
+    let unavailable = true;
+    const finalizer = new PostRunFinalizationService(repository, undefined, undefined, undefined, {
+      reconcilers: () => [{ key: "project_work", settle: async () => {
+        if (unavailable) throw new Error("Transient settlement failure");
+      } }],
+    }, new PgRunSupervisor(db.pool));
+    await expect(finalizer.finalize(runId, SPACE)).rejects.toMatchObject({ code: "settlement_pending" });
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("waiting_for_review");
+    // Make the durable backoff due without sleeping or changing the Run.
+    await db.pool.query(`UPDATE run_finalizations SET settlement_json = settlement_json - 'next_attempt_at'
+      WHERE run_id = $1`, [runId]);
+    expect(await repository.listUnsettledFinalizations()).toContainEqual({ run_id: runId, space_id: SPACE });
+    unavailable = false;
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    await resumeUnsettledRuns(config, repository, undefined, new RunMaterializationService(config, db.pool, finalizer));
+    expect((await repository.getLatestRunFinalization(SPACE, runId))?.settled_at).toBeTruthy();
+    expect(await repository.listUnsettledFinalizations()).not.toContainEqual({ run_id: runId, space_id: SPACE });
+    expect(await repository.listRunSupervisorDecisions(SPACE, runId)).toHaveLength(1);
+    expect(await repository.listRunAttempts(SPACE, runId)).toHaveLength(1);
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("waiting_for_review");
+  });
+
+  it("caps settlement backoff after many failed passes without overflowing", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const runId = await seedRun();
+    const repository = new PgRunRepository(db.pool);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    await repository.markRunTerminal({ run_id: runId, space_id: SPACE, status: "succeeded", completed_at: new Date().toISOString() });
+    const finalization = await new PostRunFinalizationService(repository).finalize(runId, SPACE);
+    await db.pool.query(`UPDATE run_finalizations SET settlement_attempts = 32 WHERE id = $1`, [finalization.id]);
+    const at = new Date().toISOString();
+    await repository.recordRunSettlement(SPACE, finalization.id, {
+      completed: [], failure: { key: "project_work", error_code: "reconciler_failed", message: "Still unavailable" }, at,
+    });
+    const saved = (await repository.getLatestRunFinalization(SPACE, runId))!;
+    expect(saved.settled_at).toBeNull();
+    expect(saved.settlement_attempts).toBe(33);
+    expect(new Date((saved.settlement_json as { next_attempt_at: string }).next_attempt_at).getTime() - new Date(at).getTime())
+      .toBe(60 * 60 * 1_000);
   });
 
   it("reuses the attempt's evaluation when finalization is retried after a partial failure", async (ctx) => {
@@ -1284,6 +1345,150 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       `SELECT count(*)::text AS count FROM jobs WHERE space_id = $1 AND payload_json->>'run_id' = $2`,
       [SPACE, runId],
     )).rows[0]?.count).toBe("0");
+  });
+
+  it.each(["running", "cancelling"])("reclaims a lost %s dispatch only after its Host confirms exit", async (status) => {
+    const runId = await seedRun({ max_attempts: 2 });
+    const repository = new PgRunRepository(db.pool);
+    const jobs = new PgJobQueueRepository(db.pool);
+    const old = new Date(Date.now() - 7_200_000);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: old.toISOString() });
+    const launchId = randomUUID();
+    await repository.bindAttemptLaunch({ space_id: SPACE, run_id: runId, launch_id: launchId });
+    if (status === "cancelling") await repository.markRunCancelling({ run_id: runId, space_id: SPACE, requested_at: old.toISOString() });
+    const job = await jobs.enqueue({ job_type: "agent_run", space_id: SPACE, user_id: USER,
+      agent_id: AGENT, payload: { run_id: runId }, max_attempts: 1 }, old);
+    await jobs.claimNext("lost-worker", ["agent_run"], old);
+    await repository.tryAcquireExecutionLock({ run_id: runId, worker_id: "lost-worker", job_id: job.id });
+    // Startup must not terminalize a process that may still own its directory.
+    expect(await repository.recoverStaleRuns(60)).toBe(0);
+    expect(await jobs.reclaimStuckJobs(600)).toMatchObject({ reclaimed_count: 1, exhausted_jobs: [] });
+    const reclaimed = await jobs.claimNext("new-worker", ["agent_run"]);
+    expect(reclaimed?.id).toBe(job.id);
+    const registry = new HostConnectionRegistry();
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    const service = new RunOrchestrationService(config, repository, {
+      hostKindResolver: async () => ({ hostKind: "server", hostId: SERVER_HOST, workspaceLocationId: null }),
+      hostCli: { connectionRegistry: registry },
+    });
+    const input = { run_id: runId, space_id: SPACE, worker_id: "new-worker", job_id: job.id, command_source: "job" as const };
+    // Offline recovery retains the logical/physical state and releases its lock.
+    await expect(service.executeRun(input)).rejects.toMatchObject({ name: "JobDeferredError" });
+    expect((await repository.getRun(SPACE, runId))?.status).toBe(status);
+    const frames: Array<{ type: string; run_id?: string; launch_id?: string }> = [];
+    let sent!: () => void;
+    const stopSent = new Promise<void>(resolve => { sent = resolve; });
+    registry.registerConnection(SERVER_HOST, { send(frame) { frames.push(frame); sent(); }, close() {} });
+    const recovery = service.executeRun(input);
+    await stopSent;
+    expect(frames).toEqual([{ type: "terminate", run_id: runId, launch_id: launchId, force: true }]);
+    expect((await repository.getRun(SPACE, runId))?.status).toBe(status);
+    expect((await repository.getLatestRunAttempt(SPACE, runId))?.ended_at).toBeNull();
+    registry.receiveComplete(SERVER_HOST, runId, { exit_code: 1, timed_out: false, error: null }, launchId);
+    await expect(recovery).resolves.toMatchObject({ status: status === "cancelling" ? "cancelled" : "orphaned" });
+    expect((await repository.getLatestRunAttempt(SPACE, runId))?.status).toBe(status === "cancelling" ? "cancelled" : "orphaned");
+    const finalizer = new PostRunFinalizationService(repository, undefined, undefined, undefined, undefined, new PgRunSupervisor(db.pool));
+    await finalizer.finalize(runId, SPACE);
+    expect((await repository.getRun(SPACE, runId))?.status).toBe(status === "cancelling" ? "cancelled" : "queued");
+    expect((await repository.listRunAttempts(SPACE, runId)).length).toBe(status === "cancelling" ? 1 : 2);
+  });
+
+  it("does not settle or unlock a successor admitted while recovery waits for the old Host attempt", async () => {
+    const runId = await seedRun({ max_attempts: 2 });
+    const repository = new PgRunRepository(db.pool);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    const launchId = randomUUID();
+    await repository.bindAttemptLaunch({ space_id: SPACE, run_id: runId, launch_id: launchId });
+    const registry = new HostConnectionRegistry();
+    let sent!: () => void;
+    const stopSent = new Promise<void>(resolve => { sent = resolve; });
+    registry.registerConnection(SERVER_HOST, { send() { sent(); }, close() {} });
+    const service = new RunOrchestrationService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), repository, {
+      hostKindResolver: async () => ({ hostKind: "server", hostId: SERVER_HOST, workspaceLocationId: null }),
+      hostCli: { connectionRegistry: registry },
+    });
+    const recovery = service.executeRun({ run_id: runId, space_id: SPACE, worker_id: "recovery", command_source: "job" });
+    await stopSent;
+    // The previous worker reports concurrently, and its Supervisor admits attempt 2.
+    await repository.publishRunTerminal({ run_id: runId, space_id: SPACE, status: "failed",
+      error_json: { error_code: "adapter_runtime_error" }, completed_at: new Date().toISOString() });
+    await new PostRunFinalizationService(repository, undefined, undefined, undefined, undefined, new PgRunSupervisor(db.pool)).finalize(runId, SPACE);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    expect(await repository.tryAcquireExecutionLock({ run_id: runId, worker_id: "successor" })).toBe(true);
+    registry.receiveComplete(SERVER_HOST, runId, { exit_code: 1, timed_out: false, error: null }, launchId);
+    await expect(recovery).resolves.toMatchObject({ skipped: true, skip_reason: "interrupted_attempt_already_settled" });
+    expect((await repository.getLatestRunAttempt(SPACE, runId))?.status).toBe("running");
+    expect((await db.pool.query("SELECT worker_id FROM run_execution_locks WHERE run_id=$1", [runId])).rows).toEqual([{ worker_id: "successor" }]);
+    expect((await db.pool.query(
+      "SELECT event_type FROM run_events WHERE run_id=$1 AND attempt_number=2",
+      [runId],
+    )).rows).toEqual([]);
+  });
+
+  it("refuses a busy finalization without blocking an unrelated Run", async () => {
+    const repository = new PgRunRepository(db.pool);
+    const [first, second] = await Promise.all([seedRun(), seedRun()]);
+    for (const id of [first, second]) await repository.markRunTerminal({ run_id: id, space_id: SPACE, status: "cancelled", completed_at: new Date().toISOString() });
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const owner = new PostRunFinalizationService(repository, undefined, undefined, undefined, {
+      reconcilers: () => [{ key: "blocked_projection", settle: async () => { entered(); await blocked; } }],
+    }).finalize(first, SPACE);
+    await ready;
+    try {
+      await expect(new PostRunFinalizationService(repository).finalize(first, SPACE))
+        .rejects.toMatchObject({ code: "finalization_in_progress" });
+      await expect(new PostRunFinalizationService(repository).finalize(second, SPACE))
+        .resolves.toMatchObject({ run_id: second });
+    } finally {
+      release();
+      await owner;
+    }
+  });
+
+  it("recovers durable cancellation intent without assuming a missing local process has exited", async () => {
+    const runId = await seedRun();
+    const repository = new PgRunRepository(db.pool);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    await repository.bindAttemptLaunch({ space_id: SPACE, run_id: runId, launch_id: randomUUID() });
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    const service = new RunOrchestrationService(config, repository, {
+      hostKindResolver: async () => ({ hostKind: "server", hostId: SERVER_HOST, workspaceLocationId: null }),
+      hostCli: { connectionRegistry: new HostConnectionRegistry() },
+    });
+    await expect(service.cancelRun({ space_id: SPACE, run_id: runId, requested_by_user_id: USER }))
+      .resolves.toMatchObject({ status: "cancelling", error_code: "cancel_confirmation_timeout" });
+    expect((await repository.getLatestRunAttempt(SPACE, runId))?.ended_at).toBeNull();
+    const recovery = new RunRecoveryService(config, repository);
+    await recovery.recover();
+    await recovery.recover();
+    expect((await db.pool.query("SELECT status FROM jobs WHERE job_type='agent_run' AND payload_json->>'run_id'=$1", [runId])).rows)
+      .toEqual([{ status: "pending" }]);
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("cancelling");
+    expect(await repository.listRunFinalizations(SPACE, runId)).toHaveLength(0);
+  });
+
+  it("does not wait on its own finalization lock when a domain reconciler cancels the same Run", async () => {
+    const runId = await seedRun();
+    const repository = new PgRunRepository(db.pool);
+    await repository.markRunTerminal({ run_id: runId, space_id: SPACE, status: "cancelled", completed_at: new Date().toISOString() });
+    let nested = 0;
+    const finalizer = new PostRunFinalizationService(repository, undefined, undefined, undefined, {
+      reconcilers: () => [{ key: "domain_cleanup", settle: async () => {
+        nested += 1;
+        // A separately constructed finalizer contends for the same DB owner.
+        await expect(new PostRunFinalizationService(new PgRunRepository(db.pool)).finalize(runId, SPACE))
+          .rejects.toMatchObject({ code: "finalization_in_progress" });
+      } }],
+    });
+    const finished = await finalizer.finalize(runId, SPACE);
+    expect(nested).toBe(1);
+    expect((await repository.getLatestRunFinalization(SPACE, runId))?.settled_at).toBeTruthy();
+    expect(finished.id).toBeTruthy();
+    // The DB owner is released after completion, allowing later replay.
+    await expect(finalizer.finalize(runId, SPACE)).resolves.toMatchObject({ id: finished.id });
   });
 
   it("marks lost executions orphaned during startup recovery", async (ctx) => {

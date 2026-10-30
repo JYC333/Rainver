@@ -492,6 +492,62 @@ reclaim and explicit finalization use one recoverable path. A finalization
 failure leaves the committed Run outcome intact and retries the Job; chat/Room
 completion is withheld until that finalization succeeds.
 
+Finalization has one PostgreSQL owner per Run attempt. Contenders, including
+reentrant domain callbacks, return `finalization_in_progress` immediately;
+jobs defer completion without consuming a model attempt and explicit finalize
+requests return HTTP 409. They never wait on the owner's advisory lock.
+An existing current-attempt finalization can resume its owed settlement after
+the Supervisor moves the Run to `waiting_for_review`; this does not resume
+execution or grant approval. A policy pause without that finalization remains
+ineligible. Failed settlement backs off to at most one hour, including after
+many failed passes.
+`runSettlement.ts` composes the durable completion steps. Host-thread outcome
+and dispatch release are a required `host_thread` step for hard terminal Runs,
+shared by cancellation, adapter completion and recovery. Failed steps remain
+owed while completed steps are skipped on replay. A review hold does not mark
+Host release done: later cancellation adds that obligation. Recovery also finds
+legacy settled records whose dispatch claim is still held, independently of
+whether `chat_completed` was already written. Terminal Run update results
+retain the Host-thread dispatch metadata needed for this replay.
+
+The `host_thread` step settles two obligations in one transaction
+(`PgHostThreadRepository.settleRunOutcome`), locking the Run row (FOR SHARE)
+before the thread row, the order quota admission uses. Nothing is written
+unless the Run, under that lock, is hard terminal and on this thread: a
+terminal snapshot held after a Supervisor successor attempt queued the Run
+again leaves claim, session, identity, occupancy and `last_run_id` unchanged.
+- **Outcome** (vendor session, identity/standing digests, occupancy,
+  `last_run_id`) is written only when it is the thread's latest word: refused
+  when a newer Run already reported, a handoff rotated the session, or another
+  turn holds the thread. A Room turn held for quota and re-admitted after the
+  person's newer turn finished therefore never replaces that turn's session.
+- **Claim release** clears `dispatch_lock_id` only when it equals this Run's
+  id on its own thread and the Run is hard terminal under that lock. Another
+  Run's claim, an admission nonce, or the Run's claim while a Supervisor
+  successor attempt has it queued again is never touched.
+The linearization point is that transaction's commit. The step completes only
+when the Run no longer holds the claim; a claim held by a Run that is not
+terminal throws `host_thread_claim_held` and stays owed (settlement retry and
+backoff). A refused outcome is not a failure. Settlement steps may declare an
+`owed` state check: a ledger that recorded `host_thread` done while the claim
+is still held (written before the claim was its own obligation) is reopened by
+the settlement sweep, which selects terminal Runs still holding a claim.
+
+`RunRecoveryService` replays these durable obligations; `RunRecoveryLoop` owns
+one background pass on its own timer independently of business job lanes;
+even occupied lanes cannot stop maintenance, and passes never overlap. Each
+step of a pass (cancellation intent, stale preparation, orphan finalization,
+chat completion, Task finalization, settlement) and each Run inside a step
+fails on its own: it is logged and retried next pass while the rest proceeds;
+this includes failures reading an individual Run before its reconciliation.
+Stuck-job reclaim failing does not skip the lifecycle replay. A pass still
+running after ten minutes is reported once in the server log with the last
+completed pass; it is not abandoned or raced, so no second pass starts beside
+a hung one. A hung database call still holds that pass (no statement timeout
+is imposed on recovery). Sources settlement callbacks
+project only the named Run's terminal result; deadline cancellation runs in
+the ordinary read/tick path outside finalization ownership.
+
 Runs in `waiting_for_review` have explicit human controls: `POST /resume`
 requeues after approval (`same_attempt` for an in-flight policy pause,
 `new_attempt` for a Supervisor terminal hold) and `POST /abandon` records a
@@ -503,11 +559,23 @@ CLI cancellation is two-phase: the Run enters `cancelling`, the control plane
 asks the host daemon to terminate the process group, and the Run is marked
 `cancelled` only after the daemon confirms exit; otherwise it stays
 `cancelling` with a `cancel_confirmation_timeout` result. The cancel signals
-are the daemon's (ADR 0016). No CLI process runs in the server. On worker
-startup, a stale `running` run whose in-flight state was lost becomes
-`orphaned`, is finalized, and passes through the same supervisor policy. A
-stale `cancelling` run settles as `cancelled` so an explicit cancel is not
-undone by an automatic orphan retry. A daemon attempt has no default run
+are the daemon's (ADR 0016). `RunExecutionControl` owns this protocol for user
+cancellation, explicit deadlines and lost-worker recovery. An empty local
+process registry is not proof that a persisted Host launch exited. Persisted
+`cancelling` intent with no live job is re-enqueued through the canonical queue,
+so a request-process crash does not lose the stop obligation.
+No CLI process runs in the server. On worker
+startup, stale preparation without a recorded Host launch can be recovered
+directly. A dispatched attempt is recovered by its reclaimed `agent_run` job:
+after acquiring the abandoned execution lock, it sends a forced stop naming
+the persisted `launch_id` and waits for that Host's matching `complete`.
+Only then does the Run become `orphaned` and pass through the existing
+Supervisor, or `cancelled` if a person had already stopped it. An offline Host
+or missing confirmation defers the job without consuming its retry budget;
+even an exhausted job retains a reconciliation claim to stop its old process.
+Recovery failure events carry the interrupted attempt number, so a delayed
+recovery cannot add its error evidence to a successor attempt.
+Recovery never rebinds a running Run as queued work. A daemon attempt has no default run
 deadline and no no-output watchdog: prolonged silence records one
 informational `run_quiet` status event and the attempt keeps running until it
 finishes, is stopped, loses its host connection, or reaches an explicitly set
@@ -658,3 +726,14 @@ goal Runs use this path through the same Profile/router/dispatcher.
 This headless variant is restricted to the Sources goal explore/repair contract;
 an unrelated headless Run without Task reporting does not select it. Its rendered
 skill retains the normal `name`/`description` frontmatter.
+
+Sources collection Runs use ordinary ACP launch and the existing Run-scoped
+system-action transport. Only `source.material.submit` is granted;
+the bound Work Skill describes its strict fields and finite same-Run corrections.
+No overlay/CLI hash handshake or search-only Host permission claim is made.
+Submissions are Agent-provided, not independently verified. Final model output
+and native tool events cannot replace the action. Selected Profile/model/mode,
+cost/consent admission, deadline/cancellation and Source authority are rechecked;
+accepted results use the existing materializer and cursor transaction. See
+[SOURCE_GOALS](SOURCE_GOALS.md#selected-agent-assisted-search) for provenance,
+reference-only retention, manual Reading and ongoing collection semantics.

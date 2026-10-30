@@ -38,6 +38,6 @@ export default function SourceAccessPage() {
       </form>}
     {saved&&<p role="status">{t('sourceGoals.credentialSaved')}</p>}
     {error&&<p role="alert">{t('sourceGoals.errorHint')}</p>}
-    <SpaceLink className="underline" to="/sources/goals">{t('sourceGoals.goals')}</SpaceLink>
+    <Button variant="outline" asChild><SpaceLink to="/library/reading/goals">{t('sourceGoals.goals')}</SpaceLink></Button>
   </Card>
 }

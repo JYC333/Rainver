@@ -12,7 +12,13 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { it, expect, vi } from 'vitest';
 import { useTestDatabase } from './support/testDatabase.js';
-import { seedSpaceOwnerProject, seedMainlineRoomsForAllProjects } from './support/domainSeeds.js';
+import { seedSpaceOwnerProject, seedMainlineRoomsForAllProjects, seedAgentWithVersion, seedServerRuntimeProfile } from './support/domainSeeds.js';
+import { proposalsModule } from '../src/modules/proposals/index.js';
+import { upsertCustomSourceSpacePolicy } from './support/customSourceWorld.js';
+import { SourceRecipeCreateService } from '../src/modules/sources/sourceRecipes/recipeCreateService.js';
+import { SourceRecipeDryRunService } from '../src/modules/sources/sourceRecipes/recipeDryRunService.js';
+import { PgRunRepository } from '../src/modules/runs/repository.js';
+import { CliAgentToolTransport } from '../src/modules/runs/cliToolTransport.js';
 import { retainReaderBody } from './support/readingMaterial.js';
 import { buildModuleServer } from './support/moduleServer.js';
 import { loadConfig } from '../src/config.js';
@@ -68,7 +74,34 @@ it.each([['en',1440,1000],['zh-CN',390,844]] as const)('walks built Reading with
   await db.pool.query(`INSERT INTO source_providers(id,provider_key,display_name,provider_kind,category,status,capabilities_json,created_at,updated_at) VALUES($1,'generic_rss','RSS Feed','generic','feed','active','{}',now(),now()) ON CONFLICT(provider_key) DO NOTHING`,[provider]);
   await db.pool.query(`INSERT INTO source_connectors(id,connector_key,display_name,connector_type,ingestion_mode,status,capabilities_json,created_at,updated_at) VALUES($1,'rss','RSS','external_feed','pull','active','{}',now(),now()) ON CONFLICT(connector_key) DO NOTHING`,[connector]);
   await db.pool.query(`INSERT INTO source_provider_connectors(id,provider_id,connector_id,status,priority,capabilities_json,created_at,updated_at) SELECT $1,p.id,c.id,'active',0,'{}',now(),now() FROM source_providers p,source_connectors c WHERE p.provider_key='generic_rss' AND c.connector_key='rss' ON CONFLICT DO NOTHING`,[randomUUID()]);
-  const app=buildModuleServer(config,[informationDigestModule,readerModule,projectsModule,sourcesModule]);
+  // A connection-backed material whose Source has not allowed readable content,
+  // so preparation must pass the Source owner's real consent proposal.
+  const consentItem=randomUUID();
+  {
+    await db.pool.query(`INSERT INTO source_connectors(id,connector_key,display_name,connector_type,ingestion_mode,status,capabilities_json,created_at,updated_at) VALUES('connector-custom-source','custom_source','Custom Source','external_url','pull','active','{}',now(),now()) ON CONFLICT DO NOTHING`);
+    await db.pool.query(`INSERT INTO source_providers(id,provider_key,display_name,provider_kind,category,status,capabilities_json,created_at,updated_at) VALUES('provider-custom-source','custom_source','Custom Source','named','general','active','{}',now(),now()) ON CONFLICT DO NOTHING`);
+    await db.pool.query(`INSERT INTO source_provider_connectors(id,provider_id,connector_id,status,priority,capabilities_json,created_at,updated_at) VALUES('mapping-custom-source','provider-custom-source','connector-custom-source','active',0,'{}',now(),now()) ON CONFLICT DO NOTHING`);
+    await upsertCustomSourceSpacePolicy(db.pool,space);
+    const create=new SourceRecipeCreateService(db.pool,config),dry=new SourceRecipeDryRunService(db.pool,config);
+    const made=await create.createSource(identity,{name:'Consent feed',project_id:null,source_type:'rss',endpoint_url:`${upstream.baseUrl}/feed.xml`,fetch_frequency:'manual',capture_policy:'reference_only',retention_policy:'metadata_only'});
+    await dry.dryRunRecipeVersion(identity,made.connection.id,{recipe_version_id:made.recipe_version.id,fixture_content:`<rss version="2.0"><channel><title>Consent feed</title><item><title>Consent article</title><link>${upstream.baseUrl}/consent-article</link><guid>consent</guid></item></channel></rss>`});
+    await create.activateRecipe(identity,made.connection.id,{recipe_version_id:made.recipe_version.id});
+    await db.pool.query(`INSERT INTO source_items(id,space_id,owner_user_id,created_by_user_id,connection_id,visibility,item_type,title,source_uri,canonical_uri,content_hash,content_state,retention_policy,first_seen_at,last_seen_at,created_at,updated_at)
+      VALUES($1,$2,$3,$3,$4,'private','external_url','Consent article',$5,$5,'consent-capture','metadata_only','metadata_only',$6,$6,$6,$6)`,[consentItem,space,owner,made.connection.id,`${upstream.baseUrl}/consent-article`,now]);
+  }
+  // Deterministic external Agent boundary for preparation: its real queued Run
+  // submits through the granted source.material.submit action; no model runs.
+  const submitPrepared=async(itemId:string,text:string)=>{
+    const operation=(await db.pool.query<{id:string;metadata_json:{run_id:string}}>("SELECT id,metadata_json FROM extraction_jobs WHERE source_item_id=$1 AND metadata_json->>'material_processing'='true' AND status IN ('pending','running') ORDER BY created_at DESC LIMIT 1",[itemId])).rows[0];
+    await db.pool.query("UPDATE runs r SET status='running',started_at=now(),runtime_profile_id=p.id,runtime_key=p.runtime_key,runtime_profile_snapshot_json=to_jsonb(p) FROM agent_runtime_profiles p WHERE r.id=$1 AND p.id=r.requested_runtime_profile_id",[operation.metadata_json.run_id]);
+    const run=(await new PgRunRepository(db.pool).getRun(space,operation.metadata_json.run_id))!;if(run.execution_kind!=='agent')throw new Error('Expected material Agent Run');
+    const item=(await db.pool.query<{source_uri:string;title:string}>('SELECT source_uri,title FROM source_items WHERE id=$1',[itemId])).rows[0];
+    const result=await new CliAgentToolTransport(config).call(run,{id:'prepare-'+itemId,name:'source.material.submit',arguments:{processing_id:operation.id,status:'succeeded',items:[{url:item.source_uri,title:item.title,summary:'Fixture preparation summary',observed_at:new Date().toISOString(),content:{kind:'article',format:'source_text',syntax:'plain',text,sources:[item.source_uri]}}],failure:null,coverage:{truncated:false,exhaustive:false,limitations:['Deterministic Agent boundary fixture; no model invocation']}}});
+    expect(result).toMatchObject({ok:true});
+    await db.pool.query("UPDATE runs SET status='succeeded' WHERE id=$1",[run.id]);
+  };
+  const materialCounts=async()=>(await db.pool.query<{runs:number;jobs:number}>("SELECT (SELECT count(*)::int FROM runs WHERE space_id=$1) runs,(SELECT count(*)::int FROM extraction_jobs WHERE space_id=$1 AND metadata_json->>'material_processing'='true') jobs",[space])).rows[0];
+  const app=buildModuleServer(config,[informationDigestModule,readerModule,projectsModule,sourcesModule,proposalsModule]);
   const { chromium } = webRequire('playwright-core');
   const vitePath=pathToFileURL(webRequire.resolve('vite')).href;
   const { preview }=await import(vitePath);
@@ -90,7 +123,7 @@ it.each([['en',1440,1000],['zh-CN',390,844]] as const)('walks built Reading with
         const request=route.request();const url=new URL(request.url());const path=url.pathname.replace('/api/v1','');
         if(failNextReading && path.endsWith('/reading') && request.method()==='GET') { failNextReading=false; return route.fulfill({status:503,json:{detail:'Acceptance: transient failure'}}) }
         // Reading, preferences, historical membership and Reader are real application routes/PG.
-        if(path.includes('/reading') || path.includes('/information-digests') || path.startsWith('/reader/') || path.startsWith('/sources/') || /^\/projects\/[^/]+\/corpus$/.test(path)) {
+        if(path.includes('/reading') || path.includes('/information-digests') || path.startsWith('/reader/') || path.startsWith('/sources/') || /^\/proposals\/[^/]+\/accept$/.test(path) || /^\/projects\/[^/]+\/corpus$/.test(path)) {
           realRequests.push(`${request.method()} ${path}${url.search}`);
           const requestedSpace=path.startsWith(`/spaces/${secondSpace}/`) || request.headers()['x-rainver-space-id']===secondSpace ? secondSpace : space;
           __setAuthIdentityForTests({spaceId:requestedSpace,userId:owner});
@@ -118,7 +151,15 @@ it.each([['en',1440,1000],['zh-CN',390,844]] as const)('walks built Reading with
         return route.fulfill({json:data});
       });
       const goto=(path:string)=>page.goto(`${base}/spaces/${space}${path}`);
-      const text=locale==='en'?{mine:'My reading',read:'Read',all:'All material',mark:'Mark read',restore:'Restore unread',prefs:'Project reading preferences',project:'Project reading',open:'Open Reader',editions:'Daily editions'}:{mine:'我的阅读',read:'已读',all:'全部资料',mark:'标为已读',restore:'恢复未读',prefs:'项目阅读偏好',project:'项目阅读',open:'打开阅读器',editions:'每日版'};
+      const text=locale==='en'?{mine:'My reading',read:'Read',all:'All material',mark:'Mark read',restore:'Restore unread',prefs:'Project reading preferences',project:'Project reading',open:'Open Reader',editions:'Daily editions',details:'Why this is here'}:{mine:'我的阅读',read:'已读',all:'全部资料',mark:'标为已读',restore:'恢复未读',prefs:'项目阅读偏好',project:'项目阅读',open:'打开阅读器',editions:'每日版',details:'推荐与跟踪依据'};
+      const showReason=async(reason:string)=>{
+        const explanation=page.getByText(reason,{exact:true});
+        await explanation.waitFor({state:'attached'});
+        // Preference changes can replace the grouped card, resetting its disclosure.
+        const card=page.getByRole('listitem',{name:'Shared recommendation across days',exact:true});
+        if(await card.locator('details').first().getAttribute('open')===null)await card.getByText(text.details,{exact:true}).click();
+        await explanation.waitFor();
+      };
       await goto('/library');
       await page.getByRole('heading',{name:text.mine,exact:true}).waitFor();
       await page.getByRole('heading',{name:'Shared recommendation across days'}).waitFor();
@@ -126,14 +167,14 @@ it.each([['en',1440,1000],['zh-CN',390,844]] as const)('walks built Reading with
       expect(await page.getByText('Project original reason').count()).toBe(0);
       await page.getByRole('button',{name:text.prefs,exact:true}).click();
       const checkbox=page.getByRole('checkbox').first();try{await checkbox.waitFor()}catch(e){console.error(await page.locator('body').innerText());throw e;}await checkbox.click();await expect.poll(()=>checkbox.isChecked()).toBe(true);
-      await page.getByText('Project original reason').waitFor();console.info('Reading preference/group passed',locale);
+      await showReason('Project original reason');console.info('Reading preference/group passed',locale);
       expect(await page.getByRole('heading',{name:'Shared recommendation across days'}).count()).toBe(1);
       const secondCheckbox=page.getByRole('checkbox').nth(1);
-      await secondCheckbox.click();await page.getByText('Project B reason',{exact:true}).waitFor();
+      await secondCheckbox.click();await showReason('Project B reason');
       expect(await page.getByRole('heading',{name:'Shared recommendation across days'}).count()).toBe(1);
       await checkbox.click();await expect.poll(()=>page.getByText('Project original reason',{exact:true}).count()).toBe(0);
       expect(await page.getByText('Project B reason',{exact:true}).count()).toBe(1);
-      await checkbox.click();await page.getByText('Project original reason',{exact:true}).waitFor();
+      await checkbox.click();await showReason('Project original reason');
       await secondCheckbox.click();await expect.poll(()=>page.getByText('Project B reason',{exact:true}).count()).toBe(0);
       expect(await page.getByText(locale==='en'?'Off by default. This changes only your reading list, never the team’s collection direction, schedule or budget.':'默认关闭。只影响你的阅读列表，不改变团队采集方向、时间或预算。',{exact:true}).count()).toBe(1);
       await page.screenshot({path:`${shotDir}/${locale}-personal.png`,fullPage:true});
@@ -182,7 +223,7 @@ it.each([['en',1440,1000],['zh-CN',390,844]] as const)('walks built Reading with
       await goto(`/projects/${project}/sources?view=all`);
       await page.getByRole('heading',{name:'Shared recommendation across days'}).waitFor();
       expect(await page.getByRole('heading',{name:'Shared recommendation across days'}).count()).toBe(1);
-      await page.getByRole('heading',{name:'Shared recommendation across days'}).locator('..').getByRole('link',{name:text.open,exact:true}).click();
+      await page.getByRole('listitem',{name:'Shared recommendation across days',exact:true}).getByRole('link',{name:text.open,exact:true}).click();
       await page.getByText('This is the actual retained Reader body for the recommendation.',{exact:true}).first().waitFor();
       await page.screenshot({path:`${shotDir}/${locale}-corpus-reader.png`,fullPage:true});
       await goto('/library/reading?view=read');
@@ -191,11 +232,64 @@ it.each([['en',1440,1000],['zh-CN',390,844]] as const)('walks built Reading with
       await page.getByRole('heading',{name:'Shared recommendation across days'}).waitFor();
       await page.getByRole('link',{name:text.open,exact:true}).click();
       await page.getByText('This is the actual retained Reader body for the recommendation.',{exact:true}).first().waitFor();
-      await page.getByRole('button',{name:locale==='en'?'Re-extract':'重新提取',exact:true}).waitFor();
-      await page.getByRole('button',{name:locale==='en'?'Close inspector':'关闭检查面板',exact:true}).click();
-      await page.getByRole('button',{name:locale==='en'?'Show inspector':'显示检查面板',exact:true}).click();
+      // Reader preparation is the managed Sources operation (MaterialProcessingPanel).
+      // Without an owned usable execution configuration it is refused: no Run,
+      // no operation and the retained body is unchanged.
+      const en=locale==='en';
+      const prepareAgain=page.getByRole('button',{name:en?'Read again':'重新读取整理',exact:true});await prepareAgain.waitFor();
+      const beforeRefusal=await materialCounts();await prepareAgain.click();
+      const reread=page.getByRole('dialog');
+      await reread.getByRole('heading',{name:en?'Read this material again?':'重新读取这篇资料？',exact:true}).waitFor();
+      expect(await materialCounts()).toEqual(beforeRefusal);
+      await reread.getByRole('button',{name:en?'Read again':'重新读取',exact:true}).click();
+      await page.getByRole('alert').first().waitFor();
+      expect(await materialCounts()).toEqual(beforeRefusal);
+      await page.getByText('This is the actual retained Reader body for the recommendation.',{exact:true}).first().waitFor();
+      const closeInspector=page.getByRole('button',{name:en?'Close inspector':'关闭检查面板',exact:true});
+      const showInspector=page.getByRole('button',{name:en?'Show inspector':'显示检查面板',exact:true});
+      // Narrow Reader viewports start with the overlay closed.
+      if(!await closeInspector.isVisible())await showInspector.click();
+      await closeInspector.click();
+      await showInspector.click();
       await page.getByRole('complementary',{name:locale==='en'?'Reader inspector':'阅读检查面板',exact:true}).waitFor();
       await page.screenshot({path:`${shotDir}/${locale}-reader.png`,fullPage:true});
+      // An owned usable Agent configuration now exists (seeded, not a model).
+      const agentId=randomUUID();await seedAgentWithVersion(db.pool,{agent:agentId,version:randomUUID(),space,owner,name:'Reading Agent',seedDefaultRuntimeProfile:false});const serverHost=(await db.pool.query<{id:string}>("SELECT id FROM hosts WHERE kind='server' LIMIT 1")).rows[0]?.id??randomUUID();await seedServerRuntimeProfile(db.pool,{agent:agentId,space,hostId:serverHost});
+      // A Source that has not allowed readable content asks for the owner's
+      // consent first; "Not now" writes nothing.
+      await goto(`/library/items/${consentItem}?from=library&returnTo=%2Flibrary%2Freading`);
+      const prepare=page.getByRole('button',{name:en?'Read and prepare':'读取并整理',exact:true});await prepare.click();
+      const consent=page.getByRole('dialog');await consent.getByRole('heading',{name:en?'Allow reading content for this Source?':'允许此来源保存可读内容？',exact:true}).waitFor();
+      await page.screenshot({path:`${shotDir}/${locale}-material-consent.png`,fullPage:true});
+      const beforeConsent=await materialCounts();const proposalsBefore=(await db.pool.query('SELECT count(*)::int n FROM proposals WHERE space_id=$1',[space])).rows[0].n;
+      await consent.getByRole('button',{name:en?'Not now':'暂不处理',exact:true}).click();await consent.waitFor({state:'hidden'});
+      expect(await materialCounts()).toEqual(beforeConsent);expect((await db.pool.query('SELECT count(*)::int n FROM proposals WHERE space_id=$1',[space])).rows[0].n).toBe(proposalsBefore);
+      // Allowing goes through the Source owner's real proposal and then queues one managed Run.
+      await prepare.click();await consent.getByRole('button',{name:en?'Allow this Source and prepare':'允许此来源保存内容并整理',exact:true}).click();
+      // Retention consent is accepted through the real proposal, but model
+      // egress for this Source is a separate, still-missing permission: refused, no Run.
+      await page.getByRole('alert').filter({hasText:'has not allowed external model processing'}).waitFor();
+      expect((await db.pool.query("SELECT status FROM proposals WHERE space_id=$1 AND proposal_type='source_material_retention'",[space])).rows.map(r=>r.status)).toEqual(['accepted']);
+      expect(await materialCounts()).toEqual(beforeConsent);
+      // FIXTURE: there is currently no API to grant model egress after a Source
+      // is created (connection PATCH is retired with 410; channel updates carry
+      // no consent), so the owner's grant is written as the canonical consent/policy.
+      const consentConnection=(await db.pool.query<{connection_id:string}>('SELECT connection_id FROM source_items WHERE id=$1',[consentItem])).rows[0].connection_id;
+      expect((await app.inject({method:'PATCH',url:`/api/v1/sources/connections/${consentConnection}`,headers:{'x-rainver-space-id':space,'content-type':'application/json'},payload:JSON.stringify({consent:{allow_external_model_egress:true}})})).statusCode).toBe(410);
+      await db.pool.query(`UPDATE source_connections SET consent_json=COALESCE(consent_json,'{}'::jsonb)||'{"allow_external_model_egress":true}'::jsonb,policy_json=COALESCE(policy_json,'{}'::jsonb)||'{"source_egress_configured":true,"source_egress_class":"external_provider_allowed"}'::jsonb WHERE id=$1`,[consentConnection]);
+      await prepare.click();await page.getByText(en?'Queued':'排队中',{exact:true}).waitFor();
+      expect(await materialCounts()).toEqual({runs:beforeConsent.runs+1,jobs:beforeConsent.jobs+1});
+      await page.getByRole('link',{name:en?'View execution':'查看执行',exact:true}).waitFor();
+      await page.screenshot({path:`${shotDir}/${locale}-material-queued.png`,fullPage:true});
+      // Cancelling stops that Run and keeps existing content; preparing again is explicit.
+      await page.getByRole('button',{name:en?'Cancel':'取消',exact:true}).click();
+      await page.getByText(en?'Preparation cancelled; existing content was preserved.':'已取消整理，已有内容保持不变。',{exact:true}).waitFor();
+      await prepare.click();await page.getByText(en?'Queued':'排队中',{exact:true}).waitFor();
+      await submitPrepared(consentItem,'Prepared consent article text from the fixture Agent boundary.');
+      await page.getByText(en?'Reading content saved.':'可读内容已保存。',{exact:true}).waitFor({timeout:15000});
+      await page.getByText('Prepared consent article text from the fixture Agent boundary.',{exact:false}).first().waitFor();
+      await page.getByRole('button',{name:en?'Read again':'重新读取整理',exact:true}).waitFor();
+      await page.screenshot({path:`${shotDir}/${locale}-material-ready.png`,fullPage:true});
       await goto(`/projects/${project}/sources`);
       await page.getByRole('heading',{name:text.project,exact:true}).waitFor();
       await page.getByRole('heading',{name:'Shared recommendation across days'}).waitFor();
@@ -260,14 +354,15 @@ it.each([['en',1440,1000],['zh-CN',390,844]] as const)('walks built Reading with
         await expect.poll(()=>headings.count()).toBe(30);
         await list.getByRole('button',{name:'加载更多',exact:true}).click();
         await expect.poll(()=>headings.count()).toBe(60);
-        await list.getByRole('heading',{name:readTitle,exact:true}).locator('..').getByRole('button',{name:'恢复未读',exact:true}).click();
+        await list.getByRole('listitem',{name:readTitle,exact:true}).getByRole('button',{name:'恢复未读',exact:true}).click();
         await expect.poll(()=>list.getByRole('button',{name:'恢复未读',exact:true}).count()).toBe(0);
         expect(await headings.count()).toBe(60);
-        await list.getByRole('heading',{name:dismissTitle,exact:true}).locator('..').getByRole('button',{name:'恢复到我的待读',exact:true}).click();
+        await list.getByRole('listitem',{name:dismissTitle,exact:true}).getByRole('button',{name:'恢复到我的待读',exact:true}).click();
         await expect.poll(()=>list.getByRole('button',{name:'恢复到我的待读',exact:true}).count()).toBe(0);
         expect(await headings.count()).toBe(60);
         await list.getByRole('button',{name:'加载更多',exact:true}).click();
-        await expect.poll(()=>headings.count()).toBe(65);
+        // 64 seeded window items plus the two pending materials (the shared recommendation and the consent-prepared article).
+        await expect.poll(()=>headings.count()).toBe(66);
         await page.screenshot({path:`${shotDir}/zh-CN-window.png`,fullPage:true});
       }
       await page.goto(`${base}/spaces/${secondSpace}/library/reading`);
@@ -281,26 +376,34 @@ it.each([['en',1440,1000],['zh-CN',390,844]] as const)('walks built Reading with
       const background = await page.getByRole('heading',{name:locale==='en'?'What would you like to keep following?':'你想持续关注什么？',exact:true}).elementHandle();
       const readingGets = () => realRequests.filter(r => r.startsWith('GET ') && /\/reading(?:\?|$)/.test(r)).length;
       const beforeCancel = readingGets();
-      // Goal setup is now a durable full page; its Agent/preview/start path is
-      // exercised by sourceGoalBrowser.browser.ts. No old technical dialog remains.
-      const setup=page.getByRole('link',{name:locale==='en'?'Describe your goal':'描述关注目标',exact:true});
-      expect(await setup.getAttribute('href')).toContain('/sources/goals/new');
+      // Topic creation is a durable full page; its follow/first-collection path
+      // is exercised by sourceGoalBrowser.browser.ts. No old technical dialog remains.
+      const setup=page.getByRole('link',{name:locale==='en'?'Follow a topic':'关注一个主题',exact:true});
+      expect(await setup.getAttribute('href')).toContain('/library/reading/goals/new');
       await page.getByRole('button',{name:locale==='en'?'Save an article':'先保存一篇文章',exact:true}).click();
-      await page.getByRole('dialog').getByRole('button',{name:locale==='en'?'Cancel':'取消',exact:true}).click();
+      // An unsent save is dismissed with the dialog's own close (Escape); nothing is written or reloaded.
+      await page.getByRole('dialog').waitFor();await page.keyboard.press('Escape');
       await page.getByRole('dialog').waitFor({state:'hidden'});
       expect(await background!.evaluate((node:any) => node.isConnected)).toBe(true);
       expect(readingGets()).toBe(beforeCancel);
       await page.getByRole('button',{name:locale==='en'?'Save an article':'先保存一篇文章',exact:true}).click();
       await page.getByRole('textbox',{name:locale==='en'?'Article URL':'文章链接',exact:true}).fill(`${upstream.baseUrl}/saved-article`);
-      await page.getByRole('button',{name:locale==='en'?'Save and extract text':'保存并提取正文',exact:true}).click();
-      const firstOpen=page.getByRole('dialog').getByRole('link',{name:text.open,exact:true});
-      await firstOpen.waitFor({timeout:15000});
+      await page.getByRole('button',{name:locale==='en'?'Save and prepare':'保存并整理',exact:true}).click();
+      // Saving a link uses the same managed preparation: one queued Run whose
+      // fixture Agent submission is then saved as the readable body.
+      await page.getByRole('dialog').getByText(locale==='en'?'Queued':'排队中',{exact:true}).waitFor({timeout:15000});
+      const savedItem=(await db.pool.query<{id:string}>("SELECT id FROM source_items WHERE space_id=$1 AND source_uri=$2",[space,`${upstream.baseUrl}/saved-article`])).rows[0].id;
+      await submitPrepared(savedItem,'This is the first article saved from Reading. The extracted text is ready to read.');
+      await page.getByRole('dialog').getByText(locale==='en'?'Reading content saved.':'可读内容已保存。',{exact:true}).waitFor({timeout:15000});
+      const firstOpen=page.getByRole('dialog').getByRole('link',{name:locale==='en'?'Open Reader':'打开阅读器',exact:true});
+      await firstOpen.waitFor();
       expect(await firstOpen.getAttribute('href')).toContain(`/spaces/${space}/library/items/`);
       await page.screenshot({path:`${shotDir}/${locale}-first-article-ready.png`,fullPage:true});
       await firstOpen.click();
       await page.getByText('This is the first article saved from Reading. The extracted text is ready to read.',{exact:true}).first().waitFor();
       await page.goto(`${base}/spaces/${secondSpace}/library/reading`);
-      expect(upstream.requests.length).toBeGreaterThan(0);
+      // The readable body came from the managed preparation operation, not a browser or server-side extraction job.
+      expect((await db.pool.query("SELECT status FROM extraction_jobs WHERE source_item_id=$1 AND metadata_json->>'material_processing'='true' ORDER BY created_at DESC LIMIT 1",[savedItem])).rows[0].status).toBe('succeeded');
 
       await goto('/library/reading');
       await page.getByRole('heading',{name:'Shared recommendation across days'}).waitFor();

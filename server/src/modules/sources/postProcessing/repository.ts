@@ -19,7 +19,7 @@ import {
 import { SOURCE_POST_PROCESSING_LIMITS } from "./config.js";
 import { upsertCanonicalEvidence } from "../evidenceIdentity.js";
 import { lockActiveProjectForMutation } from "../../projects/access.js";
-import { evidenceProvenanceReadableClause, sourceConnectionLiveSubscriberClause, sourceItemReadableClause } from "../sourceItemAccess.js";
+import { evidenceProvenanceReadableClause, sourceConnectionLiveSubscriberClause, sourceItemFullContentReadClause, sourceItemReadableClause } from "../sourceItemAccess.js";
 
 const POST_PROCESSING_EVIDENCE_ACCESS = contentResourceDefinition("extracted_evidence")!;
 const POST_PROCESSING_SOURCE_ACCESS = contentResourceDefinition("source_item")!;
@@ -2087,8 +2087,7 @@ export class PgSourcePostProcessingRepository {
   }): Promise<{ items: SourceItemRow[]; cursorAfter: SourceWatermark | null }> {
     const { clauses, params } = itemWindowWhere(input);
     params.push(input.viewerUserId);
-    clauses.push(contentReadSql("source_item", "source_items", `$${params.length}`));
-    clauses.push(`${contentAccessLevelSql({ definition: POST_PROCESSING_SOURCE_ACCESS, alias: "source_items", userExpr: `$${params.length}` })} = 'full'`);
+    clauses.push(sourceItemFullContentReadClause("source_items", `$${params.length}`));
     params.push(input.inputConfig.item_limit);
     const result = await this.db.query<SourceItemRow>(
       `SELECT ${ITEM_COLUMNS}
@@ -2118,8 +2117,7 @@ export class PgSourcePostProcessingRepository {
           AND id::text = ANY($3::text[])
           AND deleted_at IS NULL
           AND ${channelItemLinkExistsSql("source_items.space_id", "source_items.id", "$2")}
-          AND ${contentReadSql("source_item", "source_items", "$4")}
-          AND ${contentAccessLevelSql({ definition: POST_PROCESSING_SOURCE_ACCESS, alias: "source_items", userExpr: "$4" })} = 'full'
+          AND ${sourceItemFullContentReadClause("source_items", "$4")}
         ORDER BY created_at ASC, id ASC`,
       [spaceId, sourceChannelId, itemIds, viewerUserId],
     );

@@ -14,9 +14,10 @@ import { withQueryableTransaction } from "../src/modules/routeUtils/common.js";
 import type { SourceConnectionRow } from "../src/modules/sources/sourceRepositoryRows.js";
 import { loadConfig, type ServerConfig } from "../src/config.js";
 import { SourcePostProcessingService } from "../src/modules/sources/postProcessing/service.js";
+import { PgSourcesRepository } from "../src/modules/sources/repository.js";
 import { enqueueDueSourcePostProcessingRules } from "../src/modules/sources/postProcessing/scheduler.js";
 import { ProjectResearchInitialIntakeCoordinator } from "../src/modules/projectResearch/pipeline/initialIntakeCoordinator.js";
-import { seedMainlineRoomsForAllProjects, seedRun } from "./support/domainSeeds.js";
+import { seedMainlineRoomsForAllProjects, seedRun, seedSpaceMember } from "./support/domainSeeds.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -417,6 +418,53 @@ describe("source post-processing repository (real Postgres)", () => {
     expect(next.evidence).toHaveLength(0);
   });
 
+  it.for(["new_since_last_success", "explicit"])("revalidates connection access before collecting %s post-processing input", async (window, ctx) => {
+    if (!db.available) return ctx.skip();
+    const itemId = await seedItem("Withdrawn paper", "2026-07-01T00:00:00.000Z");
+    const now = new Date().toISOString();
+    await seedSpaceMember(db.pool, { space: SPACE, user: OTHER, role: "member" });
+    await db.pool.query(`UPDATE source_connections SET visibility='space_shared' WHERE id=$1`, [CONNECTION]);
+    await db.pool.query(`INSERT INTO source_channel_user_subscriptions
+      (id,space_id,source_channel_id,user_id,status,library_enabled,digest_enabled,created_at,updated_at)
+      VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)`, [randomUUID(), SPACE, CONNECTION, OTHER, now]);
+    const collect = (viewerUserId: string) => repo().collectInputBatch({
+      spaceId: SPACE, sourceChannelId: CONNECTION, viewerUserId,
+      inputConfig: normalizeInputConfig({ window }), cursor: null, explicitItemIds: [itemId],
+    });
+    expect((await collect(OTHER)).items.map(item => item.id)).toEqual([itemId]);
+
+    // The item retains its captured visibility and the old subscription still
+    // exists, but neither grants access after the connection becomes private.
+    await db.pool.query(`UPDATE source_connections SET visibility='private' WHERE id=$1`, [CONNECTION]);
+    if (window === "explicit") await expect(collect(OTHER)).rejects.toMatchObject({ statusCode: 404 });
+    else expect((await collect(OTHER)).items).toEqual([]);
+    expect((await collect(OWNER)).items.map(item => item.id)).toEqual([itemId]);
+
+    // Withdrawing the Source also stops its owner's queued processing inputs.
+    await db.pool.query(`UPDATE source_connections SET status='archived' WHERE id=$1`, [CONNECTION]);
+    if (window === "explicit") await expect(collect(OWNER)).rejects.toMatchObject({ statusCode: 404 });
+    else expect((await collect(OWNER)).items).toEqual([]);
+  });
+
+  it("does not use Space oversight to put summary-only source content into a processing prompt", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const itemId = await seedItem("Summary-only paper", "2026-07-01T00:00:00.000Z");
+    await seedSpaceMember(db.pool, { space: SPACE, user: OTHER, role: "admin" });
+    await db.pool.query(`UPDATE source_connections SET visibility='space_shared' WHERE id=$1`, [CONNECTION]);
+    await db.pool.query(`INSERT INTO source_channel_user_subscriptions
+      (id,space_id,source_channel_id,user_id,status,library_enabled,digest_enabled,created_at,updated_at)
+      VALUES ($1,$2,$3,$4,'subscribed',true,true,now(),now())`, [randomUUID(), SPACE, CONNECTION, OTHER]);
+    await db.pool.query(`UPDATE source_items SET access_level='summary' WHERE id=$1`, [itemId]);
+    const collect = (viewerUserId: string) => repo().collectInputBatch({
+      spaceId: SPACE, sourceChannelId: CONNECTION, viewerUserId,
+      inputConfig: normalizeInputConfig({ window: "explicit" }), cursor: null, explicitItemIds: [itemId],
+    });
+    await expect(collect(OTHER)).rejects.toMatchObject({ statusCode: 404 });
+    await db.pool.query(`UPDATE spaces SET oversight_mode='content' WHERE id=$1`, [SPACE]);
+    await expect(collect(OTHER)).rejects.toMatchObject({ statusCode: 404 });
+    expect((await collect(OWNER)).items.map(item => item.id)).toEqual([itemId]);
+  });
+
   it("applies channel and reader gates to origin-backed explicit Evidence", async () => {
     if (!db.available) return;
     const itemId = await seedItem("Origin paper", "2026-07-01T00:00:00.000Z");
@@ -460,6 +508,32 @@ describe("source post-processing repository (real Postgres)", () => {
       spaceId: SPACE, sourceChannelId: CONNECTION, viewerUserId: OTHER, inputConfig: config,
       cursor: null, explicitItemIds: [itemId], explicitEvidenceIds: [evidenceId],
     })).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it.for(["list", "run"])("hides private extraction job metadata through the %s surface", async (surface, ctx) => {
+    if (!db.available) return ctx.skip();
+    const itemId = await seedItem("Private paper", "2026-07-01T00:00:00.000Z");
+    await db.pool.query(`UPDATE source_items SET visibility='private' WHERE id=$1`, [itemId]);
+    const now = new Date().toISOString();
+    await seedSpaceMember(db.pool, { space: SPACE, user: OTHER, role: "member" });
+    const jobId = randomUUID();
+    await db.pool.query(`INSERT INTO extraction_jobs
+      (id,space_id,connection_id,source_item_id,job_type,status,metadata_json,created_at)
+      VALUES ($1,$2,$3,$4,'extract_text','succeeded','{"private_note":"do not disclose"}'::jsonb,$5)`,
+      [jobId, SPACE, CONNECTION, itemId, now]);
+    const sources = new PgSourcesRepository(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
+    const filters = { status: null, sourceItemId: null, connectionId: null, jobType: null, limit: 50, offset: 0 };
+    if (surface === "list") {
+      expect(await sources.listJobs({ spaceId: SPACE, userId: OTHER }, filters)).toMatchObject({ items: [], total: 0 });
+      expect((await sources.listJobs({ spaceId: SPACE, userId: OWNER }, filters)).items.map(job => job.id)).toEqual([jobId]);
+    } else {
+      await expect(sources.runJob({ spaceId: SPACE, userId: OTHER }, jobId)).rejects.toMatchObject({ statusCode: 404 });
+      expect(await sources.runJob({ spaceId: SPACE, userId: OWNER }, jobId)).toMatchObject({ id: jobId, status: "succeeded" });
+      await db.pool.query(`UPDATE extraction_jobs SET status='pending' WHERE id=$1`, [jobId]);
+      await expect(sources.runJob({ spaceId: SPACE, userId: OTHER }, jobId)).rejects.toMatchObject({ statusCode: 404 });
+      expect((await db.pool.query(`SELECT status,started_at FROM extraction_jobs WHERE id=$1`, [jobId])).rows)
+        .toEqual([{ status: "pending", started_at: null }]);
+    }
   });
 
   it("records runs and advances per-rule cursor explicitly", async () => {

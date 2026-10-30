@@ -2,6 +2,8 @@ import { lazy, Suspense } from 'react'
 import { Navigate, Routes, Route } from 'react-router-dom'
 import { Skeleton } from '../../components/ui/skeleton'
 
+const GoalPage=lazy(()=>import('../sources/SourceGoalPage'))
+const GoalList=lazy(()=>import('../sources/SourceGoalsList'))
 const ReadingWorkspace = lazy(() => import('./ReadingWorkspace'))
 const LibraryPage = lazy(() => import('./LibraryPage'))
 const LibraryItemsPage = lazy(() => import('./LibraryPage').then(module => ({ default: module.LibraryItemsPage })))
@@ -26,6 +28,8 @@ function PageFallback() {
 export default function LibraryModule() {
   return (
     <Routes>
+      <Route path="reading/goals" element={<Suspense fallback={<PageFallback />}><GoalList /></Suspense>} />
+      <Route path="reading/goals/:goalId" element={<Suspense fallback={<PageFallback />}><GoalPage /></Suspense>} />
       <Route element={<Suspense fallback={<PageFallback />}><LibraryPage /></Suspense>}>
         <Route index element={<Navigate to="reading" replace />} />
         <Route path="reading" element={<Suspense fallback={<PageFallback />}><ReadingWorkspace /></Suspense>} />

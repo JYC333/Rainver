@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ONE_ARTICLE_HTML } from "./support/customSourceFixtures.js";
+import { CUSTOM_SOURCE_LIST_PIPELINE, ONE_ARTICLE_HTML } from "./support/customSourceFixtures.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -120,7 +120,7 @@ describe("Custom Source credentialed handler flow", () => {
       credential_id: credential.id,
       config: { list_selector: "article" },
     });
-    const version = await createFlow!.generateHandler(IDENTITY, connection.id, {});
+    const version = await createFlow!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     expect(version.policy_envelope_json).toMatchObject({ credential_ref: credential.id });
   });
 
@@ -138,7 +138,7 @@ describe("Custom Source credentialed handler flow", () => {
       credential_id: credential.id,
       config: { list_selector: "article" },
     });
-    const version = await createFlow!.generateHandler(IDENTITY, connection.id, {});
+    const version = await createFlow!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
 
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(FIXTURE_HTML, { status: 200 }));
     const outcome = await createFlow!.testHandler(IDENTITY, connection.id, { handler_version_id: version.id });
@@ -161,7 +161,7 @@ describe("Custom Source credentialed handler flow", () => {
       credential_id: credential.id,
       config: { list_selector: "article" },
     });
-    const version = await createFlow!.generateHandler(IDENTITY, connection.id, {});
+    const version = await createFlow!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(FIXTURE_HTML, { status: 200 }));
     await createFlow!.testHandler(IDENTITY, connection.id, { handler_version_id: version.id });
 
@@ -179,7 +179,7 @@ describe("Custom Source credentialed handler flow", () => {
       credential_id: credential.id,
       config: { list_selector: "article" },
     });
-    const version = await createFlow!.generateHandler(IDENTITY, connection.id, {});
+    const version = await createFlow!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(FIXTURE_HTML, { status: 200 }));
     await createFlow!.testHandler(IDENTITY, connection.id, { handler_version_id: version.id });
 

@@ -27,6 +27,9 @@ const KEEP_LOCAL_EXACT = [
   'rainver:knowledge-section',
   'project.areas.open',
   'project.sidecar.width',
+  // Which Reader panels were open (two booleans), and the Reading list density.
+  'rainver:reader-layout',
+  'rainver:reading-density',
 ]
 /**
  * Do not keep a prefix wholesale. `project.sidecar.`
@@ -61,9 +64,30 @@ export function dropStorageKey(storage: Storage, key: string): void {
   try { storage.removeItem(key) } catch { /* private mode */ }
 }
 
+/**
+ * Authenticated state held only in this tab's memory (never in browser
+ * storage), such as unsent Reader comments. Each owner registers how to drop
+ * it; logout, a 401 and another tab's logout all run these.
+ */
+const inMemoryResidue = new Set<() => void>()
+
+export function registerInMemoryResidue(clear: () => void): () => void {
+  inMemoryResidue.add(clear)
+  return () => { inMemoryResidue.delete(clear) }
+}
+
+// Advanced by every clear (logout, 401, another tab's logout): work started in
+// an earlier session compares its epoch and changes nothing afterwards.
+let epoch = 0
+export function sessionEpoch(): number { return epoch }
+
 export function clearSessionResidue(): void {
+  epoch += 1
   try { clearExcept(window.localStorage, keptKeys(KEEP_LOCAL_EXACT, KEEP_LOCAL_PREFIXES)) } catch { /* private mode */ }
   try { clearExcept(window.sessionStorage, keptKeys(KEEP_SESSION_EXACT, KEEP_SESSION_PREFIXES)) } catch { /* private mode */ }
+  for (const clear of inMemoryResidue) {
+    try { clear() } catch { /* one owner's failure must not keep the rest */ }
+  }
 }
 
 /** Removes the API response cache, whatever state the app thinks it is in. */

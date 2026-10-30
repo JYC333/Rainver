@@ -28,20 +28,18 @@ import {
   type CustomSourcePipelineItem,
 } from "./customSourceHtmlExtract.js";
 import {
-  effectiveCustomSourceLimits,
-  type CustomSourceRunnerResult,
-  type CustomSourceRunnerSettings,
-} from "./customSourceRunner.js";
+  effectiveSourceExecutionLimits,
+  type SourceExecutionResult,
+  type SourceExecutionSettings,
+} from "../sourceExecutionPolicy.js";
 
 /**
  * Interpreter for `language: "declarative_pipeline_v1"` handler versions.
- * Unlike `CustomSourceRunner` (which spawns a separate OS process to run
- * *generated code* it cannot fully trust), this executes a fixed, small step
+ * Executes a fixed, small step
  * catalog implemented once by this trusted server module — there is no
  * generated/untrusted code to isolate from the host. Every step that
  * performs a live network request goes through `fetchAllowedOriginResponse`,
- * the same origin-allowlist + redirect-revalidation guard the code-template
- * mode's pre-fetch uses. See
+ * the shared origin-allowlist + redirect-revalidation guard. See
  * `.agent/architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md`.
  *
  * `mode: "test"` runs only ever read the already-provided/fixture-overridable
@@ -49,9 +47,7 @@ import {
  * `fetch_page` step targeting the primary endpoint sentinel. Every other
  * live-fetch-capable step (`follow_link`, `download_asset`, `paginate`, or a
  * `fetch_page` with a literal URL) is a deliberate no-op in test mode — a
- * fixture test must stay offline and side-effect free, the same expectation
- * the code-template mode's fully network-blocked handler process already
- * satisfies.
+ * fixture test must stay offline and side-effect free.
  */
 
 const PRIMARY_ENDPOINT_SENTINEL = "$source.endpoint_url";
@@ -98,14 +94,14 @@ interface CustomSourcePipelineRunInput {
 }
 
 export async function runCustomSourcePipeline(
-  settings: CustomSourceRunnerSettings,
+  settings: SourceExecutionSettings,
   input: CustomSourcePipelineRunInput,
-): Promise<CustomSourceRunnerResult> {
+): Promise<SourceExecutionResult> {
   const sandboxRoot = join(tmpdir(), `custom-source-pipeline-${randomUUID()}`);
   const filesRoot = join(sandboxRoot, "files");
   await mkdir(filesRoot, { recursive: true });
 
-  const limits = effectiveCustomSourceLimits(settings, input.policyEnvelope.limits);
+  const limits = effectiveSourceExecutionLimits(settings, input.policyEnvelope.limits);
   const ctx: PipelineContext = {
     vars: new Map(),
     policyEnvelope: input.policyEnvelope,

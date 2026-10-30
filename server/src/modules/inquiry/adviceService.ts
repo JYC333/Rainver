@@ -171,7 +171,7 @@ export class InquiryAdviceService {
    */
   async getAdvice(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<InquiryThreadAdvice | null> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    await assertThreadReadable(this.db, identity, projectId, threadId, "read");
+    await assertThreadReadable(this.db, identity, projectId, threadId, "read_content");
     const row = await this.db.query<AdviceRow>(
       `SELECT a.*, t.version AS current_thread_version
          FROM inquiry_thread_advice a

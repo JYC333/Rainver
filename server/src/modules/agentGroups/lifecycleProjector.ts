@@ -1,3 +1,4 @@
+import { contractWorkspaceAccess } from "../runs/contractSnapshot.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
@@ -264,12 +265,39 @@ export class AgentGroupRunLifecycleProjector {
       .filter((delegation) => Boolean(delegation.child_run_id))
       .map(async (delegation) => input.runs.getRun(input.parent.space_id, delegation.child_run_id!))))
       .filter((child): child is RunRecord => Boolean(child));
-    // Delegated children share the Conversation's cwd. Keep at most one
-    // child admitted at a time; the terminal projector calls this method
-    // again after that child completes, which advances the durable FIFO.
-    if (children.some((child) => ["running", "cancelling", "waiting_for_review", "waiting_for_dependency"]
-      .includes(child.status))) return;
-    const child = children.find((candidate) => candidate.status === "queued");
+    // Delegated children share the Conversation's cwd: a writer runs alone,
+    // while read-only reviews (`contract.workspace_access = read`) run
+    // together. The FIFO admits, in order, either the next writer once no
+    // child is active, or every review at its front once no writer is active
+    // — a review queued behind a writer waits for it. The terminal projector
+    // calls this method again as children complete, which advances it.
+    const active = children.filter((child) => ["running", "cancelling", "waiting_for_review", "waiting_for_dependency"]
+      .includes(child.status));
+    // A queued child that already has its job is admitted. One without — not
+    // yet admitted, or held at the quota line or for the turn — is still in
+    // this FIFO and is evaluated again (`admitAgentOriginRun`) when reached.
+    const queued = [];
+    for (const child of children) {
+      if (child.status !== "queued") continue;
+      if (await childAdmitted(input.client, child)) active.push(child);
+      else queued.push(child);
+    }
+    const reads = (run: RunRecord) => contractWorkspaceAccess(run.contract_snapshot_json) === "read";
+    const admit: RunRecord[] = [];
+    if (active.length === 0 || active.every(reads)) {
+      for (const child of queued) {
+        if (!reads(child)) {
+          if (active.length === 0 && admit.length === 0) admit.push(child);
+          break;
+        }
+        admit.push(child);
+      }
+    }
+    if (active.length > 0 || admit.length > 0) {
+      for (const child of admit) await this.admitDelegatedChild(input.client, input.parent, child);
+      return;
+    }
+    const child = queued[0];
     if (!child) {
       // A completed delegated child may have no descendants of its own. In
       // that case advance the sibling FIFO owned by its parent; descendants
@@ -280,10 +308,17 @@ export class AgentGroupRunLifecycleProjector {
       }
       return;
     }
-    // A delegated child is an Agent-triggered turn: it waits past the
-    // subscription reserve line (`rooms/quotaGate.ts`). A held child stays
-    // `queued`, so this FIFO re-evaluates it on the next terminal event and
-    // the minute scheduler admits it when the window resets.
+    await this.admitDelegatedChild(input.client, input.parent, child);
+  }
+
+  /**
+   * A delegated child is an Agent-triggered turn: it waits past the
+   * subscription reserve line (`rooms/quotaGate.ts`). A held child stays
+   * `queued`, so the FIFO re-evaluates it on the next terminal event and the
+   * minute scheduler admits it when the window resets.
+   */
+  private async admitDelegatedChild(client: PoolClient, parent: RunRecord, child: RunRecord): Promise<void> {
+    const input = { client, parent };
     await admitAgentOriginRun(input.client, {
       spaceId: child.space_id,
       runId: child.id,
@@ -382,7 +417,25 @@ function delegationStatusForRun(status: string): DelegationTerminalStatus | null
  */
 function delegationResultSummary(run: RunRecord, change: RunChange | null = null): string {
   const summary = delegationResultText(run);
-  return change ? `${summary}\n\n${renderRunChangeBlock(change)}` : summary;
+  const basis = reviewBasisLine(run);
+  const withBasis = basis ? `${summary}\n\n${basis}` : summary;
+  return change ? `${withBasis}\n\n${renderRunChangeBlock(change)}` : withBasis;
+}
+
+/** The version a read-only review read, so the reader of its result knows what it judged. */
+function reviewBasisLine(run: RunRecord): string | null {
+  const basis = recordValue(recordValue(run.output_json).review_basis);
+  const head = stringValue(basis.head);
+  const tree = stringValue(basis.tree);
+  if (!head && !tree) return null;
+  const at = [
+    head ? `commit ${head.slice(0, 12)}${stringValue(basis.branch) ? ` on ${stringValue(basis.branch)}` : ""}` : null,
+    tree ? `working tree ${tree.slice(0, 12)}` : null,
+  ].filter(Boolean).join(", ");
+  const changed = basis.changed_during_review === true
+    ? " The workspace changed while it was reviewed; the review may not match the current files."
+    : basis.changed_during_review === null ? " Whether the workspace changed during the review is unknown." : "";
+  return `[Reviewed read-only at ${at}.${changed}]`;
 }
 
 function delegationResultText(run: RunRecord): string {
@@ -496,6 +549,18 @@ async function queueWaitingDependencyRunsIfReady(input: {
 }
 
 /** Another Run of the group that is running or may be admitted — anything but one parked on a dependency. */
+/** Whether a queued Run already has its `agent_run` job. */
+async function childAdmitted(db: PoolClient, run: RunRecord): Promise<boolean> {
+  const job = await db.query(
+    `SELECT 1 FROM jobs
+      WHERE space_id = $1 AND job_type = 'agent_run' AND payload_json->>'run_id' = $2
+        AND status IN ('pending', 'claimed', 'running')
+      LIMIT 1`,
+    [run.space_id, run.id],
+  );
+  return (job.rowCount ?? 0) > 0;
+}
+
 async function groupHasRunnableRun(db: PoolClient, spaceId: string, groupId: string, exceptRunId: string): Promise<boolean> {
   const result = await db.query(
     `SELECT 1 FROM runs

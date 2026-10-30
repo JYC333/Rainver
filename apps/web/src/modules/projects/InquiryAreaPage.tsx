@@ -6,7 +6,7 @@ import { useSpace } from '../../contexts/SpaceContext'
 import {
   inquiryApi, notesApi, projectsApi, projectResearchApi, spacesApi,
 } from '../../api/client'
-import { errMsg } from '../../lib/utils'
+import { errMsg, isNotFoundError } from '../../lib/utils'
 import type {
   InquiryCandidate, InquiryEvidenceSignal, InquiryIteration, InquiryThread, InquiryThreadAdvice,
   InquiryThreadDetail, InquiryThreadStep, NoteSummary, Project, ProjectCorpusItem,
@@ -34,8 +34,21 @@ const EMPTY_CORPUS = new Map<string, ProjectCorpusItem>()
 
 export default function InquiryAreaPage() {
   const { projectId } = useParams<{ projectId: string }>()
+  const { activeSpaceId, userId } = useSpace()
+  return <InquiryWorkspace key={`${userId}:${activeSpaceId}:${projectId}`} />
+}
+
+function InquiryWorkspace() {
+  const { projectId } = useParams<{ projectId: string }>()
   const { activeSpaceId } = useSpace()
   const [searchParams, setSearchParams] = useSearchParams()
+  // A departed scope owns no state, refreshes, or error notifications. The
+  // keyed workspace also drops drafts and selection before a new scope paints.
+  const workspaceLive = useRef(true)
+  useEffect(() => {
+    workspaceLive.current = true
+    return () => { workspaceLive.current = false }
+  }, [])
 
   const [project, setProject] = useState<Project | null>(null)
   const [threads, setThreads] = useState<InquiryThread[]>([])
@@ -50,6 +63,7 @@ export default function InquiryAreaPage() {
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<InquiryThreadDetail | null>(null)
+  const [threadError, setThreadError] = useState<string | null>(null)
   const [iterations, setIterations] = useState<InquiryIteration[]>([])
   const [steps, setSteps] = useState<InquiryThreadStep[]>([])
   const [signals, setSignals] = useState<InquiryEvidenceSignal[]>([])
@@ -86,9 +100,10 @@ export default function InquiryAreaPage() {
   }, [setSearchParams])
 
   const loadResearchWorkflows = useCallback(async () => {
-    if (!projectId) return
+    if (!projectId || !workspaceLive.current) return
     try {
-      setResearchWorkflows(await projectResearchApi.workflows(projectId))
+      const workflows = await projectResearchApi.workflows(projectId)
+      if (workspaceLive.current) setResearchWorkflows(workflows)
     } catch { /* Keep the last successful snapshot; active work may still be running. */ }
   }, [projectId])
 
@@ -104,11 +119,13 @@ export default function InquiryAreaPage() {
 
   useEffect(() => {
     if (!activeSpaceId) return
-    void spacesApi.members(activeSpaceId).then(setMembers).catch(() => setMembers([]))
+    void spacesApi.members(activeSpaceId)
+      .then(members => { if (workspaceLive.current) setMembers(members) })
+      .catch(() => { if (workspaceLive.current) setMembers([]) })
   }, [activeSpaceId])
 
   const loadProjectScope = useCallback(async (showLoading = true) => {
-    if (!projectId) return
+    if (!projectId || !workspaceLive.current) return
     if (showLoading) setLoading(true)
     try {
       const [proj, list, focus, pending, deferred, notePage] = await Promise.all([
@@ -119,6 +136,7 @@ export default function InquiryAreaPage() {
         inquiryApi.listCandidates(projectId, 'deferred'),
         notesApi.list({ project_id: projectId, status: 'active', limit: 100 }),
       ])
+      if (!workspaceLive.current) return
       setProject(proj)
       setThreads(list)
       setPersonalFocus(focus.personal_focus)
@@ -128,30 +146,44 @@ export default function InquiryAreaPage() {
       setNotes(notePage.items)
       setSelectedId(current => current ?? list[0]?.id ?? null)
     } catch (error) {
-      toast.error(errMsg(error))
+      if (workspaceLive.current) toast.error(errMsg(error))
     } finally {
-      if (showLoading) setLoading(false)
+      if (workspaceLive.current && showLoading) setLoading(false)
     }
   }, [projectId])
 
   useEffect(() => { void loadProjectScope() }, [loadProjectScope])
 
   const loadThreadScope = useCallback(async () => {
+    if (!workspaceLive.current) return
     const generation = ++threadScopeGeneration.current
     const scope = `${projectId ?? ''}:${selectedId ?? ''}`
-    const isCurrent = () => generation === threadScopeGeneration.current
+    const isCurrent = () => workspaceLive.current && generation === threadScopeGeneration.current
       && scope === selectedThreadScopeRef.current
-    if (!projectId || !selectedId) {
+    const clearThread = () => {
       setDetail(null)
+      setThreadError(null)
       setIterations([])
       setSteps([])
       setSignals([])
       setAdvice(null)
+    }
+    if (!projectId || !selectedId) {
+      clearThread()
       return
     }
     try {
-      const [nextDetail, nextIterations, nextSteps, nextSignals] = await Promise.all([
-        inquiryApi.getThread(projectId, selectedId),
+      const nextDetail = await inquiryApi.getThread(projectId, selectedId)
+      if (!isCurrent()) return
+      setThreadError(null)
+      // Summary access retains identity but withholds the kind's state. Its
+      // body endpoints intentionally return 404; they must not hide metadata.
+      if (!(nextDetail.kind === 'question' ? nextDetail.question_state : nextDetail.hypothesis_state)) {
+        clearThread()
+        setDetail(nextDetail)
+        return
+      }
+      const [nextIterations, nextSteps, nextSignals] = await Promise.all([
         inquiryApi.listIterations(projectId, selectedId),
         inquiryApi.listSteps(projectId, selectedId),
         inquiryApi.listSignals(projectId, selectedId),
@@ -162,7 +194,11 @@ export default function InquiryAreaPage() {
       setSteps(nextSteps)
       setSignals(nextSignals)
     } catch (error) {
-      if (isCurrent()) toast.error(errMsg(error))
+      if (isCurrent()) {
+        clearThread()
+        setThreadError(isNotFoundError(error) ? 'Thread not found or not accessible.' : errMsg(error))
+        if (!isNotFoundError(error)) toast.error(errMsg(error))
+      }
       return
     }
     // Advice is an aid, not part of the Thread read model: a failure here must
@@ -176,6 +212,12 @@ export default function InquiryAreaPage() {
   }, [projectId, selectedId])
 
   useEffect(() => {
+    setDetail(null)
+    setThreadError(null)
+    setIterations([])
+    setSteps([])
+    setSignals([])
+    setAdvice(null)
     void loadThreadScope()
     // Invalidate every request owned by the Thread being left before the next
     // effect starts. An older poll must never repoint B's workspace back to A.
@@ -187,7 +229,7 @@ export default function InquiryAreaPage() {
   useEffect(() => {
     if (!projectId || signals.length === 0 || corpus?.projectId === projectId) return
     void projectsApi.corpus(projectId, { limit: 200 })
-      .then(page => setCorpus({ projectId, items: new Map(page.items.map(item => [item.id, item])) }))
+      .then(page => { if (workspaceLive.current) setCorpus({ projectId, items: new Map(page.items.map(item => [item.id, item])) }) })
       .catch(() => undefined)
   }, [corpus?.projectId, projectId, signals.length])
 
@@ -227,6 +269,7 @@ export default function InquiryAreaPage() {
 
   const refreshInFlight = useRef(new Map<string, { promise: Promise<void>; queued: boolean }>())
   const refresh = useCallback(async () => {
+    if (!workspaceLive.current) return
     const scope = `${projectId ?? ''}:${selectedId ?? ''}`
     const existing = refreshInFlight.current.get(scope)
     if (existing) {
@@ -240,7 +283,7 @@ export default function InquiryAreaPage() {
         await Promise.all([
           loadProjectScope(false), loadThreadScope(), loadResearchWorkflows(),
         ])
-      } while (flight.queued)
+      } while (workspaceLive.current && flight.queued)
     })().finally(() => {
       if (refreshInFlight.current.get(scope) === flight) refreshInFlight.current.delete(scope)
     })
@@ -258,7 +301,8 @@ export default function InquiryAreaPage() {
     [detail, researchWorkflows],
   )
   const pendingForThread = detail ? candidates.filter(candidate => candidate.thread_id === detail.id) : []
-  const stageSummary = detail
+  const contentAvailable = Boolean(detail && (detail.kind === 'question' ? detail.question_state : detail.hypothesis_state))
+  const stageSummary = detail && contentAvailable
     ? deriveStages({
       detail,
       signals,
@@ -274,8 +318,8 @@ export default function InquiryAreaPage() {
   // as long as the user holds it, so counting one kept the page polling every
   // five seconds for the rest of the round with nothing on the server able to
   // change.
-  const hasLiveWork = steps.some(step => step.slot === 'background' && step.status === 'in_progress')
-    || startedWorkflow !== null
+  const hasLiveWork = contentAvailable && (steps.some(step => step.slot === 'background' && step.status === 'in_progress')
+    || startedWorkflow !== null)
 
   // Returning to a backgrounded tab should never leave a completed search or
   // newly generated recommendation looking stale, even when no polling loop is
@@ -354,56 +398,64 @@ export default function InquiryAreaPage() {
               ? (
                 <>
                   <ThreadHeader
+                    key={`${detail.id}:${contentAvailable}`}
                     projectId={projectId}
                     detail={detail}
+                    contentAvailable={contentAvailable}
                     members={members}
                     round={stageSummary?.round ?? iterations.length + 1}
                     allowEarlyClose={stageSummary?.current !== 'land'}
                     onChanged={refresh}
                   />
-                  <StageWorkspace
-                    projectId={projectId}
-                    detail={detail}
-                    signals={signals}
-                    pendingCandidateCount={pendingForThread.length}
-                    startedWorkflow={startedWorkflow}
-                    questionRefined={questionRefined}
-                    advice={advice}
-                    steps={steps}
-                    closedRounds={iterations.length}
-                    roundStartedAt={iterations[0]?.created_at ?? null}
-                    onOpenTab={setThreadTab}
-                    onChanged={refresh}
-                  />
-                  {pendingForThread.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setView('review')}
-                      className="flex w-full items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-left text-sm"
-                    >
-                      <span className="flex-1">
-                        {pendingForThread.length === 1
-                          ? '1 material change on this Thread awaits your decision.'
-                          : `${pendingForThread.length} material changes on this Thread await your decision.`}
-                      </span>
-                      <span className="text-xs underline">Go to Review</span>
-                    </button>
+                  {contentAvailable && (
+                    <>
+                      <StageWorkspace
+                        projectId={projectId}
+                        detail={detail}
+                        signals={signals}
+                        pendingCandidateCount={pendingForThread.length}
+                        startedWorkflow={startedWorkflow}
+                        questionRefined={questionRefined}
+                        advice={advice}
+                        steps={steps}
+                        closedRounds={iterations.length}
+                        roundStartedAt={iterations[0]?.created_at ?? null}
+                        onOpenTab={setThreadTab}
+                        onChanged={refresh}
+                      />
+                      {pendingForThread.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setView('review')}
+                          className="flex w-full items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-left text-sm"
+                        >
+                          <span className="flex-1">
+                            {pendingForThread.length === 1
+                              ? '1 material change on this Thread awaits your decision.'
+                              : `${pendingForThread.length} material changes on this Thread await your decision.`}
+                          </span>
+                          <span className="text-xs underline">Go to Review</span>
+                        </button>
+                      )}
+                      <ThreadTabs
+                        projectId={projectId}
+                        detail={detail}
+                        allThreads={threads}
+                        notes={notes}
+                        signals={signals}
+                        corpus={corpus?.items ?? EMPTY_CORPUS}
+                        iterations={iterations}
+                        activeTab={threadTab}
+                        onTabChange={setThreadTab}
+                        onChanged={refresh}
+                      />
+                    </>
                   )}
-                  <ThreadTabs
-                    projectId={projectId}
-                    detail={detail}
-                    allThreads={threads}
-                    notes={notes}
-                    signals={signals}
-                    corpus={corpus?.items ?? EMPTY_CORPUS}
-                    iterations={iterations}
-                    activeTab={threadTab}
-                    onTabChange={setThreadTab}
-                    onChanged={refresh}
-                  />
                 </>
               )
-              : <p className="text-sm text-muted-foreground">Select a Thread to see its detail.</p>}
+              : threadError
+                ? <p role="alert" className="text-sm text-destructive">{threadError}</p>
+                : <p className="text-sm text-muted-foreground">Select a Thread to see its detail.</p>}
           </div>
         </div>
       )}
@@ -455,7 +507,14 @@ export default function InquiryAreaPage() {
       <CreateThreadDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        onCreated={async id => { setCreateOpen(false); await loadProjectScope(); setSelectedId(id); setView('focus') }}
+        onCreated={async id => {
+          if (!workspaceLive.current) return
+          setCreateOpen(false)
+          await loadProjectScope()
+          if (!workspaceLive.current) return
+          setSelectedId(id)
+          setView('focus')
+        }}
         projectId={projectId}
         defaultKind={createKind}
       />

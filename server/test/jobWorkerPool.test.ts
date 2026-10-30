@@ -24,7 +24,7 @@ it("runs an independent job while another lane is blocked, then drains both on s
   });
   let drained = false;
   const running = runJobWorkerPool([{ processOne: first }, { processOne: second }], {
-    stopped: () => stopped, pollIntervalMs: 10, postWakeRecheckMs: 1, beforePoll: async () => {},
+    stopped: () => stopped, pollIntervalMs: 10, postWakeRecheckMs: 1,
   }).then(() => { drained = true; });
   await vi.waitFor(() => expect(second).toHaveBeenCalledOnce());
   expect(drained).toBe(false);
@@ -37,7 +37,7 @@ it("wakes idle lanes for shutdown without taking new jobs", async () => {
   let stopped = false;
   const idle = vi.fn(async () => ({ status: "idle" as const }));
   const running = runJobWorkerPool([{ processOne: idle }, { processOne: idle }], {
-    stopped: () => stopped, pollIntervalMs: 60_000, postWakeRecheckMs: 1, beforePoll: async () => {},
+    stopped: () => stopped, pollIntervalMs: 60_000, postWakeRecheckMs: 1,
   });
   await vi.waitFor(() => expect(idle).toHaveBeenCalledTimes(2));
   stopped = true;

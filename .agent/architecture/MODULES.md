@@ -14,6 +14,7 @@
 | `apps/web/` | Web client. It consumes APIs and shared protocol types; it is not a business-rule authority. |
 | `catalog/` | Built-in definitions, including agent templates and capabilities. |
 | `packages/protocol/` | Shared TypeScript protocol package only. No handlers, persistence, routing, or authority. |
+| `packages/reader-document/` | The Reader document tree shared by the server's canonical reading writer and the web Reader: the node/mark whitelist, `normalizeReaderDocument` (an unsupported or misplaced node degrades to its text instead of hiding the document) and the one markdown-it Markdown converter. Browser-safe; no product logic, no I/O. |
 | `packages/outbound-guard/` | The one outbound HTTP boundary. The control plane's Source fetches use all of it through `server/src/modules/sources/outboundUrlSafety.ts`: the private-address block list, the address a connection is pinned to, the redirect and credential rules, and the body ceiling. The host daemon's egress proxy uses the block list alone — it resolves and dials the address itself, so it has no pinning race to close. No product logic. |
 | `ops/` | Compose files, env templates, and scripts. |
 | `deployer/` | Host deployment subsystem behind the deployer boundary. |

@@ -671,6 +671,32 @@ The Room allowance carries both halves of delegation (`agent.delegate` and
 `agent.wait_for_results`), the Project write surface, `task.plan.propose`
 (proposal-gated), and the two Source proposals.
 
+Room Agent tools also expose `agent.list_runs` and `agent.cancel_run`. The read
+returns at most 100 active Runs (identifiers, Agent, status, ancestry and creation
+time; no prompts/results), restricted to the current Room conversation and the
+same instructing person, including earlier message task groups. Cancellation
+requires an exact Run identifier and reason; it rechecks canonical Run visibility
+and command standing and uses the fully wired Run orchestrator, including runtime
+termination and lifecycle settlement. It cannot stop the calling Run, another
+person's work or another conversation. The ordinary Run tool-grant snapshot and
+System Action gateway apply; existing snapshots are not widened retroactively.
+A person replacing an abandoned chain can cancel its waiting coordinator and then
+its held child explicitly. Cancellation never implicitly cancels other children;
+`cancelling` is pending process confirmation, not a successful stop. The existing
+quota scheduler admits queued Runs only, so terminal cancellations do not revive
+when a window resets.
+
+The activity companion offers a per-Run Stop to its owner/instructing person,
+including quota/dependency waits. It polls every known nonterminal Run even after
+that Run's message leaves the latest transcript page, so old state is reconciled
+rather than left pinned. Distinct active turns are retained, with creation time
+when the same Agent has several, rather than silently deduplicated or cancelled
+when a new message is sent.
+
+Reuse / Dependency Check: commands use `authorizeRunCommand`, `PgRunRepository`
+and `buildRunOrchestration`; UI commands use `useRunActions`. No new scheduler,
+process stopper, dependencies, database schema or cancellation state machine.
+
 What the Room prompt tells the Agent (`roomRunPrompt`, the policy constants
 in `systemActions/conversationPolicy.ts`) names the action for each thing a
 person says: a stated goal → `project.propose_definition`

@@ -1,10 +1,11 @@
+import type { CustomSourcePipelineDefinition } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
-import { customSourcePolicyEnvelope } from "./support/customSourceFixtures.js";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { customSourcePolicyEnvelope, CUSTOM_SOURCE_LIST_PIPELINE } from "./support/customSourceFixtures.js";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadConfig, type ServerConfig } from "../src/config.js";
@@ -15,12 +16,11 @@ import {
 } from "../src/modules/sources/customSources/customSourceScanSchedule.js";
 import { runPendingCustomSourceHandlerRuns } from "../src/modules/sources/customSources/customSourceScanWorker.js";
 import { fixtureServerGuard } from "./support/outboundGuard.js";
-import { generateCustomSourceHandlerSource } from "../src/modules/sources/customSources/customSourceHandlerTemplate.js";
 import { sha256 } from "../src/modules/sources/sourceRepositoryMappers.js";
 import { PgSourcesRepository } from "../src/modules/sources/repository.js";
 import { SourceChannelService } from "../src/modules/sources/channels/sourceChannelService.js";
 
-// Real-Postgres + real-child-process + real local HTTP server (not a live
+// Real-Postgres + declarative pipeline + real local HTTP server (not a live
 // external provider — a loopback server this test controls) integration
 // tests for the custom-source scan scheduler and worker.
 
@@ -32,6 +32,7 @@ let config: ServerConfig | undefined;
 let artifactStorageRoot: string | undefined;
 let httpServer: Server | undefined;
 let serverPort = 0;
+let fetchCount = 0;
 /** Runs inside the fixture server before it answers, i.e. while a scan is in flight. */
 let duringFetch: (() => Promise<void>) | undefined;
 
@@ -40,6 +41,7 @@ const db = useTestDatabase(import.meta.filename, { max: 10 });
 beforeAll(async () => {
   if (!db.available) return;
   httpServer = createServer((_req, res) => {
+    fetchCount++;
     const hook = duringFetch;
     duringFetch = undefined;
     void (hook ? hook() : Promise.resolve()).finally(() => {
@@ -59,6 +61,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  fetchCount = 0;
   if (!db.available) return;
   await resetTables(
     db.pool,
@@ -109,17 +112,18 @@ beforeEach(async () => {
   config = {
     ...loadConfig({}),
     artifactStorageRoot,
-    customSourceAllowedLanguages: ["typescript_node"],
+    customSourceAllowedLanguages: ["typescript_node", "declarative_pipeline_v1"],
   };
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   duringFetch = undefined;
   if (artifactStorageRoot) await rm(artifactStorageRoot, { recursive: true, force: true });
 });
 
 // The origin is overridden per test with the real port.
-const POLICY_ENVELOPE = customSourcePolicyEnvelope({ allowed_network_origins: [`http://127.0.0.1:0`] });
+const POLICY_ENVELOPE = customSourcePolicyEnvelope({ language: "declarative_pipeline_v1", allowed_network_origins: [`http://127.0.0.1:0`] });
 
 async function insertConnection(input: {
   id: string;
@@ -196,38 +200,30 @@ async function insertConnection(input: {
   );
 }
 
+const PIPELINE = CUSTOM_SOURCE_LIST_PIPELINE as CustomSourcePipelineDefinition;
+
 async function insertActiveHandlerVersion(
   connectionId: string,
-  options: { source?: string; policyEnvelope?: typeof POLICY_ENVELOPE } = {},
+  options: { legacy?: boolean; pipeline?: CustomSourcePipelineDefinition; policyEnvelope?: typeof POLICY_ENVELOPE } = {},
 ): Promise<string> {
   const versionId = randomUUID();
-  const source = options.source ?? generateCustomSourceHandlerSource({ listSelector: "article" });
-  const artifactId = randomUUID();
-  const relativePath = join(SPACE_A, "custom-source", `${artifactId}.handler.cjs`);
-  const absolutePath = resolve(config!.artifactStorageRoot, relativePath);
-  await mkdir(dirname(absolutePath), { recursive: true });
-  await writeFile(absolutePath, source, "utf8");
-  await db.pool.query(
-    `INSERT INTO artifacts (
-       id, space_id, artifact_type, title, storage_path, mime_type,
-       exportable, export_formats_json, canonical_format, preview, created_at, updated_at
-     ) VALUES ($1, $2, 'source_custom_source_handler_code', 'test handler', $3, 'application/javascript',
-       true, '["javascript"]'::jsonb, 'javascript', false, now(), now())`,
-    [artifactId, SPACE_A, relativePath],
-  );
-  const envelope = options.policyEnvelope ?? { ...POLICY_ENVELOPE, allowed_network_origins: [`http://127.0.0.1:${serverPort}`] };
+  const pipeline = options.pipeline ?? PIPELINE;
+  // Retained historical metadata needs no code artifact: removed languages
+  // must be refused before any handler content can be required or read.
+  const source = options.legacy ? "retired-typescript-handler" : JSON.stringify(pipeline);
+  const artifactId = null;
+  const envelope = { ...(options.policyEnvelope ?? { ...POLICY_ENVELOPE, allowed_network_origins: [`http://127.0.0.1:${serverPort}`] }),
+    language: options.legacy ? "typescript_node" : "declarative_pipeline_v1" };
   await db.pool.query(
     `INSERT INTO source_handler_versions (
        id, space_id, source_connection_id, version_number, language, entrypoint,
        handler_artifact_id, manifest_json, policy_envelope_json, checksum, status,
        created_at, activated_at
-     ) VALUES ($1, $2, $3, 1, 'typescript_node', 'handler.cjs', $4, '{}'::jsonb, $5::jsonb, $6, 'active', now(), now())`,
-    [versionId, SPACE_A, connectionId, artifactId, JSON.stringify(envelope), sha256(source)],
+     ) VALUES ($1, $2, $3, 1, $7, $8, $4, $9::jsonb, $5::jsonb, $6, 'active', now(), now())`,
+    [versionId, SPACE_A, connectionId, artifactId, JSON.stringify(envelope), sha256(source),
+      envelope.language, options.legacy ? "handler.cjs" : "pipeline", JSON.stringify(options.legacy ? {} : { pipeline })],
   );
-  await db.pool.query(`UPDATE source_connections SET active_handler_version_id = $1 WHERE id = $2`, [
-    versionId,
-    connectionId,
-  ]);
+  await db.pool.query(`UPDATE source_connections SET active_handler_version_id = $1 WHERE id = $2`, [versionId, connectionId]);
   return versionId;
 }
 
@@ -395,6 +391,31 @@ describe("enqueueDueCustomSourceHandlerRuns", () => {
 });
 
 describe("runPendingCustomSourceHandlerRuns", () => {
+  it.for(["scheduled", "manual"] as const)("blocks a retained legacy handler before fetching or producing output (%s)", async (mode, ctx) => {
+    if (!db.available || !config) return ctx.skip();
+    const connId = randomUUID();
+    await insertConnection({ id: connId, handlerKind: "generated_custom" });
+    const versionId = await insertActiveHandlerVersion(connId, { legacy: true });
+    const artifactsBefore = (await db.pool.query("SELECT count(*)::int n FROM artifacts")).rows[0].n;
+    if (mode === "scheduled") {
+      expect(await enqueueDueCustomSourceHandlerRuns(db.pool, 25)).toBe(1);
+      expect(await runPendingCustomSourceHandlerRuns(db.pool, config, 10, fixtureServerGuard)).toBe(1);
+    } else {
+      const repo = new PgSourcesRepository(db.pool, config, fixtureServerGuard);
+      const identity = { spaceId: SPACE_A, userId: "user-1" };
+      const job = await repo.scanChannel(identity, connId);
+      expect(await repo.runJob(identity, job.id)).toMatchObject({ status: "failed", error_code: "handler_language_removed" });
+    }
+    expect(fetchCount).toBe(0);
+    expect((await db.pool.query("SELECT status, failure_class FROM source_handler_runs WHERE source_connection_id=$1", [connId])).rows)
+      .toEqual([{ status: "blocked", failure_class: "handler_language_removed" }]);
+    expect((await db.pool.query("SELECT status, error_code FROM extraction_jobs WHERE connection_id=$1", [connId])).rows)
+      .toEqual([{ status: "failed", error_code: "handler_language_removed" }]);
+    expect((await db.pool.query("SELECT id FROM source_items WHERE connection_id=$1", [connId])).rows).toEqual([]);
+    expect((await db.pool.query("SELECT count(*)::int n FROM artifacts")).rows[0].n).toBe(artifactsBefore);
+    expect((await db.pool.query("SELECT active_handler_version_id FROM source_connections WHERE id=$1", [connId])).rows[0].active_handler_version_id).toBe(versionId);
+  });
+
   it("processes a queued run end-to-end: materializes an source_item, completes the extraction_job, and advances the scheduler task", async () => {
     if (!db.available) return;
     const connId = randomUUID();
@@ -584,7 +605,7 @@ describe("runPendingCustomSourceHandlerRuns", () => {
     const connId = randomUUID();
     await insertConnection({ id: connId, handlerKind: "generated_custom", nextCheckAt: new Date(0).toISOString() });
     await insertActiveHandlerVersion(connId, {
-      source: `'use strict';\nconsole.error('handler failed deliberately');\nprocess.exit(7);\n`,
+      pipeline: { ...PIPELINE, output: { items_var: "unbound_items" } },
     });
     await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
 
@@ -608,8 +629,16 @@ describe("runPendingCustomSourceHandlerRuns", () => {
     const connId = randomUUID();
     await insertConnection({ id: connId, handlerKind: "generated_custom", nextCheckAt: new Date(0).toISOString() });
     await insertActiveHandlerVersion(connId, {
-      source: `'use strict';\nsetInterval(() => undefined, 1000);\n`,
+      pipeline: { ...PIPELINE, steps: [
+        { type: "fetch_page", url: `http://127.0.0.1:${serverPort}/pipeline`, bind: "list_page" },
+        ...PIPELINE.steps.slice(1),
+      ] },
     });
+    const realNow = Date.now;
+    let elapsed = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + elapsed);
+    // Advance the interpreter clock during its live request, after the worker prefetch.
+    duringFetch = async () => { duringFetch = async () => { elapsed = 1000; }; };
     await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
 
     expect(await runPendingCustomSourceHandlerRuns(db.pool, config, 10, fixtureServerGuard)).toBe(1);

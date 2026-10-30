@@ -168,3 +168,5 @@ export * from './reading.js';
 export * from "./sourceExecution.js";
 
 export * from "./sourceGoals.js";
+
+export * from "./sourceMaterials.js";

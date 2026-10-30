@@ -23,6 +23,8 @@ implemented, as expected for trigger-gated items.
 | Revisit the four-Mode taxonomy | A real Project cannot be classified by how its work advances as research, delivery, operations, or learning | Projects |
 | Review cursor/chunking | Measured pending volume makes bounded complete-pool selection too slow/noisy | Inquiry / Knowledge Promotion |
 | Thread labels/tags | Navigation or search use demonstrates the need | Inquiry |
+| Standalone Inquiry Step note editing: `updateWork` consumes `next_focus_note` only with `next_focus_kind`; provide an explicit note-edit path before exposing note-only commands | A standalone Step note edit is added to an API consumer or UI | Inquiry |
+| Concurrent same-kind Thread operations: `startStep` currently reuses an open Step of the same kind; completion must carry the originating Step id rather than select the oldest by kind | A Thread supports concurrent same-kind operations or multiple research Workflows | Inquiry + Research |
 | Adaptive Learning scheduling | Real review behavior supplies scheduling requirements | Learning |
 | Retrieval Project scope in every recall arm | Large multi-Project results make endpoint post-filtering lossy | Retrieval |
 | Shared graph composer/tier tags | A second non-`space_objects` producer or a behavior consumer exists | Graph |
@@ -184,6 +186,7 @@ currently holds.
 
 | Gate | Requirement |
 |---|---|
+| Workflow completion requires `manual_review` or `model_judge` | Complete [backlog A2.1](../plans/backlog.md#a21--manual-and-model-based-verification) before enabling that Workflow. Deferred/skipped verification is not passed evidence; durable decisions, policy/audit/retry and completion read models must be implemented. |
 | Enabling `autonomous_tick` (Always-on) | Provider-fallback and tool-degradation evidence must exist, because an autonomously launched Run has nobody reading its result. Tool degradation is covered: the `degraded` terminal status and the `managed_tool_degraded` warning event serve it, and no change may remove them while Always-on is enabled. Provider fallback is **not** covered. The code has no `model_provider_mismatch` event, so a Run silently served by a fallback Provider's own default model leaves no evidence. Emitting that evidence is an open gap Always-on must close before it is enabled. |
 | Any CLI runtime use | Install the runtime on the built-in execution host from the host card and log it in. There is no conformance gate any more: the C3 suite was retired on 2026-09-09 because a one-shot behavioural verdict, cached against a version key and blind to the model actually selected, was not evidence to gate dispatch on. What contains a CLI Run is the host namespace, its egress profile and ADR 0008's credential channel. This covers spawning a vendor CLI and nothing else: it does not gate subscription capacity, which reaches runs through the isolated in-process OAuth channel described by [ADR 0008](../decisions/0008-credential-channel-isolation.md). |
 | Enabling retry or Always-on once cost is non-null | The Run retry cost cap (`runs/supervisor.ts`) and the autonomy daily cost limit were calibrated before catalog cost reached `estimated_cost_usd`. Re-check both against observed spend before enabling either feature, rather than discovering the thresholds by a run being refused. |
@@ -265,12 +268,11 @@ differ, which is what the trigger provides.
 
 ### Out of scope when this is picked up
 
-- Not giving the managed path file access. It has no working directory by
-  design, a provider API has no file primitive, and a server-side `file.write`
-  tool would be a worse version of what a CLI runtime does natively while
-  turning an ungated mutation surface loose in the one path that currently has
-  none. The related gap — a managed run cannot produce an artifact — is
-  [backlog G1.4](../plans/backlog.md).
+- Not restoring a server-managed Agent loop or adding general file access to
+  bounded provider tasks. Autonomous Agents use ACP Host execution; durable
+  provider-task output belongs to its owning domain and canonical materializer.
+  The former G1.4 managed-loop gap was superseded by
+  [ADR 0022](../decisions/0022-acp-runtime-authority-and-schema-epoch.md).
 - Not building a quota subsystem. It exists; this connects a second consumer.
 - Not changing the CLI credential channel.
   [ADR 0008](../decisions/0008-credential-channel-isolation.md) records the
@@ -461,6 +463,12 @@ canonical A-class facts). The Project Research pipeline’s shape remains an
 open question for a separate research-layer plan: map Auto Research onto Task,
 Agent Plan and reference Workflow versions before deciding whether another
 object is needed. Capability-layer removal does not decide that work.
+Compare actual monitoring, conversational Operation and deep-Workflow usage
+before choosing that restructuring; the eight retained stage identifiers and
+pipeline consumers are not proof that a new domain object is needed. Lightweight
+monitoring delivery does not authorize retiring those consumers. Use the
+[information-monitoring gates](#information-monitoring--usage-and-retirement-gates)
+for the separate real-use and instance-inventory evidence.
 
 ## Retirement
 

@@ -30,7 +30,7 @@ it("claims and completes independent jobs concurrently without duplicate ownersh
   await queue.enqueue({ space_id: space, user_id: owner, job_type: "concurrency_probe", payload: { session: "second" } });
   let stopped = false;
   const pool = runJobWorkerPool([0, 1].map(i => new JobWorker(queue, handlers, `pool-test:${i}`, ["concurrency_probe"])), {
-    stopped: () => stopped, pollIntervalMs: 10, postWakeRecheckMs: 1, beforePoll: async () => {},
+    stopped: () => stopped, pollIntervalMs: 10, postWakeRecheckMs: 1,
   });
   try {
     await vi.waitFor(() => { expect(firstEntered).toBe(true); expect(secondEntered).toBe(true); }, { timeout: 5000 });

@@ -15,6 +15,7 @@ import { ResearchProviderCompiler } from "../../research/queryPlanning/providerC
 import { closeSubscriptionWindow, openSubscriptionWindow } from "./subscriptionWindows.js";
 
 interface SourceChannelProposalActor {
+  forceReview?: boolean;
   agentId?: string | null;
   runId?: string | null;
   idempotencyKey?: string | null;
@@ -230,12 +231,12 @@ export class SourceChannelService {
     return result.rows[0] ? this.channelOut(result.rows[0]) : null;
   }
 
-  async create(identity: SpaceUserIdentity, body: Record<string, unknown>) {
+  async create(identity: SpaceUserIdentity, body: Record<string, unknown>, nativeDraft=false) {
     return withQueryableTransaction(this.db, (db) =>
-      new SourceChannelService(db, this.config).createLocked(identity, body));
+      new SourceChannelService(db, this.config).createLocked(identity, body, nativeDraft));
   }
 
-  private async createLocked(identity: SpaceUserIdentity, body: Record<string, unknown>) {
+  private async createLocked(identity: SpaceUserIdentity, body: Record<string, unknown>, nativeDraft=false) {
     const providerKey = requiredString(body.provider_key, "provider_key");
     const provider = await this.catalog.resolve(providerKey);
     const credentialId = optionalString(body.credential_id);
@@ -253,14 +254,15 @@ export class SourceChannelService {
     const compiled = compiledResearch
       ? { query: compiledResearch.query, providerQuery: compiledResearch.query, endpointUrl: null }
       : normalizeNonSearchChannel(provider.connector_key, input);
-    const fingerprint = compiledResearch?.fingerprint ?? genericChannelFingerprint(providerKey, provider.connector_key, compiled.endpointUrl);
+    const fingerprint = provider.connector_key==='agent_native_search'?createHash('sha256').update(JSON.stringify(compiled.query)).digest('hex'):compiledResearch?.fingerprint ?? genericChannelFingerprint(providerKey, provider.connector_key, compiled.endpointUrl);
     const sourceName = optionalString(body.source_name) ?? provider.provider_display_name;
     const name = optionalString(body.name) ?? this.defaultName(providerKey, compiled.providerQuery);
     const frequency = optionalString(body.fetch_frequency) ?? "daily";
     if (!["manual", "hourly", "daily", "weekly"].includes(frequency)) {
       throw new HttpError(422, "fetch_frequency must be manual, hourly, daily, or weekly");
     }
-    const status = body.status === "paused" ? "paused" : "active";
+    if(nativeDraft&&provider.connector_key!=='agent_native_search')throw new HttpError(403,'Native draft only');
+    const status = nativeDraft||body.status === "paused" ? "paused" : "active";
     const schedule = resolveChannelSchedule(body, frequency, status);
     const projectId = optionalString(body.project_id);
     // A monitor added from a Source's own page names that Source. Do not
@@ -289,7 +291,7 @@ export class SourceChannelService {
       consent: body.consent ?? {},
       capture_policy: body.capture_policy ?? "reference_only",
     });
-    const connection = targetConnection ?? await this.ensureConnection(identity, provider, sourceName, governance, body);
+    const connection = targetConnection ?? await this.ensureConnection(identity, provider, sourceName, governance, nativeDraft?{...body,_initial_status:'paused'}:body);
     const channelResult = await this.db.query<SourceChannelRow>(
       `INSERT INTO source_channels (
          id, space_id, source_connection_id, created_by_user_id, name, channel_type,
@@ -315,6 +317,7 @@ export class SourceChannelService {
         [randomUUID(), identity.spaceId, channel.id, researchProviderKey, JSON.stringify(compiledResearch.query), compiledResearch.fingerprint, now],
       );
     }
+    if(!nativeDraft){
     await this.db.query(
       `INSERT INTO source_channel_user_subscriptions (
          id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, created_at, updated_at
@@ -323,6 +326,7 @@ export class SourceChannelService {
       [randomUUID(), identity.spaceId, channel.id, identity.userId, now],
     );
     await openSubscriptionWindow(this.db, { spaceId: identity.spaceId, channelId: channel.id, userId: identity.userId, at: now });
+    }
     await upsertSourceChannelScanTask(this.db, {
       channel: { id: channel.id, space_id: identity.spaceId, owner_user_id: identity.userId, status, fetch_frequency: frequency },
       nextRunAt: schedule.nextRunAt,
@@ -443,7 +447,7 @@ export class SourceChannelService {
         proposal_type: "source_channel_activation",
         action_id: "source.channel.propose_activation",
         source_channel_id: channelId,
-        draft_updated_at: requiredString(channel.updated_at, "draft_updated_at"),
+        draft_updated_at: channel.updated_at instanceof Date ? channel.updated_at.toISOString() : requiredString(channel.updated_at, "draft_updated_at"),
         ...(actor.idempotencyKey ? { idempotency_key: actor.idempotencyKey } : {}),
       },
       rationale: "Activate a reviewed Source Channel and its underlying governed connection.",
@@ -456,7 +460,7 @@ export class SourceChannelService {
       riskLevel: "medium",
       requiredApproverRole: "owner",
     });
-    const autoApplied = actor.agentId
+    const autoApplied = actor.agentId && !actor.forceReview
       ? await PgProposalApplyService.fromConfig(this.config).acceptAgentProposalIfGranted(proposal.id, {
         actionId: "source.channel.propose_activation",
         resourceKind: "source_channel",
@@ -691,6 +695,7 @@ function researchProviderForConnector(connectorKey: string): ResearchProviderKey
 }
 
 function normalizeNonSearchChannel(connectorKey: string, input: Record<string, unknown>) {
+  if(connectorKey==='agent_native_search'){const q=objectValue(input.query);if(typeof q.native_query!=='string'||q.native_query.length>1000||typeof q.goal_id!=='string')throw new HttpError(422,'Native search needs a bounded goal query');return {query:q,providerQuery:q,endpointUrl:null};}
   const endpointUrl = optionalString(input.endpoint_url);
   if (!endpointUrl) throw new HttpError(422, `${connectorKey} channel requires endpoint_url`);
   try { new URL(endpointUrl); } catch { throw new HttpError(422, "endpoint_url must be a valid URL"); }

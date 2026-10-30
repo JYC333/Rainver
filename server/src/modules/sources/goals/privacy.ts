@@ -12,3 +12,5 @@ export function publicGoalValidation(raw:unknown){
  const value=raw as Record<string,unknown>;
  return Object.fromEntries(['ok','errors','count','stable_ids','filtered_count'].filter(k=>k in value).map(k=>[k,value[k]]));
 }
+
+export function publicGoalRunResult(raw:Record<string,unknown>){const {materialization_token:_,search_submission:__,...safe}=raw;return {...safe,validation:publicGoalValidation(raw.validation)};}

@@ -5,7 +5,7 @@ import {
   type ProjectAttentionItem,
 } from "../projects/attentionRegistry.js";
 import { readableCandidateIds } from "./signalService.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { threadReadableSql } from "./threadAccess.js";
 
 // Registers Inquiry into the Project Kernel's registries (ADR 0011 decision
 // 5): `modules/projects` aggregates through these contracts and never
@@ -50,7 +50,7 @@ async function nextStepAdviceItems(
         AND advice.status = 'open'
         AND advice.thread_version >= thread.version
         AND thread.lifecycle_status = 'active'
-        AND ${contentReadSql("space_object", "object", "$3")}
+        AND ${threadReadableSql("object", "$3", "read_content")}
       ORDER BY advice.updated_at DESC
       LIMIT 10`,
     [identity.spaceId, projectId, identity.userId],
@@ -83,7 +83,7 @@ const inquiryAttentionAdapter: ProjectAttentionAdapter = {
       [identity.spaceId, projectId],
     );
     const [readable, advice] = await Promise.all([
-      readableCandidateIds(db, identity, projectId, candidates.rows, "read"),
+      readableCandidateIds(db, identity, projectId, candidates.rows, "read_content"),
       nextStepAdviceItems(db, identity, projectId),
     ]);
     return [...advice, ...candidates.rows.filter((candidate) => readable.has(candidate.id)).map((c): ProjectAttentionItem => ({

@@ -3,6 +3,7 @@ import type {
   CanonicalToolDefinition,
 } from "@rainver/protocol";
 import * as protocol from "@rainver/protocol";
+import { RoomRunControl } from "./roomRunControl.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
 import {
@@ -32,6 +33,7 @@ interface AgentDelegationToolBinding {
   toolDefinitions: CanonicalToolDefinition[];
   service: Pick<AgentGroupRunService, "spawnChildRun"> & Partial<Pick<AgentGroupRunService, "preflightSpawnChildRunPolicy" | "spawnChildRunAuthorized">>;
   pool: Pool | null;
+  control?: RoomRunControl;
 }
 
 export interface AgentDelegationToolDeps {
@@ -56,10 +58,15 @@ export async function resolveAgentDelegationToolBinding(
   return {
     targets,
     service,
+    control: new RoomRunControl(config, () => pool()),
     pool: sharedPool ?? null,
     toolDefinitions: [
       ...(targets.length > 0 ? [agentDelegateToolDefinition(targets)] : []),
       agentWaitForResultsToolDefinition(targets, protocol),
+      ...([
+        ["agent.list_runs", "List active runs in this Room task instructed by the same person, including prior turns. Read this before cancelling; returns identifiers and status, never prompts or results.", protocol.AgentListRunsInputSchema],
+        ["agent.cancel_run", "Cancel exactly one listed Room run when the person asks to stop or replace its work. Can stop quota-held, queued, waiting or executing work from prior turns. Copy run_id from agent.list_runs. Does not cancel children automatically; list and cancel abandoned waiting coordinators and their children explicitly. A cancelling result is not confirmation that execution stopped.", protocol.AgentCancelRunInputSchema],
+      ] as const).map(([name, description, schema]) => ({ name, description, input_schema: protocol.systemActionInputJsonSchema({ input_schema: schema }) })),
     ],
   };
 }
@@ -92,6 +99,11 @@ function agentDelegateToolDefinition(targets: readonly AgentDelegationTarget[]):
             type: "string",
             minLength: 1,
             description: "Short reason for this delegation.",
+          },
+          workspace_access: {
+            type: "string",
+            enum: ["read", "write"],
+            description: "\"read\" for a review: the target reads the Conversation's workspace and cannot change it, and reviews by different agents run at the same time. Omit for ordinary work (\"write\"). From a read-only run only \"read\" is allowed. Enforced read-only CLI reviews require a Conversation on the server Host. A paired native Host is rejected before a review task is created; do not retry by changing it to write.",
           },
           budget: {
             type: "object",
@@ -177,6 +189,10 @@ export async function runAgentRoomToolCall(
   run: AgentRunRecord,
   authorizedPolicy?: Awaited<ReturnType<AgentGroupRunService["preflightSpawnChildRunPolicy"]>>,
 ): Promise<SystemActionDispatchResult> {
+  if (call.name === "agent.list_runs" || call.name === "agent.cancel_run") {
+    if (!binding.control) throw new Error("Room run controls unavailable");
+    return binding.control.dispatch(call, run);
+  }
   if (call.name === AGENT_WAIT_FOR_RESULTS_TOOL) {
     return runAgentWaitForResultsToolCall(call, binding, run);
   }
@@ -269,6 +285,7 @@ export function agentDelegatePolicyInput(call: CanonicalToolCall, binding: Agent
     reason: params.reason ?? "agent_delegate_tool",
     budget_json: params.budget,
     context_policy_json: params.context,
+    workspace_access: params.workspace_access,
     tool_call_id: call.id,
   };
   return { params, identity, input };
@@ -449,6 +466,7 @@ function parseAgentDelegateArguments(
   reason: string | null;
   budget: Record<string, unknown>;
   context: Record<string, unknown>;
+  workspace_access: "read" | "write" | null;
 } {
   let raw: unknown;
   try {
@@ -470,7 +488,14 @@ function parseAgentDelegateArguments(
     reason: stringValue(record.reason),
     budget: recordValue(record.budget),
     context: recordValue(record.context),
+    workspace_access: workspaceAccessArgument(record.workspace_access),
   };
+}
+
+function workspaceAccessArgument(value: unknown): "read" | "write" | null {
+  if (value === undefined || value === null) return null;
+  if (value === "read" || value === "write") return value;
+  throw new Error("workspace_access must be \"read\" or \"write\".");
 }
 
 async function parseAgentWaitArguments(argumentsJson: string): Promise<{

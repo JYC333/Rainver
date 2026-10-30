@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { ONE_ARTICLE_HTML } from "./support/customSourceFixtures.js";
+import { CUSTOM_SOURCE_LIST_PIPELINE, ONE_ARTICLE_HTML } from "./support/customSourceFixtures.js";
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { seedCustomSourceWorld } from "./support/customSourceWorld.js";
+import { seedLegacyCustomSourceVersion, seedCustomSourceWorld } from "./support/customSourceWorld.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadConfig, type ServerConfig } from "../src/config.js";
@@ -41,7 +41,7 @@ beforeEach(async () => {
     ...loadConfig({}),
     databaseUrl: db.connectionUri,
     artifactStorageRoot,
-    customSourceAllowedLanguages: ["typescript_node"],
+    customSourceAllowedLanguages: ["typescript_node", "declarative_pipeline_v1"],
     customSourceGenerateRateLimitPerHour: 2,
     customSourceArtifactRetentionEnabled: true,
     customSourceArtifactRetentionDays: 30,
@@ -68,18 +68,18 @@ describe("generateHandler rate limit", () => {
   it("rejects generation past the configured per-connection-per-hour limit", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    await createFlow!.generateHandler(IDENTITY, connection.id, {});
-    await createFlow!.generateHandler(IDENTITY, connection.id, {});
-    await expect(createFlow!.generateHandler(IDENTITY, connection.id, {})).rejects.toThrow(HttpError);
+    await createFlow!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
+    await createFlow!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
+    await expect(createFlow!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE })).rejects.toThrow(HttpError);
   });
 
   it("serializes concurrent generation attempts before enforcing the per-connection limit", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
     const results = await Promise.allSettled([
-      createFlow!.generateHandler(IDENTITY, connection.id, {}),
-      createFlow!.generateHandler(IDENTITY, connection.id, {}),
-      createFlow!.generateHandler(IDENTITY, connection.id, {}),
+      createFlow!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE }),
+      createFlow!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE }),
+      createFlow!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE }),
     ]);
 
     const fulfilled = results.filter((result) => result.status === "fulfilled");
@@ -99,7 +99,8 @@ describe("generateHandler rate limit", () => {
       `SELECT count(*)::text AS count FROM artifacts WHERE space_id = $1`,
       [IDENTITY.spaceId],
     );
-    expect(Number(artifactCount.rows[0]?.count ?? 0)).toBe(2);
+    // Declarative versions keep their definition in the manifest, not a code artifact.
+    expect(Number(artifactCount.rows[0]?.count ?? 0)).toBe(0);
   });
 
   it("does not share the rate limit budget across different connections", async () => {
@@ -117,15 +118,15 @@ describe("generateHandler rate limit", () => {
       [randomUUID(), SPACE_A, identityB.userId],
     );
     const connectionB = await createDraftConnection("-b", identityB);
-    await createFlow!.generateHandler(IDENTITY, connectionA.id, {});
-    await createFlow!.generateHandler(IDENTITY, connectionA.id, {});
-    await expect(createFlow!.generateHandler(identityB, connectionB.id, {})).resolves.toBeDefined();
+    await createFlow!.generateHandler(IDENTITY, connectionA.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
+    await createFlow!.generateHandler(IDENTITY, connectionA.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
+    await expect(createFlow!.generateHandler(identityB, connectionB.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE })).resolves.toBeDefined();
   });
 
   it("applies to repair too, since repair regenerates through generateHandler internally", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    const version = await createFlow!.generateHandler(IDENTITY, connection.id, {});
+    const version = await createFlow!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     await createFlow!.testHandler(IDENTITY, connection.id, { handler_version_id: version.id, fixture_html: FIXTURE_HTML });
     await createFlow!.activateHandler(IDENTITY, connection.id, { handler_version_id: version.id });
     // That activation's generateHandler call already used 1 of the 2 slots.
@@ -141,7 +142,7 @@ describe("PgCustomSourceHandlerRepository.getHandlerSummary observability fields
   it("surfaces repair_status, recent_run_status_counts, and no pending proposal for a healthy active connection", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    const version = await createFlow!.generateHandler(IDENTITY, connection.id, {});
+    const version = await createFlow!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     await createFlow!.testHandler(IDENTITY, connection.id, { handler_version_id: version.id, fixture_html: FIXTURE_HTML });
     await createFlow!.activateHandler(IDENTITY, connection.id, { handler_version_id: version.id });
 
@@ -154,7 +155,7 @@ describe("PgCustomSourceHandlerRepository.getHandlerSummary observability fields
   it("surfaces the pending proposal blocking activation", async () => {
     if (!db.available) return;
     const connection = await createDraftConnection();
-    const version = await createFlow!.generateHandler(IDENTITY, connection.id, {});
+    const version = await createFlow!.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     await createFlow!.testHandler(IDENTITY, connection.id, { handler_version_id: version.id, fixture_html: FIXTURE_HTML });
     // Restrict allowed_domains only now — createDraft already ran under the
     // permissive default, so activation (not draft creation) is what hits
@@ -195,7 +196,7 @@ describe("PgCustomSourceHandlerRepository.getHandlerSummary observability fields
       endpoint_url: "https://example.com/list",
       config: { list_selector: "article" },
     });
-    const v1 = await flow.generateHandler(IDENTITY, connection.id, {});
+    const v1 = await flow.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE });
     await flow.testHandler(IDENTITY, connection.id, { handler_version_id: v1.id, fixture_html: FIXTURE_HTML });
     await flow.activateHandler(IDENTITY, connection.id, { handler_version_id: v1.id });
 
@@ -203,12 +204,12 @@ describe("PgCustomSourceHandlerRepository.getHandlerSummary observability fields
     // the still-active v1 (so each requires its own proposal), generated
     // and tested without the earlier one's proposal ever being resolved —
     // nothing prevents this today.
-    const v2 = await flow.generateHandler(IDENTITY, connection.id, { capture_policy: "archive_original" });
+    const v2 = await flow.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE, capture_policy: "archive_original" });
     await flow.testHandler(IDENTITY, connection.id, { handler_version_id: v2.id, fixture_html: FIXTURE_HTML });
     const activation2 = await flow.activateHandler(IDENTITY, connection.id, { handler_version_id: v2.id });
     expect(activation2.status).toBe("pending_approval");
 
-    const v3 = await flow.generateHandler(IDENTITY, connection.id, { capture_policy: "archive_original" });
+    const v3 = await flow.generateHandler(IDENTITY, connection.id, { generation_mode: "pipeline", pipeline: CUSTOM_SOURCE_LIST_PIPELINE, capture_policy: "archive_original" });
     await flow.testHandler(IDENTITY, connection.id, { handler_version_id: v3.id, fixture_html: FIXTURE_HTML });
     const activation3 = await flow.activateHandler(IDENTITY, connection.id, { handler_version_id: v3.id });
     expect(activation3.status).toBe("pending_approval");
@@ -220,6 +221,22 @@ describe("PgCustomSourceHandlerRepository.getHandlerSummary observability fields
     expect(proposalIds).toContain(activation3.proposal_id);
   });
 });
+
+async function seedLegacyVersionHistory(connectionId: string) {
+  // Historical code artifacts remain subject to retention. Seed their old
+  // activation state directly; the frozen Node runner must never execute.
+  const v1 = await seedLegacyCustomSourceVersion(db.pool, IDENTITY, connectionId, { artifactStorageRoot: config!.artifactStorageRoot });
+  const v2 = await seedLegacyCustomSourceVersion(db.pool, IDENTITY, connectionId, { artifactStorageRoot: config!.artifactStorageRoot });
+  const v3 = await seedLegacyCustomSourceVersion(db.pool, IDENTITY, connectionId, { artifactStorageRoot: config!.artifactStorageRoot });
+  await db.pool.query(
+    `UPDATE source_handler_versions SET status = 'superseded', activated_at = now(), superseded_at = now(),
+       test_result_json = '{"status":"succeeded"}'::jsonb WHERE id = ANY($1::varchar[])`,
+    [[v1.id, v2.id]],
+  );
+  await db.pool.query(`UPDATE source_handler_versions SET status = 'active' WHERE id = $1`, [v3.id]);
+  await db.pool.query(`UPDATE source_connections SET active_handler_version_id = $2, status = 'active' WHERE id = $1`, [connectionId, v3.id]);
+  return { v1, v2 };
+}
 
 describe("pruneSupersededCustomSourceHandlerArtifacts", () => {
   it("prunes an old superseded version's artifact but never the connection's most-recently-superseded version", async () => {
@@ -234,17 +251,7 @@ describe("pruneSupersededCustomSourceHandlerArtifacts", () => {
       config: { list_selector: "article" },
     });
 
-    const v1 = await flow.generateHandler(IDENTITY, connection.id, {});
-    await flow.testHandler(IDENTITY, connection.id, { handler_version_id: v1.id, fixture_html: FIXTURE_HTML });
-    await flow.activateHandler(IDENTITY, connection.id, { handler_version_id: v1.id });
-
-    const v2 = await flow.generateHandler(IDENTITY, connection.id, {});
-    await flow.testHandler(IDENTITY, connection.id, { handler_version_id: v2.id, fixture_html: FIXTURE_HTML });
-    await flow.activateHandler(IDENTITY, connection.id, { handler_version_id: v2.id });
-
-    const v3 = await flow.generateHandler(IDENTITY, connection.id, {});
-    await flow.testHandler(IDENTITY, connection.id, { handler_version_id: v3.id, fixture_html: FIXTURE_HTML });
-    await flow.activateHandler(IDENTITY, connection.id, { handler_version_id: v3.id });
+    const { v1, v2 } = await seedLegacyVersionHistory(connection.id);
 
     // v1 and v2 are now both 'superseded'. Backdate both past the retention
     // window — only v1 should be pruned; v2 is this connection's most
@@ -294,13 +301,10 @@ describe("pruneSupersededCustomSourceHandlerArtifacts", () => {
     expect(await pruneSupersededCustomSourceHandlerArtifacts(db.pool, disabledConfig)).toBe(0);
   });
 
-  it("agrees with rollback's default target on which version is 'most recent' when two share the same superseded_at", async () => {
+  it("preserves the newest historical artifact on tied timestamps while refusing removed-language rollback", async () => {
     if (!db.available) return;
-    // Retention's exclusion query and rollback's default-target query must
-    // never disagree about which superseded version is "most recent" —
-    // otherwise retention could prune the exact version a no-argument
-    // rollback would target. Both use version_number DESC as a tiebreaker
-    // for this reason. This test forces that tie.
+    // Historical artifacts remain readable even though their language can no
+    // longer be activated. A timestamp tie must keep the highest version.
     const permissiveConfig = { ...config!, customSourceGenerateRateLimitPerHour: 10 };
     const flow = new CustomSourceCreateFlowService(db.pool, permissiveConfig);
     const repairService = new CustomSourceRepairService(db.pool, permissiveConfig);
@@ -310,17 +314,7 @@ describe("pruneSupersededCustomSourceHandlerArtifacts", () => {
       config: { list_selector: "article" },
     });
 
-    const v1 = await flow.generateHandler(IDENTITY, connection.id, {});
-    await flow.testHandler(IDENTITY, connection.id, { handler_version_id: v1.id, fixture_html: FIXTURE_HTML });
-    await flow.activateHandler(IDENTITY, connection.id, { handler_version_id: v1.id });
-
-    const v2 = await flow.generateHandler(IDENTITY, connection.id, {});
-    await flow.testHandler(IDENTITY, connection.id, { handler_version_id: v2.id, fixture_html: FIXTURE_HTML });
-    await flow.activateHandler(IDENTITY, connection.id, { handler_version_id: v2.id });
-
-    const v3 = await flow.generateHandler(IDENTITY, connection.id, {});
-    await flow.testHandler(IDENTITY, connection.id, { handler_version_id: v3.id, fixture_html: FIXTURE_HTML });
-    await flow.activateHandler(IDENTITY, connection.id, { handler_version_id: v3.id });
+    const { v1, v2 } = await seedLegacyVersionHistory(connection.id);
 
     // Force the tie: v1 and v2 (both superseded, v2 has the higher
     // version_number) now share one identical, far-past-retention timestamp.
@@ -341,7 +335,10 @@ describe("pruneSupersededCustomSourceHandlerArtifacts", () => {
     );
     expect(v2AfterPrune.rows[0]?.handler_artifact_id).not.toBeNull();
 
-    const rollback = await repairService.rollbackHandler(IDENTITY, connection.id, {});
-    expect(rollback.handler_version.id).toBe(v2.id);
+    const before = await db.pool.query("SELECT active_handler_version_id FROM source_connections WHERE id=$1", [connection.id]);
+    await expect(repairService.rollbackHandler(IDENTITY, connection.id, {}))
+      .rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("language has been removed") });
+    const after = await db.pool.query("SELECT active_handler_version_id FROM source_connections WHERE id=$1", [connection.id]);
+    expect(after.rows).toEqual(before.rows);
   });
 });

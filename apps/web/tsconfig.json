@@ -19,6 +19,7 @@
     "paths": {
       "@/*": ["./src/*"],
       "@rainver/protocol": ["./node_modules/@rainver/protocol/dist/index.d.ts"],
+      "@rainver/reader-document": ["./node_modules/@rainver/reader-document/dist/index.d.ts"],
       "react": ["./node_modules/@types/react/index.d.ts"],
       "react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime.d.ts"],
       "react/jsx-dev-runtime": ["./node_modules/@types/react/jsx-dev-runtime.d.ts"]

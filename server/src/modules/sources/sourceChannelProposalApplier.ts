@@ -1,7 +1,18 @@
+import {canWriteProject} from '../projects/access.js';
+import {materialSourcePolicyHash} from './materialProcessing/consent.js';
+import type {SourceConnectionRow} from './sourceRepositoryRows.js';
+import {assertSourceConnectionManageable} from './sourceConnectionAccess.js';
 import type { ProposalApplierRegistry } from "../proposals/applierRegistry.js";
 import { requiredString } from "../routeUtils/common.js";
 
 export function registerSourceChannelProposalAppliers(registry: ProposalApplierRegistry): void {
+  registry.register('source_material_retention',async({db,proposal,userId})=>{
+    const id=requiredString(proposal.payload_json?.source_connection_id,'source_connection_id');const identity={spaceId:proposal.space_id,userId};await assertSourceConnectionManageable(db,identity,id);
+    const source=(await db.query<SourceConnectionRow>("SELECT * FROM source_connections WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL AND status<>'archived' FOR UPDATE",[id,proposal.space_id])).rows[0];
+    if(!source||source.owner_user_id!==userId||source.project_id&&!await canWriteProject(db,proposal.space_id,source.project_id,userId)||materialSourcePolicyHash(source)!==proposal.payload_json?.expected_policy_sha256)throw new Error('Source owner or policy changed; review again');
+    await db.query("UPDATE source_connections SET capture_policy=CASE WHEN capture_policy='reference_only' THEN 'extract_text' ELSE capture_policy END,policy_json=COALESCE(policy_json,'{}'::jsonb)||'{\"retention_policy\":\"full_text\"}'::jsonb,updated_at=now() WHERE id=$1 AND space_id=$2",[id,proposal.space_id]);
+    return {result_type:'source_connection',result:{source_connection_id:id,retention_policy:'full_text'}};
+  });
   registry.register("source_channel_activation", async (context) => {
     const { db, proposal } = context;
     const channelId = requiredString(proposal.payload_json?.source_channel_id, "source_channel_id");

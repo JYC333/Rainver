@@ -28,11 +28,14 @@ export function ActionPreviewCards({
   viewerUserId,
   onDecision,
   testId,
+  continueAfterDecision = true,
 }: {
   previews: readonly ChatActionPreview[]
   viewerUserId: string | null | undefined
   onDecision?: (preview: ChatActionPreview, action: ActionDecision) => Promise<void>
   testId?: string
+  /** Some owners only refresh after a decision; no new Agent turn is implied. */
+  continueAfterDecision?: boolean
 }) {
   const cards = decidableByViewer(previews, viewerUserId)
   if (cards.length === 0) return null
@@ -43,6 +46,7 @@ export function ActionPreviewCards({
           key={`${preview.action_id}:${preview.proposal_id ?? index}`}
           preview={preview}
           onDecision={onDecision}
+          continueAfterDecision={continueAfterDecision}
         />
       ))}
     </div>
@@ -62,9 +66,11 @@ export function decidableByViewer(
 function ActionPreviewCard({
   preview,
   onDecision,
+  continueAfterDecision,
 }: {
   preview: ChatActionPreview
   onDecision?: (preview: ChatActionPreview, action: ActionDecision) => Promise<void>
+  continueAfterDecision: boolean
 }) {
   const scope = useConversationScope()
   const { t } = useAppTranslation()
@@ -74,7 +80,7 @@ function ActionPreviewCard({
   const [error, setError] = useState<string | null>(null)
   const [resultMessage, setResultMessage] = useState<string | null>(null)
   const decidable = Boolean(onDecision) && !checkingStatus && status === 'proposed' && Boolean(preview.proposal_id)
-  const canContinue = Boolean(onDecision) && (status === 'auto_applied' || status === 'rejected') && !resultMessage
+  const canContinue = continueAfterDecision && Boolean(onDecision) && (status === 'auto_applied' || status === 'rejected') && !resultMessage
   const appliedDescription = preview.action_id === 'project.propose_definition'
     ? t('mixed_surfaces.action_preview.action_project_definition_saved')
     : preview.action_id === 'inquiry.promote_knowledge'
@@ -115,7 +121,7 @@ function ActionPreviewCard({
     return () => { cancelled = true }
   }, [preview.proposal_id, scope])
 
-  const continueAfterDecision = async (action: ActionDecision) => {
+  const continueAfterDecisionAction = async (action: ActionDecision) => {
     if (!onDecision) return
     setResultMessage(action === 'accept'
       ? t('mixed_surfaces.action_preview.continuing_after_accept', { action: appliedDescription })
@@ -140,7 +146,8 @@ function ActionPreviewCard({
       else await proposalsApi.reject(preview.proposal_id, scope)
       if (scope.signal?.aborted) return
       setStatus(action === 'accept' ? 'auto_applied' : 'rejected')
-      await continueAfterDecision(action)
+      if (continueAfterDecision) await continueAfterDecisionAction(action)
+      else await onDecision(preview, action)
     } catch (decisionError) {
       setError(errMsg(decisionError))
     } finally {
@@ -151,7 +158,7 @@ function ActionPreviewCard({
   const continueFromDecided = async () => {
     setBusy(true)
     setError(null)
-    await continueAfterDecision(status === 'rejected' ? 'reject' : 'accept')
+    await continueAfterDecisionAction(status === 'rejected' ? 'reject' : 'accept')
     setBusy(false)
   }
 

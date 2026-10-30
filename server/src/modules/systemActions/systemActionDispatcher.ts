@@ -1,3 +1,4 @@
+import {resolveAgentActorId} from '../../db/actorResolver.js';
 import { createHash, randomUUID } from "node:crypto";
 import type {
   CanonicalToolCall,
@@ -202,8 +203,18 @@ export class SystemActionDispatcher {
 
     const gateway = new SystemActionGateway(
       executors,
-      (definition, input, context) => enforcePolicyForAction(config, definition, input, run, retrieval, actor, delegation, context),
+      (definition, input, context) => {
+        if(definition.id==='source.material.submit'){
+          if(!definition.policy_resource)throw new Error('Material action requires its registered policy resource');
+          const bound=(run.contract_snapshot_json as {workflow_input_json?:{source_goal?:{goal_id?:string};material_processing?:{item_id:string}}})?.workflow_input_json;
+          const item=bound?.material_processing?.item_id;
+          const scoped:typeof definition={...definition,policy_action:item?'source.item_update':'source.goal.manage',policy_resource:{...definition.policy_resource,resource_type:item?'source_item':'source_goal',resource_id_input_field:item?'item_id':'goal_id'}};
+          return enforcePolicyForAction(config,scoped,{...(item?{item_id:item}:{goal_id:bound?.source_goal?.goal_id})},run,retrieval,actor,delegation,context);
+        }
+        return enforcePolicyForAction(config,definition,input,run,retrieval,actor,delegation,context);
+      },
       {
+        invalidInputExecutors:new Map([['source.material.submit',async(input)=>{const {submitMaterialResults}=await import('../sources/materialProcessing/submission.js');return submitMaterialResults(config,run,input);}]]),
         onValidated: (definition, _input, context) => emitActionEvent(definition, "action_invoked", context),
         onCompleted: (definition, result, context) =>
           emitActionEvent(definition, "action_completed", context, {
@@ -411,6 +422,10 @@ export async function enforceDeclaredResourcePolicy(
         resourceId,
       })
     : undefined;
+  // Requesting a review is distinct from the activation grant consumed by
+  // the proposal applier. Only the canonical owner-created goal chat qualifies.
+  const goalSetupRequest = definition.id === "source.channel.propose_activation"
+    && await (await import("../sources/index.js")).canRequestGoalSourceActivation(getDbPool(databaseUrl), run);
   const decision = await enforce({ databaseUrl }, await loadActionRegistry(), {
     action: definition.policy_action,
     force_record: true,
@@ -442,6 +457,7 @@ export async function enforceDeclaredResourcePolicy(
       ...(await memoryPolicyContext(getDbPool(databaseUrl), definition.id, run.space_id, run.agent_id, input)),
       surface: "managed_run_system_action_gateway",
       ...(hasActionGrant !== undefined ? { has_action_approval_grant: hasActionGrant } : {}),
+      source_goal_setup_request: goalSetupRequest,
     },
     metadata_json: { surface: "managed_run_system_action_gateway", action_id: definition.id },
   });
@@ -496,7 +512,9 @@ function toolCallFailureResult(call: CanonicalToolCall, error: unknown): SystemA
 
 function defaultActionEventSink(config: ServerConfig, run: AgentRunRecord) {
   if (!config.databaseUrl) return undefined;
-  const repository = new PgRunRepository(getDbPool(config.databaseUrl));
+  const db=getDbPool(config.databaseUrl);
+  const repository = new PgRunRepository(db);
+  const collection=(run.contract_snapshot_json as {workflow_input_json?:{source_goal?:{purpose?:string};material_processing?:unknown}})?.workflow_input_json?.source_goal?.purpose==='collect'||!!(run.contract_snapshot_json as {workflow_input_json?:{material_processing?:unknown}})?.workflow_input_json?.material_processing;
   return async (
     eventType: "action_invoked" | "action_completed",
     call: CanonicalToolCall,
@@ -508,7 +526,7 @@ function defaultActionEventSink(config: ServerConfig, run: AgentRunRecord) {
         space_id: run.space_id,
         event_type: eventType,
         status: eventType === "action_invoked" ? "running" : (metadata.ok === false ? "failed" : "succeeded"),
-        actor_id: run.agent_id,
+        actor_id: collection?await resolveAgentActorId(db,run.space_id,run.agent_id):run.agent_id,
         ...(typeof metadata.error_code === "string" ? { error_code: metadata.error_code } : {}),
         ...(typeof metadata.error_message === "string" ? { error_message: metadata.error_message } : {}),
         metadata_json: { action_id: call.name, action_version: 1, tool_call_id: call.id, instructed_by_user_id: run.instructed_by_user_id ?? null, ...metadata },

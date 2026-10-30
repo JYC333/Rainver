@@ -1,3 +1,4 @@
+import * as readerDocuments from '../src/modules/sources/materialProcessing/documents.js';
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import {
@@ -172,6 +173,7 @@ describe("arXiv polite throttle", () => {
 
 describe("SourceExtractionWorker arXiv HTML-first extraction", () => {
   it("extracts arXiv abs URLs from the HTML rendition first", async () => {
+    const savedDocument = vi.spyOn(readerDocuments, "saveSourceReadingDocument").mockResolvedValue({artifactId:"00000000-0000-4000-8000-000000000001",snapshotId:"00000000-0000-4000-8000-000000000002",contentHash:"body-hash"});
     __setArxivThrottleForTests({ sleep: async () => {} });
     const db = new ExtractionDb("extract_text", "https://arxiv.org/abs/2402.08954");
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
@@ -184,24 +186,11 @@ describe("SourceExtractionWorker arXiv HTML-first extraction", () => {
     expect(result.status).toBe("succeeded");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://arxiv.org/html/2402.08954");
-    const artifactInserts = db.calls.filter((call) => call.sql.includes("INSERT INTO artifacts"));
-    expect(artifactInserts).toHaveLength(1);
-    expect(artifactInserts[0]?.sql).toContain("'source_reader_document'");
-    expect(String(artifactInserts[0]?.params[3])).toContain("\"extraction_method\":\"structured_html_v1\"");
-    const artifactMetadata = JSON.parse(String(artifactInserts[0]?.params[6]));
-    expect(artifactMetadata).toMatchObject({
-      content_source_format: "html",
-      content_source_url: "https://arxiv.org/html/2402.08954",
-      arxiv_id: "2402.08954",
-    });
-    const snapshotInsert = db.calls.find((call) => call.sql.includes("INSERT INTO source_snapshots"));
-    expect(JSON.parse(String(snapshotInsert?.params[10]))).toMatchObject({
-      content_source_format: "html",
-      arxiv_id: "2402.08954",
-    });
+    expect(savedDocument).toHaveBeenCalledWith(db,expect.objectContaining({document:expect.objectContaining({extraction_method:'structured_html_v1',plain_text:expect.stringContaining('Full paper text.')}),metadata:expect.objectContaining({content_source_format:'html',content_source_url:'https://arxiv.org/html/2402.08954',arxiv_id:'2402.08954'})}));
   });
 
   it("falls back to the PDF rendition when the HTML rendition is unavailable", async () => {
+    const savedDocument = vi.spyOn(readerDocuments, "saveSourceReadingDocument").mockResolvedValue({artifactId:"00000000-0000-4000-8000-000000000001",snapshotId:"00000000-0000-4000-8000-000000000002",contentHash:"body-hash"});
     __setArxivThrottleForTests({ sleep: async () => {} });
     const db = new ExtractionDb("extract_text", "https://arxiv.org/abs/2402.08954");
     const fetchMock = vi.spyOn(globalThis, "fetch")
@@ -216,22 +205,10 @@ describe("SourceExtractionWorker arXiv HTML-first extraction", () => {
     expect(result.status).toBe("succeeded");
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://arxiv.org/html/2402.08954");
     expect(String(fetchMock.mock.calls[1]?.[0])).toBe("https://arxiv.org/pdf/2402.08954");
-    const artifactInserts = db.calls.filter((call) => call.sql.includes("INSERT INTO artifacts"));
-    expect(artifactInserts).toHaveLength(2);
-    expect(artifactInserts[0]?.sql).toContain("'source_raw_snapshot'");
-    expect(artifactInserts[0]?.sql).toContain("space_id = $10::varchar");
-    expect(artifactInserts[0]?.params[4]).toBe("application/pdf");
-    expect(artifactInserts[1]?.sql).toContain("'source_reader_document'");
-    expect(artifactInserts[1]?.sql).toContain("space_id = $10::varchar");
-    expect(String(artifactInserts[1]?.params[3])).toContain("\"extraction_method\":\"pdf_text_v1\"");
-    const extractedSnapshot = db.calls.filter((call) => call.sql.includes("INSERT INTO source_snapshots")).at(-1);
-    expect(JSON.parse(String(extractedSnapshot?.params[10]))).toMatchObject({
-      content_source_format: "pdf",
-      content_source_url: "https://arxiv.org/pdf/2402.08954",
-      fallback_from: "html",
-      fallback_reason: expect.stringContaining("404"),
-      arxiv_id: "2402.08954",
-    });
+    const raw = db.calls.find(call=>call.sql.includes("INSERT INTO artifacts"));
+    expect(raw?.sql).toContain("'source_raw_snapshot'");
+    expect(raw?.params[4]).toBe('application/pdf');
+    expect(savedDocument).toHaveBeenCalledWith(db,expect.objectContaining({document:expect.objectContaining({extraction_method:'pdf_text_v1',plain_text:expect.stringContaining('Agent Paper PDF')}),metadata:expect.objectContaining({content_source_format:'pdf',content_source_url:'https://arxiv.org/pdf/2402.08954',fallback_from:'html',fallback_reason:expect.stringContaining('404'),arxiv_id:'2402.08954'})}));
   });
 
   it("fails the job with the last meaningful error when every arXiv candidate fails", async () => {
@@ -248,6 +225,7 @@ describe("SourceExtractionWorker arXiv HTML-first extraction", () => {
   });
 
   it("keeps single-fetch behavior for non-arXiv URLs", async () => {
+    const savedDocument = vi.spyOn(readerDocuments, "saveSourceReadingDocument").mockResolvedValue({artifactId:"00000000-0000-4000-8000-000000000001",snapshotId:"00000000-0000-4000-8000-000000000002",contentHash:"body-hash"});
     const db = new ExtractionDb("extract_text", "https://example.test/article");
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
       "<html><body><article><p>Regular article.</p></article></body></html>",
@@ -259,8 +237,8 @@ describe("SourceExtractionWorker arXiv HTML-first extraction", () => {
     expect(result.status).toBe("succeeded");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://example.test/article");
-    const snapshotInsert = db.calls.find((call) => call.sql.includes("INSERT INTO source_snapshots"));
-    expect(JSON.parse(String(snapshotInsert?.params[10]))).not.toHaveProperty("content_source_format");
+    expect(savedDocument.mock.calls[0]?.[1].metadata).not.toHaveProperty('content_source_format');
+    expect(savedDocument.mock.calls[0]?.[1].document.plain_text).toContain('Regular article.');
   });
 
   it("prefers the HTML raw snapshot for arXiv snapshot jobs", async () => {

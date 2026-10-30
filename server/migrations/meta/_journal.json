@@ -41,6 +41,13 @@
       "version": "7",
       "when": 1793075271890,
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "tag": "0006_following_and_reader",
+      "version": "7",
+      "when": 1793310244344,
+      "breakpoints": true
     }
   ],
   "version": "7",

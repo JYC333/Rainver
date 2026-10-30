@@ -149,11 +149,13 @@ System Action ids are filtered out of runtime requirements because those
 actions execute through the server-owned `SystemActionGateway`; their authority
 comes from the Run's immutable permission snapshot and call-time policy checks.
 
-The `required_tools` request/hint channel currently has an important limitation:
-the repository supplies an empty candidate-side tool list, while client-owned
-hints may still provide required tools. Such a hint can therefore reject every
-candidate. Do not use it as an authorization mechanism or equate it with Run
-tool grants.
+The `required_tools` request/hint channel reads candidate declarations from
+`runtime_config_json.tools`, falling back to `tool_ids`, including the pinned
+Profile snapshot path. A Profile with no declarations has an empty list, so
+a nonempty requirement can reject all otherwise eligible Profiles. This is
+configuration metadata, not a verified tool inventory or Run tool grant; do not
+use it as an authorization mechanism. The inventory/producer contract remains
+in [backlog C3.2](../plans/backlog.md#c32--routing-cannot-express-a-provider-or-model-requirement).
 
 ## Durable decision and failure behavior
 

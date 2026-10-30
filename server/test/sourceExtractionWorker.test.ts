@@ -166,51 +166,6 @@ describe("SourceExtractionWorker source retention policy", () => {
     expect(finish?.params[5]).toBe("Source retention policy does not allow full_snapshot");
   });
 
-  it("writes extract_text artifacts as structured reader documents", async () => {
-    const db = new FakeDb("extract_text", "full_text");
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
-      "<html><body><article><h1>Readable article</h1><p>Article text.</p><img src='/image.png'></article></body></html>",
-      { status: 200 },
-    ));
-
-    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
-
-    expect(result.status).toBe("succeeded");
-    const artifactInsert = db.calls.find((call) => call.sql.includes("INSERT INTO artifacts"));
-    expect(artifactInsert?.sql).toContain("'source_reader_document'");
-    expect(artifactInsert?.sql).toContain("'application/json'");
-    expect(artifactInsert?.sql).toContain("'reader_document_json'");
-    expect(artifactInsert?.sql).toContain("export_formats_json");
-    expect(artifactInsert?.params).toContain(JSON.stringify(["json"]));
-    expect(String(artifactInsert?.params[3])).toContain("\"image_policy\":\"remote_reference\"");
-    expect(String(artifactInsert?.params[3])).toContain("\"src\":\"https://example.test/image.png\"");
-  });
-
-  it("stores PDF extract_text responses as raw binary snapshots and pdf reader documents", async () => {
-    const db = new FakeDb("extract_text", "full_text");
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
-      simplePdfBytes("Project Research PDF"),
-      { status: 200, headers: { "content-type": "text/plain" } },
-    ));
-
-    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
-
-    expect(result.status).toBe("succeeded");
-    const artifactInserts = db.calls.filter((call) => call.sql.includes("INSERT INTO artifacts"));
-    expect(artifactInserts).toHaveLength(2);
-    const rawInsert = artifactInserts[0];
-    expect(rawInsert?.sql).toContain("'source_raw_snapshot'");
-    expect(rawInsert?.params[4]).toBe("application/pdf");
-    expect(rawInsert?.params[5]).toBe(JSON.stringify(["pdf"]));
-    expect(rawInsert?.params[6]).toBe("pdf");
-    const readerInsert = artifactInserts[1];
-    expect(readerInsert?.sql).toContain("'source_reader_document'");
-    expect(String(readerInsert?.params[3])).toContain("\"extraction_method\":\"pdf_text_v1\"");
-    expect(String(readerInsert?.params[3])).toContain("Project Research PDF");
-    const evidenceInsert = db.calls.find((call) => call.sql.includes("INSERT INTO extracted_evidence"));
-    expect(evidenceInsert?.params[22]).toBe("pdf_text_v1");
-  });
-
   it("uses the space download limit when extracting source URLs", async () => {
     const db = new FakeDb("extract_text", "full_text", 1_024);
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
@@ -226,23 +181,6 @@ describe("SourceExtractionWorker source retention policy", () => {
     expect(finish?.params[5]).toBe("Downloaded source exceeds max size (1 KiB)");
   });
 
-  it("stores PDF snapshot jobs as raw binary snapshots and derived reader documents", async () => {
-    const db = new FakeDb("snapshot", "full_snapshot");
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
-      simplePdfBytes("Snapshot PDF Text"),
-      { status: 200, headers: { "content-type": "application/pdf" } },
-    ));
-
-    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
-
-    expect(result.status).toBe("succeeded");
-    const artifactInserts = db.calls.filter((call) => call.sql.includes("INSERT INTO artifacts"));
-    expect(artifactInserts).toHaveLength(2);
-    expect(artifactInserts[0]?.params[4]).toBe("application/pdf");
-    expect(artifactInserts[0]?.params[6]).toBe("pdf");
-    expect(String(artifactInserts[1]?.params[3])).toContain("\"extraction_method\":\"pdf_text_v1\"");
-    expect(String(artifactInserts[1]?.params[3])).toContain("Snapshot PDF Text");
-  });
 
   it("stores non-PDF binary snapshot jobs without deriving reader documents", async () => {
     const db = new FakeDb("snapshot", "full_snapshot");

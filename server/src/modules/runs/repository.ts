@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
-import { withDedicatedSessionAdvisoryLock } from "../../db/advisoryLock.js";
+import { tryWithDedicatedSessionAdvisoryLock } from "../../db/advisoryLock.js";
+import { RunFinalizationBusyError } from "./finalizationErrors.js";
 import { resolveServiceActorId, resolveUserActorId } from "../../db/actorResolver.js";
 import {
   redactEvidenceText,
@@ -178,6 +179,15 @@ export class PgRunRepository {
           WHERE status IN ('running', 'cancelling')
           AND started_at IS NOT NULL
           AND started_at < $1
+          -- A dispatched process may outlive this server. Its reclaimed job
+          -- must obtain an exact Host exit confirmation before settlement.
+          AND NOT EXISTS (
+            SELECT 1 FROM run_attempts attempt
+             WHERE attempt.run_id = runs.id AND attempt.space_id = runs.space_id
+               AND attempt.launch_id IS NOT NULL
+               AND attempt.attempt_number = (SELECT max(latest.attempt_number)
+                 FROM run_attempts latest WHERE latest.run_id = runs.id AND latest.space_id = runs.space_id)
+          )
           RETURNING id, space_id, status, error_json
        ), updated_attempts AS (
          UPDATE run_attempts a
@@ -235,7 +245,14 @@ export class PgRunRepository {
          FROM runs r
         WHERE r.status IN ('succeeded', 'failed', 'degraded', 'cancelled')
           AND EXISTS (SELECT 1 FROM task_runs tr WHERE tr.space_id = r.space_id AND tr.run_id = r.id)
-          AND NOT EXISTS (SELECT 1 FROM run_finalizations f WHERE f.space_id = r.space_id AND f.run_id = r.id)
+          AND NOT EXISTS (
+            SELECT 1 FROM run_finalizations f
+             WHERE f.space_id = r.space_id AND f.run_id = r.id
+               AND f.attempt_number = COALESCE((
+                 SELECT max(a.attempt_number) FROM run_attempts a
+                  WHERE a.space_id = r.space_id AND a.run_id = r.id
+               ), 1)
+          )
         ORDER BY r.updated_at ASC, r.id ASC
         LIMIT $1`,
       [Math.max(1, Math.min(500, Math.trunc(limit)))],
@@ -266,6 +283,21 @@ export class PgRunRepository {
         ORDER BY r.updated_at ASC, r.id ASC
         LIMIT $1`,
       [Math.max(1, Math.min(500, Math.trunc(limit)))],
+    );
+    return result.rows;
+  }
+
+  /** Persisted cancellation intent survives loss of its request/worker process. */
+  async listCancellingAgentRuns(limit = 100): Promise<Array<Pick<AgentRunRecord,
+    "id" | "space_id" | "agent_id" | "project_folder_id" | "instructed_by_user_id" | "owner_user_id">>> {
+    const result = await this.db.query<Pick<AgentRunRecord,
+      "id" | "space_id" | "agent_id" | "project_folder_id" | "instructed_by_user_id" | "owner_user_id">>(
+      `SELECT r.id, r.space_id, r.agent_id, r.project_folder_id, r.instructed_by_user_id, r.owner_user_id
+         FROM runs r WHERE r.execution_kind = 'agent' AND r.status = 'cancelling'
+          AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.space_id = r.space_id
+            AND j.job_type = 'agent_run' AND j.payload_json->>'run_id' = r.id
+            AND j.status IN ('pending', 'claimed', 'running'))
+        ORDER BY r.updated_at, r.id LIMIT $1`, [Math.max(1, Math.min(500, limit))],
     );
     return result.rows;
   }
@@ -758,7 +790,8 @@ export class PgRunRepository {
       ? declaredToolGrants.filter((grant) =>
           grant.action_id !== "authorization.request" && !grant.side_effecting
         )
-      : declaredToolGrants;
+      : ((contractSnapshot.workflow_input_json as {source_goal?:{purpose?:string};material_processing?:unknown}|undefined)?.source_goal?.purpose==='collect'||!!(contractSnapshot.workflow_input_json as {material_processing?:unknown}|undefined)?.material_processing)
+        ? declaredToolGrants.filter(grant=>grant.action_id==='source.material.submit') : declaredToolGrants;
     const permissionSnapshotJson = JSON.stringify({
       tool_grants: toolGrants,
       ...(input.scenario_tool_allowance
@@ -1493,8 +1526,10 @@ export class PgRunRepository {
       attemptNumber,
       finalizerVersion,
     ].join(":");
-    return withDedicatedSessionAdvisoryLock(this.db, lockKey, (lockedDb) =>
+    const acquired = await tryWithDedicatedSessionAdvisoryLock(this.db, lockKey, (lockedDb) =>
       fn(lockedDb === this.db ? this : new PgRunRepository(lockedDb)));
+    if (!acquired.acquired) throw new RunFinalizationBusyError();
+    return acquired.value;
   }
 
   /**
@@ -1502,6 +1537,8 @@ export class PgRunRepository {
    * the completion gate (every one completed: `settled_at`) or the failure that
    * leaves it owed, with when the sweep may try again. The Agent and its output
    * are not part of settlement and are never redone by it.
+   * A later cancellation or newly required step may add obligations to a
+   * settled record. Only the attempt's finalization owner records these passes.
    */
   async recordRunSettlement(
     spaceId: string,
@@ -1520,9 +1557,9 @@ export class PgRunRepository {
                 || CASE WHEN $4::jsonb IS NULL THEN '{}'::jsonb ELSE jsonb_build_object(
                      'last_failure', $4::jsonb || jsonb_build_object('at', $5::text),
                      -- Backs off with each failed pass, to at most an hour.
-                     'next_attempt_at', ($5::timestamptz + make_interval(mins => LEAST(60, power(2, settlement_attempts)::int)))::text
+                     'next_attempt_at', ($5::timestamptz + make_interval(mins => LEAST(60, power(2, LEAST(6, settlement_attempts))::int)))::text
                    ) END
-        WHERE space_id = $1 AND id = $2 AND status = 'completed' AND settled_at IS NULL`,
+        WHERE space_id = $1 AND id = $2 AND status = 'completed'`,
       [spaceId, finalizationId, JSON.stringify(input.completed), input.failure ? JSON.stringify(input.failure) : null, input.at],
     );
   }
@@ -1537,9 +1574,12 @@ export class PgRunRepository {
       `SELECT f.run_id, f.space_id
          FROM run_finalizations f
          JOIN runs r ON r.id = f.run_id AND r.space_id = f.space_id
-        WHERE f.status = 'completed' AND f.settled_at IS NULL
+        WHERE f.status = 'completed' AND (f.settled_at IS NULL OR EXISTS (
+          SELECT 1 FROM host_threads thread
+           WHERE thread.dispatch_lock_id = r.id
+        ))
           AND COALESCE((f.settlement_json->>'next_attempt_at')::timestamptz, f.finalized_at) <= now()
-          AND r.status IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned')
+          AND r.status IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned', 'waiting_for_review')
           AND f.attempt_number = COALESCE((
             SELECT max(a.attempt_number) FROM run_attempts a WHERE a.space_id = f.space_id AND a.run_id = f.run_id
           ), 1)
@@ -2022,17 +2062,29 @@ export class PgRunRepository {
                WHERE active_lock.run_id = runs.id
             ))
             AND (NOT $10::boolean OR $3 = 'cancelled' OR status <> 'cancelling')
+            AND ($11::integer IS NULL OR (
+              status IN ('running', 'cancelling') AND $11 = (
+                SELECT max(a.attempt_number) FROM run_attempts a
+                 WHERE a.run_id = runs.id AND a.space_id = runs.space_id
+              )
+            ))
           FOR UPDATE
        ), updated AS (
          UPDATE runs run_row
           SET status = $3,
-              -- Where the host left the checkout arrives with the diff upload,
-              -- before this; the terminal output replaces everything else but
-              -- keeps that (hosts/repository recordGitAfter).
+              -- Where the host left the checkout, and the version a read-only
+              -- review read, arrive with the diff upload, before this; the
+              -- terminal output replaces everything else but keeps those
+              -- (hosts/repository recordGitAfter, recordReviewBasis).
               output_json = CASE
                 WHEN jsonb_typeof(run_row.output_json) = 'object'
-                 AND run_row.output_json ? 'workspace_after'
-                THEN $4::jsonb || jsonb_build_object('workspace_after', run_row.output_json->'workspace_after')
+                THEN $4::jsonb
+                  || CASE WHEN run_row.output_json ? 'workspace_after'
+                       THEN jsonb_build_object('workspace_after', run_row.output_json->'workspace_after')
+                       ELSE '{}'::jsonb END
+                  || CASE WHEN run_row.output_json ? 'review_basis'
+                       THEN jsonb_build_object('review_basis', run_row.output_json->'review_basis')
+                       ELSE '{}'::jsonb END
                 ELSE $4::jsonb
               END,
               error_json = $5::jsonb,
@@ -2052,7 +2104,7 @@ export class PgRunRepository {
                   run_row.trigger_origin, run_row.instructed_by_user_id,
                   run_row.instructed_by_agent_id, run_row.error_message,
                   run_row.output_json, run_row.error_json, run_row.started_at,
-                  run_row.ended_at
+                  run_row.ended_at, run_row.host_task_thread_id, run_row.model_override_json
        ), resolved_proposals AS (
          UPDATE proposals proposal
             SET status = CASE
@@ -2100,6 +2152,7 @@ export class PgRunRepository {
         redactEvidenceText(extractErrorMessage(errorJson)),
         terminalErrorCode,
         executionOwner,
+        input.expected_attempt_number ?? null,
       ],
     );
     return result.rows[0] ?? null;
@@ -2151,7 +2204,7 @@ export class PgRunRepository {
       `SELECT id, space_id, run_id, attempt_number, status,
               started_at, ended_at, last_activity_at,
               cancel_requested_at, cancel_confirmed_at, exit_code,
-              error_code, error_json, created_at, updated_at
+              error_code, error_json, launch_id, created_at, updated_at
          FROM run_attempts
         WHERE space_id = $1 AND run_id = $2
         ORDER BY attempt_number DESC, id ASC`,
@@ -3094,8 +3147,8 @@ export class PgRunRepository {
     return (result.rowCount ?? 0) === 1;
   }
 
-  async releaseExecutionLock(runId: string): Promise<void> {
-    await this.db.query("DELETE FROM run_execution_locks WHERE run_id = $1", [runId]);
+  async releaseExecutionLock(runId: string, workerId?: string): Promise<void> {
+    await this.db.query("DELETE FROM run_execution_locks WHERE run_id = $1 AND ($2::text IS NULL OR worker_id = $2)", [runId, workerId ?? null]);
   }
 }
 

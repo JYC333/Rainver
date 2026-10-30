@@ -34,6 +34,7 @@ services:
       - ../../packages/protocol/src:/app/packages/protocol/src:ro
       - ../../packages/folder-read/src:/app/packages/folder-read/src:ro
       - ../../packages/outbound-guard/src:/app/packages/outbound-guard/src:ro
+      - ../../packages/reader-document/src:/app/packages/reader-document/src:ro
       - ../../plugins:/app/plugins:ro
       # Prompt/catalog edits must reach the boot-time builtin sync without an
       # image rebuild; a server restart is enough with the mount in place.
@@ -133,6 +134,7 @@ services:
       - ../../pnpm-workspace.yaml:/repo/pnpm-workspace.yaml:ro
       - ../../pnpm-lock.yaml:/repo/pnpm-lock.yaml:ro
       - ../../packages/protocol/package.json:/repo/packages/protocol/package.json:ro
+      - ../../packages/reader-document/package.json:/repo/packages/reader-document/package.json:ro
       - ../../server/package.json:/repo/server/package.json:ro
       - ../../apps/web:/repo/apps/web
       - ../../plugins:/repo/plugins:ro

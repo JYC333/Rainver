@@ -8,7 +8,8 @@ import {
 } from "../retrieval/index.js";
 import { canReadProject } from "../projects/access.js";
 import type { Queryable } from "../routeUtils/common.js";
-import { threadReadableSql } from "./threadAccess.js";
+import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
+import { threadAccessLevelSql, threadReadableSql } from "./threadAccess.js";
 
 const INQUIRY_OBJECT_TYPES = ["inquiry_thread"] as const;
 
@@ -17,6 +18,7 @@ interface ThreadProjectionRow {
   project_id: string;
   kind: string;
   statement: string;
+  summary: string | null;
   lifecycle_status: string;
   updated_at: Date | string | null;
   owner_user_id: string | null;
@@ -27,10 +29,10 @@ interface ThreadProjectionRow {
   predictions: string | null;
 }
 
-const THREAD_PROJECTION_SELECT = `SELECT t.object_id AS id, t.project_id, t.kind, t.statement, t.lifecycle_status,
+const THREAD_PROJECTION_COLUMNS = `t.object_id AS id, t.project_id, t.kind, t.statement, t.lifecycle_status,
             so.updated_at, so.owner_user_id, so.visibility,
-            qs.current_answer_summary, qs.known_gaps, hs.proposed_claim, hs.predictions
-       FROM inquiry_threads t
+            so.summary, qs.current_answer_summary, qs.known_gaps, hs.proposed_claim, hs.predictions`;
+const THREAD_PROJECTION_FROM = `FROM inquiry_threads t
        JOIN space_objects so ON so.id = t.object_id AND so.space_id = t.space_id
        LEFT JOIN inquiry_question_states qs ON qs.thread_id = t.object_id
        LEFT JOIN inquiry_hypothesis_states hs ON hs.thread_id = t.object_id`;
@@ -49,7 +51,7 @@ export const inquiryRetrievalAdapter: RetrievalDomainAdapter = {
 
   async loadCanonical(db, spaceId, _objectType, threadId): Promise<CanonicalObject | null> {
     const result = await db.query<ThreadProjectionRow>(
-      `${THREAD_PROJECTION_SELECT}
+      `SELECT ${THREAD_PROJECTION_COLUMNS} ${THREAD_PROJECTION_FROM}
       WHERE t.space_id = $1 AND t.object_id = $2
       LIMIT 1`,
       [spaceId, threadId],
@@ -101,8 +103,10 @@ async function revalidateThreads(
 ): Promise<Map<string, RevalidatedObject>> {
   const ids = uniqueIds(threadIds);
   if (ids.length === 0) return new Map();
-  const rows = await db.query<ThreadProjectionRow>(
-    `${THREAD_PROJECTION_SELECT}
+  const rows = await db.query<WithAccessLevel<ThreadProjectionRow>>(
+    `SELECT ${THREAD_PROJECTION_COLUMNS},
+            ${threadAccessLevelSql("so", "$3")} AS effective_access_level
+      ${THREAD_PROJECTION_FROM}
       WHERE t.space_id = $1 AND t.object_id = ANY($2::varchar[]) AND t.lifecycle_status <> 'superseded'
         AND ${threadReadableSql("so", "$3", "read")}`,
     [spaceId, ids, viewerUserId],
@@ -119,7 +123,9 @@ async function revalidateThreads(
     if (!readableProjects.has(row.project_id)) continue;
     out.set(row.id, {
       title: row.statement,
-      text: joinText([row.current_answer_summary, row.known_gaps, row.proposed_claim, row.predictions]),
+      text: bodyWithheld(row.effective_access_level)
+        ? row.summary
+        : joinText([row.current_answer_summary, row.known_gaps, row.proposed_claim, row.predictions]),
     });
   }
   return out;

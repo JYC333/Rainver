@@ -1,4 +1,5 @@
-import type { ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol'
+import type { ReaderDocumentNoteResponse, ReaderAnnotationRangeUpdate } from "@rainver/protocol"
+import type { ReaderAppearance, ReaderPositionResult, ReaderPositionWrite, ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol'
 import type { RunFilePreview } from "@rainver/protocol"
 import type { ProjectMonitoringState,ProjectMonitoringConfig,MonitoringVersion } from "@rainver/protocol";
 import { mergeAbortSignals } from '../lib/mergeAbortSignals'
@@ -495,6 +496,8 @@ export interface RequestOptions {
   spaceId?: string
   idempotencyKey?: string
   signal?: AbortSignal
+  /** Lets a small write finish while the page is being left (the Reader's last position). */
+  keepalive?: boolean
 }
 
 export class ApiRequestError extends Error {
@@ -527,6 +530,7 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
 
   const opts: RequestInit = { method, headers }
   if (options.signal) opts.signal = options.signal
+  if (options.keepalive) opts.keepalive = true
   if (body !== undefined) opts.body = isForm ? (body as FormData) : JSON.stringify(body)
 
   const r = await fetch(url, opts)
@@ -1663,6 +1667,12 @@ async function downloadArtifactExport(
   params: { project_folder_id?: string } = {},
   options: RequestOptions = {},
 ): Promise<void> {
+  const authGeneration = _authContextGeneration
+  const assertCurrent = () => {
+    if (authGeneration !== _authContextGeneration || options.signal?.aborted) {
+      throw new DOMException('Download cancelled', 'AbortError')
+    }
+  }
   const headers: Record<string, string> = {}
   if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
   headers['X-Rainver-Space-Id'] = options.spaceId ?? _spaceId
@@ -1672,8 +1682,9 @@ async function downloadArtifactExport(
   const artifactParams = query.toString()
   const url = BASE + sep + (artifactParams ? `?${artifactParams}` : '')
   const r = await fetch(url, { method: 'GET', headers, signal: options.signal })
+  assertCurrent()
   if (r.status === 401) window.dispatchEvent(new CustomEvent('auth:required'))
-  if (r.status === 404) throw new Error('Artifact not found or not exportable')
+  if (r.status === 404) throw new ApiRequestError('Artifact not found or not exportable', 404)
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`
     try {
@@ -1683,7 +1694,7 @@ async function downloadArtifactExport(
       const text = await r.text().catch(() => '')
       if (text) msg = text
     }
-    throw new Error(msg)
+    throw new ApiRequestError(msg, r.status)
   }
   const cd = r.headers.get('Content-Disposition')
   let filename = 'artifact'
@@ -1692,6 +1703,7 @@ async function downloadArtifactExport(
     if (m) filename = m[1].trim()
   }
   const blob = await r.blob()
+  assertCurrent()
   const href = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = href
@@ -2571,6 +2583,12 @@ export const informationDigestsApi = {
 }
 
 export const sourcesApi = {
+  materialProcessing: (itemId:string,options?:RequestOptions)=>get<import('@rainver/protocol').SourceMaterialProcessingState>(`/sources/items/${itemId}/processing`,options),
+  /** Shows the named version of this material's literal Agent text as Markdown: a new version through the canonical writer (one material, on request; 409 if the shown version changed). */
+  showAgentTextAsMarkdown:(itemId:string,shown:{artifact_id:string;source_snapshot_id:string|null},options?:RequestOptions)=>post<{artifact_id:string}>(`/sources/items/${itemId}/reading-syntax`,{syntax:'markdown',...shown},options),
+  prepareMaterial:(itemId:string,selection:{agent_id?:string;runtime_profile_id?:string;session_config?:import('@rainver/protocol').RuntimeSessionConfigSelection[]}={},options?:RequestOptions)=>post<import('@rainver/protocol').SourceMaterialProcessingState>(`/sources/items/${itemId}/processing/start`,selection,options),
+  cancelMaterialProcessing:(itemId:string,options?:RequestOptions)=>post<import('@rainver/protocol').SourceMaterialProcessingState>(`/sources/items/${itemId}/processing/cancel`,{},options),
+  requestMaterialStorage:(itemId:string,options?:RequestOptions)=>post<{proposal_id?:string;source_name?:string;allowed?:boolean}>(`/sources/items/${itemId}/processing/request_storage`,{},options),
   providers: (options?: RequestOptions) => get<SourceProvider[]>('/sources/providers', options),
   sourceCatalog: () => get<SourceCatalog>('/instance/source-catalog'),
   updateCatalogProvider: (id: string, body: { status?: 'active' | 'disabled' }) =>
@@ -2632,8 +2650,6 @@ export const sourcesApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<CustomSourceHandlerRun>>(`/sources/connections/${connectionId}/handler-runs?` + new URLSearchParams(q))
   },
-  generateCustomSourceHandler: (connectionId: string, body: { capture_policy?: SourceCapturePolicy; retention_policy?: string } = {}) =>
-    post<CustomSourceHandlerVersion>(`/sources/custom-sources/${connectionId}/generate-handler`, body),
   testCustomSourceHandler: (connectionId: string, body: { handler_version_id: string; fixture_html?: string }) =>
     post<CustomSourceTestOutcome>(`/sources/custom-sources/${connectionId}/test-handler`, body),
   activateCustomSourceHandler: (connectionId: string, body: { handler_version_id: string; next_check_at?: string | null; schedule_rule?: SourceScheduleRule | null }) =>
@@ -2891,6 +2907,11 @@ export const readerApi = {
   getDocument: (documentType: string, documentId: string, options: { origin?: 'library' | 'serendipity' | 'project' } = {}) =>
     get<ReaderDocumentPayload>(`/reader/documents/${documentType}/${documentId}${options.origin ? `?origin=${options.origin}` : ''}`),
 
+  documentNote: (documentType: string, documentId: string) =>
+    get<ReaderDocumentNoteResponse>(`/reader/documents/${documentType}/${documentId}/note`),
+  createDocumentNote: (documentType: string, documentId: string, title: string) =>
+    post<ReaderDocumentNoteResponse>(`/reader/documents/${documentType}/${documentId}/note`, { title }),
+
   listAnnotations: (documentType: string, documentId: string) =>
     get<ReaderAnnotationsResponse>(`/reader/documents/${documentType}/${documentId}/annotations`),
 
@@ -2899,6 +2920,9 @@ export const readerApi = {
 
   updateAnnotation: (annotationId: string, body: ReaderAnnotationUpdate) =>
     patch<ReaderAnnotation>(`/reader/annotations/${annotationId}`, body),
+
+  updateAnnotationRange: (annotationId: string, body: ReaderAnnotationRangeUpdate) =>
+    patch<ReaderAnnotation>(`/reader/annotations/${annotationId}/range`, body),
 
   deleteAnnotation: (annotationId: string) =>
     del(`/reader/annotations/${annotationId}`),
@@ -2920,6 +2944,17 @@ export const readerApi = {
 
   createProposal: (annotationId: string, body: ReaderCreateProposalRequest) =>
     post<ReaderCreatedProposal>(`/reader/annotations/${annotationId}/proposals`, body),
+
+  /** The person's own reading position in a document (private; not read status). */
+  getPosition: (spaceId: string, documentType: string, documentId: string) =>
+    get<ReaderPositionResult>(`/reader/documents/${documentType}/${documentId}/position`, { spaceId }),
+
+  putPosition: (spaceId: string, documentType: string, documentId: string, body: ReaderPositionWrite, options: { keepalive?: boolean } = {}) =>
+    put<ReaderPositionResult>(`/reader/documents/${documentType}/${documentId}/position`, body, { spaceId, ...options }),
+
+  getAppearance: () => get<ReaderAppearance>('/reader/preferences/appearance'),
+
+  putAppearance: (body: ReaderAppearance) => put<ReaderAppearance>('/reader/preferences/appearance', body),
 
   listByProject: (projectId: string, limit?: number) =>
     get<{ items: ReaderAnnotation[] }>(
@@ -4209,12 +4244,25 @@ export const projectMonitoringApi = {
 
 // Goal collection uses the same scoped transport and canonical Run stream.
 export const sourceGoalsApi={
+ check:(id:string,body:{expected_version_id:string|null},options:RequestOptions={})=>post<{status:'queued'|'in_progress';job_id?:string}>(`/sources/goals/${encodeURIComponent(id)}/check`,body,options),
+ nativeAvailability:(profile:string,options:RequestOptions={})=>get<{supported:boolean;reason?:string;supported_modes?:string[]}>(`/sources/goal-setup/agent-search/${encodeURIComponent(profile)}`,options),
  findLegacy:(channel:string,options:RequestOptions={})=>get<{goal_id:string|null}>(`/sources/goal-setup/legacy/${encodeURIComponent(channel)}`,options),
  storeCredential:(data:{name:string;secret:string},options:RequestOptions={})=>post<CustomSourceCredentialDTO>('/sources/custom-source-credentials',data,options),
  list:(options:RequestOptions={})=>get<{goals:import('@rainver/protocol').SourceGoalDetail['goal'][]}>('/sources/goals',options),
  read:(id:string,options:RequestOptions={})=>get<import('@rainver/protocol').SourceGoalDetail>(`/sources/goals/${encodeURIComponent(id)}`,options),
- begin:(data:{intent:string;project_id?:string|null;idempotency_key?:string},options:RequestOptions={})=>post<{id:string;space_id:string}>('/sources/goal-setup/begin',data,options),
- message:(goal_id:string,content:string,idempotency_key:string,options:RequestOptions={})=>post<{run_id:string;session_id:string}>('/sources/goal-setup/message',{goal_id,content,idempotency_key},options),
+ /** Creates a topic; with `follow`, creation and its one follow confirmation commit together. */
+ begin:(data:import('@rainver/protocol').SourceGoalBeginRequest,options:RequestOptions={})=>post<{id:string;space_id:string;follow?:import('@rainver/protocol').SourceGoalFollow|null}>('/sources/goal-setup/begin',data,options),
+ /** Owner-only lookup of a committed creation by its idempotency key. */
+ findCreation:(key:string,projectId:string|null,options:RequestOptions={})=>get<{goal_id:string|null;space_id?:string}>(`/sources/goal-setup/begin/${encodeURIComponent(key)}${projectId?`?project_id=${encodeURIComponent(projectId)}`:''}`,options),
+ message:(goal_id:string,content:string,idempotency_key:string,options:RequestOptions={},execution?:{search_path?:'agent'|'api';agent_id?:string;runtime_profile_id?:string;session_config?:import('@rainver/protocol').RuntimeSessionConfigSelection[]})=>post<{run_id:string;session_id:string}>('/sources/goal-setup/message',{goal_id,content,idempotency_key,...execution},options),
  legacy:(channel_id:string,options:RequestOptions={})=>post<{goal:{id:string}}>('/sources/goal-setup/legacy',{channel_id},options),
  action:(id:string,action:string,body:Record<string,unknown>={},options:RequestOptions={})=>post(`/sources/goals/${encodeURIComponent(id)}/${action}`,body,options),
+ /** A binding stopped because its Source changed: the Source as it is now and what changed (see the server's reconfirm.ts). */
+ sourceConfirmation:(id:string,bindingId:string,options:RequestOptions={})=>get<import('@rainver/protocol').SourceGoalBindingReconfirmation>(`/sources/goals/${encodeURIComponent(id)}/bindings/${encodeURIComponent(bindingId)}/source-confirmation`,options),
+ /** The owner confirms exactly the state shown (binding revision and its token). */
+ confirmSource:(id:string,bindingId:string,body:import('@rainver/protocol').SourceGoalBindingConfirmRequest,options:RequestOptions={})=>post<{binding_id:string;binding_revision:number;status:string}>(`/sources/goals/${encodeURIComponent(id)}/bindings/${encodeURIComponent(bindingId)}/source-confirmation`,body,options),
+ /** One confirmation starts continuous following; no manual preview is required. */
+ /** Tightening-only owner feedback on a followed topic. */
+ feedback:(id:string,body:import('@rainver/protocol').SourceGoalFeedbackRequest,options:RequestOptions={})=>post<{applied:boolean;duplicate:boolean;kind:string;affected:number}>(`/sources/goals/${encodeURIComponent(id)}/feedback`,body,options),
+ follow:(id:string,body:import('@rainver/protocol').SourceGoalFollowRequest,options:RequestOptions={})=>post<{goal_id:string;status:string;activated:boolean;prepare:boolean;follow:import('@rainver/protocol').SourceGoalFollow}>(`/sources/goals/${encodeURIComponent(id)}/follow`,body,options),
 }

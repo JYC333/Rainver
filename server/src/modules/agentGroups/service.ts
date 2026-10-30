@@ -40,7 +40,8 @@ import {
 } from "./sessionHandoff.js";
 import { containsRunChangeLink } from "./runChangeBlock.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
-import type { RunGitSnapshot } from "../runs/contractSnapshot.js";
+import { readOnlyWorkspaceHostRefusal } from "../runs/workspaceAccessPolicy.js";
+import { contractWorkspaceAccess, type RunGitSnapshot } from "../runs/contractSnapshot.js";
 import { RUN_REQUEST_INCLUDES_INSTRUCTION } from "../runtimeContext/runRequest.js";
 import { resolveModelWindow } from "../usage/modelCatalog.js";
 import {
@@ -165,6 +166,13 @@ export interface SpawnChildRunInput {
   reason?: string | null;
   budget_json?: Record<string, unknown> | null;
   context_policy_json?: Record<string, unknown> | null;
+  /**
+   * `read`: the child reviews the Conversation's workspace and may not write
+   * it (`contract.workspace_access`). Omitted: the parent's own access — a
+   * read-only parent's child is read-only too; `write` from a read-only
+   * parent is refused (a child never gets more than its parent).
+   */
+  workspace_access?: "read" | "write" | null;
   /**
    * The originating tool call's canonical id. When set, a delegation request
    * carrying the same (space, parent_run, tool_call_id) replays the prior
@@ -1068,6 +1076,7 @@ export class AgentGroupRunService {
     if ((parentRun.root_run_id ?? parentRun.id) !== group.root_run_id) {
       throw new HttpError(409, "Parent run does not belong to the group root lineage");
     }
+    const childAccess = delegatedWorkspaceAccessFor(parentRun, input.workspace_access);
 
     if (input.tool_call_id) {
       const existing = await repos.groups.findDelegationByToolCallId(
@@ -1105,6 +1114,21 @@ export class AgentGroupRunService {
       ) {
         throw new HttpError(422, "request_message_id sender must match requesting_agent_id");
       }
+    }
+
+    // The Conversation's pinned backend, not an Agent's mutable default, owns
+    // execution placement. Refuse unsupported read-only delegation before any
+    // message, budget charge, child Run or thread claim is created.
+    if (childAccess === "read" && group.room_id && parentRun.session_id) {
+      const backend = await new PgConversationBackendRepository(repos.db).resolveBinding({
+        space_id: input.space_id, user_id: identity.userId,
+        session_id: parentRun.session_id, agent_id: input.target_agent_id, requested: null,
+      });
+      const host = backend.execution_host_id
+        ? (await repos.db.query<{ kind: string }>("SELECT kind FROM hosts WHERE id=$1", [backend.execution_host_id])).rows[0]
+        : null;
+      const refusal = readOnlyWorkspaceHostRefusal(childAccess, backend.runtime_key, host?.kind);
+      if (refusal) throw new HttpError(409, refusal, { code: "workspace_read_only_unenforceable", detail: refusal });
     }
 
     // Policy preflight is deliberately before every domain write. The
@@ -1229,7 +1253,8 @@ export class AgentGroupRunService {
         }
         delegatedWorkspaceAccess.push({
           workspace_location_id: location.id,
-          access_mode: attachment.access_mode,
+          // A review reads every attachment, a `write` grant included.
+          access_mode: childAccess === "read" ? "read" : attachment.access_mode,
         });
       }
       {
@@ -1343,10 +1368,13 @@ export class AgentGroupRunService {
         ? [
           delegatedStanding?.sent ? delegatedStanding.text : null,
           delegatedHandoff ? handoffPromptBlock(delegatedHandoff) : null,
+          childAccess === "read" ? READ_ONLY_REVIEW_NOTICE : null,
           input.instruction,
         ].filter(Boolean).join("\n\n")
         : null,
-      instruction: input.instruction,
+      instruction: !group.room_id && childAccess === "read"
+        ? `${READ_ONLY_REVIEW_NOTICE}\n\n${input.instruction}`
+        : input.instruction,
       model_override_json: group.room_id
         ? delegatedRoomModelOverride(
           parentRun,
@@ -1367,7 +1395,9 @@ export class AgentGroupRunService {
         : null,
       runtime_profile_id: delegatedBackend?.runtime_profile_id ?? null,
       runtime_profile_selection_source: delegatedBackend ? "explicit" : "default",
-      contract_snapshot: group.room_id ? roomRunContract(group, undefined) : undefined,
+      contract_snapshot: group.room_id
+        ? { ...roomRunContract(group, undefined)!, workspace_access: childAccess }
+        : childAccess === "read" ? { source: { kind: "direct" as const, id: null }, workspace_access: childAccess } : undefined,
       budget_json: input.budget_json ?? {},
       context_policy_json: input.context_policy_json ?? {},
       visibility: group.room_id ? "selected_users" : undefined,
@@ -2479,6 +2509,29 @@ function roomRunPrompt(
     backend?.host_thread ? null : roomExecutionRules(),
     roomAssignedTaskSection(assignedTask, backend ? currentMessage : null, coordinationTargets),
   ].filter(Boolean).join("\n\n");
+}
+
+/** Told to a review: the workspace is mounted read-only, so it reports instead of editing. */
+const READ_ONLY_REVIEW_NOTICE = "[Read-only review] Your workspace is mounted read-only for this turn: you cannot change, create or delete its files, and other Agents may be reviewing it at the same time. Reply with your findings; a longer report can go in $RAINVER_OUTPUT_DIR.";
+
+/**
+ * What a delegated child may do in the workspace. Never more than its parent:
+ * a read-only parent's child reads, whatever was asked, and asking it to
+ * write is refused rather than quietly narrowed.
+ */
+function delegatedWorkspaceAccessFor(
+  parentRun: Pick<RunRecord, "contract_snapshot_json" | "required_sandbox_level">,
+  requested: "read" | "write" | null | undefined,
+): "read" | "write" {
+  const parentReads = contractWorkspaceAccess(parentRun.contract_snapshot_json) === "read"
+    || parentRun.required_sandbox_level === "read_only";
+  if (parentReads && requested === "write") {
+    throw new HttpError(403, "A read-only Run cannot delegate write access to its workspace", {
+      detail: "A read-only Run cannot delegate write access to its workspace",
+      code: "delegation_workspace_access_exceeds_parent",
+    });
+  }
+  return parentReads ? "read" : requested ?? "write";
 }
 
 function roomRunContract(

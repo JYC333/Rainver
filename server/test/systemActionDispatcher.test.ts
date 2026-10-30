@@ -134,6 +134,21 @@ describe("SystemActionDispatcher ACP tool projection", () => {
     expect(spawned).toEqual(["call-1", "call-2"]);
   });
 
+  it("does not add Room cancellation to old Run tool snapshots", async () => {
+    const definitions = protocol.SYSTEM_ACTION_REGISTRY.filter(action => ["agent.list_runs", "agent.cancel_run"].includes(action.id));
+    registryState.registry = new Map(definitions.map(action => [action.id as SystemActionId, action]));
+    const base = { ...testRun(), run_group_id: "group-1", root_run_id: "root-1" };
+    for (const granted of [false, true]) {
+      const dispatcher = await SystemActionDispatcher.create(loadConfig({}), {
+        ...base, permission_snapshot_json: { tool_grants: granted ? definitions.map(action => ({ action_id: action.id })) : [] },
+      }, { actionEventSink: async () => {}, agentDelegationTools: {
+        targets: [], service: { async spawnChildRun() { throw new Error("No spawn in projection test"); } },
+      } });
+      expect(dispatcher.listGrantedDefinitions().map(action => action.name)).toEqual(granted ? ["agent.list_runs", "agent.cancel_run"] : []);
+      if (!granted) expect((await dispatcher.dispatch({ id: "denied", name: "agent.cancel_run", arguments_json: JSON.stringify({ run_id: "old-run", reason: "Stop" }) })).modelResult).toMatchObject({ ok: false, error_code: "system_action_not_granted" });
+    }
+  });
+
   it("records a failed action_completed event when a Run calls a tool it was never granted", async () => {
     // Do not omit the event. `governedToolDegradation` sees nothing and a Run that
     // asked for a tool it never held finishes clean.

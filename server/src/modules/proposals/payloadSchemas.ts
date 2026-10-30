@@ -285,6 +285,8 @@ const customSourceRepairActivation = z
   })
   .passthrough();
 
+const sourceMaterialRetention=z.object({proposal_type:z.literal('source_material_retention'),source_connection_id:z.string().min(1),expected_policy_sha256:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
+
 const sourceChannelActivation = z.object({
   proposal_type: z.literal("source_channel_activation"),
   source_channel_id: z.string().min(1),
@@ -419,6 +421,7 @@ const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   customSourceCredentialedSource,
   customSourceRepairActivation,
   sourceChannelActivation,
+  sourceMaterialRetention,
   projectSourceBind,
   sourceBackfillStart,
   projectBriefPublish,

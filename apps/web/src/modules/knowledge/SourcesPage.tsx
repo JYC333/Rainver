@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { useEffect, useState } from 'react'
 import { knowledgeSourcesApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
@@ -16,29 +15,38 @@ function fmt(dt: string | null | undefined) {
 }
 
 export default function SourcesPage() {
+  const { activeSpaceId, userId } = useSpace()
+  return <ScopedSources key={`${activeSpaceId}:${userId}`} />
+}
+
+function ScopedSources() {
   const { activeSpaceId } = useSpace()
   const [sources, setSources] = useState<KnowledgeSourceSummary[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  const load = useCallback(async () => {
+  useEffect(() => {
+    let active = true
     if (!activeSpaceId) {
       setSources([])
       setLoading(false)
       return
     }
-    setLoading(true)
-    try {
-      const page = await knowledgeSourcesApi.list({ limit: 100 })
-      setSources(page.items)
-    } catch (e) {
-      toast.error(errMsg(e))
-      setSources([])
-    } finally {
-      setLoading(false)
+    async function load() {
+      try {
+        const page = await knowledgeSourcesApi.list({ limit: 100 })
+        if (active) setSources(page.items)
+      } catch (e) {
+        if (!active) return
+        setError(errMsg(e))
+        setSources([])
+      } finally {
+        if (active) setLoading(false)
+      }
     }
+    void load()
+    return () => { active = false }
   }, [activeSpaceId])
-
-  useEffect(() => { load() }, [load])
 
   return (
     <div className="p-6 space-y-6">
@@ -49,7 +57,9 @@ export default function SourcesPage() {
 
       {loading && <Skeleton className="h-32 w-full" />}
 
-      {!loading && sources.length === 0 && (
+      {!loading && error && <Card role="alert">Sources unavailable: {error}</Card>}
+
+      {!loading && !error && sources.length === 0 && (
         <Card>
           <EmptyState
             title={activeSpaceId ? 'No sources yet' : 'Select an operational space'}

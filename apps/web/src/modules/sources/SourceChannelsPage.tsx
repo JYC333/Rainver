@@ -1,9 +1,10 @@
+import {readingGoalPath} from './sourceGoalNavigation'
 import { SpaceLink as ReadingLink } from '../../core/spaceNav'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BookOpen, Globe2, Pause, Play, Plus, RefreshCw, Rss, Search, SlidersHorizontal, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
-import { sourcesApi } from '../../api/client'
+import { ApiRequestError, sourcesApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Badge } from '../../components/ui/badge'
@@ -85,6 +86,11 @@ function statusLabel(status: SourceGroup['status'] | SourceChannel['status']) {
 
 /** Sources are origins; query and scheduling rules are shown as nested monitors. */
 export default function SourceChannelsPage() {
+  const { activeSpaceId, userId } = useSpace()
+  return <ScopedSourceChannels key={`${activeSpaceId}:${userId}`} />
+}
+
+function ScopedSourceChannels() {
   const navigate=useSpaceNavigate()
   const { activeSpaceId } = useSpace()
   const [providers, setProviders] = useState<SourceProvider[]>([])
@@ -117,6 +123,11 @@ export default function SourceChannelsPage() {
       setChannels(channelRows)
       setRecommendations(recommendationRows)
     } catch (error) {
+      if (error instanceof ApiRequestError && [401, 403, 404].includes(error.status)) {
+        setChannels([])
+        setRecommendations([])
+        setFollowed([])
+      }
       toast.error(errMsg(error))
     } finally {
       setLoading(false)
@@ -145,6 +156,12 @@ export default function SourceChannelsPage() {
       await load()
     } catch (error) {
       toast.error(errMsg(error))
+      if (error instanceof ApiRequestError && [403, 404].includes(error.status)) {
+        setChannels([])
+        setRecommendations([])
+        setFollowed([])
+        await load()
+      }
     } finally {
       setBusyMonitorId(null)
     }
@@ -157,6 +174,12 @@ export default function SourceChannelsPage() {
       await load()
     } catch (error) {
       toast.error(errMsg(error))
+      if (error instanceof ApiRequestError && [403, 404].includes(error.status)) {
+        setChannels([])
+        setRecommendations([])
+        setFollowed([])
+        await load()
+      }
     } finally {
       setBusyMonitorId(null)
     }
@@ -170,6 +193,12 @@ export default function SourceChannelsPage() {
       toast.success(status === 'muted' ? t('sources_ui.followed.left_toast') : t('sources_ui.followed.rejoined_toast'))
     } catch (error) {
       toast.error(errMsg(error))
+      if (error instanceof ApiRequestError && [403, 404].includes(error.status)) {
+        setChannels([])
+        setRecommendations([])
+        setFollowed([])
+        await load()
+      }
     } finally {
       setBusyMonitorId(null)
     }
@@ -187,6 +216,12 @@ export default function SourceChannelsPage() {
       toast.success(decision === 'subscribed' ? 'Source followed' : decision === 'muted' ? 'Source recommendation muted' : 'Recommendation dismissed')
     } catch (error) {
       toast.error(errMsg(error))
+      if (error instanceof ApiRequestError && [403, 404].includes(error.status)) {
+        setChannels([])
+        setRecommendations([])
+        setFollowed([])
+        await load()
+      }
     } finally {
       setBusyMonitorId(null)
     }
@@ -204,7 +239,7 @@ export default function SourceChannelsPage() {
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => void load()} disabled={loading}><RefreshCw className="size-4 mr-2" />Refresh</Button>
-          <Button onClick={() => navigate('/sources/goals/new')}><Plus className="size-4 mr-2" />{t('sourceGoals.begin')}</Button>
+          <Button onClick={() => navigate(readingGoalPath(null,'new'))}><Plus className="size-4 mr-2" />{t('sourceGoals.begin')}</Button>
         </div>
       </div>
 
@@ -277,7 +312,7 @@ export default function SourceChannelsPage() {
       </div>
 
       {channels.length === 0 && !loading ? (
-        <EmptyState title={t('sourceGoals.question')} description={t('sourceGoals.examples')} action={<Button onClick={() => navigate('/sources/goals/new')}><Plus className="size-4 mr-2" />{t('sourceGoals.begin')}</Button>} />
+        <EmptyState title={t('sourceGoals.question')} description={t('sourceGoals.examples')} action={<Button onClick={() => navigate(readingGoalPath(null,'new'))}><Plus className="size-4 mr-2" />{t('sourceGoals.begin')}</Button>} />
       ) : visibleSources.length === 0 && !loading ? (
         <EmptyState title="No matching sources" description="Try a different source, platform, or monitor name." />
       ) : (
@@ -317,7 +352,7 @@ export default function SourceChannelsPage() {
                         </div>
                       </div>
                       <div className="flex shrink-0 gap-2">
-                        {monitor.goal_id&&<Button size="sm" variant="outline" onClick={()=>navigate(`/sources/goals/${monitor.goal_id}`)}>{t('sourceGoals.ownerControl')}</Button>}
+                        {monitor.goal_id&&<Button size="sm" variant="outline" onClick={()=>navigate(readingGoalPath(monitor.project_id,monitor.goal_id!))}>{t('sourceGoals.ownerControl')}</Button>}
                         <Button variant="outline" size="sm" onClick={() => void toggle(monitor)} disabled={busy||!!monitor.goal_id}>{monitor.status === 'active' ? <Pause className="size-4" /> : <Play className="size-4" />}{monitor.status === 'active' ? 'Pause' : 'Resume'}</Button>
                         <Button variant="outline" size="sm" onClick={() => void scan(monitor)} disabled={busy||!!monitor.goal_id}><RefreshCw className="size-4 mr-1" />Scan now</Button>
                       </div>

@@ -50,6 +50,7 @@ import { archiveAgentProfiles, archiveLegacyProfileTree, archiveManagedWorkspace
 import { clearFailedRuntimeOptionsCache, clearRuntimeOptionsCache } from "../capabilities.js";
 import { disableInstalledService } from "../service.js";
 import { augmentProcessPath } from "../userPath.js";
+import { UPDATE_RESTART_POLL_MS, waitForReconnectOrUpdate } from "../updateRestart.js";
 /**
  * How long an upgrade waits for the copy's Runs to finish before giving up.
  *
@@ -72,12 +73,10 @@ const RECONNECT_MAX_DELAY_MS = 30_000;
  * Reconnecting cannot change that answer — only an update can — and every
  * refused `hello` makes the server record this daemon's version again, so the
  * ordinary ≤30s backoff turns one operator problem into a permanent write
- * loop. Fifteen minutes is short enough that an update applied by hand comes
- * back online promptly (an update restarts this process anyway) and long
- * enough that an un-updated host costs the server almost nothing.
+ * loop. The installed-update marker is polled during this wait, so an update
+ * can restart an idle daemon without waiting for the next network attempt.
  */
 const OUTDATED_RECONNECT_DELAY_MS = 15 * 60_000;
-const UPDATE_RESTART_POLL_MS = 30_000;
 /** How often the built-in host looks for a credential the control plane has not published yet. */
 const BUILTIN_CREDENTIAL_POLL_MS = 3_000;
 // The installed unit uses Restart=on-failure: update is an intentional
@@ -285,7 +284,12 @@ export async function runService(options: { log?: (line: string) => void } = {})
       config = (await loadConfig()) ?? config;
     }
     log(`reconnecting in ${Math.round(reconnectDelay / 1000)}s`);
-    await sleep(reconnectDelay);
+    const next = await waitForReconnectOrUpdate(reconnectDelay,
+      join(configDir(), "update-restart-requested"), hasInFlightRuns, log);
+    if (next === "update") {
+      log("latest release is installed and the host is idle; restarting into it");
+      process.exit(UPDATE_RESTART_EXIT_CODE);
+    }
     reconnectDelay = Math.min(reconnectDelay * 2, reconnectCeiling);
   }
 }
@@ -488,7 +492,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           return;
         }
         case "terminate":
-          handleTerminate(frame, log);
+          handleTerminate(frame, log, sink.send.bind(sink));
           return;
         case "stdin":
           handleStdin(frame);

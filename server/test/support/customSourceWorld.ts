@@ -1,8 +1,50 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { Pool } from "pg";
+import { customSourcePolicyEnvelope } from "./customSourceFixtures.js";
 
 /** Settings key the Custom Source policy lives under; the tests pin the literal on purpose. */
 const CUSTOM_SOURCE_SPACE_POLICY_SETTINGS_KEY = "source.custom_source.space_policy";
+
+/** Retained historical data, without invoking a removed generator or runtime. */
+export async function seedLegacyCustomSourceVersion(
+  pool: Pool,
+  identity: { spaceId: string; userId: string },
+  connectionId: string,
+  options: { artifactStorageRoot?: string; status?: "draft" | "active" | "superseded" | "pending_approval" } = {},
+) {
+  const artifactId = options.artifactStorageRoot ? randomUUID() : null;
+  if (artifactId && options.artifactStorageRoot) {
+    const path = join(identity.spaceId, "custom-source", `${artifactId}.handler.cjs`);
+    await mkdir(dirname(join(options.artifactStorageRoot, path)), { recursive: true });
+    await writeFile(join(options.artifactStorageRoot, path), "// Historical source artifact; never execute.\n");
+    await pool.query(
+      `INSERT INTO artifacts (id, space_id, artifact_type, title, storage_path, mime_type, exportable,
+         export_formats_json, canonical_format, preview, created_at, updated_at, visibility)
+       VALUES ($1, $2, 'source_custom_source_handler_code', 'Historical handler', $3, 'application/javascript',
+         true, '["javascript"]'::jsonb, 'javascript', false, now(), now(), 'space_shared')`,
+      [artifactId, identity.spaceId, path],
+    );
+  }
+  const id = randomUUID();
+  const status = options.status ?? "draft";
+  await pool.query(
+    `INSERT INTO source_handler_versions (id, space_id, source_connection_id, version_number, language,
+       entrypoint, handler_artifact_id, manifest_json, policy_envelope_json, checksum, status,
+       created_by_user_id, test_result_json, created_at, activated_at, superseded_at)
+     SELECT $1::varchar, $2::varchar, $3::varchar, COALESCE(MAX(version_number), 0) + 1, 'typescript_node', 'handler.cjs', $4::varchar,
+       '{"generator":"template_v1"}'::jsonb, $5::jsonb, 'historical-fixture', $6::varchar, $7::varchar,
+       '{"status":"succeeded"}'::jsonb, now(),
+       CASE WHEN $6::varchar IN ('active', 'superseded') THEN now() ELSE NULL END,
+       CASE WHEN $6::varchar = 'superseded' THEN now() ELSE NULL END
+       FROM source_handler_versions WHERE space_id = $2::varchar AND source_connection_id = $3::varchar`,
+    [id, identity.spaceId, connectionId, artifactId,
+      JSON.stringify(customSourcePolicyEnvelope({ language: "typescript_node", allowed_network_origins: ["https://example.com"] })),
+      status, identity.userId],
+  );
+  return { id, language: "typescript_node", handler_artifact_id: artifactId };
+}
 
 /**
  * The world every Custom Source / Source Recipe real-Postgres file starts

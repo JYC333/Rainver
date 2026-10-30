@@ -1,14 +1,17 @@
 import i18n from '../../../i18n'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, Link, useLocation } from 'react-router-dom'
 import { toast } from 'sonner'
 import LibraryItemReaderPage from '../LibraryItemReaderPage'
 import { InformationDigestView } from '../InformationDigestView'
-import { readerApi, sourcesApi } from '../../../api/client'
+import { readerApi, sourcesApi, informationDigestsApi } from '../../../api/client'
 import type { TextSelection } from '../../../components/editor/ReadOnlyTiptapReader'
+import { clearSessionResidue } from '../../../lib/sessionResidue'
+import { useSpace } from '../../../contexts/SpaceContext'
+import { __clearCommentDraftsForTests, __commentDraftCountForTests, writeCommentDraft } from '../../../components/reader/commentDrafts'
 import type {
   InformationDigest,
   ReaderAnnotation,
@@ -22,12 +25,13 @@ vi.mock('sonner', () => ({
 }))
 
 vi.mock('../../../contexts/SpaceContext', () => ({
-  useSpace: () => ({ activeSpaceId: 'space-1', activeSpaceName: 'Space One' }),
+  useSpace: vi.fn(() => ({ activeSpaceId: 'space-1', activeSpaceName: 'Space One' })),
 }))
 
 vi.mock('../../../core/spaceNav', async () => {
-  const { Link } = await import('react-router-dom')
+  const { Link, useNavigate } = await import('react-router-dom')
   return {
+    useSpaceNavigate: useNavigate,
     SpaceLink: ({ to, children, ...props }: { to: string; children: ReactNode }) => (
       <Link to={to} {...props}>{children}</Link>
     ),
@@ -35,8 +39,10 @@ vi.mock('../../../core/spaceNav', async () => {
 })
 
 vi.mock('../../../api/client', () => ({
+  informationDigestsApi:{readingState:vi.fn()},
   sourcesApi: {
     itemAction: vi.fn(),
+    materialProcessing: vi.fn(),prepareMaterial: vi.fn(),showAgentTextAsMarkdown: vi.fn(),cancelMaterialProcessing: vi.fn(),requestMaterialStorage:vi.fn(),
     jobs: vi.fn(),
     runJob: vi.fn(),
     briefing: vi.fn(),
@@ -51,6 +57,7 @@ vi.mock('../../../api/client', () => ({
     updateThread: vi.fn(),
     createEvidence: vi.fn(),
     createProposal: vi.fn(),
+    getAppearance: vi.fn(async () => ({ font_size: null, line_height: 'normal', width: 'medium', font: 'sans', theme: 'app' })), getPosition: vi.fn(async () => ({ position: null, accepted: true })), putPosition: vi.fn(async () => ({ position: null, accepted: true })), putAppearance: vi.fn(async (value: unknown) => value), updateAnnotation: vi.fn(),
   },
 }))
 
@@ -69,6 +76,12 @@ const blockHandle = {
   blockCount: vi.fn(() => 2),
   blockSelection: vi.fn(),
   scrollToBlock: vi.fn(),
+  readingAnchor: vi.fn(() => null),
+  locate: vi.fn(() => null),
+  scrollToPos: vi.fn(),
+  headings: vi.fn(() => []),
+  find: vi.fn(() => 0),
+  findGo: vi.fn(),
 }
 
 vi.mock('../../../components/editor/ReadOnlyTiptapReader', async () => {
@@ -140,6 +153,7 @@ function makeAnnotation(overrides: Partial<ReaderAnnotation> = {}): ReaderAnnota
 
 const textSelection: TextSelection = {
   quoteText: 'Second paragraph.',
+  selectedText: 'Second paragraph.',
   selectionRect: null,
   anchorDraft: {
     quote_text: 'Second paragraph.',
@@ -235,12 +249,24 @@ function makeDecision(
   }
 }
 
+/** Read again asks first when the item already has text; confirm it. */
+async function readAgain() {
+  await userEvent.click(screen.getByRole('button', { name: 'Read again' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Read this material again?' })
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Read again' }))
+}
+
 function simulateSelection(selection: TextSelection | null) {
   act(() => { readerProps?.onTextSelected?.(selection) })
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(useSpace).mockReturnValue({ activeSpaceId: 'space-1', activeSpaceName: 'Space One' } as ReturnType<typeof useSpace>)
+  __clearCommentDraftsForTests()
+  mockedSourcesApi.materialProcessing.mockReset().mockResolvedValue({status:"idle"})
+  mockedSourcesApi.prepareMaterial.mockReset().mockResolvedValue({status:"queued",run_id:"processing-run"})
+  mockedSourcesApi.cancelMaterialProcessing.mockReset().mockResolvedValue({status:"failed",reason:"Cancelled"})
   blockHandle.blockSelection.mockReset()
   readerProps = null
   mockedApi.getDocument.mockResolvedValue(docPayload)
@@ -250,12 +276,47 @@ beforeEach(() => {
 })
 
 describe('LibraryItemReaderPage', () => {
+  it('discards an initial document response after the session ends', async () => {
+    let answer!: (value: ReaderDocumentPayload) => void
+    mockedApi.getDocument.mockReturnValueOnce(new Promise(resolve => { answer = resolve }))
+    render(<MemoryRouter initialEntries={['/library/items/item-1']}><Routes>
+      <Route path="/library/items/:itemId" element={<LibraryItemReaderPage />} />
+    </Routes></MemoryRouter>)
+    await waitFor(() => expect(mockedApi.getDocument).toHaveBeenCalledOnce())
+    clearSessionResidue()
+    await act(async () => { answer(docPayload) })
+    expect(screen.queryByTestId('reader-content')).not.toBeInTheDocument()
+  })
+
+  it.each(['loaded', 'pending'])('revalidates the daily navigation on a Space switch with a %s old briefing', async state => {
+    let answer!: (value: SourcePostProcessingBriefingDetail) => void
+    const oldBriefing = makeBriefing({ connection_name: 'Private old source', item_decisions: [makeDecision('item-1', 'relevant'), makeDecision('item-2', 'relevant')] })
+    mockedSourcesApi.briefing.mockReset()
+      .mockReturnValueOnce(state === 'loaded' ? Promise.resolve(oldBriefing) : new Promise(resolve => { answer = resolve }))
+      .mockRejectedValueOnce(Object.assign(new Error('Not accessible'), { status: 404 }))
+    const page = () => <MemoryRouter initialEntries={['/library/digests/conn-1/2026-07-07/items/item-1']}><Routes>
+      <Route path="/library/digests/:connectionId/:date/items/:itemId" element={<LibraryItemReaderPage />} />
+    </Routes></MemoryRouter>
+    const view = render(page())
+    await screen.findByTestId('reader-content')
+    if (state === 'loaded') expect(await screen.findByRole('link', { name: 'Private old source' })).toBeInTheDocument()
+    vi.mocked(useSpace).mockReturnValue({ activeSpaceId: 'space-2', activeSpaceName: 'Space Two' } as ReturnType<typeof useSpace>)
+    mockedApi.getDocument.mockResolvedValue({ ...docPayload, space_id: 'space-2' })
+    view.rerender(page())
+    await waitFor(() => expect(mockedApi.getDocument).toHaveBeenCalledTimes(2))
+    if (state === 'pending') await act(async () => { answer(oldBriefing) })
+    expect(screen.queryByRole('link', { name: 'Private old source' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Next item' })).not.toBeInTheDocument()
+    expect(mockedSourcesApi.briefing).toHaveBeenCalledTimes(2)
+  })
+
   it('loads the reader document and active annotations', async () => {
     await renderPage()
 
     expect(mockedApi.getDocument).toHaveBeenCalledWith('source_item', 'item-1', { origin: undefined })
     expect(mockedApi.listAnnotations).toHaveBeenCalledWith('source_item', 'item-1')
-    expect(screen.getByText('Signals in Long-Form Reading')).toBeInTheDocument()
+    // The full title is the article heading; the header repeats it only as short orientation text.
+    expect(screen.getByRole('heading', { level: 1, name: 'Signals in Long-Form Reading' })).toBeInTheDocument()
     expect(screen.getByTestId('reader-content')).toHaveTextContent('First paragraph.')
   })
 
@@ -312,123 +373,30 @@ describe('LibraryItemReaderPage', () => {
       }),
     }))
 
-    // The created annotation is appended, selected, and the selection is cleared.
-    const detail = await screen.findByRole('region', { name: 'Selected annotation' })
-    expect(detail).toHaveTextContent('Second paragraph.')
-    expect(screen.queryByRole('toolbar', { name: 'Annotate selection' })).not.toBeInTheDocument()
+    // The created annotation is appended and the selection is cleared. A highlight
+    // is quiet: it is not opened in the panel; the confirmation offers to view it.
     const notebook = screen.getByRole('region', { name: 'Annotation notebook' })
-    expect(notebook).toHaveTextContent('Second paragraph.')
+    await waitFor(() => expect(notebook).toHaveTextContent('Second paragraph.'))
+    expect(screen.queryByRole('toolbar', { name: 'Annotate selection' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Selected annotation' })).not.toBeInTheDocument()
+    expect(toast.success).toHaveBeenCalledWith('Highlighted', expect.objectContaining({ action: expect.objectContaining({ label: 'View' }) }))
   })
 
-  it('re-extracts the current item from the reader header and reloads the document', async () => {
-    const updatedDoc = {
-      ...docPayload,
-      content_hash: 'hash-2',
-      normalized_text: 'Fresh structured text.',
-    }
-    mockedApi.getDocument
-      .mockResolvedValueOnce(docPayload)
-      .mockResolvedValueOnce(updatedDoc)
-    mockedSourcesApi.itemAction.mockResolvedValue({} as never)
-    const pendingJob = {
-        id: 'extract-job-1',
-        space_id: 'space-1',
-        connection_id: null,
-        source_item_id: 'item-1',
-        source_object_type: null,
-        source_object_id: null,
-        source_snapshot_id: null,
-        job_type: 'extract_text',
-        status: 'pending',
-        error_code: null,
-        error_message: null,
-        items_seen: null,
-        items_created: null,
-        items_updated: null,
-        started_at: null,
-        completed_at: null,
-        created_at: '2026-07-01T00:00:00.000Z',
-        metadata_json: null,
-      }
-    mockedSourcesApi.jobs.mockImplementation(async params => ({
-      items: params?.status === 'pending' ? [pendingJob] : [],
-      total: params?.status === 'pending' ? 1 : 0,
-      limit: 1,
-      offset: 0,
-    }))
-    mockedSourcesApi.runJob.mockResolvedValue({ status: 'succeeded' } as never)
-    await renderPage()
-
-    await userEvent.click(screen.getByRole('button', { name: 'Re-extract' }))
-
-    await waitFor(() => {
-      expect(mockedSourcesApi.itemAction).toHaveBeenCalledWith('item-1', 'queue_content')
-      expect(mockedSourcesApi.jobs).toHaveBeenCalledWith({
-        source_item_id: 'item-1',
-        job_type: 'extract_text',
-        status: 'pending',
-        limit: 1,
-      })
-      expect(mockedSourcesApi.runJob).toHaveBeenCalledWith('extract-job-1')
-      expect(screen.getByTestId('reader-content')).toHaveTextContent('Fresh structured text.')
-    })
-  })
-
-  it('shows the recorded extraction failure on the reader page', async () => {
-    mockedApi.getDocument.mockResolvedValue({ ...docPayload, content_state: 'extraction_failed' })
-    mockedSourcesApi.jobs.mockResolvedValue({
-      items: [{
-        id: 'extract-job-failed',
-        space_id: 'space-1',
-        connection_id: 'conn-1',
-        source_item_id: 'item-1',
-        source_snapshot_id: null,
-        source_object_type: null,
-        source_object_id: null,
-        job_type: 'extract_text',
-        status: 'failed',
-        started_at: '2026-07-02T10:00:00.000Z',
-        completed_at: '2026-07-02T10:01:00.000Z',
-        items_seen: null,
-        items_created: null,
-        items_updated: null,
-        error_code: '502',
-        error_message: 'The source page rejected the request.',
-        metadata_json: null,
-        created_at: '2026-07-02T10:00:00.000Z',
-      }],
-      total: 1,
-      limit: 1,
-      offset: 0,
-    })
-
-    await renderPage()
-
-    expect(screen.getByRole('alert')).toHaveTextContent('Text extraction failed')
-    expect(screen.getByRole('alert')).toHaveTextContent('The source page rejected the request.')
-    expect(mockedSourcesApi.jobs).toHaveBeenCalledWith({
-      source_item_id: 'item-1',
-      job_type: 'extract_text',
-      limit: 1,
-    })
-  })
-
-  it('hides an older failed extraction when the latest extraction succeeded', async () => {
-    mockedApi.getDocument.mockResolvedValue({ ...docPayload, content_state: 'content_saved' })
-    mockedSourcesApi.jobs.mockResolvedValue({
-      items: [{
-        id: 'extract-job-succeeded', space_id: 'space-1', connection_id: 'conn-1', source_item_id: 'item-1',
-        source_snapshot_id: null, source_object_type: null, source_object_id: null, job_type: 'extract_text', status: 'succeeded',
-        started_at: '2026-07-02T10:00:00.000Z', completed_at: '2026-07-02T10:01:00.000Z',
-        items_seen: null, items_created: null, items_updated: null, error_code: null, error_message: null,
-        metadata_json: null, created_at: '2026-07-02T10:00:00.000Z',
-      }], total: 1, limit: 1, offset: 0,
-    })
-
-    await renderPage()
-
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-  })
+  it('prepares an existing material and reloads its canonical document',async()=>{
+    mockedApi.getDocument.mockResolvedValueOnce(docPayload).mockResolvedValue({...docPayload,plain_text:'Fresh structured text.',normalized_text:'Fresh structured text.'});
+    mockedSourcesApi.materialProcessing.mockResolvedValueOnce({status:'idle'}).mockResolvedValue({status:'succeeded',run_id:'processing-run'});
+    await renderPage();await readAgain();
+    await waitFor(()=>expect(mockedSourcesApi.prepareMaterial).toHaveBeenCalledWith('item-1',{}, {spaceId:'space-1'}));
+    await waitFor(()=>expect(screen.getByTestId('reader-content')).toHaveTextContent('Fresh structured text.'));
+    expect(mockedSourcesApi.itemAction).not.toHaveBeenCalled();expect(mockedSourcesApi.runJob).not.toHaveBeenCalled();
+  });
+  it('shows a persisted processing failure after reload',async()=>{
+    mockedSourcesApi.materialProcessing.mockResolvedValue({status:'failed',reason:'The source page rejected the request.',run_id:'failed-run'});
+    await renderPage();expect(await screen.findByRole('alert')).toHaveTextContent('Could not prepare this material.');expect(screen.getByRole('alert')).toHaveTextContent('The source page rejected the request.');
+  });
+  it('shows only the latest operation and does not read an old extraction error',async()=>{
+    mockedSourcesApi.materialProcessing.mockResolvedValue({status:'succeeded'});await renderPage();expect(await screen.findByText('Reading content saved.')).toBeInTheDocument();expect(screen.queryByRole('alert')).not.toBeInTheDocument();expect(mockedSourcesApi.jobs).not.toHaveBeenCalled();
+  });
 
   it('keeps the selection when annotation creation fails', async () => {
     mockedApi.createAnnotation.mockRejectedValue(new Error('nope'))
@@ -561,50 +529,25 @@ describe('LibraryItemReaderPage', () => {
     await waitFor(() => {
       expect(mockedApi.getDocument).toHaveBeenLastCalledWith('source_item', 'item-2', { origin: undefined })
     })
-    expect(await screen.findByText('Second item')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Second item' })).toBeInTheDocument()
     expect(screen.getByTestId('reader-content')).toHaveTextContent('Next item text.')
     expect(screen.queryByRole('region', { name: 'Selected annotation' })).not.toBeInTheDocument()
     expect(screen.queryByText('Existing comment body')).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Annotation notebook' })).toHaveTextContent('Next item quote.')
   })
 
-  it('drops an extraction result that returns after the reader moved to another item', async () => {
-    mockedSourcesApi.briefing.mockResolvedValue(makeBriefing({
-      item_decisions: [makeDecision('item-1', 'relevant'), makeDecision('item-2', 'relevant')],
-    }))
-    const secondDoc = { ...docPayload, document_id: 'item-2', source_item_id: 'item-2', title: 'Second item', normalized_text: 'Next item text.' }
-    mockedApi.getDocument.mockImplementation(async (_type, id) => id === 'item-2' ? secondDoc : docPayload)
-    mockedApi.listAnnotations.mockImplementation(async (_type, id) => ({
-      items: id === 'item-2' ? [] : [makeAnnotation()],
-    }))
-    mockedSourcesApi.itemAction.mockResolvedValue({} as never)
-    mockedSourcesApi.jobs.mockImplementation(async params => ({
-      items: params?.status === 'pending' ? [{ id: 'extract-job-1', status: 'pending' } as never] : [],
-      total: params?.status === 'pending' ? 1 : 0,
-      limit: 1,
-      offset: 0,
-    }))
-    let finishExtraction: (job: unknown) => void = () => {}
-    mockedSourcesApi.runJob.mockReturnValue(new Promise(resolve => { finishExtraction = resolve }) as never)
-
-    await renderPage('/library/digests/conn-1/2026-07-07/items/item-1')
-    await userEvent.click(screen.getByRole('button', { name: 'Re-extract' }))
-    await waitFor(() => expect(mockedSourcesApi.runJob).toHaveBeenCalledWith('extract-job-1'))
-
-    await userEvent.click(screen.getByRole('link', { name: 'Next item' }))
-    expect(await screen.findByText('Second item')).toBeInTheDocument()
-
-    await act(async () => { finishExtraction({ status: 'succeeded' }) })
-
-    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Text extraction succeeded'))
-    expect(screen.getByText('Second item')).toBeInTheDocument()
-    expect(screen.getByTestId('reader-content')).toHaveTextContent('Next item text.')
-    expect(screen.getByRole('region', { name: 'Annotation notebook' })).not.toHaveTextContent('First paragraph.')
-  })
+  it('drops preparation replies after navigation to another material',async()=>{
+    mockedSourcesApi.briefing.mockResolvedValue(makeBriefing({item_decisions:[makeDecision('item-1','relevant'),makeDecision('item-2','relevant')]}));
+    const next={...docPayload,document_id:'item-2',source_item_id:'item-2',title:'Second item',normalized_text:'Next item text.'};mockedApi.getDocument.mockImplementation(async(_type,id)=>id==='item-2'?next:docPayload);
+    let finish:((value:{status:string})=>void)|undefined;mockedSourcesApi.prepareMaterial.mockReturnValue(new Promise(resolve=>{finish=resolve}));
+    await renderPage('/library/digests/conn-1/2026-07-07/items/item-1');await readAgain();await waitFor(()=>expect(mockedSourcesApi.prepareMaterial).toHaveBeenCalled());
+    await userEvent.click(screen.getByRole('link',{name:'Next item'}));expect(await screen.findByRole('heading', { level: 1, name: 'Second item' })).toBeInTheDocument();await act(async()=>{finish?.({status:'queued'})});expect(screen.getByTestId('reader-content')).toHaveTextContent('Next item text.');
+  });
 
   it('moves paragraph focus with arrows and highlights the focused paragraph with H', async () => {
     const blockSelection: TextSelection = {
       quoteText: 'First paragraph.',
+      selectedText: 'First paragraph.',
       selectionRect: null,
       anchorDraft: {
         quote_text: 'First paragraph.',
@@ -663,10 +606,16 @@ describe('LibraryItemReaderPage', () => {
     await renderPage()
 
     expect(screen.getByRole('complementary', { name: 'Reader inspector' })).toBeInTheDocument()
-    await userEvent.keyboard('[[')
+    await userEvent.keyboard(']')
     expect(screen.queryByRole('complementary', { name: 'Reader inspector' })).not.toBeInTheDocument()
     await userEvent.keyboard(']')
     expect(screen.getByRole('complementary', { name: 'Reader inspector' })).toBeInTheDocument()
+    // [ shows and hides the contents, independently of the inspector.
+    await userEvent.keyboard('[[')
+    expect(screen.getByRole('navigation', { name: 'Contents' })).toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: 'Reader inspector' })).toBeInTheDocument()
+    await userEvent.keyboard('[[')
+    expect(screen.queryByRole('navigation', { name: 'Contents' })).not.toBeInTheDocument()
 
     simulateSelection(textSelection)
     expect(screen.getByRole('toolbar', { name: 'Annotate selection' })).toBeInTheDocument()
@@ -740,7 +689,7 @@ it.each(['/projects/project-a/sources?tab=untrusted&redirect=https://other.test'
 it('returns research Readers to the bounded reading-list tab and keeps project origin during re-extraction', async () => {
   await renderPage(`/library/items/item-1?from=project&returnTo=${encodeURIComponent('/projects/project-a/research?tab=reading')}`)
   expect(screen.getByRole('link', { name: 'Research reading list' })).toHaveAttribute('href', '/projects/project-a/research?tab=reading')
-  await userEvent.click(screen.getByRole('button', { name: 'Re-extract' }))
+  mockedSourcesApi.materialProcessing.mockResolvedValue({status:'succeeded'});await readAgain()
   await waitFor(() => expect(mockedApi.getDocument).toHaveBeenCalledTimes(2))
   expect(mockedApi.getDocument).toHaveBeenLastCalledWith('source_item', 'item-1', { origin: 'project' })
 })
@@ -751,7 +700,7 @@ it('localizes Reader controls and names the actual Source management return in C
   mockedApi.listAnnotations.mockResolvedValue({ items: [] })
   await renderPage(`/library/items/item-1?from=project&returnTo=${encodeURIComponent('/projects/project-a/sources?tab=settings')}`)
   expect(screen.getByRole('link', { name: '来源管理' })).toHaveAttribute('href', '/projects/project-a/sources?tab=settings')
-  expect(screen.getByRole('button', { name: '重新提取' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: '重新读取整理' })).toBeEnabled()
   expect(screen.getByRole('complementary', { name: '阅读检查面板' })).toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name: '关闭检查面板' }))
   await userEvent.click(screen.getByRole('button', { name: '显示检查面板' }))
@@ -788,31 +737,9 @@ it.each([0, 1, 2])('localizes the Chinese Inspector with %i open threads', async
   expect(screen.getByRole('button', { name: '保存为证据' })).toBeInTheDocument()
 })
 
-it.each([
-  [null, '正文提取已排队'],
-  ['succeeded', '正文提取成功'],
-  ['failed', '正文提取失败'],
-] as const)('localizes Chinese re-extraction result %s and preserves project origin', async (status, expected) => {
-  await i18n.changeLanguage('zh-CN')
-  mockedSourcesApi.jobs.mockImplementation(async params => ({ items: params?.status === 'pending' && status ? [{ id: 'queued-job', status: 'pending' }] : [] }) as never)
-  mockedSourcesApi.runJob.mockResolvedValue({ status, error_message: null, error_code: null } as never)
-  await renderPage('/library/items/item-1?from=project')
-  await userEvent.click(screen.getByRole('button', { name: '重新提取' }))
-  await waitFor(() => expect(toast.success).toHaveBeenCalledWith(expected))
-  expect(mockedApi.getDocument).toHaveBeenLastCalledWith('source_item', 'item-1', { origin: 'project' })
-  if (status === 'failed') {
-    expect(screen.getByRole('alert')).toHaveTextContent('正文提取失败')
-    expect(screen.getByRole('alert')).toHaveTextContent('未记录错误详情。')
-  }
-})
-
-it('keeps recorded extraction error details while translating the Chinese failure banner', async () => {
-  await i18n.changeLanguage('zh-CN')
-  mockedSourcesApi.jobs.mockResolvedValue({ items: [{ status: 'failed', error_message: '原始服务端错误详情', error_code: '502' }] } as never)
-  await renderPage()
-  expect(screen.getByRole('alert')).toHaveTextContent('正文提取失败')
-  expect(screen.getByRole('alert')).toHaveTextContent('原始服务端错误详情')
-})
+it.each([['queued','排队中'],['running','正在读取、整理'],['failed','此材料未能整理完成。']] as const)('shows canonical processing state %s in Chinese',async(status,expected)=>{
+ await i18n.changeLanguage('zh-CN');mockedSourcesApi.materialProcessing.mockResolvedValue({status,reason:status==='failed'?'原始服务端错误详情':null,run_id:'processing-run'});await renderPage('/library/items/item-1?from=project');expect(await screen.findByText(expected,{exact:false})).toBeInTheDocument();expect(mockedApi.getDocument).toHaveBeenCalledWith('source_item','item-1',{origin:'project'});
+});
 
 it.each([
   ['en', 'project', 'interest', 'project'], ['zh-CN', 'project', 'interest', 'project'],
@@ -861,4 +788,453 @@ it.each([
 it('rejects a Reader return to a different Project edition from its declared context', async () => {
   await renderPage(`/library/items/item-1?from=project&projectId=project-a&returnTo=${encodeURIComponent('/projects/project-b/sources?tab=digest&date=2026-01-02')}`)
   expect(screen.getByRole('link', { name: 'Reading' })).toHaveAttribute('href', '/library/items')
+})
+it.each(['en','zh-CN'])('M2: metadata-only Reader preserves the provenance label (%s)',async locale=>{
+ await i18n.changeLanguage(locale);mockedApi.getDocument.mockResolvedValue({...docPayload,result_provenance:'agent_provided_unverified',plain_text:'',normalized_text:'',content_state:'metadata_only'});await renderPage();expect(await screen.findByText(locale==='en'?'Agent-provided · Not independently verified':'Agent 提供 · 未经独立核验')).toBeInTheDocument();
+});
+
+it('shows an explicit original-source route for Agent links without retained text',async()=>{
+ mockedApi.getDocument.mockResolvedValue({...docPayload,result_provenance:'agent_provided_unverified',plain_text:'',normalized_text:'',content_state:'metadata_only',source_uri:'https://example.test/original'});
+ await renderPage();expect(screen.getByText(/No readable content was saved/)).toBeInTheDocument();expect(within(screen.getByRole('status')).getByRole('link',{name:'Open source URL'})).toHaveAttribute('href','https://example.test/original');
+});
+it('labels repository synthesis and exposes its actual supporting sources',async()=>{
+ mockedApi.getDocument.mockResolvedValue({...docPayload,result_provenance:'agent_provided_unverified',reading_info:{kind:'repository',format:'agent_summary',method:'agent',sources:['https://example.test/README']}});
+ await renderPage();expect(screen.getByText(/Agent synthesis based on the linked sources/)).toBeInTheDocument();expect(screen.getByText(/Repository overview/)).toBeInTheDocument();expect(screen.getByRole('link',{name:'https://example.test/README'})).toHaveAttribute('href','https://example.test/README');
+});
+
+it.each([['/library/reading/goals/topic-a?selection=all','Back to topic'],['/library/reading?view=read&topic=topic-a&topic_selection=all','Reading'],['/projects/project-a/sources/goals/topic-a','Back to topic']])('returns to the exact topic or filtered Reading view %s',async(returnTo,label)=>{
+  await renderPage(`/library/items/item-1?from=library&returnTo=${encodeURIComponent(returnTo)}`)
+  expect(screen.getByRole('link',{name:label})).toHaveAttribute('href',returnTo)
+})
+
+it('confirms only the exact cited topic change, without altering document read state',async()=>{
+ vi.mocked(informationDigestsApi.readingState).mockResolvedValue({updated:1});await renderPage('/library/items/item-1?change=change-v2');
+ expect(informationDigestsApi.readingState).not.toHaveBeenCalled();await userEvent.click(screen.getByRole('button',{name:'Mark this update read'}));
+ await waitFor(()=>expect(informationDigestsApi.readingState).toHaveBeenCalledWith('space-1','item-1',{topic_change_id:'change-v2',read_status:'read'},undefined));
+ expect(await screen.findByRole('button',{name:'This update is read'})).toBeDisabled();expect(mockedSourcesApi.itemAction).not.toHaveBeenCalled();
+});
+
+it('a late v2 confirmation cannot show a newly navigated v3 as acknowledged',async()=>{
+ let finish!:(value:{updated:number})=>void;vi.mocked(informationDigestsApi.readingState).mockReturnValue(new Promise(resolve=>{finish=resolve}));
+ render(<MemoryRouter initialEntries={['/library/items/item-1?change=v2']}><Routes><Route path="/library/items/:itemId" element={<><Link to="/library/items/item-1?change=v3">Next update</Link><LibraryItemReaderPage/></>}/></Routes></MemoryRouter>);
+ await screen.findByTestId('reader-content');await userEvent.click(screen.getByRole('button',{name:'Mark this update read'}));await userEvent.click(screen.getByRole('link',{name:'Next update'}));
+ await act(async()=>finish({updated:1}));expect(screen.getByRole('button',{name:'Mark this update read'})).toBeEnabled();expect(screen.queryByRole('button',{name:'This update is read'})).not.toBeInTheDocument();
+});
+
+describe('LibraryItemReaderPage stage-one reliability', () => {
+  const withNarrowViewport = (narrow: boolean) => {
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: (query: string) => ({ matches: narrow && query.includes('max-width'), media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
+    })
+  }
+  afterEach(() => { Reflect.deleteProperty(window, 'matchMedia') })
+
+  it('keeps the document readable when annotations fail, without claiming zero, and retries only the list', async () => {
+    mockedApi.listAnnotations.mockRejectedValueOnce(Object.assign(new Error('annotation service unavailable'), { status: 500 }))
+    await renderPage()
+
+    expect(screen.getByTestId('reader-content')).toHaveTextContent('First paragraph.')
+    const inspector = screen.getByRole('complementary', { name: 'Reader inspector' })
+    expect(within(inspector).getByRole('alert')).toHaveTextContent('annotation service unavailable')
+    expect(inspector).not.toHaveTextContent('0 annotations')
+    expect(inspector).not.toHaveTextContent('Select text in the document')
+
+    await userEvent.click(within(inspector).getByRole('button', { name: 'Try again' }))
+    expect(await within(inspector).findByText('1 annotation')).toBeInTheDocument()
+    expect(within(screen.getByRole('region', { name: 'Annotation notebook' })).getByText('First paragraph.')).toBeInTheDocument()
+    expect(mockedApi.getDocument).toHaveBeenCalledTimes(1)
+  })
+
+  it('distinguishes a forbidden document (no blind retry) from a failed load (retry)', async () => {
+    mockedApi.getDocument.mockRejectedValueOnce(Object.assign(new Error('forbidden'), { status: 403 }))
+    const { unmount } = render(<MemoryRouter initialEntries={['/library/items/item-1']}><Routes><Route path="/library/items/:itemId" element={<LibraryItemReaderPage />} /></Routes></MemoryRouter>)
+    expect(await screen.findByText('Reading is not available to you')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
+    unmount()
+
+    mockedApi.getDocument.mockRejectedValueOnce(Object.assign(new Error('gateway timeout'), { status: 504 })).mockResolvedValueOnce(docPayload)
+    render(<MemoryRouter initialEntries={['/library/items/item-1']}><Routes><Route path="/library/items/:itemId" element={<LibraryItemReaderPage />} /></Routes></MemoryRouter>)
+    expect(await screen.findByRole('alert')).toHaveTextContent('gateway timeout')
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByTestId('reader-content')).toHaveTextContent('First paragraph.')
+  })
+
+  it('does not run reading shortcuts during IME composition or while a menu is open', async () => {
+    blockHandle.blockSelection.mockReturnValue(textSelection)
+    mockedApi.createAnnotation.mockResolvedValue(makeAnnotation({ id: 'ann-kb' }))
+    await renderPage()
+    await userEvent.keyboard('{ArrowDown}')
+
+    fireEvent.keyDown(document.body, { key: 'h', isComposing: true })
+    fireEvent.keyDown(document.body, { key: 'n', keyCode: 229 })
+    // Keys typed inside an open menu belong to the menu.
+    const menu = document.createElement('div'); menu.setAttribute('role', 'menu')
+    const item = document.createElement('button'); item.setAttribute('role', 'menuitem'); menu.append(item); document.body.append(menu)
+    fireEvent.keyDown(item, { key: 'h' })
+    fireEvent.keyDown(item, { key: 'ArrowDown' })
+    expect(readerProps?.focusedBlockIndex).toBe(0)
+    // A menu left in the page without focus does not disable reading keys.
+    fireEvent.keyDown(document.body, { key: 'ArrowDown' })
+    expect(readerProps?.focusedBlockIndex).toBe(1)
+    fireEvent.keyDown(document.body, { key: 'ArrowUp' })
+    menu.remove()
+    expect(mockedApi.createAnnotation).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(document.body, { key: 'h', repeat: true })
+    expect(mockedApi.createAnnotation).not.toHaveBeenCalled()
+    fireEvent.keyDown(document.body, { key: 'h' })
+    fireEvent.keyDown(document.body, { key: 'h' })
+    await waitFor(() => expect(mockedApi.createAnnotation).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps the stored selection when pressing the toolbar collapses the browser selection', async () => {
+    mockedApi.createAnnotation.mockResolvedValue(makeAnnotation({ id: 'ann-touch', quote_text: 'Second paragraph.' }))
+    await renderPage()
+    simulateSelection(textSelection)
+    const toolbar = screen.getByRole('toolbar', { name: 'Annotate selection' })
+    fireEvent.pointerDown(toolbar)
+    simulateSelection(null)
+    expect(screen.getByRole('toolbar', { name: 'Annotate selection' })).toBeInTheDocument()
+    await userEvent.click(within(toolbar).getByRole('button', { name: 'Highlight' }))
+    expect(mockedApi.createAnnotation).toHaveBeenCalledWith(expect.objectContaining({ quote_text: 'Second paragraph.' }))
+  })
+
+  it('drops an annotation saved for the previous item after navigating to the next one', async () => {
+    mockedSourcesApi.briefing.mockResolvedValue(makeBriefing({ item_decisions: [makeDecision('item-1', 'relevant'), makeDecision('item-2', 'relevant')] }))
+    const next = { ...docPayload, document_id: 'item-2', source_item_id: 'item-2', title: 'Second item', normalized_text: 'Next item text.' }
+    mockedApi.getDocument.mockImplementation(async (_type, id) => id === 'item-2' ? next : docPayload)
+    mockedApi.listAnnotations.mockImplementation(async (_type, id) => ({ items: id === 'item-2' ? [] : [makeAnnotation()] }))
+    let answer: (value: ReaderAnnotation) => void = () => {}
+    mockedApi.createAnnotation.mockReturnValue(new Promise(resolve => { answer = resolve }))
+    await renderPage('/library/digests/conn-1/2026-07-07/items/item-1')
+
+    simulateSelection(textSelection)
+    await userEvent.click(screen.getByRole('button', { name: 'Highlight' }))
+    await userEvent.click(screen.getByRole('link', { name: 'Next item' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Second item' })).toBeInTheDocument()
+    await act(async () => { answer(makeAnnotation({ id: 'late', quote_text: 'Late quote from item one' })) })
+
+    expect(screen.queryByText('Late quote from item one')).not.toBeInTheDocument()
+    expect(toast.success).not.toHaveBeenCalledWith('Highlighted', expect.anything())
+  })
+
+  it('opens on the text on a phone; a highlight stays quiet and a comment opens the drawer', async () => {
+    withNarrowViewport(true)
+    mockedApi.createAnnotation
+      .mockResolvedValueOnce(makeAnnotation({ id: 'ann-h', quote_text: 'Second paragraph.' }))
+      .mockResolvedValueOnce(makeAnnotation({ id: 'ann-c', annotation_type: 'comment', quote_text: 'Second paragraph.' }))
+    await renderPage()
+    expect(screen.queryByRole('complementary', { name: 'Reader inspector' })).not.toBeInTheDocument()
+
+    simulateSelection(textSelection)
+    await userEvent.click(screen.getByRole('button', { name: 'Highlight' }))
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Highlighted', expect.anything()))
+    expect(screen.queryByRole('complementary', { name: 'Reader inspector' })).not.toBeInTheDocument()
+
+    simulateSelection(textSelection)
+    await userEvent.click(screen.getByRole('button', { name: 'Comment' }))
+    expect(await screen.findByRole('complementary', { name: 'Reader inspector' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByPlaceholderText('Add a comment…')).toHaveFocus())
+    // Escape first leaves the text field to the field; from the page it closes the drawer.
+    act(() => { (document.activeElement as HTMLElement).blur() })
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('complementary', { name: 'Reader inspector' })).not.toBeInTheDocument()
+  })
+
+  it('shows the body title once when the document opens with the same heading', async () => {
+    mockedApi.getDocument.mockResolvedValue({ ...docPayload, content_json: { type: 'doc', content: [{ type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: 'Signals in Long-Form Reading' }] }] } })
+    await renderPage()
+    // The mocked body does not render headings: no lead heading means the body's own heading is the title.
+    expect(screen.queryByRole('heading', { level: 1, name: 'Signals in Long-Form Reading' })).not.toBeInTheDocument()
+    expect(screen.getByText('example.test')).toBeInTheDocument()
+  })
+
+  it('does not let a list requested before a new highlight erase it; the list is fetched again', async () => {
+    let answerStale: (value: { items: ReaderAnnotation[] }) => void = () => {}
+    mockedApi.listAnnotations.mockImplementationOnce(() => new Promise(resolve => { answerStale = resolve }))
+      .mockResolvedValueOnce({ items: [makeAnnotation({ id: 'ann-new', quote_text: 'Saved review annotation' })] })
+    mockedApi.createAnnotation.mockResolvedValue(makeAnnotation({ id: 'ann-new', quote_text: 'Saved review annotation' }))
+    await renderPage()
+    simulateSelection(textSelection)
+    await userEvent.click(screen.getByRole('button', { name: 'Highlight' }))
+    const notebook = screen.getByRole('region', { name: 'Annotation notebook' })
+    expect(await within(notebook).findByText('Saved review annotation')).toBeInTheDocument()
+    await act(async () => { answerStale({ items: [] }) })
+    await waitFor(() => expect(mockedApi.listAnnotations).toHaveBeenCalledTimes(2))
+    expect(within(notebook).getByText('Saved review annotation')).toBeInTheDocument()
+  })
+
+  it('clears the list and unsent drafts when annotations become forbidden', async () => {
+    writeCommentDraft({ spaceId: 'space-1', documentType: 'source_item', documentId: 'item-1' }, 'ann-1', 'Private draft')
+    mockedApi.listAnnotations.mockRejectedValueOnce(Object.assign(new Error('forbidden'), { status: 403 }))
+    await renderPage()
+    expect(await within(screen.getByRole('complementary', { name: 'Reader inspector' })).findByRole('alert')).toHaveTextContent('forbidden')
+    expect(__commentDraftCountForTests()).toBe(0)
+    expect(screen.queryByText('Private draft')).not.toBeInTheDocument()
+  })
+
+  it('makes the next document annotatable at once while the previous item’s save is still running', async () => {
+    mockedSourcesApi.briefing.mockResolvedValue(makeBriefing({ item_decisions: [makeDecision('item-1', 'relevant'), makeDecision('item-2', 'relevant')] }))
+    const next = { ...docPayload, document_id: 'item-2', source_item_id: 'item-2', title: 'Second item', normalized_text: 'Next item text.' }
+    mockedApi.getDocument.mockImplementation(async (_type, id) => id === 'item-2' ? next : docPayload)
+    mockedApi.listAnnotations.mockImplementation(async () => ({ items: [] }))
+    let answerOld: (value: ReaderAnnotation) => void = () => {}
+    let answerNew: (value: ReaderAnnotation) => void = () => {}
+    mockedApi.createAnnotation.mockImplementationOnce(() => new Promise(resolve => { answerOld = resolve }))
+      .mockImplementationOnce(() => new Promise(resolve => { answerNew = resolve }))
+    await renderPage('/library/digests/conn-1/2026-07-07/items/item-1')
+
+    simulateSelection(textSelection)
+    await userEvent.click(screen.getByRole('button', { name: 'Highlight' }))
+    expect(screen.getByRole('button', { name: 'Highlight' })).toBeDisabled()
+    await userEvent.click(screen.getByRole('link', { name: 'Next item' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Second item' })).toBeInTheDocument()
+
+    simulateSelection(textSelection)
+    expect(screen.getByRole('button', { name: 'Highlight' })).toBeEnabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Highlight' }))
+    expect(mockedApi.createAnnotation).toHaveBeenLastCalledWith(expect.objectContaining({ document_id: 'item-2' }))
+    // The old save finishing must not release the new one.
+    await act(async () => { answerOld(makeAnnotation({ id: 'old' })) })
+    expect(screen.getByRole('button', { name: 'Highlight' })).toBeDisabled()
+    await act(async () => { answerNew(makeAnnotation({ id: 'new', document_id: 'item-2', quote_text: 'Second paragraph.' })) })
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Highlighted', expect.anything()))
+  })
+
+  it('keeps an unsent comment across Shell navigation and restores it on return', async () => {
+    mockedApi.listThreads.mockResolvedValue({ items: [] })
+    render(<MemoryRouter initialEntries={['/library/items/item-1']}>
+      <Link to="/home">Shell home</Link><Link to="/library/items/item-1">Back to item</Link>
+      <Routes>
+        <Route path="/library/items/:itemId" element={<LibraryItemReaderPage />} />
+        <Route path="/home" element={<p>Home page</p>} />
+      </Routes>
+    </MemoryRouter>)
+    await screen.findByTestId('reader-content')
+    await userEvent.click(within(screen.getByRole('region', { name: 'Annotation notebook' })).getByRole('button', { name: /First paragraph/ }))
+    await userEvent.type(await screen.findByPlaceholderText('Add a comment…'), 'Draft before leaving')
+    await userEvent.click(screen.getByRole('link', { name: 'Shell home' }))
+    expect(await screen.findByText('Home page')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('link', { name: 'Back to item' }))
+    await screen.findByTestId('reader-content')
+    expect(await screen.findByText('1 unsent comment is kept here')).toBeInTheDocument()
+    await userEvent.click(within(screen.getByRole('region', { name: 'Annotation notebook' })).getByRole('button', { name: /First paragraph/ }))
+    await waitFor(() => expect(screen.getByPlaceholderText('Add a comment…')).toHaveValue('Draft before leaving'))
+  })
+
+  describe('annotation authority', () => {
+    const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej }); return { promise, resolve, reject } }
+    const shownQuotes = () => ((readerProps as unknown as { annotations?: ReaderAnnotation[] })?.annotations ?? []).map(item => item.quote_text)
+    const late = makeAnnotation({ id: 'ann-late', quote_text: 'Created before refusal' })
+
+    async function startLateCreate() {
+      const list = deferred<{ items: ReaderAnnotation[] }>()
+      const post = deferred<ReaderAnnotation>()
+      mockedApi.listAnnotations.mockImplementationOnce(() => list.promise)
+      mockedApi.createAnnotation.mockImplementationOnce(() => post.promise)
+      await renderPage()
+      simulateSelection(textSelection)
+      await userEvent.click(screen.getByRole('button', { name: 'Highlight' }))
+      return { list, post }
+    }
+
+    it('does not let a create that answers after a 403 bring the quote back', async () => {
+      const { list, post } = await startLateCreate()
+      await act(async () => { list.reject(Object.assign(new Error('forbidden'), { status: 403 })) })
+      const inspector = screen.getByRole('complementary', { name: 'Reader inspector' })
+      expect(within(inspector).getByRole('alert')).toHaveTextContent('forbidden')
+      await act(async () => { post.resolve(late) })
+      expect(screen.queryByText('Created before refusal')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'highlight: Created before refusal' })).not.toBeInTheDocument()
+      expect(shownQuotes()).toEqual([])
+      expect(toast.success).not.toHaveBeenCalledWith('Highlighted', expect.anything())
+      // The pending state was released: the next selection can be annotated.
+      simulateSelection(textSelection)
+      expect(screen.getByRole('button', { name: 'Highlight' })).toBeEnabled()
+    })
+
+    it('does not apply a pre-refusal create after access is restored; only the new read shows annotations', async () => {
+      const { list, post } = await startLateCreate()
+      await act(async () => { list.reject(Object.assign(new Error('forbidden'), { status: 403 })) })
+      mockedApi.listAnnotations.mockResolvedValueOnce({ items: [makeAnnotation({ id: 'ann-authoritative', quote_text: 'From the new read' })] })
+      const inspector = screen.getByRole('complementary', { name: 'Reader inspector' })
+      await userEvent.click(within(inspector).getByRole('button', { name: 'Try again' }))
+      expect(await within(inspector).findByText('From the new read')).toBeInTheDocument()
+      await act(async () => { post.resolve(late) })
+      expect(screen.queryByText('Created before refusal')).not.toBeInTheDocument()
+      expect(shownQuotes()).toEqual(['From the new read'])
+      expect(toast.success).not.toHaveBeenCalledWith('Highlighted', expect.anything())
+    })
+
+    it('treats an ordinary list failure as no refusal: the confirmed create and the drafts stay', async () => {
+      writeCommentDraft({ spaceId: 'space-1', documentType: 'source_item', documentId: 'item-1' }, 'ann-1', 'Kept through 500')
+      const { list, post } = await startLateCreate()
+      await act(async () => { list.reject(Object.assign(new Error('server error'), { status: 500 })) })
+      await act(async () => { post.resolve(late) })
+      expect(within(screen.getByRole('region', { name: 'Annotation notebook' })).getByText('Created before refusal')).toBeInTheDocument()
+      expect(toast.success).toHaveBeenCalledWith('Highlighted', expect.anything())
+      expect(__commentDraftCountForTests()).toBe(1)
+    })
+  })
+
+  it('offers to show undeclared Agent text as Markdown for the version shown, only after confirming, and shows the new version', async () => {
+    const literal = { ...docPayload, artifact_id: 'art-a', source_snapshot_id: null, result_provenance: 'agent_provided_unverified' as const, plain_text: '# Penchan', normalized_text: '# Penchan',
+      reading_info: { kind: 'article' as const, format: 'source_text' as const, sources: ['https://example.test/article'], method: 'agent' as const }, agent_text_syntax: 'undeclared' as const }
+    const structured = { ...literal, artifact_id: 'art-b', agent_text_syntax: 'markdown' as const, plain_text: 'Penchan', normalized_text: 'Penchan', content_json: { type: 'doc', content: [{ type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: 'Penchan' }] }] } }
+    mockedApi.getDocument.mockResolvedValueOnce(literal).mockResolvedValue(structured)
+    mockedSourcesApi.showAgentTextAsMarkdown.mockResolvedValue({ artifact_id: 'art-b' })
+    await renderPage()
+    expect(screen.getByText(/did not say how it is written/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Show as Markdown' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Show this material as Markdown?' })
+    expect(dialog).toHaveTextContent('the current version is kept')
+    expect(mockedSourcesApi.showAgentTextAsMarkdown).not.toHaveBeenCalled()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Show as Markdown' }))
+    await waitFor(() => expect(mockedSourcesApi.showAgentTextAsMarkdown).toHaveBeenCalledWith('item-1', { artifact_id: 'art-a', source_snapshot_id: null }, { spaceId: 'space-1' }))
+    await waitFor(() => expect(screen.queryByText(/did not say how it is written/)).not.toBeInTheDocument())
+    expect(toast.success).toHaveBeenCalledWith('Shown as Markdown')
+  })
+
+  it('does not show a reloaded document whose request was made before logout', async () => {
+    const literal = { ...docPayload, artifact_id: 'art-a', normalized_text: 'Literal A', reading_info: { kind: 'article' as const, format: 'source_text' as const, sources: ['https://example.test/article'], method: 'agent' as const }, agent_text_syntax: 'undeclared' as const }
+    let answer: (value: unknown) => void = () => {}
+    mockedApi.getDocument.mockResolvedValueOnce(literal).mockImplementationOnce(() => new Promise(resolve => { answer = resolve }) as never)
+    mockedSourcesApi.showAgentTextAsMarkdown.mockResolvedValue({ artifact_id: 'art-b' })
+    await renderPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Show as Markdown' }))
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Show as Markdown' }))
+    await waitFor(() => expect(mockedApi.getDocument).toHaveBeenCalledTimes(2))
+    act(() => clearSessionResidue())
+    await act(async () => answer({ ...literal, artifact_id: 'art-b', normalized_text: 'Reloaded B', agent_text_syntax: 'markdown' }))
+    expect(screen.getByTestId('reader-content')).toHaveTextContent('Literal A')
+    expect(toast.success).not.toHaveBeenCalledWith('Shown as Markdown')
+  })
+
+  describe('the reload after showing as Markdown belongs to the page that asked', () => {
+    const literal = { ...docPayload, artifact_id: 'art-a', source_snapshot_id: null, normalized_text: 'Literal A', reading_info: { kind: 'article' as const, format: 'source_text' as const, sources: ['https://example.test/article'], method: 'agent' as const }, agent_text_syntax: 'undeclared' as const }
+    const converted = { ...literal, artifact_id: 'art-b', normalized_text: 'Converted B', agent_text_syntax: 'markdown' as const }
+    async function convert() {
+      await userEvent.click(screen.getByRole('button', { name: 'Show as Markdown' }))
+      await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Show as Markdown' }))
+    }
+    beforeEach(() => { mockedSourcesApi.showAgentTextAsMarkdown.mockResolvedValue({ artifact_id: 'art-b' }) })
+
+    it('a reply after the page is gone changes nothing and says nothing', async () => {
+      let answer: (value: unknown) => void = () => {}
+      mockedApi.getDocument.mockResolvedValueOnce(literal).mockImplementationOnce(() => new Promise(resolve => { answer = resolve }) as never)
+      await renderPage()
+      await convert()
+      await waitFor(() => expect(mockedApi.getDocument).toHaveBeenCalledTimes(2))
+      const annotationReads = mockedApi.listAnnotations.mock.calls.length
+      cleanup()
+      await act(async () => answer(converted))
+      expect(toast.success).not.toHaveBeenCalledWith('Shown as Markdown')
+      expect(mockedApi.listAnnotations).toHaveBeenCalledTimes(annotationReads)
+    })
+
+    it('a reply after leaving for another item and coming back (A→B→A) is not shown and not reported', async () => {
+      let answer: (value: unknown) => void = () => {}
+      const other = { ...docPayload, document_id: 'item-2', source_item_id: 'item-2', normalized_text: 'Other item' }
+      mockedApi.getDocument.mockImplementation(async (_type, id) => id === 'item-2' ? other : literal)
+      mockedApi.getDocument.mockResolvedValueOnce(literal).mockImplementationOnce(() => new Promise(resolve => { answer = resolve }) as never)
+      render(<MemoryRouter initialEntries={['/library/items/item-1']}>
+        <Link to="/library/items/item-2">to B</Link><Link to="/library/items/item-1">to A</Link>
+        <Routes><Route path="/library/items/:itemId" element={<LibraryItemReaderPage />} /></Routes>
+      </MemoryRouter>)
+      await screen.findByTestId('reader-content')
+      await convert()
+      await waitFor(() => expect(mockedApi.getDocument).toHaveBeenCalledTimes(2))
+      await userEvent.click(screen.getByRole('link', { name: 'to B' }))
+      await waitFor(() => expect(screen.getByTestId('reader-content')).toHaveTextContent('Other item'))
+      await userEvent.click(screen.getByRole('link', { name: 'to A' }))
+      await waitFor(() => expect(screen.getByTestId('reader-content')).toHaveTextContent('Literal A'))
+      await act(async () => answer(converted))
+      expect(screen.getByTestId('reader-content')).toHaveTextContent('Literal A')
+      expect(toast.success).not.toHaveBeenCalledWith('Shown as Markdown')
+    })
+
+    it.each([401, 403, 404])('a reload refused with %s removes the text, its drafts and its annotations, as on first load', async status => {
+      writeCommentDraft({ spaceId: 'space-1', documentType: 'source_item', documentId: 'item-1' }, 'ann-1', 'Draft on the old text')
+      mockedApi.getDocument.mockResolvedValueOnce(literal).mockRejectedValueOnce(Object.assign(new Error('refused'), { status }))
+      await renderPage()
+      const annotationReads = mockedApi.listAnnotations.mock.calls.length
+      await convert()
+      await waitFor(() => expect(screen.queryByTestId('reader-content')).not.toBeInTheDocument())
+      expect(screen.queryByText('Literal A')).not.toBeInTheDocument()
+      expect(__commentDraftCountForTests()).toBe(0)
+      // The annotation list is read again under the refusal (which clears it).
+      expect(mockedApi.listAnnotations.mock.calls.length).toBeGreaterThan(annotationReads)
+      expect(toast.success).not.toHaveBeenCalledWith('Shown as Markdown')
+      expect(toast.error).not.toHaveBeenCalledWith('Saved as Markdown in a new version, but the text could not be reloaded; open it again.')
+    })
+
+    it('an ordinary failure keeps the text and says the new version was saved but not reloaded', async () => {
+      mockedApi.getDocument.mockResolvedValueOnce(literal).mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }))
+      await renderPage()
+      await convert()
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Saved as Markdown in a new version, but the text could not be reloaded; open it again.'))
+      expect(screen.getByTestId('reader-content')).toHaveTextContent('Literal A')
+      expect(toast.success).not.toHaveBeenCalledWith('Shown as Markdown')
+    })
+
+    it('a refusal of a reload a newer load has replaced does not clear the newer text', async () => {
+      let refuse: (error: unknown) => void = () => {}
+      const other = { ...docPayload, document_id: 'item-2', source_item_id: 'item-2', normalized_text: 'Other item' }
+      mockedApi.getDocument.mockImplementation(async (_type, id) => id === 'item-2' ? other : literal)
+      mockedApi.getDocument.mockResolvedValueOnce(literal).mockImplementationOnce(() => new Promise((_resolve, reject) => { refuse = reject }) as never)
+      render(<MemoryRouter initialEntries={['/library/items/item-1']}>
+        <Link to="/library/items/item-2">to B</Link>
+        <Routes><Route path="/library/items/:itemId" element={<LibraryItemReaderPage />} /></Routes>
+      </MemoryRouter>)
+      await screen.findByTestId('reader-content')
+      await convert()
+      await waitFor(() => expect(mockedApi.getDocument).toHaveBeenCalledTimes(2))
+      await userEvent.click(screen.getByRole('link', { name: 'to B' }))
+      await waitFor(() => expect(screen.getByTestId('reader-content')).toHaveTextContent('Other item'))
+      await act(async () => refuse(Object.assign(new Error('refused'), { status: 403 })))
+      expect(screen.getByTestId('reader-content')).toHaveTextContent('Other item')
+    })
+  })
+
+  it('offers it for text declared plain, with words that say so, and not for Markdown or other text', async () => {
+    const agent = (syntax?: 'plain' | 'markdown') => ({ ...docPayload, artifact_id: 'art-a', reading_info: { kind: 'article' as const, format: 'source_text' as const, ...(syntax ? { syntax } : {}), sources: ['https://example.test/article'], method: 'agent' as const }, ...(syntax ? { agent_text_syntax: syntax } : {}) })
+    mockedApi.getDocument.mockResolvedValue(agent('plain'))
+    await renderPage()
+    expect(screen.getByText(/declared it plain text/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show as Markdown' })).toBeInTheDocument()
+    cleanup()
+    mockedApi.getDocument.mockResolvedValue(agent('markdown'))
+    await renderPage()
+    expect(screen.queryByRole('button', { name: 'Show as Markdown' })).not.toBeInTheDocument()
+    cleanup()
+    mockedApi.getDocument.mockResolvedValue(docPayload)
+    await renderPage()
+    expect(screen.queryByRole('button', { name: 'Show as Markdown' })).not.toBeInTheDocument()
+  })
+
+  it('explains what reading an item again does to its annotations and starts nothing until confirmed', async () => {
+    await renderPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Read again' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Read this material again?' })
+    expect(dialog).toHaveTextContent('the current version is kept, not overwritten')
+    expect(dialog).toHaveTextContent('listed as not located')
+    expect(dialog).toHaveTextContent('Nothing else is reprocessed.')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Keep current text' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(mockedSourcesApi.prepareMaterial).not.toHaveBeenCalled()
+  })
+
+  it('renders with the stored image policy, and a reprocess that changes it switches the reader before the new text shows', async () => {
+    mockedApi.getDocument.mockResolvedValueOnce({ ...docPayload, image_policy: 'remote_reference' })
+      .mockResolvedValue({ ...docPayload, image_policy: 'none', plain_text: 'Agent text.', normalized_text: 'Agent text.' })
+    mockedSourcesApi.materialProcessing.mockResolvedValueOnce({ status: 'idle' }).mockResolvedValue({ status: 'succeeded', run_id: 'processing-run' })
+    await renderPage()
+    expect((readerProps as unknown as { remoteImages: boolean }).remoteImages).toBe(true)
+    await readAgain()
+    await waitFor(() => expect(screen.getByTestId('reader-content')).toHaveTextContent('Agent text.'))
+    // The text and the stricter policy arrive in the same render of the reader.
+    expect((readerProps as unknown as { remoteImages: boolean; normalizedText: string })).toMatchObject({ remoteImages: false, normalizedText: 'Agent text.' })
+  })
 })

@@ -560,9 +560,23 @@ export class PgJobQueueRepository {
       exhausted_jobs: JobReclaimResult["exhausted_jobs"] | null;
       abandoned_runs: Array<{ space_id: string; run_id: string }> | null;
     }>(
-      `WITH retryable AS (
+      `WITH interrupted_agent_jobs AS (
+         -- Even an exhausted job still owes its dispatched process a stop.
+         -- Reclaim it for reconciliation, not another physical execution.
+         SELECT j.id FROM jobs j
+           JOIN runs r ON r.id = j.payload_json->>'run_id' AND r.space_id = j.space_id
+          WHERE j.job_type = 'agent_run' AND r.status IN ('running', 'cancelling')
+            AND EXISTS (SELECT 1 FROM run_attempts a
+              WHERE a.run_id = r.id AND a.space_id = r.space_id AND a.launch_id IS NOT NULL
+                AND a.attempt_number = (SELECT max(latest.attempt_number) FROM run_attempts latest
+                  WHERE latest.run_id = r.id AND latest.space_id = r.space_id))
+       ), retryable AS (
          UPDATE jobs
             SET status = 'pending',
+                -- Reserve a claim for stop reconciliation when the job budget
+                -- is exhausted; this cannot dispatch a new physical attempt.
+                attempts = CASE WHEN id IN (SELECT id FROM interrupted_agent_jobs)
+                  THEN LEAST(attempts, max_attempts - 1) ELSE attempts END,
                 claimed_by = NULL,
                 claimed_at = NULL,
                 started_at = NULL,
@@ -570,7 +584,7 @@ export class PgJobQueueRepository {
                 updated_at = $1::timestamptz
           WHERE status IN ('claimed', 'running')
             AND COALESCE(heartbeat_at, updated_at) < $2::timestamptz
-            AND attempts < max_attempts
+            AND (attempts < max_attempts OR id IN (SELECT id FROM interrupted_agent_jobs))
           RETURNING id, space_id, user_id, job_type, attempts, max_attempts
        ),
        failed AS (
@@ -585,6 +599,7 @@ export class PgJobQueueRepository {
           WHERE status IN ('claimed', 'running')
             AND COALESCE(heartbeat_at, updated_at) < $2::timestamptz
             AND attempts >= max_attempts
+            AND id NOT IN (SELECT id FROM interrupted_agent_jobs)
           RETURNING id, space_id, user_id, job_type, attempts, max_attempts, payload_json
        )
        SELECT

@@ -445,7 +445,7 @@ function ConversationSurfaceContent({
     setHasOlderMessages(page.items.length === MESSAGE_PAGE_SIZE)
     setQueued(page.queued ?? [])
     refreshDiscussions(page.items)
-    const runIds = uniqueIds(page.items.flatMap(message => messageRunIds(message)))
+    const runIds = uniqueIds([...page.items.flatMap(message => messageRunIds(message)), ...Object.keys(runsRef.current)])
     await refreshRuns(runIds, () => sequence === requestSequence.current)
     if (scope.signal?.aborted || sequence !== requestSequence.current) return
     // Whether a turn still belongs on screen is decided in one place, where

@@ -28,9 +28,10 @@ const ATTENTION_STATES: InquiryAttentionState[] = ['focused', 'monitoring', 'bac
  * can strand a pinned research Workflow at its alignment guard, so it belongs
  * in the assessment workspace that owns confirmed wording.
  */
-export function ThreadHeader({ projectId, detail, members, round, allowEarlyClose, onChanged }: {
+export function ThreadHeader({ projectId, detail, contentAvailable, members, round, allowEarlyClose, onChanged }: {
   projectId: string
   detail: InquiryThreadDetail
+  contentAvailable: boolean
   members: SpaceMember[]
   round: number
   allowEarlyClose: boolean
@@ -55,7 +56,7 @@ export function ThreadHeader({ projectId, detail, members, round, allowEarlyClos
     if (!editing) setStatement(detail.statement)
   }, [detail.statement, editing])
 
-  const canAct = detail.lifecycle_status === 'active'
+  const canAct = contentAvailable && detail.lifecycle_status === 'active'
   const owner = members.find(member => member.user_id === detail.owner_user_id)
 
   async function saveWording() {
@@ -168,7 +169,7 @@ export function ThreadHeader({ projectId, detail, members, round, allowEarlyClos
                   <DropdownMenuItem onSelect={() => setLifecycleTarget('archived')}>Archive…</DropdownMenuItem>
                 </>
               )}
-              {!canAct && detail.lifecycle_status !== 'superseded' && (
+              {contentAvailable && !canAct && detail.lifecycle_status !== 'superseded' && (
                 <>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onSelect={() => transitionLifecycle('active')}>Reopen</DropdownMenuItem>
@@ -178,7 +179,7 @@ export function ThreadHeader({ projectId, detail, members, round, allowEarlyClos
           </DropdownMenu>
         </div>
 
-        {editing
+        {editing && contentAvailable
           ? (
             <div className="space-y-2">
               <Textarea value={statement} onChange={event => setStatement(event.target.value)} rows={3} aria-label="Thread statement" />
@@ -203,7 +204,9 @@ export function ThreadHeader({ projectId, detail, members, round, allowEarlyClos
           )}
 
         <p className="mt-2 text-sm text-muted-foreground">
-          {detail.kind === 'question'
+          {!contentAvailable
+            ? 'Full access is required to read this Thread’s content and history.'
+            : detail.kind === 'question'
             ? `Answer (${detail.question_state?.answer_state ?? 'open'}): ${detail.question_state?.current_answer_summary || '—'}`
             : `Evaluation: ${detail.hypothesis_state?.evaluation_state ?? 'untested'}${
               detail.hypothesis_state?.confidence !== null && detail.hypothesis_state?.confidence !== undefined

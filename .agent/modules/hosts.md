@@ -1231,6 +1231,15 @@ The daemon keeps the same distinction: a newer attempt takes over the run
 id's registration, and the older attempt's cleanup leaves the shared
 `<config>/runs/<run_id>/` in place when a newer attempt owns it.
 
+After a control-plane worker is lost, its reclaimed job stops the persisted
+launch nonce before finalizing the interrupted Run. `stopAttempt` waits for a
+`complete` matching Host, Run and nonce independently of any newer live
+dispatch. A daemon whose own restart already removed that exact attempt
+confirms its absence using `complete`; an attempt still preparing, waiting for
+a Location, running or cleaning up sends its normal completion only after
+stopping. Exit cleanup is tracked by nonce so it cannot acknowledge absence
+while that attempt is still reading the checkout or releasing its lease.
+
 Two placeholders on the wire (`REMOTE_CWD_PLACEHOLDER`,
 `WORK_SKILL_PATH_PLACEHOLDER`, in the contract) stand for values only the
 executing machine knows; the daemon substitutes them in argv, the initial
@@ -1247,7 +1256,12 @@ heartbeat is marked `execution_ready = false`. On socket close, the host is
 marked `offline` immediately; Host liveness remains distinct from Location
 readiness.
 A `hello` reporting a daemon older than `MIN_HOST_DAEMON_VERSION`
-(`hosts/daemonCompatibility.ts`, `0.4.3`) is refused with `daemon_outdated`.
+(`hosts/daemonCompatibility.ts`, `0.4.4`) is refused with `daemon_outdated`.
+The daemon still checks the installer's `update-restart-requested` marker every
+thirty seconds during its fifteen-minute offline backoff. An installed update
+therefore restarts an idle daemon without a successful handshake; an active Run
+keeps the marker pending. Docker instance rebuilds replace the built-in Host,
+not a paired machine's separate systemd service.
 Older daemons do not preserve the original Skill base64 bytes, content hashes
 and structured resource links required by current launches. The reported version is recorded and
 the host stays offline rather than accepting Runs it would fail one at a time,
@@ -1397,9 +1411,16 @@ a rotation or reset, run after it — held for the subscription window, say)
 records only that it was the last Run: the retired session is never written
 back, nor its identity digest or occupancy. Clearing the id matters: retrying
 an already-broken vendor session id does not recover the session. It is called
-from `agentRunHandler.ts`'s `handleAgentRun` (via
+from the durable `host_thread` step in `runs/runSettlement.ts` (via
 `server/src/modules/hosts/threadOutcome.ts`'s `recordHostThreadOutcome`)
-once the dispatched Run's `agent_run` job reaches terminal. The dispatch route
+when the Run is hard terminal, through `PgHostThreadRepository.settleRunOutcome`:
+the outcome is written only if no newer Run reported, and the Run's own claim
+is released whenever it is hard terminal — independently, so an older turn
+re-admitted after a newer one never strands the thread nor replaces its
+session. Cancellation, adapter completion and recovery share this step. A
+claim still held remains owed in the finalization ledger and is replayed even
+when the chat completion event already exists or an earlier ledger recorded
+the step done ([RUNS_AND_OUTPUTS](../architecture/RUNS_AND_OUTPUTS.md)). The dispatch route
 does not wait for that. A reset it
 concludes is said in the Room once per Run that proved it (the notice carries
 `host_thread_run_id`); the thread keeps its id across resets and the explicit
@@ -1770,33 +1791,37 @@ mode, written with the credential it registered with. A config with no
 
 ### Location lease, Task worktrees and `git_after`
 
-Writers on one directory are serialized; nothing else is. Two writers in one
-checkout would each see, and each diff, the other's half-finished edits, so
-the lease is taken by every writing launch, whatever kind of Run it is.
-What stays serial is deliberate: a Room conversation's Agents — a
-multi-recipient message, a discussion's waves — share the Conversation's
-directory by design and run one at a time by that design, a cost accepted
-until wall-clock complaints say otherwise (deferred register). An execution
-Task Run avoids the wait by working in its Task's worktree (below).
-`src/locationLease.ts` holds one execution lease per WorkspaceLocation id.
-A `launch` whose `isolation.sandbox_mode` is not `read_only`
-(`launchMayWrite`; a strict host told nothing counts as read-only, a paired
-host told nothing as a writer) takes the lease of its own Location — unless
-it runs in its Task's worktree, which takes the Task's lease instead — and of every `workspace_access` attachment
-granted `write`, all in sorted id order so two multi-Location writers cannot
-deadlock, before its baseline tree is captured. If any is held it queues in
-arrival order and sends `waiting_for_workspace` once (`HostDaemonFrameSchema`).
-Holders and waiters are launch attempts (`launch_id`), because a supervisor
-retry reuses the run id. The leases are released together in a `finally`
-right after the exit diff and HEAD are read — nothing after that reads the
-directory — or in `handleLaunch` when the launch fails before spawning. A
-queued launch is not in `launchingRuns` (an upgrade drain does not wait for
-it) but counts for `hasInFlightRuns`; revocation cancels every queued
-launch. A `read_only` Run, a managed workspace (already keyed by Conversation
-or owner) and a Task worktree's own Location take no lease. On a paired host
-`read_only` is the dispatch's declared intent, not enforcement. Locations are
-keyed by id, so overlapping registrations are not serialized (deferred
-register).
+Strict read-only reviews take shared Location leases; writers take exclusive
+leases. Different Agents in the same Room can review together, while writers
+wait for existing readers and writers. FIFO admission allows a consecutive
+reader prefix and prevents new readers overtaking an already queued writer.
+Ordinary multi-recipient messages and discussions retain their serial policy;
+only explicit `workspace_access: "read"` delegations opt into review admission.
+The Conversation × Agent vendor thread remains exclusive in either mode.
+
+`src/locationLease.ts` acquires primary and attachment Location ids in sorted
+order before baseline capture. A strict read-only launch takes shared leases
+for all its Locations and downgrades every workspace attachment to read-only.
+A writer takes exclusive leases for its primary Location and writable
+attachments; a Task worktree takes its own exclusive Task key instead. Managed
+workspaces without Location ids have no Location lease. Paired native launches
+are always treated as writers by the daemon: native execution does not enforce
+read-only access, so server admission rejects explicit reviews on paired Hosts
+with `workspace_read_only_unenforceable` rather than silently weakening them.
+
+Holders and waiters are launch attempts (`launch_id`), not logical Run ids.
+A waiting attempt emits `waiting_for_workspace`; cancellation removes only that
+attempt. Leases release in `finally` after the exit tree and diff are captured,
+or on launch failure. A queued attempt counts toward `hasInFlightRuns` but not
+`launchingRuns`; revocation also cancels waiters. Different Location ids pointing
+to overlapping paths remain an existing alias boundary.
+
+A read-only review records `review_basis` (HEAD, branch, captured Git tree and
+whether Git-visible content changed during review). This is an observed Git
+basis, not an immutable snapshot of ignored files or external edits. It uploads
+no code diff artifact, so another writer's edits cannot become its output.
+The namespace keeps Run output, temporary files and runtime profile state
+writable outside the source directory; reports belong in `RAINVER_OUTPUT_DIR`.
 
 `terminate` carries the `launch_id` of the dispatch the server is waiting on:
 the daemon cancels that attempt's wait or signals that attempt's process and
@@ -2692,3 +2717,20 @@ mapping executes no handler; existing versions remain readable. New generated
 code uses the reviewed Sources isolated executor, with no legacy-runner fallback.
 Standard-container success still requires administrator cgroup/userns capability
 validation before deployment; missing capability refuses with zero requests.
+
+### Explicit read-only namespace acceptance
+
+After building `packages/host-daemon`, on an isolated Linux host with working
+`/usr/bin/bwrap`, run `node test/readonlyNamespace.acceptance.mjs` from that
+package. It fails rather than skips when containment is unavailable. It uses
+synthetic temporary source/profile/output directories and removes them after
+checking write-to-read profile reuse, source write/create/delete/rename/index
+refusal, and report/cache/tmp writes. This is process/OS acceptance, not a real
+vendor login or model invocation; portable unit tests still validate launch
+planning independently.
+
+Room 只读委派在创建子 Run 前检查会话固定的目标 backend/Host：
+本地 CLI 若不在 server Host，委派直接返回 409 与处理说明，不创建失败子任务，
+不占线程或扣委派额度。不会自动将工作目录移到另一台机器，亦不降级为可写。
+需使用 intended workspace 在 server Host 可用的会话重新审查。
+执行期仍保留同一能力校验，防止接纳后配置变化绕过强制只读限制。

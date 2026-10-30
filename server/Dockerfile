@@ -27,12 +27,14 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY packages/protocol/package.json ./packages/protocol/
 COPY packages/folder-read/package.json ./packages/folder-read/
 COPY packages/outbound-guard/package.json ./packages/outbound-guard/
+COPY packages/reader-document/package.json ./packages/reader-document/
 COPY server/package.json ./server/
 COPY apps/web/package.json ./apps/web/
 RUN pnpm install --frozen-lockfile \
     --filter @rainver/protocol \
     --filter @rainver/folder-read \
     --filter @rainver/outbound-guard \
+    --filter @rainver/reader-document \
     --filter @rainver/server
 
 COPY packages/protocol/tsconfig.json packages/protocol/tsconfig.build.json ./packages/protocol/
@@ -46,6 +48,10 @@ RUN pnpm --filter @rainver/folder-read build
 COPY packages/outbound-guard/tsconfig.json packages/outbound-guard/tsconfig.build.json ./packages/outbound-guard/
 COPY packages/outbound-guard/src ./packages/outbound-guard/src
 RUN pnpm --filter @rainver/outbound-guard build
+# The Reader document tree and the one Markdown converter the reading writer uses.
+COPY packages/reader-document/tsconfig.json packages/reader-document/tsconfig.build.json ./packages/reader-document/
+COPY packages/reader-document/src ./packages/reader-document/src
+RUN pnpm --filter @rainver/reader-document build
 
 # ---- build: compile TS -> dist ------------------------------------------------
 FROM deps AS build
@@ -77,7 +83,7 @@ WORKDIR /app/server
 # runs TypeScript watch builds, so the compiled dist trees must be writable by
 # the non-root runtime user.
 RUN mkdir -p /home/node/.claude \
-    && chown -R node:node /home/node /app/server/dist /app/packages/protocol/dist /app/packages/folder-read/dist /app/packages/outbound-guard/dist
+    && chown -R node:node /home/node /app/server/dist /app/packages/protocol/dist /app/packages/folder-read/dist /app/packages/outbound-guard/dist /app/packages/reader-document/dist
 USER node
 ENV HOME=/home/node
 
@@ -104,12 +110,14 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY packages/protocol/package.json ./packages/protocol/
 COPY packages/folder-read/package.json ./packages/folder-read/
 COPY packages/outbound-guard/package.json ./packages/outbound-guard/
+COPY packages/reader-document/package.json ./packages/reader-document/
 COPY server/package.json ./server/
 COPY apps/web/package.json ./apps/web/
 RUN pnpm install --prod --frozen-lockfile \
     --filter @rainver/protocol \
     --filter @rainver/folder-read \
     --filter @rainver/outbound-guard \
+    --filter @rainver/reader-document \
     --filter @rainver/server
 
 # ---- runtime: prod deps + compiled output -------------------------------------
@@ -131,6 +139,8 @@ COPY packages/folder-read/package.json ./packages/folder-read/package.json
 COPY --from=deps /app/packages/folder-read/dist ./packages/folder-read/dist
 COPY packages/outbound-guard/package.json ./packages/outbound-guard/package.json
 COPY --from=deps /app/packages/outbound-guard/dist ./packages/outbound-guard/dist
+COPY packages/reader-document/package.json ./packages/reader-document/package.json
+COPY --from=deps /app/packages/reader-document/dist ./packages/reader-document/dist
 # Built-in catalog definitions served read-only by the catalog module
 # (default SERVER_CATALOG_ROOT resolves to /app/catalog).
 COPY catalog ./catalog
@@ -140,13 +150,15 @@ COPY --from=prod-deps /app/packages/protocol/node_modules ./packages/protocol/no
 # pnpm keeps each workspace package's dependencies beside that package. The
 # server's own undici installation cannot satisfy outbound-guard's import.
 COPY --from=prod-deps /app/packages/outbound-guard/node_modules ./packages/outbound-guard/node_modules
+# reader-document's markdown-it likewise sits beside that package.
+COPY --from=prod-deps /app/packages/reader-document/node_modules ./packages/reader-document/node_modules
 COPY --from=prod-deps /app/server/node_modules ./server/node_modules
 WORKDIR /app/server
 
 COPY server/migrations ./migrations
 COPY --from=build /app/server/dist ./dist
 # Fail the image build if a workspace package cannot resolve its runtime deps.
-RUN node --input-type=module -e "await import('@rainver/outbound-guard')"
+RUN node --input-type=module -e "await import('@rainver/outbound-guard'); await import('@rainver/reader-document')"
 
 # CLI login helper processes need a writable HOME before their state is synced
 # into the managed profile dir under RAINVER_HOME.

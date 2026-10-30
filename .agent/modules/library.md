@@ -252,11 +252,25 @@ Opening Reading never activates acquisition or changes source visibility.
 
 The unified reading backend contract is available separately from edition reads:
 see [Information Digest — Unified reading projection](information-digest.md#unified-reading-projection).
-It supplies cross-day pending/read recommendation lists, current authorized
+It supplies cross-day pending/read lists for recommendations and material saved by followed goals, current authorized
 Project reasons, personal opt-in and a searchable all-material view. Its item
 and material references open the same shared Reader; callers forward
 `reader_origin` as the Reader's `origin` query to preserve interest isolation.
 The existing edition and per-Source routes retain their scope and history; explicit `?date=` opens that fixed edition, including completed members.
+
+Followed-goal intake is eligible only through server-recorded goal membership
+(`source_goal_items`, see [SOURCE_GOALS](../architecture/SOURCE_GOALS.md#goal--sourceitem-membership)),
+never item metadata. `GET .../reading?topic=<goalId>&topic_selection=important|all`
+restricts the same authorized, grouped list to one followed goal the viewer may
+read (personal owner, or a live Project reader in that scope); an invisible topic
+is 404. Each item carries `topics` (goal id, the topic's own `project_id` and
+bounded `title`, selection status, reason, `judged_by`, `delivery_kind` —
+baseline, new publication, evidenced change or unknown freshness — and the
+latest `change_evidence_url`) for the visible goals of all its grouped members,
+keeping the strongest selection.
+`important` lists only topic-judged selections; `all` means every material the
+goal actually collected, not complete coverage. Topic and selection belong to the
+cursor scope, and topic visibility is part of the page fingerprint.
 
 ## Unified reading UI
 
@@ -265,10 +279,39 @@ for both My reading and Project reading (`/projects/:projectId/sources`). Pendin
 is the default; read and all-material views change the server query, never a local
 filter of one fetched page. Cards render all currently authorized contributions,
 original rationales, edition date/timezone or first-result label, recommendation
-arrival time and separate article time. Material-only rows are explicitly labeled.
+arrival time and separate article time. Material-only rows are explicitly labeled. Successfully saved goal collections enter Pending without requiring a digest or annotation; preview-only results do not. Eligibility is established by the canonical successful collection audit and binding, with existing Source/Project access gates, personal Project opt-in, deduplication, and read/dismiss states preserved. Pausing a goal does not remove its saved reading history.
 Summary-only rows do not link into Reader. Full rows forward `reader_origin`,
 including project, to the shared Reader. A bounded return destination preserves
 reading navigation; legacy day-scoped Reader deep links retain prev/next.
+
+List controls: newest/oldest order is a server query (`sort=oldest` in the URL
+and in `readingReturnTo`'s whitelist; `newest` is the default and never
+written); comfortable/compact density is a browser preference
+(`rainver:reading-density`, on the logout keep-list). Rows form a list with
+↑/↓ (j/k), Home/End and Enter (opens the row's own Reader link). Rows show the
+viewer's private reading progress. The search field says what it searches
+(titles, summaries, sources — not full text) and is distinct from the Reader's
+find in this document.
+
+Opening an item keeps two per-tab records in sessionStorage (cleared on
+logout; `readingSequence.ts`): the list as the server returned it (ids, keys,
+access level, opaque next cursor, query) and where the list was left. Back on
+the list within 30 minutes, it reloads up to as many rows as were open (≤150)
+and focuses the item, or says it is no longer in the list. In the Reader,
+`ReadingSequenceNav` offers previous/next in list order, skipping summary-only
+rows, with first/last states. A row is named by its item and topic change
+(the Reader's `change` parameter): the same item listed as material and again
+per update is several rows, and neighbours, the return point and "mark read"
+use that row. Past the loaded rows it follows the list's cursor with the same
+query for at most 5 pages, skipping pages of summary-only rows; if rows remain
+beyond that it says so rather than claiming the end. A reply is kept (in
+storage or on screen), navigated on or announced only while the run that
+asked is still mounted for that row and session (an owner token per mounted
+row, dropped on unmount, so A→B→A cannot revive it), and a
+refused cursor (the list changed) keeps the Reader where it is. "Mark read and next" (unread items without a
+topic change, which has its own confirmation) calls the canonical reading
+state API and moves only after it succeeds. A kept record grants nothing: the
+Reader re-checks every document.
 
 `useReading` owns request sequencing, scope resets and page transport only.
 Space/Project/view/search are bound to each request and cursor; late responses
@@ -363,14 +406,24 @@ the shared card/form styling, and interest controls use the English/Chinese loca
 catalogs. Reader toolbar controls use the shared small icon size and explicit
 border tokens; long-form document typography remains specific to Reader.
 
+The Library Reader wrapper shows a short title in its toolbar and passes the full
+title plus source metadata (Agent-provided label, document type/content state,
+source host) as the Reader lead above the body. The document loads on its own
+and the annotation list through the shared `useReaderAnnotations`: a missing
+document, a 403 (no retry offered) and a failed load (retry) are distinct
+states; an inaccessible document also drops its unsent comment drafts; an
+annotation-list failure keeps the text readable with a local retry. Project
+Research reports follow the same contract (see the Reader guide). Reading list links carry the submitted search
+`q` in their bounded return path, so Reader returns to the same results.
+
 ### First reading material
 
 An empty unfiltered To read or All material view offers “What would you like to
-keep following?” in EN/ZH. ReadingStart opens the Sources-owned complete goal
-page with optional Project context; it creates nothing until a message is sent.
-Desktop conversation and actual preview are adjacent; narrow screens switch on
-the same page. Existing goals recover canonical Session messages, precise plan
-versions, Run progress and source coverage on return/refresh.
+keep following?” in EN/ZH. “Follow a topic” opens the shared topic creation page
+with optional Project context; it creates nothing until the topic, frequency and
+effort are confirmed once, after which preparation and the first collection run
+in the background (see [Topic reading journey](../architecture/SOURCE_GOALS.md#topic-reading-journey-ui)).
+Topic pages recover their update stream, status and plan on return/refresh.
 
 Save an article still uses the existing URL writer and extraction jobs, with
 Project writer checks. Only a completed save revalidates the Reading list;
@@ -380,6 +433,137 @@ subscriptions and successful SourceItem history remain the same consumers.
 Project Sources/configuration now opens the same goal management list. Historical
 monitoring candidates/digests, linked Source display and necessary settings remain
 reachable through their existing routes. Compatibility mapping sends no collection
-requests and keeps the old scheduler owner until an exact valid preview is
-confirmed. See [SOURCE_GOALS](../architecture/SOURCE_GOALS.md) for transfer and
+requests and keeps the old scheduler owner until following is confirmed; then
+the topic is the Source's only automatic scheduler and a manual Project
+monitoring run of that Source is refused. See [SOURCE_GOALS](../architecture/SOURCE_GOALS.md) for transfer and
 conservative rollback semantics; engine output is not itself a Library item.
+
+Reading goal setup and management stay under `/library/reading/goals` for
+personal Reading, and `/projects/:projectId/sources/goals` inside the Project
+layout. Both reuse the Sources-owned goal components and backend API. Return,
+creation recovery and stop navigation retain this context; there are no legacy
+Sources goal route aliases. Settings and return actions use the shared Button
+component rather than standalone underlined action links.
+
+Reading lists this scope's topics (`useScopeTopics`, refreshed while one is
+preparing or collecting) in a topic filter beside the views. Choosing a topic
+queries the server with `topic` and `topic_selection` (`important` by default,
+All as a toggle); the URL keeps `topic`/`topic_selection` with the view, and an
+empty filtered list shows a topic-specific empty state rather than first-use
+guidance. Cards show each visible topic link (topic title linking to its page,
+freshness, judgment, reason and who judged). Reader links from a filtered or
+non-default view return to that exact list (`readingHrefReturning`);
+`readingReturnTo` accepts only the Reading/Project-reading list with known
+`view`/`topic`/`topic_selection` values and topic pages with `selection`, each
+key once, canonically encoded. Opening a topic never starts an Agent Run.
+Model/mode controls use the common conversation configuration component and only
+the selected runtime's advertised choices.
+
+Agent-assisted search links carry `agent_provided_unverified` provenance on Reading
+cards and Reader details (EN/ZH). The public Reading/Reader DTO projects only this
+status from metadata, not raw Source metadata or content. Metadata-only Agent links
+open with an empty body and their original link; no summary or verification is invented.
+
+Reading places Following alongside Source management in the same tools row,
+with a badge counting confirmed following in the current personal/Project scope
+(`follow_state.intent === 'following'`, including background preparation).
+Manual-save-only, unconfirmed and paused topics remain in management but do not
+inflate the badge. There
+is no separate top goal banner. The management page has a scoped Back to reading
+link at the top and grouped controls with shared spacing. Goal titles and deletion
+confirmation belong in that list and detail; collected material is retained.
+The plan conversation (topic Advanced section) links only the latest search Run's
+execution details; collection progress is not repeated in the chat.
+
+### Preparing saved material
+
+`MaterialProcessingPanel` is the one reading preparation control used by Reader
+and `SaveReadingUrlDialog`. It observes Sources' persisted operation and Run, not
+a browser-run extraction job. A saved link, repository and new query share the
+[Sources material contract](../architecture/SOURCE_MATERIAL_PROCESSING.md).
+The Library list opens Reader rather than keeping a second extraction/retry flow.
+
+Material preparation uses shared status badges, buttons and theme tokens in both
+Reader and URL saving. The parent owns outer spacing; goal execution settings
+reuse the same picker without nested frames. Reader itself offers no Agent picker;
+material preparation inherits the saved goal or existing owned default configuration. Queued/working/final updates are
+announced through the status region, and failures retain the standard error color.
+
+Saving a link starts its preparation before the dialog mounts the panel, so the
+panel's first read sees the queued operation rather than an idle state. If
+preparation fails after the owner allowed a Source's readable content (for
+example a missing model-egress permission), the consent dialog closes and the
+refusal is shown; nothing is queued. Real-backend acceptance
+(`readingBrowserAcceptance.browser.ts`, EN/ZH) covers Read again without an
+execution configuration, consent decline and acceptance through the real
+proposal, the separate egress refusal, a queued Run with its execution link,
+cancellation, and a fixture Agent submission that becomes the Reader body.
+
+## Topic change deliveries
+
+Reading may contain both an existing material and separate immutable topic-change
+deliveries for it. `ReadingItem.topic_change` and the `change` Reader query carry
+the exact delivery identity; `topic_change_id` in the existing Reading state API
+confirms or dismisses that change for this viewer only. These rows sort by their
+new delivery time and use the same pagination/access reload contract. A repeated
+evidence URL does not create a delivery, and confirming an older change leaves a
+newer change pending. Material read state, highlights, annotations and body
+revision remain intact. Topic update rows show a localized badge and the cited
+evidence through the existing topic summary. Actual SourceItem full-content and
+Source/Project consent gates apply to derived evidence; summary-only materials
+do not expose change reasons/evidence. Topic material/change totals describe the
+viewer's currently visible set, not hidden historical inventory.
+
+Reading, topic updates, daily editions and legacy type lists share `ReadingCard`:
+two-line title and summary, quiet metadata and compact topic links, with actions
+on the right from `sm` and a wrapping action row on narrow screens. Expanding
+“Why this is here” reveals the full summary and original recommendation,
+judgment and material associations. Agent-provided/unverified provenance stays
+visible. Topic titles prefer the planning Agent's short label; old topics retain
+the original subject as a fallback and truncate visually.
+
+### Reading list preview and state undo
+
+A Reading container at least 980px wide shows a preview beside its rows. Row
+focus/keyboard movement or the Preview action chooses the current list item's
+summary, recommendation rationale, topic links and source address. It makes no
+parallel document request. The preview reads only the current authorized page,
+clears on query/revalidation failure, and offers a Reader link only for `full`
+items. Narrow containers retain direct title navigation with no extra step.
+
+A confirmed read/unread state update offers toast Undo through the same Reading
+state endpoint, restoring the original state and re-reading the server list.
+A failed update offers no success action. The action belongs to its mounted
+view generation and session epoch; a switch away and back cannot revive an old
+Undo, and repeated activation cannot send the same restore twice.
+
+Reading 个人状态反馈统一覆盖已读和放一边/恢复：确认后提供撤销，
+撤销使用原状态及 topic change 身份。所有旧 toast 与当前按钮共享同步写入互斥；
+撤销按钮按 Sonner 合同保留到服务端恢复成功，失败/忙时保留重试，亦可手动关闭。
+
+
+Reader document notes are independent Notes, created only after confirmation and
+resolved into the person's Personal Space by the access-owned creation context.
+Reader stores a private typed document→Note association, never a second body or
+an empty quote annotation. The Notes editor owns content/revisions/sharing. Both
+current document and Note access gate each resolution; cross-Space links use the
+Note's actual Space. Repeated create reconciles one association and note.
+
+Reading-list article swiping is opt-in and browser-local. Only ordinary top-level
+prose recognizes short horizontal touch; tables, code, images, selections and long
+presses keep native interaction. Navigation reuses the existing neighbour/cursor
+sequence, skips summary-only entries and never writes read state. Session/scope
+changes and cancellation invalidate the gesture; buttons remain available.
+
+
+Reading's main list and Following details use the same `ReadingStatusBadge`.
+For an unread material in the latest finished collection of a visible topic,
+it replaces the existing unread badge with Just collected / 本次新增; it does
+not add a badge or row. Skimmed/read states and independent change deliveries
+keep their existing status. Topic-filtered lists use only that topic's arrival
+flag; the unfiltered list accepts an arrival from any currently visible topic.
+The Reading query derives eligible goals with the same scope/Project read rules
+as its topic links before loading latest audits, and retains material plus
+collecting-Source authorization. This is not publication age or since-last-visit
+state. No read acknowledgement is written by displaying it. See Source Goals'
+latest-collection contract for provenance and failure/empty-check semantics.

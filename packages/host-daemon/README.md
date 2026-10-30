@@ -87,11 +87,22 @@ rainver-host update
 ```
 
 Updating is not optional in the long run. The control plane requires a minimum
-daemon version (currently 0.4.0) and refuses an older one at `hello` with
+daemon version (currently 0.4.4) and refuses an older one at `hello` with
 `daemon_outdated`: the Host shows as offline, executes no Runs, and stays that
 way until this machine is updated with the command above (or by turning
 automatic updates on). The daemon keeps retrying on a long interval and logs
 the reason once, so `journalctl --user -u rainver-host` names it.
+
+An outdated daemon waits fifteen minutes between connection attempts, but
+continues checking for an installed update every thirty seconds. Once its Runs
+have finished it restarts into the installed build, even while offline. The
+server's Docker rebuild updates the built-in Host; a paired machine's systemd
+service needs its own Host installation update.
+
+Version 0.4.4 confirms when an exact stopped Run attempt is already absent,
+allowing a restarted control plane to recover interrupted work without leaving
+an old process or directory lease behind. Recovery waits for exit confirmation;
+the existing Run Supervisor decides whether to retry within its original bounds.
 
 Automatic checks can be toggled later without pairing again:
 

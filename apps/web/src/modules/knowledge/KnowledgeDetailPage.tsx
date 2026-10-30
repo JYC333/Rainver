@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { ArrowLeft } from 'lucide-react'
@@ -19,6 +19,12 @@ import KnowledgeUpdateProposalForm from './KnowledgeUpdateProposalForm'
 
 export default function KnowledgeDetailPage() {
   const { itemId = '' } = useParams()
+  const { activeSpaceId, userId } = useSpace()
+  return <KnowledgeDetail key={`${activeSpaceId}:${userId}:${itemId}`} />
+}
+
+function KnowledgeDetail() {
+  const { itemId = '' } = useParams()
   const { activeSpaceId, activeSpaceName, userId } = useSpace()
   const [item, setItem] = useState<KnowledgeItem | null>(null)
   const [relations, setRelations] = useState<KnowledgeRelation[]>([])
@@ -29,45 +35,47 @@ export default function KnowledgeDetailPage() {
   const [lastProposal, setLastProposal] = useState<Proposal | null>(null)
   const [archiving, setArchiving] = useState(false)
 
-  const loadRelations = useCallback(async (knowledgeItemId: string) => {
-    setLoadingRelations(true)
-    setRelationsError(null)
-    try {
-      setRelations(await knowledgeApi.relations(knowledgeItemId))
-    } catch (e) {
-      setRelations([])
-      setRelationsError(errMsg(e))
-    } finally {
-      setLoadingRelations(false)
-    }
-  }, [])
-
-  const loadItem = useCallback(async () => {
+  useEffect(() => {
+    let active = true
     if (!itemId || !activeSpaceId) {
       setItem(null)
       setRelations([])
       setLoadingItem(false)
       return
     }
-    setLoadingItem(true)
-    setNotFound(false)
-    setRelations([])
-    setRelationsError(null)
-    try {
-      const nextItem = await knowledgeApi.get(itemId)
-      setItem(nextItem)
-      await loadRelations(nextItem.id)
-    } catch (e) {
-      if (isNotFoundError(e)) setNotFound(true)
-      else toast.error(errMsg(e))
-      setItem(null)
-      setRelations([])
-    } finally {
-      setLoadingItem(false)
+    async function load() {
+      try {
+        const nextItem = await knowledgeApi.get(itemId)
+        if (!active) return
+        setItem(nextItem)
+        setLoadingRelations(true)
+        try {
+          const nextRelations = await knowledgeApi.relations(nextItem.id)
+          if (active) setRelations(nextRelations)
+        } catch (e) {
+          if (!active) return
+          setRelations([])
+          if (isNotFoundError(e)) {
+            setNotFound(true)
+            setItem(null)
+          } else setRelationsError(errMsg(e))
+        }
+      } catch (e) {
+        if (!active) return
+        if (isNotFoundError(e)) setNotFound(true)
+        else toast.error(errMsg(e))
+        setItem(null)
+        setRelations([])
+      } finally {
+        if (active) {
+          setLoadingRelations(false)
+          setLoadingItem(false)
+        }
+      }
     }
-  }, [activeSpaceId, itemId, loadRelations])
-
-  useEffect(() => { loadItem() }, [loadItem])
+    void load()
+    return () => { active = false }
+  }, [activeSpaceId, itemId])
 
   async function submitArchiveProposal() {
     if (!item) return
@@ -77,7 +85,12 @@ export default function KnowledgeDetailPage() {
       setLastProposal(p)
       toast.success('Archive proposal created')
     } catch (e) {
-      if (isNotFoundError(e)) setNotFound(true)
+      if (isNotFoundError(e)) {
+        setNotFound(true)
+        setItem(null)
+        setRelations([])
+        setLastProposal(null)
+      }
       toast.error(errMsg(e))
     } finally {
       setArchiving(false)

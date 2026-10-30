@@ -436,6 +436,44 @@ describe("knowledgeNoteScopeDb", () => {
       expect(listedIds).not.toContain(theirs.id);
     });
 
+    it.for(["item", "source"] as const)("gates both endpoints when listing %s evidence links", async (parent, ctx) => {
+      if (!db.available || !app) return ctx.skip();
+      const viewer = randomUUID();
+      await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at,email,registration_source)
+        VALUES ($1,'Reader','active',now(),now(),lower(gen_random_uuid()::text || '@test.invalid'),'system')`, [viewer]);
+      await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
+        VALUES ($1,$2,$3,'member','active',now(),now())`, [randomUUID(), SPACE, viewer]);
+      const repository = new PgKnowledgeRepository(db.pool);
+      const source = await repository.createSource(identity, { source_type: "external_note", title: "Evidence", raw_text: "Private evidence", visibility: "space_shared" }) as { id: string };
+      const item = randomUUID();
+      await insertKnowledgeItem(db.pool, { id: item, spaceId: SPACE, title: "Finding", content: "Private finding",
+        ownerUserId: USER, createdByUserId: USER });
+      await db.pool.query("UPDATE space_objects SET visibility='space_shared' WHERE id=$1", [source.id]);
+      const link = randomUUID();
+      await db.pool.query(`INSERT INTO knowledge_item_sources
+        (id,space_id,knowledge_item_id,source_id,relation_type,locator,quote,note,created_by_user_id,created_at)
+        VALUES ($1,$2,$3,$4,'cites','secret locator','secret quote','secret note',$5,now())`, [link, SPACE, item, source.id, USER]);
+      const otherEndpoint = parent === "item" ? source.id : item;
+      const reader = { spaceId: SPACE, userId: viewer };
+      const list = (who: { spaceId: string; userId: string } = reader) => parent === "item"
+        ? repository.listItemSources(who, item) : repository.listSourceItems(who, source.id);
+
+      await db.pool.query("UPDATE space_objects SET visibility='private' WHERE id=$1", [otherEndpoint]);
+      expect(await list()).toEqual([]);
+      expect(await list(identity)).toMatchObject([{ id: link, quote: "secret quote" }]);
+
+      await db.pool.query("UPDATE space_objects SET visibility='selected_users' WHERE id=$1", [otherEndpoint]);
+      const grant = randomUUID();
+      await db.pool.query(`INSERT INTO content_access_grants
+        (id,space_id,resource_type,resource_id,grantee_user_id,access_level,granted_by_user_id,created_at,updated_at)
+        VALUES ($1,$2,'space_object',$3,$4,'summary',$5,now(),now())`, [grant, SPACE, otherEndpoint, viewer, USER]);
+      expect(await list()).toMatchObject([{ id: link, locator: null, quote: null, note: null }]);
+      await db.pool.query("UPDATE content_access_grants SET access_level='full' WHERE id=$1", [grant]);
+      expect(await list()).toMatchObject([{ id: link, locator: "secret locator", quote: "secret quote", note: "secret note" }]);
+      await db.pool.query("UPDATE content_access_grants SET revoked_at=now() WHERE id=$1", [grant]);
+      expect(await list()).toEqual([]);
+    });
+
     it("rejects an oversized scope rather than building an unbounded predicate", async () => {
       if (!db.available || !app) return;
       const response = await app.inject({

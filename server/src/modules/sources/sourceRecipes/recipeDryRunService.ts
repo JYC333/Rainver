@@ -17,7 +17,7 @@ import { PgCustomSourceHandlerRepository } from "../customSources/customSourceHa
 import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService.js";
 import { fetchCustomSourceEndpointHtml } from "../customSources/customSourceEndpointFetch.js";
 import { validateCustomSourceHandlerOutput } from "../customSources/customSourceContractValidator.js";
-import { cleanupSandbox, effectiveCustomSourceLimits } from "../customSources/customSourceRunner.js";
+import { cleanupSourceExecutionFiles, effectiveSourceExecutionLimits } from "../sourceExecutionPolicy.js";
 import { sha256 } from "../sourceRepositoryMappers.js";
 import { runSourceRecipe } from "./recipeInterpreter.js";
 import {
@@ -110,7 +110,7 @@ export class SourceRecipeDryRunService {
       } else {
         const validation = await validateCustomSourceHandlerOutput({
           raw: JSON.parse(runResult.raw_output_json),
-          limits: effectiveCustomSourceLimits(settings.runner, envelope.limits),
+          limits: effectiveSourceExecutionLimits(settings.runner, envelope.limits),
           allowedNetworkOrigins: envelope.allowed_network_origins,
           sandboxFilesRoot: runResult.sandbox_files_root,
         });
@@ -124,7 +124,7 @@ export class SourceRecipeDryRunService {
         }
       }
     } finally {
-      await cleanupSandbox(runResult.sandbox_files_root).catch(() => undefined);
+      await cleanupSourceExecutionFiles(runResult.sandbox_files_root).catch(() => undefined);
     }
 
     const dryRun: SourceRecipeDryRunResult = {

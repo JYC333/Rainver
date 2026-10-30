@@ -1,3 +1,4 @@
+import {registerMaterialProcessingRoutes} from './materialProcessing/routes.js';
 import {registerSourceGoalRoutes} from './goals/routes.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import * as protocol from "@rainver/protocol";
@@ -307,7 +308,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   const postProcessing = () => new SourcePostProcessingService(dbPool(context.config), context.config);
   registerCustomSourceRoutes(app, context);
   registerSourceRecipeRoutes(app, context);
-  registerSourceGoalRoutes(app,context);
+  registerSourceGoalRoutes(app,context);registerMaterialProcessingRoutes(app,context);
 
   app.get("/api/v1/sources", sourcesHealth(context));
   app.get("/api/v1/sources/", sourcesHealth(context));

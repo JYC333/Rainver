@@ -6,6 +6,8 @@ import { JobDeferredError, JobHandlerRegistry } from "./handlerRegistry.js";
 import { PgJobQueueRepository } from "./repository.js";
 import { JobWorker } from "./worker.js";
 import { runJobWorkerPool } from "./workerPool.js";
+import { RunRecoveryLoop } from "./runRecoveryLoop.js";
+import { RunRecoveryService } from "../runs/recovery.js";
 import { wakeJobWorkers } from "./wakeSignal.js";
 import { registerAgentRunHandler } from "../runs/agentRunHandler.js";
 import { registerProviderTaskRunHandler } from "../runs/providerTaskRunHandler.js";
@@ -21,8 +23,6 @@ import {
   instanceUpdatePending,
   UNATTENDED_RUN_JOB_TYPES,
 } from "../deployment/drainAdmission.js";
-import { PgRunRepository } from "../runs/repository.js";
-import { RunMaterializationService } from "../runs/materializationService.js";
 import { OperationalAlertService } from "../notifications/operationalAlerts.js";
 import { registerEvaluationHarnessHandler } from "../evolution/evaluationJob.js";
 import { registerProjectResearchHandler } from "../projectResearch/index.js";
@@ -32,11 +32,6 @@ import { registerExperimentReconcileHandler } from "../experiments/reconcileJob.
 import { registerTaskBranchJobHandlers } from "../hosts/taskBranchJobs.js";
 import { registerTaskMergeHandler } from "../hosts/taskMerges.js";
 import { TaskMergeResolutionDispatcher } from "../tasks/mergeResolution.js";
-import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
-import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
-import { finalizeChatTurn, recordChatTurnFinalizationFailure } from "../runs/chatTurnFinalizer.js";
-import type { ChatTurnFinalizerDeps } from "../runs/chatTurnFinalizer.js";
-import { isHardTerminalRunStatus } from "../runs/orchestrationResults.js";
 import { registerRoomConversationTitleHandler } from "../rooms/conversationTitleJob.js";
 import { registerRoomDelegationCompletionRetryHandler } from "../agentGroups/delegationCompletionRetryJob.js";
 import { registerRoomDiscussionAdvanceRetryHandler } from "../rooms/discussionAdvanceRetryJob.js";
@@ -44,7 +39,6 @@ import { registerRoomQueuedMessageReleaseHandler } from "../rooms/queuedMessageR
 import { registerResearchAcquisitionPipelineHandler } from "../projectResearch/pipeline/researchAcquisitionPipelineJob.js";
 import { registerResearchOperationFailureNotifyHandler } from "../projectResearch/pipeline/researchOperationFailureNotifyJob.js";
 import { registerResearchOperationCancelHandler } from "../projectResearch/pipeline/researchOperationCancelJob.js";
-import { finalizedForPostRun } from "../runs/finalizationOutcome.js";
 
 const POLL_INTERVAL_MS = 1_000;
 /**
@@ -57,6 +51,8 @@ const POLL_INTERVAL_MS = 1_000;
  */
 const POST_WAKE_RECHECK_MS = 25;
 const RECLAIM_INTERVAL_MS = 120_000;
+/** A recovery pass running this long is reported (not abandoned): a hung step would otherwise be silent. */
+const RECOVERY_STALL_MS = 10 * 60_000;
 // Keep the shared worker lease conservative for every job family. Individual
 // adapters own their execution deadlines and cancellation; a Research-specific
 // latency requirement must not shorten the global orphan-reclaim boundary.
@@ -138,7 +134,6 @@ export function startJobsWorker(
   if (!config.databaseUrl) return null;
 
   const queue = PgJobQueueRepository.fromConfig(config);
-  const runs = PgRunRepository.fromConfig(config);
   const registry = buildJobHandlerRegistry(config, pluginHost);
   const claimableJobTypes = registry.registeredJobTypes();
   if (claimableJobTypes.length === 0) {
@@ -152,56 +147,29 @@ export function startJobsWorker(
   ));
 
   let stopped = false;
-  let lastReclaim = 0;
+  const lifecycle = new RunRecoveryService(config);
+  const recovery = new RunRecoveryLoop(async () => {
+    // Reclaim and lifecycle replay are independent: a reclaim error still lets the replay run.
+    try {
+      const reclaimed = await workers[0]!.reclaimStuckJobs(STUCK_AFTER_SECONDS);
+      if (reclaimed > 0) log?.warn(`[jobs-worker] reclaimed ${reclaimed} stuck job(s)`);
+    } catch (error) {
+      log?.error(`[jobs-worker] stuck job reclaim failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await lifecycle.recover(log);
+  }, RECLAIM_INTERVAL_MS, error => log?.error(`[jobs-worker] recovery failed: ${error instanceof Error ? error.message : String(error)}`), {
+    afterMs: RECOVERY_STALL_MS,
+    report: elapsedMs => log?.error(`[jobs-worker] recovery pass still running after ${Math.round(elapsedMs / 1000)}s; next pass waits for it (last completed ${recovery.lastCompletedAt?.toISOString() ?? "never"})`),
+  });
 
   const loop = (async () => {
     log?.info(`[jobs-worker] started (${workerId}) lanes=${workers.length} types=${claimableJobTypes.join(",")}`);
-    try {
-      const recovered = await runs.recoverStaleRuns(3600);
-      if (recovered > 0) log?.warn(`[jobs-worker] recovered ${recovered} stale run(s)`);
-      const orphaned = await runs.listOrphanedRunIds();
-      if (orphaned.length > 0) {
-        const materializer = RunMaterializationService.fromConfig(config);
-        for (const item of orphaned) {
-          const run = await runs.getRun(item.space_id, item.id);
-          if (!run) continue;
-          try {
-            await materializer.finalizeRun(run);
-          } catch (error) {
-            log?.warn(
-              `[jobs-worker] orphaned run ${item.id} finalization deferred: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-          }
-        }
-      }
-      await reconcileTerminalChatRuns(config, runs, log);
-      await reconcileUnfinalizedTaskRuns(config, runs, log);
-      await resumeUnsettledRuns(config, runs, log);
-    } catch (error) {
-      log?.error(
-        `[jobs-worker] stale run recovery failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
+    recovery.start();
     await runJobWorkerPool(workers, {
       stopped: () => stopped,
       pollIntervalMs: POLL_INTERVAL_MS,
       postWakeRecheckMs: POST_WAKE_RECHECK_MS,
       log,
-      beforePoll: async () => {
-        const now = Date.now();
-        if (now - lastReclaim < RECLAIM_INTERVAL_MS) return;
-        // Reserve before awaiting so only one lane sweeps this interval.
-        lastReclaim = now;
-        const reclaimed = await workers[0]!.reclaimStuckJobs(STUCK_AFTER_SECONDS);
-        if (reclaimed > 0) log?.warn(`[jobs-worker] reclaimed ${reclaimed} stuck job(s)`);
-        await reconcileTerminalChatRuns(config, runs, log);
-        await reconcileUnfinalizedTaskRuns(config, runs, log);
-        await resumeUnsettledRuns(config, runs, log);
-      },
     });
     log?.info(`[jobs-worker] stopped (${workerId})`);
   })();
@@ -215,129 +183,7 @@ export function startJobsWorker(
       // Break an idle wait instead of letting shutdown sit out its remainder.
       wakeJobWorkers();
       await loop;
+      await recovery.stop();
     },
   };
-}
-
-export async function reconcileTerminalChatRuns(
-  config: ServerConfig,
-  runs: PgRunRepository,
-  log?: JobsWorkerLogger,
-  materializer: Pick<RunMaterializationService, "finalizeRun"> =
-    RunMaterializationService.fromConfig(config),
-  finalizerDeps: ChatTurnFinalizerDeps = {},
-): Promise<void> {
-  const pending = await runs.listTerminalChatRunsAwaitingCompletion();
-  for (const item of pending) {
-    const run = await runs.getRun(item.space_id, item.id);
-    if (!run) continue;
-    try {
-      const finalization = await materializer.finalizeRun(run);
-      // Owed settlement is finished for the chat turn: the sweep settles the rest.
-      if (!finalizedForPostRun(finalization)) {
-        throw new Error(
-          finalization.error_message ?? "Run finalization reconciliation failed.",
-        );
-      }
-      const current = await runs.getRun(item.space_id, item.id);
-      if (current && isHardTerminalRunStatus(current.status)) {
-        // Safety net for a job that died between terminal status and its
-        // host-thread bookkeeping: release the thread's dispatch claim and
-        // record the vendor-session outcome before publishing completion.
-        const hostThread = hostThreadDispatchInputs(current);
-        if (hostThread.thread_id) {
-          await recordHostThreadOutcome(config, hostThread.thread_id, current, hostThread.resume_attempted, hostThread.identity, hostThread.standing);
-        }
-        try {
-          await finalizeChatTurn(config, runs, current, finalizerDeps);
-        } catch (error) {
-          // Bounded: a successful chat Run holds its conversation until it
-          // completes, so a finalization that keeps failing must not hold it
-          // for good. Past the bound the turn completes as failed.
-          const failure = await recordChatTurnFinalizationFailure(config, runs, current, error, finalizerDeps);
-          if (!failure.completed) throw error;
-          log?.warn(
-            `[jobs-worker] chat Run ${item.id} completed as failed after ${failure.attempts} finalization attempts: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
-    } catch (error) {
-      log?.warn(
-        `[jobs-worker] chat Run ${item.id} completion deferred: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  }
-  const waitingForReview = await runs.listWaitingRoomChatRunsAwaitingReply();
-  for (const item of waitingForReview) {
-    const run = await runs.getRun(item.space_id, item.id);
-    if (!run || run.status !== "waiting_for_review") continue;
-    try {
-      await finalizeChatTurn(config, runs, run, finalizerDeps);
-    } catch (error) {
-      log?.warn(
-        `[jobs-worker] waiting Room Run ${item.id} reply deferred: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  }
-}
-
-/**
- * A Task's terminal Run that nobody finalized — its job was cancelled or gave
- * up, recovery cancelled it, a module ended it by hand — is finalized here,
- * so its Task is settled (`projectWork/finalizationReconciler.ts`) whatever
- * path ended the Run. The paths that can, finalize at once and this finds
- * nothing.
- */
-export async function reconcileUnfinalizedTaskRuns(
-  config: ServerConfig,
-  runs: PgRunRepository,
-  log?: JobsWorkerLogger,
-  materializer: Pick<RunMaterializationService, "finalizeRun"> =
-    RunMaterializationService.fromConfig(config),
-): Promise<void> {
-  for (const item of await runs.listTaskRunsAwaitingFinalization()) {
-    const run = await runs.getRun(item.space_id, item.id);
-    if (!run) continue;
-    try {
-      const finalization = await materializer.finalizeRun(run);
-      if (finalization.status !== "succeeded") {
-        throw new Error(finalization.error_message ?? "Run finalization failed.");
-      }
-    } catch (error) {
-      log?.warn(
-        `[jobs-worker] Task Run ${item.id} finalization deferred: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  }
-}
-
-/**
- * A finalized Run whose settlement is still owed — a reconciler failed, or the
- * process died between the finalization record and the completion gate — is
- * settled here. Finalizing again resumes from the reconcilers not yet
- * completed; the Agent, its model calls and its output are never redone.
- */
-export async function resumeUnsettledRuns(
-  config: ServerConfig,
-  runs: PgRunRepository,
-  log?: JobsWorkerLogger,
-  materializer: Pick<RunMaterializationService, "finalizeRun"> =
-    RunMaterializationService.fromConfig(config),
-): Promise<void> {
-  for (const item of await runs.listUnsettledFinalizations()) {
-    const run = await runs.getRun(item.space_id, item.run_id);
-    if (!run) continue;
-    const settled = await materializer.finalizeRun(run);
-    if (settled.status !== "succeeded") {
-      log?.warn(`[jobs-worker] Run ${item.run_id} settlement still owed: ${settled.error_code ?? "unknown"}`);
-    }
-  }
 }

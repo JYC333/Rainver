@@ -209,7 +209,12 @@ configuration only supplies selection settings. Existing snapshots never change.
 
 `ReadingService` / `ReadingRepository` own the read-only, Space-local reading
 projection. `GET /api/v1/spaces/:spaceId/reading` accepts `view=pending|read|all`,
-`limit` (1–100, default 30), optional `q` and an opaque `cursor`. The same path
+`limit` (1–100, default 30), optional `q`, `sort=newest|oldest` (default
+newest; part of the cursor, so a cursor of the other order is refused with 422;
+cursors issued before sorting read as newest) and an opaque `cursor`. Each item
+carries the viewer's own `reading_progress` ({current, furthest} or null) from
+their private Reader position (see [Reader](../architecture/READER.md)); it is
+never read state. The same path
 under `/projects/:projectId/reading` scopes it to a readable Project without
 requiring the personal opt-in. Neither GET generates, fetches, ranks, writes a
 snapshot or runs a model. `pending` is the default: unread/skimmed recommendations

@@ -1,14 +1,21 @@
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 
 /**
  * Why a Thread is being reached. `read` counts Space oversight, which is
- * audit (`architecture/SECURITY_AND_ACCESS_BOUNDARIES.md`). `change` is the
+ * audit (`architecture/SECURITY_AND_ACCESS_BOUNDARIES.md`). `read_content`
+ * additionally requires full access for state, history and derived reasoning.
+ * `change` is the
  * person's own reach, since oversight never changes a record. `publish` feeds
  * something the whole Project sees, such as a Delta Brief, so it is the
  * person's own reach over Threads shared with the Space.
  */
-export type ThreadAccessPurpose = "read" | "change" | "publish";
+export type ThreadAccessPurpose = "read" | "read_content" | "change" | "publish";
+
+export function threadAccessLevelSql(rootAlias: string, userExpr: string): string {
+  return contentAccessLevelSql({ definition: contentResourceDefinition("space_object")!, alias: rootAlias, userExpr });
+}
 
 /**
  * Who can reach a Thread: its ontology root's content predicate. Project
@@ -16,7 +23,8 @@ export type ThreadAccessPurpose = "read" | "change" | "publish";
  * owner's — so no Thread path may rest on the Project gate alone.
  */
 export function threadReadableSql(rootAlias: string, userExpr: string, purpose: ThreadAccessPurpose): string {
-  const reach = contentReadSql("space_object", rootAlias, userExpr, { includeOversight: purpose === "read" });
+  const reach = contentReadSql("space_object", rootAlias, userExpr, { includeOversight: purpose === "read" || purpose === "read_content" });
+  if (purpose === "read_content") return `(${reach} AND ${threadAccessLevelSql(rootAlias, userExpr)} = 'full')`;
   return purpose === "publish" ? `(${reach} AND ${rootAlias}.visibility = 'space_shared')` : reach;
 }
 

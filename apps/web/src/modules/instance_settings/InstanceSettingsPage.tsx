@@ -2,7 +2,7 @@ import { ServerCog, ShieldAlert } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { Card, CardTitle } from '../../components/ui/card'
 import AcpRegistryPanel from './AcpRegistryPanel'
-import { CustomSourceRunnerSettingsPanel } from './CustomSourceRunnerSettingsPanel'
+import { SourceExecutionSettingsPanel } from './SourceExecutionSettingsPanel'
 import { SourceCatalogPanel } from './SourceCatalogPanel'
 import { OperationsSettingsPanel } from './OperationsSettingsPanel'
 import { UpdatePanel } from './UpdatePanel'
@@ -44,7 +44,7 @@ export default function InstanceSettingsPage() {
           <UpdatePanel />
           <OperationsSettingsPanel />
           <SourceCatalogPanel />
-          <CustomSourceRunnerSettingsPanel />
+          <SourceExecutionSettingsPanel />
           <AcpRegistryPanel />
           <UsersSecurityPanel />
         </>

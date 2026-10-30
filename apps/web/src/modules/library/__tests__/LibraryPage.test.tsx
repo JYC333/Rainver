@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import LibraryModule from '../LibraryModule'
 import { informationDigestsApi, projectsApi, sourcesApi } from '../../../api/client'
-import type { ExtractionJob, InformationDigest, InterestProfileSnapshot, SourceChannel, SourceItem } from '../../../types/api'
+import type { InformationDigest, InterestProfileSnapshot, SourceChannel, SourceItem } from '../../../types/api'
 
 // First-content guidance is covered by ReadingStart integration tests.
 vi.mock('../ReadingStart', () => ({ ReadingStart: () => <p>No pending recommendations</p> }))
@@ -18,11 +18,12 @@ vi.mock('../../../contexts/SpaceContext', () => ({
 }))
 
 vi.mock('../../../core/spaceNav', async () => {
-  const { Link }=await import('react-router-dom')
-  return {SpaceLink: ({to,children,...props}:{to:string;children:ReactNode})=><Link to={to} {...props}>{children}</Link>}
+  const { Link, useNavigate }=await import('react-router-dom')
+  return {useSpaceNavigate: useNavigate, SpaceLink: ({to,children,...props}:{to:string;children:ReactNode})=><Link to={to} {...props}>{children}</Link>}
 })
 
 vi.mock('../../../api/client', () => ({
+  sourceGoalsApi: { list: vi.fn().mockResolvedValue({goals:[]}) },
   projectsApi: {
     list: vi.fn(),
     addCorpusItem: vi.fn(),
@@ -148,30 +149,6 @@ function sourceItem(overrides: Partial<SourceItem> = {}): SourceItem {
   }
 }
 
-function extractionJob(overrides: Partial<ExtractionJob> = {}): ExtractionJob {
-  return {
-    id: 'extract-job-1',
-    space_id: 'space-1',
-    connection_id: 'conn-1',
-    source_item_id: 'item-1',
-    source_snapshot_id: null,
-    source_object_type: null,
-    source_object_id: null,
-    job_type: 'extract_text',
-    status: 'pending',
-    started_at: null,
-    completed_at: null,
-    items_seen: null,
-    items_created: null,
-    items_updated: null,
-    error_code: null,
-    error_message: null,
-    metadata_json: null,
-    created_at: '2026-07-07T00:00:00.000Z',
-    ...overrides,
-  }
-}
-
 function renderLibrary(path = '/library/items') {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -197,6 +174,10 @@ describe('LibraryPage', () => {
     vi.mocked(informationDigestsApi.profile).mockResolvedValue(interestProfile())
     vi.mocked(informationDigestsApi.annotationEpisodes).mockResolvedValue({ episodes: [] })
     vi.mocked(projectsApi.list).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
+  })
+
+  it('labels Agent-provided material in the compatible item cards',async()=>{
+    vi.mocked(sourcesApi.items).mockResolvedValue(page([sourceItem({metadata_json:{result_provenance:'agent_provided_unverified'}})],1));renderLibrary();await screen.findByText('Agent-provided · Not independently verified');
   })
 
   it('shows a missing day without generating it, and backfills only when asked', async () => {
@@ -444,53 +425,12 @@ describe('LibraryPage', () => {
     await waitFor(() => expect(informationDigestsApi.acceptCandidate).toHaveBeenCalledWith('space-1', 'model-evaluation', {}))
   })
 
-  it('runs text extraction from the source item reading stream', async () => {
-    vi.mocked(sourcesApi.itemAction).mockResolvedValue(sourceItem({
-      content_state: 'content_queued',
-      retention_policy: 'full_text',
-    }))
-    vi.mocked(sourcesApi.jobs).mockResolvedValue(page([extractionJob()], 1))
-    vi.mocked(sourcesApi.runJob).mockResolvedValue(extractionJob({ status: 'succeeded' }))
-
-    renderLibrary('/library/items')
-
-    fireEvent.click(await screen.findByRole('button', { name: /extract text gaussian splatting paper/i }))
-
-    await waitFor(() => {
-      expect(sourcesApi.itemAction).toHaveBeenCalledWith('item-1', 'queue_content')
-      expect(sourcesApi.jobs).toHaveBeenCalledWith({
-        source_item_id: 'item-1',
-        job_type: 'extract_text',
-        status: 'pending',
-        limit: 1,
-      })
-      expect(sourcesApi.runJob).toHaveBeenCalledWith('extract-job-1')
-      expect(screen.getByText('succeeded')).toBeInTheDocument()
-    })
-  })
-
-  it('allows content-saved items to be re-extracted from Library', async () => {
-    vi.mocked(sourcesApi.items).mockResolvedValue(page([sourceItem({
-      content_state: 'content_saved',
-      retention_policy: 'full_text',
-      extracted_artifact_id: 'artifact-1',
-    })], 30))
-    vi.mocked(sourcesApi.itemAction).mockResolvedValue(sourceItem({
-      content_state: 'content_queued',
-      retention_policy: 'full_text',
-    }))
-    vi.mocked(sourcesApi.jobs).mockResolvedValue(page([extractionJob()], 1))
-    vi.mocked(sourcesApi.runJob).mockResolvedValue(extractionJob({ status: 'succeeded' }))
-
-    renderLibrary('/library/items')
-
-    fireEvent.click(await screen.findByRole('button', { name: /re-extract gaussian splatting paper/i }))
-
-    await waitFor(() => {
-      expect(sourcesApi.itemAction).toHaveBeenCalledWith('item-1', 'queue_content')
-      expect(sourcesApi.runJob).toHaveBeenCalledWith('extract-job-1')
-    })
-  })
+  it('opens the shared Reader for processing rather than running extraction from a card',async()=>{
+    renderLibrary('/library/items');const links=await screen.findAllByRole('link',{name:'Read'});expect(links[0]).toHaveAttribute('href','/library/items/item-1');expect(screen.queryByRole('button',{name:/extract text/i})).not.toBeInTheDocument();expect(sourcesApi.itemAction).not.toHaveBeenCalled();expect(sourcesApi.runJob).not.toHaveBeenCalled();
+  });
+  it('keeps already readable items on the same Reader path',async()=>{
+    vi.mocked(sourcesApi.items).mockResolvedValue(page([sourceItem({content_state:'content_saved',retention_policy:'full_text',extracted_artifact_id:'artifact-1'})],30));renderLibrary('/library/items');expect((await screen.findAllByRole('link',{name:'Read'}))[0]).toHaveAttribute('href','/library/items/item-1');expect(screen.queryByRole('button',{name:/re-extract/i})).not.toBeInTheDocument();
+  });
 
   it('shows an empty state when no library items exist yet', async () => {
     vi.mocked(sourcesApi.items).mockResolvedValue({ items: [], total: 0, limit: 30, offset: 0 })

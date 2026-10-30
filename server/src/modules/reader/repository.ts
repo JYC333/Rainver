@@ -1,3 +1,4 @@
+import {SourceMaterialContentUnavailableReasonSchema,type SourceMaterialContentUnavailableReason,SourceMaterialReadingInfoSchema,type SourceMaterialReadingInfo} from '@rainver/protocol';
 import { readingVersionCurrentSql } from '../sources/readingIdentity.js';
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
@@ -9,8 +10,8 @@ import { normalizeSourceConnectionReadGovernance, enforceSourceDerivedImportTarg
 import type { SourceItemRow } from "../sources/sourceRepositoryRows.js";
 import { ITEM_COLUMNS } from "../sources/sourceRepositoryRows.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
-import { sourceConnectionDeliveredToReaderClause, sourceConnectionLiveSubscriberClause, sourceConnectionReaderConsentClause } from "../sources/sourceItemAccess.js";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { sourceConnectionDeliveredToReaderClause, sourceConnectionLiveSubscriberClause, sourceConnectionReaderConsentClause, sourceDerivedArtifactReadableClause } from "../sources/sourceItemAccess.js";
+import { contentAccessLevelSql, contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
@@ -53,8 +54,30 @@ function plainTextToPmDoc(text: string | null | undefined): ReaderPmDoc {
   };
 }
 
+/** JSON with object keys sorted, so equal trees hash equally however they were built. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
 function sha256Hex(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+function sourceAgentUnavailableReason(item:SourceItemRow):SourceMaterialContentUnavailableReason|null{
+ const m=item.metadata_json as Record<string,unknown>|null;
+ if(m?.result_provenance!=='agent_provided_unverified')return null;
+ const reason=SourceMaterialContentUnavailableReasonSchema.safeParse(m.reading_unavailable_reason);
+ return reason.success?reason.data:item.retention_policy==='metadata_only'?'policy_restricted':'not_read';
+}
+function sourceReadingInfo(item:SourceItemRow):SourceMaterialReadingInfo|null{
+ const m=item.metadata_json as Record<string,unknown>|null;
+ if(!m)return null;
+ const info=SourceMaterialReadingInfoSchema.safeParse({kind:m.reading_content_kind,format:m.reading_content_format,...(m.reading_content_syntax==='plain'||m.reading_content_syntax==='markdown'?{syntax:m.reading_content_syntax}:{}),sources:m.reading_sources,method:m.reading_method});
+ return info.success?info.data:null;
 }
 
 // ── Safe artifact text reader ─────────────────────────────────────────────────
@@ -69,6 +92,7 @@ interface ArtifactTextRow {
   mime_type: string | null;
   visibility: string;
   owner_user_id: string | null;
+  metadata_json: Record<string, unknown> | null;
 }
 
 async function loadVisibleArtifactForReader(
@@ -78,10 +102,13 @@ async function loadVisibleArtifactForReader(
   artifactId: string,
 ): Promise<ArtifactTextRow | null> {
   const result = await db.query<ArtifactTextRow>(
-    `SELECT a.id, a.space_id, a.artifact_type, a.title, a.content, a.storage_path, a.mime_type, a.visibility, a.owner_user_id
+    `SELECT a.id, a.space_id, a.artifact_type, a.title, a.content, a.storage_path, a.mime_type, a.visibility, a.owner_user_id, a.metadata_json
        FROM artifacts a
       WHERE a.id = $1 AND a.space_id = $2
-        AND ${contentReadSql("artifact", "a", "$3")}`,
+        AND ${contentReadSql("artifact", "a", "$3")}
+        AND ${contentAccessLevelSql({ definition: contentResourceDefinition("artifact")!, alias: "a", userExpr: "$3" })} = 'full'
+        AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}
+        AND ${sourceDerivedArtifactReadableClause("a", "$3", true)}`,
     [artifactId, spaceId, userId],
   );
   return result.rows[0] ?? null;
@@ -101,6 +128,17 @@ interface ArtifactReaderContent {
   text: string;
   title: string;
   contentJson?: ReaderPmDoc;
+  imagePolicy?: "remote_reference" | "none";
+  /**
+   * For Agent-provided text (`agent_provided_v1`): the syntax the Agent declared
+   * for this version, from the version's own artifact metadata — `undeclared`
+   * (older submissions) or `plain` mean the text was kept literally, so `text`
+   * is exactly what the Agent submitted. Never derived from the text itself.
+   * Absent for any other version.
+   */
+  agentTextSyntax?: "undeclared" | "plain" | "markdown";
+  /** The version's own metadata (kind, format and sources of Agent text are recorded here). */
+  metadata: Record<string, unknown>;
 }
 
 async function readArtifactForReader(
@@ -128,6 +166,11 @@ async function readArtifactForReader(
       text: structured.plain_text,
       title: structured.title ?? row.title,
       contentJson: structured.content_json,
+      imagePolicy: structured.image_policy,
+      ...(structured.extraction_method === "agent_provided_v1"
+        ? { agentTextSyntax: row.metadata_json?.reading_content_syntax === "markdown" ? "markdown" as const : row.metadata_json?.reading_content_syntax === "plain" ? "plain" as const : "undeclared" as const }
+        : {}),
+      metadata: row.metadata_json ?? {},
     };
   }
   return null;
@@ -166,6 +209,15 @@ interface SourceSnapshotRow {
 // ── Reader document output ────────────────────────────────────────────────────
 
 interface ReaderDocumentOut {
+  result_provenance?:'agent_provided_unverified'|null;
+  reading_info?:SourceMaterialReadingInfo|null;
+  content_unavailable_reason?:SourceMaterialContentUnavailableReason|null;
+  /**
+   * For a source item showing Agent-provided text: the syntax the Agent declared
+   * for the version shown (`undeclared`, `plain` or `markdown`). Undeclared and
+   * plain text is shown literally; a writer may ask for that version as Markdown.
+   */
+  agent_text_syntax?: "undeclared" | "plain" | "markdown";
   document_type: string;
   document_id: string;
   space_id: string;
@@ -177,6 +229,12 @@ interface ReaderDocumentOut {
    *  computed from this field, not from plain_text. */
   normalized_text: string;
   content_hash: string;
+  /** Version of the document's structure: a hash of its canonical content tree.
+   *  `content_hash` alone cannot show that block positions moved (a re-parse can
+   *  keep the text and change the tree); anchors record both. */
+  structure_hash: string;
+  /** Whether the document's own images may load inline; null where the document type has no stored policy. */
+  image_policy: "remote_reference" | "none" | null;
   content_format: "tiptap_json";
   content_schema_version: 1;
   content_json: ReaderPmDoc;
@@ -345,10 +403,11 @@ export class PgReaderRepository {
     identity: SpaceUserIdentity,
     documentType: string,
     documentId: string,
-    options: { origin?: ReadOrigin } = {},
+    /** `recordOpen: false` reads the document without marking it opened (version checks). */
+    options: { origin?: ReadOrigin; recordOpen?: boolean } = {},
   ): Promise<ReaderDocumentOut | null> {
     if (documentType === "source_item") {
-      return this.resolveSourceItem(identity, documentId, options.origin ?? "library");
+      return this.resolveSourceItem(identity, documentId, options.origin ?? "library", options.recordOpen ?? true);
     }
     if (documentType === "source_snapshot") {
       return this.resolveSourceSnapshot(identity, documentId);
@@ -364,10 +423,55 @@ export class PgReaderRepository {
 
   // ── source_item resolver ────────────────────────────────────────────────────
 
+  /**
+   * The extracted version the Reader shows for a source item: its current
+   * extracted artifact, else its latest readable extracted snapshot (by
+   * captured_at). Artifact and snapshot visibility are checked for the caller.
+   * The Reader payload and actions on "the version shown" both use this, so
+   * they name the same version.
+   */
+  private async visibleExtractedVersion(identity: SpaceUserIdentity, item: SourceItemRow): Promise<{ artifactId: string; snapshotId: string | null; content: ArtifactReaderContent } | null> {
+    if (item.extracted_artifact_id) {
+      const content = await readArtifactForReader(this.db, this.config, identity.spaceId, identity.userId, item.extracted_artifact_id);
+      if (content) return { artifactId: item.extracted_artifact_id, snapshotId: null, content };
+    }
+    const snapResult = await this.db.query<SourceSnapshotRow>(
+      `SELECT id, space_id, project_id, source_item_id, snapshot_type, artifact_id, content_hash, source_uri
+         FROM source_snapshots
+        WHERE space_id = $1 AND source_item_id = $2 AND snapshot_type = 'extracted' AND artifact_id IS NOT NULL
+          AND ${contentReadSql("source_snapshot", "source_snapshots", "$3")}
+        ORDER BY captured_at DESC LIMIT 1`,
+      [identity.spaceId, item.id, identity.userId],
+    );
+    const snap = snapResult.rows[0];
+    if (snap?.artifact_id) {
+      const content = await readArtifactForReader(this.db, this.config, identity.spaceId, identity.userId, snap.artifact_id);
+      if (content) return { artifactId: snap.artifact_id, snapshotId: snap.id, content };
+    }
+    return null;
+  }
+
+  /**
+   * The version a source item's Reader shows, behind the same gates as reading
+   * it (full content decision, Source read consent), without recording an open.
+   * Null when no extracted version is shown (excerpt or nothing).
+   */
+  async shownSourceItemVersion(identity: SpaceUserIdentity, itemId: string): Promise<{ artifactId: string; snapshotId: string | null; content: ArtifactReaderContent } | null> {
+    if ((await contentDecisionFromDb(this.db, identity, "source_item", itemId)) !== "full") return null;
+    const item = (await this.db.query<SourceItemRow>(
+      `SELECT ${ITEM_COLUMNS} FROM source_items WHERE space_id = $1 AND id = $2 AND deleted_at IS NULL`,
+      [identity.spaceId, itemId],
+    )).rows[0];
+    if (!item) return null;
+    await enforceSourceItemReadConsent({ db: this.db, identity, item });
+    return this.visibleExtractedVersion(identity, item);
+  }
+
   private async resolveSourceItem(
     identity: SpaceUserIdentity,
     itemId: string,
     origin: ReadOrigin,
+    recordOpen = true,
   ): Promise<ReaderDocumentOut | null> {
     if ((await contentDecisionFromDb(this.db, identity, "source_item", itemId)) !== "full") return null;
     const result = await this.db.query<SourceItemRow>(
@@ -378,63 +482,31 @@ export class PgReaderRepository {
     if (!item) return null;
 
     await enforceSourceItemReadConsent({ db: this.db, identity, item });
-    await markSourceItemOpened(this.db, identity, itemId, origin);
+    if (recordOpen) await markSourceItemOpened(this.db, identity, itemId, origin);
 
-    // Priority 1: extracted_artifact_id
-    if (item.extracted_artifact_id) {
-      const text = await readArtifactForReader(this.db, this.config, identity.spaceId, identity.userId, item.extracted_artifact_id);
-      if (text) {
-        return this.buildDocOut({
-          documentType: "source_item",
-          documentId: itemId,
-          spaceId: identity.spaceId,
-          projectId: item.project_id,
-          title: item.title,
-          plainText: text.text,
-          contentJson: text.contentJson,
-          sourceItemId: itemId,
-          artifactId: item.extracted_artifact_id,
-          sourceSnapshotId: null,
-          rawArtifactId: item.raw_artifact_id,
-          extractedArtifactId: item.extracted_artifact_id,
-          sourceUri: item.source_uri,
-          contentState: item.content_state,
-          retentionPolicy: item.retention_policy,
-        });
-      }
-    }
-
-    // Priority 2: latest extracted snapshot (by captured_at, not id)
-    const snapResult = await this.db.query<SourceSnapshotRow>(
-      `SELECT id, space_id, project_id, source_item_id, snapshot_type, artifact_id, content_hash, source_uri
-         FROM source_snapshots
-        WHERE space_id = $1 AND source_item_id = $2 AND snapshot_type = 'extracted' AND artifact_id IS NOT NULL
-          AND ${contentReadSql("source_snapshot", "source_snapshots", "$3")}
-        ORDER BY captured_at DESC LIMIT 1`,
-      [identity.spaceId, itemId, identity.userId],
-    );
-    const snap = snapResult.rows[0];
-    if (snap?.artifact_id) {
-      const text = await readArtifactForReader(this.db, this.config, identity.spaceId, identity.userId, snap.artifact_id);
-      if (text) {
-        return this.buildDocOut({
-          documentType: "source_item",
-          documentId: itemId,
-          spaceId: identity.spaceId,
-          projectId: item.project_id,
-          title: item.title,
-          plainText: text.text,
-          contentJson: text.contentJson,
-          sourceItemId: itemId,
-          artifactId: snap.artifact_id,
-          sourceSnapshotId: snap.id,
-          rawArtifactId: item.raw_artifact_id,
-          extractedArtifactId: item.extracted_artifact_id,
-          sourceUri: item.source_uri,
-          contentState: item.content_state,
-          retentionPolicy: item.retention_policy,
-        });
-      }
+    const version = await this.visibleExtractedVersion(identity, item);
+    if (version) {
+      return this.buildDocOut({
+        documentType: "source_item",
+        documentId: itemId,
+        spaceId: identity.spaceId,
+        projectId: item.project_id,
+        title: item.title,
+        plainText: version.content.text,
+        contentJson: version.content.contentJson,
+        imagePolicy: version.content.imagePolicy,
+        sourceItemId: itemId,
+        artifactId: version.artifactId,
+        sourceSnapshotId: version.snapshotId,
+        rawArtifactId: item.raw_artifact_id,
+        extractedArtifactId: item.extracted_artifact_id,
+        sourceUri: item.source_uri,
+        contentState: item.content_state,
+        retentionPolicy: item.retention_policy,
+        agentReading:sourceReadingInfo(item),contentUnavailableReason:sourceAgentUnavailableReason(item),
+        resultProvenance: (item.metadata_json as Record<string,unknown>|null)?.result_provenance==='agent_provided_unverified'?'agent_provided_unverified':null,
+        agentTextSyntax: version.content.agentTextSyntax,
+      });
     }
 
     // Priority 3: excerpt fallback
@@ -454,9 +526,12 @@ export class PgReaderRepository {
         sourceUri: item.source_uri,
         contentState: item.content_state,
         retentionPolicy: item.retention_policy,
+          agentReading:sourceReadingInfo(item),contentUnavailableReason:sourceAgentUnavailableReason(item),
+          resultProvenance: (item.metadata_json as Record<string,unknown>|null)?.result_provenance==='agent_provided_unverified'?'agent_provided_unverified':null,
       });
     }
 
+    if(item.source_uri&&item.content_state==='metadata_only')return this.buildDocOut({documentType:'source_item',documentId:itemId,spaceId:identity.spaceId,projectId:item.project_id,title:item.title,plainText:'',sourceItemId:itemId,artifactId:null,sourceSnapshotId:null,rawArtifactId:null,extractedArtifactId:null,sourceUri:item.source_uri,contentState:item.content_state,retentionPolicy:item.retention_policy,agentReading:sourceReadingInfo(item),contentUnavailableReason:sourceAgentUnavailableReason(item),resultProvenance:(item.metadata_json as Record<string,unknown>|null)?.result_provenance==='agent_provided_unverified'?'agent_provided_unverified':null});
     return null;
   }
 
@@ -507,6 +582,7 @@ export class PgReaderRepository {
       title: text.title,
       plainText: text.text,
       contentJson: text.contentJson,
+      imagePolicy: text.imagePolicy,
       sourceItemId: snap.source_item_id,
       artifactId: snap.artifact_id,
       sourceSnapshotId: snapshotId,
@@ -545,6 +621,8 @@ export class PgReaderRepository {
       plain_text: report.normalized_text,
       normalized_text: report.normalized_text,
       content_hash: report.content_hash,
+      structure_hash: sha256Hex(canonicalJson(report.reader_document_json)),
+      image_policy: null,
       content_format: "tiptap_json",
       content_schema_version: 1,
       content_json: report.reader_document_json,
@@ -577,6 +655,7 @@ export class PgReaderRepository {
     if (!note?.project_id || !(await canAccessProject(this.db, identity.spaceId, note.project_id, identity.userId))) return null;
     return { document_type: "research_notebook", document_id: noteId, space_id: identity.spaceId, project_id: note.project_id, title: `Research notebook · ${note.title}`,
       plain_text: note.plain_text ?? "", normalized_text: note.plain_text ?? "", content_hash: note.content_hash ?? "",
+      structure_hash: sha256Hex(canonicalJson(note.content_json)), image_policy: null,
       content_format: "tiptap_json", content_schema_version: 1, content_json: note.content_json, source_item_id: null,
       artifact_id: null, source_snapshot_id: null, raw_artifact_id: null, extracted_artifact_id: null, source_uri: null,
       content_state: null, retention_policy: null, can_annotate: true };
@@ -592,6 +671,7 @@ export class PgReaderRepository {
     title: string;
     plainText: string;
     contentJson?: ReaderPmDoc;
+    imagePolicy?: "remote_reference" | "none";
     sourceItemId: string | null;
     artifactId: string | null;
     sourceSnapshotId: string | null;
@@ -599,11 +679,16 @@ export class PgReaderRepository {
     extractedArtifactId: string | null;
     sourceUri: string | null;
     contentState: string | null;
+    resultProvenance?:'agent_provided_unverified'|null;
+    agentReading?:SourceMaterialReadingInfo|null;
+    agentTextSyntax?: "undeclared" | "plain" | "markdown";
+    contentUnavailableReason?:SourceMaterialContentUnavailableReason|null;
     retentionPolicy: string | null;
   }): ReaderDocumentOut {
     const normalizedText = normalizeReaderText(args.plainText);
     const contentJson = args.contentJson ?? plainTextToPmDoc(args.plainText);
     const contentHash = sha256Hex(normalizedText);
+    const structureHash = sha256Hex(canonicalJson(contentJson));
     return {
       document_type: args.documentType,
       document_id: args.documentId,
@@ -613,6 +698,8 @@ export class PgReaderRepository {
       plain_text: args.plainText,
       normalized_text: normalizedText,
       content_hash: contentHash,
+      structure_hash: structureHash,
+      image_policy: args.imagePolicy ?? null,
       content_format: "tiptap_json",
       content_schema_version: 1,
       content_json: contentJson,
@@ -624,6 +711,10 @@ export class PgReaderRepository {
       source_uri: args.sourceUri,
       content_state: args.contentState,
       retention_policy: args.retentionPolicy,
+      result_provenance: args.resultProvenance??null,
+      reading_info:args.agentReading??null,
+      ...(args.agentTextSyntax ? { agent_text_syntax: args.agentTextSyntax } : {}),
+      content_unavailable_reason:args.plainText?null:args.contentUnavailableReason??null,
       can_annotate: true,
     };
   }
@@ -778,7 +869,7 @@ function annotationVisibility(
   return requested;
 }
 
-async function assertDocumentReadable(
+export async function assertDocumentReadable(
   db: Queryable,
   identity: SpaceUserIdentity,
   documentType: string,
@@ -1093,6 +1184,12 @@ export class PgAnnotationRepository {
     const status = optionalString(body.status);
     if (status !== null && status !== undefined) {
       if (status !== "active" && status !== "archived") throw new HttpError(422, "Invalid status");
+      // Restoring (the Reader's Undo of a removal) brings the quote back into the
+      // document, so it needs the document to be readable now, like creating it.
+      if (status === "active" && row.status !== "active") {
+        const target = annotationDocumentTarget(row);
+        if (target) await assertDocumentReadable(this.db, identity, target.documentType, target.documentId);
+      }
       params.push(status); sets.push(`status = $${params.length}`);
     }
 

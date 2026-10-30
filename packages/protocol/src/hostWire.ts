@@ -1083,6 +1083,12 @@ export const HostRunDiffUploadSchema = z.object({
   truncated: z.boolean().optional(),
   git_before: HostRunGitAfterSchema.optional(),
   git_after: HostRunGitAfterSchema.optional(),
+  /**
+   * The git tree id of the whole working directory (tracked, staged and
+   * untracked, ignored files excluded) when the Run started — the version a
+   * read-only review read. Absent outside a git checkout.
+   */
+  workspace_tree_before: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
 });
 export type HostRunDiffUpload = z.infer<typeof HostRunDiffUploadSchema>;
 

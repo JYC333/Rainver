@@ -15,7 +15,8 @@ import {
   validateCustomSourceHandlerOutput,
   type CustomSourceContractValidationResult,
 } from "./customSourceContractValidator.js";
-import { effectiveCustomSourceLimits, type CustomSourceRunnerSettings } from "./customSourceRunner.js";
+import { effectiveSourceExecutionLimits, type SourceExecutionSettings } from "../sourceExecutionPolicy.js";
+import {agentReadingDocument,agentReadingMetadata,saveSourceReadingDocument} from "../materialProcessing/documents.js";
 import { upsertCanonicalEvidence } from "../evidenceIdentity.js";
 
 /**
@@ -39,7 +40,7 @@ interface CustomSourceHandlerRunContext {
   sourceConnectionId: string;
   handlerVersionId: string;
   /** Server-owned operational provenance, independent of content retention. */
-  goal?: {id:string;bindingId:string;bindingRevision:number;implementationSha256:string|null};
+  goal?: {id:string;bindingId:string;bindingRevision:number;implementationSha256:string|null;resultProvenance?:'agent_provided_unverified'};
 }
 
 interface CustomSourceMaterializationResult {
@@ -49,6 +50,8 @@ interface CustomSourceMaterializationResult {
   snapshotsCreated: number;
   evidenceCreated: number;
   errors: string[];
+  /** Actual source_items rows written or matched, in output order. */
+  itemIds: string[];
 }
 
 type SourceMaterializationKind = "custom_source_handler" | "source_recipe" | "source_goal";
@@ -69,7 +72,7 @@ export class CustomSourceMaterializationService {
   constructor(
     private readonly db: Queryable,
     private readonly config: ServerConfig,
-    private readonly settings: CustomSourceRunnerSettings,
+    private readonly settings: SourceExecutionSettings,
   ) {}
 
   async materialize(input: {
@@ -84,13 +87,16 @@ export class CustomSourceMaterializationService {
     recordHandlerRun?: boolean;
     /** Which source implementation produced the validated output. Omitted means the Level 3 Custom Source handler path. */
     sourceKind?: SourceMaterializationKind;
+    /** Server-derived metadata-only link origins; no network/file authority. */
+    metadataOnlyOrigins?: string[];
   }): Promise<CustomSourceMaterializationResult> {
     const recordHandlerRun = input.recordHandlerRun ?? true;
     const descriptor = sourceMaterializationDescriptor(input.sourceKind ?? "custom_source_handler");
     const validation = await validateCustomSourceHandlerOutput({
       raw: input.rawOutputJson,
-      limits: effectiveCustomSourceLimits(this.settings, input.policyEnvelope.limits),
+      limits: effectiveSourceExecutionLimits(this.settings, input.policyEnvelope.limits),
       allowedNetworkOrigins: input.policyEnvelope.allowed_network_origins,
+      metadataOnlyOrigins: input.metadataOnlyOrigins,
       sandboxFilesRoot: input.sandboxFilesRoot,
     });
 
@@ -109,6 +115,7 @@ export class CustomSourceMaterializationService {
         snapshotsCreated: 0,
         evidenceCreated: 0,
         errors: validation.errors,
+        itemIds: [],
       };
     }
 
@@ -151,8 +158,10 @@ export class CustomSourceMaterializationService {
     snapshotsCreated: number;
     evidenceCreated: number;
     errors: string[];
+    itemIds: string[];
   }> {
     const errors: string[] = [];
+    const itemIds: string[] = [];
     let itemsCreated = 0;
     let itemsUpdated = 0;
     let snapshotsCreated = 0;
@@ -161,6 +170,10 @@ export class CustomSourceMaterializationService {
     for (const [index, item] of validation.output.items.entries()) {
       try {
         const { itemId, created } = await this.upsertItem(run, item, retentionPolicy, descriptor);
+        itemIds.push(itemId);
+        if(item.reading_content){
+          await saveSourceReadingDocument(this.db,{spaceId:run.spaceId,itemId,document:agentReadingDocument(item.reading_content,item.source_uri),agentProvided:true,summary:item.excerpt,metadata:agentReadingMetadata(item.reading_content)});
+        }
         if (created) itemsCreated++;
         else itemsUpdated++;
         await projectSourceRoutingHook().routeMaterializedItem(this.db, {
@@ -190,7 +203,7 @@ export class CustomSourceMaterializationService {
       }
     }
 
-    return { itemsCreated, itemsUpdated, snapshotsCreated, evidenceCreated, errors };
+    return { itemsCreated, itemsUpdated, snapshotsCreated, evidenceCreated, errors, itemIds };
   }
 
   private async upsertItem(
@@ -226,6 +239,7 @@ export class CustomSourceMaterializationService {
       [descriptor.implementationVersionMetadataKey]: run.handlerVersionId,
       [descriptor.runMetadataKey]: run.runId,
       ...(item.metadata ?? {}),
+      ...(run.goal?.resultProvenance?{result_provenance:run.goal.resultProvenance}:{}),
       ...(run.goal?{goal_id:run.goal.id,goal_binding_id:run.goal.bindingId,goal_binding_revision:run.goal.bindingRevision,goal_implementation_sha256:run.goal.implementationSha256,goal_version_id:run.handlerVersionId,goal_run_id:run.runId,capture_method:descriptor.captureMethod}:{}),
     });
     // Column limits: title varchar(1024), excerpt varchar(2048), author varchar(512).
@@ -645,6 +659,7 @@ export function applyCustomSourceRetentionPolicy(
       ...item,
       excerpt: allowsText ? item.excerpt : null,
       metadata: allowsText ? item.metadata : null,
+      reading_content: ['full_text','full_snapshot','archived'].includes(retentionPolicy) ? item.reading_content : null,
       snapshots: allowsSnapshots ? item.snapshots : [],
       evidence: allowsText ? item.evidence : [],
     })),

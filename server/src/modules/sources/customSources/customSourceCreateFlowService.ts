@@ -1,8 +1,6 @@
 import { assertSourceConnectionManageable } from "../sourceConnectionAccess.js";
 import { randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
 import type {
   CustomSourceHandlerInput,
   CustomSourcePolicyEnvelope,
@@ -30,14 +28,10 @@ import {
   type HandlerVersionRow,
 } from "./customSourceHandlerRepository.js";
 import { sha256 } from "../sourceRepositoryMappers.js";
-import { cleanupSandbox, effectiveCustomSourceLimits, evaluateCustomSourceRunnerBlockReason } from "./customSourceRunner.js";
+import { cleanupSourceExecutionFiles, effectiveSourceExecutionLimits, evaluateCustomSourceExecutionBlockReason } from "../sourceExecutionPolicy.js";
 import { fetchCustomSourceEndpointHtml } from "./customSourceEndpointFetch.js";
 import { executeCustomSourceHandler } from "./customSourceHandlerExecution.js";
 import { validateCustomSourceHandlerOutput } from "./customSourceContractValidator.js";
-import {
-  CUSTOM_SOURCE_HANDLER_ENTRYPOINT,
-  generateCustomSourceHandlerSource,
-} from "./customSourceHandlerTemplate.js";
 import { insertProposalRow } from "../../proposals/reviewPackets.js";
 import { getSourceChannelScanTask, upsertSourceChannelScanTask } from "../sourceConnectionScheduler.js";
 import { resolveRequestedSourceSchedule } from "../sourceScheduleInput.js";
@@ -137,7 +131,6 @@ export class CustomSourceCreateFlowService {
   async generateHandler(identity: SpaceUserIdentity, connectionId: string, body: Record<string, unknown>) {
     const connection = await this.requireCustomSourceConnection(identity, connectionId);
     const settings = await new PgCustomSourceHandlerRepository(this.pool, this.config).getEffectiveSettings(identity);
-    const config = objectValue(connection.config_json);
     const endpointOrigin = parseOrigin(connection.endpoint_url ?? "");
 
     const capturePolicy = requireCapturePolicy(optionalString(body.capture_policy) ?? connection.capture_policy);
@@ -147,9 +140,8 @@ export class CustomSourceCreateFlowService {
       settings.space.default_retention_policy,
     );
 
-    const generationMode = optionalString(body.generation_mode) ?? "code_template";
-    if (generationMode !== "code_template" && generationMode !== "pipeline") {
-      throw new HttpError(422, `Unsupported generation_mode: ${generationMode}`);
+    if (body.generation_mode !== "pipeline") {
+      throw new HttpError(422, "generation_mode must be pipeline; generated-code handlers have been removed");
     }
 
     const baseLimits = {
@@ -161,74 +153,36 @@ export class CustomSourceCreateFlowService {
       log_max_bytes: Math.min(65_536, settings.runner.log_bytes_max),
     };
 
-    if (generationMode === "pipeline") {
-      const parsedPipeline = protocol.CustomSourcePipelineDefinitionSchema.safeParse(body.pipeline);
-      if (!parsedPipeline.success) {
-        throw new HttpError(422, "generation_mode 'pipeline' requires a valid pipeline definition in body.pipeline");
-      }
-      const pipeline = parsedPipeline.data;
-      const policyEnvelope: CustomSourcePolicyEnvelope = {
-        allowed_network_origins: [endpointOrigin],
-        capture_policy: capturePolicy,
-        retention_policy: retentionPolicy,
-        credential_ref: connection.credential_id,
-        language: "declarative_pipeline_v1",
-        browser_automation_enabled: false,
-        shell_enabled: false,
-        dependency_installation_enabled: false,
-        log_redaction_enabled: true,
-        limits: { ...baseLimits, max_items: 50 },
-      };
-      const checksum = sha256(JSON.stringify(pipeline));
-      const version = await this.withGenerateRateLimit(identity, connectionId, (client) =>
-        this.insertHandlerVersionRow(client, {
-          spaceId: identity.spaceId,
-          connectionId,
-          entrypoint: CUSTOM_SOURCE_PIPELINE_HANDLER_ENTRYPOINT,
-          handlerArtifactId: null,
-          manifest: { generator: "pipeline_v1", pipeline },
-          policyEnvelope,
-          checksum,
-          createdByUserId: identity.userId,
-        }),
-      );
-      return handlerVersionOut(version);
+    const parsedPipeline = protocol.CustomSourcePipelineDefinitionSchema.safeParse(body.pipeline);
+    if (!parsedPipeline.success) {
+      throw new HttpError(422, "generation_mode 'pipeline' requires a valid pipeline definition in body.pipeline");
     }
-
-    // body.list_selector lets a caller override the connection's stored
-    // config without editing it first — repair uses this to carry forward
-    // the active version's manifest value (or an explicit fixed selector)
-    // when regenerating.
-    const listSelector = optionalString(body.list_selector) ?? optionalString(config.list_selector);
+    const pipeline = parsedPipeline.data;
     const policyEnvelope: CustomSourcePolicyEnvelope = {
       allowed_network_origins: [endpointOrigin],
       capture_policy: capturePolicy,
       retention_policy: retentionPolicy,
       credential_ref: connection.credential_id,
-      language: "typescript_node",
+      language: "declarative_pipeline_v1",
       browser_automation_enabled: false,
       shell_enabled: false,
       dependency_installation_enabled: false,
       log_redaction_enabled: true,
-      limits: { ...baseLimits, max_items: listSelector ? 50 : 1 },
+      limits: { ...baseLimits, max_items: 50 },
     };
-
-    const source = generateCustomSourceHandlerSource({ listSelector });
-    const checksum = sha256(source);
-
-    const version = await this.withGenerateRateLimit(identity, connectionId, async (client) => {
-      const artifactId = await this.storeHandlerSourceArtifact(client, identity.spaceId, connectionId, source);
-      return this.insertHandlerVersionRow(client, {
+    const checksum = sha256(JSON.stringify(pipeline));
+    const version = await this.withGenerateRateLimit(identity, connectionId, (client) =>
+      this.insertHandlerVersionRow(client, {
         spaceId: identity.spaceId,
         connectionId,
-        entrypoint: CUSTOM_SOURCE_HANDLER_ENTRYPOINT,
-        handlerArtifactId: artifactId,
-        manifest: { generator: "template_v1", list_selector: listSelector },
+        entrypoint: CUSTOM_SOURCE_PIPELINE_HANDLER_ENTRYPOINT,
+        handlerArtifactId: null,
+        manifest: { generator: "pipeline_v1", pipeline },
         policyEnvelope,
         checksum,
         createdByUserId: identity.userId,
-      });
-    });
+      }),
+    );
     return handlerVersionOut(version);
   }
 
@@ -242,8 +196,8 @@ export class CustomSourceCreateFlowService {
 
     const settings = await new PgCustomSourceHandlerRepository(this.pool, this.config).getEffectiveSettings(identity);
     const policyEnvelope = envelopeOf(version);
-    const blockReason = evaluateCustomSourceRunnerBlockReason(settings.runner, policyEnvelope);
-    const credential = await new CustomSourceCredentialService(this.pool, this.config).resolveCredentialHeader(
+    const blockReason = evaluateCustomSourceExecutionBlockReason(settings.runner, policyEnvelope);
+    const credential = blockReason ? null : await new CustomSourceCredentialService(this.pool, this.config).resolveCredentialHeader(
       identity.spaceId,
       policyEnvelope.credential_ref,
     );
@@ -266,7 +220,7 @@ export class CustomSourceCreateFlowService {
       runnerResult = { status: "blocked", reason: blockReason } as const;
     } else {
       try {
-        runnerResult = await executeCustomSourceHandler(this.pool, this.config, settings.runner, {
+        runnerResult = await executeCustomSourceHandler(settings.runner, {
           version,
           policyEnvelope,
           credential,
@@ -344,7 +298,7 @@ export class CustomSourceCreateFlowService {
 
       const validation = await validateCustomSourceHandlerOutput({
         raw: parsedOutput,
-        limits: effectiveCustomSourceLimits(settings.runner, policyEnvelope.limits),
+        limits: effectiveSourceExecutionLimits(settings.runner, policyEnvelope.limits),
         allowedNetworkOrigins: policyEnvelope.allowed_network_origins,
         sandboxFilesRoot: runnerResult.sandbox_files_root,
       });
@@ -368,7 +322,7 @@ export class CustomSourceCreateFlowService {
         },
       });
     } finally {
-      await cleanupSandbox(runnerResult.sandbox_files_root).catch(() => undefined);
+      await cleanupSourceExecutionFiles(runnerResult.sandbox_files_root).catch(() => undefined);
     }
   }
 
@@ -376,6 +330,7 @@ export class CustomSourceCreateFlowService {
     await this.requireCustomSourceConnection(identity, connectionId);
     const versionId = requiredString(body.handler_version_id, "handler_version_id");
     const version = await this.requireHandlerVersion(identity, connectionId, versionId);
+    assertDeclarativeHandlerVersion(version);
 
     if (version.status !== "draft") {
       throw new HttpError(409, `Handler version must be in draft status to activate (was ${version.status})`);
@@ -681,39 +636,6 @@ export class CustomSourceCreateFlowService {
     };
   }
 
-  private async storeHandlerSourceArtifact(
-    db: Queryable,
-    spaceId: string,
-    connectionId: string,
-    source: string,
-  ): Promise<string> {
-    const artifactId = randomUUID();
-    const relativePath = join(spaceId, "custom-source", `${artifactId}.handler.cjs`);
-    const absolutePath = resolve(this.config.artifactStorageRoot, relativePath);
-    await mkdir(dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, source, "utf8");
-    const now = new Date().toISOString();
-    await db.query(
-      `INSERT INTO artifacts (
-         id, space_id, artifact_type, title, content, storage_path, mime_type,
-         exportable, export_formats_json, canonical_format, preview,
-         created_at, updated_at, visibility, trust_level
-       ) VALUES (
-         $1, $2, 'source_custom_source_handler_code', $3, NULL, $4, 'application/javascript',
-         true, $5::jsonb, 'javascript', false,
-         $6, $6, 'space_shared', 'low'
-       )`,
-      [
-        artifactId,
-        spaceId,
-        `Custom Source handler code (connection ${connectionId})`,
-        relativePath,
-        JSON.stringify(["javascript"]),
-        now,
-      ],
-    );
-    return artifactId;
-  }
 
 }
 
@@ -775,6 +697,13 @@ export async function activateCustomSourceHandlerVersion(
 ): Promise<string> {
   const now = new Date().toISOString();
   await withDbTransaction(pool, async (client) => {
+    const target = await client.query<Pick<HandlerVersionRow, "language" | "policy_envelope_json">>(
+      `SELECT language, policy_envelope_json FROM source_handler_versions
+        WHERE id = $1 AND space_id = $2 AND source_connection_id = $3`,
+      [versionId, identity.spaceId, connectionId],
+    );
+    if (!target.rows[0]) throw new HttpError(404, "Handler version not found");
+    assertDeclarativeHandlerVersion(target.rows[0]);
     const channelResult = await client.query<{ id: string; space_id: string; owner_user_id: string; fetch_frequency: string; schedule_rule_json: unknown }>(
       `SELECT ch.id, ch.space_id, sc.owner_user_id, ch.fetch_frequency, ch.schedule_rule_json
          FROM source_channels ch
@@ -859,6 +788,13 @@ export async function activateCustomSourceHandlerVersion(
     }
   });
   return now;
+}
+
+export function assertDeclarativeHandlerVersion(version: Pick<HandlerVersionRow, "language" | "policy_envelope_json">): void {
+  if (version.language !== "declarative_pipeline_v1"
+    || objectValue(version.policy_envelope_json).language !== "declarative_pipeline_v1") {
+    throw new HttpError(409, "Handler language has been removed; only declarative_pipeline_v1 handlers are supported");
+  }
 }
 
 export function evaluateCustomSourceActivation(

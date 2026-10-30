@@ -79,19 +79,27 @@ content while Project navigation remains independent; horizontal lane overflow
 is retained and cards are not clipped by individual lane scroll containers.
 
 
-## Goal conversation routes
+## Topic (goal) routes
 
-Sources owns `/sources/goals/new`, `/sources/goals/:goalId`, `/sources/goals`
-and the dedicated `/sources/access` credential route. Reading and Project Sources
-entry links carry scope into the same page. Desktop uses a two-column layout;
-narrow screens switch conversation/plan on the same page with native focusable
-buttons. Existing source list/detail and Project Sources/settings links remain.
-No independent chat engine or new navigation platform is introduced.
+Personal topics live at `/library/reading/goals[/new|/:goalId]` and Project
+topics at `/projects/:projectId/sources/goals[/new|/:goalId]` inside the Project
+layout; `/sources/access` remains the dedicated credential route. Source
+list/detail and Project Sources/settings links carry scope into the same page.
+The create page is a single centered form (topic, frequency, effort, folded
+Advanced). The topic page is a two-column grid at `lg` and above — the update
+stream in a `minmax(0,1fr)` column and a 20rem status/changes/manage aside with
+a bordered card surface — and stacks the aside below the stream on narrow screens. The
+plan conversation, trial and Agent settings sit in a folded Advanced section
+below both columns, where the conversation and plan share a two-column grid only
+at `xl`. Selection toggles use the shared muted segmented style with
+`aria-pressed`; status uses a polite live region. No independent chat engine or
+new navigation platform is introduced.
 
 Goal composer draft persistence is an opt-in predicate on the shared draft hook:
 recognized secret patterns clear older session storage before another write.
-Other conversation consumers keep their existing persistence behavior. Legacy
-channel deep links first resolve existing mappings read-only; paused goals support
-candidate conversation while collection/preview remains stopped. Owned source
-list/detail controls route to goal management. Error guidance is categorized and
-localized; budget/credentials/stopped errors do not suggest blind Agent retries.
+Other conversation consumers keep their existing persistence behavior. Topic
+creation keeps only its idempotency key and created id in session storage, never
+the topic text. Legacy channel deep links first resolve existing mappings
+read-only. Owned source list/detail controls route to topic management. Error
+guidance is categorized and localized; budget/credentials/stopped errors do not
+suggest blind Agent retries.

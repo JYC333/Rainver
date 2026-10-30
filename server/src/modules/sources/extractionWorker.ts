@@ -1,3 +1,4 @@
+import {storeSourceReaderArtifact,saveSourceReadingDocument} from './materialProcessing/documents.js';
 import { observePage } from './monitoring/pageObservation.js';
 import { MonitoringAdmissionError } from '../projects/monitoringControl.js';
 import { monitoringChannelControlClause } from '../projects/monitoringControl.js';
@@ -12,6 +13,7 @@ import { SourceBackfillExecutionService } from "./sourceBackfillExecutionService
 import { type SourceConnectionRow } from "./sourceRepositoryRows.js";
 import {
   extractStructuredReaderContent,
+  readerContentFromFetchedText,
   type StructuredReaderContent,
 } from "./contentParsing.js";
 import { extractPdfReaderContent } from "./pdfExtract.js";
@@ -175,6 +177,7 @@ export class SourceExtractionWorker {
         WHERE id = $1
           AND space_id = $2
           AND status = 'pending'
+          AND COALESCE(metadata_json->>'material_processing','false')<>'true'
           AND (metadata_json->>'monitoring_operation_id' IS NULL OR metadata_json->>'monitoring_operation_id'=$4::text)
         RETURNING ${JOB_COLUMNS}`,
       [jobId, spaceId, now,this.monitoringOperationId??null],
@@ -732,7 +735,7 @@ export class SourceExtractionWorker {
       const worker = new SourceExtractionWorker(tx,this.config,this.guard,this.monitoringOperationId);
       return {
         upsertScannedItemLocked: (input)=>worker.upsertScannedItemLocked(input),
-        writeReaderDocumentArtifact: (...args)=>worker.writeReaderDocumentArtifact(...args),
+        writeReaderDocumentArtifact: (...args)=>storeSourceReaderArtifact(tx,...args),
         createSourceSnapshot: (input)=>worker.createSourceSnapshot(input),
       };
     });
@@ -1013,46 +1016,9 @@ export class SourceExtractionWorker {
       ?? await this.readerContentFromFetched(response, item.source_uri);
     const text = readerContent.plain_text;
     const evidenceExtractionMethod = response.isPdf ? "pdf_text_v1" : "full_text";
-    const artifactId = await this.writeReaderDocumentArtifact(
-      job.space_id,
-      item.id,
-      item.visibility,
-      item.title ?? readerContent.title ?? "extracted",
-      readerContent,
-      resolved.contentMeta,
-    );
-    const contentHash = sha256(text);
     const now = new Date().toISOString();
-    const sourceSnapshotId = await this.createSourceSnapshot({
-      spaceId: job.space_id,
-      sourceItemId: item.id,
-      connectionId: item.connection_id,
-      snapshotType: "extracted",
-      artifactId,
-      contentHash,
-      sourceUri: item.source_uri,
-      captureMethod: "full_text",
-      trustLevel: "normal",
-      sourceVisibility: item.visibility,
-      metadata: {
-        job_id: job.id,
-        ...(rawSnapshotId ? { raw_source_snapshot_id: rawSnapshotId } : {}),
-        ...resolved.contentMeta,
-      },
-      capturedAt: now,
-    });
-
-    await this.db.query(
-      `UPDATE source_items
-          SET content_state = 'content_saved',
-              retention_policy = 'full_text',
-              raw_artifact_id = COALESCE($6, raw_artifact_id),
-              extracted_artifact_id = $3,
-              content_hash = $4,
-              updated_at = $5
-        WHERE space_id = $1 AND id = $2`,
-      [job.space_id, item.id, artifactId, contentHash, now, rawArtifactId],
-    );
+    const {artifactId,snapshotId:sourceSnapshotId,contentHash}=await saveSourceReadingDocument(this.db,{spaceId:job.space_id,itemId:item.id,document:readerContent,metadata:{job_id:job.id,...(rawSnapshotId?{raw_source_snapshot_id:rawSnapshotId}:{}),...resolved.contentMeta}});
+    if(rawArtifactId)await this.db.query('UPDATE source_items SET raw_artifact_id=$3 WHERE id=$1 AND space_id=$2',[item.id,job.space_id,rawArtifactId]);
     const access = await this.db.query<{ owner_user_id: string | null; access_level: string }>(
       `SELECT owner_user_id, access_level FROM source_items WHERE space_id=$1 AND id=$2`,
       [job.space_id, item.id],
@@ -1145,10 +1111,9 @@ export class SourceExtractionWorker {
         ?? await this.readerContentFromFetched(response, item.source_uri);
       const text = readerContent.plain_text;
       if (text || readerContent.content_json.content.length > 0) {
-        const extractedId = await this.writeReaderDocumentArtifact(
+        const extractedId = await storeSourceReaderArtifact(this.db,
           job.space_id,
           item.id,
-          item.visibility,
           item.title ?? readerContent.title ?? "extracted",
           readerContent,
           resolved.contentMeta,
@@ -1401,7 +1366,11 @@ export class SourceExtractionWorker {
           if (!response.isText || response.text === null) {
             throw new HttpError(415, `Unsupported source content type (${response.contentType ?? "unknown"})`);
           }
-          readerContent = extractStructuredReaderContent(response.text, candidate.url);
+          // A candidate known to be HTML (the arXiv HTML rendition) is HTML; an
+          // `auto` candidate is read by the syntax its response declares.
+          readerContent = candidate.format === "html"
+            ? extractStructuredReaderContent(response.text, candidate.url)
+            : readerContentFromFetchedText(response.text, response.contentType, candidate.url);
           if (!readerContent.plain_text.trim()) {
             throw new HttpError(422, "HTML extraction produced no text");
           }
@@ -1694,73 +1663,6 @@ export class SourceExtractionWorker {
     return record(job.metadata_json).created_by === "manual_scan";
   }
 
-  private async writeReaderDocumentArtifact(
-    spaceId: string,
-    sourceItemId: string,
-    sourceVisibility: string,
-    title: string,
-    content: StructuredReaderContent,
-    extraMetadata: Record<string, unknown> = {},
-  ): Promise<string> {
-    const artifactId = randomUUID();
-    const relPath = join(spaceId, `${artifactId}.reader.json`);
-    const absPath = join(this.config.artifactStorageRoot, relPath);
-    const payload = JSON.stringify(content);
-    await mkdir(join(this.config.artifactStorageRoot, spaceId), { recursive: true });
-    await writeFile(absPath, payload, "utf8");
-    const now = new Date().toISOString();
-    await this.db.query(
-      `INSERT INTO artifacts (
-         id, space_id, artifact_type, title, content, storage_path, mime_type,
-         exportable, export_formats_json, canonical_format, preview, metadata_json,
-         created_at, updated_at, visibility, access_level, owner_user_id, trust_level, project_id
-       ) VALUES (
-         $1, $2, 'source_reader_document', $3, $4, $5, 'application/json',
-         true, $6::jsonb, 'reader_document_json', false, $7::jsonb,
-         $8, $9,
-         (SELECT visibility FROM source_items WHERE space_id = $10::varchar AND id = $11::varchar),
-         (SELECT access_level FROM source_items WHERE space_id = $12::varchar AND id = $13::varchar),
-         (SELECT owner_user_id FROM source_items WHERE space_id = $14::varchar AND id = $15::varchar),
-         'medium',
-         (SELECT project_id FROM source_items WHERE space_id = $10::varchar AND id = $11::varchar)
-       )`,
-      [
-        artifactId,
-        spaceId,
-        title.slice(0, 512),
-        payload,
-        relPath,
-        JSON.stringify(["json"]),
-        JSON.stringify({
-          schema_version: content.schema_version,
-          kind: content.kind,
-          extraction_method: content.extraction_method,
-          image_policy: content.image_policy,
-          image_count: content.image_count,
-          source_uri: content.source_uri,
-          ...extraMetadata,
-        }),
-        now,
-        now,
-        spaceId,
-        sourceItemId,
-        spaceId,
-        sourceItemId,
-        spaceId,
-        sourceItemId,
-      ],
-    );
-    if (sourceVisibility === "selected_users") await inheritContentAccessGrants(this.db, {
-      spaceId,
-      sourceResourceType: "source_item",
-      sourceResourceId: sourceItemId,
-      targetResourceType: "artifact",
-      targetResourceId: artifactId,
-      inheritedAt: now,
-    });
-    return artifactId;
-  }
-
   private async writeRawArtifact(
     spaceId: string,
     sourceItemId: string,
@@ -1832,7 +1734,8 @@ export class SourceExtractionWorker {
       return extractPdfReaderContent(response.bytes, sourceUri);
     }
     if (response.isText && response.text !== null) {
-      return extractStructuredReaderContent(response.text, sourceUri);
+      // HTML, Markdown and plain text each by the syntax the response declares.
+      return readerContentFromFetchedText(response.text, response.contentType, sourceUri);
     }
     throw new HttpError(415, `Unsupported source content type (${response.contentType ?? "unknown"})`);
   }

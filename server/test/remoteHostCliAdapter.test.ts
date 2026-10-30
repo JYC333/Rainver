@@ -1671,3 +1671,6 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
   });
 
 });
+it('refuses a collector missing its bound context before any Host command or permission request',async()=>{
+ const runCommand=vi.fn();await expect(executeRemoteHostCliAdapter({run:run({runtime_key:'claude_code',contract_snapshot_json:{workflow_input_json:{source_goal:{purpose:'collect'}}}}),prompt:'Collect',invocation_delivery:runtimeContextDelivery('Collect'),model:null,resume_session_id:null},'host-1','folder-1',{executor:{runCommand},bindings:NO_PROVIDER_BINDINGS})).rejects.toThrow('source_native_context_refused');expect(runCommand).not.toHaveBeenCalled();
+});

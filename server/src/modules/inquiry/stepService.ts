@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { dateIso, type Queryable } from "../routeUtils/common.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { threadReadableSql } from "./threadAccess.js";
 import { type NextFocusKind } from "./threadService.js";
 
 /**
@@ -343,7 +343,7 @@ export async function listOpenProjectSteps(
        JOIN space_objects so ON so.id = t.object_id AND so.space_id = t.space_id
       WHERE s.space_id = $1 AND s.project_id = $2 AND s.status = 'in_progress'
         AND t.lifecycle_status = 'active'
-        AND ${contentReadSql("space_object", "so", "$3")}
+        AND ${threadReadableSql("so", "$3", "read_content")}
       ORDER BY s.created_at DESC, s.id DESC`,
     [input.spaceId, input.projectId, input.userId],
   );

@@ -13,7 +13,7 @@ interface PageMaterializer {
     itemId: string;
     created: boolean;
   }>;
-  writeReaderDocumentArtifact(spaceId: string, itemId: string, visibility: string, title: string, document: StructuredReaderContent): Promise<string>;
+  writeReaderDocumentArtifact(spaceId: string, itemId: string, title: string, document: StructuredReaderContent): Promise<string>;
   createSourceSnapshot(input: SourceSnapshotInput): Promise<string>;
 }
 export async function observePage(db: Queryable, input: Pick<SourceScanItemInput, 'job' | 'connection' | 'capturedAt'> & {
@@ -60,7 +60,7 @@ export async function observePage(db: Queryable, input: Pick<SourceScanItemInput
       itemType: 'external_url'
     });
     if (!old || old.content_hash !== version.hash) {
-      const artifact = await worker.writeReaderDocumentArtifact(job.space_id, baseline.itemId, connection.visibility, common.title, version.document);
+      const artifact = await worker.writeReaderDocumentArtifact(job.space_id, baseline.itemId, common.title, version.document);
       const afterId = await worker.createSourceSnapshot({
         spaceId: job.space_id,
         sourceItemId: baseline.itemId,
@@ -109,7 +109,7 @@ export async function observePage(db: Queryable, input: Pick<SourceScanItemInput
           }
         });
         if (change.created) {
-          const changeArtifact = await worker.writeReaderDocumentArtifact(job.space_id, change.itemId, connection.visibility, `Page change: ${common.title}`, document);
+          const changeArtifact = await worker.writeReaderDocumentArtifact(job.space_id, change.itemId, `Page change: ${common.title}`, document);
           await worker.createSourceSnapshot({
             spaceId: job.space_id,
             sourceItemId: change.itemId,

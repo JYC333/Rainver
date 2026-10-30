@@ -1,3 +1,5 @@
+import {agentReadingPolicy} from '../materialProcessing/policy.js';
+import {SourceMaterialSubmissionSchema} from '@rainver/protocol';
 import type {SourceConnectionRow} from '../sourceRepositoryRows.js';
 import {CustomSourceHandlerOutputSchema} from '@rainver/protocol';
 import type {ServerConfig} from '../../../config.js';
@@ -30,6 +32,19 @@ export async function cleanGoalSamples(db:Queryable,config:ServerConfig,goalId?:
  for(const b of bindings.rows){const next=await retainGoalSample(db,config,b.source_connection_id,b.fixture_json??{},forceRemove||b.status==='deleted');if(JSON.stringify(next)!==JSON.stringify(b.fixture_json))await db.query('UPDATE source_goal_bindings SET fixture_json=$2 WHERE id=$1 AND fixture_json=$3::jsonb AND fixture_json IS DISTINCT FROM $2::jsonb',[b.id,next,b.fixture_json]);}
  const previews=await db.query<{id:string;result_json:{contributions?:Record<string,unknown>[]};status:string}>(`SELECT p.id,p.result_json,g.status FROM source_goal_previews p JOIN source_goals g ON g.id=p.goal_id WHERE ($1::varchar IS NULL OR g.id=$1)`,[goalId??null]);
  for(const p of previews.rows){const next={...p.result_json,contributions:await Promise.all((p.result_json.contributions??[]).map((c:Record<string,unknown>)=>retainGoalSample(db,config,String(c.source_connection_id),c,forceRemove||p.status==='deleted')))};if(JSON.stringify(next)!==JSON.stringify(p.result_json))await db.query('UPDATE source_goal_previews SET result_json=$2 WHERE id=$1 AND result_json=$3::jsonb AND result_json IS DISTINCT FROM $2::jsonb',[p.id,next,p.result_json]);}
+ // Collection submissions are transport/recovery inputs, not an unlimited body archive.
+ const collections=await db.query<{id:string;status:string;goal_status:string;result_json:Record<string,unknown>;capture_policy:SourceConnectionRow['capture_policy'];policy_json:SourceConnectionRow['policy_json']}>(`SELECT r.id,r.status,g.status AS goal_status,r.result_json,c.capture_policy,c.policy_json FROM source_goal_runs r JOIN source_goals g ON g.id=r.goal_id AND g.space_id=r.space_id JOIN source_connections c ON c.id=r.result_json->'spec'->>'source_connection_id' AND c.space_id=r.space_id WHERE ($1::varchar IS NULL OR g.id=$1) AND (r.result_json ? 'search_submission' OR r.result_json ? 'accepted_output')`,[goalId??null]);
+ for(const row of collections.rows){
+  const policy=agentReadingPolicy(row);const next={...row.result_json};const erase=forceRemove||row.goal_status==='deleted';
+  if(!['queued','accepted','materializing'].includes(row.status)){delete next.search_submission;delete next.accepted_output;}
+  else {
+   const submission=SourceMaterialSubmissionSchema.safeParse(next.search_submission);
+   if(submission.success)next.search_submission={...submission.data,items:submission.data.items.map(item=>({...item,summary:!erase&&policy.summary?item.summary:null,content:!erase&&policy.content?item.content:null}))};
+   const output=CustomSourceHandlerOutputSchema.safeParse(next.accepted_output);
+   if(output.success){const retained=applyCustomSourceRetentionPolicy(output.data,erase?'metadata_only':policy.retention);next.accepted_output=retained;}
+  }
+  if(JSON.stringify(next)!==JSON.stringify(row.result_json))await db.query('UPDATE source_goal_runs SET result_json=$2 WHERE id=$1 AND result_json=$3::jsonb',[row.id,next,row.result_json]);
+ }
  const repairs=await db.query<{id:string;validation_json:{live_sample?:Record<string,unknown>};source_connection_id:string;status:string}>(`SELECT r.id,r.validation_json,b.source_connection_id,g.status FROM source_goal_repairs r JOIN source_goal_bindings b ON b.id=r.binding_id JOIN source_goals g ON g.id=b.goal_id WHERE ($1::varchar IS NULL OR g.id=$1)`,[goalId??null]);
  for(const r of repairs.rows){if(!r.validation_json?.live_sample)continue;const next={...r.validation_json,live_sample:await retainGoalSample(db,config,r.source_connection_id,r.validation_json.live_sample,forceRemove||r.status==='deleted')};if(JSON.stringify(next)!==JSON.stringify(r.validation_json))await db.query('UPDATE source_goal_repairs SET validation_json=$2 WHERE id=$1 AND validation_json=$3::jsonb AND validation_json IS DISTINCT FROM $2::jsonb',[r.id,next,r.validation_json]);}
 }

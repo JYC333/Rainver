@@ -4300,6 +4300,11 @@ export interface ReaderDocumentRef {
 }
 
 export interface ReaderDocumentPayload {
+  content_unavailable_reason?:import('@rainver/protocol').SourceMaterialContentUnavailableReason|null
+  reading_info?:import('@rainver/protocol').SourceMaterialReadingInfo|null
+  /** For Agent text: the syntax declared for the version shown; undeclared and plain are shown literally. */
+  agent_text_syntax?: 'undeclared' | 'plain' | 'markdown'
+  result_provenance?:'agent_provided_unverified'|null
   document_type: string
   document_id: string
   space_id: string
@@ -4309,6 +4314,10 @@ export interface ReaderDocumentPayload {
   /** Canonical normalized form used for content_hash, text_range offsets, and context slicing. */
   normalized_text: string
   content_hash: string
+  /** Hash of the canonical content tree: a re-parse can keep the text and still move every block. */
+  structure_hash?: string
+  /** Whether the document's own images may load inline; null where the type stores no policy. */
+  image_policy?: 'remote_reference' | 'none' | null
   content_format: 'tiptap_json'
   content_schema_version: 1
   content_json: Record<string, unknown>
@@ -4352,6 +4361,8 @@ export interface ReaderAnchorJson {
   tiptap_range?: { from: number; to: number }
   block_ref?: { index: number; node_type: string; from: number; to: number }
   content_hash?: string
+  /** Structure version of the document when the anchor was made (see ReaderDocumentPayload.structure_hash). */
+  structure_hash?: string
   document_ref?: ReaderDocumentRef
   [key: string]: unknown
 }

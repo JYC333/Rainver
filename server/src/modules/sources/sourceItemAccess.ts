@@ -36,7 +36,7 @@ export function sourceItemReadableClause(
 export function sourceItemFullContentReadClause(itemAlias: string, userParam: string): string {
   return `(
     ${sourceItemReadableClause(itemAlias, userParam, false, { includeOversight: false })}
-    AND ${contentAccessLevelSql({ definition: SOURCE_ITEM_ACCESS, alias: itemAlias, userExpr: userParam })} = 'full'
+    AND ${contentAccessLevelSql({ definition: SOURCE_ITEM_ACCESS, alias: itemAlias, userExpr: userParam, includeOversight: false })} = 'full'
   )`;
 }
 
@@ -179,9 +179,11 @@ export const SOURCE_DERIVED_ARTIFACT_TYPES = ["source_reader_document", "source_
  * readable item that references it, or through a snapshot whose connection
  * still admits the reader. Its own visibility, copied from the item at
  * capture, is not enough — it would outlive an unsubscribe window or a
- * revoked connection. Other artifacts are unaffected.
+ * revoked connection. Full-body reads additionally require full access to
+ * that live origin; an old artifact's copied level cannot undo a demotion.
+ * Other artifacts are unaffected.
  */
-export function sourceDerivedArtifactReadableClause(artifactAlias: string, userParam: string): string {
+export function sourceDerivedArtifactReadableClause(artifactAlias: string, userParam: string, requireFull = false): string {
   return `(
     ${artifactAlias}.artifact_type NOT IN (${SOURCE_DERIVED_ARTIFACT_TYPES.map((type) => `'${type}'`).join(", ")})
     OR EXISTS (
@@ -190,6 +192,7 @@ export function sourceDerivedArtifactReadableClause(artifactAlias: string, userP
          AND artifact_item.deleted_at IS NULL
          AND ${artifactAlias}.id IN (artifact_item.raw_artifact_id, artifact_item.extracted_artifact_id)
          AND ${sourceItemDocumentReadableClause("artifact_item", userParam)}
+         ${requireFull ? `AND ${contentAccessLevelSql({ definition: SOURCE_ITEM_ACCESS, alias: "artifact_item", userExpr: userParam })} = 'full'` : ""}
     )
     OR EXISTS (
       SELECT 1
@@ -203,8 +206,11 @@ export function sourceDerivedArtifactReadableClause(artifactAlias: string, userP
          AND artifact_snapshot_connection.id = artifact_snapshot.connection_id
        WHERE artifact_snapshot.space_id = ${artifactAlias}.space_id
          AND artifact_snapshot.artifact_id = ${artifactAlias}.id
+         AND ${contentReadSql("source_snapshot", "artifact_snapshot", userParam)}
+         ${requireFull ? `AND ${contentAccessLevelSql({ definition: SOURCE_SNAPSHOT_ACCESS, alias: "artifact_snapshot", userExpr: userParam })} = 'full'` : ""}
          AND (
-           (artifact_snapshot_item.id IS NOT NULL AND ${sourceItemReadableClause("artifact_snapshot_item", userParam, false)})
+           (artifact_snapshot_item.id IS NOT NULL AND ${sourceItemReadableClause("artifact_snapshot_item", userParam, false)}
+            ${requireFull ? `AND ${contentAccessLevelSql({ definition: SOURCE_ITEM_ACCESS, alias: "artifact_snapshot_item", userExpr: userParam })} = 'full'` : ""})
            OR (
              artifact_snapshot.source_item_id IS NULL
              AND (

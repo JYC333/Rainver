@@ -1,3 +1,5 @@
+import { markdownToReaderDocument, normalizeReaderDocument } from "@rainver/reader-document";
+
 export interface ReaderPmMark {
   type: string;
   attrs?: Record<string, unknown>;
@@ -19,7 +21,7 @@ export interface ReaderPmDoc {
 export interface StructuredReaderContent {
   schema_version: 1;
   kind: "reader_document";
-  extraction_method: "structured_html_v1" | "pdf_text_v1";
+  extraction_method: "structured_html_v1" | "markdown_v1" | "plain_text_v1" | "pdf_text_v1" | "agent_provided_v1";
   image_policy: "remote_reference" | "none";
   title: string | null;
   source_uri: string | null;
@@ -42,25 +44,6 @@ const CANDIDATE_CONTAINER_TAGS = new Set(["article", "main", "section", "div"]);
 const POSITIVE_ATTR_RE = /(^|\s)(article|body|content|entry|main|markdown|post|prose|reader|story|text)(\s|$)/i;
 const STRONG_CONTENT_ATTR_RE = /(^|\s)(article content|article body|content body|entry content|entry body|post content|post body|rich text|story content|story body|text content|markdown|prose|正文)(\s|$)/i;
 const NEGATIVE_ATTR_RE = /(^|\s)(ad|ads|advert|advertisement|aside|banner|breadcrumb|comments?|cookie|drawer|footer|login|menu|modal|nav|navbar|navigation|newsletter|pagination|paywall|popup|promo|promotion|recommend|related|search|share|sidebar|social|sponsor|subscribe|toolbar|widget)(\s|$)/i;
-const READER_NODE_TYPES = new Set([
-  "blockquote",
-  "bulletList",
-  "codeBlock",
-  "doc",
-  "hardBreak",
-  "heading",
-  "horizontalRule",
-  "image",
-  "listItem",
-  "orderedList",
-  "paragraph",
-  "table",
-  "tableCell",
-  "tableHeader",
-  "tableRow",
-  "text",
-]);
-const READER_MARK_TYPES = new Set(["link"]);
 const ENTITY_MAP: Record<string, string> = {
   amp: "&",
   apos: "'",
@@ -101,9 +84,10 @@ export function extractStructuredReaderContent(
   const plainText = pmDocToPlainText(contentJson);
   const fallbackText = stripHtml(readableHtml);
   const finalPlainText = plainText.trim() || fallbackText;
-  const finalContentJson = contentJson.content.length > 0
+  // Stored through the shared normalizer, so the tree is valid for the Reader schema.
+  const finalContentJson = normalizeReaderDocument(contentJson.content.length > 0
     ? contentJson
-    : plainTextToPmDoc(finalPlainText);
+    : plainTextToPmDoc(finalPlainText)) as ReaderPmDoc;
   return {
     schema_version: 1,
     kind: "reader_document",
@@ -117,25 +101,73 @@ export function extractStructuredReaderContent(
   };
 }
 
+const EXTRACTION_METHODS = new Set(["structured_html_v1", "markdown_v1", "plain_text_v1", "pdf_text_v1", "agent_provided_v1"]);
+
+/** The syntax a fetched text response declares by its media type (or, without one, by a Markdown file extension). */
+export function fetchedTextSyntax(contentType: string | null, url: string): "html" | "markdown" | "plain" {
+  const type = contentType?.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (type === "text/markdown" || type === "text/x-markdown") return "markdown";
+  if (type === "text/plain" || type === "application/json" || type.endsWith("+json")) return "plain";
+  if (!type || type === "application/octet-stream") {
+    try { if (/\.(md|markdown)$/i.test(new URL(url).pathname)) return "markdown"; } catch { /* not a URL */ }
+  }
+  return "html";
+}
+
+/**
+ * Reader content for a fetched text response, by its declared syntax: HTML
+ * through the structural extractor, Markdown through the shared markdown-it
+ * converter, plain text as paragraphs. Nothing is converted to another syntax
+ * first, and nothing is guessed from the text itself.
+ */
+export function readerContentFromFetchedText(text: string, contentType: string | null, sourceUri: string): StructuredReaderContent {
+  const syntax = fetchedTextSyntax(contentType, sourceUri);
+  if (syntax === "html") return extractStructuredReaderContent(text, sourceUri);
+  const contentJson = (syntax === "markdown" ? markdownToReaderDocument(text) : normalizeReaderDocument(plainTextToPmDoc(text))) as ReaderPmDoc;
+  const plainText = pmDocToPlainText(contentJson) || text.trim();
+  return {
+    schema_version: 1,
+    kind: "reader_document",
+    extraction_method: syntax === "markdown" ? "markdown_v1" : "plain_text_v1",
+    // Same rule as a captured page: images the source itself references.
+    image_policy: "remote_reference",
+    title: null,
+    source_uri: sourceUri,
+    plain_text: plainText,
+    content_json: contentJson,
+    image_count: countImageNodes(contentJson),
+  };
+}
+
+/** Converts Agent-provided reading text by the syntax the Agent declared; undeclared text stays literal. */
+export function agentReaderContentJson(text: string, syntax: "plain" | "markdown" | undefined): ReaderPmDoc {
+  return (syntax === "markdown" ? markdownToReaderDocument(text) : plainTextToPmDoc(text)) as ReaderPmDoc;
+}
+
+export { pmDocToPlainText };
+
 export function parseStructuredReaderContent(value: string): StructuredReaderContent | null {
   try {
     const parsed = JSON.parse(value) as unknown;
     if (!isRecord(parsed)) return null;
     if (parsed.schema_version !== 1 || parsed.kind !== "reader_document") return null;
-    if (parsed.extraction_method !== "structured_html_v1" && parsed.extraction_method !== "pdf_text_v1") return null;
+    if (!EXTRACTION_METHODS.has(parsed.extraction_method as string)) return null;
     if (parsed.image_policy !== "remote_reference" && parsed.image_policy !== "none") return null;
     if (typeof parsed.plain_text !== "string") return null;
-    if (!isPmDoc(parsed.content_json)) return null;
+    if (!isRecord(parsed.content_json) || parsed.content_json.type !== "doc") return null;
+    // Stored documents are read through the shared Reader normalizer: an
+    // unsupported node degrades to its text instead of hiding the document.
+    const contentJson = normalizeReaderDocument(parsed.content_json) as ReaderPmDoc;
     return {
       schema_version: 1,
       kind: "reader_document",
-      extraction_method: parsed.extraction_method,
+      extraction_method: parsed.extraction_method as StructuredReaderContent["extraction_method"],
       image_policy: parsed.image_policy,
       title: typeof parsed.title === "string" ? parsed.title : null,
       source_uri: typeof parsed.source_uri === "string" ? parsed.source_uri : null,
       plain_text: parsed.plain_text,
-      content_json: parsed.content_json,
-      image_count: typeof parsed.image_count === "number" ? parsed.image_count : countImageNodes(parsed.content_json),
+      content_json: contentJson,
+      image_count: typeof parsed.image_count === "number" ? parsed.image_count : countImageNodes(contentJson),
     };
   } catch {
     return null;
@@ -194,6 +226,10 @@ function pruneReaderChrome(html: string): string {
     if (CHROME_TAGS.has(tag)) return true;
     if (hasNegativeReaderAttrs(openTag) && !hasStrongContentAttrs(openTag)) return true;
     if (!NOISE_PRUNE_TAGS.has(tag) || hasStrongContentAttrs(openTag)) return false;
+    // A layout wrapper around a link-heavy nav and the marked article body is
+    // not chrome: judging it by link density alone dropped the article with it.
+    // Its nav is still judged, and pruned, as an element of its own.
+    if (containsStrongContentElement(elementHtml)) return false;
 
     const textLength = visibleTextLength(elementHtml);
     const linkDensity = linkedTextDensity(elementHtml);
@@ -201,6 +237,15 @@ function pruneReaderChrome(html: string): string {
     if (tag === "header" && linkCount > 0 && textLength <= 1000 && linkDensity >= 0.35) return true;
     return linkCount >= 2 && textLength <= 1600 && linkDensity >= 0.5 && !hasPositiveReaderAttrs(openTag);
   });
+}
+
+function containsStrongContentElement(elementHtml: string): boolean {
+  const inner = /<[a-z][a-z0-9:-]*\b[^>]*>/gi;
+  inner.exec(elementHtml); // the element's own open tag
+  for (let match = inner.exec(elementHtml); match; match = inner.exec(elementHtml)) {
+    if (hasStrongContentAttrs(match[0])) return true;
+  }
+  return false;
 }
 
 function readableScore(html: string, kind: ReadableCandidateKind): number {
@@ -379,63 +424,62 @@ function boundedSpan(value: string | null): number {
   return Number.isFinite(n) ? Math.min(20, Math.max(1, Math.floor(n))) : 1;
 }
 
+/**
+ * HTML → Reader tree. Keeps the inline semantics the Reader can show (bold,
+ * italic, strike, inline code, links), headings h1–h6, nested lists as
+ * nested lists, blockquotes and tables; `<pre>` text is kept character for
+ * character. Anything else becomes plain text of the nearest block.
+ */
 function htmlToReaderPmDoc(html: string, sourceUri: string | null): ReaderPmDoc {
-  const root: ReaderPmNode[] = [];
-  const containerStack: ReaderPmNode[][] = [root];
-  const listStack: Array<{ type: "bulletList" | "orderedList"; items: ReaderPmNode[] }> = [];
-  const linkStack: string[] = [];
+  interface Frame { kind: "root" | "blockquote" | "listItem"; blocks: ReaderPmNode[]; list?: ListFrame }
+  interface ListFrame { type: "bulletList" | "orderedList"; items: ReaderPmNode[]; depth: number; start: number }
+  const frames: Frame[] = [{ kind: "root", blocks: [] }];
+  const lists: ListFrame[] = [];
+  const marks: ReaderPmMark[] = [];
   let currentBlock: { type: "paragraph" | "heading" | "codeBlock"; attrs?: Record<string, unknown>; content: ReaderPmNode[] } | null = null;
-  let currentListItem: ReaderPmNode[] | null = null;
   let preDepth = 0;
 
-  function currentContainer(): ReaderPmNode[] {
-    return containerStack[containerStack.length - 1] ?? root;
-  }
-
-  function appendBlock(node: ReaderPmNode): void {
-    currentContainer().push(node);
-  }
+  const top = (): Frame => frames[frames.length - 1]!;
+  const appendBlock = (node: ReaderPmNode): void => { top().blocks.push(node); };
 
   function closeCurrentBlock(): void {
     if (!currentBlock) return;
-    trimInlineContent(currentBlock.content);
+    if (currentBlock.type !== "codeBlock") trimInlineContent(currentBlock.content);
+    else trimCodeBlock(currentBlock.content);
     if (currentBlock.content.length > 0) {
       const node: ReaderPmNode = { type: currentBlock.type, content: currentBlock.content };
       if (currentBlock.attrs) node.attrs = currentBlock.attrs;
-      if (currentListItem) appendBlockContentToListItem(node, currentListItem);
-      else appendBlock(node);
+      appendBlock(node);
     }
     currentBlock = null;
   }
 
-  function ensureParagraph(): ReaderPmNode[] {
-    if (currentListItem) return currentListItem;
+  function ensureBlock(): ReaderPmNode[] {
     if (!currentBlock) currentBlock = { type: "paragraph", content: [] };
     return currentBlock.content;
   }
 
-  function appendInline(node: ReaderPmNode): void {
-    const target = currentListItem ?? ensureParagraph();
-    target.push(node);
-  }
-
   function appendText(raw: string): void {
     const decoded = decodeEntities(raw);
-    const text = preDepth > 0 ? decoded : decoded.replace(/\s+/g, " ");
+    const verbatim = preDepth > 0;
+    const text = verbatim ? decoded : decoded.replace(/\s+/g, " ");
     if (!text) return;
-    const target = currentListItem ?? ensureParagraph();
+    const target = ensureBlock();
     const previous = target[target.length - 1];
-    const value = previous?.type === "text" && typeof previous.text === "string"
-      ? coalesceText(previous.text, text)
-      : trimLeadingText(target, text);
+    const value = verbatim
+      ? text
+      : previous?.type === "text" && typeof previous.text === "string"
+        ? coalesceText(previous.text, text)
+        : trimLeadingText(target, text);
     if (!value) return;
-    const marks = currentLinkMark(linkStack);
-    if (previous?.type === "text" && typeof previous.text === "string" && sameMarks(previous.marks, marks)) {
+    // Code blocks hold plain text only.
+    const applied = verbatim ? undefined : currentMarks(marks);
+    if (previous?.type === "text" && typeof previous.text === "string" && sameMarks(previous.marks, applied)) {
       previous.text += value;
       return;
     }
     const node: ReaderPmNode = { type: "text", text: value };
-    if (marks) node.marks = marks;
+    if (applied) node.marks = applied;
     target.push(node);
   }
 
@@ -444,24 +488,29 @@ function htmlToReaderPmDoc(html: string, sourceUri: string | null): ReaderPmDoc 
     currentBlock = { type, attrs, content: [] };
   }
 
-  function closeListItem(): void {
-    if (!currentListItem) return;
-    trimInlineContent(currentListItem);
-    if (currentListItem.length > 0 && listStack.length > 0) {
-      listStack[listStack.length - 1]!.items.push({
-        type: "listItem",
-        content: [{ type: "paragraph", content: currentListItem }],
-      });
+  function closeFrame(): void {
+    const frame = frames.pop();
+    if (!frame || frame.kind === "root") return;
+    if (frame.kind === "listItem") {
+      frame.list?.items.push({ type: "listItem", content: frame.blocks.length > 0 ? frame.blocks : [{ type: "paragraph" }] });
+    } else if (frame.blocks.length > 0) {
+      appendBlock({ type: "blockquote", content: frame.blocks });
     }
-    currentListItem = null;
+  }
+
+  function closeListItem(): void {
+    closeCurrentBlock();
+    const list = lists[lists.length - 1];
+    if (list && top().kind === "listItem" && top().list === list) closeFrame();
   }
 
   function closeList(): void {
     closeCurrentBlock();
-    closeListItem();
-    const list = listStack.pop();
-    if (!list || list.items.length === 0) return;
-    appendBlock({ type: list.type, content: list.items });
+    const list = lists.pop();
+    if (!list) return;
+    while (frames.length > list.depth) closeFrame();
+    if (list.items.length === 0) return;
+    appendBlock({ type: list.type, ...(list.type === "orderedList" && list.start !== 1 ? { attrs: { start: list.start } } : {}), content: list.items });
   }
 
   const tokenRe = /<\/?[^>]+>|[^<]+/g;
@@ -477,35 +526,42 @@ function htmlToReaderPmDoc(html: string, sourceUri: string | null): ReaderPmDoc 
     if (!tag) continue;
     const closing = /^<\s*\//.test(value);
     const selfClosing = /\/\s*>$/.test(value) || VOID_TAGS.has(tag);
+    const markType = INLINE_MARK_TAGS[tag];
 
     if (closing) {
-      if (tag === "a") linkStack.pop();
+      if (markType && !(markType === "code" && preDepth > 0)) popMark(marks, markType);
       else if (["p", "h1", "h2", "h3", "h4", "h5", "h6", "pre"].includes(tag)) {
         if (tag === "pre") preDepth = Math.max(0, preDepth - 1);
         closeCurrentBlock();
       } else if (tag === "li") {
-        closeCurrentBlock();
         closeListItem();
       } else if (tag === "ul" || tag === "ol") {
         closeList();
       } else if (tag === "blockquote") {
         closeCurrentBlock();
-        const content = containerStack.pop();
-        if (content && content !== root && content.length > 0) appendBlock({ type: "blockquote", content });
+        while (frames.length > 1 && top().kind !== "blockquote") closeFrame();
+        if (top().kind === "blockquote") closeFrame();
       } else if (BLOCK_TAGS.has(tag)) {
         closeCurrentBlock();
       }
       continue;
     }
 
-    if (tag === "a") {
-      const href = resolveRemoteUrl(attrValue(value, "href"), sourceUri);
-      if (href) linkStack.push(href);
+    if (markType) {
+      // `<code>` inside `<pre>` is the code block itself, not an inline mark.
+      if (markType === "code" && preDepth > 0) continue;
+      if (markType === "link") {
+        const href = resolveRemoteUrl(attrValue(value, "href"), sourceUri);
+        marks.push(href ? { type: "link", attrs: { href } } : { type: "link" });
+      } else {
+        marks.push({ type: markType });
+      }
       continue;
     }
 
     if (tag === "br") {
-      appendInline({ type: "hardBreak" });
+      if (preDepth > 0) appendText("\n");
+      else ensureBlock().push({ type: "hardBreak" });
       continue;
     }
 
@@ -544,20 +600,21 @@ function htmlToReaderPmDoc(html: string, sourceUri: string | null): ReaderPmDoc 
 
     if (tag === "blockquote") {
       closeCurrentBlock();
-      containerStack.push([]);
+      frames.push({ kind: "blockquote", blocks: [] });
       continue;
     }
 
     if (tag === "ul" || tag === "ol") {
       closeCurrentBlock();
-      listStack.push({ type: tag === "ul" ? "bulletList" : "orderedList", items: [] });
+      const start = tag === "ol" ? Number(attrValue(value, "start") ?? "1") : 1;
+      lists.push({ type: tag === "ul" ? "bulletList" : "orderedList", items: [], depth: frames.length, start: Number.isInteger(start) ? start : 1 });
       continue;
     }
 
     if (tag === "li") {
-      closeCurrentBlock();
       closeListItem();
-      currentListItem = [];
+      const list = lists[lists.length - 1];
+      if (list) frames.push({ kind: "listItem", blocks: [], list });
       continue;
     }
 
@@ -568,7 +625,7 @@ function htmlToReaderPmDoc(html: string, sourceUri: string | null): ReaderPmDoc 
     }
 
     if (/^h[1-6]$/.test(tag)) {
-      startBlock("heading", { level: Math.min(Number(tag.slice(1)), 3) });
+      startBlock("heading", { level: Number(tag.slice(1)) });
       continue;
     }
 
@@ -583,13 +640,43 @@ function htmlToReaderPmDoc(html: string, sourceUri: string | null): ReaderPmDoc 
   }
 
   closeCurrentBlock();
-  closeListItem();
-  while (listStack.length > 0) closeList();
-  while (containerStack.length > 1) {
-    const content = containerStack.pop();
-    if (content && content.length > 0) appendBlock({ type: "blockquote", content });
+  while (lists.length > 0) closeList();
+  while (frames.length > 1) closeFrame();
+  return { type: "doc", content: frames[0]!.blocks.filter(hasRenderableContent) };
+}
+
+/** Inline HTML elements whose meaning the Reader keeps, by mark. */
+const INLINE_MARK_TAGS: Record<string, string> = {
+  a: "link", b: "bold", strong: "bold", i: "italic", em: "italic",
+  s: "strike", del: "strike", strike: "strike", code: "code", kbd: "code", samp: "code",
+};
+
+function currentMarks(stack: ReaderPmMark[]): ReaderPmMark[] | undefined {
+  const marks: ReaderPmMark[] = [];
+  for (const mark of stack) {
+    // A link without a usable target still scopes its text, but adds no mark.
+    if (mark.type === "link" && !mark.attrs) continue;
+    const existing = marks.findIndex(item => item.type === mark.type);
+    if (existing >= 0) marks.splice(existing, 1);
+    marks.push(mark);
   }
-  return { type: "doc", content: root.filter(hasRenderableContent) };
+  // Inline code excludes every other mark in the Reader schema, links included.
+  if (marks.some(mark => mark.type === "code")) return [{ type: "code" }];
+  return marks.length > 0 ? marks : undefined;
+}
+
+function popMark(stack: ReaderPmMark[], type: string): void {
+  const index = stack.map(mark => mark.type).lastIndexOf(type);
+  if (index >= 0) stack.splice(index, 1);
+}
+
+/** A `<pre>` block keeps its text verbatim; only a single newline right after `<pre>` and the last line break are markup. */
+function trimCodeBlock(nodes: ReaderPmNode[]): void {
+  const first = nodes[0];
+  if (first?.type === "text" && typeof first.text === "string") first.text = first.text.replace(/^\r?\n/, "");
+  const last = nodes[nodes.length - 1];
+  if (last?.type === "text" && typeof last.text === "string") last.text = last.text.replace(/\r?\n$/, "");
+  for (let index = nodes.length - 1; index >= 0; index -= 1) if (nodes[index]!.type === "text" && !nodes[index]!.text) nodes.splice(index, 1);
 }
 
 function plainTextToPmDoc(text: string): ReaderPmDoc {
@@ -663,10 +750,6 @@ function coalesceText(previous: string, next: string): string {
   return next;
 }
 
-function currentLinkMark(stack: string[]): ReaderPmMark[] | undefined {
-  const href = stack[stack.length - 1];
-  return href ? [{ type: "link", attrs: { href } }] : undefined;
-}
 
 function sameMarks(a: ReaderPmMark[] | undefined, b: ReaderPmMark[] | undefined): boolean {
   const left = a ?? [];
@@ -695,20 +778,6 @@ function attrValue(tag: string, name: string): string | null {
   return raw ? decodeEntities(raw.trim()) : null;
 }
 
-function appendBlockContentToListItem(node: ReaderPmNode, target: ReaderPmNode[]): void {
-  if (target.length > 0) target.push({ type: "hardBreak" });
-  if (node.type === "text" || node.type === "hardBreak") {
-    target.push(node);
-    return;
-  }
-  for (const child of node.content ?? []) {
-    if (child.type === "text" || child.type === "hardBreak") {
-      target.push(child);
-    } else {
-      appendBlockContentToListItem(child, target);
-    }
-  }
-}
 
 function firstSrcsetUrl(srcset: string | null): string | null {
   const first = srcset?.split(",")[0]?.trim();
@@ -754,33 +823,12 @@ function countImageNodes(doc: ReaderPmDoc): number {
   return count;
 }
 
-function isPmDoc(value: unknown): value is ReaderPmDoc {
-  return isRecord(value) &&
-    value.type === "doc" &&
-    Array.isArray(value.content) &&
-    value.content.every(isPmNode);
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isPmNode(value: unknown): value is ReaderPmNode {
-  if (!isRecord(value) || typeof value.type !== "string" || !READER_NODE_TYPES.has(value.type)) return false;
-  if (value.attrs !== undefined && !isRecord(value.attrs)) return false;
-  if (value.text !== undefined && typeof value.text !== "string") return false;
-  if (value.marks !== undefined && (!Array.isArray(value.marks) || !value.marks.every(isPmMark))) return false;
-  if (value.content !== undefined && (!Array.isArray(value.content) || !value.content.every(isPmNode))) return false;
-  if (value.type === "text" && typeof value.text !== "string") return false;
-  return true;
-}
 
-function isPmMark(value: unknown): value is ReaderPmMark {
-  return isRecord(value) &&
-    typeof value.type === "string" &&
-    READER_MARK_TYPES.has(value.type) &&
-    (value.attrs === undefined || isRecord(value.attrs));
-}
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

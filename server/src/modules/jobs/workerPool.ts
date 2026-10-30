@@ -8,7 +8,6 @@ export async function runJobWorkerPool(
     stopped: () => boolean;
     pollIntervalMs: number;
     postWakeRecheckMs: number;
-    beforePoll: () => Promise<void>;
     log?: { warn: (message: string) => void; error: (message: string) => void };
   },
 ): Promise<void> {
@@ -16,8 +15,6 @@ export async function runJobWorkerPool(
     let idleWaitMs = options.pollIntervalMs;
     while (!options.stopped()) {
       try {
-        await options.beforePoll();
-        if (options.stopped()) break;
         const result = await worker.processOne();
         if (result.status === "idle" && !options.stopped()) {
           const wake = await waitForJobWake(idleWaitMs);

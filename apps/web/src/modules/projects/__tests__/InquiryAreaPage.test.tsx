@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
@@ -19,9 +19,10 @@ vi.mock('../../../core/spaceNav', () => ({
   useSpaceNavigate: () => spaceNavigate,
 }))
 
+const scope = vi.hoisted(() => ({ activeSpaceId: 'space-1' }))
 vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({
-    activeSpaceId: 'space-1', userId: 'user-1',
+    activeSpaceId: scope.activeSpaceId, userId: 'user-1',
     spaces: [{ id: 'space-1', role: 'member' }],
   }),
 }))
@@ -142,6 +143,7 @@ function candidate(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  scope.activeSpaceId = 'space-1'
   vi.clearAllMocks()
   vi.mocked(projectsApi.get).mockResolvedValue(PROJECT)
   vi.mocked(projectsApi.getActiveBriefVersion).mockResolvedValue(null)
@@ -182,6 +184,83 @@ function renderPage(path = '/spaces/space-1/projects/project-1/inquiry') {
 }
 
 describe('InquiryAreaPage', () => {
+  it('drops old Space content and ignores a late Project list on the same Project deep link', async () => {
+    const page = renderPage()
+    await screen.findByRole('button', { name: 'Edit wording' })
+    let releaseList!: (value: typeof QUESTION[]) => void
+    const oldList = new Promise<typeof QUESTION[]>(resolve => { releaseList = resolve })
+    vi.mocked(inquiryApi.listThreads).mockReturnValueOnce(oldList)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await waitFor(() => expect(inquiryApi.listThreads).toHaveBeenCalledTimes(2))
+    document.dispatchEvent(new Event('visibilitychange'))
+
+    scope.activeSpaceId = 'space-2'
+    vi.mocked(projectsApi.get).mockRejectedValue(new Error('Project not found'))
+    vi.mocked(inquiryApi.listThreads).mockResolvedValue([])
+    page.rerender(
+      <MemoryRouter initialEntries={['/spaces/space-1/projects/project-1/inquiry']} future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <Routes>
+          <Route path="/spaces/:spaceId/projects/:projectId/inquiry" element={<InquiryAreaPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Edit wording' })).not.toBeInTheDocument())
+    await waitFor(() => expect(inquiryApi.listThreads).toHaveBeenCalledTimes(3))
+    const detailReads = vi.mocked(inquiryApi.getThread).mock.calls.length
+    await act(async () => { releaseList([{ ...QUESTION, statement: 'Late private Thread' }]); await oldList })
+    expect(screen.queryByText('Does caching help?')).not.toBeInTheDocument()
+    expect(screen.queryByText('Late private Thread')).not.toBeInTheDocument()
+    expect(inquiryApi.getThread).toHaveBeenCalledTimes(detailReads)
+    expect(inquiryApi.listThreads).toHaveBeenCalledTimes(3)
+  })
+
+  it.each(['question', 'hypothesis'] as const)('shows summary-readable %s metadata without requiring its restricted body endpoints', async kind => {
+    vi.mocked(inquiryApi.getThread).mockResolvedValue({ ...QUESTION_DETAIL, kind, question_state: null })
+    vi.mocked(inquiryApi.listIterations).mockRejectedValue(new Error('Thread not found'))
+    vi.mocked(inquiryApi.listSteps).mockRejectedValue(new Error('Thread not found'))
+    vi.mocked(inquiryApi.listSignals).mockRejectedValue(new Error('Thread not found'))
+    renderPage()
+
+    expect(await screen.findByText('Full access is required to read this Thread’s content and history.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Thread actions' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit wording' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /^Clarify/ })).not.toBeInTheDocument()
+    expect(inquiryApi.listIterations).not.toHaveBeenCalled()
+    expect(inquiryApi.getAdvice).not.toHaveBeenCalled()
+    expect(toast.error).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Thread actions' }))
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Add to My Focus' }))
+    expect(inquiryApi.setPersonalFocus).toHaveBeenCalledWith('project-1', 'thread-1', true)
+  })
+
+  it.each(['summary', 'denied'])('clears previously read content when refresh becomes %s', async mode => {
+    vi.mocked(inquiryApi.getThread).mockResolvedValue({
+      ...QUESTION_DETAIL,
+      question_state: { ...QUESTION_DETAIL.question_state, current_answer_summary: 'Private cached conclusion' },
+    })
+    renderPage()
+    expect(await screen.findByText(/Private cached conclusion/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Thread actions' }))
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Mark blocked…' }))
+    expect(screen.getByRole('dialog', { name: 'Mark this Thread blocked' })).toBeInTheDocument()
+    if (mode === 'summary') {
+      vi.mocked(inquiryApi.getThread).mockResolvedValue({ ...QUESTION_DETAIL, question_state: null })
+    } else {
+      vi.mocked(inquiryApi.getThread).mockRejectedValue(new Error('Thread not found'))
+    }
+    vi.mocked(inquiryApi.listIterations).mockRejectedValue(new Error('Thread not found'))
+    document.dispatchEvent(new Event('visibilitychange'))
+
+    await waitFor(() => expect(screen.queryByText(/Private cached conclusion/)).not.toBeInTheDocument())
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /^Clarify/ })).not.toBeInTheDocument()
+    if (mode === 'summary') {
+      expect(screen.getByText('Full access is required to read this Thread’s content and history.')).toBeInTheDocument()
+    } else {
+      expect(screen.getByRole('alert')).toHaveTextContent('Thread not found')
+    }
+  })
+
   it('lists Threads and shows the selected Thread detail', async () => {
     renderPage()
 

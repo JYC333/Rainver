@@ -9,12 +9,12 @@ STAMP_FILE="$STAMP_DIR/package-inputs.sha256"
 dependency_hash() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum /repo/package.json /repo/pnpm-workspace.yaml /repo/pnpm-lock.yaml \
-      /repo/packages/protocol/package.json /repo/server/package.json package.json \
+      /repo/packages/protocol/package.json /repo/packages/reader-document/package.json /repo/server/package.json package.json \
       | sha256sum | awk '{print $1}'
     return
   fi
   shasum -a 256 /repo/package.json /repo/pnpm-workspace.yaml /repo/pnpm-lock.yaml \
-    /repo/packages/protocol/package.json /repo/server/package.json package.json \
+    /repo/packages/protocol/package.json /repo/packages/reader-document/package.json /repo/server/package.json package.json \
     | shasum -a 256 | awk '{print $1}'
 }
 
@@ -39,6 +39,7 @@ if [ -n "$install_reason" ]; then
   echo "[web-dev] $install_reason; running pnpm install"
   pnpm --dir /repo install --frozen-lockfile \
     --filter @rainver/protocol \
+    --filter @rainver/reader-document \
     --filter @rainver/web
   mkdir -p "$STAMP_DIR"
   printf '%s\n' "$current_hash" > "$STAMP_FILE"

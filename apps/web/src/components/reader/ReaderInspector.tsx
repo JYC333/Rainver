@@ -12,9 +12,10 @@ import { Input } from '../../components/ui/input'
 import { Textarea } from '../../components/ui/textarea'
 import {
   X, MessageSquare, Bookmark, Quote, Highlighter,
-  Lock, Globe, Lightbulb, Brain, Trash2,
+  Lock, Globe, Lightbulb, Brain, Trash2, Copy,
 } from 'lucide-react'
-import { annotationCountsByType, openThreadCount, type ReaderAnnotationType } from './readerModel'
+import { copyText } from './readerClipboard'
+import { annotationCountsByType, openThreadCount, type ReaderAnnotationsStatus, type ReaderAnnotationType, type ReaderThreadsStatus } from './readerModel'
 
 const TYPE_ICONS: Record<ReaderAnnotationType, typeof Highlighter> = {
   highlight: Highlighter,
@@ -26,53 +27,88 @@ const TYPE_ICONS: Record<ReaderAnnotationType, typeof Highlighter> = {
 interface ReaderInspectorProps {
   /** Active annotations in document order. */
   annotations: ReaderAnnotation[]
+  /** Loading/failure of the annotation list; the counts and notebook are not shown as empty meanwhile. */
+  annotationsStatus?: ReaderAnnotationsStatus
   selection: TextSelection | null
   selectedAnnotation: ReaderAnnotation | null
   threads: ReaderCommentThread[]
+  /** Loading/failure of the selected annotation's threads; never shown as "no comments". */
+  threadsStatus?: ReaderThreadsStatus
+  /** Annotations with an unsent comment kept for this document. */
+  draftAnnotationIds?: ReadonlySet<string>
+  /** Annotations that cannot be placed in the current document; kept and listed, not painted. */
+  unlocatedAnnotationIds?: ReadonlySet<string>
   createLabel: string
   onCreateLabelChange: (label: string) => void
   commentInputRef: RefObject<HTMLTextAreaElement | null>
+  /** The selected annotation's unsent comment, owned by the workspace. */
+  commentDraft: string
+  onCommentDraftChange: (value: string) => void
+  commentPending: boolean
+  onSubmitComment: () => void
   onSelectAnnotation: (annotation: ReaderAnnotation) => void
-  onAnnotationArchived: (annotationId: string) => void
-  /**
-   * A change to the threads of `annotationId`, as an update over the current
-   * list: the request it answers may complete after another thread change,
-   * or after another annotation was selected, and the owner decides whether
-   * the annotation is still the one on screen.
-   */
-  onThreadsUpdated: (annotationId: string, update: (current: ReaderCommentThread[]) => ReaderCommentThread[]) => void
+  /** Archives on the server; the workspace decides whether the list may still change. */
+  onArchiveAnnotation: (annotationId: string) => Promise<void>
+  onAdjustRange?: (annotation: ReaderAnnotation) => void
+  /** Resolves or reopens a thread of the selected annotation; the workspace coordinates it with other writes. */
+  onSetThreadStatus: (threadId: string, status: 'open' | 'resolved') => Promise<void>
   onClose: () => void
+  /** Laid over the text because the Reader is too narrow to dock it beside. */
+  overlay?: boolean
 }
+
+/** Notebook filters: every annotation, one type, or those not placed in this version. */
+type NotebookFilter = 'all' | ReaderAnnotationType | 'unlocated'
 
 export function ReaderInspector({
   annotations,
+  annotationsStatus,
   selection,
   selectedAnnotation,
   threads,
+  threadsStatus,
+  draftAnnotationIds,
+  unlocatedAnnotationIds,
   createLabel,
   onCreateLabelChange,
   commentInputRef,
+  commentDraft,
+  onCommentDraftChange,
+  commentPending,
+  onSubmitComment,
   onSelectAnnotation,
-  onAnnotationArchived,
-  onThreadsUpdated,
+  onArchiveAnnotation,
+  onAdjustRange,
+  onSetThreadStatus,
   onClose,
+  overlay = false,
 }: ReaderInspectorProps) {
   const { t } = useAppTranslation()
   const [archiving, setArchiving] = useState(false)
-  const [commentBody, setCommentBody] = useState('')
-  const [commenting, setCommenting] = useState(false)
   const [actioning, setActioning] = useState(false)
+  // One status change per thread at a time; a second click cannot race the first.
+  const [threadPending, setThreadPending] = useState<Record<string, boolean>>({})
+  const [filter, setFilter] = useState<NotebookFilter>('all')
+  const draftCount = annotations.filter(item => draftAnnotationIds?.has(item.id)).length
+  const unlocatedCount = annotations.filter(item => unlocatedAnnotationIds?.has(item.id)).length
 
   const counts = annotationCountsByType(annotations)
+  const filters: Array<{ value: NotebookFilter; count: number }> = [
+    { value: 'all', count: annotations.length },
+    ...(['highlight', 'comment', 'excerpt', 'bookmark'] as const).map(value => ({ value, count: counts[value] })).filter(item => item.count > 0),
+    ...(unlocatedCount > 0 ? [{ value: 'unlocated' as const, count: unlocatedCount }] : []),
+  ]
+  // A filter whose annotations are all gone falls back to everything.
+  const activeFilter = filters.some(item => item.value === filter) ? filter : 'all'
+  const shown = annotations.filter(item => activeFilter === 'all' || (activeFilter === 'unlocated' ? unlocatedAnnotationIds?.has(item.id) : item.annotation_type === activeFilter))
   const openThreads = openThreadCount(threads)
 
   async function archiveAnnotation() {
     if (!selectedAnnotation) return
     setArchiving(true)
     try {
-      await readerApi.deleteAnnotation(selectedAnnotation.id)
-      onAnnotationArchived(selectedAnnotation.id)
-      toast.success(t('reading.annotationRemoved'))
+      // The workspace confirms the removal and offers Undo.
+      await onArchiveAnnotation(selectedAnnotation.id)
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -80,33 +116,15 @@ export function ReaderInspector({
     }
   }
 
-  async function addComment() {
-    if (!selectedAnnotation || !commentBody.trim()) return
-    const annotationId = selectedAnnotation.id
-    setCommenting(true)
+  async function setThreadStatus(threadId: string, status: 'open' | 'resolved') {
+    if (!selectedAnnotation || threadPending[threadId]) return
+    setThreadPending(current => ({ ...current, [threadId]: true }))
     try {
-      const result = await readerApi.createComment(annotationId, { body: commentBody.trim() })
-      onThreadsUpdated(annotationId, (current) => {
-        const updated = current.map((t) => t.id === result.thread.id ? result.thread : t)
-        if (!updated.find((t) => t.id === result.thread.id)) updated.push(result.thread)
-        return updated
-      })
-      setCommentBody('')
+      await onSetThreadStatus(threadId, status)
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
-      setCommenting(false)
-    }
-  }
-
-  async function setThreadStatus(threadId: string, status: 'open' | 'resolved') {
-    if (!selectedAnnotation) return
-    const annotationId = selectedAnnotation.id
-    try {
-      const updated = await readerApi.updateThread(threadId, { status })
-      onThreadsUpdated(annotationId, (current) => current.map((t) => t.id === threadId ? updated : t))
-    } catch (e) {
-      toast.error(errMsg(e))
+      setThreadPending(current => { const { [threadId]: _done, ...rest } = current; return rest })
     }
   }
 
@@ -137,13 +155,14 @@ export function ReaderInspector({
   }
 
   return (
-    <aside className="reader-inspector border-l border-border bg-background flex flex-col h-full overflow-y-auto" aria-label={t('reading.inspectorRegion')}>
-      {/* Keep the mobile close control clear of Shell’s floating capture action. */}
-      <div className="flex items-center justify-between pl-3 pr-20 md:pr-3 py-2 border-b border-border shrink-0">
+    <aside className={`reader-inspector${overlay ? ' reader-inspector-overlay' : ''} border-l border-border bg-background flex flex-col h-full overflow-y-auto`} aria-label={t('reading.inspectorRegion')}>
+      {/* Sticky so the drawer can always be closed; keeps the mobile close
+          control clear of Shell’s floating capture action. */}
+      <div className="sticky top-0 z-10 flex items-center justify-between bg-background pl-3 pr-20 md:pr-3 py-2 border-b border-border shrink-0">
         <div className="min-w-0">
           <p className="text-sm font-medium">{t('reading.inspector')}</p>
           <p className="text-xs text-muted-foreground">
-            {t('reading.annotationCount', { count: annotations.length })}
+            {annotationsStatus ? t(annotationsStatus.state === 'loading' ? 'reading.annotationsLoading' : 'reading.annotationsFailed') : t('reading.annotationCount', { count: annotations.length })}
             {selectedAnnotation && <> · {t('reading.openThreadCount', { count: openThreads })}</>}
           </p>
         </div>
@@ -190,23 +209,43 @@ export function ReaderInspector({
                 <p className="text-xs font-medium">{selectedAnnotation.label}</p>
               )}
             </div>
-            <Button
-              variant="ghost" size="icon-sm" className="shrink-0"
-              onClick={archiveAnnotation} disabled={archiving}
-              aria-label={t('reading.removeAnnotation')}
-            >
-              <Trash2 className="size-3" />
-            </Button>
+            <div className="flex shrink-0 gap-0.5">
+              {onAdjustRange && <Button variant="ghost" size="sm" onClick={() => onAdjustRange(selectedAnnotation)}>{t('reading.adjustRange')}</Button>}
+              <Button variant="ghost" size="icon-sm" aria-label={t('reading.copyQuote')} title={t('reading.copyQuote')}
+                onClick={() => void copyText(selectedAnnotation.quote_text).then(ok => ok ? toast.success(t('reading.copied')) : toast.error(t('reading.copyFailed')))}>
+                <Copy className="size-3" />
+              </Button>
+              <Button
+                variant="ghost" size="icon-sm"
+                onClick={archiveAnnotation} disabled={archiving}
+                aria-label={t('reading.removeAnnotation')} title={t('reading.removeAnnotation')}
+              >
+                <Trash2 className="size-3" />
+              </Button>
+            </div>
           </div>
 
           <blockquote className="text-xs italic border-l-2 border-border pl-2 text-muted-foreground line-clamp-4">
             {selectedAnnotation.quote_text}
           </blockquote>
+          {unlocatedAnnotationIds?.has(selectedAnnotation.id) && (
+            <p className="text-xs text-muted-foreground">{t('reading.unlocatedDetail')}</p>
+          )}
 
           {/* Comments */}
           <div className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground">{t('reading.comments')}</p>
-            {threads.length === 0 && (
+            {threadsStatus?.state === 'loading' && (
+              <p role="status" className="text-xs text-muted-foreground">{t('reading.commentsLoading')}</p>
+            )}
+            {threadsStatus?.state === 'error' && (
+              <div role="alert" className="space-y-2 rounded-md border border-destructive/40 p-2 text-xs">
+                <p className="font-medium">{t('reading.commentsFailed')}</p>
+                <p className="break-words text-muted-foreground">{errMsg(threadsStatus.error)}</p>
+                <Button size="sm" variant="outline" onClick={threadsStatus.retry}>{t('reading.retry')}</Button>
+              </div>
+            )}
+            {!threadsStatus && threads.length === 0 && (
               <p className="text-xs text-muted-foreground">{t('reading.noComments')}</p>
             )}
             {threads.map((thread) => (
@@ -215,11 +254,11 @@ export function ReaderInspector({
                   <Badge variant="outline" className="text-xs">{t(`reading.thread_${thread.status}`)}</Badge>
                   <div className="flex gap-1">
                     {thread.status === 'open' && (
-                      <Button variant="ghost" size="sm"
+                      <Button variant="ghost" size="sm" disabled={threadPending[thread.id]}
                         onClick={() => setThreadStatus(thread.id, 'resolved')}>{t('reading.resolve')}</Button>
                     )}
                     {thread.status === 'resolved' && (
-                      <Button variant="ghost" size="sm"
+                      <Button variant="ghost" size="sm" disabled={threadPending[thread.id]}
                         onClick={() => setThreadStatus(thread.id, 'open')}>{t('reading.reopen')}</Button>
                     )}
                   </div>
@@ -237,18 +276,26 @@ export function ReaderInspector({
               className="text-xs resize-none min-h-0"
               rows={2}
               placeholder={t('reading.addComment')}
-              value={commentBody}
-              onChange={(e) => setCommentBody(e.target.value)}
+              aria-label={t('reading.addComment')}
+              value={commentDraft}
+              onChange={(e) => onCommentDraftChange(e.target.value)}
             />
-            <Button size="sm" className="w-full" onClick={addComment}
-              disabled={!commentBody.trim() || commenting}>
-              {t('reading.comment')}
-            </Button>
+            <div className="flex gap-2">
+              <Button size="sm" className="flex-1" onClick={onSubmitComment}
+                disabled={!commentDraft.trim() || commentPending}>
+                {commentPending ? t('reading.commentSaving') : t('reading.comment')}
+              </Button>
+              {/* Kept drafts are only ever discarded on purpose. */}
+              {commentDraft.trim() && !commentPending && (
+                <Button size="sm" variant="ghost" onClick={() => onCommentDraftChange('')}>{t('reading.discardDraft')}</Button>
+              )}
+            </div>
           </div>
 
           {/* Downstream actions */}
           <div className="space-y-1">
             <p className="text-xs font-medium text-muted-foreground">{t('reading.actions')}</p>
+            <p className="text-xs text-muted-foreground">{t('reading.actionsHint')}</p>
             <div className="flex flex-col gap-1">
               <Button
                 variant="outline" size="sm" className="h-7 text-xs justify-start"
@@ -276,12 +323,37 @@ export function ReaderInspector({
       {/* Notebook */}
       <section className="p-3 space-y-1 flex-1" aria-label={t('reading.notebookRegion')}>
         <p className="text-xs font-medium text-muted-foreground pb-1">{t('reading.notebook')}</p>
-        {annotations.length === 0 && (
+        {draftCount > 0 && (
+          <p role="status" className="text-xs text-primary">{t('reading.unsentComments', { count: draftCount })}</p>
+        )}
+        {unlocatedCount > 0 && (
+          <p role="status" className="rounded-md border border-warning/40 bg-warning/5 p-2 text-xs">{t('reading.unlocatedNotice', { count: unlocatedCount })}</p>
+        )}
+        {annotationsStatus?.state === 'loading' && (
+          <p role="status" className="text-xs text-muted-foreground">{t('reading.annotationsLoading')}</p>
+        )}
+        {annotationsStatus?.state === 'error' && (
+          <div role="alert" className="space-y-2 rounded-md border border-destructive/40 p-2 text-xs">
+            <p className="font-medium">{t('reading.annotationsFailed')}</p>
+            <p className="break-words text-muted-foreground">{errMsg(annotationsStatus.error)}</p>
+            <Button size="sm" variant="outline" onClick={annotationsStatus.retry}>{t('reading.retry')}</Button>
+          </div>
+        )}
+        {!annotationsStatus && annotations.length === 0 && (
           <p className="text-xs text-muted-foreground">
             {t('reading.notebookEmpty')}
           </p>
         )}
-        {annotations.map((ann) => {
+        {filters.length > 2 && (
+          <div role="group" aria-label={t('reading.notebookFilter')} className="flex flex-wrap gap-1 pb-1">
+            {filters.map(item => <button key={item.value} type="button" aria-pressed={activeFilter === item.value}
+              className={`min-h-7 rounded-full border px-2 text-xs ${activeFilter === item.value ? 'border-primary bg-primary/12' : 'border-border text-muted-foreground hover:bg-accent'}`}
+              onClick={() => setFilter(item.value)}>
+              {t(item.value === 'all' ? 'reading.filterAll' : item.value === 'unlocated' ? 'reading.unlocated' : `reading.${item.value}`)} {item.count}
+            </button>)}
+          </div>
+        )}
+        {shown.map((ann) => {
           const Icon = TYPE_ICONS[ann.annotation_type]
           const isSelected = ann.id === selectedAnnotation?.id
           return (
@@ -299,6 +371,12 @@ export function ReaderInspector({
                   : <Globe className="size-2.5 shrink-0" />}
                 {ann.anchor_state === 'unverified' && (
                   <Badge variant="destructive" className="text-xs px-1 py-0">{t('reading.unverified')}</Badge>
+                )}
+                {unlocatedAnnotationIds?.has(ann.id) && (
+                  <Badge variant="outline" className="text-xs px-1 py-0">{t('reading.unlocated')}</Badge>
+                )}
+                {draftAnnotationIds?.has(ann.id) && (
+                  <Badge variant="outline" className="text-xs px-1 py-0">{t('reading.unsentDraft')}</Badge>
                 )}
               </div>
               <p className="text-xs line-clamp-2">{ann.quote_text}</p>

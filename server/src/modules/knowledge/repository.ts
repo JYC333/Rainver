@@ -42,7 +42,8 @@ import {
   confidence,
 } from "../routeUtils/common.js";
 import { assertWritableSpaceObject } from "./knowledgeWriteAccess.js";
-import { contentReadSql, contentVisibilityParamFilterSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql, contentVisibilityParamFilterSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
 import { recordDetailRead } from "../contentAccess/audit.js";
 import { proposalToOut } from "../proposals/repository.js";
@@ -972,13 +973,13 @@ export class PgKnowledgeRepository {
   async listItemSources(identity: SpaceUserIdentity, itemId: string): Promise<Record<string, unknown>[]> {
     const item = await this.getVisibleItemRow(identity, itemId);
     if (!item) throw new HttpError(404, "Knowledge item not found");
-    return this.listKnowledgeItemSourceLinks("knowledge_item_id", itemId, identity.spaceId, bodyWithheld(item.effective_access_level));
+    return this.listKnowledgeItemSourceLinks("knowledge_item_id", itemId, identity);
   }
 
   async listSourceItems(identity: SpaceUserIdentity, sourceId: string): Promise<Record<string, unknown>[]> {
     const source = await this.getSourceRow(identity, sourceId);
     if (!source) throw new HttpError(404, "Source not found");
-    return this.listKnowledgeItemSourceLinks("source_id", sourceId, identity.spaceId, bodyWithheld(source.effective_access_level));
+    return this.listKnowledgeItemSourceLinks("source_id", sourceId, identity);
   }
 
   async createItemSource(identity: SpaceUserIdentity, itemId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -2494,25 +2495,33 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * An item↔source link restates the source's text as `quote` / `note`, so a
-   * reader at summary level of the object the listing hangs off is withheld
-   * them.
+   * A link requires both endpoints to remain readable. Its quote, locator and
+   * note may restate either endpoint's body, so both must grant full access.
    */
   private async listKnowledgeItemSourceLinks(
     column: "knowledge_item_id" | "source_id",
     value: string,
-    spaceId: string,
-    withheld: boolean,
+    identity: SpaceUserIdentity,
   ): Promise<Record<string, unknown>[]> {
-    const rows = await this.db.query<Record<string, unknown>>(
-      `SELECT id, space_id, knowledge_item_id, source_id, relation_type,
-              locator, quote, note, confidence, created_by_user_id, created_at
-         FROM knowledge_item_sources
-        WHERE ${column} = $1 AND space_id = $2
-        ORDER BY created_at DESC, id DESC`,
-      [value, spaceId],
+    const definition = contentResourceDefinition("space_object")!;
+    const rows = await this.db.query<WithAccessLevel<Record<string, unknown>>>(
+      `SELECT link.id, link.space_id, link.knowledge_item_id, link.source_id, link.relation_type,
+              link.locator, link.quote, link.note, link.confidence, link.created_by_user_id, link.created_at,
+              CASE WHEN ${contentAccessLevelSql({ definition, alias: "item_object", userExpr: "$3" })} = 'full'
+                     AND ${contentAccessLevelSql({ definition, alias: "source_object", userExpr: "$3" })} = 'full'
+                   THEN 'full' ELSE 'summary' END AS effective_access_level
+         FROM knowledge_item_sources link
+         JOIN space_objects item_object ON item_object.id = link.knowledge_item_id AND item_object.space_id = link.space_id
+         JOIN space_objects source_object ON source_object.id = link.source_id AND source_object.space_id = link.space_id
+        WHERE link.${column} = $1 AND link.space_id = $2
+          AND ${contentReadSql("space_object", "item_object", "$3")}
+          AND ${contentReadSql("space_object", "source_object", "$3")}
+        ORDER BY link.created_at DESC, link.id DESC`,
+      [value, identity.spaceId, identity.userId],
     );
-    return rows.rows.map((row) => normalizeDates(withheld ? { ...row, locator: null, quote: null, note: null } : row));
+    return rows.rows.map(({ effective_access_level, ...row }) => normalizeDates(
+      bodyWithheld(effective_access_level) ? { ...row, locator: null, quote: null, note: null } : row,
+    ));
   }
 
   /**

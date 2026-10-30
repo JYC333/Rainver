@@ -262,7 +262,9 @@ function artifactSelectSql(userExpr: string): string {
                  a.title, a.content, a.storage_ref, a.storage_path, a.mime_type,
                  a.exportable, a.preview, a.metadata_json, a.visibility, a.access_level,
                  a.owner_user_id, a.created_at, a.updated_at, a.project_id, a.project_folder_id,
-                 ${contentAccessLevelSql({ definition: ARTIFACT_ACCESS, alias: "a", userExpr })} AS effective_access_level
+                 CASE WHEN ${contentAccessLevelSql({ definition: ARTIFACT_ACCESS, alias: "a", userExpr })} = 'full'
+                        AND ${sourceDerivedArtifactReadableClause("a", userExpr, true)}
+                      THEN 'full' ELSE 'summary' END AS effective_access_level
             FROM artifacts a`;
 }
 

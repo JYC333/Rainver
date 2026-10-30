@@ -27,6 +27,10 @@ const ALLOWED_BARE_BY_FILE = new Map<string, string | string[]>([
   ["pg", join("src", "db")],
   ["@earendil-works/pi-ai", join("src", "modules", "providers", "invocation", "piAiChat.ts")],
   ["unpdf", join("src", "modules", "sources", "pdfExtract.ts")],
+  // The shared Reader document tree and Markdown converter: used by the
+  // Sources reading writer/extractor that produces Reader documents. Confined
+  // there so a second Markdown or Reader-tree implementation cannot grow.
+  ["@rainver/reader-document", join("src", "modules", "sources", "contentParsing.ts")],
   // ADR 0016: the only WebSocket endpoint in the server, the hosts
   // hello/heartbeat channel — confined here so a second module cannot grow
   // its own ad hoc realtime transport.

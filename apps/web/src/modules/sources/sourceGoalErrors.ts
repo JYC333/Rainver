@@ -2,10 +2,11 @@
 export function sourceGoalErrorKind(error:unknown){
  const e=error as {status?:number;code?:string;message?:string}|null
  const categories:Record<string,string>={
+  source_native_mode_unsupported:'nativeUnsupportedMode',source_native_safety_unavailable:'nativeUnsupported',source_native_runtime_unsupported:'nativeUnsupported',source_credential_decision_required:'apiDecision',source_search_path_confirmation_required:'apiPathDecision',
   source_repair_calibration_unavailable:'calibrationUnavailable',source_authority_revoked:'authorityRevoked',
   source_goal_use_credential_channel:'errorCredentials',use_credential_channel:'errorCredentials',
   source_goal_execution_setup_required:'errorSetup',source_goal_run_in_progress:'errorBusy',
-  source_goal_stopped:'errorStopped',source_goal_exploration_budget_exhausted:'errorBudget',
+  source_goal_preview_in_progress:'errorPreviewBusy',source_goal_stopped:'errorStopped',source_goal_exploration_budget_exhausted:'errorBudget',
   source_goal_access_required:'errorAccess',source_goal_message_superseded:'errorConflict',
   source_goal_transfer_changed:'errorConflict',source_goal_owns_schedule:'errorConflict',
   source_quota_exhausted:'errorLimited',source_cooldown:'errorLimited',

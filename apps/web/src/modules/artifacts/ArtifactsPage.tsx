@@ -5,7 +5,7 @@ import { BarChart3, FilePlus2, FileSearch, FolderKanban, Loader2, Package, Slide
 import { toast } from 'sonner'
 import { artifactsApi, knowledgeApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
-import { errMsg } from '../../lib/utils'
+import { errMsg, isNotFoundError } from '../../lib/utils'
 import type {
   Artifact,
   RetrievalCalibrationDecision,
@@ -30,6 +30,11 @@ function fmt(dt: string | null | undefined) {
 }
 
 export default function ArtifactsPage() {
+  const { activeSpaceId, userId } = useSpace()
+  return <ScopedArtifacts key={`${activeSpaceId}:${userId}`} />
+}
+
+function ScopedArtifacts() {
   const { activeSpaceId, activeSpaceName } = useSpace()
   const [searchParams, setSearchParams] = useSearchParams()
   const projectFilter = searchParams.get('project_id') ?? ''
@@ -118,7 +123,10 @@ export default function ArtifactsPage() {
       await artifactsApi.export(id, { project_folder_id: folderFilter || undefined })
       toast.success('Download started')
     } catch (e) {
-      toast.error(errMsg(e))
+      if (isNotFoundError(e)) {
+        setItems(current => current.filter(item => item.id !== id))
+        await load()
+      } else toast.error(errMsg(e))
     }
   }
 
@@ -611,7 +619,7 @@ export default function ArtifactsPage() {
                 )}
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Button size="sm" variant="outline" onClick={() => dl(a.id)}>Export</Button>
+                <Button size="sm" variant="outline" disabled={!a.exportable} onClick={() => dl(a.id)}>Export</Button>
               </div>
             </Card>
           ))}

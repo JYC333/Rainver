@@ -312,6 +312,38 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
     });
   });
 
+  it("records the version a read-only review read, never a diff of its own, and keeps it through finalization", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    await db.pool.query(
+      `UPDATE runs SET status = 'running', output_json = NULL, required_sandbox_level = 'read_only',
+         contract_snapshot_json = COALESCE(contract_snapshot_json, '{}'::jsonb) || '{"workspace_access":"read"}'::jsonb
+        WHERE id = $1`,
+      [RUN_A],
+    );
+    const hosts = new PgHostRepository(db.pool);
+    const tree = "a".repeat(40);
+    expect(HostRunDiffUploadSchema.safeParse({ launch_id: LAUNCH_A, diff: "", workspace_tree_before: tree }).success).toBe(true);
+    expect(HostRunDiffUploadSchema.safeParse({ launch_id: LAUNCH_A, diff: "", workspace_tree_before: "not-a-tree" }).success).toBe(false);
+    // Someone else's change in the directory is not the review's own.
+    const result = accepted(await hosts.recordDiffArtifact(HOST_A, OWNER, RUN_A, {
+      launch_id: LAUNCH_A,
+      diff: "diff --git a/f b/f\n+someone else\n",
+      truncated: false,
+      git_before: { branch: "main", head: "reviewed-head" },
+      workspace_tree_before: tree,
+    }));
+    expect(result.artifact_id).toBeNull();
+    expect((await db.pool.query("SELECT 1 FROM artifacts WHERE run_id = $1 AND artifact_type = 'remote_diff'", [RUN_A])).rowCount).toBe(0);
+    await new PgRunRepository(db.pool).markRunTerminal({
+      run_id: RUN_A, space_id: SPACE, status: "succeeded", output_json: { summary: "reviewed" }, completed_at: new Date().toISOString(),
+    });
+    const finalized = await db.pool.query<{ output_json: Record<string, unknown> }>(`SELECT output_json FROM runs WHERE id = $1`, [RUN_A]);
+    expect(finalized.rows[0]!.output_json).toMatchObject({
+      summary: "reviewed",
+      review_basis: { head: "reviewed-head", branch: "main", tree, changed_during_review: true, launch_id: LAUNCH_A },
+    });
+  });
+
   it("keeps a Run's diff and its checkout position when the branch name is long", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const now = new Date().toISOString();

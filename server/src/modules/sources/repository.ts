@@ -78,6 +78,8 @@ import {
   sourceItemReadableClause,
 } from "./sourceItemAccess.js";
 import { ProjectSourceBindingRepository } from "../projects/projectSourceBindingRepository.js";
+import { sourceJobReadableClause } from "./sourceJobAccess.js";
+import { assertSourceConnectionManageable } from "./sourceConnectionAccess.js";
 import type { WithAccessLevel } from "../access/contentAccessTypes.js";
 
 const EVIDENCE_LINK_TYPES = new Set([
@@ -481,8 +483,8 @@ export class PgSourcesRepository {
     limit: number;
     offset: number;
   }) {
-    const params: unknown[] = [identity.spaceId];
-    const clauses = ["space_id = $1"];
+    const params: unknown[] = [identity.spaceId, identity.userId];
+    const clauses = ["space_id = $1", sourceJobReadableClause("extraction_jobs", "$2")];
     if (filters.status) {
       params.push(filters.status);
       clauses.push(`status = $${params.length}`);
@@ -509,13 +511,24 @@ export class PgSourcesRepository {
   }
 
   async runJob(identity: SpaceUserIdentity, jobId: string) {
+    const admitted = await this.db.query<ExtractionJobRow>(
+      `SELECT ${JOB_COLUMNS} FROM extraction_jobs WHERE space_id = $1 AND id = $2
+        AND ${sourceJobReadableClause("extraction_jobs", "$3", false)}`,
+      [identity.spaceId, jobId, identity.userId],
+    );
+    const job = admitted.rows[0];
+    if (!job) throw new HttpError(404, "Extraction job not found");
+    if (job.job_type === "connection_scan" && job.connection_id) {
+      await assertSourceConnectionManageable(this.db, identity, job.connection_id);
+    }
     await runSourceRecipeScanJob(this.db, this.config, jobId, identity.spaceId, this.guard);
     await runCustomSourceHandlerScanJob(this.db, this.config, jobId, identity.spaceId, this.guard);
     const worker = new SourceExtractionWorker(this.db, this.config, this.guard);
     await worker.runPendingJob(jobId, identity.spaceId);
     const result = await this.db.query<ExtractionJobRow>(
-      `SELECT ${JOB_COLUMNS} FROM extraction_jobs WHERE space_id = $1 AND id = $2`,
-      [identity.spaceId, jobId],
+      `SELECT ${JOB_COLUMNS} FROM extraction_jobs WHERE space_id = $1 AND id = $2
+        AND ${sourceJobReadableClause("extraction_jobs", "$3", false)}`,
+      [identity.spaceId, jobId, identity.userId],
     );
     if (!result.rows[0]) throw new HttpError(404, "Extraction job not found");
     return jobOut(result.rows[0]);

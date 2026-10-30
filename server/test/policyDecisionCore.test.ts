@@ -792,3 +792,10 @@ describe("proposal.apply gate", () => {
     expect(() => effectiveProposalRisk("memory_create", "bogus")).toThrow();
   });
 });
+
+describe('goal setup proposal requests',()=>{
+ it('allows only server-verified Source review requests, not other requestable writes',()=>{
+  const allowed=engineCheck(registry,req('source.connection.manage',{surface:'managed_run_system_action_gateway',action_id:'source.channel.propose_activation',source_goal_setup_request:true,has_action_approval_grant:false}));expect(allowed.policy_rule_id).toBe('source_goal_setup_proposal_allowed');
+  for(const action_id of ['source.backfill.propose_start','project.source.propose_bind'])expect(engineCheck(registry,req('source.connection.manage',{surface:'managed_run_system_action_gateway',action_id,source_goal_setup_request:true,has_action_approval_grant:false})).decision).toBe('deny');
+ });
+});

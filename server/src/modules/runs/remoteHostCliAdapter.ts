@@ -336,6 +336,7 @@ async function runRemoteHostCliAdapter(
   deps: RemoteHostCliAdapterDeps,
   leases: Array<() => void>,
 ): Promise<RunAdapterResultEnvelope> {
+  if((input.run.contract_snapshot_json as {workflow_input_json?:{source_goal?:{purpose?:string};material_processing?:unknown}})?.workflow_input_json?.material_processing||(input.run.contract_snapshot_json as {workflow_input_json?:{source_goal?:{purpose?:string}}})?.workflow_input_json?.source_goal?.purpose==='collect'){const {assertMaterialProcessingDispatch}=await import('../sources/index.js');if(!deps.config)throw new Error('source_native_context_refused');await assertMaterialProcessingDispatch(deps.config,input.run);}
   const startedAt = new Date().toISOString();
   const runtimeKey = input.run.runtime_key;
   const spec = getLocalCliRuntimeAdapterSpec(runtimeKey);

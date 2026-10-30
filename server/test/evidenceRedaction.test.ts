@@ -111,9 +111,8 @@ describe("run evidence redaction", () => {
   /**
    * Do not anchor the name pattern with a leading `[\w.-]*`. That form is
    * quadratic: it consumes to end-of-line and backtracks one character at a
-   * time from every start position, so 64 KiB on one line — which a Custom
-   * Source handler can print, and which `customSourceRunner` hands here whole
-   * — takes seconds on the single event loop.
+   * time from every start position, so 64 KiB on one line received from an
+   * external runtime takes seconds on the single event loop.
    */
   it("scans a long single line in linear time", () => {
     const started = Date.now();

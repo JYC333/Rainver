@@ -31,6 +31,13 @@ inset so its background extends behind the home indicator without a blank strip.
 chat overlays use the same inset boundaries, including landscape left/right
 insets, rather than extending behind the system status bar.
 
+The shared Reader opens on the text below 769px: its inspector is a bottom drawer
+shown only on request (toolbar button, selecting an annotation, a comment, or
+`]`/`[`), with a sticky close row, the bottom safe inset, and the soft keyboard's
+`visualViewport` overlap applied so the comment field stays reachable. A plain
+highlight on a phone does not open the drawer. Physical iOS/Android keyboard and
+native selection behavior still need device checks.
+
 Floating quick capture includes the bottom safe inset in its mobile offset,
 keeping both its button and composer above bottom navigation.
 

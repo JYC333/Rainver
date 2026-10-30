@@ -551,6 +551,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const result = await RunMaterializationService.fromConfig(
         context.config,
       ).finalizeRun(run);
+      if (result.error_code === "finalization_in_progress") {
+        return reply.code(409).send({ detail: result.error_message, error_code: result.error_code });
+      }
       // Owed settlement is a durable finalization; the sweep settles the rest.
       if (!finalizedForPostRun(result)) {
         throw new Error(

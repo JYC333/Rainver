@@ -34,6 +34,20 @@ prefix is unchanged. The formal file retains every original statement, backfill
 and inter-file `RESET search_path` in order; its snapshot is the former final
 snapshot linked to `0004`. Schema authoring still appends after this chain.
 
+The following unpublished `dev` suffix `0006_topic_following` through
+`0012_reader_note_personal_space` is now composed into
+`0006_following_and_reader.sql`. The published `0000`–`0005` SQL and snapshots
+remain byte-for-byte unchanged. Topic membership/judgment/change deliveries,
+Reader positions, document-note creation and the Personal Space association
+backfill remain in their exact original order, separated by `RESET search_path`.
+The final former `0012` snapshot is relinked to `0005`; future development appends
+at `0007`. This is one branch increment, not a baseline/schema-epoch rewrite.
+The managed preparation archived this source/target pair alongside the earlier
+pair; an instance that applied any of `0006`–`0012` needs explicit ADR 0025
+history conversion before normal upgrades, not checksum overrides or a reset.
+No live database conversion or deployment is performed by this consolidation.
+
+
 Preparation archived the original and target chains with the managed squash
 tool outside the source tree. Before updating any database that applied the
 former suffix, use ADR 0025's archived-pair discovery and explicit offline

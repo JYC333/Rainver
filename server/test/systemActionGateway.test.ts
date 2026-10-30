@@ -166,3 +166,10 @@ describe("SystemActionGateway", () => {
     expect(ROOM_CONVERSATION_TOOL_ALLOWANCE).toContain("inquiry.create_thread");
   });
 });
+
+it('invalid-input handlers run only through registry, policy and audit hooks',async()=>{
+ const requestContext={...context,idempotency_key:'bounded-call'};
+ const invalid=vi.fn(async()=>{throw Object.assign(new Error('field correction'),{code:'source_material_submission_invalid'})});const invoked=vi.fn(),failed=vi.fn();const policy=vi.fn(async()=>({allowed:false,policy_decision_record_id:'policy-denied'}));const hooks={invalidInputExecutors:new Map<SystemActionId,typeof invalid>([['source.material.submit',invalid]]),onValidated:invoked,onFailed:failed};const gateway=new SystemActionGateway(new Map([['source.material.submit',vi.fn()]]),policy,hooks);
+ await expect(gateway.dispatch('source.material.submit',{},requestContext)).rejects.toMatchObject({code:'system_action_policy_denied',policy_decision_record_id:'policy-denied'});expect(invalid).not.toHaveBeenCalled();expect(invoked).toHaveBeenCalledTimes(1);expect(failed).toHaveBeenCalledWith(expect.objectContaining({id:'source.material.submit'}),expect.objectContaining({code:'system_action_policy_denied'}),requestContext);
+ policy.mockResolvedValue({allowed:true,policy_decision_record_id:'allowed'});await expect(gateway.dispatch('source.material.submit',{},requestContext)).rejects.toMatchObject({code:'source_material_submission_invalid'});expect(invalid).toHaveBeenCalledWith({},expect.objectContaining({policy_decision:{allowed:true,policy_decision_record_id:'allowed'}}));invalid.mockClear();await expect(new SystemActionGateway(new Map(),policy,hooks).dispatch('source.material.submit',{},requestContext)).rejects.toMatchObject({code:'system_action_not_implemented'});expect(invalid).not.toHaveBeenCalled();
+});

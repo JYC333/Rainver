@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:layout": "node --test src/__tests__/conversation-layout.browser.mjs",
+    "test:layout": "node --test src/__tests__/conversation-layout.browser.mjs src/__tests__/reader-layout.browser.mjs src/__tests__/reader-journeys.browser.mjs",
     "test:watch": "vitest",
     "tauri": "tauri"
   },
@@ -78,6 +78,7 @@
   },
   "devDependencies": {
     "@rainver/protocol": "workspace:*",
+    "@rainver/reader-document": "workspace:*",
     "@tauri-apps/cli": "^2.1.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

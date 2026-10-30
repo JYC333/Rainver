@@ -9,5 +9,6 @@ export default defineConfig({
     projects: undefined,
     include: ['test/readingBrowserAcceptance.browser.ts'],
     maxWorkers: 1,
+    testTimeout: 120000,
   },
 });

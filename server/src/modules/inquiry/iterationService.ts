@@ -20,7 +20,8 @@ import {
 } from "./stepService.js";
 import { RetrievalProjectionService } from "../retrieval/index.js";
 import { inquiryRetrievalRegistry } from "./retrievalAdapter.js";
-import { assertThreadReadable } from "./threadAccess.js";
+import { assertThreadReadable, threadAccessLevelSql } from "./threadAccess.js";
+import type { WithAccessLevel } from "../access/contentAccessTypes.js";
 import { recordThreadRevision } from "./threadRevisionService.js";
 import { recordThreadWorkEvent, type ThreadEventProvenance } from "./threadWorkEvents.js";
 import { tryQueueAdviceForFocusedThread } from "./adviceJob.js";
@@ -244,9 +245,9 @@ export class InquiryIterationService {
         [confirmedNextFocus, threadId, identity.spaceId],
       );
       await db.query(TOUCH_THREAD_ROOT_SQL, [now, threadId, identity.spaceId]);
-      const updatedThread = await db.query<ThreadRow>(
-        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
-        [threadId, identity.spaceId],
+      const updatedThread = await db.query<WithAccessLevel<ThreadRow>>(
+        `SELECT ${THREAD_COLUMNS}, ${threadAccessLevelSql("so", "$3")} AS effective_access_level FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+        [threadId, identity.spaceId, identity.userId],
       );
 
       const finalThread = updatedThread.rows[0]!;
@@ -303,7 +304,7 @@ export class InquiryIterationService {
 
   async listIterations(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    await assertThreadReadable(this.db, identity, projectId, threadId, "read");
+    await assertThreadReadable(this.db, identity, projectId, threadId, "read_content");
     const rows = await this.db.query(
       `SELECT i.* FROM inquiry_iterations i
          JOIN inquiry_threads t ON t.object_id = i.thread_id AND t.space_id = i.space_id
@@ -316,7 +317,7 @@ export class InquiryIterationService {
 
   async listRevisions(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    await assertThreadReadable(this.db, identity, projectId, threadId, "read");
+    await assertThreadReadable(this.db, identity, projectId, threadId, "read_content");
     const rows = await this.db.query(
       `SELECT r.id, r.thread_id, r.version, r.kind, r.statement, r.answer_state,
               r.evaluation_state, r.confidence, r.state_snapshot_json,
@@ -398,9 +399,9 @@ export class InquiryIterationService {
           `UPDATE space_objects SET title = $1, updated_at = $2 WHERE id = $3 AND space_id = $4`,
           [newStatement, now, threadId, identity.spaceId],
         );
-        const updated = await db.query<ThreadRow>(
-          `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
-          [threadId, identity.spaceId],
+        const updated = await db.query<WithAccessLevel<ThreadRow>>(
+          `SELECT ${THREAD_COLUMNS}, ${threadAccessLevelSql("so", "$3")} AS effective_access_level FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+          [threadId, identity.spaceId, identity.userId],
         );
         const revised = updated.rows[0]!;
         const cognitiveState = await this.currentCognitiveState(db, threadId, thread.kind);
@@ -521,9 +522,9 @@ export class InquiryIterationService {
         ],
       );
       if (structureAction === "child") {
-        const child = await db.query<ThreadRow>(
-          `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
-          [newThreadId, identity.spaceId],
+        const child = await db.query<WithAccessLevel<ThreadRow>>(
+          `SELECT ${THREAD_COLUMNS}, ${threadAccessLevelSql("so", "$3")} AS effective_access_level FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+          [newThreadId, identity.spaceId, identity.userId],
         );
         await new RetrievalProjectionService(db, inquiryRetrievalRegistry).reindex(identity.spaceId, "inquiry_thread", newThreadId);
         return { thread: threadToOut(child.rows[0]!), child_of_thread_id: threadId, superseded_by_thread_id: null };
@@ -557,9 +558,9 @@ export class InquiryIterationService {
         [identity.spaceId, threadId, now],
       );
       await db.query(TOUCH_THREAD_ROOT_SQL, [now, threadId, identity.spaceId]);
-      const supersededThread = await db.query<ThreadRow>(
-        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
-        [threadId, identity.spaceId],
+      const supersededThread = await db.query<WithAccessLevel<ThreadRow>>(
+        `SELECT ${THREAD_COLUMNS}, ${threadAccessLevelSql("so", "$3")} AS effective_access_level FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+        [threadId, identity.spaceId, identity.userId],
       );
       const projection = new RetrievalProjectionService(db, inquiryRetrievalRegistry);
       await projection.reindex(identity.spaceId, "inquiry_thread", threadId);
@@ -761,9 +762,9 @@ export class InquiryIterationService {
         `UPDATE space_objects SET owner_user_id = $1, updated_at = $2 WHERE id = $3 AND space_id = $4`,
         [nextOwner, now, threadId, identity.spaceId],
       );
-      const updated = await db.query<ThreadRow>(
-        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
-        [threadId, identity.spaceId],
+      const updated = await db.query<WithAccessLevel<ThreadRow>>(
+        `SELECT ${THREAD_COLUMNS}, ${threadAccessLevelSql("so", "$3")} AS effective_access_level FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+        [threadId, identity.spaceId, identity.userId],
       );
       return { ...threadToOut(updated.rows[0]!), wip_limit_exceeded: wipLimitExceeded };
     });
@@ -776,7 +777,7 @@ export class InquiryIterationService {
    */
   async listSteps(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    await assertThreadReadable(this.db, identity, projectId, threadId, "read");
+    await assertThreadReadable(this.db, identity, projectId, threadId, "read_content");
     const rows = await listSteps(this.db, { spaceId: identity.spaceId, projectId, threadId });
     return rows.map(stepToOut);
   }
@@ -795,7 +796,7 @@ export class InquiryIterationService {
 
   async listWorkEvents(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    await assertThreadReadable(this.db, identity, projectId, threadId, "read");
+    await assertThreadReadable(this.db, identity, projectId, threadId, "read_content");
     const rows = await this.db.query(
       `SELECT e.* FROM inquiry_thread_work_events e
          JOIN inquiry_threads t ON t.object_id = e.thread_id AND t.space_id = e.space_id
@@ -860,9 +861,9 @@ export class InquiryIterationService {
         [toStatus, attention, threadId, identity.spaceId],
       );
       await db.query(TOUCH_THREAD_ROOT_SQL, [now, threadId, identity.spaceId]);
-      const updated = await db.query<ThreadRow>(
-        `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
-        [threadId, identity.spaceId],
+      const updated = await db.query<WithAccessLevel<ThreadRow>>(
+        `SELECT ${THREAD_COLUMNS}, ${threadAccessLevelSql("so", "$3")} AS effective_access_level FROM ${THREAD_FROM} WHERE t.object_id = $1 AND t.space_id = $2`,
+        [threadId, identity.spaceId, identity.userId],
       );
       await new RetrievalProjectionService(db, inquiryRetrievalRegistry).reindex(identity.spaceId, "inquiry_thread", threadId);
       // Only the two transitions a person reverses from the feed are recorded

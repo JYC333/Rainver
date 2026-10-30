@@ -267,7 +267,8 @@ pnpm run preview
 pnpm test
 
 # Real layout regression (separate from jsdom): build, then check the Room and
-# Agent Work routes with mixed Markdown at mobile/desktop breakpoints.
+# Agent Work routes with mixed Markdown at mobile/desktop breakpoints, and the
+# Library Reader with a synthetic Chinese/English article (screenshots go to /tmp).
 # Playwright Core is a dev dependency; it does not download browsers on install.
 pnpm exec playwright-core install chromium
 pnpm run build
@@ -415,9 +416,15 @@ adapter catalog are fixed server authorities.
 
 Focused verification commands from repo root. The server's `pretest`,
 `pretypecheck` and `prebuild` already run `build:workspace-deps`
-(`@rainver/protocol`, `@rainver/outbound-guard`, `@rainver/folder-read`; the
-host-daemon's adds `@rainver/agent-cli`), so a server step never needs the
-protocol built by hand first. Run the protocol's own checks when the change
+(`@rainver/protocol`, `@rainver/outbound-guard`, `@rainver/folder-read`,
+`@rainver/reader-document`; the host-daemon's adds `@rainver/agent-cli`), so a
+server step never needs the protocol built by hand first. The web app typechecks
+against the built `@rainver/protocol` and `@rainver/reader-document`; build them
+(`pnpm --filter @rainver/reader-document build`) after changing their sources.
+In the dev Compose stack the server's TypeScript watcher rebuilds
+`reader-document` itself, but the web container uses the build baked into its
+image: after changing `packages/reader-document`, rebuild and restart the
+frontend service (`docker compose -f ops/compose/docker-compose.dev.yml up -d --build frontend`). Run the protocol's own checks when the change
 touches the contract, not as a build step for the server:
 
 ```bash

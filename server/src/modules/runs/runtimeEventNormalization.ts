@@ -62,10 +62,8 @@ export function createVendorEventNormalizer(runtimeKey: string): {
         ? [toolStartedEvent(runtimeKey, occurredAt, lifecycle.callId, toolName)]
         : [];
       if (status !== "completed" && status !== "failed") return inferredStart;
-      return [
-        ...inferredStart,
-        toolTerminalEvent(runtimeKey, occurredAt, lifecycle.callId, toolName, status),
-      ];
+      const terminal=toolTerminalEvent(runtimeKey,occurredAt,lifecycle.callId,toolName,status);
+      return [...inferredStart,terminal];
     }
     return [];
   };

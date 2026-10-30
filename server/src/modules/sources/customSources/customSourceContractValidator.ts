@@ -22,6 +22,9 @@ interface CustomSourceContractValidationInput {
   limits: CustomSourcePolicyLimits;
   /** Policy-approved network origins for `source_uri`/snapshot provenance; an empty list denies all (fail closed). */
   allowedNetworkOrigins: string[];
+  /** Server-derived metadata links from trusted built-in search parsers only.
+   * Never authorizes fetching these origins or attaching snapshots/evidence. */
+  metadataOnlyOrigins?: string[];
   /** Absolute path to the sandbox `files/` directory snapshot `file_path` values are resolved against. */
   sandboxFilesRoot: string;
 }
@@ -88,7 +91,7 @@ export async function validateCustomSourceHandlerOutput(
     }
     seenExternalIds.add(item.external_id);
 
-    if (!originAllowed(item.source_uri, input.allowedNetworkOrigins)) {
+    if (!originAllowed(item.source_uri, input.allowedNetworkOrigins) && !(item.snapshots.length===0 && item.evidence.length===0 && originAllowed(item.source_uri,input.metadataOnlyOrigins??[]))) {
       errors.push(`items[${itemIndex}]: source_uri is outside the approved policy envelope`);
     }
 

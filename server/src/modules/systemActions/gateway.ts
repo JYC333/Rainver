@@ -41,6 +41,7 @@ export class SystemActionGateway {
     private readonly executors: ReadonlyMap<SystemActionId, SystemActionExecutor>,
     private readonly enforcePolicy: SystemActionPolicyEnforcer,
     private readonly hooks: {
+      invalidInputExecutors?: ReadonlyMap<SystemActionId,SystemActionExecutor>;
       onValidated?: (definition: SystemActionDefinition, input: unknown, context: SystemActionDispatchContext) => Promise<void>;
       onCompleted?: (definition: SystemActionDefinition, result: { output: unknown; policy_decision_record_id: string | null }, context: SystemActionDispatchContext) => Promise<void>;
       onFailed?: (definition: SystemActionDefinition, error: unknown, context: SystemActionDispatchContext) => Promise<void>;
@@ -66,7 +67,17 @@ export class SystemActionGateway {
       throw new SystemActionGatewayError("system_action_idempotency_required", `Action '${actionId}' requires an idempotency key`);
     }
     const parsedInput = definition.input_schema.safeParse(input);
-    if (!parsedInput.success) throw new SystemActionGatewayError("system_action_invalid_input", parsedInput.error.message);
+    if (!parsedInput.success) {
+      const invalid=this.hooks.invalidInputExecutors?.get(definition.id as SystemActionId);
+      if(invalid){
+        await this.hooks.onValidated?.(definition, undefined, context);
+        const policy=await this.enforcePolicy(definition,input,context);
+        if(!policy.allowed)throw new SystemActionGatewayError(policyRequiresApproval(policy.details)?"system_action_approval_required":"system_action_policy_denied",policy.reason??"Action denied by policy",policy.policy_decision_record_id??null);
+        if(!this.executors.has(definition.id as SystemActionId))throw new SystemActionGatewayError("system_action_not_implemented",`No executor registered for '${actionId}'`,policy.policy_decision_record_id??null);
+        await invalid(input,{...context,policy_decision:policy});
+      }
+      throw new SystemActionGatewayError("system_action_invalid_input", parsedInput.error.message);
+    }
     await this.hooks.onValidated?.(definition, parsedInput.data, context);
     const policy = await this.enforcePolicy(definition, parsedInput.data, context);
     if (!policy.allowed) {

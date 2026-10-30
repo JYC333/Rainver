@@ -9,7 +9,7 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "build:workspace-deps": "pnpm --filter @rainver/protocol --filter @rainver/outbound-guard --filter @rainver/folder-read build",
+    "build:workspace-deps": "pnpm --filter @rainver/protocol --filter @rainver/outbound-guard --filter @rainver/folder-read --filter @rainver/reader-document build",
     "pretypecheck": "pnpm run build:workspace-deps",
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "prebuild": "pnpm run build:workspace-deps",
@@ -36,6 +36,7 @@
     "@rainver/folder-read": "workspace:*",
     "@rainver/outbound-guard": "workspace:*",
     "@rainver/protocol": "workspace:*",
+    "@rainver/reader-document": "workspace:*",
     "better-auth": "1.7.5",
     "cron-parser": "^5.10.0",
     "drizzle-orm": "^0.45.2",

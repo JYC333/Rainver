@@ -1,10 +1,9 @@
 # Backlog
 
-Date: 2026-08-13
-Status: real work with no trigger condition. Merged from the retired
-`hardening-blind-spot-remediation-plan.md`, `product-capability-followups-plan.md`,
-and `protocol-client-contract-drift-plan.md` after a full audit against the code
-on 2026-08-13.
+Date: 2026-10-29
+Status: remaining work with no trigger condition, rechecked against the current
+working tree (including uncommitted changes). Implementation status here is not
+a claim of release, deployment, or real-instance acceptance.
 
 ## How to use this file
 
@@ -12,7 +11,9 @@ Every item here is a genuine gap that someone will eventually close; none of
 them is waiting on a trigger. Anything that *is* waiting on a trigger, and every
 standing enablement gate, belongs in
 [../tasks/deferred-register.md](../tasks/deferred-register.md) instead. Nothing
-here is scheduled; items are pulled on demand.
+here is scheduled; items are pulled on demand. Reuse-engine replacements are
+maintained in [platform-reuse-cleanup.md](platform-reuse-cleanup.md), not duplicated
+here. Existing usage and deployment gates remain in force after this review.
 
 Implementation truth remains the code. Current-state architecture belongs under
 `.agent/architecture/`; this file is forward-looking only. Remove an item once
@@ -23,8 +24,9 @@ document — do not leave a closed section behind as history. That belongs to gi
 
 ### A2.1 — Manual and model-based verification
 
-`evaluate()` returns `skipped` with `implementation_status: "deferred"` for both
-declared types, so a Workflow can declare them and receive nothing.
+`evaluateByType()` still returns `skipped` with
+`implementation_status: "deferred"` for both declared types. Finalization treats
+skipped required evidence as `verification_incomplete`, not as a pass.
 
 - [ ] Implement the declared `manual_review` verifier lifecycle, including
   durable pending/approved/rejected state and its effect on completion.
@@ -35,8 +37,10 @@ declared types, so a Workflow can declare them and receive nothing.
 Constraint: deterministic Verification Engine results remain the completion
 authority; model or human judgment must be an explicit verifier result.
 
-Scheduling rule: must be completed before any Workflow declaring one of these
-verifier types as required completion evidence is enabled.
+The standing Workflow enablement condition is recorded in the
+[enablement gates](../tasks/deferred-register.md#enablement-gates).
+Evidence: `runs/verification/engine.ts`, `runs/finalizationService.ts`, and
+[Verification Engine](../architecture/VERIFICATION_ENGINE.md).
 
 ## 2. Workflow / Automation Lifecycle
 
@@ -46,6 +50,9 @@ Current code provides the Run-detail UI, sanitized preview/extraction, low-risk
 draft creation, and a high-risk `workflow_save` Proposal whose acceptance creates
 a draft `workflow_template` asset version. Real-PostgreSQL coverage
 (`server/test/runWorkflowServiceDb.test.ts`) stops at that draft boundary.
+`RunDetailPage.saveWorkflow()` discards the returned proposal/asset/version IDs
+after its toast, although the existing Evolution surfaces already own review
+and promotion. Independent promotion tests do not close the full journey.
 
 - [ ] Connect the created draft visibly into the existing proposal/promotion
   lifecycle so the user can review and promote it without reconstructing which
@@ -63,206 +70,129 @@ force.
 
 ### D1.2 — Artifact user-edit tracking
 
-The `artifacts` module records no revision or edit history at all. The
-`edited_by_user` flags elsewhere (research evidence cards, note revisions) are
-their own domains' state and do not cover generated artifacts.
+The `artifacts` module exposes list/detail/export, with no user-edit endpoint
+or revision model. Its current role is an audit/export boundary; domain reports
+are read through their owning domain. This work therefore needs an explicit
+edit/revision source and ownership contract, not just a missing event hook.
+`edited_by_user` flags in research evidence cards and note revisions belong to
+those domains and do not establish Artifact revisions.
 
-- [ ] Record user edits to generated artifacts with actor, artifact version,
+- [ ] Define the supported edit/revision lifecycle, then record edits with actor, artifact version,
   source Run, and before/after provenance.
 - [ ] Convert meaningful edit patterns into evolution evidence/signals without
   treating every edit as an automatic promotion or memory write.
 - [ ] Add Project Folder, Artifact, privacy, and cross-space isolation tests.
 
-Interim: Proposal reject/request-changes signals remain the user-correction
-evidence — see
+Interim: Proposal rejection supplies correction evidence. There is no
+`request_changes` Proposal lifecycle status or authoritative Artifact revision
+event; an emitter branch is not an implemented user flow. See
 [../architecture/EVOLUTION_SIGNAL_SYSTEM.md](../architecture/EVOLUTION_SIGNAL_SYSTEM.md).
 
 ## 4. Project Surfaces
 
-### G1.2 — Two loose ends left by the Inquiry Step model
+### Domain contents and classification pagination
 
-Both are unreachable today and neither blocks anything; they are recorded so the
-next person to touch these paths does not rediscover them the hard way.
+Domain contents stop at 200 objects; classification pickers load only 200
+Projects and 100 Notes/Knowledge Items. Detail-page classification already
+exists and is not remaining work.
 
-- [ ] `updateWork` consumes `next_focus_note` only when the request also names a
-  `next_focus_kind`, so a note-only request succeeds and changes nothing. No
-  caller sends one, and the change panel has no note field. If a standalone note
-  edit is ever added, make that path real first rather than letting a user's note
-  vanish silently.
-- [ ] Nothing prevents two open background Steps of the same kind on one Thread.
-  `completeBackgroundStep` closes the oldest rather than all of them, which is
-  correct while a Thread pins at most one research Workflow. A genuine
-  multi-Workflow Thread would need the Step id carried through the completion
-  path so each operation closes the Step it actually produced.
+- [ ] Add continuation to `focusAreas/service.ts:contents` and the Domain UI.
+- [ ] Page the classification pickers in `FocusAreasPage.tsx` without changing
+  visibility or classification authority (ADR 0015).
 
-Constraint: do not add a note edit or a second concurrent Workflow per Thread
-without closing the matching item.
+The note-only and concurrent same-kind Inquiry Step extensions have explicit
+usage triggers and are tracked in the
+[Project/Inquiry register](../tasks/deferred-register.md#project-and-inquiry--usage-triggered).
 
-## 5. Runtime Conformance
-
-### C3.1 — Conformance second wave: dropped
-
-The first wave is gone, so there is no second one. The C3 suite was retired on
-2026-09-09: it certified a vendor CLI's behaviour once and cached the verdict
-against a version key, blind to the model actually selected, and gated dispatch
-on it. Its strongest question — will a runtime write outside what it was given
-— is answered structurally by ADR 0016's namespace, and the rest were single
-samples of a non-deterministic system, or duplicated what using the runtime
-already proves.
-
-Everything this wave proposed (validation compliance, artifact production,
-timeout behaviour, cost/latency profiling, feeding trust decisions) shares that
-premise. If the question comes back, the shape to reach for is observation of
-real Runs rather than a synthetic probe taken once, and asset-centric
-protection rather than run grading — see the risk-level item in
-[../tasks/deferred-register.md](../tasks/deferred-register.md).
+## 5. Runtime Routing and Provider Setup
 
 ### C3.2 — Routing cannot express a provider or model requirement
 
-Found 2026-08-15 while retiring the routing plan. The router never reads
-`model_provider_id` or `model_name` — they are carried on `RouteCandidate` and
-referenced nowhere in `router.ts`. A caller that needs a specific provider has
-exactly one way to get it: pin the profile as `explicit`, which hard-filters
-every other candidate and takes the run out of routing entirely. Project
-Research does this, and it is why its stage runs record a foregone route
-decision.
+`routing/router.ts` still has no provider/model requirement independent of an
+explicit Runtime Profile. Pinning a Profile preserves the user's backend choice
+but does not allow fallback among Profiles satisfying a shared requirement.
 
-- [ ] Decide whether a run may declare a provider/model requirement, and
-  whether it is a hard filter or a scoring term.
-- [ ] Wire both sides. A requirement dimension needs a producer *and* a
-  populated candidate side; `required_tools` has the first without the second
-  and therefore rejects every candidate when used. See
-  [../architecture/ROUTING.md](../architecture/ROUTING.md).
-- [ ] Decide whether `required_tools` should be repaired or removed while here.
-  It is reachable today from four carriers — Task `policy_json`, workflow node
-  `contract_json`, plan node `policy_json`, and automation `config_json` — and
-  any of them rejects every system-created candidate. Removal has to close all
-  four; repair means populating the candidate side.
+- [ ] Define provider/model requirements as a hard filter or scoring term and
+  wire both request producers and candidate data.
+- [ ] Resolve the `required_tools` inventory contract or remove that channel
+  from every producer. Candidate tools now come from
+  `runtime_config_json.tools` / `tool_ids` (`routing/repository.ts`), rather
+  than an unconditional empty array. Profiles without declarations still fail
+  a nonempty requirement; the declarations are not Run tool grants.
+- [ ] Cover Task policy, Workflow contract, Plan policy and Automation config
+  carriers, including pinned Conversation behavior and retry/fallback.
 
-Constraint: this must land before "Let Project Research stage runs route" in
-[deferred-register.md](../tasks/deferred-register.md), or unpinning Project
-Research silently discards the user's provider choice rather than letting the
-router honour it.
+Constraint: the provider/model requirement must exist before unpinning Research
+stage Runs under the [routing trigger](../tasks/deferred-register.md).
+Current authority: [Routing](../architecture/ROUTING.md).
 
 ### G1.3 — Chat provider presets cover one vendor
 
-Found 2026-08-14 during the runtime-boundary audit. `server/src/modules/providers/presets/`
-holds five presets: four retrieval-side (OpenAI embeddings, Cohere, ZeroEntropy,
-Ollama) and exactly one chat preset, MiniMax. Anthropic, OpenAI chat, OpenRouter
-and DeepSeek have none, so adding one means typing a base URL and model names by
-hand.
+MiniMax remains the only chat preset in `providers/presets/`; the other presets
+cover embeddings/reranking. The vendor registry already publishes endpoints,
+and `AddProviderForm` pre-fills the selected vendor's base URL. The remaining
+convenience gap is curated chat model/configuration defaults, not absent vendor
+support or mandatory manual endpoint entry.
 
-- [ ] Decide which chat vendors deserve a preset and add them, or state that
-  presets are deliberately retrieval-only and stop implying otherwise in the
-  add-provider form.
+- [ ] Decide which chat vendors need curated presets and add them, or make the
+  deliberate scope of the chat preset catalog explicit in the add-provider flow.
 
-Constraint: a preset pre-fills configuration; it must not carry a credential,
-and `api_key_required` stays a server-declared fact. The server-owned vendor
-registry and its API are current-state authority; see
+Constraint: presets carry no credentials; vendor identity, capabilities,
+endpoint defaults and `api_key_required` remain server-owned. See
 [provider-policy.md](../modules/provider-policy.md).
 
-### G1.4 — A managed run cannot produce an artifact
+### R1.2 — Select Research acquisition defaults per invocation
 
-Closed by the 2026-09 ACP Runtime Authority cutover (ADR 0022). The former
-managed Agent loop no longer exists: autonomous Agent Runs use ACP and the
-normal Run materialization path. Bounded `provider_task` Runs deliberately do
-not gain a general Agent artifact surface; a future bounded operation that
-needs durable output must use its owning domain service and provenance policy,
-not revive a second Agent loop.
+Room-invoked `research.start_acquisition` still uses a fixed provider mix
+(`arxiv`, `openalex`) and query candidate budget (1,000), while provider/model
+selection comes from configured defaults. The Manager or a research Agent does
+not choose those parameters for each invocation.
 
-### R1.2 — Research start parameters should be auto-selected, not fixed defaults
+- [ ] Add governed per-invocation selection of provider mix, candidate budget
+  and execution model, preserving the user's requested acquisition scope.
 
-`research.start_acquisition` (`.agent/architecture/SYSTEM_ACTIONS.md`,
-`server/src/modules/projectResearch/pipeline/researchAcquisitionPipelineJob.ts`)
-ships with server-derived fixed defaults for providers, candidate budget, and
-execution model, mirroring the UI's preselection. Follow-up (user, 2026-08-20):
-these should be evaluated and chosen per invocation by the Manager Agent or a
-dedicated research agent — e.g. provider mix from the question's domain, budget
-from project scale — instead of one static default set.
+`max_items` and `since` are already caller-supplied. Query candidate budget and
+acquisition item cap are different controls; do not replace one with the other.
+Evidence: `projectResearch/pipeline/researchAcquisitionPipelineJob.ts`,
+`projectResearch/executionProfileService.ts`, and
+[System Actions](../architecture/SYSTEM_ACTIONS.md#researchstart_acquisition).
 
-## 7. Harness And Scope Convergence
+## 6. Context Delivery Acceptance
 
-Two remaining specifications cover capability shrink and the two-Scope user
-model, and one audit (H2) covers the two paths a prompt is assembled by. Each
-is a separate convergence with its own prerequisites; pointers only here,
-detail there. Runtime-boundary and registry-lifecycle work completed on
-2026-08-14, and the routing specification was retired on 2026-08-15 — its
-shipped behaviour is in
-[../architecture/ROUTING.md](../architecture/ROUTING.md) and its untriggered
-remainder in [../tasks/deferred-register.md](../tasks/deferred-register.md).
+### H2 — Joined prompt-provenance acceptance
 
-None is currently active. The completed managed execution replatform is
-current-state architecture, not backlog work.
+Agent Host dispatch now uses `RuntimeContextInvocationGateway`; the ACP adapter
+projects its accepted Delivery and hydrates authorized image/resource blocks
+without repeating descriptor text. Delegated children and session handoffs use
+their own Run request rather than the parent's pending user message. The former
+server-managed Agent loop is gone; this is not a two-runtime-authority migration.
 
-### H1 — Managed tool families cannot contribute to the system prompt
+Existing focused coverage includes `acpRuntimeContextPrompt.test.ts`,
+`remoteHostCliAdapter.test.ts`, `conversationInputService.test.ts`,
+`runtimeContextGroup.test.ts`, and `currentRuntimeContextInputRef` cases in
+`runOrchestrationService.test.ts`. These establish component contracts; do not
+re-list their implemented behavior as missing.
 
-Closed by the ACP cutover. Room delegation and wait behavior are exposed as
-canonical ACP tool definitions; their descriptions carry usage guidance,
-target schemas constrain delegation to active Room members, and the Runtime
-Context Delivery remains the authoritative instruction source. The former
-managed-loop prompt override is not retained. `managedAgentDelegationTools`
-tests assert both tool behavior and the guidance delivered with those tools.
-- [x] File a Note, Knowledge Item, or Project into a Domain from its own
-  detail page. The first slice ([ADR 0015](../decisions/0015-focus-area-classification.md))
-  only offered classification from a Domain page's first-100-object pickers.
-  Detail read projections now include `focus_area_id`, and the existing
-  `focusAreasApi.setForObject` / `setForProject` write gates remain authoritative.
-- [ ] Page the Domain aggregation and classification pickers: the Domain page
-  still caps listed objects at 200 and its older pickers at the first 100 Notes
-  and Knowledge Items. These lists are incomplete for large Spaces.
-- [x] Capability shrink — retired 2026-10-24; Git history holds the plan
-  (`.agent/plans/capability-shrink-plan.md` up to `7092d70b`). The authority
-  documents and the workflow template layer landed on 2026-08-14 (`a0c1e5c4`,
-  `4009c281`), the unified Skill library on 2026-10-23 (`01e3464e`), the
-  capability layer removal and `skills` rename on 2026-10-23 (`bcad8183`), and
-  the builtin Skill package source on 2026-10-24 (`75846283`). Skill, Tool /
-  System Action and Workflow are the three layers; see
-  [CAPABILITY_WORKFLOW_SKILL_SYSTEM.md](../architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md)
-  and the GLOSSARY.
-- [ ] Project Research layer rework — the follow-on the retired capability
-  shrink plan named and did not authorize. The first usable slice is implemented:
-  [Project information monitoring](../architecture/PROJECTS.md#bounded-manual-information-monitoring-p1)
-  provides bounded first delivery, daily recommendations, recent-first acquisition
-  and resumable backfill. Real-use acceptance and physical deep-research retirement
-  retain their [separate evidence gates](../tasks/deferred-register.md#information-monitoring--usage-and-retirement-gates).
-  Auto Research is a code-enforced
-  stage machine with its own managed Agent and runtime; the conversational
-  path (Room Agent + research System Actions + Project Operations) reaches
-  the same outcome. Map Auto Research onto Task, Agent Plan and a reference
-  Workflow version; list what does not map; only then decide whether a new
-  object is needed. The eight stage constants in
-  `projectResearch/researchStages.ts` go with the pipeline. Decide on usage
-  evidence (focus workflows started versus Operations run), not on the
-  current shape. See also deferred-register's "Project kernel — P2" note.
+- [ ] Close the joined acceptance record for Room/direct chat, resumed turns,
+  attachments, retry, handoff and delegation: match the canonical current input,
+  immutable Invocation Snapshot and actual ACP prompt for the same invocation,
+  showing no lost or duplicated message/descriptor and the correct continuity.
 
-### H2 — Prompt provenance across ACP and conversation inputs
+Current authority: [Runtime Context](../modules/runtime-context.md) and
+[Rooms](../modules/rooms.md). Broader Research restructuring remains behind the
+[usage and retirement gates](../tasks/deferred-register.md#information-monitoring--usage-and-retirement-gates).
 
-From the agent-identity-and-memory-boundary plan's decision 8, recorded in its
-P5 (2026-09-06); that plan is retired and the surviving statement of the split
-is [modules/rooms.md](../modules/rooms.md)'s host-bound section.
-
-The 2026-09 cutover now routes every Agent Host dispatch through
-`RuntimeContextInvocationGateway`; `remoteHostCliAdapter` projects that
-Delivery into the ACP prompt. Structured conversation input is still hydrated
-by `ConversationInputService` and supplied as a separate content source to the
-same projection. Keep this distinction explicit: it is not a second runtime
-authority, but omission or duplicate delivery at the join would affect the
-user's actual turn.
-
-This remains a final-integration review item, not a deferred implementation
-project. Verify the current-user message is neither lost nor duplicated across
-Delivery projection and conversation-input hydration; compare Room/direct-chat
-transcript continuity with the immutable Runtime Context snapshot.
-
-## 8. Execution Runtime
+## 7. Execution Runtime
 
 ### One Host daemon cannot connect to multiple Rainver servers
 
 Recorded 2026-09-04. The installed daemon currently owns one
 `~/.rainver-host/config.json` containing a single `server_url`, `host_id`,
-token, and workspace map, and the CLI refuses a second registration. Supporting
-multiple servers is intentionally deferred; it should be a real multi-instance
-model rather than an array added to the existing singleton config.
+token, and workspace map, and the CLI refuses a second registration in that
+configuration root. `RAINVER_HOST_CONFIG_DIR` can select another root, but does
+not provide a named-profile CLI or independent service lifecycle. Supporting
+multiple servers needs a real multi-instance model rather than an array added
+to the singleton config.
 
 - [ ] Introduce named profiles with isolated server credentials and workspace
   mappings.
@@ -277,151 +207,87 @@ model rather than an array added to the existing singleton config.
 Constraint: one server's revoke, outage, or configuration cleanup must never
 stop another profile or expose its token or workspace mappings.
 
-### A bound remote run's egress snapshot records `local_cli`
+### A provider-bound Host Run's egress snapshot records `local_cli`
 
-Carried out of the retired remote-host provider-binding plan (P2,
-2026-08-28). A bound remote run's model traffic is governed by the Space's
-`externalEgressEnabled` switch (the `local_cli` egress branch) but **not** by
-per-provider egress policy: `runtimeProviderEgressDestination` never runs for
-it, because the provider is resolved after the execution-control snapshot is
-written. The snapshot therefore records `destination_type: "local_cli"` for a
-run whose traffic went to a named ModelProvider through the server proxy. The
-alternative at the time — recording the router's *prediction* — was wrong in
-a worse way. Closing it means either writing the snapshot after binding
-resolution or amending it afterwards; neither was P2-sized.
+`policy/executionControlSnapshots.ts:createForRun` can read the immutable
+Runtime Profile's selected provider, but explicitly sets the snapshot's provider
+to null for Host dispatch. It records `local_cli` even when
+`remoteProviderBinding.resolveRemoteRunBinding` uses that Profile's named
+ModelProvider. This is not merely late provider resolution, nor evidence that
+dispatch/proxy credential and provider checks are absent.
 
-### Per-dispatch backend override in the Command Center
+- [ ] Align the snapshot with the selected backend and actual egress
+  classification, preserving credential authorization, provider classification
+  and the distinction between Host and server-side network activity.
+- [ ] Update policy/read-model tests together; `runtimeContextPolicyDb.test.ts`
+  currently asserts the `local_cli` snapshot for this path.
 
-Carried out of the same plan. The API accepts `model_provider_id` / `model`
-on both dispatch routes and the resolution honors all three request shapes
-(dispatch override > host×adapter default > ambient), but the Command Center
-only sets the Host × adapter default. "Pick a provider on a single dispatch"
-— the second half of that plan's DoD 1 — is reachable by API only.
+### A strict-Host Task Run cannot declare its output
 
-### pg-boss for the `jobs` module
+All Agent CLI Runs now use the Host daemon; the old server-loop versus
+remote-loop explanation no longer applies. The gap remains in
+`systemActions/scenarioToolAllowance.ts:dispatchToolAllowance`: only
+`trusted_host` receives `artifact.submit`; a built-in strict-Host Task Run does
+not. `runWorkSurfaceDb.test.ts` asserts this restriction.
 
-Recorded during the execution-topology and Project control-plane plan's P0
-reuse evaluation (2026-08-23; that plan is now retired, git history holds it): `PgJobQueueRepository` + the job worker
-(~800 lines, `server/src/modules/jobs/`) is a real candidate for replacement
-by `pg-boss`, a mature Postgres-backed job queue. Not pulled into that plan
-because it replaces an already-working internal canonical mechanism the
-execution-topology work doesn't touch, not a broken or duplicated one — no
-urgency, real payoff. `queueAdvance.ts`'s own pg-advisory-lock serialization
-(the "one active Run per thread" invariant) is a separate concern this
-migration would not remove.
+- [ ] Verify and complete declaration-to-collected-output materialization for
+  strict-Host execution, including declared types, Task links, provenance and
+  missing-output failures.
+- [ ] Grant `artifact.submit` for that mode only when declarations are applied
+  end to end. Reuse the current Host collection/materialization path rather
+  than restoring a retired server execution path.
 
-### A sandboxed Run cannot declare a Task's output
+Current behavior: [Hosts](../modules/hosts.md).
 
-Carried out of the agent work surface plan's P2 (retired 2026-08-28; ledger
-in git history)
-(2026-08-28). `artifact.submit` is granted only on the remote-host path,
-because only that path applies a declaration: the executing host uploads its
-output directory and `hosts/repository.ts` gives those files the declared type
-and Task link. A server-host Run's artifacts come through
-`materializationService` (`produced_artifact_paths`), which does not consume
-declarations, so the action is withheld rather than accepted and ignored —
-telling an agent its deliverable was recorded when nothing would act on it is
-worse than not offering it. Closing this means teaching materialization to
-join declarations to collected paths, with `path` relative to the Run's
-exchange output directory rather than `$RAINVER_OUTPUT_DIR`. Until then a
-sandboxed Run's Task with declared required outputs still parks for review.
+### Work Skill provenance is not exposed through its identity read model
 
-### Loose ends from the agent work surface
+`runToolIdentityRepository.ts` stores `skill_content_hash`, and Host dispatch
+also mirrors the hash into Run metadata. The identity-column value has no
+product reader. The unified Host wire contract already exists in
+`packages/protocol/src/hostWire.ts` and is not remaining work.
 
-Recorded 2026-08-28 when `agent-work-surface-plan.md` retired; found by its
-integration gate.
-
-- [ ] Nothing reads `run_tool_identities.skill_content_hash`. Both delivery
-  paths write it, and the remote one also mirrors it into the Run's
-  `metadata_json`, but a sandboxed Run's Skill is only recoverable by direct
-  SQL — which is the use the column was added for.
-- [x] The work-surface wire shape is declared twice —
-  `runs/runWorkSurface.ts`'s `RunWorkSurfaceFrame` and the daemon's
-  `WorkSurfaceFrame` — with nothing pinning them together. **Resolved
-  2026-09-02:** the whole host WebSocket wire, both directions, is one
-  contract (`packages/protocol/src/hostWire.ts`); the daemon depends on
-  `@rainver/protocol` at runtime and parses every frame with it, the server
-  parses daemon frames with it, and both type their sends against it. The
-  daemon's `WorkSurfaceFrame` is now an alias of the contract's type. Found
-  because `work_surface` was in fact dropped at that boundary.
+- [ ] Expose the dispatched Work Skill identity through a supported provenance
+  read model, making the delivered version traceable without inventing a second
+  identity source. Do not describe all strict-Host evidence as SQL-only: Host
+  dispatch already carries the metadata copy.
 
 ### Interactive permission gate for headless dispatch
 
-`RunPermissionPolicy` (`server/src/modules/runs/runPermissionPolicy.ts`,
-landed in the same P0) always pre-authorizes, because every current dispatch
-path is headless — no human is present mid-run to answer a prompt. A gate
-that can actually suspend a Run for a human decision needs suspend/notify/
-resume machinery this policy does not have, and would change the product
-surface (a Run can sit "waiting for permission" instead of running to
-completion or failing). Not scoped into any current plan. Until it exists,
-the Rainver Work Skill teaches `task.request_review` as the way an agent hands
-a decision back: it stops the work and asks, which is the whole of what a
-dispatched Run can do about a question only a person can answer.
+`runs/runPermissionPolicy.ts:decidePermission` selects `allow_once`, then
+`allow_always`, or cancels if neither option exists. It records the headless
+preauthorization decision; it has no durable wait for a person.
 
-### Custom Source handler isolation is application-level, and ESM would not change that
+- [ ] Define and implement a suspend/notify/resume authorization lifecycle for
+  workflows that require a person to decide an ACP permission request mid-run.
+- [ ] Preserve authorization, cancellation, recovery and audit across the wait;
+  ordinary runtime questions or `task.request_review` are not substitutes for
+  a permission-decision state machine.
 
-The Custom Source runner spawns each handler as a plain `node` child process
-and relies on a generated CommonJS bootstrap that monkey-patches `net`, `tls`,
-`http(s)`, `dgram`, `fetch`, `child_process`, `worker_threads`, and the common
-`fs` entrypoints before `require`-ing the handler. The runner's own header says
-what that is: defense in depth, not container, network-namespace, or OS-level
-isolation — a native addon, `process.binding`, or any unpatched API reaches
-outside it.
-
-Decided 2026-08-26, when the server moved to ESM: the bootstrap and the
-`handler.cjs` artifact contract stay CommonJS on purpose. Porting them to ESM
-would cost a sandbox rewrite (`module.register()` loader hooks,
-`syncBuiltinESMExports()`, a handler version migration) and leave the
-protection surface exactly where it is, because live bindings and async
-`import()` make the patching approach harder, not stronger.
-
-What would actually raise the bar, in order of cost:
-
-- [ ] Spawn handlers under Node's permission model:
-  `--permission --allow-fs-read=<sandbox> --allow-fs-write=<sandbox>` with no
-  `--allow-child-process`, `--allow-worker`, or `--allow-addons`. Enforced at
-  the runtime API boundary rather than by patching; a few lines in `spawn`,
-  no change to stored handlers. Does not cover the network.
-- [ ] For the network, run handler processes inside the existing Docker sandbox
-  image with networking disabled, at the price of a container start per run.
-
-Constraint: keep the honesty boundary — do not describe the runner as
-OS-sandboxed until one of the above is in place. Do the ESM port, if ever,
-only as part of such a rewrite, never on its own.
+This does not authorize changing current headless policy or adding a per-Run
+confirmation in place of the high-trust control below.
 
 ### Queued research stages still run as Agent Runs
 
-Recorded 2026-09-21 by the ACP runtime-authority review. Monitoring
-comparison (`research.monitor_compare`), brief synthesis and its critique
-(`research.brief_synthesize`) are single-shot structured generation with no
-tools and no turns, so ADR 0022 classifies them as `provider_task` Runs. They
-still create `agent` Runs through `ProjectResearchExecutionProfileService`,
-which manufactures a `system_research` Agent and a `Research · OpenCode`
-`model_provider` Profile, and dispatch an ACP session to produce JSON. Ad-hoc
-analysis and notebook chat already moved to `runs/boundedProviderTaskRun.ts`.
+Monitoring comparison, synthesis and critique still create Agent Runs through
+`ProjectResearchExecutionProfileService`. Their consumers use declared output
+materialization and the Run verification/reconcile/retry path. Ad-hoc analysis
+and notebook chat already use bounded provider tasks; that partial migration
+does not complete these stage callers.
 
-Why they did not move with them: the three stages consume
-`output_json.result.materialization` (the `research_report.archive.v1`
-artifact written by `RunMaterializationService` during agent-run
-orchestration) and the declared-output verification / Supervisor retry path.
+- [ ] Reuse the existing `runBoundedProviderTask` finalizer and canonical Run
+  materialization/verification mechanisms for declared artifacts and evidence.
+- [ ] Migrate `monitorComparisonService`, both `pipeline/synthesisCoordinator`
+  sites, and retained intake/standing callers together to queued provider-task
+  execution; register preparers by stage/capability identifier.
+- [ ] Preserve reconciliation and retry evidence. Remove Agent/Profile
+  manufacturing in `executionProfileService.ts` only after its remaining
+  consumers migrate; remove the `system_research` kind only if unused.
 
-- [ ] Give `runBoundedProviderTask` a materialization step that writes the
-  same declared artifacts and evidence a bounded contract names, reusing
-  `RunMaterializationService` rather than a second writer.
-- [ ] Move all three writers (`monitorComparisonService`,
-  `pipeline/synthesisCoordinator` both sites, `orchestrator.startInitialIntake`
-  and `standingComparisonService`) to `createQueuedProviderTaskRun` +
-  `provider_task_run` in one change; register their preparers by
-  `capability_id`.
-- [x] Remove the research stage capability requirement and backfill from
-  `executionProfileService.ts` (capability-layer cleanup A, 2026-10-23).
-  Stage ids now live in `projectResearch/researchStages.ts`.
-- [ ] Delete Agent/Profile manufacturing in `executionProfileService.ts` when
-  the remaining Agent stages migrate; remove the `system_research` Agent kind
-  only if no consumer remains.
-
-Constraint: no half-migrated writer; every research Run must satisfy
-`ck_runs_execution_shape` at every step.
+Constraint: each Run must satisfy `ck_runs_execution_shape`; do not leave a
+half-migrated producer/consumer pair. Stage identifiers already live in
+`projectResearch/researchStages.ts`; capability-layer removal is completed work.
+Evidence: `projectResearchSynthesisReconcileDb.test.ts` and
+[Execution Model](../architecture/EXECUTION_MODEL.md).
 
 ### `high`-trust execution needs an enforced control, not a run-time confirmation
 
@@ -447,7 +313,7 @@ and ADR 0017 / B70 already prefer review-after with undo over pre-approval.
 Constraint: routing must derive the trust from the stored grant, never from a
 registry declaration or a UI label (plan decision recorded in ROUTING.md).
 
-## 9. Imported CLI History
+## 8. Imported CLI History
 
 From the ambient-session-import integration gate (2026-08-28); the feature
 shipped in `293023c3` / `d162aabf` and the remaining citation-link item does not block it.
@@ -470,27 +336,73 @@ shipped in `293023c3` / `d162aabf` and the remaining citation-link item does not
   likewise needs a gated candidate projection before its stored refs can be
   rendered. This is the remaining part of the retired plan's Phase 2
   acceptance condition 2.
-- [x] Enforce the four read-side wire shapes (`ImportedSession`,
-  `ImportedSessionRecord`, `AmbientSyncReport`, `ExtractionOutcome`).
-  Server row and outcome types now derive from the protocol DTOs, and the
-  HTTP routes validate the strict schemas after normalizing PostgreSQL
-  timestamps. A real-PostgreSQL route test covers all four shapes.
+## 9. Reader 剩余验收与增强
 
-## 10. Agent Identity
+按用户2026-10-29最新决定，实施plan退役，未完成内容集中在此按需拉取。
+迁移不代表能力已实现、验收通过或已部署。完整调研与历史证据保留在Git历史：
+退役前版本 `8f8ec8b3` 的 `.agent/plans/reader-experience-implementation-plan.md`。
+现行行为见 [Reader](../architecture/READER.md)、[Library](../modules/library.md)、
+[Information Digest](../modules/information-digest.md)，不再维护第二份实施清单。
 
-From the agent-identity-and-memory-boundary plan's P4 review (2026-09-06);
-that plan is retired, and the current state is
-[ADR 0003](../decisions/0003-memory-proposal-flow.md) §4 with
-[modules/rooms.md](../modules/rooms.md) and
-[modules/agents.md](../modules/agents.md). The phase shipped and the item
-does not block it. (Sending the block on change is implemented; see
-`modules/rooms.md`.)
+### 真实设备与体验验收（E03 / F06 / G03–G06 / H05–H06）
 
-- [ ] Deliver the same block to **managed** (server-side) Agents. P4 scoped
-  itself to the host-bound path on purpose: the managed path would acquire
-  these entries through its Runtime Context Memory candidate authority, which
-  is a different and smaller change, and the plan deferred it behind the
-  two-prompt-assembly-paths audit in section 7 (H2).
+- [ ] 目标手机/PWA的系统软键盘、原生选区手柄、长按、自动高亮开关、范围精调、
+  横滑翻篇与竖向滚动冲突；表格/代码横滚及选文不得翻篇。评论输入、工具条、
+  保存/取消在键盘弹出后仍可达，旋转后同句和高亮保持。
+- [ ] 真实屏幕阅读器与纯键盘走查：结构、动作名称、焦点顺序/返回、目录与批注
+  抽屉、对话框、保存中/失败/重试和减少动态效果；撤权不得留旧正文与引文。
+- [ ] 物理目标设备测短/长文、中英混排、0/20/200批注、图片晚加载的首屏、选择
+  延迟、恢复和内存；先记录设备/系统/浏览器及预算，再报告p50/p95，连续阅读10篇
+  检查回收。CPU节流与JS堆不等于真实手机性能或进程内存。
+- [ ] 桌面/手机视觉走查：浅深色、hover/focus/选中/禁用/保存/失败，选中与持久
+  高亮清晰但不抢正文。像素级Readwise比较需有权访问的登录界面或用户认可截图，
+  不能用公开资料推断私有tokens或后端行为。
+
+已有自动证据：实际200%浏览器tab zoom、旋转视口文字锚点恢复、18样本性能/批注
+矩阵、10篇SPA JS堆回收、图片晚到恢复、14张浅深状态截图均已通过。
+范围调整、私密独立文档笔记、改键、可选横滑、引用/标签JSON导出已实现；
+导出不含评论线程。不要把这些重列为待实现，也不能把合成测试冒充上述真机验收。
+证据入口：`reader-layout.browser.mjs`、`reader-journeys.browser.mjs`、
+`ReaderWorkspace.test.tsx`、`readerPositionsDb.test.ts`、`readerDocumentFidelityDb.test.ts`。
+
+### A08 — 公式、脚注与复杂媒体
+
+- [ ] 专用数学/脚注表示与渲染；基础文章不吞字符，脚注可读且能往返定位。
+- [ ] 不支持内容提供可解释退化/原文入口，不同媒体的标注不互套坐标。
+  保真PDF/EPUB/视频依赖见H08，不以一般Markdown支持冒充已完成。
+
+### G06 — 平板分页双栏
+
+- [ ] 独立定义横向分页/双列模式、阅读位置和批注坐标，再实施控件；现有连续滚动
+  容器适配已完成，侧栏加正文不等于双栏分页。
+- [ ] 跨模式及竖屏→横屏→竖屏保持同句和高亮，不混用滚动像素与分页坐标；
+  未实现不显示无效分页开关。
+
+### G08 — 真离线阅读与同步
+
+- [ ] 先接受独立架构决策，再定义授权正文缓存、撤权/过期、离线写入队列、冲突、
+  回网重新授权及失败语义。现有服务端权威不变，不直接引入第二套同步权威。
+- [ ] 断网不伪称已同步，回网复核授权，旧缓存不得成为撤权旁路；SW静态壳缓存
+  不是离线阅读。遵守 [Local-first compatibility](../architecture/LOCAL_FIRST_COMPATIBILITY.md)。
+
+### E08 / H08 — 完整导出与后续媒体
+
+- [ ] 完整批注/评论线程归档与批量导出：复用Reader当前授权读取，分别定义引用、
+  评论和证据范围；当前引用/标签JSON导出不等于评论归档或全库批量导出。
+- [ ] PDF原版、EPUB分页、视频同步转录、TTS分别定义格式、播放/下载、位置与标注
+  坐标、依赖及授权边界；按类型路由，不误用重排文本坐标，不放假播放/下载/分页按钮。
+- [ ] 如增加全文库检索，复用搜索owner、分页与授权。当前列表只搜标题/摘要/来源，
+  文内查找是另一个入口，不以前端过滤当前页冒充全文库检索。
+
+后续复用canonical文档/Notes/批注/位置writer与服务端授权；阅读位置、浏览到底或翻篇
+不自动改变已读/推荐画像，打开旧文不静默重解析。部署、读取真实私文或改变实例权限
+仍需相应授权。
+参考官方产品行为（非Rainver实现证据）：
+[外观](https://docs.readwise.io/reader/docs/faqs/appearance)、
+[批注](https://docs.readwise.io/reader/docs/faqs/highlights-tags-notes)、
+[导出](https://docs.readwise.io/reader/docs/faqs/exporting)、
+[PDF](https://docs.readwise.io/reader/docs/faqs/pdfs)、
+[视频](https://docs.readwise.io/reader/docs/faqs/videos)。
 
 ## Completion and retirement
 

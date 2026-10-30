@@ -166,7 +166,8 @@ Task is finalized — by the job that ran it (`agentRunHandler`), by the route
 that cancelled it (`runs/routes.ts`, `jobs/routes.ts`), or, for what ended
 another way (a queued Run whose job was cancelled or gave up, one recovery
 cancelled, one a module ended by hand), by the jobs worker's sweep of
-terminal Task Runs with no `run_finalizations` row
+terminal Task Runs with no `run_finalizations` row for their latest physical
+attempt (an earlier attempt's finalization cannot satisfy a retry)
 (`reconcileUnfinalizedTaskRuns`, at start and every two minutes). A
 cancelled Run's finalization has nothing to evaluate and settles at once.
 

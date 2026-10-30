@@ -96,7 +96,10 @@ canonical loading, edge projection, and the single `revalidate` read gate:
 Knowledge (`knowledge_item` / `note` / `source` / `claim`), Memory
 (`memory_entry`), Projects (`project_public_summary`), Sources
 (`source_item` / `extracted_evidence`), and Inquiry (`inquiry_thread`, behind
-the Project read gate). Sources projections index titles,
+both the Project and Thread root read gates). Inquiry revalidation uses the
+root's effective access level: summary readers receive its stored summary,
+never Question/Hypothesis state, while the title remains discoverable.
+Sources projections index titles,
 excerpts, source metadata, preset metadata, and evidence excerpts; raw snapshots
 and full extracted reader text are not indexed by default. The boundary is
 strict — domains depend on the engine, never the reverse (`BOUNDARIES.md`
@@ -586,7 +589,8 @@ proposal authoring UI.
   domain toggle, Home links allowed reviewers to Context
   Ops according to Context Ops review/scan settings and shows the other
   context-layer operation surfaces, Ask Space also exposes Inquiry Threads
-  through the Inquiry adapter's live Project read gate, Context Ops displays backend aggregate health
+  through the Inquiry adapter's live Project and Thread root read gates with
+  summary-safe text, Context Ops displays backend aggregate health
   summaries, Retrieval Settings exposes review/scan settings, and proposal
   detail can accept retrieval maintenance packets.
 - **Agent tool surface.** `modules/retrieval/tool/service.ts`

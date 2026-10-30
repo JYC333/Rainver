@@ -248,7 +248,7 @@ what is installed.
 | Graph rendering | `@antv/g6` behind the graph renderer boundary | `apps/web/src/components/graph/core/createGraphRenderer.ts` |
 | Rich text editing | TipTap | `apps/web/src/components/editor/` |
 | Complete text-file/code editing | CodeMirror 6 through the local Files & Code adapter; keep language chunks lazy and do not use a React wrapper | `apps/web/src/modules/project_files/CodeMirrorEditor.tsx` |
-| Markdown → editor document | `markdown-it` | `apps/web/src/components/editor/markdownToProseMirror.ts` |
+| Markdown → Reader/editor document | `markdown-it`, one converter shared by the server reading writer and the web Reader; HTML is never converted to Markdown first | `packages/reader-document/src/markdown.ts` (web: `apps/web/src/components/editor/markdownToProseMirror.ts` re-exports it) |
 | Drag and drop | `@dnd-kit` | components |
 | Conversation / Agent-turn UI | **AI Elements** (Vercel's shadcn registry) — copied source under `components/ai-elements/`, not a runtime dependency, so it is edited in place like any other component here; re-add through the CLI rather than merging | `apps/web/src/components/ai-elements/`, `apps/web/components.json` |
 | Markdown rendering (chat) | `streamdown` — via AI Elements' `MessageResponse`; tolerates the half-formed markdown a stream produces mid-token | `apps/web/src/components/ai-elements/message.tsx` |

@@ -5,23 +5,10 @@ import { withDbTransaction, type Pool } from "../../routeUtils/common.js";
 import { resolveStoredArtifactPath } from "./artifactStoragePath.js";
 
 /**
- * Bounds growth of stored `typescript_node`
- * handler source artifacts (`artifact_type = 'source_custom_source_handler_code'`)
- * across repeated repair cycles. `declarative_pipeline_v1` versions never
- * have a `handler_artifact_id` (their pipeline definition lives in
- * `manifest_json`), so this only ever touches `typescript_node` rows.
- *
- * Deliberately excludes each connection's single most-recently-superseded
- * version — `rollbackHandler`'s default target (`customSourceRepairService.ts`)
- * — so a no-argument rollback is never broken by this job. An explicit
- * `target_version_id` pointing at an older, pruned version will still fail,
- * but with the same "Handler source artifact is missing
- * its stored file" error `executeCustomSourceHandler` already raises for a
- * version whose artifact is missing for any other reason.
- *
- * Only prunes the artifact (file + row) and clears
- * `handler_artifact_id` — the `source_handler_versions` row itself is kept
- * for audit/history.
+ * Prunes retained historical handler-code artifacts (file + artifact row),
+ * keeping handler-version rows for audit. New versions are declarative and
+ * have no code artifact. Retention still protects the most recently superseded
+ * version's historical artifact; retaining it never enables code execution.
  */
 export async function pruneSupersededCustomSourceHandlerArtifacts(
   db: Pool,

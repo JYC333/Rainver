@@ -6,6 +6,7 @@ const appRoot = resolve(import.meta.dirname, "../..");
 const protocolRoot = join(appRoot, "packages/protocol");
 const folderReadRoot = join(appRoot, "packages/folder-read");
 const outboundGuardRoot = join(appRoot, "packages/outbound-guard");
+const readerDocumentRoot = join(appRoot, "packages/reader-document");
 const serverRoot = join(appRoot, "server");
 const pluginsRoot = join(appRoot, "plugins");
 const watchedPaths = [
@@ -18,6 +19,9 @@ const watchedPaths = [
   join(outboundGuardRoot, "src"),
   join(outboundGuardRoot, "tsconfig.json"),
   join(outboundGuardRoot, "tsconfig.build.json"),
+  join(readerDocumentRoot, "src"),
+  join(readerDocumentRoot, "tsconfig.json"),
+  join(readerDocumentRoot, "tsconfig.build.json"),
   join(serverRoot, "src"),
   join(serverRoot, "tsconfig.json"),
   pluginsRoot,
@@ -64,7 +68,7 @@ async function build() {
   buildRunning = true;
   do {
     buildPending = false;
-    console.log("[typescript-watch] compiling folder-read, outbound-guard, protocol, server, and official plugins");
+    console.log("[typescript-watch] compiling folder-read, outbound-guard, reader-document, protocol, server, and official plugins");
     const folderReadCode = await run(
       join(folderReadRoot, "node_modules/.bin/tsc"),
       ["-p", "tsconfig.build.json"],
@@ -77,13 +81,20 @@ async function build() {
         outboundGuardRoot,
       )
       : folderReadCode;
-    const protocolCode = outboundGuardCode === 0
+    const readerDocumentCode = outboundGuardCode === 0
+      ? await run(
+        join(readerDocumentRoot, "node_modules/.bin/tsc"),
+        ["-p", "tsconfig.build.json"],
+        readerDocumentRoot,
+      )
+      : outboundGuardCode;
+    const protocolCode = readerDocumentCode === 0
       ? await run(
       join(protocolRoot, "node_modules/.bin/tsc"),
       ["-p", "tsconfig.build.json"],
       protocolRoot,
     )
-      : outboundGuardCode;
+      : readerDocumentCode;
     const serverCode = protocolCode === 0
       ? await run(join(serverRoot, "node_modules/.bin/tsc"), ["-p", "tsconfig.json"], serverRoot)
       : protocolCode;
