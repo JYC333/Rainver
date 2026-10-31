@@ -626,6 +626,9 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       const asset=await readingAsset(db,{spaceId:full.space_id,userId:full.instructed_by_user_id!},false,ref?.target_key??(full.contract_snapshot_json as {workflow_input_json?:{reading_method_trial?:{target_key?:string}}})?.workflow_input_json?.reading_method_trial?.target_key);
       await (await import('../evolution/assetLocks.js')).lockEvolutionAssets(db,[asset.id]);
     }
+    const {followingRefOf}=await import('../sources/readingMethods/followingContext.js');
+    const following=runs.map(followingRefOf).filter((r):r is NonNullable<typeof r>=>!!r).sort((a,b)=>a.goal_id.localeCompare(b.goal_id));
+    for(const ref of following)await db.query(`SELECT g.id FROM source_goals g JOIN source_goal_versions v ON v.goal_id=g.id AND v.space_id=g.space_id WHERE g.id=$1 AND v.id=$2 AND g.space_id=$3 FOR SHARE OF g,v`,[ref.goal_id,ref.version_id,full.space_id]);
     const dependencies=[];
     for(const run of runs){const deps=await reading.readingRunDependencies(db,run);if(deps)dependencies.push(deps);}
     const spaceId=full.space_id;
@@ -1192,6 +1195,19 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     }
   }
 
+  /** Canonical Source/Artifact locks for an explicitly bounded reading investigation. */
+  async lockSourceReadingReferences(db:Queryable,spaceId:string,refs:readonly {item_id:string;artifact_id:string}[],userId:string,targetItemId?:string){
+    // Lock publication and history items in one order before any shared locks
+    // are upgraded by the Source writer (two articles may cite each other).
+    if(targetItemId)await db.query(`SELECT id FROM source_items WHERE space_id=$1 AND id=ANY($2::varchar[]) ORDER BY id FOR UPDATE`,[spaceId,[...new Set([targetItemId,...refs.map(ref=>ref.item_id)])].sort()]);
+    if(targetItemId)await db.query(`SELECT id FROM source_snapshots WHERE space_id=$1 AND artifact_id=ANY($2::varchar[]) ORDER BY id FOR SHARE`,[spaceId,refs.map(ref=>ref.artifact_id)]);
+    for(const ref of [...refs].sort((a,b)=>a.item_id.localeCompare(b.item_id))){
+      await this.lockSourceItemDependencies(db,spaceId,ref.item_id,userId);
+      await this.lockContentAclDependencies(db,spaceId,'source_item',ref.item_id,userId);
+      await this.lockContentAclDependencies(db,spaceId,'artifact',ref.artifact_id,userId);
+    }
+  }
+
   private async lockSourceItemDependencies(
     db: Queryable,
     spaceId: string,
@@ -1399,3 +1415,5 @@ import { selectedSkillInstruction } from "../skills/selectedSkills.js";
 
 /** Caller must hold a transaction through the Source writer/Delivery commit. */
 export async function lockReadingRunAuthority(db:Queryable,run:import('../runs/repository.js').RunRecord){await new PgInvocationDeliveryAuthorizer().lockReadingRunAuthority(db,run);}
+
+export async function lockSourceReadingReferences(db:Queryable,spaceId:string,refs:readonly {item_id:string;artifact_id:string}[],userId:string,targetItemId?:string){await new PgInvocationDeliveryAuthorizer().lockSourceReadingReferences(db,spaceId,refs,userId,targetItemId);}

@@ -30,6 +30,7 @@ export const SourceGoalBindingSpecSchema=z.object({
  supports_history:z.boolean(),
 }).strict();
 export const SourceGoalPlanSchema=z.object({
+ analysis_brief:z.string().trim().min(1).max(4000).describe('Analysis purpose for downstream reading: questions, comparison target, useful evidence and expected judgment. Derived from the user intent, not permissions or invented project facts.').optional(),
  title:z.string().trim().min(1).max(60).describe('Short topic label in the user language, ideally 4–12 Chinese characters or 2–6 words; summarize the subject, not the request.').optional(),
  search_path_snapshot:z.enum(['agent','api']).optional(),
  interval_seconds:z.number().int().min(3600).max(604800).optional(),
@@ -39,7 +40,7 @@ export const SourceGoalPlanSchema=z.object({
  limitations:z.array(z.string().max(1000)).max(20),
 }).strict().superRefine((p,c)=>{if(new Set(p.sources.map(s=>s.source_channel_id)).size!==p.sources.length || new Set(p.sources.map(s=>s.source_connection_id)).size!==p.sources.length)c.addIssue({code:'custom',message:'Duplicate source channel'});});
 export const SourceGoalNativeSourceRequestSchema=z.object({reason:z.string().min(1).max(2000),implementation:z.object({kind:z.literal('agent_search'),query:z.string().trim().min(3).max(1000)}).strict(),supports_history:z.literal(false)}).strict();
-export const SourceGoalVersionWriteSchema=z.object({goal_id:IdSchema,expected_revision:z.number().int().nonnegative(),plan:SourceGoalPlanSchema.or(z.object({title:z.string().trim().min(1).max(60).optional(),summary:z.string().min(1).max(4000),sources:z.array(SourceGoalBindingSpecSchema.or(SourceGoalNativeSourceRequestSchema)).min(1).max(5),limitations:z.array(z.string().max(1000)).max(20),interval_seconds:z.number().int().min(3600).max(604800).optional(),filters:z.object({includes:z.array(z.string()),excludes:z.array(z.string()),excluded_origins:z.array(z.string()).default([])}).optional()}).strict())}).strict();
+export const SourceGoalVersionWriteSchema=z.object({goal_id:IdSchema,expected_revision:z.number().int().nonnegative(),plan:SourceGoalPlanSchema.or(z.object({analysis_brief:z.string().trim().min(1).max(4000).optional(),title:z.string().trim().min(1).max(60).optional(),summary:z.string().min(1).max(4000),sources:z.array(SourceGoalBindingSpecSchema.or(SourceGoalNativeSourceRequestSchema)).min(1).max(5),limitations:z.array(z.string().max(1000)).max(20),interval_seconds:z.number().int().min(3600).max(604800).optional(),filters:z.object({includes:z.array(z.string()),excludes:z.array(z.string()),excluded_origins:z.array(z.string()).default([])}).optional()}).strict())}).strict();
 /** Optional manual save: the owner keeps one fresh exact-version Agent-search
  * preview as reading material without continuous following. Following itself
  * is SourceGoalFollowRequestSchema and never requires a preview. */

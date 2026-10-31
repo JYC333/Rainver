@@ -799,7 +799,7 @@ export class PgRunRepository {
           grant.action_id !== "authorization.request" && !grant.side_effecting
         )
       : ((contractSnapshot.workflow_input_json as {source_goal?:{purpose?:string};material_processing?:unknown}|undefined)?.source_goal?.purpose==='collect'||!!(contractSnapshot.workflow_input_json as {material_processing?:unknown}|undefined)?.material_processing)
-        ? declaredToolGrants.filter(grant=>grant.action_id==='source.material.submit') : declaredToolGrants;
+        ? declaredToolGrants.filter(grant=>grant.action_id==='source.material.submit'||(!!(contractSnapshot.workflow_input_json as {material_processing?:{investigation?:boolean}}|undefined)?.material_processing?.investigation&&grant.action_id==='source.material.investigate')) : declaredToolGrants;
     const permissionSnapshotJson = JSON.stringify({
       tool_grants: toolGrants,
       ...(input.scenario_tool_allowance

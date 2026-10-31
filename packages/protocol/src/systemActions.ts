@@ -1,4 +1,4 @@
-import {SourceMaterialSubmissionSchema} from './sourceMaterials.js';
+import {SourceMaterialSubmissionSchema,SourceMaterialInvestigationSchema} from './sourceMaterials.js';
 import {SourceGoalVersionWriteSchema,SourceGoalRepairSchema} from './sourceGoals.js';
 import { ProposeProjectMonitoringSchema } from "./projectInformationMonitoring.js";
 import { z } from "zod";
@@ -300,6 +300,7 @@ const proposalInputs:Record<string,z.ZodType>={
   "source.goal.inspect":z.object({goal_id:z.string().min(1),source_connection_id:z.string().min(1),source_channel_id:z.string().min(1)}).strict(),
   "source.goal.write_version":SourceGoalVersionWriteSchema,
   "source.material.submit":SourceMaterialSubmissionSchema,
+  "source.material.investigate":SourceMaterialInvestigationSchema,
   "source.goal.repair_candidate":SourceGoalRepairSchema.extend({goal_id:z.string().min(1)}),
   "source.channel.propose_activation": z.object({
     provider_key: z.string().min(1),
@@ -483,6 +484,7 @@ export const SYSTEM_ACTION_REGISTRY = [
   agentAction("source.goal.read", "Read collection goal", "sources", "SourceGoalService.read", "source.goal.manage", "none", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("source.goal.sources", "List authorized collection sources", "sources", "SourceGoalActions.sources", "source.goal.manage", "none", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("source.goal.inspect", "Inspect untrusted source documentation", "sources", "SourceGoalActions.inspect", "source.goal.manage", "durable", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
+  agentAction("source.material.investigate", "Search retained Source materials, read authorized history, or check an investigation draft before submitting. Only for the bound saved-item reading Run; this is coverage feedback, not a semantic quality verdict.", "sources", "SourceMaterialInvestigation.execute", "source.item_update", "durable", {resource_type:"source_item",resource_id_input_field:"item_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("source.material.submit", "Submit Agent-provided search results (not independently verified)", "sources", "SourceMaterialSubmission.submit", "source.goal.manage", "durable", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("source.goal.write_version", "Write immutable collection plan candidate", "sources", "SourceGoalService.writeVersion", "source.goal.manage", "draft", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("source.goal.repair_candidate", "Validate bounded source repair candidate", "sources", "SourceGoalRepairService.candidate", "source.goal.manage", "durable", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),

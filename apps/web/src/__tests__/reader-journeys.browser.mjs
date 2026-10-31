@@ -55,6 +55,13 @@ function makeServer({ versions = {}, failReadOnce = false, failCreateOnce = fals
     const json = data => route.fulfill({ json: data })
     if (path === '/me') return json({ id: 'user-j', name: 'Journey tester', email: 'j@example.test', default_space_id: spaceId, instance_role: 'member' })
     if (path === '/me/spaces') return json([{ id: spaceId, name: 'Journey Space', type: 'personal', role: 'owner' }])
+    if (path === '/agents') return json([{ id: 'research-agent', name: 'Research Agent', created_by_user_id: 'user-j', agent_kind: 'personal', status: 'active' }])
+    if (path === '/agents/research-agent/runtime-profiles') return json([
+      { id: 'opencode-api', name: 'OpenCode API', runtime_key: 'opencode', enabled: true, is_default: true, backend_mode: 'model_provider', provider_binding: { model: 'Configured model' } },
+      { id: 'antigravity-native', name: 'Antigravity', runtime_key: 'antigravity', enabled: true, is_default: false, backend_mode: 'runtime_native', provider_binding: { model: null } },
+    ])
+    if (path === '/agents/research-agent/conversation-backends') return json({ options: ['opencode-api', 'antigravity-native'].map(runtime_profile_id => ({ runtime_profile_id, usable: true, session_config_options: [] })), session_config: [] })
+    if (/^\/sources\/items\/[^/]+\/processing\/start$/.test(path)) { state.prepared = body(); return json({ status: 'queued', run_id: 'research-run' }) }
     if (path === '/plugins/effective') return json({ plugins: {} })
     if (path === '/sources/goals') return json({ goals: [{ id: 'topic-a', space_id: spaceId, project_id: null, status: 'running', intent_json: { intent: 'Robot learning' }, compatibility_json: {}, follow_state: { intent: 'following', phase: 'scheduled' } }] })
     if (path === `/spaces/${spaceId}/reading`) {
@@ -128,7 +135,7 @@ function makeServer({ versions = {}, failReadOnce = false, failCreateOnce = fals
     if (one && method === 'DELETE') { state.annotations.get(one[1]).status = 'archived'; return route.fulfill({ status: 204, body: '' }) }
     if (one && method === 'PATCH') { Object.assign(state.annotations.get(one[1]), body()); return json(state.annotations.get(one[1])) }
     if (/^\/reader\/annotations\/[^/]+\/threads$/.test(path)) return json({ items: [] })
-    if (/^\/sources\/items\/[^/]+\/processing$/.test(path)) return json({ status: 'idle' })
+    if (/^\/sources\/items\/[^/]+\/processing$/.test(path)) return json(state.prepared ? {status:'queued',run_id:'research-run'} : { status: 'idle' })
     if (path === '/me/agent-attention/stream') return route.fulfill({ status: 503, body: '' })
     return route.fulfill({ status: 404, json: { detail: 'Unavailable in journey fixture' } })
   }
@@ -1099,5 +1106,35 @@ test('Version history — header entry, retained body, read-only state and retur
       assert.match(page.url(), /from=project/)
       assert.equal(fixture.state.annotations.size, 0)
     } finally { await page.context().close() }
+  }
+})
+
+
+test('Reading execution — choose Antigravity or OpenCode API before rerunning, without starting a model on settings open', async () => {
+  const output = '/tmp/reading-investigation-browser'; mkdirSync(output, { recursive: true })
+  for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
+    const fixture=makeServer(), page=await newPage(fixture,{locale,theme,width}), zh=locale==='zh-CN', tag=`${theme}-${locale}-${width}`
+    try {
+      await openItem(page,'investigation-test')
+      await page.screenshot({path:join(output,`${tag}-entry.png`),animations:'disabled'})
+      await page.getByRole('button',{name:zh?'执行设置':'Execution settings',exact:true}).click()
+      const dialog=page.getByRole('dialog');await dialog.waitFor()
+      const agent=dialog.getByRole('button',{name:zh?'Agent':'Agent',exact:true}); await agent.click()
+      await page.getByRole('option',{name:'Research Agent',exact:true}).click()
+      await dialog.getByText(/OpenCode API · opencode/).waitFor()
+      const profile=dialog.getByRole('button',{name:zh?'运行配置':'Runtime configuration',exact:true});await profile.click()
+      await page.getByRole('option',{name:'Antigravity · antigravity',exact:true}).click()
+      await page.screenshot({path:join(output,`${tag}-antigravity.png`),animations:'disabled'})
+      const box=await dialog.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=width+1)
+      assert.equal(fixture.state.prepared,undefined)
+      await profile.click();await page.getByRole('option',{name:/OpenCode API · opencode/}).click()
+      await page.screenshot({path:join(output,`${tag}-api.png`),animations:'disabled'})
+      await dialog.getByRole('button',{name:zh?'完成':'Done',exact:true}).click()
+      await page.getByRole('button',{name:zh?'重新读取整理':'Read again',exact:true}).click()
+      await page.getByRole('dialog').getByRole('button',{name:zh?'重新读取':'Read again',exact:true}).click()
+      await page.waitForFunction(()=>document.querySelector('a[href$="/runs/research-run"]'))
+      assert.deepEqual(fixture.state.prepared,{agent_id:'research-agent',runtime_profile_id:'opencode-api',investigation:true})
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
+    } finally {await page.context().close()}
   }
 })

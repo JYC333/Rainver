@@ -1,5 +1,6 @@
+import {readingRunContext} from '../readingMethods/followingContext.js';
 import {readingMethodOf,assertFrozenReadingMethod} from '../../prompts/index.js';
-import {readingProjectContext,assertReadingAudience,assertReadingRunEgress} from '../readingMethods/context.js';
+import {assertReadingAudience,assertReadingRunEgress} from '../readingMethods/context.js';
 import {recoverGoalWatermark} from './watermark.js';
 import {materialRunExpired} from '../materialProcessing/executionBudget.js';
 import {agentReadingPolicy} from '../materialProcessing/policy.js';
@@ -45,7 +46,7 @@ export async function reconcileNativeSearch(db:Pool,config:ServerConfig,goalId:s
    const c=await preflightGoalSource(tx,config,identity,{...goal,execution_search_path:'agent'},p.spec);if(goalSourceFingerprint(c)!==authority)throw new Error('source_authority_revoked');
    const version=(await tx.query('SELECT plan_json FROM source_goal_versions WHERE id=$1 AND goal_id=$2',[audit.version_id,goalId])).rows[0];if(!version)throw new Error('source_native_context_refused');
    if(p.preview_id){const preview=(await tx.query(`SELECT 1 FROM source_goal_previews WHERE id=$1 AND version_id=$2 AND status='running' AND expires_at>now()`,[p.preview_id,audit.version_id])).rows[0];if(!preview||goal.current_version_id!==audit.version_id)throw new Error('source_native_stale_result');}else if(goal.active_version_id!==audit.version_id||goal.status!=='running')throw new Error('source_native_stale_result');
-   const method=readingMethodOf(run);if(method){await assertFrozenReadingMethod(tx,method,await readingProjectContext(tx,identity,method.project_id));await assertReadingAudience(tx,identity,null,null,c.id);await assertReadingRunEgress(tx,run,c.id);}
+   const method=readingMethodOf(run);if(method){await assertFrozenReadingMethod(tx,method,await readingRunContext(tx,identity,run,method.project_id,c.visibility==='private'));await assertReadingAudience(tx,identity,null,null,c.id);await assertReadingRunEgress(tx,run,c.id);}
    const submission=SourceMaterialSubmissionSchema.safeParse(audit.result_json.search_submission);
    if(!submission.success)throw new Error('source_material_submission_missing');
    const supplied=submission.data;const policy=agentReadingPolicy(c);capturePolicy=policy.capture;retentionPolicy=policy.retention;

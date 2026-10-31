@@ -1067,3 +1067,21 @@ Project in both Run and closed WorkContext. It does not request wider Source
 sharing or secretly inject Project instructions. Actual Source revocation still
 fails existing preflight; ordinary layered readership is not authority revocation.
 Delivery and final writer check frozen context, actual egress and output scope.
+
+## Purpose-led analysis handoff
+
+The setup Agent is told that each topic can supply a reusable analysis purpose
+to subsequent reading. It derives `plan.analysis_brief` (1–4000 characters) from
+the person's actual request: why follow, up to three consequential questions,
+any named comparison target, useful evidence and the judgment sought. It includes
+that substance in `plan.summary`, without inventing a Project or baseline facts.
+The field is optional for old plans and uses the existing version-write and
+activation gates; saving a later draft does not change the active purpose.
+
+Agent collection receives the exact collecting version, not mutable draft intent.
+Freshness and deduplication still govern new deliveries; older architecture/docs
+may be supporting evidence when overall understanding is needed. An unchanged
+repository entry is not new news, and a proposed PR is not shipped capability.
+Saved-item rereading also receives eligible topic purpose through the shared
+Sources reading context. This adds no automatic repository scanning, new search
+permissions, scheduler, schema migration or model loop.

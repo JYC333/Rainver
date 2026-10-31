@@ -386,7 +386,7 @@ describe('LibraryItemReaderPage', () => {
     mockedApi.getDocument.mockResolvedValueOnce(docPayload).mockResolvedValue({...docPayload,plain_text:'Fresh structured text.',normalized_text:'Fresh structured text.'});
     mockedSourcesApi.materialProcessing.mockResolvedValueOnce({status:'idle'}).mockResolvedValue({status:'succeeded',run_id:'processing-run'});
     await renderPage();await readAgain();
-    await waitFor(()=>expect(mockedSourcesApi.prepareMaterial).toHaveBeenCalledWith('item-1',{}, {spaceId:'space-1'}));
+    await waitFor(()=>expect(mockedSourcesApi.prepareMaterial).toHaveBeenCalledWith('item-1',{investigation:true}, {spaceId:'space-1'}));
     await waitFor(()=>expect(screen.getByTestId('reader-content')).toHaveTextContent('Fresh structured text.'));
     expect(mockedSourcesApi.itemAction).not.toHaveBeenCalled();expect(mockedSourcesApi.runJob).not.toHaveBeenCalled();
   });

@@ -490,10 +490,10 @@ it('recovers an in-flight preview as empty pending data and refuses a second res
  if(!db.available)return ctx.skip();const v=await version();await db.pool.query("INSERT INTO source_goal_previews(id,space_id,goal_id,version_id,status,result_json,expires_at) VALUES($1,$2,$3,$4,'running','{}',now()+interval '15 minutes')",[randomUUID(),identity.spaceId,goalId,v.id]);const detail=await service.read(identity,goalId);expect(detail.previews[0].result_json.contributions).toEqual([]);await expect(service.preview(identity,goalId,v.id,AbortSignal.timeout(1000))).rejects.toMatchObject({statusCode:409});expect((await db.pool.query('SELECT count(*)::int n FROM source_goal_previews WHERE goal_id=$1',[goalId])).rows[0].n).toBe(1);
 });
 
-async function nativePlan(){
+async function nativePlan(analysisBrief?:string){
  const {seedNativeSearchCatalog}=await import('../src/modules/sources/catalog/nativeSearchCatalog.js');await seedNativeSearchCatalog(db.pool);const host=randomUUID();await seedServerHost(db.pool,{id:host});await db.pool.query(`UPDATE agent_runtime_profiles SET runtime_key='claude_code',execution_host_id=$2,workspace_mode='managed',runtime_installation='own' WHERE id=$1`,[profile,host]);
  await db.pool.query("UPDATE hosts SET kind='remote',environment_kind='linux_native',owner_user_id=$2,capabilities_json=$3,last_heartbeat_at=now() WHERE id=$1",[host,identity.userId,{runtimes:['claude_code'],versions:{claude_code:'fixture'},installations:{claude_code:[{id:'own',version:'fixture',logged_in:true,options:{session_available:true,config_options:[]},health_check_protocol:'acp'}]}}]);
- const real=new SourceGoalService(db.pool,config,new SourceGoalExecutor(db.pool,config));const v=await real.writeVersion(identity,{goal_id:goalId,expected_revision:0,plan:{summary:'Native robotics search',sources:[{reason:'Search through selected Agent',implementation:{kind:'agent_search',query:'robotics research'},supports_history:false}],limitations:['Native search capability/usage unknown until trial']}},runId);return {real,v};
+ const real=new SourceGoalService(db.pool,config,new SourceGoalExecutor(db.pool,config));const v=await real.writeVersion(identity,{goal_id:goalId,expected_revision:0,plan:{...(analysisBrief?{analysis_brief:analysisBrief}:{}),summary:'Native robotics search',sources:[{reason:'Search through selected Agent',implementation:{kind:'agent_search',query:'robotics research'},supports_history:false}],limitations:['Native search capability/usage unknown until trial']}},runId);return {real,v};
 }
 async function submitted(run:string,items=[{url:'https://evidence.test/robotics',title:'Robotics actual search result'}],extra:Record<string,unknown>={}){
  await db.pool.query(`UPDATE runs r SET status='running',started_at=now(),runtime_profile_id=p.id,runtime_key=p.runtime_key,runtime_profile_snapshot_json=to_jsonb(p) FROM agent_runtime_profiles p WHERE r.id=$1 AND p.id=r.requested_runtime_profile_id`,[run]);
@@ -700,8 +700,8 @@ it('later Agent reading enriches an existing link without duplicating it or repl
  }
  expect((await db.pool.query('SELECT id FROM source_items')).rows).toEqual([original]);expect((await db.pool.query('SELECT count(*)::int n FROM source_snapshots')).rows[0].n).toBe(1);const {PgReaderRepository}=await import('../src/modules/reader/repository.js');expect(await new PgReaderRepository(db.pool,config).getDocument(identity,'source_item',original.id)).toMatchObject({plain_text:'First readable robotics document'});
 });
-async function savedMaterialForProcessing(){
- const {real,v}=await nativePlan();const preview=await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));await finishNative((await real.read(identity,goalId)).native_runs[0].id);await real.read(identity,goalId);await real.saveSample(identity,goalId,{version_id:v.id,preview_id:preview.id,idempotency_key:'old-saved-material'});return (await db.pool.query('SELECT * FROM source_items')).rows[0];
+async function savedMaterialForProcessing(analysisBrief?:string){
+ const {real,v}=await nativePlan(analysisBrief);const preview=await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));await finishNative((await real.read(identity,goalId)).native_runs[0].id);await real.read(identity,goalId);await real.saveSample(identity,goalId,{version_id:v.id,preview_id:preview.id,idempotency_key:'old-saved-material'});return (await db.pool.query('SELECT * FROM source_items')).rows[0];
 }
 async function runningMaterial(runId:string){
  await db.pool.query("UPDATE runs r SET status='running',started_at=now(),runtime_profile_id=p.id,runtime_key=p.runtime_key,runtime_profile_snapshot_json=to_jsonb(p) FROM agent_runtime_profiles p WHERE r.id=$1 AND p.id=r.requested_runtime_profile_id",[runId]);const run=(await new PgRunRepository(db.pool).getRun(identity.spaceId,runId))!;if(run.execution_kind!=='agent')throw new Error('Expected Agent fixture Run');return run;
@@ -1709,4 +1709,133 @@ it('retains the last finished arrival while a check is running, but not after a 
  expect((await arrival()).new_in_latest_collection).toBe(true);
  await db.pool.query("UPDATE source_goal_runs SET status='failed',ended_at=now()-interval '59 minutes' WHERE id=$1",[pending]);
  expect((await arrival()).new_in_latest_collection).not.toBe(true);
+});
+
+it('saved-item investigation uses a bounded canonical feedback action and requires the checked complete report',async ctx=>{
+ if(!db.available)return ctx.skip();const item=await savedMaterialForProcessing();
+ const {MaterialItemProcessingService}=await import('../src/modules/sources/materialProcessing/items.js');
+ const {CliAgentToolTransport}=await import('../src/modules/runs/cliToolTransport.js');
+ const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');
+ const service=new MaterialItemProcessingService(db.pool,config),queued=await service.start(identity,item.id,{investigation:true});const run=await runningMaterial(queued.run_id!);
+ const transport=new CliAgentToolTransport(config),tools=(await transport.list(run)).map(t=>t.name);
+ expect(tools).toEqual(expect.arrayContaining(['source.material.investigate','source.material.submit']));expect(tools).not.toContain('agent.delegate');expect(tools).not.toContain('retrieval.search');
+ expect(run.prompt).toContain('one to three consequential questions');expect(run.prompt).toContain('eight directly relevant');
+ expect(await transport.call(run,{id:'malformed-check',name:'source.material.investigate',arguments:{operation:'check'}})).toMatchObject({ok:false,error_code:'system_action_invalid_input'});
+ const draft='Finding: retry has limits. No comparable stored material was found. The next check is durability. Retries require idempotency. Durability is unknown. Retries alone do not guarantee exactly-once delivery. '+item.source_uri;
+ const payload={processing_id:queued.processing_id,status:'succeeded',items:[{url:item.source_uri,title:item.title,summary:null,observed_at:new Date().toISOString(),content:{kind:'article',format:'agent_summary',syntax:'markdown',text:draft,sources:[item.source_uri]}}],failure:null,coverage:{truncated:false,exhaustive:false,limitations:[]}};
+ await expect(submitMaterialResults(config,run,payload)).rejects.toThrow('Check the complete report');
+ const search=await transport.call(run,{id:'history',name:'source.material.investigate',arguments:{operation:'search',query:'NoMatchingMaterial987'}});expect(search).toMatchObject({ok:true});
+ const check=await transport.call(run,{id:'check',name:'source.material.investigate',arguments:{operation:'check',draft,questions:[{question:'What are the limits?',finding:'Finding: retry has limits.',explanation:'Retries require idempotency.',evidence_urls:[item.source_uri],limitations:'Durability is unknown.',alternative:'Retries alone do not guarantee exactly-once delivery.'}],historical_comparison:'No comparable stored material was found.',remaining_gaps:['Durability'],stop_reason:'The next check needs an experiment.'}});expect(check).toMatchObject({ok:true});expect(JSON.stringify(check)).toContain('"ready":true');
+ await expect(submitMaterialResults(config,run,{...payload,items:[{...payload.items[0],content:{...payload.items[0].content,text:'A shorter replacement'}}]})).rejects.toThrow('same draft');
+ expect(await submitMaterialResults(config,run,payload)).toMatchObject({recorded:true});
+ await db.pool.query("UPDATE runs SET status='degraded' WHERE id=$1",[run.id]);expect(await service.read(identity,item.id)).toMatchObject({status:'succeeded',execution:{agent_id:run.agent_id,profile_id:run.requested_runtime_profile_id}});
+ const {PgReaderRepository}=await import('../src/modules/reader/repository.js');expect((await new PgReaderRepository(db.pool,config).getDocument(identity,'source_item',item.id))!.plain_text).toBe(draft);
+ expect((await db.pool.query('SELECT metadata_json FROM extraction_jobs WHERE id=$1',[queued.processing_id])).rows[0].metadata_json).not.toHaveProperty('investigation');
+});
+
+it('saved-item investigation searches and reads real retained history but excludes private material and refuses a revoked dependency',async ctx=>{
+ if(!db.available)return ctx.skip();const target=await savedMaterialForProcessing();await db.pool.query("UPDATE source_items SET visibility='space_shared' WHERE id=$1",[target.id]);
+ const {agentReadingDocument,agentReadingMetadata,saveSourceReadingDocument}=await import('../src/modules/sources/materialProcessing/documents.js');
+ const {reindexSourceItemAndEvidenceForRetrieval}=await import('../src/modules/sources/retrievalIndexing.js');
+ const {MaterialItemProcessingService}=await import('../src/modules/sources/materialProcessing/items.js');
+ const {investigateMaterial,assertInvestigationReport}=await import('../src/modules/sources/materialProcessing/investigation.js');
+ async function history(visibility:string,text:string){const id=randomUUID(),url='https://example.test/history/'+id;await db.pool.query(`INSERT INTO source_items(id,space_id,owner_user_id,created_by_user_id,visibility,item_type,title,source_uri,canonical_uri,content_state,retention_policy,first_seen_at,last_seen_at,created_at,updated_at) VALUES($1,$2,$3,$3,$4,'external_url','HistoryCompareUnique', $5,$5,'metadata_only','metadata_only',now(),now(),now(),now())`,[id,identity.spaceId,identity.userId,visibility,url]);const content={kind:'article' as const,format:'agent_summary' as const,syntax:'plain' as const,text,sources:[url]};await saveSourceReadingDocument(db.pool,{spaceId:identity.spaceId,itemId:id,document:agentReadingDocument(content,url),metadata:agentReadingMetadata(content),agentProvided:true,summary:'HistoryCompareUnique '+text});await reindexSourceItemAndEvidenceForRetrieval(db.pool,{spaceId:identity.spaceId,itemId:id,trigger:'material_processing'});return id;}
+ const shared=await history('space_shared','HistoryCompareUnique v1 needs caller retry handling.');const hidden=await history('private','HistoryCompareUnique PRIVATE_SENTINEL_NOT_FOR_REPORT');
+ expect(target.connection_id).toBeTruthy();await db.pool.query('UPDATE source_items SET connection_id=$2 WHERE id=$1',[shared,target.connection_id]);
+ const queued=await new MaterialItemProcessingService(db.pool,config).start(identity,target.id,{investigation:true});const run=await runningMaterial(queued.run_id!);
+ const found=await investigateMaterial(config,run,{operation:'search',query:'HistoryCompareUnique'}) as {items:{item_id:string}[]};expect(found.items.map(i=>i.item_id)).toContain(shared);expect(found.items.map(i=>i.item_id)).not.toContain(hidden);expect(JSON.stringify(found)).not.toContain('PRIVATE_SENTINEL');
+ const read=await investigateMaterial(config,run,{operation:'read',item_id:shared});expect(read).toMatchObject({text:'HistoryCompareUnique v1 needs caller retry handling.',truncated:false,acceptance_status:'unknown'});
+ await expect(investigateMaterial(config,run,{operation:'read',item_id:hidden})).rejects.toMatchObject({statusCode:403});
+ const draft='New retry handling adds automatic attempts. Old v1 left this to the caller. Callers still need idempotency. No independent test. Different configuration may explain a change. '+target.source_uri;
+ const check=await investigateMaterial(config,run,{operation:'check',draft,questions:[{question:'What changed?',finding:'New retry handling adds automatic attempts.',explanation:'Callers still need idempotency.',evidence_urls:[target.source_uri],limitations:'No independent test.',alternative:'Different configuration may explain a change.'}],historical_comparison:'Old v1 left this to the caller.',remaining_gaps:[],stop_reason:'Version change explained.'});expect(check).toMatchObject({ready:true});
+ const revised={kind:'article' as const,format:'agent_summary' as const,syntax:'plain' as const,text:'HistoryCompareUnique revised body',sources:['https://example.test/revised']};await saveSourceReadingDocument(db.pool,{spaceId:identity.spaceId,itemId:shared,document:agentReadingDocument(revised,revised.sources[0]),agentProvided:true,metadata:agentReadingMetadata(revised)});
+ const retained=await assertInvestigationReport(db.pool,config,run,draft);expect(retained!.refs.find(ref=>ref.item_id===shared)?.snapshot_id).toEqual(expect.any(String));
+ await db.pool.query("UPDATE source_items SET visibility='private' WHERE id=$1",[shared]);await expect(assertInvestigationReport(db.pool,config,run,draft)).rejects.toMatchObject({statusCode:404});
+ await db.pool.query("UPDATE source_items SET visibility='space_shared' WHERE id=$1",[shared]);
+ const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');
+ await submitMaterialResults(config,run,{processing_id:queued.processing_id,status:'succeeded',items:[{url:target.source_uri,title:target.title,summary:'This derived summary must not be copied into the Source index',observed_at:new Date().toISOString(),content:{kind:'article',format:'agent_summary',syntax:'plain',text:draft,sources:[target.source_uri]}}],failure:null,coverage:{truncated:false,exhaustive:false,limitations:[]}});
+ await db.pool.query("UPDATE runs SET status='succeeded' WHERE id=$1",[run.id]);expect(await new MaterialItemProcessingService(db.pool,config).read(identity,target.id)).toMatchObject({status:'succeeded'});
+ const {PgReaderRepository}=await import('../src/modules/reader/repository.js');
+ const reader=new PgReaderRepository(db.pool,config);const report=(await reader.getDocument(identity,'source_item',target.id))!;expect(report.plain_text).toBe(draft);
+ expect((await db.pool.query('SELECT excerpt FROM source_items WHERE id=$1',[target.id])).rows[0].excerpt).not.toBe('This derived summary must not be copied into the Source index');
+ const originalPolicy=(await db.pool.query('SELECT policy_json FROM source_connections WHERE id=$1',[target.connection_id])).rows[0].policy_json;
+ await db.pool.query(`UPDATE source_connections SET policy_json=jsonb_set(policy_json,'{retention_policy}','"metadata_only"') WHERE id=$1`,[target.connection_id]);
+ const {PgArtifactRepository:RetainedArtifactRepository}=await import('../src/modules/artifacts/repository.js');expect(await new RetainedArtifactRepository(db.pool,config).getVisible(identity.spaceId,identity.userId,report.artifact_id!)).toBeNull();
+ await db.pool.query('UPDATE source_connections SET policy_json=$2 WHERE id=$1',[target.connection_id,originalPolicy]);
+
+ await db.pool.query("UPDATE source_items SET visibility='private' WHERE id=$1",[shared]);
+ // Owner may still read their private history, but another member never gets
+ // the derived body through its formerly shared Artifact. Revoke its Artifact
+ // from this owner too to exercise the independent retained-body dependency.
+ await db.pool.query("UPDATE artifacts SET access_level='summary',visibility='space_shared',owner_user_id=NULL WHERE id=$1",[retained!.refs.find(ref=>ref.item_id===shared)!.artifact_id]);
+ const {PgArtifactRepository}=await import('../src/modules/artifacts/repository.js');
+ expect(await new PgArtifactRepository(db.pool,config).getVisible(identity.spaceId,identity.userId,report.artifact_id!)).toBeNull();
+ // Use a normal member without oversight for the public derived-copy check.
+ const member='history-report-member';await db.pool.query("INSERT INTO users(id,display_name,status,email,registration_source,created_at,updated_at) VALUES($1,'Reader','active','history-report@example.test','system',now(),now())",[member]);await db.pool.query("INSERT INTO space_memberships(id,space_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,'member','active',now(),now())",[randomUUID(),identity.spaceId,member]);
+ expect(await new PgArtifactRepository(db.pool,config).getVisible(identity.spaceId,member,report.artifact_id!)).toBeNull();
+
+});
+
+
+it('Following analysis purpose is versioned and delivered to native collection instead of a later draft intent',async ctx=>{
+ if(!db.available)return ctx.skip();
+ const brief='Compare robotics scheduling mechanisms with the supplied project baseline; identify reusable trade-offs and untested assumptions.';
+ const {real,v}=await nativePlan(brief);
+ expect((await db.pool.query('SELECT plan_json FROM source_goal_versions WHERE id=$1',[v.id])).rows[0].plan_json.analysis_brief).toBe(brief);
+ await db.pool.query(`UPDATE source_goals SET intent_json=$2 WHERE id=$1`,[goalId,{intent:'UNAPPROVED_OTHER_TOPIC',includes:[],excludes:[]}]);
+ await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));
+ const id=(await real.read(identity,goalId)).native_runs[0].id;
+ const row=(await db.pool.query('SELECT prompt,contract_snapshot_json FROM runs WHERE id=$1',[id])).rows[0];
+ expect(row.prompt).toContain(brief);expect(row.prompt).toContain('Follow robotics research and industry updates');expect(row.prompt).not.toContain('UNAPPROVED_OTHER_TOPIC');
+ expect(row.contract_snapshot_json.workflow_input_json.reading_following).toMatchObject({goal_id:goalId,version_id:v.id});
+ // The actual submission path reassembles the same frozen context.
+ await finishNative(id);expect((await real.read(identity,goalId)).previews[0].status).toBe('ready');
+});
+
+it('Following rereading keeps its admitted purpose, refuses changed context, and does not inherit an unapproved draft',async ctx=>{
+ if(!db.available)return ctx.skip();
+ const brief='Evaluate mechanisms and limitations for our robotics design; compare only against an evidenced baseline.';
+ const item=await savedMaterialForProcessing(brief);
+ const active=(await db.pool.query('SELECT active_version_id FROM source_goals WHERE id=$1',[goalId])).rows[0].active_version_id;
+ const draft=randomUUID();
+ await db.pool.query(`INSERT INTO source_goal_versions(id,space_id,goal_id,revision,plan_json,created_by_run_id) SELECT $1,space_id,goal_id,revision+1,jsonb_set(plan_json,'{analysis_brief}','"UNAPPROVED_DRAFT_BRIEF"'),created_by_run_id FROM source_goal_versions WHERE id=$2`,[draft,active]);
+ await db.pool.query('UPDATE source_goals SET current_version_id=$2 WHERE id=$1',[goalId,draft]);
+ const {MaterialItemProcessingService,assertItemProcessingDispatch}=await import('../src/modules/sources/materialProcessing/items.js');
+ const service=new MaterialItemProcessingService(db.pool,config),queued=await service.start(identity,item.id,{investigation:true});
+ const run=await runningMaterial(queued.run_id!);
+ const prompt=(await db.pool.query('SELECT prompt FROM runs WHERE id=$1',[run.id])).rows[0].prompt;
+ expect(prompt).toContain(brief);expect(prompt).toContain('Follow robotics research and industry updates');expect(prompt).not.toContain('UNAPPROVED_DRAFT_BRIEF');
+ await assertItemProcessingDispatch(db.pool,config,run);
+ await db.pool.query(`UPDATE source_goals SET intent_json=$2 WHERE id=$1`,[goalId,{intent:'UNAPPROVED_OTHER_TOPIC',includes:[],excludes:[]}]);
+ await assertItemProcessingDispatch(db.pool,config,run);
+ const ref=(run.contract_snapshot_json as {workflow_input_json:{reading_following:{version_id:string}}}).workflow_input_json.reading_following;
+ await db.pool.query(`UPDATE source_goal_versions SET plan_json=jsonb_set(plan_json,'{analysis_brief}','"CHANGED_CONTEXT"') WHERE id=$1`,[ref.version_id]);
+ await expect(assertItemProcessingDispatch(db.pool,config,run)).rejects.toMatchObject({statusCode:409});
+});
+
+it('Following purposes fall back for old plans and cannot leak from personal topics to a shared or unrelated material',async ctx=>{
+ if(!db.available)return ctx.skip();
+ const item=await savedMaterialForProcessing();
+ const {MaterialItemProcessingService}=await import('../src/modules/sources/materialProcessing/items.js');
+ const service=new MaterialItemProcessingService(db.pool,config),first=await service.start(identity,item.id);
+ const prompt=(await db.pool.query('SELECT prompt FROM runs WHERE id=$1',[first.run_id])).rows[0].prompt;
+ expect(prompt).toContain('Follow robotics research and industry updates');
+ await service.cancel(identity,item.id);
+ // Very old plans with no intent provenance use retained summary, never draft text.
+ await db.pool.query("UPDATE source_goal_versions SET plan_json=plan_json-'intent_snapshot' WHERE goal_id=$1",[goalId]);
+ await db.pool.query(`UPDATE source_goals SET compatibility_json=compatibility_json-'active_intent_snapshot',intent_json=$2 WHERE id=$1`,[goalId,{intent:'UNAPPROVED_LEGACY_DRAFT',includes:[],excludes:[]}]);
+ const legacy=await service.start(identity,item.id);
+ const legacyPrompt=(await db.pool.query('SELECT prompt FROM runs WHERE id=$1',[legacy.run_id])).rows[0].prompt;
+ expect(legacyPrompt).toContain('Native robotics search');expect(legacyPrompt).not.toContain('UNAPPROVED_LEGACY_DRAFT');
+ await service.cancel(identity,item.id);
+ await db.pool.query("UPDATE source_items SET visibility='space_shared' WHERE id=$1",[item.id]);
+ const shared=await service.start(identity,item.id);
+ const row=(await db.pool.query('SELECT prompt,contract_snapshot_json FROM runs WHERE id=$1',[shared.run_id])).rows[0];
+ expect(row.prompt).not.toContain('Follow robotics research and industry updates');expect(row.contract_snapshot_json.workflow_input_json).not.toHaveProperty('reading_following');
+ await service.cancel(identity,item.id);
+ // A forged topic link to another connection cannot supply analysis context.
+ await db.pool.query("UPDATE source_items SET visibility='private',connection_id=$2 WHERE id=$1",[item.id,specs[0].source_connection_id]);
+ await db.pool.query("UPDATE source_connections SET capture_policy='extract_text',policy_json=policy_json||'{\"retention_policy\":\"full_text\"}',consent_json=consent_json||'{\"allow_external_model_egress\":true}' WHERE id=$1",[specs[0].source_connection_id]);
+ const foreign=await service.start(identity,item.id);
+ expect((await db.pool.query('SELECT contract_snapshot_json FROM runs WHERE id=$1',[foreign.run_id])).rows[0].contract_snapshot_json.workflow_input_json).not.toHaveProperty('reading_following');
 });

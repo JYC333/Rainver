@@ -98,11 +98,11 @@ name: ${WORK_SKILL_ID}
 description: Bounded Agent-provided Source search collection.
 ---
 Describe source.material.submit directly with $RAINVER_CLI; no action catalogue discovery is needed.
-Only source.material.submit is granted for this bound collection.
+${options.domainActions?.includes('source.material.investigate')?'Granted actions: source.material.submit, source.material.investigate.':'Only source.material.submit is granted for this bound collection.'} When source.material.investigate is listed, describe it and use search/read/check to find authorized retained history and check the complete report before submitting; it is coverage feedback, not independent validation.
 Use the processing_id from this Run; never choose another identity.
 Submit URLs, titles, observed_at and explicit coverage/failure. Follow the Source
 capture/retention policy in the Run prompt. When text is permitted, autonomously
-identify link type and read it: articles supply source_text; repositories supply
+identify link type and read it. When source.material.investigate is granted, all investigation reports use agent_summary and must pass its check. Otherwise articles supply source_text; repositories supply
 an agent_summary of README/docs, purpose, capabilities and goal relevance. Include
 actual content.sources and distinguish retrieved text from your synthesis.
 Always set content.syntax: "markdown" when content.text uses Markdown (headings,

@@ -1,5 +1,6 @@
+import {readingRunContext} from '../readingMethods/followingContext.js';
 import {readingMethodOf,assertFrozenReadingMethod} from '../../prompts/index.js';
-import {readingProjectContext,assertReadingAudience,assertReadingRunEgress} from '../readingMethods/context.js';
+import {assertReadingAudience,assertReadingRunEgress} from '../readingMethods/context.js';
 import type {SourceGoalBindingSpec,RuntimeSessionConfigSelection} from '@rainver/protocol';
 import {requireNativeCollector} from './nativeSafety.js';
 import {isDeepStrictEqual} from 'node:util';
@@ -25,6 +26,6 @@ export async function assertNativeCollectionDispatch(config:ServerConfig,run:Run
  const c=await preflightGoalSource(db,config,identity,{...g,execution_search_path:plan.plan_json.search_path_snapshot??'agent'},p.spec);if(goalSourceFingerprint(c)!==p.authority_sha256||p.route.profile_sha256!==await nativeProfileFingerprint(db,g.runtime_profile_id)||!isDeepStrictEqual((run.model_override_json as {acp_session_config?:unknown}|null)?.acp_session_config??[],p.route.session_config))throw new HttpError(403,'source_native_route_changed');
  if(p.preview_id){if(g.current_version_id!==audit.version_id||!(await db.query(`SELECT 1 FROM source_goal_previews WHERE id=$1 AND version_id=$2 AND status='running' AND expires_at>now()`,[p.preview_id,audit.version_id])).rows.length)throw new HttpError(409,'source_native_stale_result');}
  else{const b=(await db.query<{revision:number;status:string}>(`SELECT revision,status FROM source_goal_bindings WHERE id=$1 AND goal_id=$2`,[audit.binding_id,g.id])).rows[0];if(g.active_version_id!==audit.version_id||g.status!=='running'||!b||b.status!=='collecting'||b.revision!==p.binding_revision)throw new HttpError(409,'source_native_stale_result');}
- const method=readingMethodOf(run);if(method){await assertFrozenReadingMethod(db,method,await readingProjectContext(db,identity,method.project_id));await assertReadingAudience(db,identity,null,null,c.id);await assertReadingRunEgress(db,run,c.id);}
+ const method=readingMethodOf(run);if(method){await assertFrozenReadingMethod(db,method,await readingRunContext(db,identity,run,method.project_id,c.visibility==='private'));await assertReadingAudience(db,identity,null,null,c.id);await assertReadingRunEgress(db,run,c.id);}
  return c;
 }

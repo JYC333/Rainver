@@ -1,5 +1,6 @@
+import {retainedAnalysisPolicySql} from './materialProcessing/policy.js';
 import { registeredEntities } from "../ontology/entities.js";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 
 const SOURCE_SNAPSHOT_ACCESS = contentResourceDefinition("source_snapshot")!;
@@ -184,7 +185,20 @@ export const SOURCE_DERIVED_ARTIFACT_TYPES = ["source_reader_document", "source_
  * Other artifacts are unaffected.
  */
 export function sourceDerivedArtifactReadableClause(artifactAlias: string, userParam: string, requireFull = false): string {
-  return `(
+  return `(NOT EXISTS (
+    SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(${artifactAlias}.metadata_json->'reading_history_refs')='array' THEN ${artifactAlias}.metadata_json->'reading_history_refs' ELSE '[]'::jsonb END) history_ref
+    LEFT JOIN source_items history_item ON history_item.space_id=${artifactAlias}.space_id AND history_item.id=history_ref->>'item_id' AND history_item.deleted_at IS NULL
+    LEFT JOIN source_connections history_connection ON history_connection.space_id=history_item.space_id AND history_connection.id=history_item.connection_id
+    LEFT JOIN artifacts history_artifact ON history_artifact.space_id=${artifactAlias}.space_id AND history_artifact.id=history_ref->>'artifact_id'
+    LEFT JOIN source_snapshots history_snapshot ON history_snapshot.space_id=${artifactAlias}.space_id AND history_snapshot.id=history_ref->>'snapshot_id'
+    WHERE history_item.id IS NULL OR history_artifact.id IS NULL
+      OR (history_item.connection_id IS NOT NULL AND (history_connection.id IS NULL OR NOT COALESCE(${retainedAnalysisPolicySql('history_connection')},false)))
+      OR (history_ref->>'snapshot_id' IS NOT NULL AND (history_snapshot.id IS NULL OR NOT COALESCE(${contentReadSql('source_snapshot','history_snapshot',userParam,{includeOversight:false})},false) OR ${contentAccessLevelSql({definition:SOURCE_SNAPSHOT_ACCESS,alias:'history_snapshot',userExpr:userParam,includeOversight:false})}<>'full'))
+      OR NOT COALESCE(${sourceItemFullContentReadClause('history_item',userParam)},false)
+      OR NOT COALESCE(${contentReadSql('artifact','history_artifact',userParam,{includeOversight:false})},false)
+      OR NOT COALESCE(${roomRunReadAccessSql('history_artifact.run_id','history_artifact.space_id',userParam)},false)
+      OR ${contentAccessLevelSql({definition:contentResourceDefinition('artifact')!,alias:'history_artifact',userExpr:userParam,includeOversight:false})}<>'full'
+  )) AND (
     ${artifactAlias}.artifact_type NOT IN (${SOURCE_DERIVED_ARTIFACT_TYPES.map((type) => `'${type}'`).join(", ")})
     OR EXISTS (
       SELECT 1 FROM source_items artifact_item

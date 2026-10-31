@@ -83,3 +83,5 @@ export const runtimeContextModule: ServerModule = {
 };
 
 export {lockReadingRunAuthority} from './gateway.js';
+
+export {lockSourceReadingReferences} from './gateway.js';

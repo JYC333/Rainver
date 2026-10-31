@@ -16,7 +16,7 @@ rows. This adds no scheduler, model loop, CLI adapter or credential channel.
 `materialProcessing/dispatch.ts` guards both shapes before actual dispatch and
 submission. The public payload has one `processing_id`; Space, user, item or
 immutable goal/version, Agent/Profile and configuration come from the persisted
-Run. The grant contains only `source.material.submit`. It does not include
+Run. Collection grants only `source.material.submit`; Reader saved-item investigation also grants the bound `source.material.investigate` feedback action. It does not include
 `authorization.request` or broad Source writes. The gateway retains its registered
 approval configuration and binds policy checks to the actual goal or item.
 Invalid submissions follow the same gateway policy/audit path and have at most
@@ -25,7 +25,7 @@ credential-text checks precede persistence. Actual permissions failures never
 become a correctable formatting error.
 
 Existing goal selections remain pinned, including advertised model/mode values.
-The item preparation API can bind explicit selections for callers, but Reader exposes no per-article Agent settings. An active operation
+The item preparation API can bind explicit selections for callers, and Reader exposes the same explicit Agent/Profile/model/mode selection through Execution settings. An active operation
 refuses a changed selection. Unbound items select an eligible owned Agent's
 existing default Profile. Configured OpenCode profiles use the ordinary adapter;
 no managed Room assistant is borrowed for a headless Run. If no executable owned
@@ -134,8 +134,8 @@ No legacy default is inferred as human consent, and no bulk live-data migration
 runs. Changed Source authority makes old exact-preview proofs stale before a
 new automatic model Run is admitted.
 
-Single-item instructions bound reading to the main resource and up to two relevant
-documentation pages, require per-fetch timeouts and stopping after repeated
+Standard API preparation bounds reading to the main resource and up to two relevant
+documentation pages; Reader investigation permits up to eight relevant evidence pages, require per-fetch timeouts and stopping after repeated
 failures, prohibit dependency installation, and reserve time for submission. These
 are Agent instructions, not a guarantee that every external page is readable; the
 canonical admitted Run deadline remains enforced. Submission and recovery read
@@ -189,3 +189,70 @@ The controlled comparison workspace is described in [Reading methods](READING_ME
 Its private trial Runs have no material-submit capability and cannot replace Reader
 content, annotations, reading state or Following cursors. Neutral annotations and
 closed briefing generation are unchanged; briefing excerpts remain bounded.
+
+## Saved-item investigation and execution selection
+
+Reader preparation now explicitly sends `investigation: true` on the existing
+start endpoint. It still executes one canonical Agent Run on the selected ACP
+Profile; there is no second server model loop or automatic delegation. Existing
+API clients that omit the flag and goal collection keep their existing bounded
+submission contract. Starting a different investigation mode while an operation
+is active is refused, like changing its execution selection.
+
+The Reader's **Execution settings** reuses `AgentExecutionPicker`: choose an owned
+Agent, an enabled existing Profile, and the model/mode options its actual runtime
+advertises. OpenCode can use an existing `model_provider` Profile; an installed
+Antigravity Profile can use its existing account. Opening settings makes no model
+call, creates no Run and changes no credentials. Reset restores topic/default
+inheritance. A running operation cannot be changed. The processing projection
+shows its actual Agent/Profile/runtime. Selecting another Profile clears the
+previous Profile's model/mode overrides.
+
+Investigation admits only `source.material.submit` and the new bound
+`source.material.investigate` action, through the existing Dispatcher/Gateway.
+`search` wraps the existing Source retrieval registry in lexical mode (no extra
+embedding/rewrite/model calls), at most three queries/eight candidates per query;
+`read` opens at most five eligible Reader bodies, up to 12000 characters each,
+with their own synthesis provenance and explicit truncation. Twelve successful
+investigation actions fit within the same admitted ten-minute deadline. There
+are no generic Knowledge/Memory tools and no ambient retrieval expansion.
+
+History is filtered to the report audience (without oversight), compatible
+visibility/Project scope, Source retention/egress and Artifact/Room access.
+Historical references, including bounded inherited references, are frozen in the
+operation and rechecked before submission and publication using canonical Source
+locks. Frozen versions can still resolve their retained snapshots after a later revision; missing, changed or unauthorized dependencies fail closed. The final Artifact retains
+those references; the shared Source-derived Artifact gate checks them on Reader,
+Artifact list/detail/export reads too. A history-derived Agent summary is not
+copied into the Source excerpt/index. Temporary investigation state is removed
+at terminal settlement. No private history is made shared just because its
+requester can read it; read/accepted status is not guessed.
+
+`check` accepts the full report draft plus one to three question records with
+finding, explanation, citations, limitations and alternative explanations, the
+historical comparison, remaining gaps and stopping reason. Records quote report
+passages: a checklist beside a shallow report does not satisfy the check. It
+returns missing-coverage feedback in the same Agent tool loop. Only the exact
+checked `agent_summary` is accepted for an investigation; unavailable primary
+material may still follow the existing truthful unavailable/failure path.
+This is a deterministic coverage/consistency check, not independent fact checking
+or a semantic quality verdict. Ordinary fetches remain runtime tools; observed
+round counts and real-model quality are not inferred from a successful submission.
+The primary resource may be followed by up to eight relevant evidence pages,
+not a fixed quota; no dependency installation, account fallback or unbounded
+research is introduced. Source network/retention controls remain authoritative.
+
+### Following purpose in saved-item analysis
+
+Preparation resolves the owned topic's active plan (or retained material version
+when no plan is active) and freezes its reference as `reading_following`. The
+versioned intent, title and optional `analysis_brief` accompany authorized Project
+context in the reading input. Same Space, goal owner, Project and Source-version
+binding are required; personal purpose does not copy into shared material.
+Legacy plans without a brief use their saved intent, or retained plan summary
+when legacy intent provenance is missing; ordinary saved links remain
+ordinary reading. Context hash checks at dispatch and acceptance refuse changed
+or revoked admitted context. Later draft conversations never rewrite a queued
+Run's purpose. Investigation instructions require checked findings to address
+that purpose and disclose missing baseline evidence; coverage checking still
+does not prove relevance, factual truth or semantic depth.

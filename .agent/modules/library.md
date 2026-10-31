@@ -509,8 +509,9 @@ The Library list opens Reader rather than keeping a second extraction/retry flow
 
 Material preparation uses shared status badges, buttons and theme tokens in both
 Reader and URL saving. The parent owns outer spacing; goal execution settings
-reuse the same picker without nested frames. Reader itself offers no Agent picker;
-material preparation inherits the saved goal or existing owned default configuration. Queued/working/final updates are
+reuse the same picker without nested frames. Material preparation offers Execution
+settings for the next reading Run, using existing owned Agent/Profile choices;
+without an override it inherits the saved goal or owned default configuration. Queued/working/final updates are
 announced through the status region, and failures retain the standard error color.
 
 Saving a link starts its preparation before the dialog mounts the panel, so the
@@ -614,3 +615,15 @@ The final Advanced area also offers authorized API Provider/model overrides and
 the real system revision-method workspace. Its own candidates use a fixed prompt-
 revision comparison example, not a Reading investigation case; activation remains
 proposal-gated and manual editing stays available without an API.
+
+### Reading investigation execution
+
+The Source Reader offers **Execution settings** beside **Read again** / **Read and
+prepare**, using the shared Agent execution picker. It selects an existing owned
+Agent/Profile and its advertised model/mode for the next Run; native Antigravity
+and API-bound OpenCode configurations use the same entry. Selecting no override
+keeps the topic/default route. Changes are disabled while processing, and actual
+Run execution is shown separately. Preparing from Reader requests the bounded
+saved-item investigation, including authorized history search and draft coverage
+feedback; it does not change goal collection or method-comparison execution.
+See [material processing](../architecture/SOURCE_MATERIAL_PROCESSING.md#saved-item-investigation-and-execution-selection).

@@ -7,7 +7,7 @@ import {enforceSources} from '../enforceSources.js';
 import {MaterialItemProcessingService} from './items.js';
 import {proposeMaterialStorage} from './consent.js';
 import {showAgentTextAsMarkdown} from './syntax.js';
-const request=z.object({agent_id:z.string().min(1).optional(),runtime_profile_id:z.string().min(1).optional(),session_config:z.array(RuntimeSessionConfigSelectionSchema).max(32).optional()}).strict().refine(v=>!!v.agent_id===!!v.runtime_profile_id,{message:'Select Agent and runtime profile together'});
+const request=z.object({investigation:z.boolean().optional(),agent_id:z.string().min(1).optional(),runtime_profile_id:z.string().min(1).optional(),session_config:z.array(RuntimeSessionConfigSelectionSchema).max(32).optional()}).strict().refine(v=>!!v.agent_id===!!v.runtime_profile_id,{message:'Select Agent and runtime profile together'});
 export function registerMaterialProcessingRoutes(app:FastifyInstance,context:ModuleContext){
  for(const operation of ['read','start','cancel','request_storage'] as const){
   app.route({method:operation==='read'?'GET':'POST',url:`/api/v1/sources/items/:itemId/processing${operation==='read'?'':'/'+operation}`,handler:async(req,reply)=>{

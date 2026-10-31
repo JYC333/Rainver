@@ -43,8 +43,8 @@ When authorized historical inputs are actually supplied, the strategy compares
 repetition, additions, conflicts, revisions and connections with citations on both
 sides. Collected, read and explicitly accepted states are distinct; an AI summary
 is not independent evidence. Missing historical inputs must be stated as such,
-never as an empty library. This prompt change does not wire retrieval or historical
-inputs into existing production/paired execution. Tool authorization and input
+never as an empty library. The method text alone does not wire retrieval or historical
+inputs into execution. Saved-item investigation now supplies bounded history explicitly through its own governed action; frozen comparisons still use only supplied inputs. Tool authorization and input
 preparation remain caller-owned. With a supplied evidence bundle an ordinary API
 can perform the analysis; without it the model cannot claim system search.
 
@@ -382,3 +382,34 @@ OS sandbox claim. Source/Project and original candidate dependencies still gate 
 reads and finalization. Meta CLI pairs require the fixed prompt-and-feedback sample,
 validate the declared JSON and expose readable revised prompt/changes, with structural
 completion distinct from the human judgment. Other consumers retain their original context.
+
+### Saved-item execution supplement
+
+Reader preparation now opts into the code-owned saved-item investigation contract:
+selected ACP Agent, bounded Source-history search/read and complete-draft coverage
+feedback before submission. This supplies history explicitly through a bound
+action; it does not enable ambient Work Context retrieval, alter the plain method
+asset, or widen frozen comparisons/goal collection. Method prose cannot change
+these grants. See [material processing](SOURCE_MATERIAL_PROCESSING.md#saved-item-investigation-and-execution-selection).
+
+## Following analysis purpose
+
+The common strategy separates understanding an object, comparing it with an
+authorized target, and monitoring changes. It chooses evidence and conclusions
+according to the supplied purpose; release/PR streams do not stand in for system
+architecture, and Project goals are not implementation evidence. No purpose
+grants filesystem/repository access or changes the execution budget.
+
+Following planning saves optional bounded `analysis_brief` in the existing
+`source_goal_versions.plan_json` and explains it in the visible plan summary.
+Collection uses the exact collecting version's title, intent and brief. Saved-item
+preparation uses the active plan, or the material's retained plan version when
+no plan is active; unapproved newer drafts are excluded. Plans without a brief
+fall back to their saved intent (or retained plan summary when legacy intent
+provenance is unavailable). `reading_following` freezes goal/version/Source
+references, and the existing method context hash covers the assembled Project
+and Following inputs. Dispatch and publication reconstruct that same context.
+Personal topic purposes are omitted from shared material; Project purpose
+requires matching Project/Source ownership and current requester access. Missing
+project implementation evidence remains a stated comparison gap, not a claim
+that the system lacks a feature. No live instance was updated by source edits.

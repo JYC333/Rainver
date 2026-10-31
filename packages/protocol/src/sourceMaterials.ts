@@ -39,4 +39,12 @@ export const SourceMaterialSubmissionSchema=z.object({
 }).strict().superRefine((v,c)=>{if(v.status==='failed'&&(!v.failure||v.items.length))c.addIssue({code:z.ZodIssueCode.custom,path:['failure'],message:'Failed searches require a failure and zero items'});if(v.items.reduce((n,i)=>n+(i.content?.text.length??0)+(i.summary?.length??0),0)>200000||new TextEncoder().encode(JSON.stringify(v)).length>350000)c.addIssue({code:z.ZodIssueCode.custom,path:['items'],message:'Total reading text exceeds 200000 characters; submit fewer useful items'});if(v.status==='succeeded'&&v.failure)c.addIssue({code:z.ZodIssueCode.custom,path:['failure'],message:'Successful searches must have failure:null'});});
 export type SourceMaterialSubmission=z.infer<typeof SourceMaterialSubmissionSchema>;
 
-export interface SourceMaterialProcessingState {status:string;can_prepare?:boolean;processing_id?:string;run_id?:string;error?:string|null;reason?:string|null;source_id?:string;source_name?:string;can_request_consent?:boolean;}
+export interface SourceMaterialProcessingState {status:string;execution?:{agent_id:string;agent_name:string;profile_id:string;profile_name:string;runtime_key:string};can_prepare?:boolean;processing_id?:string;run_id?:string;error?:string|null;reason?:string|null;source_id?:string;source_name?:string;can_request_consent?:boolean;}
+
+/** The selected Agent uses this feedback surface in its ordinary ACP tool loop. */
+export const SourceMaterialInvestigationSchema=z.discriminatedUnion('operation',[
+ z.object({operation:z.literal('search'),query:z.string().trim().min(2).max(300)}).strict(),
+ z.object({operation:z.literal('read'),item_id:IdSchema}).strict(),
+ z.object({operation:z.literal('check'),draft:z.string().trim().min(1).max(60000),questions:z.array(z.object({question:z.string().trim().min(1).max(500),finding:z.string().trim().min(1).max(2000),explanation:z.string().trim().min(1).max(3000),evidence_urls:z.array(SearchResultUrlSchema).min(1).max(10),limitations:z.string().trim().min(1).max(1500),alternative:z.string().trim().min(1).max(1500)}).strict()).min(1).max(3),historical_comparison:z.string().trim().min(1).max(3000),remaining_gaps:z.array(z.string().trim().min(1).max(500)).max(8),stop_reason:z.string().trim().min(1).max(500)}).strict(),
+]);
+export type SourceMaterialInvestigation=z.infer<typeof SourceMaterialInvestigationSchema>;

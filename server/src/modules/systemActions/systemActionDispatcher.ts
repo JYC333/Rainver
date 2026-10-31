@@ -204,7 +204,7 @@ export class SystemActionDispatcher {
     const gateway = new SystemActionGateway(
       executors,
       (definition, input, context) => {
-        if(definition.id==='source.material.submit'){
+        if(definition.id==='source.material.submit'||definition.id==='source.material.investigate'){
           if(!definition.policy_resource)throw new Error('Material action requires its registered policy resource');
           const bound=(run.contract_snapshot_json as {workflow_input_json?:{source_goal?:{goal_id?:string};material_processing?:{item_id:string}}})?.workflow_input_json;
           const item=bound?.material_processing?.item_id;

@@ -23,6 +23,7 @@ export function registerSourcesSystemActionExecutors(
   run: RunRecord,
 ): void {
   registerSourceGoalActions(executors,config,run);
+  executors.set('source.material.investigate',async input=>{const {investigateMaterial}=await import('./materialProcessing/investigation.js');return {modelResult:{ok:true,result:await investigateMaterial(config,run,input)},summary:{tool_name:'source.material.investigate',ok:true}}});
   executors.set('source.material.submit',async input=>({modelResult:{ok:true,result:await submitMaterialResults(config,run,input)},summary:{tool_name:'source.material.submit',ok:true}}));
   const db = getDbPool(config.databaseUrl!);
   const identity = { spaceId: run.space_id, userId: run.instructed_by_user_id! };

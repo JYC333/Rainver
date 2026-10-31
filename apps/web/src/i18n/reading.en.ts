@@ -1,5 +1,11 @@
 export const readingEn = {
   "reading": {
+executionSettings: "Execution settings",
+executionSettingsHint: "Choose an existing Agent and runtime configuration for the next reading Run. Antigravity uses its configured login; OpenCode can use its existing API-bound configuration. Changes do not affect an active Run.",
+executionSelected: "Custom execution selected",
+inheritExecution: "Use topic/default execution",
+executionDone: "Done",
+
     versionHistory: "Version history",
     versionHistoryHint: "Saved reading results, newest first. Earlier versions open read-only.",
     latestVersion: "Back to latest",
@@ -230,7 +236,7 @@ export const readingEn = {
     "unlocatedNotice_other": "The text has changed: {{count}} annotations cannot be placed in it. Their quotes and comments are kept below.",
     "unlocatedDetail": "This quote is no longer in the current text, or occurs more than once and its surrounding text no longer shows which, so it is not highlighted. The quote and comments are kept.",
     "prepareAgainTitle": "Read this material again?",
-    "prepareAgainImpact": "The Agent reads this one item again and saves the result as a new version of its text; the current version is kept, not overwritten. Your annotations and comments stay. Those that can be found again with certainty in the new text stay highlighted; the others are listed as not located, with their quote and comments. Nothing else is reprocessed.",
+    "prepareAgainImpact": "The Agent investigates this item through multiple tool/model steps, searches eligible retained materials, checks evidence gaps and saves the complete report as a new version; the current version is kept, not overwritten. Your annotations and comments stay. Those that can be found again with certainty in the new text stay highlighted; the others are listed as not located, with their quote and comments. Nothing else is reprocessed.",
     "prepareAgainKeep": "Keep current text",
     "prepareAgainConfirm": "Read again",
     "documentMissingHint": "No readable content is available for this item. Try queueing content extraction first.",

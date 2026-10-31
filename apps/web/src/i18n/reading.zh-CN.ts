@@ -1,5 +1,11 @@
 export const readingZhCN = {
   "reading": {
+executionSettings: "执行设置",
+executionSettingsHint: "选择下次阅读使用的已有 Agent 和运行配置。Antigravity 使用已配置的登录；OpenCode 可选已绑定 API 的配置。不会改变正在运行的任务。",
+executionSelected: "已选择执行配置",
+inheritExecution: "使用主题或默认配置",
+executionDone: "完成",
+
     versionHistory: "版本历史",
     versionHistoryHint: "按生成时间排列，旧版本仅供查看。",
     latestVersion: "返回最新版本",
@@ -230,7 +236,7 @@ export const readingZhCN = {
     "unlocatedNotice_other": "正文已变化：{{count}} 条批注无法在当前正文中定位，原摘录和评论保留在下方。",
     "unlocatedDetail": "这段摘录在当前正文中已不存在，或出现多处且前后文已无法确定是哪一处，因此不再高亮；摘录和评论均已保留。",
     "prepareAgainTitle": "重新读取这篇资料？",
-    "prepareAgainImpact": "Agent 会重新读取这一篇，并把结果保存为新版本正文；当前版本会保留，不会被覆盖。你的批注和评论都会保留：能在新正文中确定找回的会继续高亮，无法确定位置的会列为“未定位”，摘录和评论仍可查看。不会处理其他资料。",
+    "prepareAgainImpact": "Agent 会围绕这一篇进行多轮调查，检索可用于此报告的已有资料并检查证据缺口，把完整报告保存为新版本正文；当前版本会保留，不会被覆盖。你的批注和评论都会保留：能在新正文中确定找回的会继续高亮，无法确定位置的会列为“未定位”，摘录和评论仍可查看。不会处理其他资料。",
     "prepareAgainKeep": "保留当前正文",
     "prepareAgainConfirm": "重新读取",
     "documentMissingHint": "此资料暂无可读内容，请先尝试提取正文。",

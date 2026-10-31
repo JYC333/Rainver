@@ -74,3 +74,13 @@ it('manual checking requires the exact shown version and accepts null only as th
  expect(SourceGoalCheckRequestSchema.parse({expected_version_id:null})).toEqual({expected_version_id:null});
  for(const input of [{},{expected_version_id:''},{expected_version_id:'v',ignore_budget:true}])expect(SourceGoalCheckRequestSchema.safeParse(input).success).toBe(false);
 });
+
+it('accepts bounded downstream analysis briefs for API and Agent plans without requiring them on old plans',async()=>{
+ const {SourceGoalVersionWriteSchema}=await import('../src/index.js');
+ const plan={summary:'Comparison purpose is visible here',analysis_brief:'Compare system mechanisms using actual architecture and code evidence.',sources:[{source_connection_id:'s',source_channel_id:'c',reason:'Evidence',supports_history:false,implementation:{kind:'connector'}}],limitations:[]};
+ expect(SourceGoalPlanSchema.parse(plan).analysis_brief).toBe(plan.analysis_brief);
+ expect(SourceGoalVersionWriteSchema.safeParse({goal_id:'g',expected_revision:0,plan:{...plan,sources:[{reason:'Evidence',supports_history:false,implementation:{kind:'agent_search',query:'system architecture'}}]}}).success).toBe(true);
+ expect(SourceGoalPlanSchema.safeParse({...plan,analysis_brief:'x'.repeat(4001)}).success).toBe(false);
+ expect(SourceGoalPlanSchema.safeParse({...plan,analysis_brief:' '}).success).toBe(false);
+ expect(SourceGoalPlanSchema.safeParse({...plan,analysis_brief:undefined}).success).toBe(true);
+});
