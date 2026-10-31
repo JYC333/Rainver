@@ -1,3 +1,4 @@
+import { readingMethodContext } from './methodContext.js';
 import {HttpError,withDbTransaction,type Pool,type SpaceUserIdentity} from '../../routeUtils/common.js';
 import {lockEvolutionAssets} from '../../evolution/assetLocks.js';
 import {PromptRepository} from '../repository.js';
@@ -5,7 +6,6 @@ import {resolvePrompt} from '../resolver.js';
 import {readingAsset} from './access.js';
 import {READING_METHOD_KEY} from './runtime.js';
 import {assertReadingPromotion} from './workspace.js';
-import {readingItemContext} from '../../sources/index.js';
 
 /** Same proposal/applier as every prompt; retries of this explicit request reuse its pending proposal. */
 export async function proposeReadingMethod(db:Pool,identity:SpaceUserIdentity,versionId:string,evaluationId:string,projectId:string|null){
@@ -19,9 +19,9 @@ export async function proposeReadingMethod(db:Pool,identity:SpaceUserIdentity,ve
  });
 }
 /** Resolving the expected effective version and rollback write share the canonical asset lock. */
-export async function rollbackReadingMethod(db:Pool,identity:SpaceUserIdentity,itemId:string,projectId:string|null,expectedVersionId:string,targetKey=READING_METHOD_KEY){
+export async function rollbackReadingMethod(db:Pool,identity:SpaceUserIdentity,itemId:string|null,projectId:string|null,expectedVersionId:string,targetKey=READING_METHOD_KEY){
  return withDbTransaction(db,async tx=>{
-  const ctx=await readingItemContext(tx,identity,itemId,projectId);const asset=await readingAsset(tx,identity,true,targetKey);await lockEvolutionAssets(tx,[asset.id]);
+  const ctx=await readingMethodContext(tx,identity,itemId,projectId);const asset=await readingAsset(tx,identity,true,targetKey);await lockEvolutionAssets(tx,[asset.id]);
   const effective=await resolvePrompt(tx,{...identity,assetKey:targetKey,projectId:ctx.projectId});
   if(effective.version_id!==expectedVersionId)throw new HttpError(409,'Effective method changed; refresh before rollback');
   return new PromptRepository(tx).rollbackDeployment(identity,targetKey,{scope_type:ctx.projectId?'project':'space',scope_id:ctx.projectId??identity.spaceId,label:'production'});

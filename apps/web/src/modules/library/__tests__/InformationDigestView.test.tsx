@@ -1,5 +1,4 @@
 // Permission-gated maintenance links are covered by their own journey tests.
-vi.mock('../../prompts/ReadingMethodEntry',()=>({ReadingMethodEntry:()=>null}))
 import { render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -50,6 +49,8 @@ describe('InformationDigestView', () => {
   });
   it('words sections, team counts and feedback in English', () => {
     render(<InformationDigestView digest={digest(items)} project onSerendipityFeedback={vi.fn()} />)
+    expect(screen.queryByRole('link',{name:'Open Reader'})).not.toBeInTheDocument()
+    expect(screen.getByRole('link',{name:'A paper on sparse attention'})).toHaveAttribute('href',expect.stringContaining('/library/items/source-1'))
     expect(screen.getByText('For your interests')).toBeInTheDocument()
     expect(screen.getByText('Outside your usual view')).toBeInTheDocument()
     expect(screen.getByText('1 person read this')).toBeInTheDocument()

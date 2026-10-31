@@ -1,3 +1,4 @@
+import { readingMethodContext } from './methodContext.js';
 import { resolveRevisionMethod, REVISION_METHOD_KEY } from './revisionMethod.js';
 import {listReadingGenerations} from './generation.js';
 import type {ReadingMethodContext} from '@rainver/protocol';
@@ -19,11 +20,12 @@ import {prepareSampleAuthority,assertSampleAuthority,sampleContentChanged} from 
 import {canWriteProject} from '../../projects/access.js';
 import {PAIR_EVALUATOR,readReadingTrial} from './trials.js';
 
-export async function readingWorkspace(db:Queryable,identity:SpaceUserIdentity,itemId:string,projectId?:string|null,entryOnly=false,config?:ServerConfig,expectedArtifactId?:string,targetKey=READING_METHOD_KEY):Promise<ReadingMethodContext>{
- const ctx=await readingItemContext(db,identity,itemId,projectId);
+export async function readingWorkspace(db:Queryable,identity:SpaceUserIdentity,itemId:string|null,projectId?:string|null,entryOnly=false,config?:ServerConfig,expectedArtifactId?:string,targetKey=READING_METHOD_KEY):Promise<ReadingMethodContext>{
+ const ctx=await readingMethodContext(db,identity,itemId,projectId);
+ if(!itemId&&expectedArtifactId)throw new HttpError(422,'Artifact context requires a result');
  const row=(await db.query(`SELECT role FROM space_memberships WHERE space_id=$1 AND user_id=$2 AND status='active'`,[identity.spaceId,identity.userId])).rows[0];
  let canManage=['owner','admin'].includes(String(row?.role)) && (!ctx.projectId||await canWriteProject(db,identity.spaceId,ctx.projectId,identity.userId));
- const base:ReadingMethodContext={target_key:targetKey,item_id:ctx.item.id,item_title:ctx.item.title??'',project_id:ctx.projectId,project_name:ctx.context?.name?String(ctx.context.name):null,can_manage:canManage,initialized:false,effective_version_id:null,effective_version:null,effective_scope:null,method:null,result_provenance:null,versions:[],cases:[],trials:[],runtimes:[]};
+ const base:ReadingMethodContext={target_key:targetKey,item_id:ctx.item?.id??null,item_title:ctx.item?.title??'',project_id:ctx.projectId,project_name:ctx.context?.name?String(ctx.context.name):null,can_manage:canManage,initialized:false,effective_version_id:null,effective_version:null,effective_scope:null,method:null,result_provenance:null,versions:[],cases:[],trials:[],runtimes:[]};
  let asset;try{asset=await readingAsset(db,identity,false,targetKey);}catch(e){if(e instanceof HttpError&&e.statusCode===409)return base;throw e;}
  try{await assertCanWriteAssetOwnerScope(db,identity,asset);}catch(e){if(!(e instanceof HttpError)||e.statusCode!==403)throw e;canManage=false;}
  base.can_manage=canManage;base.initialized=true;if(entryOnly)return base;
@@ -32,10 +34,10 @@ export async function readingWorkspace(db:Queryable,identity:SpaceUserIdentity,i
  try{const effective=await resolvePrompt(db,{...identity,assetKey:targetKey,projectId:ctx.projectId});base.effective_version_id=effective.version_id;base.effective_scope=effective.scope_type?String(effective.scope_type):null;base.method=effective.rendered_text;const v=(await db.query(`SELECT version FROM evolvable_asset_versions WHERE id=$1`,[effective.version_id])).rows[0];base.effective_version=Number(v?.version);}
  catch(e){if(!(e instanceof HttpError)||![404,409].includes(e.statusCode))throw e;}
  // A result without recorded provenance remains unknown; never infer it from the current deployment.
- let metadata=ctx.item.metadata_json as Record<string,unknown>;
- if(config){const shown=await new (await import('../../reader/index.js')).PgReaderRepository(db,config).shownSourceItemVersion(identity,itemId);if(expectedArtifactId && shown?.artifactId!==expectedArtifactId)throw new HttpError(409,'The Reader version changed; reopen the result before improving it');if(shown)metadata=shown.content.metadata;}
+ let metadata=ctx.item?.metadata_json as Record<string,unknown>;
+ if(config&&itemId){const shown=await new (await import('../../reader/index.js')).PgReaderRepository(db,config).shownSourceItemVersion(identity,itemId);if(expectedArtifactId && shown?.artifactId!==expectedArtifactId)throw new HttpError(409,'The Reader version changed; reopen the result before improving it');if(shown)metadata=shown.content.metadata;}
  const provenance=metadata?.reading_method_provenance as {version_id?:string;content_hash?:string}|undefined;
- if(provenance?.version_id){
+ if(provenance?.version_id&&ctx.item){
   const v=(await db.query(`SELECT id,version,content_hash FROM evolvable_asset_versions WHERE id=$1 AND asset_id=$2`,[provenance.version_id,asset.id])).rows[0];
   const runId=typeof metadata.agent_run_id==='string'?metadata.agent_run_id:null;
   const run=runId?await new (await import('../../runs/repository.js')).PgRunRepository(db).getRun(identity.spaceId,runId):null;
@@ -52,6 +54,7 @@ export async function readingWorkspace(db:Queryable,identity:SpaceUserIdentity,i
  base.effective_content_hash=base.effective_version_id?(await db.query<{content_hash:string}>(`SELECT content_hash FROM evolvable_asset_versions WHERE id=$1`,[base.effective_version_id])).rows[0]?.content_hash??null:null;
  const versions=await new PromptRepository(db).listVersions(identity,targetKey);
  base.versions=versions.filter(v=>v.scope_type===(ctx.projectId?'project':'space')&&v.scope_id===(ctx.projectId??identity.spaceId)).map(v=>({id:String(v.id),version:Number(v.version),status:String(v.status),content_hash:String(v.content_hash),method:String((v.content as {template?:string})?.template??''),reason:((v.content as {reading_reason?:string})?.reading_reason)??null}));
+ if(!itemId)return base;
  base.cases=(await db.query<{id:string;name:string}>(`SELECT id,name,(input_json->>'context_hash'<>$5 OR input_json->>'authority'<>$6) AS stale FROM evaluation_cases WHERE space_id=$1 AND asset_id=$2 AND created_by_user_id=$3 AND status='active' AND input_json->>'reading_item_id'=$4 ORDER BY created_at DESC LIMIT 20`,[identity.spaceId,asset.id,identity.userId,itemId,sha256Json(ctx.context),ctx.authority])).rows;
  const availableCases:typeof base.cases=[];for(const c of base.cases){try{const view=await readReadingSample(db,identity,c.id);availableCases.push({...c,stale:view.stale})}catch(e){if(!(e instanceof HttpError)||![403,404].includes(e.statusCode))throw e;}}base.cases=availableCases;
  const ids=(await db.query<{id:string}>(`SELECT id FROM evolvable_asset_evaluation_runs WHERE space_id=$1 AND asset_id=$2 AND created_by_user_id=$3 AND evaluator_version=$4 AND eval_suite_ref_json->>'item_id'=$5 AND eval_suite_ref_json->>'project_id' IS NOT DISTINCT FROM $6 ORDER BY created_at DESC LIMIT 20`,[identity.spaceId,asset.id,identity.userId,PAIR_EVALUATOR,itemId,ctx.projectId])).rows;
@@ -67,7 +70,7 @@ export async function initializeReading(db:Pool,config:ServerConfig,identity:Spa
 export async function saveReadingDraft(db:Pool,identity:SpaceUserIdentity,raw:unknown){
  const parsed=ReadingMethodDraftSchema.safeParse(raw);if(!parsed.success)throw new HttpError(422,parsed.error.message);const input=parsed.data;assertSafeGoalMessage(JSON.stringify(input));
  return withDbTransaction(db,async tx=>{
-  const ctx=await readingItemContext(tx,identity,input.item_id,input.project_id);const asset=await readingAsset(tx,identity,true,input.target_key);await lockEvolutionAssets(tx,[asset.id]);
+  const ctx=await readingMethodContext(tx,identity,input.item_id,input.project_id);const asset=await readingAsset(tx,identity,true,input.target_key);await lockEvolutionAssets(tx,[asset.id]);
   const current=await freezeReadingMethod(tx,{...identity,projectId:ctx.projectId},ctx.context,input.target_key);
   if(current.frozen.version_id!==input.parent_version_id){const candidate=await (await import('./access.js')).readingCandidate(tx,identity,input.parent_version_id,ctx.projectId,input.target_key);readingStrategy(candidate.version.content);}
   const parent=(await tx.query(`SELECT content_json,status FROM evolvable_asset_versions WHERE id=$1 AND asset_id=$2`,[input.parent_version_id,asset.id])).rows[0];

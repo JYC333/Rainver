@@ -68,7 +68,7 @@ function ScopedReading({ spaceId, projectId }: { spaceId: string; projectId?: st
   const chooseDensity = (value: 'comfortable' | 'compact') => { setDensity(value); try { window.localStorage.setItem(DENSITY_KEY, value) } catch { /* private mode */ } }
   const listRef = useRef<HTMLDivElement>(null)
   const [returnNotice, setReturnNotice] = useState(false)
-  const [preferencesOpen, setPreferencesOpen] = useState(false)
+  const [preferencesOpen, setPreferencesOpen] = useState(params.get('settings') === 'reading')
   const base = projectId ? `/projects/${projectId}/sources` : '/library/reading'
   const changeParams = (name: string, value: string) => {
     const next = new URLSearchParams(params)
@@ -155,7 +155,7 @@ function ScopedReading({ spaceId, projectId }: { spaceId: string; projectId?: st
       <div className="flex min-w-0 items-center gap-4"><div className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-primary/35 bg-primary/12"><BookOpen className="size-5 text-accent-foreground" /></div><div className="space-y-1"><h1 className="text-xl font-semibold tracking-tight">{t(projectId ? 'reading.project' : 'reading.mine')}</h1><p className="max-w-2xl text-xs text-muted-foreground">{t(projectId ? 'reading.projectHint' : 'reading.pendingHint')}</p></div></div>
       <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={feed.loading || feed.busy} onClick={() => void feed.reload()}><RefreshCw className="size-3.5" />{t('reading.refresh')}</Button><Button size="sm" variant="ghost" onClick={() => setPreferencesOpen(v => !v)} aria-expanded={preferencesOpen}><Settings2 className="size-3.5" />{t('reading.preferences')}</Button></div>
     </header>
-    {preferencesOpen && <Card className="p-4">{projectId ? <ProjectReadingPreference key={`${spaceId}:${projectId}`} spaceId={spaceId} projectId={projectId} /> : <ReadingPreferences spaceId={spaceId} onChanged={() => void feed.reload()} />}</Card>}
+    {preferencesOpen && <Card className="p-4">{projectId ? <ProjectReadingPreference key={`${spaceId}:${projectId}`} spaceId={spaceId} projectId={projectId} /> : <ReadingPreferences spaceId={spaceId} onChanged={() => void feed.reload()} />}<div className="mt-4 border-t border-border pt-3"><ReadingMethodEntry scopeHint projectId={projectId} readerHref={`${returnTo}${returnTo.includes('?')?'&':'?'}settings=reading`}/></div></Card>}
     {!projectId && <PersonalBriefingPanel key={spaceId} spaceId={spaceId} />}
     <nav className="flex flex-wrap items-center justify-between gap-3" aria-label={t('reading.views')}><div className="inline-flex flex-wrap items-center gap-1 rounded-lg bg-muted p-1">
       {(['pending','read','all'] as const).map(option => <Button key={option} size="sm" className={view === option ? 'bg-background text-foreground shadow-sm hover:bg-background' : undefined} variant="ghost" aria-current={view === option ? 'page' : undefined} onClick={() => changeParams('view', option)}>{t(`reading.${option}`)}</Button>)}</div><div className="flex flex-wrap gap-2">
@@ -200,7 +200,7 @@ function ScopedReading({ spaceId, projectId }: { spaceId: string; projectId?: st
         {item.material_links.length > 0 && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer hover:text-foreground">{t('reading.materialLinks')}</summary><ul>{item.material_links.map(link => <li key={`${link.kind}:${link.reference_id}`}><SpaceLink className="underline" to={`/projects/${link.project_id}/sources?view=all`}>{t(`reading.link_${link.kind}`)}</SpaceLink></li>)}</ul></details>}
         </>}
         actions={<>
-          {item.access_level === 'full' ? <Button size="sm" variant="outline" asChild><SpaceLink to={itemHref(item)} onClick={() => remember(item)}>{t('reading.open')}</SpaceLink></Button> : <span className="text-xs text-muted-foreground">{t('reading.summaryOnly')}</span>}{item.access_level === 'full' && <ReadingMethodEntry itemId={item.source_item_id} projectId={projectId??item.material_project_id} readerHref={itemHref(item)} onNavigate={()=>remember(item)}/>}<Button size="sm" variant="ghost" className="reading-preview-trigger" onClick={() => setPreviewKey(item.key)} aria-label={t('reading.previewItem', { title: item.title })}>{t('reading.itemPreview')}</Button>
+          {item.access_level !== 'full' && <span className="text-xs text-muted-foreground">{t('reading.summaryOnly')}</span>}<Button size="sm" variant="ghost" className="reading-preview-trigger" onClick={() => setPreviewKey(item.key)} aria-label={t('reading.previewItem', { title: item.title })}>{t('reading.itemPreview')}</Button>
           <Button size="sm" variant="ghost" disabled={feed.busy || feed.loading} onClick={() => void changePersonalState(item, 'read_status')}>{t(item.read_status === 'read' || item.read_status === 'discussed' ? 'reading.restore' : 'reading.markRead')}</Button>
           <Button size="sm" variant="ghost" disabled={feed.busy || feed.loading} onClick={() => void changePersonalState(item, 'dismissed')}>{t(item.dismissed ? 'reading.restoreQueue' : 'reading.dismiss')}</Button>
         </>}

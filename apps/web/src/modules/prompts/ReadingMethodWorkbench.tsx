@@ -1,3 +1,5 @@
+import { readingHrefReturning } from '../library/readingLinks';
+import { ReadingMethodComparisonExample } from './ReadingMethodComparisonExample';
 import {ReadingMethodApiExecution,type MethodExecution} from './ReadingMethodApiExecution';
 import { ReadingMethodAdvanced } from './ReadingMethodAdvanced';
 import {ReadingMethodGeneration} from './ReadingMethodGeneration';
@@ -24,8 +26,8 @@ export default function ReadingMethodWorkbench() {
     activeSpaceId,
     userId
   } = useSpace();
-  const [q] = useSearchParams();
-  const item = q.get('item_id') ?? '',
+  const [q, setQuery] = useSearchParams();
+  const item = q.get('item_id'),
     project = q.get('project_id'),
     artifact = q.get('artifact_id'),
     target = q.get('target_key')==='prompt.revision.method'?'prompt.revision.method':'reading.project_investigation';
@@ -54,7 +56,8 @@ export default function ReadingMethodWorkbench() {
     [comment, setComment] = useState(''),
     [proposal, setProposal] = useState(''),
     [notice, setNotice] = useState('');
-  const scope = `${activeSpaceId}:${userId}:${item}:${project}:${artifact}:${target}`;
+  const requestedCandidate=q.get('candidate_id')??'';
+  const scope = `${activeSpaceId}:${userId}:${item}:${project}:${artifact}:${target}:${requestedCandidate}`;
   const current = useRef(scope);
   current.current = scope;
   const owner = useRef<object | null>(null);
@@ -89,7 +92,9 @@ export default function ReadingMethodWorkbench() {
       throw e;
     }
     if (token && owner.current === token && current.current === scope && epoch === sessionEpoch() && which === request.current) {
+      if(requestedCandidate&&response.project_id!==project){setData(null);setError('reading_scope_changed');return false;}
       setData(response);
+      if(requestedCandidate&&!response.versions.some(v=>v.id===requestedCandidate))setCandidate('');
       setError('');
       return true;
     }
@@ -98,13 +103,13 @@ export default function ReadingMethodWorkbench() {
   useEffect(() => {
     const token = {};
     owner.current = token;
-    setTab('current');
+    setTab(q.get('method_tab')==='compare'?'compare':'current');
     setExecution({});
     setData(null);
     setError('');
     setEditing(false);
     setAdvancedOpen(false);
-    setCandidate('');
+    setCandidate(requestedCandidate);
     setManualParent('');
     setProposal('');
     setNotice('');
@@ -129,14 +134,14 @@ export default function ReadingMethodWorkbench() {
       setNotice('');
       setBusy(false);
     });
-    if (item) void reload().catch(e => {
+    void reload().catch(e => {
       if (owner.current === token) setError(errMsg(e));
     });
     return () => {
       if (owner.current === token) owner.current = null;
       drop();
     };
-  }, [scope, reload, item]);
+  }, [scope, reload, item, requestedCandidate]);
   const act = async (action: () => Promise<unknown>) => {
     if (operation.current||generationBusy) return;
     const token = owner.current,
@@ -255,16 +260,16 @@ export default function ReadingMethodWorkbench() {
       window.clearInterval(timer);
     };
   }, [running, reload]);
-  if (!item) return <main className="mx-auto max-w-3xl space-y-4 p-5"><h1>{t('readingMethod.reading_methods')}</h1><p>{t('readingMethod.open_improve_this_result_from_reading_or')}</p><SpaceLink className="underline" to="/library/reading">Reading</SpaceLink><p><SpaceLink className="underline" to="/prompts?advanced=1">{t('readingMethod.advanced_prompt_management')}</SpaceLink></p></main>;
+
   return <main className="mx-auto max-w-6xl space-y-5 p-4 pb-24 sm:p-6 sm:pb-12 reading-touch text-sm">
- <Button variant="ghost" size="sm" asChild><SpaceLink to={readingMethodReturn(item, q.get('reader'), data?.project_id ?? project)}>← {t('readingMethod.back_to_reading')}</SpaceLink></Button>
+ <Button variant="ghost" size="sm" asChild><SpaceLink to={readingMethodReturn(item, q.get('reader'), data?.project_id ?? project)}>← {t(item?'readingMethod.back_to_reading':'readingMethod.back_to_settings')}</SpaceLink></Button>
  <header className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><h1 className="text-xl font-semibold">{t(target==='prompt.revision.method'?'readingMethod.revision_method':'readingMethod.reading_method')}</h1><p className="break-words text-sm text-muted-foreground">{data?.project_name ?? t('readingMethod.current_space')} · {data?.effective_version ? (data.effective_scope === 'system' ? t('readingMethod.system_baseline') : data.effective_scope === 'space' ? t('readingMethod.space_default') : t('readingMethod.project_override')) + t('readingMethod.effective') + ` v${data.effective_version}` : t('readingMethod.not_initialized_deployed')} · {editing ? t('readingMethod.unsaved_changes') : candidate ? t('readingMethod.candidate_draft') : t('readingMethod.production_unchanged')}</p></div>
  {data?.can_manage && data.initialized && (positive||proposal||candidate&&tab!=='compare'&&tab!=='current') && <Button disabled={busy||generationBusy||!!running||!!proposal||editing} onClick={()=>{if(positive)requestActivation();else setTab('compare');}}>{proposal?t('readingMethod.awaiting_decision'):positive?t('readingMethod.request_activation'):t('readingMethod.compare_runs')}</Button>}
  </header>
- {error && <div role="alert" className="rounded border border-destructive p-3"><p className="break-words">{error}</p><Button variant="outline" onClick={() => void act(reload)}>{t('readingMethod.retry_refresh')}</Button></div>}
+ {error && <div role="alert" className="rounded border border-destructive p-3"><p className="break-words">{error==='reading_scope_changed'?t('readingMethod.comparison_scope_changed'):error}</p><Button variant="outline" onClick={() => void act(reload)}>{t('readingMethod.retry_refresh')}</Button></div>}
  {notice && <p role="status" className="rounded border border-border p-3 text-sm">{notice}</p>}
  {!data && !error && <p role="status">{t('readingMethod.loading')}</p>}
- {data && <>{target==='reading.project_investigation'&&<p className="text-sm text-muted-foreground">{t('readingMethod.result_method')}{data.result_provenance ? `v${data.result_provenance.version}` : t('readingMethod.unknown_for_this_legacy_result_current_deployment')}</p>}
+ {data && <>{item&&target==='reading.project_investigation'&&<p className="text-sm text-muted-foreground">{t('readingMethod.result_method')}{data.result_provenance ? `v${data.result_provenance.version}` : t('readingMethod.unknown_for_this_legacy_result_current_deployment')}</p>}
  {!data.initialized && <p>{t('readingMethod.the_method_has_not_been_synchronized_initialization')}{data.can_manage && <Button disabled={busy||generationBusy} onClick={() => void act(() => readingMethodsApi.initialize())}>{t('readingMethod.initialize_method')}</Button>}</p>}
  {!data.can_manage && <p>{t('readingMethod.editing_and_enabling_require_existing_prompt_maintenance')}</p>}
  <Tabs value={tab} onValueChange={setTab}><TabsList className="h-auto flex-wrap justify-start" aria-label={t('readingMethod.reading_method_views')}>{['current', 'compare', 'history'].map((v, n) => <TabsTrigger key={v} value={v} disabled={busy||generationBusy}>{[t('readingMethod.current_method'), t('readingMethod.comparison'), t('readingMethod.history')][n]}</TabsTrigger>)}</TabsList>
@@ -290,6 +295,7 @@ export default function ReadingMethodWorkbench() {
               value: v.id,
               label: `v${v.version} · ${v.reason ?? statusLabel(v.status)}`
             }))]} /></div>
+ {!item ? <ReadingMethodComparisonExample spaceId={activeSpaceId!} projectId={data.project_id} disabled={busy||generationBusy||!candidate} select={selected=>{const next=new URLSearchParams(q);next.set('item_id',selected.source_item_id);next.set('candidate_id',candidate);next.set('method_tab','compare');next.set('reader',readingHrefReturning(selected,readingMethodReturn(null,q.get('reader'),data.project_id)));next.delete('artifact_id');setQuery(next);}}/> : <>
  <p className="text-sm">{t(target==='prompt.revision.method'?'readingMethod.revision_comparison_help':'readingMethod.controlled_offline_comparison_homepage_relevant_documentation_example')}</p>
  <div className="space-y-2">{t('readingMethod.sample')}<Select portal={false} ariaLabel={t('readingMethod.sample')} value={sample} disabled={busy||generationBusy} onChange={setSample} options={[{
               value: '',
@@ -349,6 +355,7 @@ export default function ReadingMethodWorkbench() {
 </>}
  </>}</>}
  {proposal && <p role="status">{t('readingMethod.proposal_awaits_your_decision_it_is_not')} <SpaceLink className="underline" to="/proposals">{t('readingMethod.open_proposals')}</SpaceLink><Button variant="outline" onClick={() => void act(reload)}>{t('readingMethod.refresh_effective_version_after_decision')}</Button></p>}
+ </>}
  </TabsContent>}
  {tab === 'history' && <TabsContent value="history" className="space-y-4">{data.versions.map(v => <Card key={v.id} className="break-words p-3">v{v.version} · {{
               draft: t('readingMethod.draft'),

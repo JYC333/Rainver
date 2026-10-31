@@ -12,7 +12,8 @@ export interface GenerationRef {
   provider?: import('./revisionProvider.js').RevisionProvider;
   revision_method?: FrozenRevisionMethod;
   source_kind: 'description';
-  item_id: string;
+  item_id: string | null;
+  scope_only?: true;
   project_id: string | null;
   authority: string;
   parent_version_id: string;

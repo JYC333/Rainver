@@ -98,3 +98,10 @@ it('CLI is explicitly selected without API, clears API fields, and switching bac
  fireEvent.click(await screen.findByRole('button',{name:'Execution method'}));fireEvent.click(screen.getByRole('option',{name:'Use authorized Space default API'}));
  expect(screen.getByRole('button',{name:'Generate candidate version'})).toBeDisabled();
 });
+it('generates a shared-method draft without selecting any article or starting a comparison',async()=>{
+ const data={...context(),item_id:null,item_title:''};vi.mocked(readingMethodsApi.context).mockResolvedValue(data);vi.mocked(readingMethodsApi.generate).mockResolvedValue(generation());
+ render(<MemoryRouter initialEntries={['/prompts?reading_method=1&project_id=p']}><ReadingMethodWorkbench/></MemoryRouter>);
+ await fill();fireEvent.click(screen.getByRole('button',{name:'Generate candidate version'}));
+ await waitFor(()=>expect(readingMethodsApi.generate).toHaveBeenCalledWith(expect.objectContaining({item_id:null,project_id:'p',description:generation().description})));
+ expect(readingMethodsApi.sample).not.toHaveBeenCalled();expect(readingMethodsApi.trial).not.toHaveBeenCalled();
+});

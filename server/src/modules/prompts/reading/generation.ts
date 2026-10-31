@@ -1,3 +1,4 @@
+import { readingMethodContext } from './methodContext.js';
 import { startProviderGeneration } from './providerGeneration.js';
 import { resolveRevisionMethod } from './revisionMethod.js';
 import { ReadingMethodGenerationSchema, type ReadingMethodGenerationView } from '@rainver/protocol';
@@ -10,7 +11,6 @@ import { runFinalizationReconcilerRegistry } from '../../runs/finalizationReconc
 import { createManagedExecutionPolicy } from '../../policy/managedExecutionPolicy.js';
 import { resolveSessionConfig, sessionConfigRunOverride } from '../../sessions/sessionConfig.js';
 import { nativeProfileFingerprint } from '../../sources/goals/nativeRoute.js';
-import { readingItemContext } from '../../sources/index.js';
 import { assertSafeGoalMessage } from '../../sources/goals/messageSafety.js';
 import { lockEvolutionAssets } from '../../evolution/assetLocks.js';
 import { normalizeVersionScopeForWrite, canViewVersionScope } from '../../evolution/assetAccess.js';
@@ -38,7 +38,7 @@ export async function startReadingGeneration(db: Pool, identity: SpaceUserIdenti
   await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`prompt-generation:${identity.spaceId}:${identity.userId}`]);
     const asset = await readingAsset(tx, identity,true,input.target_key);
     await lockEvolutionAssets(tx, [asset.id]);
-    const ctx = await readingItemContext(tx, identity, input.item_id, input.project_id);
+    const ctx = await readingMethodContext(tx, identity, input.item_id, input.project_id);
     await normalizeVersionScopeForWrite(tx, identity, ctx.projectId ? 'project' : 'space', ctx.projectId ?? identity.spaceId);
     const effective = await freezeReadingMethod(tx, {
       ...identity,
@@ -56,7 +56,7 @@ export async function startReadingGeneration(db: Pool, identity: SpaceUserIdenti
     const profileHash = await nativeProfileFingerprint(tx, input.runtime_profile_id!);
     if (input.retry_of) {
       const retry = await ownedRun(tx, identity, input.retry_of);
-      if ((generationOf(retry)!.target_key??READING_METHOD_KEY)!==(input.target_key??READING_METHOD_KEY) || generationOf(retry)!.item_id !== input.item_id || !generationTerminal.has(retry.status)) throw new HttpError(409, 'Retry must name a finished generation for this result');
+      if ((generationOf(retry)!.target_key??READING_METHOD_KEY)!==(input.target_key??READING_METHOD_KEY) || generationOf(retry)!.item_id !== (input.item_id ?? null) || generationOf(retry)!.project_id !== ctx.projectId || !generationTerminal.has(retry.status)) throw new HttpError(409, 'Retry must name a finished generation for this result');
       const view = await readReadingGeneration(tx, identity, retry.id);
       if (!['failed', 'degraded', 'cancelled', 'blocked', 'orphaned'].includes(view.status)) throw new HttpError(409, 'Only unsuccessful terminal generations may be retried');
     }
@@ -81,7 +81,8 @@ Return ONLY JSON with schema "${GENERATION_SCHEMA}", method (40..12000 character
       target_key: input.target_key,
       revision_method: revisionMethod,
       source_kind: 'description',
-      item_id: ctx.item.id,
+      item_id: ctx.item?.id ?? null,
+      ...(!ctx.item ? {scope_only:true as const} : {}),
       project_id: ctx.projectId,
       authority: ctx.authority,
       parent_version_id: parent.id,
@@ -113,7 +114,7 @@ Return ONLY JSON with schema "${GENERATION_SCHEMA}", method (40..12000 character
       contract_snapshot: {
         source: {
           kind: 'direct',
-          id: ctx.item.id
+          id: ctx.item?.id ?? asset.id
         },
         workflow_input_json: {
           reading_method_executor_only: true,
@@ -206,10 +207,10 @@ export async function readReadingGeneration(db: Queryable, identity: SpaceUserId
     changes: candidate ? output?.changes??[] : []
   };
 }
-export async function listReadingGenerations(db: Queryable, identity: SpaceUserIdentity, itemId: string, projectId: string | null, targetKey=READING_METHOD_KEY) {
+export async function listReadingGenerations(db: Queryable, identity: SpaceUserIdentity, itemId: string | null, projectId: string | null, targetKey=READING_METHOD_KEY) {
   const ids = (await db.query<{
     id: string;
-  }>(`SELECT id FROM runs WHERE space_id=$1 AND instructed_by_user_id=$2 AND ${generationSql}->>'item_id'=$3 AND ${generationSql}->>'project_id' IS NOT DISTINCT FROM $4 AND COALESCE(${generationSql}->>'target_key','reading.project_investigation')=$5 ORDER BY created_at DESC,id DESC LIMIT 10`, [identity.spaceId, identity.userId, itemId, projectId,targetKey])).rows;
+  }>(`SELECT id FROM runs WHERE space_id=$1 AND instructed_by_user_id=$2 AND ${generationSql} IS NOT NULL AND (${generationSql}->>'item_id' IS NULL OR ${generationSql}->>'item_id'=$3) AND ${generationSql}->>'project_id' IS NOT DISTINCT FROM $4 AND COALESCE(${generationSql}->>'target_key','reading.project_investigation')=$5 ORDER BY created_at DESC,id DESC LIMIT 10`, [identity.spaceId, identity.userId, itemId, projectId,targetKey])).rows;
   return Promise.all(ids.map(r => readReadingGeneration(db, identity, r.id)));
 }
 export async function cancelReadingGeneration(db: Pool, config: ServerConfig, identity: SpaceUserIdentity, id: string) {

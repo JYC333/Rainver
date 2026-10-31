@@ -349,3 +349,57 @@ it('CLI inventory and admission reject foreign identity, disabled profiles and m
  await expect(startReadingGeneration(db.pool,identity,input)).rejects.toMatchObject({statusCode:409});
  expect((await db.pool.query(`SELECT count(*)::int n FROM runs`)).rows[0].n).toBe(0);
 });
+
+it('shared method maintenance reads and saves by scope without reading an article or creating a Run',async()=>{
+ const observed:string[]=[];
+ const scoped={query:async(...args:Parameters<typeof db.pool.query>)=>{observed.push(String(args[0]));return db.pool.query(...args)}};
+ const context=await readingWorkspace(scoped as never,identity,null,PROJECT);
+ expect(context).toMatchObject({item_id:null,project_id:PROJECT,can_manage:true,result_provenance:null});
+ const spaceMethod=await readingWorkspace(db.pool,identity,null,null);expect(spaceMethod).toMatchObject({item_id:null,project_id:null,can_manage:true});
+ expect(spaceMethod.method).toBeTruthy();
+ expect(context.method).toBeTruthy();expect(observed.some(sql=>/\b(source_items|source_connections|reader_documents)\b/.test(sql))).toBe(false);
+ const draft=await saveReadingDraft(db.pool,identity,{project_id:PROJECT,parent_version_id:context.effective_version_id,reason:'Shared method feedback without a selected result',method:context.method+' Inspect primary evidence before making claims.'});
+ expect(draft.scope_type).toBe('project');expect(draft.scope_id).toBe(PROJECT);
+ expect((await readingWorkspace(db.pool,identity,null,PROJECT)).versions.map(v=>v.id)).toContain(draft.id);
+ await expect(saveReadingDraft(db.pool,{spaceId:SPACE,userId:MEMBER},{project_id:PROJECT,parent_version_id:context.effective_version_id,reason:'Denied',method:context.method+' New text.'})).rejects.toMatchObject({statusCode:403});
+ expect((await db.pool.query('SELECT count(*)::int n FROM runs')).rows[0].n).toBe(0);
+ await expect(readingWorkspace(db.pool,identity,null,PROJECT,false,w.config(),'artifact-without-result')).rejects.toMatchObject({statusCode:422});
+});
+
+it('scope-only API revision executes and settles without Source dependencies, and keeps Provider and maintenance withdrawal gates',async()=>{
+ const provider=await apiProvider();
+ const current=await readingWorkspace(db.pool,identity,null,PROJECT);
+ const input={source_kind:'description',project_id:PROJECT,parent_version_id:current.effective_version_id,parent_content_hash:current.effective_content_hash,description:'Improve the shared evidence strategy, without choosing an article.'};
+ await db.pool.query(`UPDATE source_connections SET consent_json='{"allow_external_model_egress":false,"allow_local_provider_egress":false}' WHERE id=$1`,[CONNECTION]);
+ const {__setProviderHttpClientForTests}=await import('../src/modules/providers/invocation/invocation.js');const {openAiChatResponse}=await import('./support/piAiHttp.js');
+ __setProviderHttpClientForTests({fetch:async()=>openAiChatResponse({choices:[{message:{content:JSON.stringify(result)}}]})});
+ try {
+  const generation=await startReadingGeneration(db.pool,identity,input);
+  const run=(await w.runs().getRun(SPACE,generation.id))!;
+  expect((run.contract_snapshot_json as any).workflow_input_json.reading_method_generation).toMatchObject({item_id:null,project_id:PROJECT,scope_only:true});
+  expect(run.prompt).not.toContain('PRIVATE_ARTICLE');expect(run.prompt).not.toContain('warehouse picking');
+  await assertGenerationDispatch(db.pool,run);await apiExecute();
+  const ready=await readReadingGeneration(db.pool,identity,generation.id);expect(ready).toMatchObject({status:'ready',visibility:'visible'});
+  expect((await readingWorkspace(db.pool,identity,null,PROJECT)).generations?.[0]?.id).toBe(generation.id);
+  // An actual comparison still requires its real material's current Source permission.
+  const sample=await saveReadingSample(db.pool,identity,item,PROJECT,READING_METHOD_FIXTURE,w.config());
+  const candidate=(await db.pool.query('SELECT content_hash FROM evolvable_asset_versions WHERE id=$1',[ready.candidate_version_id])).rows[0];
+  await expect(startReadingTrial(db.pool,w.config(),identity,{item_id:item,project_id:PROJECT,candidate_version_id:ready.candidate_version_id,candidate_content_hash:candidate.content_hash,case_id:sample.id})).rejects.toMatchObject({statusCode:403});
+  const {assertGenerationReadable}=await import('../src/modules/prompts/reading/generationAuthority.js');
+  const malformed=structuredClone(run);delete (malformed.contract_snapshot_json as any).workflow_input_json.reading_method_generation.scope_only;
+  await expect(assertGenerationReadable(db.pool,identity,malformed)).rejects.toMatchObject({statusCode:403});
+  await db.pool.query(`UPDATE model_providers SET enabled=false WHERE id=$1`,[provider]);
+  expect((await readReadingGeneration(db.pool,identity,generation.id)).visibility).toBe('withheld');
+ }finally{__setProviderHttpClientForTests(null)}
+});
+
+it('scope-only CLI revision uses canonical Delivery and settlement without requiring an article',async()=>{
+ const current=await readingWorkspace(db.pool,identity,null,PROJECT);
+ const generation=await startReadingGeneration(db.pool,identity,{source_kind:'description',item_id:null,project_id:PROJECT,parent_version_id:current.effective_version_id,parent_content_hash:current.effective_content_hash,description:'Keep evidence and unknowns distinct across this Project.',agent_id:AGENT,runtime_profile_id:PROFILE});
+ worker=await startWorkerProcess({databaseUrl:db.connectionUri,home,hostId:HOST});worker.send({cmd:'policy',prompt:{answer:JSON.stringify(result)}});
+ const ready=await until(()=>readReadingGeneration(db.pool,identity,generation.id),g=>!['queued','running','settling'].includes(g.status),'scope-only CLI generation',300);
+ expect(ready).toMatchObject({status:'ready',visibility:'visible'});
+ expect((await db.pool.query('SELECT count(*)::int n FROM invocation_deliveries WHERE invocation_id=$1',[generation.id])).rows[0].n).toBe(1);
+ await db.pool.query(`UPDATE space_memberships SET role='member' WHERE space_id=$1 AND user_id=$2`,[SPACE,OWNER]);
+ expect((await readReadingGeneration(db.pool,identity,generation.id)).visibility).toBe('withheld');
+});

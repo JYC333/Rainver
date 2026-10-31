@@ -1,3 +1,5 @@
+// This acquisition-surface fixture is an ordinary reader; method maintenance has its own scope/entry tests.
+vi.mock('../../../contexts/SpaceContext',()=>({useSpace:()=>({activeSpaceId:'space-1'})}))
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'

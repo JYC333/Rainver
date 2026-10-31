@@ -1,3 +1,4 @@
+import { readingMethodContext } from './methodContext.js';
 import { assertRevisionProvider, assertRevisionProviderReadable } from './revisionProvider.js';
 import { assertRevisionMethod } from './revisionMethod.js';
 import { isDeepStrictEqual } from 'node:util';
@@ -6,7 +7,7 @@ import { PgRunRepository } from '../../runs/repository.js';
 import { HttpError, type Queryable, type SpaceUserIdentity } from '../../routeUtils/common.js';
 import { PgConversationBackendRepository } from '../../sessions/conversationBackendRepository.js';
 import { nativeProfileFingerprint } from '../../sources/goals/nativeRoute.js';
-import { readingItemContext, assertReadingRunEgress } from '../../sources/index.js';
+import { assertReadingRunEgress } from '../../sources/index.js';
 import { resolveSessionConfig } from '../../sessions/sessionConfig.js';
 import { normalizeVersionScopeForWrite } from '../../evolution/assetAccess.js';
 import { readingAsset } from './access.js';
@@ -19,8 +20,9 @@ import { sha256Json } from '../hash.js';
 export async function assertGenerationReadable(db: Queryable, identity: SpaceUserIdentity, run: RunRecord) {
   const ref = generationOf(run);
   if (!ref || run.space_id !== identity.spaceId || run.instructed_by_user_id !== identity.userId) throw new HttpError(404, 'Generation not found');
+  if (!(typeof ref.item_id === 'string' && ref.item_id.length > 0) && !(ref.item_id === null && ref.scope_only === true)) throw new HttpError(403, 'Generation context is missing');
   await readingAsset(db, identity,true,ref.target_key);
-  const ctx = await readingItemContext(db, identity, ref.item_id, ref.project_id);
+  const ctx = await readingMethodContext(db, identity, ref.item_id, ref.project_id);
   if (ctx.projectId !== ref.project_id) throw new HttpError(403, 'Generation scope changed');
   await normalizeVersionScopeForWrite(db, identity, ref.project_id ? 'project' : 'space', ref.project_id ?? identity.spaceId);
   if(ref.provider&&(run.execution_kind!=='provider_task'||(run.model_provider_id&&run.model_provider_id!==ref.provider.id)))throw new HttpError(403,'Generation ProviderTask destination mismatch');

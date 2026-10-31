@@ -1,7 +1,8 @@
 import {safeAppPath} from '../../lib/safeHttpUrl'
 import {readingReturnTo} from '../library/readingLinks'
 /** Navigation only, never authority. Keep the original Reader origin (notably serendipity). */
-export function readingMethodReturn(itemId:string,raw:string|null,projectId?:string|null):string{
+export function readingMethodReturn(itemId:string|null|undefined,raw:string|null,projectId?:string|null):string{
+ if(!itemId)return readingReturnTo(raw,projectId)??(projectId?`/projects/${encodeURIComponent(projectId)}/sources?tab=settings`:'/library/reading?settings=reading');
  const fallback=`/library/items/${encodeURIComponent(itemId)}?from=${projectId?'project':'library'}`
  if(!raw||safeAppPath(raw)!==raw)return fallback
  const [path,query='']=raw.split('?');if(raw.split('?').length>2)return fallback

@@ -95,7 +95,7 @@ describe('unified reading presentation', () => {
     vi.mocked(informationDigestsApi.setReadingPreference).mockResolvedValue({show_in_my_reading:true})
     render(ui())
     await screen.findByText(item.title)
-    fireEvent.click(screen.getByRole('button',{name:'Project reading preferences'}))
+    fireEvent.click(screen.getByRole('button',{name:'Reading settings'}))
     expect(screen.getAllByText('Off by default. This changes only your reading list, never the team’s collection direction, schedule or budget.')).toHaveLength(1)
     const checkbox=await screen.findByRole('checkbox')
     await waitFor(()=>expect(checkbox).toBeEnabled())
@@ -173,7 +173,7 @@ it('does not link a summary-only Home preview into Reader', async () => {
 
 it.each([
   [{read_status:'read'} as const,'Mark read'],
-  [{dismissed:true} as const,'Set aside for me'],
+  [{dismissed:true} as const,'Set aside'],
   [{read_status:'unread'} as const,'Restore unread'],
 ])('retains a loaded multi-page window after %j and continues with the new server cursor',async(body,label)=>{
   const items=Array.from({length:90},(_,i)=>({...item,key:`key-${i}`,source_item_id:`id-${i}`,title:`Window item ${i}`,read_status:label==='Restore unread'?'read' as const:'unread' as const}))
@@ -388,7 +388,7 @@ describe('Reading state undo', () => {
 
   it('undoes setting aside through the state API', async () => {
     render(ui())
-    fireEvent.click(await screen.findByRole('button', { name: 'Set aside for me' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Set aside' }))
     await waitFor(() => expect(toast.success).toHaveBeenCalled())
     const options = vi.mocked(toast.success).mock.calls[0][1] as unknown as { action: { onClick: () => Promise<void> } }
     await act(async () => options.action.onClick())
@@ -443,11 +443,25 @@ it('a filtered Reading topic does not borrow a new-arrival marker from another t
  render(<MemoryRouter initialEntries={['/?topic=topic-a']}><ReadingWorkspace/></MemoryRouter>);const card=await screen.findByRole('listitem',{name:item.title});expect(within(card).getByText('Unread')).toBeVisible();expect(within(card).queryByText('Just collected')).not.toBeInTheDocument();
 });
 
-it('full cards offer the real maintenance entry after Reader; summary-only cards retain preview/state without an unusable entry',async()=>{
- userId='maintainer';const label='Improve result: adjust the reading method for this item';
- const full=render(ui());const entry=await screen.findByRole('link',{name:label});const open=screen.getByRole('link',{name:'Open Reader'});const preview=screen.getByRole('button',{name:'Preview A retained recommendation'});
- expect(open.compareDocumentPosition(entry)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();expect(entry.compareDocumentPosition(preview)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();expect(readingMethodsApi.entry).toHaveBeenCalledTimes(1);full.unmount();
- vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([{...item,access_level:'summary'}]));const probes=vi.mocked(readingMethodsApi.entry).mock.calls.length;
- render(ui());await screen.findByText(item.title);expect(screen.queryByRole('link',{name:label})).not.toBeInTheDocument();expect(screen.queryByRole('link',{name:'Open Reader'})).not.toBeInTheDocument();expect(readingMethodsApi.entry).toHaveBeenCalledTimes(probes);
- const summary=screen.getByText('Summary access only');const summaryPreview=screen.getByRole('button',{name:'Preview A retained recommendation'});const mark=screen.getByRole('button',{name:'Mark read'});expect(summary).toBeInTheDocument();expect(summary.compareDocumentPosition(summaryPreview)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();expect(summaryPreview.compareDocumentPosition(mark)&Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+it('keeps shared method maintenance in Reading settings and opens Reader from card titles',async()=>{
+ userId='maintainer';
+ vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([item,{...item,key:'other',source_item_id:'other',title:'Second example'}]));
+ render(ui());
+ const card=await screen.findByRole('listitem',{name:item.title});
+ expect(within(card).getByRole('link',{name:item.title})).toHaveAttribute('href',expect.stringContaining('/library/items/article'));
+ expect(screen.queryByRole('button',{name:'Improve result'})).not.toBeInTheDocument();
+ expect(screen.queryByRole('link',{name:'Open Reader'})).not.toBeInTheDocument();
+ expect(screen.queryByRole('link',{name:'Reading method'})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Reading settings'}));
+ const entry=await screen.findByRole('link',{name:'Reading method'});
+ expect(screen.getByText('After activation, this method is the Space default. Projects can override it.')).toBeInTheDocument();
+ const url=new URL(entry.getAttribute('href')!,'https://app.test');
+ expect(url.searchParams.get('reading_method')).toBe('1');expect(url.searchParams.has('item_id')).toBe(false);
+ expect(entry.closest('header')).toBeNull();expect(readingMethodsApi.entry).toHaveBeenCalledTimes(1);
+});
+it('Reading settings can open a scope-only method even with no full articles available',async()=>{
+ userId='maintainer';vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([{...item,access_level:'summary'}]));
+ render(ui());await screen.findByText(item.title);fireEvent.click(screen.getByRole('button',{name:'Reading settings'}));
+ const entry=await screen.findByRole('link',{name:'Reading method'});expect(entry.getAttribute('href')).not.toContain('item_id');
+ expect(screen.queryByRole('link',{name:item.title})).not.toBeInTheDocument();
 });

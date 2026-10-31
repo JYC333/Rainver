@@ -1,3 +1,4 @@
+import { readingMethodContext } from './methodContext.js';
 import { registerReadingTrialSettlement } from './trials.js';
 import { registerRevisionProviderTrials } from './providerTrial.js';
 import { ReadingMethodGenerationSchema } from '@rainver/protocol';
@@ -5,7 +6,6 @@ import type { z } from 'zod';
 import { HttpError, withDbTransaction, withQueryableTransaction, type Pool, type SpaceUserIdentity } from '../../routeUtils/common.js';
 import { PgRunRepository } from '../../runs/repository.js';
 import { enqueueProviderTaskRunJob, providerTaskRunPreparers } from '../../runs/providerTaskRunHandler.js';
-import { readingItemContext } from '../../sources/index.js';
 import { readingAsset } from './access.js';
 import { lockEvolutionAssets } from '../../evolution/assetLocks.js';
 import { normalizeVersionScopeForWrite } from '../../evolution/assetAccess.js';
@@ -24,7 +24,7 @@ export async function startProviderGeneration(db: Pool, identity: SpaceUserIdent
     await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, [`prompt-generation:${identity.spaceId}:${identity.userId}`]);
     const asset = await readingAsset(tx, identity, true, input.target_key);
     await lockEvolutionAssets(tx, [asset.id]);
-    const ctx = await readingItemContext(tx, identity, input.item_id, input.project_id);
+    const ctx = await readingMethodContext(tx, identity, input.item_id, input.project_id);
     await normalizeVersionScopeForWrite(tx, identity, ctx.projectId ? 'project' : 'space', ctx.projectId ?? identity.spaceId);
     const target = await freezeReadingMethod(tx, {
       ...identity,
@@ -35,7 +35,7 @@ export async function startProviderGeneration(db: Pool, identity: SpaceUserIdent
     const provider = await revisionProvider(tx, identity, input.provider_id, input.model, true);
     if (input.retry_of) {
       const prior = await new PgRunRepository(tx).getRun(identity.spaceId, input.retry_of);
-      if (!prior || prior.instructed_by_user_id !== identity.userId || generationOf(prior)?.item_id !== ctx.item.id || (generationOf(prior)?.target_key ?? 'reading.project_investigation') !== (input.target_key ?? 'reading.project_investigation') || !generationTerminal.has(prior.status) || !['failed', 'degraded', 'cancelled', 'blocked', 'orphaned'].includes((await readReadingGeneration(tx, identity, prior.id)).status)) throw new HttpError(409, 'Retry must name an unsuccessful terminal generation of this item');
+      if (!prior || prior.instructed_by_user_id !== identity.userId || generationOf(prior)?.item_id !== (ctx.item?.id ?? null) || generationOf(prior)?.project_id !== ctx.projectId || (generationOf(prior)?.target_key ?? 'reading.project_investigation') !== (input.target_key ?? 'reading.project_investigation') || !generationTerminal.has(prior.status) || !['failed', 'degraded', 'cancelled', 'blocked', 'orphaned'].includes((await readReadingGeneration(tx, identity, prior.id)).status)) throw new HttpError(409, 'Retry must name an unsuccessful terminal generation of this item');
     }
     const inputKey = sha256Json([identity.userId, {
       ...input,
@@ -58,7 +58,8 @@ export async function startProviderGeneration(db: Pool, identity: SpaceUserIdent
       source_kind: 'description',
       provider,
       revision_method: method,
-      item_id: ctx.item.id,
+      item_id: ctx.item?.id ?? null,
+      ...(!ctx.item ? {scope_only:true as const} : {}),
       project_id: ctx.projectId,
       authority: ctx.authority,
       parent_version_id: input.parent_version_id,
@@ -85,7 +86,7 @@ export async function startProviderGeneration(db: Pool, identity: SpaceUserIdent
       contract_snapshot: {
         source: {
           kind: 'direct',
-          id: ctx.item.id
+          id: ctx.item?.id ?? asset.id
         },
         workflow_input_json: {
           reading_method_generation: ref

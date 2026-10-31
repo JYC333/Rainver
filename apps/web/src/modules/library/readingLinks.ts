@@ -28,7 +28,7 @@ export function readerHrefFor(itemId: string, origin: ReadingItem['reader_origin
 
 // q is the submitted Reading search: trimmed, at most the search field's 500
 // UTF-16 units, no control characters. It is only ever read back as a filter.
-const LIST_PARAMS: Record<string, RegExp> = { view: /^(?:pending|read|all)$/, sort: /^oldest$/, topic: /^[\w-]{1,64}$/, topic_selection: /^(?:important|all)$/, q: /^[^\s\u0000-\u001F\u007F](?:[^\u0000-\u001F\u007F]{0,498}[^\s\u0000-\u001F\u007F])?$/ }
+const LIST_PARAMS: Record<string, RegExp> = { settings: /^reading$/,  view: /^(?:pending|read|all)$/, sort: /^oldest$/, topic: /^[\w-]{1,64}$/, topic_selection: /^(?:important|all)$/, q: /^[^\s\u0000-\u001F\u007F](?:[^\u0000-\u001F\u007F]{0,498}[^\s\u0000-\u001F\u007F])?$/ }
 const TOPIC_PARAMS: Record<string, RegExp> = { selection: /^(?:important|all)$/ }
 /** Only known keys with known values, each once, in a canonical encoding. */
 function boundedQuery(query: string | undefined, allowed: Record<string, RegExp>): boolean {

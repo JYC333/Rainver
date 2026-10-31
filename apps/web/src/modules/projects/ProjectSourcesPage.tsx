@@ -1,3 +1,4 @@
+import {ReadingMethodEntry} from '../prompts/ReadingMethodEntry'
 import { readingHref } from '../library/readingLinks'
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useAppTranslation } from '../../i18n'
@@ -489,6 +490,7 @@ export default function ProjectSourcesPage({view='all'}:{view?:'all'|'manage'|'m
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {projectId && <ReadingMethodEntry projectId={projectId} readerHref={`/projects/${projectId}/sources?tab=settings`}/>}
           {projectId && <Button variant="outline" asChild><Link to={`/projects/${projectId}/research?tab=reading`}><BookOpen className="size-4" />{t('monitoring.deepReadingList')}</Link></Button>}
           <Button variant="outline" className="gap-1.5 shrink-0" asChild disabled={!projectId}>
             <Link to={projectGraphHref(projectId, bindings)}>

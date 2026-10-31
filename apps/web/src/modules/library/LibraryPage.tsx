@@ -1,3 +1,4 @@
+import {ReadingMethodEntry} from '../prompts/ReadingMethodEntry'
 import {ReadingCard} from './ReadingCard'
 import {AgentSearchProvenance} from './AgentSearchProvenance'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -532,6 +533,7 @@ function ScopedLibraryDigestsPage() {
       </div>
 
       <details className="rounded-lg border border-border bg-card p-4"><summary className="cursor-pointer text-sm font-medium">{t('monitoring.readingPreferences')}</summary><div className="mt-4 space-y-4">
+        {activeSpaceId && <ReadingMethodEntry scopeHint readerHref="/library/reading?settings=reading"/>}
         {activeSpaceId && <AnnotationRecoveryNotice spaceId={activeSpaceId} />}
         {activeSpaceId && profile && <InterestProfileControls spaceId={activeSpaceId} profile={profile} onChanged={load} />}
       </div></details>

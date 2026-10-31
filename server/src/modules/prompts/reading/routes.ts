@@ -11,7 +11,8 @@ export function registerReadingMethodRoutes(app:FastifyInstance,context:ModuleCo
  const register=(method:'get'|'post',path:string,action:(identity:{spaceId:string;userId:string},r:Parameters<typeof query>[0])=>Promise<unknown>)=>app[method](base+path,async(r,reply)=>{const identity=await resolveIdentity(context.config,r,reply);if(!identity)return reply;try{return reply.send(await action(identity,r));}catch(e){return sendRouteError(reply,e);}});
  const target=(v:unknown)=>{const parsed=MethodTargetSchema.safeParse(v??'reading.project_investigation');if(!parsed.success)throw new HttpError(422,'Unknown method target');return parsed.data;};
  const id=(v:unknown)=>{if(typeof v!=='string'||!v)throw new HttpError(422,'item_id is required');return v;};
- register('get','',async(i,r)=>readingWorkspace(db(),i,id(query(r).item_id),typeof query(r).project_id==='string'?String(query(r).project_id):null,false,context.config,typeof query(r).artifact_id==='string'?String(query(r).artifact_id):undefined,target(query(r).target_key)));
+ const optionalItem=(v:unknown)=>v==null?null:id(v);
+ register('get','',async(i,r)=>readingWorkspace(db(),i,optionalItem(query(r).item_id),typeof query(r).project_id==='string'?String(query(r).project_id):null,false,context.config,typeof query(r).artifact_id==='string'?String(query(r).artifact_id):undefined,target(query(r).target_key)));
  register('get','/entry',(i,r)=>readingEntryScope(db(),i,typeof query(r).project_id==='string'?String(query(r).project_id):null));
  register('get','/cli-options',(i,r)=>readingCliOptions(db(),i,typeof query(r).project_id==='string'?String(query(r).project_id):null));
  register('post','/initialize',i=>initializeReading(db(),context.config,i));
@@ -26,5 +27,5 @@ export function registerReadingMethodRoutes(app:FastifyInstance,context:ModuleCo
  register('post','/trials/:id/judgment',(i,r)=>judgeReadingTrial(db(),i,id(params(r).id),jsonBody(r)));
  register('post','/trials/:id/cancel',(i,r)=>cancelReadingTrial(db(),context.config,i,id(params(r).id)));
  register('post','/promote',async(i,r)=>{const b=jsonBody(r);return proposeReadingMethod(db(),i,id(b.version_id),id(b.evaluation_id),typeof b.project_id==='string'?b.project_id:null);});
- register('post','/rollback',async(i,r)=>{const b=jsonBody(r);return rollbackReadingMethod(db(),i,id(b.item_id),typeof b.project_id==='string'?b.project_id:null,id(b.expected_version_id),target(b.target_key));});
+ register('post','/rollback',async(i,r)=>{const b=jsonBody(r);return rollbackReadingMethod(db(),i,optionalItem(b.item_id),typeof b.project_id==='string'?b.project_id:null,id(b.expected_version_id),target(b.target_key));});
 }

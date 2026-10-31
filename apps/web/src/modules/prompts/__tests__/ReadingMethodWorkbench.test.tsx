@@ -8,7 +8,7 @@ import {readingMethodsApi} from '../../../api/client'
 import {clearSessionResidue} from '../../../lib/sessionResidue'
 let viewer='u';
 vi.mock('../../../contexts/SpaceContext',()=>({useSpace:()=>({activeSpaceId:'s',preferredSpaceId:'s',userId:viewer})}))
-vi.mock('../../../api/client',()=>({providersApi:{usable:vi.fn().mockResolvedValue([])},readingMethodsApi:{context:vi.fn(),initialize:vi.fn(),draft:vi.fn(),sample:vi.fn(),trial:vi.fn(),judge:vi.fn(),promote:vi.fn(),cancel:vi.fn(),rollback:vi.fn()}}))
+vi.mock('../../../api/client',()=>({informationDigestsApi:{reading:vi.fn().mockResolvedValue({items:[],total:0,next_cursor:null})},providersApi:{usable:vi.fn().mockResolvedValue([])},readingMethodsApi:{generate:vi.fn(),context:vi.fn(),initialize:vi.fn(),draft:vi.fn(),sample:vi.fn(),trial:vi.fn(),judge:vi.fn(),promote:vi.fn(),cancel:vi.fn(),rollback:vi.fn()}}))
 const value=():ReadingMethodContext=>({item_id:'i',item_title:'Original',project_id:'p',project_name:'Robotics',can_manage:true,initialized:true,effective_version_id:'baseline',effective_version:1,effective_scope:'system',method:'Investigate mechanisms and evidence, not a homepage rewrite.',result_provenance:null,versions:[],cases:[],trials:[],runtimes:[{agent_id:'a',runtime_profile_id:'r',name:'Analyst · Local',usable:true,reason:null}]})
 const mount=()=>render(<MemoryRouter initialEntries={['/prompts?reading_method=1&item_id=i&project_id=p']}><ReadingMethodWorkbench/></MemoryRouter>)
 beforeEach(()=>{viewer='u';vi.clearAllMocks();vi.mocked(readingMethodsApi.context).mockResolvedValue(value())})
@@ -50,4 +50,24 @@ it('scope change discards the expanded editor and ignores a late save from the p
 });
 it('technical information preserves actual source version and Run navigation without entering editing',async()=>{
  const data=value();data.result_provenance={version_id:'recorded-version',version:7,run_id:'origin-run',content_hash:null};vi.mocked(readingMethodsApi.context).mockResolvedValue(data);mount();await screen.findByText(data.method!);fireEvent.click(screen.getByText('Advanced',{exact:true}));expect(screen.getByText('v7 · recorded-version')).toBeVisible();expect(screen.getByRole('link',{name:'View originating Run'})).toHaveAttribute('href',expect.stringContaining('/runs/origin-run'));expect(screen.getByRole('textbox',{name:'What went wrong, and what should change?'})).toBeEnabled();expect(screen.queryByRole('textbox',{name:'Reading method'})).not.toBeInTheDocument();
+});
+
+it('opens, reads and saves a shared method without selecting a result',async()=>{
+ const data={...value(),item_id:null,item_title:''};
+ vi.mocked(readingMethodsApi.context).mockResolvedValue(data);
+ render(<MemoryRouter initialEntries={['/prompts?reading_method=1&project_id=p']}><ReadingMethodWorkbench/></MemoryRouter>);
+ await screen.findByText(data.method!);
+ expect(readingMethodsApi.context).toHaveBeenCalledWith(null,'p',null,'reading.project_investigation');
+ fireEvent.click(screen.getByText('Advanced',{exact:true}));fireEvent.click(screen.getByRole('button',{name:'Edit manually'}));
+ fireEvent.change(screen.getByLabelText('Problem / reason for change'),{target:{value:'Shared method feedback'}});
+ fireEvent.change(screen.getByLabelText('Reading method',{exact:true}),{target:{value:data.method+' Use primary examples.'}});
+ fireEvent.click(screen.getByRole('button',{name:'Save draft (production unchanged)'}));
+ await waitFor(()=>expect(readingMethodsApi.draft).toHaveBeenCalledWith(expect.objectContaining({item_id:null,project_id:'p',reason:'Shared method feedback'})));
+ expect(readingMethodsApi.sample).not.toHaveBeenCalled();expect(readingMethodsApi.trial).not.toHaveBeenCalled();
+});
+it('comparison material cannot silently change the method maintenance scope',async()=>{
+ const data={...value(),project_id:'another-project'};vi.mocked(readingMethodsApi.context).mockResolvedValue(data);
+ render(<MemoryRouter initialEntries={['/prompts?reading_method=1&item_id=i&project_id=p&candidate_id=child&method_tab=compare']}><ReadingMethodWorkbench/></MemoryRouter>);
+ expect(await screen.findByRole('alert')).toHaveTextContent('This material belongs to a different method scope');
+ expect(screen.queryByText(data.method!)).not.toBeInTheDocument();expect(readingMethodsApi.trial).not.toHaveBeenCalled();
 });

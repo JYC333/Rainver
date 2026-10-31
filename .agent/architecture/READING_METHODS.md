@@ -11,8 +11,17 @@ Project/Space, matching the comparison scope. Only the existing system-asset mai
 propose or roll back; a result link grants no authority. Ordinary readers do not
 acquire maintenance rights. A Project-scoped version also needs its canonical writer.
 
-Reading cards, digest items and Source Reader expose **Improve this result** after
-a server permission check. `/prompts?reading_method=1&item_id=…&project_id=…`
+Reading settings expose the primary **Reading method** entry for the current
+Space or Project. Source Reader retains a secondary contextual **Improve result**
+shortcut; reading and digest cards open Reader only through their title.
+Method viewing, manual child drafts and description-driven generation can run
+without a selected article. Their authority is the canonical method-maintenance
+and Space/Project write scope, not an invented Source item. An explicit server-owned
+`scope_only` marker with null item identifies new scope-only generation contracts;
+missing legacy material references are refused. Existing result-linked generations
+retain all original Source authorization and withdrawal dependencies.
+
+`/prompts?reading_method=1&item_id=…&project_id=…`
 is the simple method workspace. `/prompts?advanced=1`, existing asset/tab deep links,
 and the advanced disclosure preserve the original prompt/evolution capabilities.
 Reader/list return links preserve the exact safe date, list and reader-origin context; they are navigation, not authority. The workspace shows the actual production resolution, not the latest draft. A
@@ -136,10 +145,23 @@ Neutral collection still freezes its originating goal Project as an authorizatio
 
 ## Reading-method UI presentation
 
-Reading/Digest cards keep Open Reader first; the method affordance is a shared
-small ghost Button/SpaceLink with a short translated label and a fuller accessible
-name. Reader places it with the header controls. Scope permission probes, return
-origin/date and all request/session guards are unchanged by the styling.
+The primary shared-method link lives inside Reading settings, including daily
+recommendation preferences and Project source settings. Cards have no duplicate
+Open Reader or method controls. Reader retains its compact contextual shortcut.
+The method workspace shows the effective scope/version without an article and
+allows default API or explicit CLI description revisions and manual immutable
+child drafts. Private generations remain tied to their instructor and current
+maintenance/Provider/Project permissions; method generation loads no article body
+or implicit Project context.
+
+Only comparison asks for a readable material example. The chooser uses the
+canonical authorized Reading projection, supports title search/paging and never
+chooses an item silently. Selecting it preserves the scoped candidate and return
+context and enters the existing Source-authorized sample/trial flow; another
+Project's material is not an implicit scope switch. Generation requires no sample,
+while trial execution still requires the full current material/audience/egress
+checks. Existing item-linked histories remain item-authorized. A scope-only view
+never invents result provenance or lists unrelated ordinary Runs as generations.
 
 The workspace uses shared Tabs/Select/Card/Input/Textarea/Button and semantic theme
 colours, with bundled Chinese/English `readingMethod` copy. Selects are outside

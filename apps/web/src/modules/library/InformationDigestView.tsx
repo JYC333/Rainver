@@ -1,4 +1,3 @@
-import {ReadingMethodEntry} from '../prompts/ReadingMethodEntry'
 import { readingHref } from './readingLinks'
 import { useState } from 'react'
 import { ExternalLink } from 'lucide-react'
@@ -59,7 +58,7 @@ export function InformationDigestView({ digest, project = false, onSerendipityFe
           </div>}
           </>}
           actions={<>
-            <Button size="sm" variant="outline" asChild><Link to={readingHref({source_item_id:item.source_item_id,reader_origin:projectId?'project':item.section==='serendipity'?'serendipity':'library'},projectId,'digest',digest.digest_date)}>{t('reading.open')}</Link></Button><ReadingMethodEntry itemId={item.source_item_id} projectId={projectId} readerHref={readingHref({source_item_id:item.source_item_id,reader_origin:projectId?'project':item.section==='serendipity'?'serendipity':'library'},projectId,'digest',digest.digest_date)}/>
+
             {item.source_uri && (
               <SafeExternalLink className="text-muted-foreground hover:text-foreground" href={item.source_uri} aria-label={t('workspace_ui.digest.open_source', { title: item.title })}>
                 <ExternalLink className="size-4" />
@@ -102,6 +101,7 @@ export function InformationDigestView({ digest, project = false, onSerendipityFe
       ))
   return (
     <div className="space-y-6">
+
       {digest.settings.coverage_scope === 'current_only' && <p className="text-sm">{t('monitoring.currentOnly')}</p>}
       {digest.settings.ranking === 'project_monitoring' && <p className="text-sm">{t(`monitoring.${String(digest.settings.coverage ?? 'not_run')}`)}</p>}
       <section className="grid gap-3">

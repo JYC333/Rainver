@@ -29,3 +29,11 @@ it('both locales keep the visible label at the start of the accessible name',asy
  try{for(const locale of ['en','zh-CN']){await act(async()=>{await i18n.changeLanguage(locale)});const view=render(<MemoryRouter><ReadingMethodEntry itemId="a" projectId="p"/></MemoryRouter>);const label=locale==='en'?'Improve result':'改进结果';const link=await screen.findByRole('link',{name:new RegExp('^'+label)});expect(link.textContent).toBe(label);expect(link.getAttribute('aria-label')?.startsWith(link.textContent!)).toBe(true);expect(link).toHaveAttribute('href',expect.stringContaining('item_id=a'));view.unmount()}}
  finally{await act(async()=>{await i18n.changeLanguage('en')})}
 });
+
+it('settings entry uses the shared scope without inventing an article',async()=>{
+ vi.mocked(readingMethodsApi.entry).mockResolvedValue({can_manage:true,project_id:'p'});
+ render(<MemoryRouter><ReadingMethodEntry projectId="p"/></MemoryRouter>);
+ const entry=await screen.findByRole('link',{name:'Reading method'});
+ const query=new URL(entry.getAttribute('href')!,'https://app.test').searchParams;
+ expect(query.get('project_id')).toBe('p');expect(query.has('item_id')).toBe(false);
+});

@@ -21,6 +21,15 @@ source pipeline, subscription model, data model, and API.
 
 ## Owns
 
+- Reading settings contain the primary shared **Reading method** link, scoped to
+  the current Space or Project; daily recommendation preferences and Project
+  source settings reuse it. Method maintenance opens without an article. The
+  Source Reader keeps a secondary result-context shortcut. Reading/Digest cards
+  navigate through titles without duplicate Open Reader or method buttons.
+  Comparing a candidate asks for an authorized material only at comparison time;
+  read, draft and description revision do not require a sample. See
+  [Reading methods](../architecture/READING_METHODS.md) for authority and scope.
+
 - Library shell (`/library`): Shell scene sidebar navigation for reading
   sections; defaults to `/library/reading` (the cross-day pending recommendation list). The navigation labels it Reading. All material uses `/library/reading?view=all`; legacy `/library/items` and type filters remain reachable under By type.
 - Personal briefing at the top of personal Reading (`PersonalBriefingPanel`,

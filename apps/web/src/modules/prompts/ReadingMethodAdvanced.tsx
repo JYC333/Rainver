@@ -29,6 +29,7 @@ interface Props {
 export function ReadingMethodAdvanced({ data, execution, open, onOpen, editRequest, editing, disabled, method, reason, setMethod, setReason, startEditing, cancelEditing, save }: Props) {
   const { t } = useAppTranslation();
   const location=useLocation();const next=new URLSearchParams(location.search);next.set("target_key",data.target_key==='prompt.revision.method'?'reading.project_investigation':'prompt.revision.method');
+  next.delete('candidate_id');next.delete('method_tab');
   const id = useId();
   const editor = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {

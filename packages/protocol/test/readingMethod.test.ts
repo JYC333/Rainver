@@ -30,3 +30,12 @@ it('CLI supports both method targets but never mixes API and CLI fields',()=>{
  expect(ReadingMethodTrialSchema.safeParse({target_key,item_id:'i',candidate_version_id:'v',candidate_content_hash:'a'.repeat(64),case_id:'c',agent_id:'a',runtime_profile_id:'r'}).success).toBe(true);
  }
 });
+it('scope-only maintenance accepts omitted/null material but real comparisons still require an article',()=>{
+ const generation={source_kind:'description',parent_version_id:'parent',parent_content_hash:'a'.repeat(64),description:'Improve the shared evidence strategy'};
+ expect(ReadingMethodGenerationSchema.parse(generation).item_id).toBeNull();
+ expect(ReadingMethodGenerationSchema.parse({...generation,item_id:null}).item_id).toBeNull();
+ expect(ReadingMethodGenerationSchema.safeParse({...generation,item_id:''}).success).toBe(false);
+ expect(ReadingMethodGenerationSchema.safeParse({...generation,scope_only:true}).success).toBe(false);
+ expect(ReadingMethodDraftSchema.parse({parent_version_id:'p',reason:'Shared feedback',method:'Use primary documentation and examples; distinguish unknowns.'}).item_id).toBeNull();
+ expect(ReadingMethodTrialSchema.safeParse({project_id:null,candidate_version_id:'c',candidate_content_hash:'a'.repeat(64),case_id:'case'}).success).toBe(false);
+});
