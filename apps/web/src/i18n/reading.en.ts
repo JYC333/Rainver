@@ -1,5 +1,14 @@
 export const readingEn = {
   "reading": {
+    versionHistory: "Version history",
+    versionHistoryHint: "Saved reading results, newest first. Earlier versions open read-only.",
+    latestVersion: "Back to latest",
+    currentVersion: "Current",
+    noRetainedVersions: "No retained reading versions.",
+    loadingVersions: "Loading versions…",
+    moreVersions: "Load more",
+    historicalVersion: "Historical version · {{date}} · Read-only",
+
     topicChange:'Topic update',
   newChanges:'{{count}} new topic changes',
   markChangeRead:'Mark this update read',changeRead:'This update is read',

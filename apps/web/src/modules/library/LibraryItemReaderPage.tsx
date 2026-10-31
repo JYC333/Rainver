@@ -25,6 +25,8 @@ import { Button } from '../../components/ui/button'
 import { SafeExternalLink } from '../../components/SafeExternalLink'
 import { safeHttpUrl } from '../../lib/safeHttpUrl'
 import { sessionEpoch } from '../../lib/sessionResidue'
+import { ReaderVersionHistory } from './ReaderVersionHistory'
+import { formatDateTime } from '../../i18n/format'
 
 const RELEVANCE_ORDER: SourcePostProcessingItemRelevance[] = ['relevant', 'maybe', 'not_relevant']
 function orderedItemIds(briefing: SourcePostProcessingBriefingDetail): string[] {
@@ -38,7 +40,13 @@ function orderedItemIds(briefing: SourcePostProcessingBriefingDetail): string[] 
 export default function LibraryItemReaderPage() {
   const { t } = useAppTranslation()
   const { itemId = '', connectionId, date } = useParams<{ itemId: string; connectionId?: string; date?: string }>()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const versionId = searchParams.get('version')
+  const chooseVersion = (id: string | null) => {
+    const next = new URLSearchParams(searchParams)
+    if (id) next.set('version', id); else next.delete('version')
+    setSearchParams(next)
+  }
   // Reached from the digest's serendipity section: the open is reading, not interest evidence.
   const changeId=searchParams.get('change');const [changeAcknowledged,setChangeAcknowledged]=useState(false);const [changeBusy,setChangeBusy]=useState(false);
   const readOrigin = searchParams.get('from') === 'project' ? 'project' as const : searchParams.get('from') === 'serendipity' ? 'serendipity' as const : undefined
@@ -50,11 +58,11 @@ export default function LibraryItemReaderPage() {
   const [documentError, setDocumentError] = useState<unknown>(null)
   // The document and its annotations load and fail independently: an
   // annotation outage must not hide text the reader is allowed to read.
-  const draftScope = useMemo(() => activeSpaceId && itemId ? { spaceId: activeSpaceId, documentType: 'source_item', documentId: itemId } : null, [activeSpaceId, itemId])
+  const draftScope = useMemo(() => !versionId && activeSpaceId && itemId ? { spaceId: activeSpaceId, documentType: 'source_item', documentId: itemId } : null, [activeSpaceId, itemId, versionId])
   const { annotations, onAnnotationsChange, status: annotationsStatus, reload: reloadAnnotations, authority: annotationAuthority } = useReaderAnnotations(draftScope)
   const [loading, setLoading] = useState(true)
   const [reloadKey, setReloadKey] = useState(0)
-  const currentScope=useRef('');currentScope.current=activeSpaceId+':'+itemId;
+  const currentScope=useRef('');currentScope.current=activeSpaceId+':'+itemId+':'+(versionId??'');
   // Every document request takes a number; only the latest one, for this item and session, may show its reply.
   const documentRequest=useRef(0)
   // The page that asked: one token per mounted page and item, dropped on cleanup, so a reload
@@ -69,15 +77,15 @@ export default function LibraryItemReaderPage() {
    * failure is thrown and the text shown stays.
    */
   const reloadDocument=useCallback(async():Promise<'shown'|'superseded'|'denied'>=>{
-    const request=++documentRequest.current,scope=activeSpaceId+':'+itemId,epoch=sessionEpoch(),owner=pageOwner.current
+    const request=++documentRequest.current,scope=activeSpaceId+':'+itemId+':'+(versionId??''),epoch=sessionEpoch(),owner=pageOwner.current
     const current=()=>owner!==null&&pageOwner.current===owner&&documentRequest.current===request&&currentScope.current===scope&&sessionEpoch()===epoch
     let doc:ReaderDocumentPayload
-    try{doc=await readerApi.getDocument('source_item',itemId,{origin:readOrigin})}
+    try{doc=await (versionId ? readerApi.sourceVersion(itemId,versionId) : readerApi.getDocument('source_item',itemId,{origin:readOrigin}))}
     catch(error){
       if(!current())return 'superseded'
       if(isReaderAccessError(error)||isNotFoundError(error)){
         setDocument(null);setDocumentError(error)
-        if(activeSpaceId)clearDocumentCommentDrafts({spaceId:activeSpaceId,documentType:'source_item',documentId:itemId})
+        if(activeSpaceId && !versionId)clearDocumentCommentDrafts({spaceId:activeSpaceId,documentType:'source_item',documentId:itemId})
         // The annotation list is read again under the same refusal, which clears it.
         reloadAnnotations()
         return 'denied'
@@ -86,7 +94,7 @@ export default function LibraryItemReaderPage() {
     }
     if(!current())return 'superseded'
     setDocument(doc);reloadAnnotations();return 'shown'
-  },[activeSpaceId,itemId,readOrigin,reloadAnnotations])
+  },[activeSpaceId,itemId,readOrigin,reloadAnnotations,versionId])
   useEffect(() => {
     if (!activeSpaceId || !connectionId || !date) return setBriefing(null)
     let cancelled = false; const epoch = sessionEpoch(); setBriefing(null)
@@ -101,17 +109,17 @@ export default function LibraryItemReaderPage() {
     // A newer load supersedes any reload still in flight.
     const request = ++documentRequest.current, epoch = sessionEpoch()
     const current = () => !cancelled && documentRequest.current === request && sessionEpoch() === epoch
-    readerApi.getDocument('source_item', itemId, { origin: readOrigin })
+    ;(versionId ? readerApi.sourceVersion(itemId, versionId) : readerApi.getDocument('source_item', itemId, { origin: readOrigin }))
       .then(doc => { if (current()) setDocument(doc) })
       .catch(error => {
         if (!current()) return
         setDocument(null); setDocumentError(error)
         // No longer readable: unsent comments on it must not linger in memory.
-        if (isReaderAccessError(error) || isNotFoundError(error)) clearDocumentCommentDrafts({ spaceId: activeSpaceId, documentType: 'source_item', documentId: itemId })
+        if (!versionId && (isReaderAccessError(error) || isNotFoundError(error))) clearDocumentCommentDrafts({ spaceId: activeSpaceId, documentType: 'source_item', documentId: itemId })
       })
       .finally(() => { if (current()) setLoading(false) })
     return () => { cancelled = true }
-  }, [activeSpaceId, itemId, readOrigin, reloadKey])
+  }, [activeSpaceId, itemId, readOrigin, reloadKey, versionId])
 
   const ids = useMemo(() => briefing ? orderedItemIds(briefing) : [], [briefing]); const index = ids.indexOf(itemId)
   const previous = index > 0 ? ids[index - 1] : null; const next = index >= 0 && index < ids.length - 1 ? ids[index + 1] : null
@@ -120,12 +128,13 @@ export default function LibraryItemReaderPage() {
   const listReturn = readingReturnTo(searchParams.get('returnTo'), searchParams.get('projectId')); const backTo = dayScoped ? `/library/digests/${connectionId}/${date}` : (readingReturnTo(searchParams.get('returnTo'), searchParams.get('projectId')) ?? '/library/items')
   const backLabel = dayScoped ? (briefing?.connection_name ?? t('reading.day')) : t(/\/goals\/[\w-]+(?:\?|$)/.test(backTo) ? 'topics.backToTopic' : backTo.startsWith('/library/digests') || /[?]tab=digest(?:&date=\d{4}-\d{2}-\d{2})?$/.test(backTo) ? 'reading.editions' : backTo.includes('/research?') ? 'reading.researchReturn' : /[?]tab=(candidates|settings)$/.test(backTo) ? 'reading.sources' : backTo.startsWith('/projects/') ? 'reading.project' : 'nav.library'); const itemPath = (id: string) => `/library/digests/${connectionId}/${date}/items/${id}`
 
-  if (loading) return <div className="max-w-3xl space-y-4 p-6"><Skeleton className="h-6 w-32"/><Skeleton className="h-8 w-64"/><Skeleton className="h-96 w-full"/></div>
+  if (loading || (document && (versionId ? document.document_id !== versionId : document.document_type !== 'source_item'))) return <div className="max-w-3xl space-y-4 p-6"><Skeleton className="h-6 w-32"/><Skeleton className="h-8 w-64"/><Skeleton className="h-96 w-full"/></div>
   if (!document) {
     const status = documentError && typeof documentError === 'object' && 'status' in documentError ? documentError.status : null
     // Missing, not permitted and failed are different answers; only a failure invites a retry.
     const missing = !documentError || status === 404 || isNotFoundError(documentError)
     return <div className="p-6"><Button variant="ghost" size="sm" asChild><Link to={backTo}><ArrowLeft className="mr-1 size-4"/>{backLabel}</Link></Button>
+      {versionId && <Button size="sm" variant="outline" onClick={() => chooseVersion(null)}>{t('reading.latestVersion')}</Button>}
       {missing ? <EmptyState title={t('reading.documentMissing')} description={t('reading.documentMissingHint')}/>
         : status === 403 ? <EmptyState title={t('reading.noAccess')} description={t('reading.documentForbiddenHint')}/>
         : <div role="alert" className="mt-4 space-y-3 rounded-lg border border-border p-4"><p className="text-sm font-medium">{t('reading.documentLoadFailed')}</p><p className="break-words text-sm text-muted-foreground">{errMsg(documentError)}</p><Button size="sm" variant="outline" onClick={() => setReloadKey(key => key + 1)}>{t('reading.retry')}</Button></div>}
@@ -140,7 +149,7 @@ export default function LibraryItemReaderPage() {
   // A document whose stored policy is `none` (Agent-authored reading) never
   // loads remote images inline; older documents without a policy keep the
   // captured-page behaviour.
-  return <ReaderWorkspace remoteImages={document.image_policy !== 'none'} document={document} annotations={annotations} onAnnotationsChange={onAnnotationsChange} annotationsStatus={annotationsStatus} annotationAuthority={annotationAuthority}
+  return <ReaderWorkspace key={activeSpaceId+':'+itemId+':'+(versionId??'current')} remoteImages={document.image_policy !== 'none'} document={document} annotations={versionId ? [] : annotations} onAnnotationsChange={onAnnotationsChange} annotationsStatus={annotationsStatus} annotationAuthority={annotationAuthority}
     lead={<ReaderDocumentLead title={document.title} contentJson={document.content_json} meta={<>
       <AgentSearchProvenance value={document.result_provenance}/>
       {document.content_state && <span>{t(`reading.document_${document.document_type}`)} · {t(`reading.content_${document.content_state}`, { defaultValue: document.content_state })}</span>}
@@ -156,14 +165,19 @@ export default function LibraryItemReaderPage() {
       {/* A short title for orientation; the full title is the body's heading. */}
       <p className="min-w-0 flex-1 truncate text-sm font-medium" title={document.title}>{document.title}</p>
       {safeHttpUrl(document.source_uri) && <Button variant="ghost" size="icon-sm" asChild><SafeExternalLink href={document.source_uri} aria-label={t('reading.openSource')}><ExternalLink className="size-4"/></SafeExternalLink></Button>}
-      <ReadingMethodEntry itemId={itemId} projectId={searchParams.get('projectId')} artifactId={document.artifact_id} readerHref={`${dayScoped?itemPath(itemId):`/library/items/${itemId}`}?${searchParams.toString()}`}/>
-      <ReaderPanelToggle panelOpen={panelOpen} togglePanel={togglePanel} unsentComments={unsentComments}/>
+      {!versionId && <ReadingMethodEntry itemId={itemId} projectId={searchParams.get('projectId')} artifactId={document.artifact_id} readerHref={`${dayScoped?itemPath(itemId):`/library/items/${itemId}`}?${searchParams.toString()}`}/>}
+      <ReaderVersionHistory key={activeSpaceId+':'+itemId+':'+(versionId??'current')} itemId={itemId} onChoose={chooseVersion} onDenied={error => {
+        ++documentRequest.current; setDocument(null); setDocumentError(error)
+        if (activeSpaceId) clearDocumentCommentDrafts({ spaceId: activeSpaceId, documentType: 'source_item', documentId: itemId })
+        reloadAnnotations()
+      }}/>
+      {!versionId && <ReaderPanelToggle panelOpen={panelOpen} togglePanel={togglePanel} unsentComments={unsentComments}/>}
     </header>}
-    banner={<>{changeId&&<div className="mx-4 mt-3 rounded-lg border p-3"><Button disabled={changeBusy||changeAcknowledged} onClick={async()=>{if(!activeSpaceId)return;const scope=currentChange.current;setChangeBusy(true);try{await informationDigestsApi.readingState(activeSpaceId,itemId,{topic_change_id:changeId,read_status:'read'},searchParams.get('projectId')??undefined);if(currentChange.current===scope)setChangeAcknowledged(true)}catch(e){if(currentChange.current===scope)toast.error(errMsg(e))}finally{if(currentChange.current===scope)setChangeBusy(false)}}}>{t(changeAcknowledged?'reading.changeRead':'reading.markChangeRead')}</Button></div>}<MaterialProcessingPanel className="mx-4 mt-3" key={activeSpaceId+':'+itemId} itemId={itemId} spaceId={activeSpaceId??undefined} hasContent={!!document.plain_text.trim()} onReady={async()=>{await reloadDocument()}}/>{(document.reading_info||document.result_provenance==='agent_provided_unverified'||!document.plain_text.trim()) && <div role="status" className="mx-4 mt-3 space-y-2 rounded-lg border border-border bg-card px-3 py-2 text-sm">
+    banner={<>{versionId && <div role="status" className="mx-4 mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card p-3 text-sm"><p>{t('reading.historicalVersion', { date: formatDateTime(document.version_captured_at) })}</p><Button variant="outline" size="sm" onClick={() => chooseVersion(null)}>{t('reading.latestVersion')}</Button></div>}{!versionId && changeId&&<div className="mx-4 mt-3 rounded-lg border p-3"><Button disabled={changeBusy||changeAcknowledged} onClick={async()=>{if(!activeSpaceId)return;const scope=currentChange.current;setChangeBusy(true);try{await informationDigestsApi.readingState(activeSpaceId,itemId,{topic_change_id:changeId,read_status:'read'},searchParams.get('projectId')??undefined);if(currentChange.current===scope)setChangeAcknowledged(true)}catch(e){if(currentChange.current===scope)toast.error(errMsg(e))}finally{if(currentChange.current===scope)setChangeBusy(false)}}}>{t(changeAcknowledged?'reading.changeRead':'reading.markChangeRead')}</Button></div>}{!versionId && <MaterialProcessingPanel className="mx-4 mt-3" key={activeSpaceId+':'+itemId} itemId={itemId} spaceId={activeSpaceId??undefined} hasContent={!!document.plain_text.trim()} onReady={async()=>{await reloadDocument()}}/>}{(document.reading_info||document.result_provenance==='agent_provided_unverified'||!document.plain_text.trim()) && <div role="status" className="mx-4 mt-3 space-y-2 rounded-lg border border-border bg-card px-3 py-2 text-sm">
       <p>{document.plain_text.trim()?t(document.reading_info?.format==='agent_summary'?'reading.agentSummaryContent':document.reading_info?.method==='extractor'?'reading.sourceTextContent':'reading.agentRetrievedContent'):t('reading.agentNoContent')}</p>
       {!document.plain_text.trim() && document.content_unavailable_reason && <p>{t(`reading.agentContentReason_${document.content_unavailable_reason}`)}</p>}
       {document.reading_info?.kind==='repository' && <p className="text-muted-foreground">{t('reading.agentRepositoryContent')}</p>}
-      {(document.agent_text_syntax==='undeclared'||document.agent_text_syntax==='plain') && activeSpaceId && document.artifact_id && <AgentMarkdownChoice itemId={itemId} spaceId={activeSpaceId} syntax={document.agent_text_syntax} shown={{artifact_id:document.artifact_id,source_snapshot_id:document.source_snapshot_id??null}} reload={reloadDocument}/>}
+      {!versionId && (document.agent_text_syntax==='undeclared'||document.agent_text_syntax==='plain') && activeSpaceId && document.artifact_id && <AgentMarkdownChoice itemId={itemId} spaceId={activeSpaceId} syntax={document.agent_text_syntax} shown={{artifact_id:document.artifact_id,source_snapshot_id:document.source_snapshot_id??null}} reload={reloadDocument}/>}
       {(document.reading_info?.sources?.length??0)>0&&<details className="text-muted-foreground"><summary className="w-fit cursor-pointer hover:text-foreground">{t('reading.agentSources',{count:document.reading_info!.sources.length})}</summary>{document.reading_info!.sources.map(source=><p key={source} className="break-all"><SafeExternalLink href={source}>{source}</SafeExternalLink></p>)}</details>}
       {!document.plain_text.trim() && safeHttpUrl(document.source_uri) && <SafeExternalLink href={document.source_uri}>{t('reading.openSource')}</SafeExternalLink>}
     </div>}</>}

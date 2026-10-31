@@ -94,7 +94,7 @@ export function ReaderWorkspace({ document, annotations, onAnnotationsChange, an
   const { keys: shortcutKeys } = useReaderShortcuts()
   // A phone opens on the text; the drawer appears when the reader asks for it.
   // Elsewhere the panels open as the person last left them on this browser.
-  const [panelOpen, setPanelOpen] = useState(() => !narrowReaderViewport() && readReaderLayout().inspector)
+  const [panelOpen, setPanelOpen] = useState(() => document.can_annotate !== false && !narrowReaderViewport() && readReaderLayout().inspector)
   const [outlineOpen, setOutlineOpen] = useState(() => !narrowReaderViewport() && readReaderLayout().outline)
   const [panelWidths, setPanelWidths] = useState(() => readReaderLayout())
   const [rowWidth, setRowWidth] = useState(() => window.innerWidth)
@@ -300,6 +300,7 @@ export function ReaderWorkspace({ document, annotations, onAnnotationsChange, an
   }, [])
   // Overlays do not both cover the text: opening one closes the other.
   const choosePanel = useCallback((update: (open: boolean) => boolean) => {
+    if (document.can_annotate === false) return
     panelChosenRef.current = true
     setPanelOpen(current => {
       const next = update(current)
@@ -307,7 +308,7 @@ export function ReaderWorkspace({ document, annotations, onAnnotationsChange, an
       if (!narrowReaderViewport()) writeReaderLayout({ inspector: next })
       return next
     })
-  }, [overlayInspector])
+  }, [overlayInspector, document.can_annotate])
   const chooseOutline = useCallback((update: (open: boolean) => boolean) => {
     setOutlineOpen(current => {
       const next = update(current)
@@ -426,6 +427,7 @@ export function ReaderWorkspace({ document, annotations, onAnnotationsChange, an
   selectAnnotationRef.current = selectAnnotation
 
   const createAnnotation = useCallback(async (type: ReaderAnnotationType, selected: TextSelection, automatic = false) => {
+    if (document.can_annotate === false) return
     // A ref, not state: two key presses inside one render must create one annotation.
     if (creationOwner.current !== null) return
     const owner = ++creationSeq.current
@@ -603,8 +605,8 @@ export function ReaderWorkspace({ document, annotations, onAnnotationsChange, an
       </ReaderPopover>}
       <div className="flex-1" />
       <ReaderSyncStatus position={position} />
-      <ReaderDocumentNote spaceId={document.space_id} documentType={document.document_type} documentId={document.document_id} />
-      <ReaderAnnotationExport documentType={document.document_type} documentId={document.document_id} authority={annotationAuthority} />
+      {document.can_annotate !== false && <ReaderDocumentNote spaceId={document.space_id} documentType={document.document_type} documentId={document.document_id} />}
+      {document.can_annotate !== false && <ReaderAnnotationExport documentType={document.document_type} documentId={document.document_id} authority={annotationAuthority} />}
       <Button variant="ghost" size="icon-sm" aria-label={t('reading.shortcutsTitle')} title={`${t('reading.shortcutsTitle')} (${shortcutKeys.help})`} onClick={() => setShortcutsOpen(true)}><CircleHelp className="size-4" /></Button>
       <Button variant="ghost" size="icon-sm" aria-pressed={focusMode} aria-label={t(focusMode ? 'reading.exitFocus' : 'reading.enterFocus')} title={`${t(focusMode ? 'reading.exitFocus' : 'reading.enterFocus')} (${shortcutKeys.focus})`}
         onClick={() => setFocusMode(on => !on)}>{focusMode ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}</Button>
@@ -670,7 +672,7 @@ export function ReaderWorkspace({ document, annotations, onAnnotationsChange, an
         overlay={overlayInspector}
         onClose={() => choosePanel(() => false)} />}
     </div>
-    {selection && !rangeEdit && <ReaderSelectionToolbar selectionRect={selection.selectionRect} pending={pendingType !== null}
+    {selection && !rangeEdit && document.can_annotate !== false && <ReaderSelectionToolbar selectionRect={selection.selectionRect} pending={pendingType !== null}
       onPressChange={setToolbarPressed}
       onCopy={() => void copyText(selection.selectedText).then(ok => ok ? toast.success(t('reading.copied')) : toast.error(t('reading.copyFailed')))}
       onAction={type => void createAnnotation(type, selection)} />}

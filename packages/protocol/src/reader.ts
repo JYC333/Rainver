@@ -2,6 +2,16 @@ import { z } from "zod";
 
 export const ReaderDocumentTypeSchema = z.enum(["source_item", "source_snapshot", "research_report", "research_notebook"]);
 
+/** Retained readable bodies of one Source item, newest first. Not prompt versions. */
+export const ReaderSourceVersionSchema = z.object({
+  snapshot_id: z.string(), captured_at: z.string(), is_current: z.boolean(),
+}).strict();
+export type ReaderSourceVersion = z.infer<typeof ReaderSourceVersionSchema>;
+export const ReaderSourceVersionsSchema = z.object({
+  items: z.array(ReaderSourceVersionSchema), next_offset: z.number().int().nonnegative().nullable(),
+}).strict();
+export type ReaderSourceVersions = z.infer<typeof ReaderSourceVersionsSchema>;
+
 export const ReaderAnnotationCreateSchema = z.object({
   document_type: ReaderDocumentTypeSchema,
   document_id: z.string().min(1),

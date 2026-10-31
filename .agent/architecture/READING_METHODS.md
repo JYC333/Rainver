@@ -29,6 +29,39 @@ Reader-origin artifact id is checked against the Reader's canonical shown versio
 without recording an open. Provenance is matched to the stored Run contract; old
 results without it remain unknown.
 
+## Evidence-led adaptive reading v1 baseline
+
+The catalog baseline is organized as a task definition, six analysis dimensions,
+five stages, a report skeleton and delivery checks. Dimensions cover the central
+claim, mechanism/conditions, evidence/limits, relationships/change, applicability
+and next judgment. Material-specific lenses still cover product/repository,
+news/release, research, opinion/tutorial and industry/data reports. It selects at
+most three consequential questions, with no opening dialogue, persona performance,
+command menu, numeric certainty or minimum report length.
+
+When authorized historical inputs are actually supplied, the strategy compares
+repetition, additions, conflicts, revisions and connections with citations on both
+sides. Collected, read and explicitly accepted states are distinct; an AI summary
+is not independent evidence. Missing historical inputs must be stated as such,
+never as an empty library. This prompt change does not wire retrieval or historical
+inputs into existing production/paired execution. Tool authorization and input
+preparation remain caller-owned. With a supplied evidence bundle an ordinary API
+can perform the analysis; without it the model cannot claim system search.
+
+The same plain-text asset key and Source/output/tool limits are retained.
+Supplied-page comparisons need no browsing or submission action. See
+[v1 design and evaluation examples](../../docs/READING_METHOD_V1.md) for public
+research sources, limitations and ten fictional human-evaluation cases. These are
+not registered product samples or semantic CI passes.
+The design name v1 does not assert a particular deployed
+version number. Local edits do not operate the running instance. On a deployed
+server with a database, startup built-in seeds also sync the catalog and switch
+system production; explicit initialization is another sync entry. After a
+successful sync, new Runs without a Space/Project deployment override resolve the
+new system baseline without comparison or a promotion proposal. Existing scoped
+deployments keep their approved versions, and queued Runs keep their admitted
+frozen version. This source change does not alter those existing sync semantics.
+
 ## Writes, comparison and privacy
 
 Explicit initialization syncs this catalog key using existing builtin sync authority.

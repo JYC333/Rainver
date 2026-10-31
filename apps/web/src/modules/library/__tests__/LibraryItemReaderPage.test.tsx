@@ -48,7 +48,7 @@ vi.mock('../../../api/client', () => ({
     briefing: vi.fn(),
   },
   readerApi: {
-    getDocument: vi.fn(),
+    getDocument: vi.fn(), sourceVersions: vi.fn(), sourceVersion: vi.fn(),
     listAnnotations: vi.fn(),
     createAnnotation: vi.fn(),
     deleteAnnotation: vi.fn(),
@@ -1237,4 +1237,65 @@ describe('LibraryItemReaderPage stage-one reliability', () => {
     // The text and the stricter policy arrive in the same render of the reader.
     expect((readerProps as unknown as { remoteImages: boolean; normalizedText: string })).toMatchObject({ remoteImages: false, normalizedText: 'Agent text.' })
   })
+})
+
+describe('article version history', () => {
+  it('opens a retained version read-only and returns to latest without changing the source item', async () => {
+    mockedApi.sourceVersions.mockResolvedValue({ items: [
+      { snapshot_id: 'latest-snapshot', captured_at: '2026-10-31T15:00:00Z', is_current: true },
+      { snapshot_id: 'old-snapshot', captured_at: '2026-10-30T15:00:00Z', is_current: false },
+    ], next_offset: null })
+    mockedApi.sourceVersion.mockResolvedValue({ ...docPayload, document_type: 'source_snapshot', document_id: 'old-snapshot', can_annotate: false,
+      version_captured_at: '2026-10-30T15:00:00Z', plain_text: 'Earlier body', normalized_text: 'Earlier body',
+      content_json: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Earlier body' }] }] } })
+    await renderPage('/library/items/item-1?from=project&returnTo=%2Flibrary%2Freading')
+    await userEvent.click(screen.getByRole('button', { name: 'Version history' }))
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(within(dialog).getByText('Current')).toBeInTheDocument())
+    await userEvent.click(within(dialog).getAllByRole('button').find(button => button.querySelector('time') && !button.textContent?.includes('Current'))!)
+    await screen.findByText(/Historical version/)
+    expect(mockedApi.sourceVersion).toHaveBeenCalledWith('item-1', 'old-snapshot')
+    expect(screen.queryByRole('button', { name: 'Read again' })).not.toBeInTheDocument()
+    act(() => readerProps!.onTextSelected!(textSelection))
+    expect(screen.queryByRole('button', { name: /Highlight/ })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Back to latest' }))
+    await waitFor(() => expect(screen.queryByText(/Historical version/)).not.toBeInTheDocument())
+    expect(mockedApi.getDocument).toHaveBeenLastCalledWith('source_item', 'item-1', { origin: 'project' })
+    expect(mockedApi.createAnnotation).not.toHaveBeenCalled()
+    expect(mockedSourcesApi.prepareMaterial).not.toHaveBeenCalled()
+  })
+
+  it('explains a failed history load and retries without replacing the article', async () => {
+    mockedApi.sourceVersions.mockRejectedValueOnce(new Error('History temporarily unavailable')).mockResolvedValueOnce({ items: [], next_offset: null })
+    await renderPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Version history' }))
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByText('History temporarily unavailable')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Try again' }))
+    await within(dialog).findByText('No retained reading versions.')
+    expect(screen.getByTestId('reader-content')).toBeInTheDocument()
+  })
+})
+
+it('drops the article and its drafts when listing its versions reveals lost parent access', async () => {
+  mockedApi.sourceVersions.mockRejectedValueOnce({ status: 403, message: 'Access withdrawn' })
+  await renderPage()
+  writeCommentDraft({ spaceId: 'space-1', documentType: 'source_item', documentId: 'item-1' }, 'ann-1', 'Private draft')
+  await userEvent.click(screen.getByRole('button', { name: 'Version history' }))
+  await waitFor(() => expect(screen.queryByTestId('reader-content')).not.toBeInTheDocument())
+  expect(__commentDraftCountForTests()).toBe(0)
+})
+
+it('ignores a historical-body reply after returning to the current version', async () => {
+  let resolveOld!: (doc: ReaderDocumentPayload) => void
+  mockedApi.sourceVersion.mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve }))
+  render(<MemoryRouter initialEntries={['/library/items/item-1?version=old-snapshot']}><Routes>
+    <Route path="/library/items/:itemId" element={<><Link to="/library/items/item-1">Latest test route</Link><LibraryItemReaderPage /></>} />
+  </Routes></MemoryRouter>)
+  await waitFor(() => expect(mockedApi.sourceVersion).toHaveBeenCalled())
+  await userEvent.click(screen.getByRole('link', { name: 'Latest test route' }))
+  await screen.findByTestId('reader-content')
+  await act(async () => resolveOld({ ...docPayload, document_type: 'source_snapshot', document_id: 'old-snapshot', can_annotate: false, normalized_text: 'Stale historical reply' }))
+  expect(screen.getByTestId('reader-content')).not.toHaveTextContent('Stale historical reply')
+  expect(screen.queryByText(/Historical version/)).not.toBeInTheDocument()
 })

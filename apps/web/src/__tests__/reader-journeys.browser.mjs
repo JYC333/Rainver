@@ -93,6 +93,13 @@ function makeServer({ versions = {}, failReadOnce = false, failCreateOnce = fals
       }
       return json({ position: state.positions.get(id) ?? null, accepted: true })
     }
+    const history = /^\/reader\/source-items\/([^/]+)\/versions(?:\/([^/]+))?$/.exec(path)
+    if (history) {
+      const id = history[1]
+      if (history[2]) return json({ ...documentFor(id, { type: 'doc', content: [h(1, 'Earlier analysis'), p('Retained evidence from the earlier reading.')] }, 'historical'),
+        document_type: 'source_snapshot', document_id: history[2], can_annotate: false, image_policy: 'none', version_captured_at: '2026-10-30T08:00:00Z' })
+      return json({ items: [{ snapshot_id: 'current-snapshot', captured_at: '2026-10-31T08:00:00Z', is_current: true }, { snapshot_id: 'earlier-snapshot', captured_at: '2026-10-30T08:00:00Z', is_current: false }], next_offset: null })
+    }
     const document_ = /^\/reader\/documents\/source_item\/([^/]+)$/.exec(path)
     if (document_) return json(server.doc(document_[1]))
     const documentNote = /^\/reader\/documents\/source_item\/([^/]+)\/note$/.exec(path)
@@ -1061,3 +1068,36 @@ test('main Reading arrival chip matches the reported material card without addin
   assert.equal(sizes[1].badges,sizes[0].badges);assert.equal(sizes[1].metadataHeight,sizes[0].metadataHeight);assert.equal(sizes[1].height,sizes[0].height);assert.equal(sizes[1].overflow,false);
  }
 });
+
+
+test('Version history — header entry, retained body, read-only state and return in both themes and languages', async () => {
+  const output = process.env.READER_HISTORY_OUT ?? '/tmp/reader-history-browser'
+  mkdirSync(output, { recursive: true })
+  for (const theme of ['dark', 'light']) for (const locale of ['en', 'zh-CN']) for (const width of [390, 1280]) {
+    const fixture = makeServer(), page = await newPage(fixture, { theme, locale, width })
+    const zh = locale === 'zh-CN', tag = `${theme}-${locale}-${width}`
+    try {
+      await openItem(page, 'history-article', '?from=project&returnTo=%2Flibrary%2Freading')
+      const entry = page.getByRole('button', { name: zh ? '版本历史' : 'Version history', exact: true })
+      await entry.focus()
+      await page.screenshot({ path: join(output, `${tag}-entry.png`), animations: 'disabled' })
+      await page.keyboard.press('Enter')
+      const dialog = page.getByRole('dialog'); await dialog.waitFor()
+      await dialog.getByText(zh ? '当前版本' : 'Current', { exact: true }).waitFor()
+      await page.screenshot({ path: join(output, `${tag}-list.png`), animations: 'disabled' })
+      const box = await dialog.boundingBox()
+      assert.ok(box.x >= 0 && box.x + box.width <= width + 1, `Dialog must fit ${tag}: ${JSON.stringify(box)}`)
+      await dialog.locator('li').nth(1).getByRole('button').click()
+      await page.getByText('Retained evidence from the earlier reading.', { exact: true }).waitFor()
+      assert.match(page.url(), /version=earlier-snapshot/)
+      assert.equal(await page.getByRole('button', { name: zh ? '重新读取整理' : 'Read again', exact: true }).count(), 0)
+      await page.screenshot({ path: join(output, `${tag}-body.png`), animations: 'disabled' })
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
+      await page.getByRole('button', { name: zh ? '返回最新版本' : 'Back to latest', exact: true }).click()
+      await page.locator('.reader-surface p').first().waitFor()
+      assert.doesNotMatch(page.url(), /version=/)
+      assert.match(page.url(), /from=project/)
+      assert.equal(fixture.state.annotations.size, 0)
+    } finally { await page.context().close() }
+  }
+})

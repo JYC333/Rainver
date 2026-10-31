@@ -2946,6 +2946,10 @@ export const sourcesApi = {
 
 // ── Reader ────────────────────────────────────────────────────────────────
 export const readerApi = {
+  sourceVersions: (itemId: string, offset = 0) =>
+    get<import('@rainver/protocol').ReaderSourceVersions>(`/reader/source-items/${itemId}/versions?offset=${offset}`),
+  sourceVersion: (itemId: string, snapshotId: string) =>
+    get<ReaderDocumentPayload>(`/reader/source-items/${itemId}/versions/${encodeURIComponent(snapshotId)}`),
   /** `origin: 'serendipity'` marks an open that came from the digest's serendipity section; it is not interest evidence. */
   getDocument: (documentType: string, documentId: string, options: { origin?: 'library' | 'serendipity' | 'project' } = {}) =>
     get<ReaderDocumentPayload>(`/reader/documents/${documentType}/${documentId}${options.origin ? `?origin=${options.origin}` : ''}`),

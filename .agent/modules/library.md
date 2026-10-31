@@ -154,6 +154,11 @@ source pipeline, subscription model, data model, and API.
   reader's own Source annotation failure episodes (`AnnotationRecoveryNotice`):
   a relative and absolute next-retry time only while an automatic retry is
   scheduled, the waiting condition otherwise, and "Retry now".
+- Source Reader version history lists retained extracted snapshots and opens an
+  old body read-only in the same route via `?version=…`, with a return to the
+  latest body. Current annotations and processing actions stay on the latest
+  version. Snapshot access is checked independently, not inferred from the
+  parent item. See [Reader](../architecture/READER.md#retained-source-reading-versions).
 - Single-item reader routes:
   - `/library/items/:itemId`
   - `/library/digests/:connectionId/:date/items/:itemId`

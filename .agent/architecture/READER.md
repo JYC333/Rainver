@@ -202,6 +202,29 @@ navigation, metadata, and domain actions.
   a fixed 15px; block hover offsets apply only inside the Reader column, and only
   for a fine pointer (`hover: hover`), so a tap never leaves a block lit.
 
+### Retained Source reading versions
+
+The Source Reader header's **Version history** opens a paginated list of retained
+extracted snapshots (25 per page, newest first, timestamp with seconds, current
+artifact marked). `GET /api/v1/reader/source-items/:itemId/versions` accepts a
+nonnegative `offset`; `.../versions/:snapshotId` reads one version. These are
+body versions, separate from Reading method/prompt versions. No new storage or
+migration is involved. A snapshot must belong to that item, and the parent item,
+Source consent, snapshot, Artifact and originating Room gates all still apply;
+summary-only or denied versions do not appear. Each request rechecks authority.
+
+Library keeps the selected snapshot in `?version=…`, preserving Project/origin
+and return navigation. The retained body uses the shared Reader with its own
+snapshot identity, image policy, declared syntax and provenance, a read-only
+banner and **Back to latest**. It does not record a current-item open, change
+the current Artifact pointer, mark the item read or rewrite annotations.
+Current-item annotations/drafts are not shown or copied onto old bodies; new
+annotations, Markdown conversion, document-note creation and reprocessing are
+not offered there. A private position on the snapshot is independent of the
+current item's position. Restoring an old version and visual diffs are not
+part of this viewing surface. Missing/denied bodies never fall back to another
+version while pretending the requested version was opened.
+
 ### Reading position, appearance and reading tools
 
 **First screen of a source item.** The text leads: when the material has text
@@ -224,9 +247,9 @@ that fits on screen is read through (100%) — a different case.
 **Scope.** Everything below belongs to `ReaderWorkspace`, so it applies to every
 document shown in it: Library source items (`source_item`) and Project research
 reports (`research_report`). The position API and its gate also accept
-`source_snapshot` and `research_notebook`, but no web surface shows those in the
-Reader today (a Note opens in the Notes editor), so no position is recorded for
-them. Reading-list progress, previous/next and "mark read and next" are Library
+`source_snapshot` and `research_notebook`, and the Source history surface now shows `source_snapshot` with its own
+position. No web Reader surface shows `research_notebook` (a Note opens in the
+Notes editor), so no position is recorded for it. Reading-list progress, previous/next and "mark read and next" are Library
 features over the unified Reading list (source items only).
 
 - **Reading position** (`reader_positions`, `modules/reader/positions.ts`,

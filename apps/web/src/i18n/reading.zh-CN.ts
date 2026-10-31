@@ -1,5 +1,14 @@
 export const readingZhCN = {
   "reading": {
+    versionHistory: "版本历史",
+    versionHistoryHint: "按生成时间排列，旧版本仅供查看。",
+    latestVersion: "返回最新版本",
+    currentVersion: "当前版本",
+    noRetainedVersions: "暂无保留的阅读版本。",
+    loadingVersions: "正在加载版本…",
+    moreVersions: "加载更多",
+    historicalVersion: "历史版本 · {{date}} · 只读",
+
     topicChange:'主题变化',
   newChanges:'{{count}} 条主题新变化',
   markChangeRead:'标记本次变化已读',changeRead:'本次变化已读',

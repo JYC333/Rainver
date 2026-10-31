@@ -4300,6 +4300,7 @@ export interface ReaderDocumentRef {
 }
 
 export interface ReaderDocumentPayload {
+  version_captured_at?: string | null
   content_unavailable_reason?:import('@rainver/protocol').SourceMaterialContentUnavailableReason|null
   reading_info?:import('@rainver/protocol').SourceMaterialReadingInfo|null
   /** For Agent text: the syntax declared for the version shown; undeclared and plain are shown literally. */
@@ -4329,7 +4330,7 @@ export interface ReaderDocumentPayload {
   source_uri: string | null
   content_state: string | null
   retention_policy: string | null
-  can_annotate: true
+  can_annotate: boolean
 }
 
 export interface ReaderAnnotation {
