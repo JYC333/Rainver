@@ -79,7 +79,8 @@ export interface RunContractSnapshotInput {
   task_merge_id?: string | null;
   /**
    * `read`: the Run may read its workspace and must not write it — a review.
-   * Recorded only when `read`; absent means the ordinary (write) access.
+   * New delegations record either explicit value; older Runs and ordinary
+   * Run producers without a declaration retain their existing write default.
    * Execution resolves it to `required_sandbox_level = read_only`
    * (`resolveSandboxLevelForRuntime`) and refuses a Host that cannot enforce it.
    */
@@ -111,7 +112,7 @@ interface RunContractSnapshot {
   policy_context_json: unknown;
   git_snapshot: RunGitSnapshot | null;
   task_merge_id?: string;
-  workspace_access?: "read";
+  workspace_access?: "read" | "write";
   created_at: string;
 }
 
@@ -155,7 +156,8 @@ export function createRunContractSnapshot(
     policy_context_json: cloneJson(input?.policy_context_json),
     git_snapshot: input?.git_snapshot ? cloneJson(input.git_snapshot) as RunGitSnapshot : null,
     ...(input?.task_merge_id ? { task_merge_id: input.task_merge_id } : {}),
-    ...(input?.workspace_access === "read" ? { workspace_access: "read" as const } : {}),
+    ...(input?.workspace_access === "read" || input?.workspace_access === "write"
+      ? { workspace_access: input.workspace_access } : {}),
     created_at: createdAt,
   };
 }

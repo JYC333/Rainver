@@ -1820,7 +1820,10 @@ leases. Different Agents in the same Room can review together, while writers
 wait for existing readers and writers. FIFO admission allows a consecutive
 reader prefix and prevents new readers overtaking an already queued writer.
 Ordinary multi-recipient messages and discussions retain their serial policy;
-only explicit `workspace_access: "read"` delegations opt into review admission.
+every new delegation must explicitly choose `workspace_access: "read"` or
+`"write"`; only `read` opts into review admission. Missing/null access is a
+correctable input error, never a silent write fallback. Existing Run contracts
+without a value retain their historical write behavior.
 The Conversation × Agent vendor thread remains exclusive in either mode.
 
 `src/locationLease.ts` acquires primary and attachment Location ids in sorted

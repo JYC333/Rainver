@@ -212,7 +212,7 @@ describe("RunMaterializationService", () => {
           proposal_type: "memory_create",
           payload_json: { content: "candidate" },
         }],
-        delegations: [{ target_agent_id: "agent-2", instruction: "Review" }],
+        delegations: [{ workspace_access: "write" as const, target_agent_id: "agent-2", instruction: "Review" }],
       },
       exit_code: 0,
       error_code: null,
@@ -344,7 +344,7 @@ describe("RunMaterializationService", () => {
       output_text: "",
       output_json: {
         delegations: [
-          {
+          { workspace_access: "write" as const,
             target_agent_id: "agent-reader",
             instruction: "Summarize the packet.",
           },

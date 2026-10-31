@@ -266,7 +266,12 @@ export type SendAgentRunGroupMessageResponse = z.infer<
 >;
 
 /** What a delegated child may do in the Conversation's workspace. */
-export const DelegationWorkspaceAccessSchema = z.enum(["read", "write"]);
+export const DelegationWorkspaceAccessSchema = z.enum(["read", "write"], {
+  required_error: 'workspace_access is required: choose "read" for parallel research/review or "write" for workspace changes.',
+  invalid_type_error: 'workspace_access must be "read" or "write"; it cannot be null.',
+}).describe(
+  'Required execution contract: choose "read" for research, analysis or review that does not change workspace files; different Agents may run these together with enforced read-only access. Choose "write" when workspace changes are needed; shared-workspace writers run exclusively. Instruction text never sets access. Host capacity, dependencies and FIFO still apply. A read-only parent can only delegate "read". External tool/service side effects have separate permissions. Never retry an unsupported read-only Host as writable.',
+);
 export type DelegationWorkspaceAccess = z.infer<typeof DelegationWorkspaceAccessSchema>;
 
 export const SpawnChildRunRequestSchema = z
@@ -283,7 +288,7 @@ export const SpawnChildRunRequestSchema = z
     reason: z.string().nullish(),
     budget_json: TraceSafeObjectSchema.nullish(),
     context_policy_json: TraceSafeObjectSchema.nullish(),
-    workspace_access: DelegationWorkspaceAccessSchema.nullish(),
+    workspace_access: DelegationWorkspaceAccessSchema,
   })
   .strict();
 
@@ -305,11 +310,11 @@ export const RuntimeDelegationOutputItemSchema = z
     context: TraceSafeObjectSchema.nullish(),
     /**
      * `read`: the child reviews its workspace and may not write it (a
-     * read-only review). Omitted means `write`, the existing behaviour. A
-     * child never gets more than its parent: a read-only parent can only
+     * read-only review). Every new delegation must explicitly choose access.
+     * A child never gets more than its parent: a read-only parent can only
      * delegate `read`.
      */
-    workspace_access: DelegationWorkspaceAccessSchema.nullish(),
+    workspace_access: DelegationWorkspaceAccessSchema,
   })
   .strict();
 export type RuntimeDelegationOutputItem = z.infer<

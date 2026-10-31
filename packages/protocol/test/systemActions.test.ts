@@ -66,10 +66,12 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
     expect(schema).toBe(RuntimeDelegationOutputItemSchema);
     expect(schema.safeParse({}).success).toBe(false);
     expect(schema.safeParse({ target_agent_id: "agent-1" }).success).toBe(false);
-    expect(schema.safeParse({ target_agent_id: "agent-1", instruction: "Review this." }).success).toBe(true);
+    expect(schema.safeParse({ target_agent_id: "agent-1", instruction: "Review this." }).success).toBe(false);
+    expect(schema.safeParse({ target_agent_id: "agent-1", instruction: "Review this.", workspace_access: "read" }).success).toBe(true);
     expect(schema.safeParse({
       target_agent_id: "agent-1",
       instruction: "Review this.",
+      workspace_access: "read",
       extra_field: "not part of the contract",
     }).success).toBe(false);
   });

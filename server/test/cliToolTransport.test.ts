@@ -99,6 +99,17 @@ describe("CliAgentToolTransport", () => {
     };
   }
 
+  it("rejects a missing workspace contract through the CLI transport before dispatch", async () => {
+    const spawnCalls: unknown[] = [];
+    const cliRun = run({ permission_snapshot_json: { tool_grants: [{ action_id: "agent.delegate" }] } } as Partial<AgentRunRecord>);
+    const transport = new CliAgentToolTransport(config, delegationDeps(spawnCalls));
+    const result = await transport.call(cliRun, { id: "missing-access", name: "agent.delegate",
+      arguments: { target_agent_id: "agent-reviewer", instruction: "Read only, research independently." },
+    });
+    expect(result).toMatchObject({ ok: false, error_code: "system_action_invalid_input" });
+    expect(spawnCalls).toEqual([]);
+  });
+
   it("dispatches a granted ACP tool call to its registered domain handler", async () => {
     const spawnCalls: unknown[] = [];
     const cliRun = run({
@@ -109,13 +120,13 @@ describe("CliAgentToolTransport", () => {
     const result = await transport.call(cliRun, {
       id: "tool-call-1",
       name: "agent.delegate",
-      arguments: { target_agent_id: "agent-reviewer", instruction: "Answer 1+1 independently." },
+      arguments: { target_agent_id: "agent-reviewer", instruction: "Answer 1+1 independently.", workspace_access: "read" },
     });
 
     expect(spawnCalls).toHaveLength(1);
     expect(spawnCalls[0]).toMatchObject({
       identity: { spaceId: "space-1", userId: "user-1" },
-      input: { target_agent_id: "agent-reviewer", parent_run_id: "run-cli-1", root_run_id: "run-root" },
+      input: { target_agent_id: "agent-reviewer", parent_run_id: "run-cli-1", root_run_id: "run-root", workspace_access: "read" },
     });
     expect(result).toMatchObject({ ok: true, target_agent_id: "agent-reviewer", child_run_id: "run-child-1" });
   });

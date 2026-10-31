@@ -181,24 +181,46 @@ routing a message").
 
 ### Explicit read-only review delegation
 
-`agent.delegate` and structured runtime delegations accept optional
-`workspace_access: "read" | "write"`. Omission preserves write behavior, except
-that a read-only parent passes its read ceiling to its children. An explicit
-write request under a read parent is refused. This access is captured in the
-immutable Run contract and resolved to `read_only` at runtime admission,
+`agent.delegate` and structured runtime delegations require
+`workspace_access: "read" | "write"` as a required execution contract. Missing,
+null or invalid access is rejected before delegation, budget, thread or Run
+writes; instruction prose never supplies the value. The live tool, System
+Action input, structured output and service admission enforce the same
+protocol enum. A read-only parent can only request `read`; a write request
+under a read parent is refused. Both explicit values are captured in the
+immutable Run contract; `read` resolves to `read_only` at runtime admission,
 independent of risk, Folder defaults or saved vendor session permissions.
 Task titles and instruction prose never determine permissions.
 
 Different Agents' read-only children in the same Room are admitted together;
 a writer waits for earlier children, and later readers cannot overtake it.
 Same-Agent vendor threads and Host capacity retain their existing gates.
-Only a strict server Host can enforce this mode; a paired native Host fails
-closed. The Host uses shared read / exclusive write Location leases and OS
+The server Host and personal Linux Hosts reporting verified `bwrap-v1` support
+can enforce this mode; unsupported Hosts fail closed. The Host uses shared
+read / exclusive write Location leases and OS
 read-only mounts, not a second scheduler or a prompt-only convention. See
 [Host leases and review basis](../modules/hosts.md#location-lease-task-worktrees-and-git_after).
 There is no new Task-form toggle: request read-only delegation explicitly;
 the Agent tool schema exposes the access choice. Review reports are ordinary
 outputs, while source diff collection is disabled for read-only Runs.
+
+The coordinator creates every independent reader before yielding with
+`agent.wait_for_results`; children start only after the parent's execution
+has yielded or finished. Delegation tool results expose `workspace_access`
+and `workspace_concurrency` (`shared_read` or `exclusive_write`), and
+`agent.list_runs` reads each authorized Run's immutable contract and current
+queue/parent/Host wait evidence. `waiting_for_parent` means the parent has not
+released execution; `waiting_for_delegation_admission` means the jobless child
+still awaits the existing FIFO admission, not that a worker has started it.
+Quota, conversation-turn and Host workspace waits retain their owning codes.
+No parallelism is promised beyond dependency, FIFO, vendor-thread and Host
+capacity constraints. Older Run contracts are not rewritten; an absent access
+on an existing Run retains its write meaning.
+
+Reuse / Dependency Check: extends the existing protocol Zod schemas,
+AgentGroup service/FIFO, Run/Room wait projection and Host reader/writer leases.
+No dependency or migration is added; an external scheduler would duplicate
+Rainver's existing admission and authorization authority.
 
 **Artifact** — durable output produced by a run. Stored under `artifact_storage_root`. Exportable within the owning space. `storage_path` is always relative to `artifact_storage_root`.
 
@@ -472,8 +494,8 @@ by an initialized Conversation that already pins it as Primary or attachment.
 A healthy vendor session resumes only its own Conversation × Agent thread, and
 a Host/CLI/Primary change requires a new Conversation. Vendor
 state remains a disposable cache rather than a replay authority. One
-Conversation-wide dispatch lock serializes all Agents because they share the
-filesystem scope. There is no Room-owned runtime thread or Room Folder
+Conversation-wide dispatch admission keeps shared-workspace writers exclusive;
+explicitly read-only delegated children may share it. There is no Room-owned runtime thread or Room Folder
 fallback.
 
 RunStep error/metadata is filtered by `server/src/modules/runs/evidenceRedaction.ts` before persisting. Raw credential values are never stored in RunStep rows.
@@ -565,9 +587,9 @@ fan-out ceiling and bounded defaults). The implementation is
   `delegation_budget` passed internally by the server takes precedence (there
   is no user-facing Room budget parameter); an explicit `max_fanout` remains a
   hard bound. Each subgroup may narrow but never widen the container bound.
-  A group still runs only one Run at a time because the Conversation
-  shares one directory (`lifecycleProjector.ts`). There is no new concurrency
-  mechanism.
+  The Conversation shares one directory: ordinary turns and delegated writers
+  run exclusively, while explicitly declared read-only children use shared
+  admission (`lifecycleProjector.ts`).
 - **Shared accounting and policy.** Every admitted child and Agent-origin
   completion charges the same container, named by `container_group_id`.
   Temporary fanout counts all admitted delegations across its branches, not

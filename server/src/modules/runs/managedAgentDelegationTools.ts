@@ -64,7 +64,7 @@ export async function resolveAgentDelegationToolBinding(
       ...(targets.length > 0 ? [agentDelegateToolDefinition(targets)] : []),
       agentWaitForResultsToolDefinition(targets, protocol),
       ...([
-        ["agent.list_runs", "List active runs in this Room task instructed by the same person, including prior turns. Read this before cancelling; returns identifiers and status, never prompts or results.", protocol.AgentListRunsInputSchema],
+        ["agent.list_runs", "List active runs in this Room task instructed by the same person, including prior turns, workspace access and scheduling waits. Read this to check parallel execution or before cancelling; returns identifiers and status, never prompts or results.", protocol.AgentListRunsInputSchema],
         ["agent.cancel_run", "Cancel exactly one listed Room run when the person asks to stop or replace its work. Can stop quota-held, queued, waiting or executing work from prior turns. Copy run_id from agent.list_runs. Does not cancel children automatically; list and cancel abandoned waiting coordinators and their children explicitly. A cancelling result is not confirmation that execution stopped.", protocol.AgentCancelRunInputSchema],
       ] as const).map(([name, description, schema]) => ({ name, description, input_schema: protocol.systemActionInputJsonSchema({ input_schema: schema }) })),
     ],
@@ -72,6 +72,11 @@ export async function resolveAgentDelegationToolBinding(
 }
 
 function agentDelegateToolDefinition(targets: readonly AgentDelegationTarget[]): CanonicalToolDefinition {
+  // Budget/context use the trace-safe recursive validator at execution, but
+  // their model-facing schemas below are deliberately plain objects.
+  const schema = protocol.systemActionInputJsonSchema({
+    input_schema: protocol.RuntimeDelegationOutputItemSchema.omit({ budget: true, context: true }),
+  });
   return {
       name: AGENT_DELEGATE_TOOL,
       description: [
@@ -81,10 +86,9 @@ function agentDelegateToolDefinition(targets: readonly AgentDelegationTarget[]):
         `Available targets: ${targets.map(targetLabel).join("; ")}`,
       ].join(" "),
       input_schema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["target_agent_id", "instruction"],
+        ...schema,
         properties: {
+          ...schema.properties as Record<string, unknown>,
           target_agent_id: {
             type: "string",
             enum: targets.map((target) => target.agent_id),
@@ -99,11 +103,6 @@ function agentDelegateToolDefinition(targets: readonly AgentDelegationTarget[]):
             type: "string",
             minLength: 1,
             description: "Short reason for this delegation.",
-          },
-          workspace_access: {
-            type: "string",
-            enum: ["read", "write"],
-            description: "\"read\" for a review: the target gets kernel-enforced read-only filesystem access to the Conversation's workspace (external service/tool side effects are a separate boundary), and reviews by different agents run at the same time. Omit for ordinary work (\"write\"). From a read-only run only \"read\" is allowed. Enforced read-only CLI reviews require the server Host or an updated personal Linux Host reporting verified bubblewrap read-only support. Unsupported Hosts are rejected before a review task is created; configure the intended Host rather than retrying as writable.",
           },
           budget: {
             type: "object",
@@ -241,7 +240,9 @@ export async function runAgentRoomToolCall(
         delegation_id: result.delegation.id,
         child_run_id: result.child_run_id,
         status: result.delegation.status,
-        message: "Delegated child run queued. Do not fabricate the child result; wait for delegation result messages before summarizing outcomes.",
+        workspace_access: params.workspace_access,
+        workspace_concurrency: params.workspace_access === "read" ? "shared_read" : "exclusive_write",
+        message: "Child run created. It starts after the parent yields or finishes, subject to FIFO, Host capacity and workspace access. Delegate all independent readers with workspace_access=read, then call agent.wait_for_results to yield; keeping the parent running does not start its children. Use agent.list_runs to inspect scheduling waits. Do not fabricate child results.",
       },
       summary: {
         tool_name: call.name,
@@ -250,6 +251,7 @@ export async function runAgentRoomToolCall(
         delegation_id: result.delegation.id,
         child_run_id: result.child_run_id,
         delegation_status: result.delegation.status,
+        workspace_access: params.workspace_access,
         policy_decision_record_id: result.policy_decision_record_id,
       },
     };
@@ -466,7 +468,7 @@ function parseAgentDelegateArguments(
   reason: string | null;
   budget: Record<string, unknown>;
   context: Record<string, unknown>;
-  workspace_access: "read" | "write" | null;
+  workspace_access: "read" | "write";
 } {
   let raw: unknown;
   try {
@@ -474,7 +476,7 @@ function parseAgentDelegateArguments(
   } catch {
     throw new Error("Tool arguments must be valid JSON.");
   }
-  const record = recordValue(raw);
+  const record = protocol.RuntimeDelegationOutputItemSchema.parse(raw);
   const targetAgentId = stringValue(record.target_agent_id);
   if (!targetAgentId) throw new Error("target_agent_id is required.");
   if (!targets.some((target) => target.agent_id === targetAgentId)) {
@@ -488,14 +490,8 @@ function parseAgentDelegateArguments(
     reason: stringValue(record.reason),
     budget: recordValue(record.budget),
     context: recordValue(record.context),
-    workspace_access: workspaceAccessArgument(record.workspace_access),
+    workspace_access: record.workspace_access,
   };
-}
-
-function workspaceAccessArgument(value: unknown): "read" | "write" | null {
-  if (value === undefined || value === null) return null;
-  if (value === "read" || value === "write") return value;
-  throw new Error("workspace_access must be \"read\" or \"write\".");
 }
 
 async function parseAgentWaitArguments(argumentsJson: string): Promise<{

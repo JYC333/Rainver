@@ -56,6 +56,7 @@ import {
 } from "./repository.js";
 
 import type { ConversationInputPart, LaunchWorkspace, PolicyCheckRequest, RuntimeSessionConfigSelection } from "@rainver/protocol";
+import { DelegationWorkspaceAccessSchema } from "@rainver/protocol";
 
 export interface AgentGroupIdentity {
   spaceId: string;
@@ -168,11 +169,11 @@ export interface SpawnChildRunInput {
   context_policy_json?: Record<string, unknown> | null;
   /**
    * `read`: the child reviews the Conversation's workspace and may not write
-   * it (`contract.workspace_access`). Omitted: the parent's own access — a
-   * read-only parent's child is read-only too; `write` from a read-only
+   * it (`contract.workspace_access`). Required for every new delegation;
+   * a read-only parent's child must request `read`; `write` from a read-only
    * parent is refused (a child never gets more than its parent).
    */
-  workspace_access?: "read" | "write" | null;
+  workspace_access: "read" | "write";
   /**
    * The originating tool call's canonical id. When set, a delegation request
    * carrying the same (space, parent_run, tool_call_id) replays the prior
@@ -862,11 +863,15 @@ export class AgentGroupRunService {
       if (!parentRun || parentRun.run_group_id !== group.id) throw new HttpError(404, "Parent run not found in this agent group");
       if (parentRun.agent_id !== input.requesting_agent_id) throw new HttpError(403, "requesting_agent_id must match the parent run agent");
       if ((parentRun.root_run_id ?? parentRun.id) !== group.root_run_id) throw new HttpError(409, "Parent run does not belong to the group root lineage");
+      const childAccess = delegatedWorkspaceAccessFor(parentRun, input.workspace_access);
       // A retried call replays the delegation it already made; judged afresh,
       // that delegation would count against itself and be refused.
       if (input.tool_call_id) {
         const existing = await repos.groups.findDelegationByToolCallId(input.space_id, input.parent_run_id, input.tool_call_id);
-        if (existing) return { status: "allow", policy_decision_record_id: existing.policy_decision_record_id };
+        if (existing) {
+          await assertReplayedDelegationAccess(repos.runs, existing, childAccess);
+          return { status: "allow", policy_decision_record_id: existing.policy_decision_record_id };
+        }
       }
       await assertAgentsExist(repos.groups, input.space_id, identity.userId, [input.requesting_agent_id, input.target_agent_id], group.room_id);
       return this.enforceSpawnPolicy(repos.groups, group, parentRun, input);
@@ -1085,6 +1090,7 @@ export class AgentGroupRunService {
         input.tool_call_id,
       );
       if (existing) {
+        await assertReplayedDelegationAccess(repos.runs, existing, childAccess);
         return {
           delegation: existing,
           child_run_id: existing.child_run_id,
@@ -1403,7 +1409,7 @@ export class AgentGroupRunService {
       runtime_profile_selection_source: delegatedBackend ? "explicit" : "default",
       contract_snapshot: group.room_id
         ? { ...roomRunContract(group, undefined)!, workspace_access: childAccess }
-        : childAccess === "read" ? { source: { kind: "direct" as const, id: null }, workspace_access: childAccess } : undefined,
+        : { source: { kind: "direct" as const, id: null }, workspace_access: childAccess },
       budget_json: input.budget_json ?? {},
       context_policy_json: input.context_policy_json ?? {},
       visibility: group.room_id ? "selected_users" : undefined,
@@ -1434,12 +1440,13 @@ export class AgentGroupRunService {
         group_id: input.group_id,
         delegation_id: delegation.id,
         child_run_id: childRun.id,
+        workspace_access: childAccess,
+        workspace_concurrency: childAccess === "read" ? "shared_read" : "exclusive_write",
         policy_decision_record_id: policy.policy_decision_record_id ?? null,
       },
     });
-    // A Room Conversation serializes filesystem access. The child remains a
-    // durable queued Run and is enqueued when its parent yields/finishes by
-    // the lifecycle projector, so it cannot overlap the parent's turn.
+    // The lifecycle projector enqueues compatible readers together and
+    // writers exclusively, only after their parent yields/finishes.
     if (group.room_id && group.session_id) {
       await chargeDelegatedChild(repos.db, group, childRun.id);
     }
@@ -2520,24 +2527,46 @@ function roomRunPrompt(
 /** Told to a review: the workspace is mounted read-only, so it reports instead of editing. */
 const READ_ONLY_REVIEW_NOTICE = "[Read-only review] Your workspace is mounted read-only for this turn: you cannot change, create or delete its files, and other Agents may be reviewing it at the same time. Reply with your findings; a longer report can go in $RAINVER_OUTPUT_DIR.";
 
+async function assertReplayedDelegationAccess(
+  runs: PgRunRepository,
+  existing: RunDelegationRecord,
+  requested: "read" | "write",
+): Promise<void> {
+  if (!existing.child_run_id) return;
+  const child = await runs.getRun(existing.space_id, existing.child_run_id);
+  if (child && contractWorkspaceAccess(child.contract_snapshot_json) !== requested) {
+    throw new HttpError(409, "This delegation already exists with a different workspace_access contract", {
+      code: "delegation_workspace_access_conflict",
+      detail: "Replay the original access choice; an existing Run's execution contract cannot be changed.",
+    });
+  }
+}
+
 /**
  * What a delegated child may do in the workspace. Never more than its parent:
- * a read-only parent's child reads, whatever was asked, and asking it to
- * write is refused rather than quietly narrowed.
+ * every new delegation declares access, and asking a read-only parent to
+ * delegate a write is refused rather than quietly narrowed.
  */
 function delegatedWorkspaceAccessFor(
   parentRun: Pick<RunRecord, "contract_snapshot_json" | "required_sandbox_level">,
-  requested: "read" | "write" | null | undefined,
+  requested: unknown,
 ): "read" | "write" {
+  const access = DelegationWorkspaceAccessSchema.safeParse(requested);
+  if (!access.success) {
+    throw new HttpError(422, access.error.message, {
+      code: "delegation_workspace_access_required",
+      detail: 'Declare workspace_access: "read" for research/review without workspace changes, or "write" for workspace changes. Instruction text does not set access.',
+    });
+  }
   const parentReads = contractWorkspaceAccess(parentRun.contract_snapshot_json) === "read"
     || parentRun.required_sandbox_level === "read_only";
-  if (parentReads && requested === "write") {
+  if (parentReads && access.data === "write") {
     throw new HttpError(403, "A read-only Run cannot delegate write access to its workspace", {
       detail: "A read-only Run cannot delegate write access to its workspace",
       code: "delegation_workspace_access_exceeds_parent",
     });
   }
-  return parentReads ? "read" : requested ?? "write";
+  return access.data;
 }
 
 function roomRunContract(

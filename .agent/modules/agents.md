@@ -515,6 +515,17 @@ the worker is released, and the lifecycle projector requeues the same run with
 dependency summaries once all declared dependency runs are terminal. Delegation
 completion alone does not create an inferred follow-up run.
 
+Every new live or structured delegation must declare `workspace_access` as
+`read` or `write`; omission/null fails validation instead of silently choosing
+write access. Independent research/review without workspace edits uses `read`;
+workspace changes use `write`. The service validates before policy preflight
+and creation, enforces the parent's read ceiling, and snapshots the selected
+value on the child. The parent delegates all independent readers then yields;
+the existing FIFO admits compatible readers together and keeps writers
+exclusive. Tool results expose the selected access/concurrency, and
+`agent.list_runs` adds access and current scheduling waits without prompts or
+results. See [execution contracts](../architecture/EXECUTION_MODEL.md#explicit-read-only-review-delegation).
+
 The web Agent Rooms surface is the Projects module's `rooms` route
 (`/projects/:projectId/rooms`, `apps/web/src/modules/agent_groups/AgentGroupsPage.tsx`).
 It creates manager-led rooms, reads group timeline/trace, posts

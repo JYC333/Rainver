@@ -2668,7 +2668,7 @@ describe("Room workflow (real Postgres)", () => {
         const parent = await runs.getRun("space-1", sent.run_ids[0]!);
         expect(parent!.model_override_json).toMatchObject({ acp_session_config: [{ value: "fable" }] });
         const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
-        const child = await groupService.spawnChildRun(owner, {
+        const child = await groupService.spawnChildRun(owner, { workspace_access: "write" as const,
           space_id: "space-1", group_id: group!.id, parent_run_id: parent!.id, root_run_id: group!.root_run_id!,
           requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review the change.",
         });
@@ -2718,7 +2718,7 @@ describe("Room workflow (real Postgres)", () => {
         requested: null, dropped: [{ id: "model", value: "fable", reason: "value_unavailable" }],
       });
       const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
-      const child = await groupService.spawnChildRun(owner, {
+      const child = await groupService.spawnChildRun(owner, { workspace_access: "write" as const,
         space_id: "space-1", group_id: group.id, parent_run_id: parent.id, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review the change.",
       });
@@ -2730,12 +2730,40 @@ describe("Room workflow (real Postgres)", () => {
         .toEqual([{ id: "model", type: "select", category: "model", value: "fable" }]);
     });
 
+    for (const parentAccess of ["read", "write"] as const) it(`rejects an undeclared delegation before policy or durable side effects (${parentAccess} parent)`, async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Required execution contract");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Ask for an independent review." });
+      const manager = sent.run_ids[0]!;
+      await dispatchQueuedRoomRuns([manager]);
+      await db.pool.query("UPDATE runs SET contract_snapshot_json=contract_snapshot_json||jsonb_build_object('workspace_access',$2::text) WHERE id=$1", [manager, parentAccess]);
+      const input = {
+        space_id: "space-1", group_id: sent.task_group_ids[0]!, parent_run_id: manager, root_run_id: manager,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1",
+        instruction: "Read only; do not edit. Research independently.",
+      };
+      const snapshot = async () => (await db.pool.query(`SELECT
+        (SELECT count(*) FROM runs) runs, (SELECT count(*) FROM run_delegations) delegations,
+        (SELECT count(*) FROM jobs) jobs, (SELECT count(*) FROM agent_run_messages) messages,
+        (SELECT count(*) FROM policy_decision_records) policy_records,
+        (SELECT jsonb_agg(jsonb_build_object('id',id,'claim',dispatch_lock_id) ORDER BY id) FROM host_threads) claims`)).rows[0];
+      const before = await snapshot();
+      for (const workspace_access of [undefined, null, "admin"]) {
+        // JS callers can violate TypeScript; service admission must still refuse them.
+        const invalid = { ...input, workspace_access } as unknown as Parameters<AgentGroupRunService["spawnChildRun"]>[1];
+        await expect(groupService.preflightSpawnChildRunPolicy(owner, invalid)).rejects.toMatchObject({ statusCode: 422 });
+        await expect(groupService.spawnChildRun(owner, invalid)).rejects.toMatchObject({ statusCode: 422 });
+        await expect(groupService.spawnChildRunAuthorized(owner, invalid, { status: "allow" })).rejects.toMatchObject({ statusCode: 422 });
+      }
+      expect(await snapshot()).toEqual(before);
+    });
+
     for(const personal of [false,true]) it(`runs read-only reviews by different Agents together, then the writer alone (${personal?"personal-capable":"server"})`, async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       if(personal){await db.pool.query(`INSERT INTO hosts (id,owner_user_id,machine_id,name,kind,environment_kind,status,capabilities_json,last_heartbeat_at,created_at,updated_at)
        SELECT 'host-personal-read','user-1',machine_id,'Personal Linux','remote','linux_native',status,capabilities_json||'{"workspace_read_only":{"supported":true,"mechanism":"bwrap-v1","reason":null}}'::jsonb,last_heartbeat_at,created_at,updated_at FROM hosts WHERE id='host-1'`);
        await db.pool.query("UPDATE agent_runtime_profiles SET execution_host_id='host-personal-read' WHERE id='runtime-cli'");}
-      const { owner, created, conversation } = await roomWithSpecialist("Parallel reviews", "Reviewer A", ["agent-3", "agent-4"],personal?{hostId:'host-personal-read',primary:{kind:'managed'}}:undefined);
+      const { owner, created, conversation } = await roomWithSpecialist("Parallel reviews", "Reviewer A", ["agent-3", "agent-4", "agent-5"],personal?{hostId:'host-personal-read',primary:{kind:'managed'}}:undefined);
       const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
       const repo = new PgRunRepository(db.pool);
       const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Have the team review the change, then fix it." });
@@ -2743,20 +2771,26 @@ describe("Room workflow (real Postgres)", () => {
       await dispatchQueuedRoomRuns([manager]);
       const caller = (await repo.getAgentRun("space-1", manager))!;
       const binding = (await resolveAgentDelegationToolBinding(config, caller, { pool: db.pool }))!;
-      const delegate = async (target: string, access?: "read" | "write") => (await runAgentRoomToolCall({ id: randomUUID(), name: "agent.delegate",
-        arguments_json: JSON.stringify({ target_agent_id: target, instruction: `Task for ${target}.`, ...(access ? { workspace_access: access } : {}) }) },
+      const delegate = async (target: string, access: "read" | "write") => (await runAgentRoomToolCall({ id: randomUUID(), name: "agent.delegate",
+        arguments_json: JSON.stringify({ workspace_access: access, target_agent_id: target, instruction: `Task for ${target}.` }) },
       binding, caller)).modelResult as { ok: boolean; child_run_id: string; error?: string };
       const reviewA = await delegate("agent-2", "read");
       const reviewB = await delegate("agent-3", "read");
-      const writer = await delegate("agent-4");
-      expect([reviewA.ok, reviewB.ok, writer.ok]).toEqual([true, true, true]);
+      const writer = await delegate("agent-4", "write");
+      const laterReader = await delegate("agent-5", "read");
+      expect([reviewA.ok, reviewB.ok, writer.ok, laterReader.ok]).toEqual([true, true, true, true]);
+      const schedule = async (id: string) => {
+        const result = (await runAgentRoomToolCall({ id: randomUUID(), name: "agent.list_runs", arguments_json: "{}" }, binding, caller)).modelResult as { runs: Array<{ run_id: string; scheduling: unknown }> };
+        return result.runs.find(r => r.run_id === id)!.scheduling;
+      };
+      expect(await schedule(reviewA.child_run_id)).toMatchObject({ workspace_access: "read", workspace_concurrency: "shared_read", wait_reason: "waiting_for_parent" });
       // The same Agent keeps one vendor thread: a second turn for it waits for the first, it is not run beside it.
       expect(await delegate("agent-2", "read")).toMatchObject({ ok: false, error: expect.stringMatching(/already handling another Room turn/) });
       const reviewRow = (id: string) => db.pool.query<{ contract_snapshot_json: Record<string, unknown>; prompt: string; model_override_json: Record<string, unknown> }>(
         "SELECT contract_snapshot_json, prompt, model_override_json FROM runs WHERE id = $1", [id]).then(r => r.rows[0]!);
       expect((await reviewRow(reviewA.child_run_id)).contract_snapshot_json.workspace_access).toBe("read");
       expect((await reviewRow(reviewA.child_run_id)).prompt).toContain("[Read-only review]");
-      expect((await reviewRow(writer.child_run_id)).contract_snapshot_json).not.toHaveProperty("workspace_access");
+      expect((await reviewRow(writer.child_run_id)).contract_snapshot_json.workspace_access).toBe("write");
       expect((await reviewRow(writer.child_run_id)).prompt).not.toContain("[Read-only review]");
       const jobFor = async (id: string) => (await db.pool.query(
         "SELECT 1 FROM jobs WHERE job_type = 'agent_run' AND payload_json->>'run_id' = $1 AND status IN ('pending','claimed','running')", [id])).rowCount === 1;
@@ -2766,6 +2800,11 @@ describe("Room workflow (real Postgres)", () => {
       // What orchestration does once the parked parent's process has ended.
       await new AgentGroupRunLifecycleProjector(db.pool, config, fixedQuota(0)).queueDelegatedChildren((await repo.getRun("space-1", manager))!);
       expect([await jobFor(reviewA.child_run_id), await jobFor(reviewB.child_run_id), await jobFor(writer.child_run_id)]).toEqual([true, true, false]);
+      expect(await jobFor(laterReader.child_run_id)).toBe(false);
+      expect(await schedule(writer.child_run_id)).toMatchObject({ workspace_access: "write", workspace_concurrency: "exclusive_write", wait_reason: "waiting_for_delegation_admission" });
+      // Repeated concurrent reconciliation must not double-admit jobs or let a writer overtake the readers.
+      await Promise.all([0, 1].map(() => new AgentGroupRunLifecycleProjector(db.pool, config, fixedQuota(0)).queueDelegatedChildren(caller)));
+      expect((await db.pool.query("SELECT count(*)::int AS n FROM jobs WHERE job_type='agent_run' AND payload_json->>'parent_run_id'=$1", [manager])).rows[0]!.n).toBe(2);
       if(personal){
         const child=await new PgRouteDecisionRepository(db.pool).routeRun((await repo.getAgentRun('space-1',reviewA.child_run_id))!);
         expect(await repo.readOnlyHostCapabilities(child)).toMatchObject({workspace_read_only:{supported:true}});
@@ -2773,17 +2812,21 @@ describe("Room workflow (real Postgres)", () => {
         expect(await repo.readOnlyHostCapabilities(child)).toMatchObject({workspace_read_only:{supported:false}});
         await db.pool.query(`UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{workspace_read_only,supported}','true') WHERE id='host-personal-read'`);
       }
-      await dispatchQueuedRoomRuns([reviewA.child_run_id, reviewB.child_run_id]);
+      await Promise.all([reviewA.child_run_id, reviewB.child_run_id].map(id => dispatchQueuedRoomRuns([id])));
       expect((await repo.getRun("space-1", reviewA.child_run_id))!.status).toBe("running");
       expect((await repo.getRun("space-1", reviewB.child_run_id))!.status).toBe("running");
+      expect(await schedule(reviewB.child_run_id)).toMatchObject({ workspace_concurrency: "shared_read", wait_reason: null });
       // One review ending does not let the writer in beside the other.
       await completeChild(reviewA.child_run_id);
       expect(await jobFor(writer.child_run_id)).toBe(false);
       await completeChild(reviewB.child_run_id);
       expect(await jobFor(writer.child_run_id)).toBe(true);
+      expect(await jobFor(laterReader.child_run_id)).toBe(false);
 
       // A review never gets more than its parent: as a read-only Run it delegates only reviews.
       await dispatchQueuedRoomRuns([writer.child_run_id]);
+      await completeChild(writer.child_run_id);
+      expect(await jobFor(laterReader.child_run_id)).toBe(true);
       const reviewer = (await repo.getAgentRun("space-1", reviewA.child_run_id))!;
       await expect(groupService.spawnChildRun(owner, {
         space_id: "space-1", group_id: reviewer.run_group_id!, parent_run_id: reviewer.id, root_run_id: reviewer.root_run_id!,
@@ -2865,14 +2908,14 @@ describe("Room workflow (real Postgres)", () => {
         (SELECT jsonb_agg(jsonb_build_object('id',id,'claim',dispatch_lock_id) ORDER BY id) FROM host_threads) AS claims`)).rows[0];
       const before = await snapshot();
       const result = await runAgentRoomToolCall({ id: randomUUID(), name: "agent.delegate", arguments_json: JSON.stringify({
-        target_agent_id: "agent-2", instruction: "Read-only review.", ...(inherited ? {} : { workspace_access: "read" }),
+        target_agent_id: "agent-2", instruction: "Read-only review.", workspace_access: "read",
       }) }, binding, caller);
       expect(result.modelResult).toMatchObject({ ok: false });
       expect(JSON.stringify(result.modelResult)).toContain("bubblewrap");
       expect(await snapshot()).toEqual(before);
     });
 
-    it("inherits a read-only parent's access when the child omits its mode", async (ctx) => {
+    it("preserves a read-only parent's ceiling with an explicit child contract", async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Inherited review");
       const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Review without editing." });
@@ -2880,7 +2923,7 @@ describe("Room workflow (real Postgres)", () => {
       await dispatchQueuedRoomRuns([manager]);
       await db.pool.query("UPDATE runs SET contract_snapshot_json=contract_snapshot_json||'{\"workspace_access\":\"read\"}'::jsonb WHERE id=$1", [manager]);
       const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
-      const child = await groupService.spawnChildRun(owner, {
+      const child = await groupService.spawnChildRun(owner, { workspace_access: "read",
         space_id: "space-1", group_id: group.id, parent_run_id: manager, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1",
         instruction: "Inspect the implementation.",
@@ -2903,7 +2946,7 @@ describe("Room workflow (real Postgres)", () => {
         `UPDATE agent_run_groups SET budget_json = '{"max_depth":1,"max_fanout":1}'::jsonb WHERE id = $1`,
         [group.id],
       );
-      const input = {
+      const input = { workspace_access: "write" as const,
         space_id: "space-1", group_id: group.id, parent_run_id: managerRun, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1",
         instruction: "Check the numbers.", tool_call_id: "call-1",
@@ -2923,6 +2966,13 @@ describe("Room workflow (real Postgres)", () => {
       expect(retryPolicy.status).toBe("allow");
       const retried = await groupService.spawnChildRunAuthorized(owner, input, retryPolicy);
       expect(retried.delegation.id).toBe(first.delegation.id);
+      // Reusing a tool-call id cannot relabel an existing writer as a parallel reader.
+      const changedAccess = { ...input, workspace_access: "read" as const };
+      await expect(groupService.preflightSpawnChildRunPolicy(owner, changedAccess)).rejects.toMatchObject({ statusCode: 409 });
+      await expect(groupService.spawnChildRun(owner, changedAccess)).rejects.toMatchObject({ statusCode: 409 });
+      await expect(groupService.spawnChildRunAuthorized(owner, changedAccess, retryPolicy)).rejects.toMatchObject({ statusCode: 409 });
+      expect((await new PgRunRepository(db.pool).getRun("space-1", first.child_run_id!))!.contract_snapshot_json)
+        .toMatchObject({ workspace_access: "write" });
     });
 
     it("re-counts a preflighted delegation against delegations admitted since", async (ctx) => {
@@ -2936,7 +2986,7 @@ describe("Room workflow (real Postgres)", () => {
         `UPDATE agent_run_groups SET budget_json = '{"max_depth":1,"max_fanout":1}'::jsonb WHERE id = $1`,
         [group.id],
       );
-      const input = (toolCallId: string) => ({
+      const input = (toolCallId: string) => ({ workspace_access: "write" as const,
         space_id: "space-1", group_id: group.id, parent_run_id: managerRun, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1",
         instruction: "Check the numbers.", tool_call_id: toolCallId,
@@ -3718,14 +3768,14 @@ describe("Room workflow (real Postgres)", () => {
       expect(group.budget_json).toMatchObject({ max_depth: 1, max_fanout: soft, soft_max_fanout: soft, hard_max_fanout: hard });
       if (agents === 5) {
         for (let i = 0; i < agents; i += 1) {
-          const child = await groupService.spawnChildRun(owner, { space_id: "space-1", group_id: group.id,
+          const child = await groupService.spawnChildRun(owner, { workspace_access: "write" as const, space_id: "space-1", group_id: group.id,
             parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!, requesting_agent_id: "agent-1",
             target_agent_id: `agent-${i + 2}`, manager_user_id: "user-1", instruction: "Queue this specialist's work." });
           expect(child.child_run_id).toBeTruthy();
         }
       }
       if (agents !== 2) return;
-      const spawn = () => groupService!.spawnChildRun(owner, { space_id: "space-1", group_id: group.id,
+      const spawn = () => groupService!.spawnChildRun(owner, { workspace_access: "write" as const, space_id: "space-1", group_id: group.id,
         parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!, requesting_agent_id: "agent-1",
         target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review the next item." });
       for (let i = 1; i <= hard; i += 1) {
@@ -3762,7 +3812,7 @@ describe("Room workflow (real Postgres)", () => {
       // Internal callers may supply a tighter budget than the Room default.
       await db.pool.query("UPDATE agent_run_groups SET budget_json=$2::jsonb WHERE id=$1",
         [groupId, JSON.stringify({ max_depth: 1, max_fanout: 3 })]);
-      const input = { space_id: "space-1", group_id: groupId, parent_run_id: sent.run_ids[0]!, root_run_id: sent.run_ids[0]!,
+      const input = { workspace_access: "write" as const, space_id: "space-1", group_id: groupId, parent_run_id: sent.run_ids[0]!, root_run_id: sent.run_ids[0]!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review." };
       const first = await groupService.spawnChildRun(owner, input);
       await publishBudgetTurn(input.parent_run_id);
@@ -3806,7 +3856,7 @@ describe("Room workflow (real Postgres)", () => {
         if (result === 0) await publishBudgetTurn(current.root_run_id);
       }
       for (let delegation = 0; delegation < 9; delegation += 1) {
-        const child = await groupService.spawnChildRun(owner, { space_id: "space-1", group_id: current.id,
+        const child = await groupService.spawnChildRun(owner, { workspace_access: "write" as const, space_id: "space-1", group_id: current.id,
           parent_run_id: current.root_run_id, root_run_id: current.root_run_id, requesting_agent_id: "agent-1",
           target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review the next item." });
         expect(child.child_run_id).toBeTruthy();
@@ -3824,7 +3874,7 @@ describe("Room workflow (real Postgres)", () => {
       expect(accepted).toBe(9); // The tenth delegation fits fanout but would cost turn 21.
       // Probe the original group, whose fanout bound is still ten, so a zero
       // completion-subgroup bound cannot be the reason for this refusal.
-      const denied = await groupService.spawnChildRun(owner, { space_id: "space-1", group_id: containerId,
+      const denied = await groupService.spawnChildRun(owner, { workspace_access: "write" as const, space_id: "space-1", group_id: containerId,
         parent_run_id: sent.run_ids[0]!, root_run_id: sent.run_ids[0]!, requesting_agent_id: "agent-1",
         target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "One more review." });
       expect(denied).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
@@ -3849,7 +3899,7 @@ describe("Room workflow (real Postgres)", () => {
       if (mode === "duplicate") participants.push("agent-2");
       if (mode === "coordinator") participants.push("agent-1");
       const bounds = { task_id: task.id, participant_agent_ids: participants, max_delegations: 3 };
-      const spawn = (target: string, budget?: Record<string, unknown>) => groupService!.spawnChildRun(owner, {
+      const spawn = (target: string, budget?: Record<string, unknown>) => groupService!.spawnChildRun(owner, { workspace_access: "write" as const,
         space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: target, manager_user_id: "user-1",
         instruction: "Implement or independently review the authorized change.", budget_json: budget,
@@ -3876,7 +3926,7 @@ describe("Room workflow (real Postgres)", () => {
       const nextTask = await tasks.createTask(owner, { title: "Next task", project_id: "project-1" });
       const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Implement and review the authorized tasks." });
       const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
-      const input = { space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
+      const input = { workspace_access: "write" as const, space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review this task." };
       const bounds = { task_id: firstTask.id, participant_agent_ids: ["agent-2"], max_delegations: 1 };
       const child = await groupService.spawnChildRun(owner, { ...input, budget_json: { collaboration: bounds } });
@@ -3910,7 +3960,7 @@ describe("Room workflow (real Postgres)", () => {
       const nextTask = await tasks.createTask(owner, { title: "Next task", project_id: "project-1" });
       const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Work on the authorized tasks." });
       const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
-      const input = { space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
+      const input = { workspace_access: "write" as const, space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review." };
       const bounds = { task_id: oldTask.id, participant_agent_ids: ["agent-2"], max_delegations: 1 };
       const prior = await groupService.spawnChildRun(owner, { ...input, budget_json: { collaboration: bounds } });
@@ -3935,7 +3985,7 @@ describe("Room workflow (real Postgres)", () => {
       const task = await new PgTaskRepository(db.pool).createTask(owner, { title: "Follow-up task", project_id: "project-1" });
       const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Review and follow up." });
       const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
-      const input = { space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
+      const input = { workspace_access: "write" as const, space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review." };
       const child = await groupService.spawnChildRun(owner, input);
       let continuation = { id: group.id, root_run_id: input.parent_run_id };
@@ -3985,7 +4035,7 @@ describe("Room workflow (real Postgres)", () => {
       const bounds = { task_id: task.id, participant_agent_ids: ["agent-2"], max_delegations: 10 };
       if (mode === "participants") bounds.participant_agent_ids = ["agent-1"];
       if (mode === "task_missing") bounds.task_id = randomUUID();
-      const spawn = (budget?: Record<string, unknown>) => groupService!.spawnChildRun(owner, {
+      const spawn = (budget?: Record<string, unknown>) => groupService!.spawnChildRun(owner, { workspace_access: "write" as const,
         space_id: "space-1", group_id: groupId, parent_run_id: parentId, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1",
         instruction: "Review the current implementation and report concrete findings.", budget_json: budget,
@@ -4119,7 +4169,7 @@ describe("Room workflow (real Postgres)", () => {
       const repo = new PgRunRepository(db.pool);
       const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
       const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", first.task_group_ids[0]!))!;
-      const spawned = await groupService.spawnChildRun(owner, {
+      const spawned = await groupService.spawnChildRun(owner, { workspace_access: "write" as const,
         space_id: "space-1", group_id: group.id, parent_run_id: first.run_ids[0]!, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Check the release.",
       });
@@ -4273,7 +4323,7 @@ describe("Room workflow (real Postgres)", () => {
       const [managerRun, specialistRun] = sent.run_ids as [string, string];
       const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
       await dispatchQueuedRoomRuns([managerRun]);
-      const spawned = await groupService.spawnChildRun(owner, {
+      const spawned = await groupService.spawnChildRun(owner, { workspace_access: "write" as const,
         space_id: "space-1",
         group_id: group!.id,
         parent_run_id: managerRun,
@@ -4345,7 +4395,7 @@ describe("Room workflow (real Postgres)", () => {
       const [managerRun, specialistRun] = sent.run_ids as [string, string];
       const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
       await dispatchQueuedRoomRuns([managerRun]);
-      const spawned = await groupService.spawnChildRun(owner, {
+      const spawned = await groupService.spawnChildRun(owner, { workspace_access: "write" as const,
         space_id: "space-1", group_id: group!.id, parent_run_id: managerRun, root_run_id: group!.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-3", manager_user_id: "user-1", instruction: "Check the numbers.",
       });
@@ -5231,7 +5281,7 @@ describe("Room workflow (real Postgres)", () => {
 
     const roomGroup = await new PgAgentGroupRepository(db.pool).getGroup("space-1", first.task_group_ids[0]!);
     if (!roomGroup?.root_run_id || !groupService) throw new Error("host Room group was not created");
-    const delegated = await groupService.spawnChildRun(owner, {
+    const delegated = await groupService.spawnChildRun(owner, { workspace_access: "write" as const,
       space_id: "space-1",
       group_id: roomGroup.id,
       parent_run_id: first.run_ids[0]!,
@@ -5677,7 +5727,7 @@ describe("Room workflow (real Postgres)", () => {
     const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
     if (!group?.root_run_id) throw new Error("group or its root_run_id not found");
 
-    const spawned = await groupService.spawnChildRun(owner, {
+    const spawned = await groupService.spawnChildRun(owner, { workspace_access: "write" as const,
       space_id: "space-1",
       group_id: group.id,
       parent_run_id: managerRunId,
@@ -5777,7 +5827,7 @@ describe("Room workflow (real Postgres)", () => {
     await db.pool.query("UPDATE agent_run_groups SET budget_json=$2::jsonb WHERE id=$1",
       [group.id, JSON.stringify({ max_depth: 1, max_fanout: 2 })]);
 
-    const spawn = (targetAgentId: string, instruction: string) => groupService!.spawnChildRun(owner, {
+    const spawn = (targetAgentId: string, instruction: string) => groupService!.spawnChildRun(owner, { workspace_access: "write" as const,
       space_id: "space-1",
       group_id: group.id,
       parent_run_id: managerRunId,
@@ -5916,7 +5966,7 @@ describe("Room workflow (real Postgres)", () => {
     const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
     if (!group?.root_run_id) throw new Error("group or its root_run_id not found");
 
-    const spawned = await groupService.spawnChildRun(owner, {
+    const spawned = await groupService.spawnChildRun(owner, { workspace_access: "write" as const,
       space_id: "space-1",
       group_id: group.id,
       parent_run_id: managerRunId,
@@ -6154,7 +6204,7 @@ describe("Room workflow (real Postgres)", () => {
     const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
     if (!group?.root_run_id) throw new Error("group or its root_run_id not found");
 
-    const spawned = await groupService.spawnChildRun(owner, {
+    const spawned = await groupService.spawnChildRun(owner, { workspace_access: "write" as const,
       space_id: "space-1",
       group_id: group.id,
       parent_run_id: managerRunId,
