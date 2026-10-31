@@ -148,6 +148,7 @@ const TASK_REQUIRED_CAPABILITY: Record<string, (vendor: VendorDescriptor) => boo
   retrieval_rerank: (vendor) => vendor.supportsRerank,
   retrieval_query_rewrite: (vendor) => vendor.supportsChat && !vendor.subscriptionOnly,
   retrieval_synthesis: (vendor) => vendor.supportsChat && !vendor.subscriptionOnly,
+  prompt_revision: (vendor) => vendor.supportsChat && !vendor.subscriptionOnly,
   room_conversation_title: (vendor) => vendor.supportsChat && !vendor.subscriptionOnly,
 };
 

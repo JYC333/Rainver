@@ -1,3 +1,4 @@
+import type { FrozenRevisionMethod } from './revisionMethod.js';
 import type { RuntimeSessionConfigSelection } from '@rainver/protocol';
 import { ReadingMethodGeneratedOutputSchema } from '@rainver/protocol';
 import { declaredStructuredOutput, runOutputResult } from '../../runs/orchestrationResults.js';
@@ -7,6 +8,9 @@ export const GENERATION_SCHEMA = 'reading_method_revision.v1';
 export const generationTerminal = new Set(['succeeded', 'degraded', 'failed', 'cancelled', 'orphaned']);
 export interface GenerationRef {
   kind: typeof GENERATION_KIND;
+  target_key?: 'reading.project_investigation'|'prompt.revision.method';
+  provider?: import('./revisionProvider.js').RevisionProvider;
+  revision_method?: FrozenRevisionMethod;
   source_kind: 'description';
   item_id: string;
   project_id: string | null;
@@ -45,3 +49,5 @@ export function generationVersionRefs(content: unknown): string[] {
  const id=(content as {reading_generation?:{origin_run_id?:unknown}}|null)?.reading_generation?.origin_run_id;
  return typeof id==='string'&&id?[id]:[];
 }
+
+export function readingProviderOf(run:Pick<RunRecord,'contract_snapshot_json'>){return generationOf(run)?.provider??(run.contract_snapshot_json as {workflow_input_json?:{reading_method_trial?:{provider?:import('./revisionProvider.js').RevisionProvider}}})?.workflow_input_json?.reading_method_trial?.provider;}

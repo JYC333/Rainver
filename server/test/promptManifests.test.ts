@@ -25,6 +25,7 @@ const EXPECTED_ASSET_KEYS = [
   "project_research.synthesis",
   "project_research.synthesis_critique",
   "reading.project_investigation",
+  "prompt.revision.method",
   "research_engine.query_plan",
   "research_query.intent_plan",
   "retrieval.query_rewrite",

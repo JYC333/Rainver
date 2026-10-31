@@ -268,6 +268,8 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
         conflictKey: "supervisor_retry",
       }));
     }
+    // Canonical bounded method execution supplies its own approved instruction, not an Agent persona.
+    if ((await import('../prompts/index.js')).isReadingMethodExecutor(run)) return items;
     // Standing items: what a vendor session holds for its whole life — the
     // Agent's instruction, the Project's Instruction and Brief, the Skills
     // bound to it, the Room identity block. Sent into a fresh session, and

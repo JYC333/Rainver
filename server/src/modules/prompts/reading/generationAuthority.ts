@@ -1,3 +1,5 @@
+import { assertRevisionProvider, assertRevisionProviderReadable } from './revisionProvider.js';
+import { assertRevisionMethod } from './revisionMethod.js';
 import { isDeepStrictEqual } from 'node:util';
 import type { RunRecord } from '../../runs/repository.js';
 import { PgRunRepository } from '../../runs/repository.js';
@@ -17,11 +19,13 @@ import { sha256Json } from '../hash.js';
 export async function assertGenerationReadable(db: Queryable, identity: SpaceUserIdentity, run: RunRecord) {
   const ref = generationOf(run);
   if (!ref || run.space_id !== identity.spaceId || run.instructed_by_user_id !== identity.userId) throw new HttpError(404, 'Generation not found');
-  await readingAsset(db, identity);
+  await readingAsset(db, identity,true,ref.target_key);
   const ctx = await readingItemContext(db, identity, ref.item_id, ref.project_id);
   if (ctx.projectId !== ref.project_id) throw new HttpError(403, 'Generation scope changed');
   await normalizeVersionScopeForWrite(db, identity, ref.project_id ? 'project' : 'space', ref.project_id ?? identity.spaceId);
-  await assertReadingRunEgress(db, run, ctx.source?.id ?? null);
+  if(ref.provider&&(run.execution_kind!=='provider_task'||(run.model_provider_id&&run.model_provider_id!==ref.provider.id)))throw new HttpError(403,'Generation ProviderTask destination mismatch');
+  if(ref.provider) await assertRevisionProviderReadable(db,identity,ref.provider,ctx.source?.id??null);
+  else await assertReadingRunEgress(db, run, ctx.source?.id ?? null);
   return ctx;
 }
 export async function assertGenerationDispatch(db: Queryable, run: RunRecord) {
@@ -37,8 +41,10 @@ export async function assertGenerationDispatch(db: Queryable, run: RunRecord) {
   const parent = await freezeReadingMethod(db, {
     ...identity,
     projectId: ref.project_id
-  }, null);
+  }, null, ref.target_key);
   if (ctx.authority !== ref.authority || parent.frozen.version_id !== ref.parent_version_id || parent.frozen.content_hash !== ref.parent_hash || sha256Json(run.prompt) !== ref.prompt_hash) throw new HttpError(409, 'Generation input or effective method changed; start from the current method');
+  if (ref.revision_method) await assertRevisionMethod(db, ref.revision_method);
+  if(ref.provider){if(run.execution_kind!=='provider_task'||run.agent_id||run.requested_runtime_profile_id)throw new HttpError(403,'Invalid revision execution kind');await assertRevisionProvider(db,identity,ref.provider,ctx.source?.id??null,true);return;}
   await assertClosedReadingContext(db, run.space_id, run.id, null);
   if (ref.profile_hash !== (await nativeProfileFingerprint(db, run.requested_runtime_profile_id!))) throw new HttpError(409, 'Generation execution configuration changed');
   if (!(await db.query(`SELECT id FROM agents WHERE id=$1 AND space_id=$2 AND owner_user_id=$3 AND status='active'`, [run.agent_id, run.space_id, identity.userId])).rows.length) throw new HttpError(403, 'Generation Agent unavailable');

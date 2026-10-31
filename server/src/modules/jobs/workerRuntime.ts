@@ -1,3 +1,4 @@
+import {registerRevisionProviderRuns,registerReadingProviderReconciliation} from "../prompts/index.js";
 import {registerSourceGoalJob} from '../sources/goals/worker.js';
 import { registerMonitoringJob } from "../projects/monitoring/worker.js";
 import { randomUUID } from "node:crypto";
@@ -98,6 +99,8 @@ export function buildJobHandlerRegistry(
   const registry = new JobHandlerRegistry();
   registerSourceGoalJob(registry,config);
   registerAgentRunHandler(registry, config);
+  registerReadingProviderReconciliation(registry,config);
+  registerRevisionProviderRuns();
   registerProviderTaskRunHandler(registry, config);
   registerMemoryConsolidationHandler(registry, config);
   registerDailyCaptureReportHandler(registry, config);

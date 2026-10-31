@@ -18,9 +18,9 @@ export function readingStrategy(content:unknown):string{
  return value.template;
 }
 /** Production uses the existing approved-only resolver. Missing catalog is not a silent code fallback. */
-export async function freezeReadingMethod(db: Queryable, input: {spaceId:string; userId:string; projectId?:string|null; agentId?:string|null}, context: unknown) {
+export async function freezeReadingMethod(db: Queryable, input: {spaceId:string; userId:string; projectId?:string|null; agentId?:string|null}, context: unknown, assetKey=READING_METHOD_KEY) {
   let resolved;
-  try { resolved = await resolvePrompt(db, {spaceId:input.spaceId,userId:input.userId,projectId:input.projectId,assetKey:READING_METHOD_KEY}); }
+  try { resolved = await resolvePrompt(db, {spaceId:input.spaceId,userId:input.userId,projectId:input.projectId,assetKey}); }
   catch (error) { if(error instanceof HttpError && error.statusCode===404) throw new HttpError(409,'Initialize the reading method through the catalog sync before preparing material',{code:'reading_method_not_initialized',detail:'Initialize the reading investigation method through the explicit catalog sync in the Reading method workspace.'}); throw error; }
   if(resolved.validation_errors.length || !resolved.rendered_text || resolved.rendered_text.length>12000) throw new HttpError(409,'Reading method must be a text strategy of at most 12000 characters');
   const content=(await db.query(`SELECT content_json FROM evolvable_asset_versions WHERE id=$1`,[resolved.version_id])).rows[0];readingStrategy(content?.content_json);

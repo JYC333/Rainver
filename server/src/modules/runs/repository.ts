@@ -438,6 +438,7 @@ export class PgRunRepository {
    * a refused admission cannot leave a queued Run behind for the worker.
    */
   async createQueuedProviderTaskRun(input: {
+    visibility?: "private" | "space_shared";
     space_id: string;
     user_id: string;
     trigger_origin: string;
@@ -475,7 +476,7 @@ export class PgRunRepository {
          ) VALUES (
            $1, $2, NULL, NULL, 'provider_task',
            $3, $4, 'queued', 'live', $5, $6,
-           $7, $7, 'space_shared', 'full',
+           $7, $7, $12, 'full',
            'none', $8::jsonb, $9, $10,
            $11, $11
          ) RETURNING id, space_id, execution_kind, status`,
@@ -483,7 +484,7 @@ export class PgRunRepository {
           randomUUID(), input.space_id, input.run_type, input.trigger_origin,
           input.prompt, input.instruction ?? null, input.user_id,
           JSON.stringify(contractSnapshot), input.project_id ?? null,
-          input.capability_id ?? null, now,
+          input.capability_id ?? null, now, input.visibility ?? "space_shared",
         ],
       );
       const row = result.rows[0];

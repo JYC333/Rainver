@@ -589,7 +589,14 @@ retains the advanced prompt page via a disclosure, without a new top-level nav.
 See [Reading methods](../architecture/READING_METHODS.md) for version freezing,
 private paired Runs, human judgment, proposals, rollback and verification limits.
 
-The Reading method workspace leads with a description-driven candidate generation
-using an explicitly selected owned execution configuration; manual editing remains
-in an advanced disclosure. Generation only saves a draft: the existing explicit
+The Reading method workspace shows the complete current effective method first,
+then description-driven candidate generation using the authorized Space default
+chat API, without an Agent or personal CLI configuration. One final Advanced disclosure combines explicit manual
+editing, recorded result provenance and the original prompt-management link;
+viewing information does not begin editing. Generation only saves a draft: the existing explicit
 comparison and human approval path still controls activation. Logs are not inputs.
+
+The final Advanced area also offers authorized API Provider/model overrides and
+the real system revision-method workspace. Its own candidates use a fixed prompt-
+revision comparison example, not a Reading investigation case; activation remains
+proposal-gated and manual editing stays available without an API.

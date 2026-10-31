@@ -55,6 +55,7 @@ export interface ChatMessage {
 }
 
 export interface ProviderChatRequestBody {
+  signal?: AbortSignal;
   provider_id?: string | null;
   model?: string | null;
   messages: ChatMessage[];
@@ -799,6 +800,7 @@ function meteringWithProviderTaskRefs(
 }
 
 function providerTaskOwnerDomain(task: string): string {
+  if (task === "prompt_revision" || task === "prompt_method_comparison") return "prompts";
   if (task === "daily_report") return "dailyReports";
   if (task.startsWith("inquiry_")) return "inquiry";
   if (task.startsWith("project_research_")) return "projectResearch";
@@ -1043,6 +1045,7 @@ async function invokeProviderWithPool(
     }
     let sameKeyRetries = 0;
     for (;;) {
+      body.signal?.throwIfAborted();
       const providerTask = await beginProviderTaskAttempt(store, target, body.metering, {
         eventType: "llm.generation",
         model: body.model ?? target.provider.default_model,
@@ -1277,6 +1280,7 @@ interface ProviderTextCompletionInput {
 }
 
 interface ProviderMessagesCompletionInput {
+  signal?:AbortSignal;
   provider_id: string;
   model?: string | null;
   system?: string | null;
@@ -1340,6 +1344,7 @@ export async function completeProviderMessages(
 }> {
   const chatBody = (providerId: string, model: string | null | undefined): ProviderChatRequestBody => ({
     provider_id: providerId,
+    signal:input.signal,
     model,
     system: input.system,
     messages: input.messages,

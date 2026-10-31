@@ -71,7 +71,7 @@ async function applyEvolvableAssetVersionPromote(context: ProposalApplyContext):
   const asset = assetResult.rows[0];
   if (!asset) throw new HttpError(404, "Evolvable asset not found in this space");
   await assertCanWriteAssetOwnerScope(db, identity, asset);
-  const reading=(await db.query(`SELECT 1 FROM evolvable_assets WHERE id=$1 AND asset_key='reading.project_investigation'`,[payload.asset_id])).rows[0];
+  const reading=(await db.query(`SELECT 1 FROM evolvable_assets WHERE id=$1 AND asset_key IN ('reading.project_investigation','prompt.revision.method')`,[payload.asset_id])).rows[0];
   if(reading){
     // The original trial owner must still have the frozen material/context. Approval is not an export grant.
     const owner=(await db.query<{created_by_user_id:string}>(`SELECT created_by_user_id FROM evolvable_asset_evaluation_runs WHERE id=$1 AND space_id=$2`,[payload.evaluation_run_ids?.[0],spaceId])).rows[0];

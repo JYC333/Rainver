@@ -42,10 +42,13 @@ from generic case lists/executors. They are not private Memory or arbitrary auto
 A comparison creates one existing `evolvable_asset_evaluation_runs` record with
 `reading_method_pair.v1` and two private canonical Runs/jobs. The suite reference
 freezes baseline/candidate hashes, case hash, material authority, context hash,
-profile fingerprint, input key and both Run ids. Both receive the same supplied
-pages/context/profile; automatic retrieval is off and nothing is pinned. Their Work Context binds the
+execution fingerprint, input key and both Run ids. Both receive the same supplied
+pages/context and frozen execution selection; automatic retrieval is off and nothing
+is pinned. Legacy Agent pairs have a closed Work Context that binds the
 canonical Project (when present) for policy/instruction authorization, while the
-Run/output stays private; the Project instruction version joins the context hash. No Source
+Run/output stays private; the Project instruction version joins the context hash.
+Default API pairs use only their explicit frozen input, without an Agent persona
+or implicit retrieval. No Source
 write tool is granted. The ordinary runtime/profile and credential gates still
 apply; this is not a promise of OS sandboxing on paired native hosts, nor a new
 credential pre-authorization. No application model/provider is called by IDE tests.
@@ -147,8 +150,11 @@ acceptance includes the parent Reading/Digest card, not just the destination.
 
 ## Description-driven revisions
 
-The default current-method view accepts **a description of what went wrong and
-what should change**, plus an explicitly selected owned Agent/Profile. The
+The current-method tab first shows the complete effective method and its resolved
+scope/version in a default-visible read-only Card. It stays the production baseline
+when a generated candidate is selected. Below it, the primary form accepts
+**a description of what went wrong and
+what should change**, using the authorized Space default chat API. No Agent/Profile is required. The
 `POST /prompts/reading-method/generations` contract accepts only
 `source_kind: description`; log ids, raw logs, attachments and arbitrary context
 fields are refused. No logs, original Run replies, article bodies, Project brief,
@@ -193,7 +199,13 @@ to its explicitly approved scope; it does not publish the private generation
 feedback/explanation. A new revision of that published method starts from its
 strategy, without inheriting private input from the earlier generation. Withdrawal hides the entire
 feedback/method/explanation, while routine authorized history changes are marked
-historical. Generated content cannot be edited in place: **Advanced: edit
+historical. API generation history checks current Provider existence, enabled Space
+grant and credential eligibility, plus Source consent for that Provider with the
+frozen model. Ordinary Provider configuration drift keeps historical output and
+private candidate readers visible but marks generation stale. Admission, dispatch,
+Delivery and settlement still require the exact frozen configuration fingerprint;
+a drifted queued Run cannot execute or create a draft. Actual Provider/credential
+or Source permission withdrawal hides the whole derived result. Generated content cannot be edited in place: **Advanced → Edit
 manually** saves an immutable child (of the selected candidate or effective
 method), preserving provenance and invalidating comparisons for the old version.
 The original manual API remains available. Generation never starts a two-Run
@@ -208,3 +220,110 @@ It remains an unsuccessful terminal result: the person may explicitly retry it
 with `retry_of`, subject to the same ownership, input, permission and daily limits.
 Duplicate retries reuse one Run; a successful retry becomes the latest result for
 the unchanged description. It is never reclassified as a quality pass.
+
+
+The workspace ends with one **Advanced** disclosure, after all tab content and
+ordinary delivery guidance. It combines manual editing, recorded result-version /
+originating Run links (only when present), and the original advanced prompt
+management link. Opening information does not enter editing or disable generation.
+Only an explicit edit action clones the selected candidate or effective method;
+comparison's revision action opens and focuses this final editor. Save creates an
+immutable child and returns to comparison; Cancel clears local edits. The editor
+retains maintenance, active-generation/comparison, pending-proposal and session
+protections. Read-only viewers can see the effective method and recorded provenance
+without gaining manual write controls.
+
+## Versioned revision instruction
+
+Description generation resolves the approved `prompt.revision.method` asset
+separately from the target investigation method. Explicit Reading catalog
+initialization syncs both built-in baselines; GET performs no synchronization.
+If an older installation has only the investigation asset, the workspace offers
+initialization instead of silently using a hardcoded revision prompt.
+
+New generation contracts freeze the revision asset id/hash/provenance and rendered
+text as `revision_method`; the target parent retains its separate id/hash. A
+later deployment does not replace the immutable admitted revision instruction.
+Its version must still exist with the same content at dispatch/settlement. Legacy
+Agent generation contracts without this field retain their original behavior;
+no historical revision provenance is inferred. The default bounded ProviderTask execution and the two-target self-revision workspace are described below.
+
+
+## Default API execution and the revision method target
+
+The current-method → description → final Advanced layout applies to two targets
+only: `reading.project_investigation` and `prompt.revision.method`. The latter is
+the complete built-in rewriting strategy, not an Agent persona. Explicit catalog
+initialization syncs both; GET never syncs. New generation contracts record both
+its approved immutable id/hash/text/provenance and the distinct target parent
+id/hash. A later revision-method deployment does not alter admitted text; target
+baseline changes still make an execution stale. Legacy Agent generations without
+revision provenance keep their actual historical contract, not an inferred version.
+
+The main path resolves the enabled `prompt_revision` task-policy primary, otherwise
+the enabled granted Space default chat Provider and explicit/default text model.
+Embedding/rerank choices, unavailable credentials and disabled/ungranted Providers
+are refused. No automatic provider/CLI/account fallback is allowed. Advanced can
+explicitly choose an authorized Provider and its listed model. The default native
+OpenCode runtime is not this API. Advanced also offers an explicit CLI executor choice, loaded on demand from the current user's usable Host-bound runtime profiles. No Agent/Profile is created or modified. The UI identifies runtime, Host and profile; the canonical Agent remains an execution association, not the rewrite persona. Both targets support CLI generation and controlled comparisons. Missing API configuration does not disable a selected usable CLI; no fallback is automatic.
+
+New executions are private canonical `provider_task` Runs with no Agent,
+AgentVersion, Profile, Host or workspace. The ordinary `provider_task_run` worker
+rebuilds only the frozen request and uses boundedProviderTaskRun, canonical
+credential spend, usage and ProviderTask controls/Delivery/snapshot. Its domain
+`authorizeAttempt` callback runs in that Delivery transaction, fences the actual
+Provider/grant and the complete Source/Project/item authority, and rechecks the
+physical provider/model before commit. Source egress uses that concrete API
+endpoint/model classification. The provider HTTP path has a shared 180-second
+abort deadline across attempts; canonical key-pool policy is otherwise unchanged.
+There is no token or money hard cap. Cancellation prevents candidate publication;
+a request already sent can still finish and incur cost. Late completion cannot
+replace cancelled state or create a candidate.
+
+Success and draft/paired-evaluation projection share a transaction, using the
+canonical terminal writer and then rereading its full Run contract. The terminal
+reconciler also receives a normal durable job nudge; existing recovery replays
+registered idempotent projections after failure/restart. One inflight generation
+and three per rolling day, and a separate one-inflight/three-pair allowance, are
+serialized per Space/person across both targets. Explicit unsuccessful-terminal
+retries create a new bounded Run; duplicate retries reuse it. Schema failure
+(including extra side-effect fields) saves no candidate and creates no Source,
+Reader, Digest, Task, Memory or proposal changes.
+
+Advanced links to the real system revision-method workspace, preserving item,
+Project and return context. It shows the actual effective revision body/version;
+its candidate is generated by the current approved revision strategy without
+recursive automation. Its fixed controlled sample contains an original prompt,
+feedback and preserved language/evidence/no-browsing requirements, not a Reading
+homepage investigation. Baseline/candidate perform two canonical API Runs; JSON
+validation/execution success is structure-only. Human judgment, promotion proposal,
+applier readback and exact-scope rollback use the same existing evaluation and
+prompt deployment authorities, bound to that target's asset and hashes. A user
+still decides a real proposal; IDE fixtures do not approve product proposals.
+
+Private generation origins guard generic Run/version/render/staging and later
+cross-Source comparisons. Revocation hides affected derived text, labels and
+judgments; approved publication shares only the explicitly approved strategy,
+not private feedback or explanation. No Reader body, original Run replies, logs,
+Memory or implicit retrieval/Agent persona enters default generation. Logs remain
+unsupported strict input; no log tab/provider was added. API setup failure leaves
+the current method readable and advanced manual editing available.
+
+## Optional CLI method execution
+
+Advanced has mutually exclusive default API / other API / CLI execution. The scope-only
+`GET /prompts/reading-method/cli-options` requires the existing maintenance authority,
+returns only usable owned Host-bound configurations, reads no article and writes nothing.
+The server rechecks owned Agent/Profile, Host usability, session selections and actual
+Source destination at admission, dispatch and Delivery; inventory is not authorization.
+
+New CLI method generation/comparison uses the same approved revision asset/target parent,
+canonical agent_run/ACP/jobs and bounded private output. Its server-owned workflow marker
+closes the instruction surface in Runtime Context acquisition: the explicit method request
+and platform execution rules remain; Agent persona, bound Skills, implicit Project and
+personal Memory are not appended. Existing unmarked historical Runs retain their admitted
+contract. This is a narrow method-executor context rule, not a general runtime bypass or
+OS sandbox claim. Source/Project and original candidate dependencies still gate private
+reads and finalization. Meta CLI pairs require the fixed prompt-and-feedback sample,
+validate the declared JSON and expose readable revised prompt/changes, with structural
+completion distinct from the human judgment. Other consumers retain their original context.

@@ -623,7 +623,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     const runs=await reading.readingDependencyRuns(db,full);
     if(ref||runs.length>1){
       const {readingAsset}=await import('../prompts/reading/access.js');
-      const asset=await readingAsset(db,{spaceId:full.space_id,userId:full.instructed_by_user_id!},false);
+      const asset=await readingAsset(db,{spaceId:full.space_id,userId:full.instructed_by_user_id!},false,ref?.target_key??(full.contract_snapshot_json as {workflow_input_json?:{reading_method_trial?:{target_key?:string}}})?.workflow_input_json?.reading_method_trial?.target_key);
       await (await import('../evolution/assetLocks.js')).lockEvolutionAssets(db,[asset.id]);
     }
     const dependencies=[];

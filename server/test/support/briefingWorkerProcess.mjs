@@ -62,9 +62,9 @@ const sink = {
         if (request.method === "session/new") return out(runId, launchId, { jsonrpc: "2.0", id: request.id, result: { sessionId: `synthetic-${runId}` } });
         if (request.method === "session/prompt") {
           const sessionId = request.params?.sessionId ?? `synthetic-${runId}`;
+          report({ type: "prompted", runId, launchId, prompt: request.params?.prompt });
           if (promptPolicy === "hold") {
             held.set(runId, { launchId, id: request.id, sessionId });
-            report({ type: "prompted", runId, launchId });
             return;
           }
           return answer(runId, launchId, request.id, sessionId, promptPolicy.answer);

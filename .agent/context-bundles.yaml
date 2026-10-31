@@ -509,6 +509,8 @@ host-daemon:
 
 reading-method:
   docs:
+    - .agent/modules/provider-policy.md
+    - .agent/architecture/AGENT_RUNTIME_AUTHORITY.md
     - .agent/architecture/READING_METHODS.md
     - .agent/architecture/SOURCE_MATERIAL_PROCESSING.md
     - .agent/architecture/SOURCE_GOALS.md

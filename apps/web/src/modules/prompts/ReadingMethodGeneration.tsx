@@ -1,10 +1,10 @@
+import type {MethodExecution} from './ReadingMethodApiExecution';
 import { useEffect, useRef, useState } from 'react';
 import type { ReadingMethodContext, ReadingMethodGenerationView } from '@rainver/protocol';
 import { useAppTranslation } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
 import { Button } from '../../components/ui/button';
 import { Textarea } from '../../components/ui/textarea';
-import { Select } from '../../components/ui/select';
 import { SpaceLink } from '../../core/spaceNav';
 import { Card } from '../../components/ui/card';
 import { sessionEpoch, registerInMemoryResidue } from '../../lib/sessionResidue';
@@ -12,6 +12,7 @@ import { errMsg } from '../../lib/utils';
 import { readingMethodsApi } from './readingMethodApi';
 interface Props {
   data: ReadingMethodContext;
+  execution?:MethodExecution;
   disabled: boolean;
   onActive: (active: boolean) => void;
   withhold: () => void;
@@ -23,6 +24,7 @@ const active = (g: ReadingMethodGenerationView | null | undefined) => !!g && ['q
 /** One mounted, authenticated workspace owns its async results. No feedback/log/body is persisted in browser storage. */
 export function ReadingMethodGeneration({
   data,
+  execution={},
   disabled,
   onActive,
   withhold,
@@ -36,7 +38,6 @@ export function ReadingMethodGeneration({
   const latest = data.generations?.[0] ?? null;
   const [generation, setGeneration] = useState(latest),
     [description, setDescription] = useState(latest?.description ?? ''),
-    [runtime, setRuntime] = useState(''),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
   const owner = useRef<object | null>(null),
@@ -62,7 +63,6 @@ export function ReadingMethodGeneration({
       ++request.current;
       setGeneration(null);
       setDescription('');
-      setRuntime('');
       setError('');
       setBusy(false);
       pending.current = false;
@@ -170,31 +170,25 @@ export function ReadingMethodGeneration({
     <Card className="space-y-3 p-4">
       <h2 className="font-semibold">{t('readingMethod.describe_change')}</h2>
       <p className="text-sm text-muted-foreground">{t('readingMethod.description_only_inputs')}</p>
-      <label className="block space-y-2"><span>{t('readingMethod.change_description')}</span><Textarea value={description} disabled={disabled || busy || running} maxLength={2400} onChange={e => setDescription(e.target.value)} placeholder={t('readingMethod.description_example')} /></label>
-      <div className="space-y-2"><p>{t('readingMethod.execution_configuration_choose_explicitly')}</p><Select portal={false} ariaLabel={t('readingMethod.generation_runtime')} value={runtime} onChange={setRuntime} disabled={disabled || busy || running} options={[{
-          value: '',
-          label: t('readingMethod.choose_agent_runtime')
-        }, ...data.runtimes.map(r => ({
-          value: `${r.agent_id}:${r.runtime_profile_id}`,
-          label: r.name + (r.reason ? ` · ${r.reason}` : ''),
-          disabled: !r.usable
-        }))]} /></div>
-      {!data.runtimes.some(r=>r.usable)&&<p>{t('readingMethod.no_usable_execution_configuration_configure_your_own')} <SpaceLink className="underline" to="/agents">{t('readingMethod.open_agent_configuration')}</SpaceLink></p>}
+      <label className="block space-y-2"><span>{t('readingMethod.change_description')}</span><Textarea value={description} disabled={disabled || busy || running} maxLength={2400} onChange={e => setDescription(e.target.value)} placeholder={t(data.target_key === 'prompt.revision.method' ? 'readingMethod.revision_description_example' : 'readingMethod.description_example')} /></label>
+      <p className="text-sm text-muted-foreground">{t(execution.agent_id!==undefined?'readingMethod.cli_execution':execution.provider_id?'readingMethod.api_override_active':'readingMethod.api_default_notice')}{execution.agent_id===undefined&&!execution.provider_id&&data.api_execution?.name ? ` · ${data.api_execution.name}` : ''}</p>
+      {data.api_execution?.usable===false&&!execution.provider_id&&execution.agent_id===undefined&&<p role="status">{t('readingMethod.api_unavailable')} <Button size="sm" variant="ghost" asChild><SpaceLink to="/providers">{t('readingMethod.configure_api')}</SpaceLink></Button></p>}
       <p className="text-xs text-muted-foreground">{t('readingMethod.generation_limits')}</p>
       <div className="flex flex-wrap gap-2">
-        <Button variant={currentCandidate?'outline':'default'} disabled={disabled || busy || running || !description.trim() || !runtime || !data.effective_content_hash} onClick={() => void run(() => readingMethodsApi.generate({
+        <Button variant={currentCandidate?'outline':'default'} disabled={disabled || busy || running || (execution.agent_id!==undefined&&!execution.agent_id) || !description.trim() || (data.api_execution?.usable===false&&!execution.provider_id&&execution.agent_id===undefined) || !data.effective_content_hash} onClick={() => void run(() => readingMethodsApi.generate({
+          target_key:data.target_key,
           source_kind: 'description',
           item_id: data.item_id,
           project_id: data.project_id,
           parent_version_id: data.effective_version_id,
           parent_content_hash: data.effective_content_hash,
           description,
-          agent_id: runtime.split(':')[0],
-          runtime_profile_id: runtime.split(':')[1],
+          ...execution,
           ...(generation && ['failed', 'degraded', 'cancelled', 'blocked', 'orphaned'].includes(generation.status) ? {
             retry_of: generation.id
           } : {})
         }))}>{t('readingMethod.generate_candidate')}</Button>
+        {running&&<p className="text-xs text-muted-foreground">{t('readingMethod.api_cancel_notice')}</p>}
         {running && generation && <Button variant="outline" disabled={busy} onClick={() => void run(() => readingMethodsApi.cancelGeneration(generation.id))}>{t('readingMethod.cancel_generation')}</Button>}
         {generation && <Button variant="ghost" disabled={busy} onClick={() => void run(() => readingMethodsApi.generation(generation.id))}>{t('readingMethod.refresh_generation')}</Button>}
       </div>

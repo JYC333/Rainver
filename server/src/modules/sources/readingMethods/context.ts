@@ -37,6 +37,9 @@ export async function assertReadingRunEgress(db:Queryable,run:RunRecord,connecti
   if(!connectionId)return;
   const source=(await db.query<SourceConnectionRow>(`SELECT * FROM source_connections WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL AND status<>'archived'`,[connectionId,run.space_id])).rows[0];
   if(!source)throw new HttpError(403,'Source unavailable');
+  const {readingProviderOf,assertReadingProviderEgress}=await import('../../prompts/index.js');
+  const provider=readingProviderOf(run);
+  if(provider){if(run.execution_kind!=='provider_task'||(run.model_provider_id&&run.model_provider_id!==provider.id))throw new HttpError(403,'Reading ProviderTask destination mismatch');await assertReadingProviderEgress(db,{spaceId:run.space_id,userId:run.instructed_by_user_id!},provider,connectionId);return;}
   if(run.runtime_key) await assertSourceEgressAllowedForDestination(db,source,await runDestination(db,run.space_id,run));
   else if(run.agent_id&&run.requested_runtime_profile_id)await assertSourcePromptEgressAllowed(db,source,run.agent_id,run.requested_runtime_profile_id);
 }

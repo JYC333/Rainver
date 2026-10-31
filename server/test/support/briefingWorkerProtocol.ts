@@ -12,7 +12,7 @@ export type WorkerCommand =
 export type WorkerReport =
   | { type: "ready"; pid: number }
   | { type: "frame"; frame: { type: string; run_id?: string; launch_id?: string; force?: boolean; method?: string } }
-  | { type: "prompted"; runId: string; launchId: string }
+  | { type: "prompted"; runId: string; launchId: string; prompt?: unknown }
   | { type: "cancelled"; result: unknown }
   | { type: "pong"; seq: number }
   | { type: "stopped" };
