@@ -55,6 +55,7 @@ describe("Antigravity skill isolation", () => {
 });
 
 beforeEach(async () => {
+  process.env.RAINVER_HOST_BWRAP="/nonexistent/rainver-test-bwrap";
   configDir = await mkdtemp(join(tmpdir(), "rainver-host-exec-config-"));
   workspaceDir = await mkdtemp(join(tmpdir(), "rainver-host-exec-workspace-"));
   attachedWorkspaceDir = await mkdtemp(join(tmpdir(), "rainver-host-exec-attached-"));
@@ -71,6 +72,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  delete process.env.RAINVER_HOST_BWRAP;
   delete process.env.RAINVER_HOST_CONFIG_DIR;
   delete process.env.RAINVER_HOST_WORKSPACES_ROOT;
   await rm(configDir, { recursive: true, force: true });
@@ -945,10 +947,9 @@ describe("a retry that reuses the run id", () => {
     // while that attempt is still uploading; both attempts share
     // `<config>/runs/<run_id>/`. The first attempt's cleanup must not delete
     // the second attempt's Skill and launcher out from under a live child.
-    // Read-only, because a writer's retry queues behind the first attempt's
-    // Location lease and so never overlaps it; a Run that takes no lease still
-    // can.
-    const readOnly = { sandbox_mode: "read_only", egress_profile: "none" } as const;
+    // An unsupported personal Host cannot use a read-only label to bypass its
+    // lease. A retry retains launch identity and directory ownership through cleanup.
+    const readOnly = { sandbox_mode: "read_write", egress_profile: "none" } as const;
     const first = collectSend();
     await handleLaunch(
       { run_id: "run-retry", launch_id: "launch-1", workspace_location_id: "folder-1", argv: ["sh", "-c", "sleep 0.4"], work_surface: surface, isolation: readOnly },
@@ -1111,7 +1112,7 @@ describe("Location lease", () => {
     expect(await first.complete()).toMatchObject({ exit_code: 0 });
   });
 
-  it("makes a paired host's read-only Run wait for a writer: it runs natively and could write", async () => {
+  it("refuses an unprobed paired read-only Run before spawning instead of degrading to a writer", async () => {
     const order: string[] = [];
     const record = (collector: ReturnType<typeof collectSend>) => (frame: Record<string, unknown>) => {
       order.push(`${String(frame.run_id)}:${String(frame.type)}`);
@@ -1137,8 +1138,8 @@ describe("Location lease", () => {
     );
     await reader.complete();
     await readerLaunch;
-    expect(frameIndex(reader.frames, "waiting_for_workspace")).toBe(0);
-    expect(order.indexOf("lease-reader-1:launched")).toBeGreaterThan(order.indexOf("lease-writer-3:complete"));
+    expect(reader.frames[0]).toMatchObject({type:"complete",exit_code:1,error:expect.stringMatching(/Read-only workspace unavailable/)});
+    expect(frameIndex(reader.frames,"launched")).toBe(-1);
     await writer.complete();
   });
 
@@ -1291,9 +1292,8 @@ describe("Location lease", () => {
       record(second),
       () => {},
     );
-    // On a paired host a read-only label is not enforced, so it waits like a
-    // writer of its own Location (held by the first writer) — strict reviews
-    // are the readers (`launchLeasePlan`).
+    // This test Host has no executable read-only mechanism: refusal must not
+    // enter the lease queue or launch as a writable substitute.
     const reader = collectSend();
     const readerLaunch = handleLaunch(
       {
@@ -1314,7 +1314,7 @@ describe("Location lease", () => {
     await first.complete();
     await reader.complete();
     await readerLaunch;
-    expect(reader.frames[0]).toMatchObject({ type: "waiting_for_workspace" });
+    expect(reader.frames[0]).toMatchObject({type:"complete",exit_code:1,error:expect.stringMatching(/Read-only workspace unavailable/)});
   });
 
   it("stops only the named attempt when a terminate carries its launch id", async () => {

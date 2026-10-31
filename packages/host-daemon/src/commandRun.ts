@@ -1,3 +1,5 @@
+import {readOnlyIpcFilter} from './readOnlyIpc.js';
+import {probeReadOnlyWorkspace,readOnlyBinary,assertReadOnlyBinds,workspaceGitDirectory} from './readOnlyWorkspace.js';
 import { spawn } from "node:child_process";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -201,7 +203,10 @@ async function runHostCommandInner(
     LANG: "C.UTF-8",
     ...resolved.env,
   };
-  const strict = config.trust === "strict";
+  const personalRead=config.trust!=='strict'&&request.isolation?.sandbox_mode==='read_only';
+  if(personalRead&&!(await probeReadOnlyWorkspace()).supported)return {exit_code:1,stdout:'',stderr:'',timed_out:false,error:'Read-only workspace requires Linux bubblewrap mount/PID namespace support on this Host'};
+  const strict = config.trust === "strict"||personalRead;
+  if(personalRead){gitCommonDir=await workspaceGitDirectory(cwd);try{assertReadOnlyBinds([cwd,...(gitCommonDir?[gitCommonDir]:[])],[{path:scratch,access:'read_write'}]);}catch(error){log(`Read-only command preparation failed: ${String(error)}`);return {exit_code:1,stdout:'',stderr:'',timed_out:false,error:'Read-only workspace preparation failed; inspect local Host log.'};}}
   try {
     await mkdir(scratch, { recursive: true, mode: 0o700 });
     if (strict) {
@@ -224,7 +229,7 @@ async function runHostCommandInner(
           // executable nor its login home unless the tree is bound in.
           loginHome: namespaceTool?.home ?? null,
           toolTree: namespaceTool ? managedToolTreeForLaunch(namespaceRuntimeKey, namespaceInstallation) : null,
-          runtimeRoot: daemonRuntimeRoot(),
+          runtimeRoot: daemonRuntimeRoot(undefined, personalRead ? spawnEnv : null),
           // A Task worktree's history is in the repository's git directory,
           // outside the worktree; git inside the namespace needs it. Bound as
           // the workspace itself is.
@@ -239,9 +244,9 @@ async function runHostCommandInner(
         isolation: request.isolation ?? { sandbox_mode: "read_write", egress_profile: "none" },
         env: spawnEnv,
       });
-      spawnCommand = namespace.command;
-      spawnArgs = namespace.args;
-      spawnEnv = { PATH: "/usr/local/bin:/usr/bin:/bin" };
+      spawnCommand = personalRead?readOnlyBinary():namespace.command;
+      spawnArgs = personalRead?["--seccomp","4",...namespace.args]:namespace.args;
+      spawnEnv = namespace.env;
     }
     return await new Promise<CommandRunResult>((resolve) => {
       // Four streams in strict mode: the namespace reports readiness on fd 3
@@ -251,9 +256,10 @@ async function runHostCommandInner(
       const child = spawn(spawnCommand, spawnArgs, {
         cwd,
         env: spawnEnv,
-        stdio: strict ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
+        stdio: personalRead ? ["pipe", "pipe", "pipe", "pipe", "pipe"] : strict ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
         detached: true,
       });
+      if(personalRead){const filter=child.stdio[4] as import('node:stream').Writable;filter.on('error',error=>log(`Local IPC filter pipe closed: ${String(error)}`));filter.end(readOnlyIpcFilter());}
       if (request.stdin) child.stdin?.write(request.stdin);
       child.stdin?.end();
       let stdout = "";
@@ -306,7 +312,7 @@ async function runHostCommandInner(
       stdout: "",
       stderr: "",
       timed_out: false,
-      error: `Could not run this command in an isolated namespace: ${error instanceof Error ? error.message : String(error)}`,
+      error: personalRead?'Read-only command preparation failed; inspect local Host log.':`Could not run this command in an isolated namespace: ${error instanceof Error ? error.message : String(error)}`,
     };
   } finally {
     {

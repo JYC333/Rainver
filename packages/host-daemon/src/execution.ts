@@ -1,3 +1,5 @@
+import {readOnlyIpcFilter} from './readOnlyIpc.js';
+import {probeReadOnlyWorkspace,readOnlyBinary,assertReadOnlyBinds,workspacePathLeaseKeys,workspaceGitDirectory,readOnlyRootGuard,executableRoots,captureReadOnlyBasis} from './readOnlyWorkspace.js';
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostDaemonFrame, type HostEgressTransport, type HostLaunchFrame, type HostLaunchIsolation, type HostLaunchProviderBinding, type HostLaunchWorkSurface, type HostServerFrameOf } from "@rainver/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -814,21 +816,29 @@ function grantRunEgress(
  * `@rainver/agent-cli` are siblings under the same `node_modules`, not files
  * inside this package.
  */
-export function daemonRuntimeRoot(moduleUrl: string = import.meta.url): string {
+export function daemonRuntimeRoot(moduleUrl: string = import.meta.url, protectedEnvironment: NodeJS.ProcessEnv | null = process.env): string {
+  // Personal read roots share the same lexical/physical HOME bound as binaries.
+  // Strict callers explicitly pass null to retain their existing /app layout.
+  const safe = protectedEnvironment ? readOnlyRootGuard(protectedEnvironment) : () => true;
   const dir = dirname(fileURLToPath(moduleUrl));
   const segments = dir.split(sep);
   // `.../<install root>/node_modules/@rainver/host-daemon/dist` → the install
   // root. The *first* `node_modules`, because a nested one is inside it.
   const index = segments.indexOf("node_modules");
-  if (index > 0) return segments.slice(0, index).join(sep) || sep;
+  if (index > 0) {
+    const install = segments.slice(0, index).join(sep) || sep;
+    if (safe(install)) return install;
+  }
   // Otherwise this daemon runs from a directory layout — the container puts it
   // at `/app/packages/host-daemon/dist` with dependency trees at both
   // `/app/packages/host-daemon/node_modules` and `/app/node_modules`. The
   // highest ancestor that has one is the root that contains them all; stopping
   // at the package's own parent would leave the ACP adapter and the `rainver`
   // command outside the namespace.
-  let root = resolve(dir, "..");
+  let root = safe(resolve(dir, "..")) ? resolve(dir, "..") : dir;
+  if (!safe(root)) throw new Error('Runtime installation would expose a login HOME; use a dedicated installation directory');
   for (let candidate = root; candidate !== dirname(candidate); candidate = dirname(candidate)) {
+    if (!safe(candidate)) break;
     if (existsSync(join(candidate, "node_modules"))) root = candidate;
   }
   return root;
@@ -910,6 +920,9 @@ export function planStrictLaunch(input: {
   runtimeRoot: string;
   /** Authorized Workspace Locations materialized by launchRun on this host. */
   workspaceBinds?: ReadonlyArray<{ path: string; access_mode: "read" | "write" }>;
+  readOnlyExecutables?: string[];
+  personalAmbient?: Record<string,string>;
+  loginFiles?:string[];
 }): StrictLaunch {
   // **The container contributes nothing.** A trusted host keeps the machine's
   // environment because it is the owner's machine; a strict host is not
@@ -920,6 +933,12 @@ export function planStrictLaunch(input: {
   // it, and none of them has any claim on what the instance configured itself
   // with. The allowlist is the one the bound-run path already applies for
   // B67. Do not pass the container environment through.
+  if (input.personalAmbient) {
+    const safe = readOnlyRootGuard(input.personalAmbient);
+    for (const root of [input.runtimeRoot, ...(input.readOnlyExecutables ?? []), ...(input.toolTree ? [input.toolTree] : [])]) {
+      if (!safe(root)) throw new Error('Read-only runtime/CA binding would expose a login HOME; configure a dedicated path');
+    }
+  }
   const home = join(input.runDir, "home");
   const env: Record<string, string> = {
     ...filterAmbientEnv(input.ambient),
@@ -927,6 +946,7 @@ export function planStrictLaunch(input: {
     // point at the provider proxy for one upstream — win over the general
     // egress proxy rather than being overwritten by it.
     ...input.egress,
+    ...(input.personalAmbient??{}),
     ...input.derivedEnv,
     // Last, and per Run. A managed copy's launch env points HOME at that
     // copy's shared login home, and an unbound run would otherwise inherit
@@ -945,23 +965,23 @@ export function planStrictLaunch(input: {
       ? "read_write" as const
       : "read_only" as const,
   }));
-  const { command, args } = buildStrictNamespaceCommand({
+  const namespace = buildStrictNamespaceCommand({
     command: input.command,
     args: input.args,
     cwd: input.cwd,
     home,
-    binds: strictBindsForRun({
+    binds: [...[...(input.readOnlyExecutables??[]),...(input.loginFiles??[])].map(path=>({path,access:"read_only" as const})),...strictBindsForRun({
       runDir: input.runDir,
       profileDir: input.profileDir,
-      loginHome: input.loginHome,
+      loginHome: input.loginFiles?null:input.loginHome,
       toolTree: input.toolTree,
       runtimeRoot: input.runtimeRoot,
       workspaceBinds,
-    }),
+    })],
     isolation,
     env,
   });
-  return { command, args, home, env };
+  return { command:namespace.command, args:namespace.args, home, env:namespace.env };
 }
 
 /**
@@ -998,6 +1018,10 @@ export async function handleLaunch(
   const hold: LaunchHold = { leases: [], worktree: null, resolution: null, spawned: false, toolBridge: null };
   try {
     await launchRun(frame, send, log, hold);
+  } catch(error){
+    log(`Launch preparation failed: ${String(error)}`);
+    if(hold.spawned)handleTerminate({run_id:frame.run_id,launch_id:frame.launch_id,force:true},log);
+    else send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:false,error:frame.isolation?.sandbox_mode==='read_only'?'Read-only launch preparation failed; inspect local Host log.':'Host launch preparation failed; inspect local Host log.'});
   } finally {
     launchingRuns.delete(frame.launch_id);
     stoppedLaunches.delete(frame.launch_id);
@@ -1035,12 +1059,12 @@ function releaseHeldLeases(frame: Pick<LaunchFrame, "launch_id">, hold: LaunchHo
 
 /**
  * Whether a Run may write its workspace, which is what its Location's lease
- * serializes. Only a strict host's namespace can make a workspace read-only
+ * serializes. An enforced namespace can make a workspace read-only
  * (`--ro-bind`): there the dispatch's `sandbox_mode` decides, and a dispatch
  * that says nothing is read-only (`DEFAULT_STRICT_ISOLATION`). A paired host
- * runs natively and cannot hold a process to `read_only`, so whatever it was
- * told its Run may write, and takes the writer's lease — a `read_only` label it
- * cannot enforce must not let it run beside a writer.
+ * uses shared leases only after its read-only capability check succeeds and
+ * the actual launch is committed to the same namespace protection. Native
+ * writes retain exclusive leases. The boolean means namespace enforcement.
  */
 export function launchMayWrite(isolation: HostLaunchIsolation | undefined, strict: boolean): boolean {
   if (!strict) return true;
@@ -1088,6 +1112,8 @@ async function launchRun(
   hold: LaunchHold,
 ): Promise<void> {
   const config = await requireConfig();
+  const personalRead=config.trust!=='strict'&&frame.isolation?.sandbox_mode==='read_only';
+  if(personalRead&&!(await probeReadOnlyWorkspace()).supported){send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:false,error:'Read-only workspace unavailable: install bubblewrap and allow mount/PID namespaces on this Linux Host; update/reconnect both sides. No writable fallback.'});return;}
   let cwd: string | undefined;
   try {
     if (frame.workspace?.kind === "managed") {
@@ -1132,6 +1158,13 @@ async function launchRun(
     });
     return;
   }
+  const attachmentRoots=(frame.workspace_access??[]).map(a=>({path:resolveLocationCwd(config.workspaces,a.workspace_location_id,a.workspace_relative_path,workspacesRoot()),access:a.access_mode})).filter((a):a is {path:string;access:'read'|'write'}=>!!a.path);
+  const commonGit=await workspaceGitDirectory(cwd);
+  const attachedGit=(await Promise.all(attachmentRoots.map(a=>workspaceGitDirectory(a.path)))).filter((p):p is string=>!!p);
+  if(personalRead){
+    try{assertReadOnlyBinds([cwd,...attachmentRoots.map(a=>a.path),...(commonGit?[commonGit]:[]),...attachedGit],[{path:runDir(frame.run_id),access:'read_write'},...(frame.provider_binding?[{path:providerProfileDir(frame.provider_binding.profile_key),access:'read_write' as const}]:[])]);}
+    catch(error){send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:false,error:'Read-only workspace preparation failed; inspect local Host log.'});log(String(error));return;}
+  }
   // Who else may be writing this directory (hosts.md, "Location lease"). An
   // execution Task Run works in its Task's worktree and waits only for an
   // earlier Run of the same Task; a Location that is not the top level of a
@@ -1139,7 +1172,7 @@ async function launchRun(
   const locationId = frame.workspace?.kind === "managed"
     ? null
     : frame.workspace?.workspace_location_id ?? frame.workspace_location_id ?? null;
-  const taskId = frame.workspace?.kind === "location" ? frame.workspace.worktree?.task_id ?? null : null;
+  const taskId = !personalRead&&frame.workspace?.kind === "location" ? frame.workspace.worktree?.task_id ?? null : null;
   let taskRepository: LocationRepository | null = null;
   if (locationId && taskId) {
     // Not a checkout, or one with nothing committed: the Run works in place.
@@ -1162,7 +1195,19 @@ async function launchRun(
   // worktree, and each attachment granted `write` — and the Task worktree's
   // own lease, exclusively; a read-only Run's Locations shared. Taken
   // together, in sorted order.
-  const leasePlan = launchLeasePlan(frame, config.trust === "strict", locationId ?? null, taskKey);
+  const leasePlan = launchLeasePlan(frame, config.trust === "strict"||personalRead, locationId ?? null, taskKey);
+  // Task code runs in its own checkout, not the original Location. Lock that
+  // physical root (also when registered through an alias) without serializing
+  // independent Tasks on their shared git object store.
+  const leaseCwd=taskKey?join(configDir(),'task-worktrees',locationId!,taskId!):cwd;
+  const pathKeys=workspacePathLeaseKeys(leaseCwd,[...Object.values(config.workspaces),...(frame.workspace_access??[]).map(a=>config.workspaces[a.workspace_location_id]).filter((p):p is string=>!!p)]);
+  if(commonGit&&!taskKey)pathKeys.push('workspace-git:'+commonGit);
+  if(!taskKey&&frame.isolation?.sandbox_mode==='read_only'&&(config.trust==='strict'||personalRead))leasePlan.shared.push(...pathKeys);else leasePlan.exclusive.push(...pathKeys);
+  for(const attachment of attachmentRoots){
+    const keys=workspacePathLeaseKeys(attachment.path,Object.values(config.workspaces));
+    if(personalRead||frame.isolation?.sandbox_mode==='read_only'||attachment.access==='read')leasePlan.shared.push(...keys);else leasePlan.exclusive.push(...keys);
+  }
+  for(const path of attachedGit)(personalRead||frame.isolation?.sandbox_mode==='read_only'?leasePlan.shared:leasePlan.exclusive).push('workspace-git:'+path);
   const leaseIds = [...leasePlan.exclusive, ...leasePlan.shared];
   if (stoppedLaunches.has(frame.launch_id)) {
     sendStoppedBeforeStart(frame, send);
@@ -1395,6 +1440,7 @@ async function launchRun(
       // go.
       const relocatesState = Object.keys(binding.profile_env).length > 0
         || binding.files.length > 0 || binding.login_link !== null;
+      if(personalRead&&binding.credential_source==='host_login'&&!relocatesState)throw new Error('This runtime requires a declared login/state boundary for read-only execution; update its runtime definition, not its login.');
       if (relocatesState) {
         profileDir = providerProfileDir(binding.profile_key);
         loginHome = loginHomeFor(runtimeKey, frame.installation ?? OWN_INSTALLATION);
@@ -1478,8 +1524,8 @@ async function launchRun(
   let spawnCommand = command;
   let spawnCommandArgs = spawnArgs;
   let spawnEnv: Record<string, string> = { ...baseEnv, ...derivedEnv };
-  const strict = config.trust === "strict";
-  if (strict && frame.runtime_key === "codex_cli") {
+  const strict = config.trust === "strict"||personalRead;
+  if (config.trust === "strict" && frame.runtime_key === "codex_cli") {
     // This Run's own profile — the Agent × container one (`profileDir`), never
     // the login home. Writing the login home would rewrite the config the
     // managed login shares across every Agent and every Room on this
@@ -1512,6 +1558,9 @@ async function launchRun(
         ? readToolManifestSync(frame.runtime_key ?? rawCommand, frame.installation)
         : null;
       const plan = planStrictLaunch({
+        personalAmbient:personalRead?baseEnv:undefined,
+        loginFiles:personalRead&&profileDir?(frame.provider_binding?.login_link&&loginHome?[join(loginHome,frame.provider_binding.login_link.home_subdir,frame.provider_binding.login_link.credential_file)].filter(existsSync):[]):undefined,
+        readOnlyExecutables:personalRead?[...executableRoots(fileURLToPath(import.meta.url),spawnEnv),...executableRoots(command,spawnEnv),...((frame.installation??OWN_INSTALLATION)===OWN_INSTALLATION&&frame.runtime_key==='codex_cli'?executableRoots('codex',spawnEnv):[]),...((frame.installation??OWN_INSTALLATION)===OWN_INSTALLATION&&frame.runtime_key==='claude_code'?executableRoots('claude',spawnEnv):[]),...(spawnArgs[0]?.startsWith('/')&&existsSync(spawnArgs[0])?executableRoots(spawnArgs[0],spawnEnv):[]),...['NODE_EXTRA_CA_CERTS','SSL_CERT_FILE','SSL_CERT_DIR','REQUESTS_CA_BUNDLE','CURL_CA_BUNDLE'].map(key=>baseEnv[key]).filter((p):p is string=>!!p&&existsSync(p))]:undefined,
         runId: frame.run_id,
         runDir: runDir(frame.run_id),
         command,
@@ -1527,21 +1576,25 @@ async function launchRun(
         profileDir,
         loginHome,
         toolTree: tool ? managedToolTreeForLaunch(frame.runtime_key ?? rawCommand, frame.installation) : null,
-        runtimeRoot: daemonRuntimeRoot(),
+        runtimeRoot: daemonRuntimeRoot(undefined, personalRead ? baseEnv : null),
         // A worktree's history lives in the repository's own git directory,
         // outside the worktree; without it git inside the namespace fails.
         workspaceBinds: hold.worktree ?? hold.resolution
           ? [...attachedWorkspaceBinds, { path: (hold.worktree ?? hold.resolution)!.gitCommonDir, access_mode: "write" as const }]
-          : attachedWorkspaceBinds,
+          : [...attachedWorkspaceBinds,...(personalRead?[...(commonGit?[commonGit]:[]),...attachedGit].map(path=>({path,access_mode:"read" as const})):[])],
       });
       await mkdir(plan.home, { recursive: true, mode: 0o700 });
-      spawnCommand = plan.command;
-      spawnCommandArgs = plan.args;
-      // Every variable the run needs is already a `--setenv` inside the
-      // namespace; what is left is only what `bwrap` itself needs to run.
-      spawnEnv = { PATH: "/usr/local/bin:/usr/bin:/bin" };
-      stdio = ["pipe", "pipe", "pipe", "pipe"];
+      if(personalRead){
+        const binds:StrictBind[]=[];for(let i=0;i<plan.args.length;i++)if(plan.args[i]==='--bind')binds.push({path:plan.args[i+1]!,access:'read_write'});
+        assertReadOnlyBinds([cwd,...attachedWorkspaceBinds.map(b=>b.path),...(commonGit?[commonGit]:[]),...attachedGit],binds);
+      }
+      spawnCommand = personalRead?readOnlyBinary():plan.command;
+      spawnCommandArgs = personalRead?["--seccomp","4",...plan.args]:plan.args;
+      // Environment values stay in the inherited environment, never public argv.
+      spawnEnv = plan.env;
+      stdio = personalRead?["pipe", "pipe", "pipe", "pipe", "pipe"]:["pipe", "pipe", "pipe", "pipe"];
     } catch (error) {
+      log(`Namespace preparation failed: ${String(error)}`);
       // The grant was registered while building the plan; a Run that never
       // starts still has to give it back, or the daemon accumulates one entry
       // per failed launch for its whole lifetime.
@@ -1552,7 +1605,7 @@ async function launchRun(
         launch_id: frame.launch_id,
         exit_code: 1,
         timed_out: false,
-        error: `Could not build this run's isolation namespace: ${error instanceof Error ? error.message : String(error)}`,
+        error: personalRead?'Read-only namespace preparation failed; inspect local Host log.':`Could not build this run's isolation namespace: ${error instanceof Error ? error.message : String(error)}`,
       });
       return;
     }
@@ -1573,7 +1626,7 @@ async function launchRun(
   // of the same Run first started.
   const baselineTree = taskWorktree
     ? taskWorktree.startCommit
-    : await captureWorkspaceTree(cwd).catch((error: unknown) => {
+    : personalRead?await captureReadOnlyBasis(cwd,commonGit).catch(error=>{log(`Read-only baseline unavailable: ${String(error)}`);return null;}):await captureWorkspaceTree(cwd).catch((error: unknown) => {
       log(`run ${frame.run_id}: workspace baseline capture failed: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     });
@@ -1590,6 +1643,7 @@ async function launchRun(
     stdio,
     detached: true,
   });
+  if(personalRead){const filter=child.stdio[4] as import('node:stream').Writable;filter.on('error',error=>log(`Local IPC filter pipe closed: ${String(error)}`));filter.end(readOnlyIpcFilter());}
   // From here the close handler below releases the leases.
   hold.spawned = true;
   // A `stdin` frame that lands as the agent exits fails asynchronously (EPIPE)
@@ -1606,6 +1660,7 @@ async function launchRun(
       // Kill it. Letting it run would report a namespace failure about a
       // process that ran.
       if (!namespaceReady) terminateWithEscalation(child, true, log);
+      else if(personalRead)send({type:"launched",run_id:frame.run_id,launch_id:frame.launch_id});
     });
   }
   const active: ActiveRun = {
@@ -1635,7 +1690,7 @@ async function launchRun(
   // `stdin` frame are two separate WS messages, and this handler reaches
   // this point only after two `await`s, so a same-tick follow-up `stdin`
   // frame's handler could otherwise run first and find no active run.
-  send({ type: "launched", run_id: frame.run_id, launch_id: frame.launch_id });
+  if(!personalRead)send({ type: "launched", run_id: frame.run_id, launch_id: frame.launch_id });
 
   if (frame.stdin) {
     const translated = substituteAcpInput(frame.stdin, active.placeholders, active.inputResourcePaths, hold.toolBridge?.directory);
@@ -1678,7 +1733,8 @@ async function launchRun(
       let diff: string | null = null;
       let gitAfter: Awaited<ReturnType<typeof captureGitHead>> = null;
       try {
-        diff = await captureWorkspaceDiff(cwd, baselineTree).catch((error: unknown) => {
+        const readAfter=personalRead?await captureReadOnlyBasis(cwd,commonGit).catch(error=>{log(`Read-only exit basis unavailable: ${String(error)}`);return null;}):null;
+        diff = personalRead?(baselineTree&&readAfter?(baselineTree===readAfter?'':'External workspace change during read-only review'):null):await captureWorkspaceDiff(cwd, baselineTree).catch((error: unknown) => {
           log(`run ${frame.run_id}: diff capture failed: ${error instanceof Error ? error.message : String(error)}`);
           return null;
         });
@@ -1763,7 +1819,14 @@ async function launchRun(
           stderrTail,
         }),
       });
-    })();
+    })().catch(error=>{
+      log(`Run exit bookkeeping failed: ${String(error)}`);
+      releaseHeldLeases(frame,hold);finishingRuns.delete(frame.launch_id);
+      if(activeRuns.get(frame.run_id)===active)activeRuns.delete(frame.run_id);
+      if(activeLaunches.get(frame.launch_id)?.active===active)activeLaunches.delete(frame.launch_id);
+      if(!activeRuns.has(frame.run_id)&&!isLaunching(frame.run_id))egressProxy?.revoke(frame.run_id);
+      try{send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:active.timedOut,error:'Host exit bookkeeping failed; inspect local Host log.'});}catch(sendError){log(`Completion transport unavailable: ${String(sendError)}`);}
+    });
   });
 }
 

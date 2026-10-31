@@ -2730,9 +2730,12 @@ describe("Room workflow (real Postgres)", () => {
         .toEqual([{ id: "model", type: "select", category: "model", value: "fable" }]);
     });
 
-    it("runs read-only reviews by different Agents together, then the writer alone, and never widens a read-only Run", async (ctx) => {
+    for(const personal of [false,true]) it(`runs read-only reviews by different Agents together, then the writer alone (${personal?"personal-capable":"server"})`, async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
-      const { owner, created, conversation } = await roomWithSpecialist("Parallel reviews", "Reviewer A", ["agent-3", "agent-4"]);
+      if(personal){await db.pool.query(`INSERT INTO hosts (id,owner_user_id,machine_id,name,kind,environment_kind,status,capabilities_json,last_heartbeat_at,created_at,updated_at)
+       SELECT 'host-personal-read','user-1',machine_id,'Personal Linux','remote','linux_native',status,capabilities_json||'{"workspace_read_only":{"supported":true,"mechanism":"bwrap-v1","reason":null}}'::jsonb,last_heartbeat_at,created_at,updated_at FROM hosts WHERE id='host-1'`);
+       await db.pool.query("UPDATE agent_runtime_profiles SET execution_host_id='host-personal-read' WHERE id='runtime-cli'");}
+      const { owner, created, conversation } = await roomWithSpecialist("Parallel reviews", "Reviewer A", ["agent-3", "agent-4"],personal?{hostId:'host-personal-read',primary:{kind:'managed'}}:undefined);
       const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
       const repo = new PgRunRepository(db.pool);
       const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Have the team review the change, then fix it." });
@@ -2763,6 +2766,13 @@ describe("Room workflow (real Postgres)", () => {
       // What orchestration does once the parked parent's process has ended.
       await new AgentGroupRunLifecycleProjector(db.pool, config, fixedQuota(0)).queueDelegatedChildren((await repo.getRun("space-1", manager))!);
       expect([await jobFor(reviewA.child_run_id), await jobFor(reviewB.child_run_id), await jobFor(writer.child_run_id)]).toEqual([true, true, false]);
+      if(personal){
+        const child=await new PgRouteDecisionRepository(db.pool).routeRun((await repo.getAgentRun('space-1',reviewA.child_run_id))!);
+        expect(await repo.readOnlyHostCapabilities(child)).toMatchObject({workspace_read_only:{supported:true}});
+        await db.pool.query(`UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{workspace_read_only,supported}','false') WHERE id='host-personal-read'`);
+        expect(await repo.readOnlyHostCapabilities(child)).toMatchObject({workspace_read_only:{supported:false}});
+        await db.pool.query(`UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{workspace_read_only,supported}','true') WHERE id='host-personal-read'`);
+      }
       await dispatchQueuedRoomRuns([reviewA.child_run_id, reviewB.child_run_id]);
       expect((await repo.getRun("space-1", reviewA.child_run_id))!.status).toBe("running");
       expect((await repo.getRun("space-1", reviewB.child_run_id))!.status).toBe("running");
@@ -2817,6 +2827,21 @@ describe("Room workflow (real Postgres)", () => {
         "SELECT 1 FROM jobs WHERE job_type = 'agent_run' AND payload_json->>'run_id' = $1 AND status IN ('pending','claimed','running')", [second])).rowCount).toBe(1);
     });
 
+    it('rejects a non-Room default unsupported read-only Host before creating a child',async ctx=>{
+      if(!db.available||!service||!groupService)return ctx.skip();
+      const {owner}=await roomWithSpecialist('Seed default profile','Reviewer',['agent-3']);
+      await db.pool.query(`INSERT INTO hosts (id,owner_user_id,machine_id,name,kind,environment_kind,status,capabilities_json,last_heartbeat_at,created_at,updated_at)
+       SELECT 'non-room-host','user-1',machine_id,'Old personal','remote','linux_native',status,capabilities_json,last_heartbeat_at,created_at,updated_at FROM hosts WHERE id='host-1'`);
+      await db.pool.query("UPDATE agent_runtime_profiles SET execution_host_id='non-room-host' WHERE agent_id='agent-3'");
+      const created=await groupService.createGroup(owner,{space_id:'space-1',title:'Non-Room review',manager_agent_id:'agent-2',member_agent_ids:['agent-3'],project_id:null});
+      await groupService.sendUserMessage(owner,{space_id:'space-1',group_id:created.group.id,content:'Coordinate a review'});
+      const group=(await groupService.getGroup(owner,created.group.id)).group;
+      const root=(await new PgRunRepository(db.pool).getAgentRun('space-1',group.root_run_id!))!;
+      const count=async()=>(await db.pool.query(`SELECT (SELECT count(*) FROM runs) runs,(SELECT count(*) FROM run_delegations) delegations,(SELECT count(*) FROM jobs) jobs`)).rows[0];const before=await count();
+      await expect(groupService.spawnChildRun(owner,{space_id:'space-1',group_id:group.id,parent_run_id:root.id,root_run_id:root.id,requesting_agent_id:'agent-2',target_agent_id:'agent-3',manager_user_id:'user-1',instruction:'Review only',workspace_access:'read'})).rejects.toMatchObject({statusCode:409});
+      expect(await count()).toEqual(before);
+    });
+
     for (const inherited of [false, true]) it(`rejects an unsupported read-only Host before creating a child (${inherited ? "inherited" : "explicit"})`, async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       await db.pool.query(`INSERT INTO hosts (id,owner_user_id,machine_id,name,kind,environment_kind,status,capabilities_json,last_heartbeat_at,created_at,updated_at)
@@ -2843,7 +2868,7 @@ describe("Room workflow (real Postgres)", () => {
         target_agent_id: "agent-2", instruction: "Read-only review.", ...(inherited ? {} : { workspace_access: "read" }),
       }) }, binding, caller);
       expect(result.modelResult).toMatchObject({ ok: false });
-      expect(JSON.stringify(result.modelResult)).toContain("server Host");
+      expect(JSON.stringify(result.modelResult)).toContain("bubblewrap");
       expect(await snapshot()).toEqual(before);
     });
 

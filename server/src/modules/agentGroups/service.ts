@@ -1125,10 +1125,16 @@ export class AgentGroupRunService {
         session_id: parentRun.session_id, agent_id: input.target_agent_id, requested: null,
       });
       const host = backend.execution_host_id
-        ? (await repos.db.query<{ kind: string }>("SELECT kind FROM hosts WHERE id=$1", [backend.execution_host_id])).rows[0]
+        ? (await repos.db.query<{ kind: string; capabilities_json:unknown }>("SELECT kind,capabilities_json FROM hosts WHERE id=$1", [backend.execution_host_id])).rows[0]
         : null;
-      const refusal = readOnlyWorkspaceHostRefusal(childAccess, backend.runtime_key, host?.kind);
+      const refusal = readOnlyWorkspaceHostRefusal(childAccess, backend.runtime_key, host?.kind, host?.capabilities_json);
       if (refusal) throw new HttpError(409, refusal, { code: "workspace_read_only_unenforceable", detail: refusal });
+    } else if(childAccess==='read') {
+      // Non-Room delegation selects the target's default Profile, as Run admission does.
+      const profile=(await repos.db.query<{runtime_key:string;execution_host_id:string|null}>(`SELECT runtime_key,execution_host_id FROM agent_runtime_profiles WHERE space_id=$1 AND agent_id=$2 AND enabled=true AND is_default=true`,[input.space_id,input.target_agent_id])).rows[0];
+      const host=profile?.execution_host_id?(await repos.db.query<{kind:string;capabilities_json:unknown}>(`SELECT kind,capabilities_json FROM hosts WHERE id=$1`,[profile.execution_host_id])).rows[0]:null;
+      const refusal=readOnlyWorkspaceHostRefusal(childAccess,profile?.runtime_key,host?.kind,host?.capabilities_json);
+      if(refusal)throw new HttpError(409,refusal,{code:'workspace_read_only_unenforceable',detail:refusal});
     }
 
     // Policy preflight is deliberately before every domain write. The

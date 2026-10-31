@@ -1132,6 +1132,11 @@ export class PgRunRepository {
     return run ? { ...run, effective_access_level: decision } : null;
   }
 
+  async readOnlyHostCapabilities(run:RunRecord):Promise<unknown>{
+    const profile=run.runtime_profile_snapshot_json as {execution_host_id?:string}|null;
+    if(!profile?.execution_host_id)return undefined;
+    return (await this.db.query('SELECT capabilities_json FROM hosts WHERE id=$1',[profile.execution_host_id])).rows[0]?.capabilities_json;
+  }
   async listRuns(filters: RunListFilters): Promise<VisibleRunRecord[]> {
     await assertProjectInSpace(this.db, filters.space_id, filters.project_id);
     const clauses = [

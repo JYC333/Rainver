@@ -113,6 +113,7 @@ import { resolveExecutionHost } from "./executionHostResolution.js";
 import { finalizedForPostRun } from "./finalizationOutcome.js";
 
 export interface RunExecutionRepositoryPort {
+  readOnlyHostCapabilities?(run:RunRecord):Promise<unknown>;
   getRun(spaceId: string, runId: string): Promise<RunRecord | null>;
   getLatestRunAttempt?(spaceId: string, runId: string): Promise<RunAttemptRecord | null>;
   resolveRunActorId(
@@ -1850,11 +1851,11 @@ export class RunOrchestrationService {
       projectFolderId: run.project_folder_id,
       workspaceAccess,
     });
-    // Read-only is a guarantee only where something enforces it: the strict
-    // server Host binds the workspace read-only. A paired Host runs natively
-    // and cannot hold the process to it, so a review there is refused rather
-    // than run writable under a read-only label.
-    const readOnlyRefusal = readOnlyWorkspaceHostRefusal(workspaceAccess, run.runtime_key, hostKind);
+    // Require the actual Host capability for a personal review. The daemon
+    // still verifies its namespace and readiness at launch; ordinary personal
+    // writes remain native. Missing capability cannot become writable review.
+    const readHostCaps=workspaceAccess==='read'?await this.repository.readOnlyHostCapabilities?.(run):undefined;
+    const readOnlyRefusal = readOnlyWorkspaceHostRefusal(workspaceAccess, run.runtime_key, hostKind,readHostCaps);
     if (readOnlyRefusal) throw new RunPreparationError("workspace_read_only_unenforceable", readOnlyRefusal);
     if (requiredSandboxLevel === "one_shot_docker" && isVendorCliAdapter(run.runtime_key)) {
       const spec = getRuntimeAdapterSpec(run.runtime_key);

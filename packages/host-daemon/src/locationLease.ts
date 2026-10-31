@@ -24,9 +24,10 @@
  *
  * Several leases are always taken in sorted Location-id order, whatever their
  * mode, so two Runs that each need two Locations cannot each hold one and wait
- * for the other. Locations are keyed by id, not by path: two Locations
- * registered at the same directory, or one nested inside another, are not
- * serialized against each other (deferred register).
+ * for the other. The execution planner adds canonical physical-path and git-common-directory
+ * keys alongside Location ids, so configured overlapping roots and path aliases
+ * cannot admit a writer beside an enforced reader. These are the same FIFO
+ * lease mechanism, not a separate queue.
  *
  * In-process state for this daemon's lifetime, keyed like `activeRuns`: a
  * lease outlives a WebSocket reconnect along with the Run that holds it.

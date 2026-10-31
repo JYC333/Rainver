@@ -559,3 +559,19 @@ way: it would be another strict daemon registered from another machine.
   Runtime Context Gateway for Agent Runs on both built-in and paired Hosts.
   Delivery is sent through ACP; the Host still owns physical paths and the
   opaque vendor session, and a mismatch starts a fresh session.
+
+## 2026-10-31 amendment: explicit personal read-only workspace review
+
+The owner-only trusted-Host authority remains unchanged. Updated personal Linux
+Hosts may opt into an explicit `workspace_access: read` Run using the existing
+rootless bubblewrap mount/PID namespace and readiness protocol. This narrows
+workspace writes; it does not turn the Host into the shared strict trust mode,
+add mandatory network isolation or grant another user access to the machine.
+Declared login files replace whole-HOME exposure for this mode. A local seccomp
+filter blocks named Unix clients and io_uring, but network/authorized external
+services remain a separate side-effect boundary; reader leases do not coordinate
+those external writers.
+Ordinary trusted writes remain native. Both server and daemon must fail closed
+without the locally verified mechanism. The current implementation, lease
+boundaries and prerequisites are recorded in modules/hosts.md. Installation or
+restart of a running personal daemon remains a separate operator action.

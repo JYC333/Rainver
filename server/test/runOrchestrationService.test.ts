@@ -1995,6 +1995,15 @@ describe("RunOrchestrationService", () => {
     expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
   });
 
+  for(const supported of [true,false])it(`checks current personal Host capability at execution (${supported})`,async()=>{
+    const repo=new FakeRepo();repo.run=run({runtime_key:'codex_cli',model_provider_id:null,required_sandbox_level:'none',project_folder_id:'workspace-1',contract_snapshot_json:{workspace_access:'read',source:{kind:'direct',id:null}}});
+    Object.assign(repo,{readOnlyHostCapabilities:async()=>({workspace_read_only:{supported,mechanism:'bwrap-v1',reason:null}})});
+    let launched=false;
+    const service=orchestration(repo,{policyEnforcer:allowPolicy,hostKindResolver:async()=>({hostKind:'remote' as const,hostId:'host-2',workspaceLocationId:'location-2'}),...daemonCli({async runCommand(input){launched=true;await completeCodexProtocol(input.stdio_controller,'review');return {returncode:0,stdout:'review',stderr:'',timed_out:false};}})});
+    const result=await service.executeRun({run_id:'run-1',space_id:'space-1',worker_id:'worker-1',command_source:'job'});
+    expect(launched).toBe(supported);if(!supported)expect(result).toMatchObject({error_code:'workspace_read_only_unenforceable'});
+  });
+
   it("refuses a review on a paired Host, which runs natively and cannot keep it from writing", async () => {
     const repo = new FakeRepo();
     repo.run = run({

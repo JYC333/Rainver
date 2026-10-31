@@ -14,7 +14,8 @@ import { dirname, join } from "node:path";
 /**
  * How much of this machine a Run is allowed to see.
  *
- * `trusted` is a paired personal machine: native spawn, no namespace, the
+ * `trusted` is a paired personal machine: native writes, with an optional
+ * locally verified namespace for explicit read-only review; otherwise the
  * trust the owner already extends to their own laptop (ADR 0016 §2).
  * `strict` is the built-in host inside `sandbox-runner`: the same daemon,
  * serving every Space of the instance, with each Run wrapped in its own

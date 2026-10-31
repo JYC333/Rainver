@@ -7,6 +7,12 @@ pnpm. The installer uses an existing Node.js 24 installation when available
 shared fallback runtime, which every later update reuses rather than
 downloading again.
 
+Installation also installs missing bubblewrap with your system package manager
+and checks that read-only parallel review really works. It may ask for sudo
+permission. If the system blocks namespaces/seccomp, installation stops with a
+diagnostic; it does not change system security settings. `rainver-host update`
+repeats this check, including when no new version is available.
+
 Vendor runtimes are not bundled: install the official `codex`, `claude`, or
 other CLI you intend to use on the host. Rainver checks the host's captured
 `PATH` every heartbeat. When Codex or Claude appears later, its small ACP
@@ -73,7 +79,7 @@ uniqueness rule, use a different machine display name if you pair it again.
 
 Automatic updates are opt-in. They check the selected release channel every
 six hours. The updater first verifies the channel's small `BUILD_ID` asset and
-returns immediately when that build is already active, without downloading the
+verifies local read-only protection when that build is already active, without downloading the
 Node runtime, daemon release archive, or adapter pack. For a new build it
 verifies every downloaded asset's SHA-256 checksum, switches the installed
 version atomically, and asks the daemon to restart only after all launching,
@@ -228,3 +234,46 @@ RAINVER_HOST_RELEASE_BASE_URL=file:///tmp/rainver-host-release \
 
 The helper refuses to overwrite an existing output directory. It is intended
 for a Linux Host running Node 24, matching the supported Host runtime.
+
+## Optional read-only parallel review (personal Linux)
+
+After upgrading both server and Host, explicitly delegate with
+`workspace_access: read`. Different Agents can review one Conversation workspace
+concurrently; omission remains ordinary writable/FIFO work. CLI/persona choice
+does not determine the protection. Capability probing never reads personal CLI
+login material; execution uses the runtime's existing declared login file.
+
+This mode requires Linux x64/arm64 mount/PID namespaces, seccomp and bubblewrap at
+`/usr/bin/bwrap` (or the owner-configured daemon startup `RAINVER_HOST_BWRAP`).
+The daemon probes locally and reports capability; the server cannot substitute
+its own Linux capabilities for your machine. Unsupported/old Hosts refuse before
+child creation; execution also refuses if the mechanism disappears. During
+installation or `rainver-host update`, system prerequisites are handled automatically:
+the installer uses the system package manager to install missing bubblewrap,
+then runs `rainver-host check-read-only` using the daemon's startup configuration.
+This applies even when the release is already current. Interactive installation
+can request sudo permission; unattended updates only use non-interactive sudo
+and fail with instructions when permission is unavailable. Unsupported package
+managers, broken binaries or blocked namespaces fail before activating a new
+Host release. The installer never relaxes kernel/Compose security. Reconnect an
+updated daemon after upgrading both sides.
+macOS/Windows are not currently supported by this read-only mechanism.
+
+Read reviews mount the workspace, attachments and linked git metadata read-only;
+report/tmp and disjoint runtime state remain writable. Runtime/profile/output
+paths overlapping the workspace or hard-linked writable state are rejected.
+Only declared login credential files are bound from the login HOME, not the whole
+personal HOME. A kernel filter blocks named Unix clients (including abstract or
+later-created sockets) and io_uring; Node stream socketpairs still work. A runtime
+needing named Unix clients or lacking a declared login/state boundary fails
+closed. Login-file refresh may require an owner login outside this read mode.
+Native proxy/CA settings remain available; environment values are never bwrap
+command-line arguments. Ordinary writes remain
+native. This is not full-machine isolation or an assertion that network access
+is always disabled. TCP/UDP/loopback or authorized external tools can still
+cause service-side effects; this mode does not authorize them or guarantee them
+read-only. Shared review leases assume those services and external owner editors
+are not writing the same workspace. Such edits can change the observed basis.
+Do not restart a Host during active work: drain it and upgrade via the existing
+Host update flow after review/approval. Building this checkout does not update an
+installed service automatically.

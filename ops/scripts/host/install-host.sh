@@ -66,7 +66,7 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   echo "This installer currently supports Linux only." >&2
   exit 1
 fi
-for command_name in cmp curl find grep install sha256sum tar systemctl; do
+for command_name in cmp curl find grep install sha256sum tar systemctl timeout; do
   command -v "$command_name" >/dev/null 2>&1 || { echo "Required command not found: $command_name" >&2; exit 1; }
 done
 if ! systemctl --user show-environment >/dev/null 2>&1; then
@@ -119,6 +119,74 @@ EOF
     systemctl --user enable --now rainver-host-update.timer
   fi
 }
+
+# Reuse the daemon's executable namespace/seccomp probe, not a binary-presence
+# proxy. Keep this in the checksummed installer, including its no-op update path.
+install_read_only_dependency() {
+  local -a elevate=() package_command=() refresh_command=()
+  if command -v apt-get >/dev/null 2>&1; then
+    refresh_command=(apt-get update)
+    package_command=(apt-get install -y bubblewrap)
+  elif command -v dnf >/dev/null 2>&1; then
+    package_command=(dnf install -y bubblewrap)
+  elif command -v yum >/dev/null 2>&1; then
+    package_command=(yum install -y bubblewrap)
+  elif command -v zypper >/dev/null 2>&1; then
+    package_command=(zypper --non-interactive install bubblewrap)
+  elif command -v pacman >/dev/null 2>&1; then
+    package_command=(pacman -S --needed --noconfirm bubblewrap)
+  elif command -v apk >/dev/null 2>&1; then
+    package_command=(apk add bubblewrap)
+  else
+    echo "Cannot install bubblewrap: no supported system package manager found." >&2
+    return 1
+  fi
+  if (( EUID != 0 )); then
+    if ! command -v sudo >/dev/null 2>&1; then
+      echo "Installing bubblewrap requires administrator permission, but sudo is unavailable." >&2
+      return 1
+    fi
+    elevate=(sudo -n)
+    # A timer must never wait for a password. An interactive install may ask
+    # through /dev/tty even when the installer itself was piped into bash.
+    if [[ -t 2 && -r /dev/tty ]]; then elevate=(sudo); fi
+  fi
+  echo "Installing the bubblewrap system dependency (administrator permission may be required)."
+  if ! (
+    if (( ${#refresh_command[@]} )); then
+      "${elevate[@]}" "${refresh_command[@]}" || exit 1
+    fi
+    "${elevate[@]}" "${package_command[@]}"
+  ); then
+    echo "Bubblewrap installation failed. Retry rainver-host update from a terminal with administrator permission; the current Host is unchanged." >&2
+    return 1
+  fi
+}
+
+ensure_read_only_support() (
+  # Probe under the same owner startup configuration as the daemon. Do not
+  # print this file or its environment (it can include proxy credentials).
+  local startup_env="${XDG_CONFIG_HOME:-$HOME/.config}/rainver-host/service.env"
+  if [[ -f "$startup_env" ]]; then
+    set -a
+    source "$startup_env"
+    set +a
+  fi
+  local binary="${RAINVER_HOST_BWRAP:-/usr/bin/bwrap}" result
+  if [[ ! -x "$binary" ]]; then
+    if [[ "$binary" != /usr/bin/bwrap ]]; then
+      echo "Configured RAINVER_HOST_BWRAP is not executable; correct the Host startup configuration." >&2
+      return 1
+    fi
+    install_read_only_dependency || return 1
+  fi
+  echo "Checking read-only workspace protection (mount/PID namespaces and seccomp)..."
+  if ! result="$(timeout 15 "$@" check-read-only)" || [[ "$result" != 'Read-only parallel review: ready.' ]]; then
+    echo "Read-only protection check failed. Bubblewrap must support seccomp and this user's mount/PID namespaces. Check OS policy or Host configuration; no kernel settings were changed and no new Host build was activated." >&2
+    return 1
+  fi
+  echo "$result"
+)
 
 # The installer refreshes itself first: when the published script differs
 # from this copy, the published one takes over below with
@@ -189,6 +257,7 @@ if [[ "$ensure_adapters" == false ]]; then
     && -x "$BIN_DIR/rainver-host" \
     && -x "$INSTALL_ROOT/rainver-host-daemon" \
     && -f "$SYSTEMD_DIR/rainver-host.service" ]]; then
+    ensure_read_only_support "$BIN_DIR/rainver-host"
     install -m 755 "$temp_dir/install-host.sh" "$INSTALL_ROOT/install-host.sh"
     if [[ "$auto_update" != "preserve" ]]; then
       configure_auto_update "$INSTALL_ROOT/install-host.sh"
@@ -345,6 +414,9 @@ if [[ -z "$payload_version" ]]; then
   echo "Downloaded release did not report a version." >&2
   exit 1
 fi
+
+# Fail before switching current, pruning rollback builds or restarting services.
+ensure_read_only_support "$node_command" "$payload/app/dist/cli.js"
 
 printf '%s\n' "$release_channel" > "$INSTALL_ROOT/channel"
 changed=true

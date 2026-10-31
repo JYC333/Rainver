@@ -4,8 +4,9 @@ import type { HostLaunchIsolation } from "@rainver/protocol";
 
 /**
  * The strict-mode namespace: one rootless bubblewrap mount/PID namespace per
- * Run. A `strict` host wraps every Run; a `trusted` host spawns natively and
- * never reaches this file.
+ * Run. A `strict` host wraps every Run; an updated personal Linux Host also
+ * uses this mechanism for explicit, locally verified read-only reviews.
+ * Ordinary trusted writes remain native.
  *
  * Bind each path at its own path. The daemon is the only component that
  * resolves paths (B64), and the values it has already materialized —
@@ -127,7 +128,7 @@ function mergeBinds(binds: StrictBind[]): StrictBind[] {
  * be built" stays distinct from "the runtime exited immediately", which are
  * the same exit code otherwise. Do not drop the readiness report.
  */
-export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { command: string; args: string[] } {
+export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { command: string; args: string[]; env:Record<string,string> } {
   const cwd = assertAbsolute("cwd", request.cwd);
   const home = assertAbsolute("home", request.home);
   const args = [
@@ -160,10 +161,6 @@ export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { 
     args.push(bind.access === "read_only" ? "--ro-bind" : "--bind", bind.path, bind.path);
   }
 
-  args.push("--setenv", "HOME", home);
-  for (const [key, value] of Object.entries({ ...request.env, ...STRICT_SANDBOX_ENV })) {
-    args.push("--setenv", key, value);
-  }
   args.push(
     "--chdir",
     cwd,
@@ -175,5 +172,5 @@ export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { 
     request.command,
     ...request.args,
   );
-  return { command: BWRAP_PATH, args };
+  return { command: BWRAP_PATH, args, env:{HOME:home,...request.env,...STRICT_SANDBOX_ENV} };
 }

@@ -14,7 +14,8 @@ memory (written through the canonical applier under
 enforcement all live on the server. Agent execution itself runs on one or more **execution hosts** registered to the
 control plane — the server host (strictly isolated, bubblewrap sandboxed, the default and only host
 in a single-machine deployment) or a personal machine the user owns and has paired (trusted-host mode,
-native execution, no sandbox isolation). See
+native execution by default; explicit read-only reviews can use a verified Linux
+namespace). See
 [decisions/0016-control-plane-execution-hosts.md](decisions/0016-control-plane-execution-hosts.md) for
 the two-tier trust model. The system is not local-first. There is no sync
 protocol and no offline queue. Active memory, proposals, credentials, and

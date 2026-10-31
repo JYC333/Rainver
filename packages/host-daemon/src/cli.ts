@@ -35,6 +35,14 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  if (command === "check-read-only") {
+    const { probeReadOnlyWorkspace } = await import("./readOnlyWorkspace.js");
+    const capability = await probeReadOnlyWorkspace();
+    if (!capability.supported) throw new Error(capability.reason ?? "Read-only workspace protection is unavailable.");
+    console.log("Read-only parallel review: ready.");
+    return;
+  }
+
   if (command === "register") {
     const result = await register({ serverUrl: requireFlag(argv, "server"), pairingCode: requireFlag(argv, "code") });
     console.log(`Registered as '${result.name}' (host ${result.host_id}).`);
@@ -111,13 +119,14 @@ async function main(argv: string[]): Promise<void> {
   }
 
   throw new Error(
-    "usage: rainver-host <register|unregister|workspace|update|version>\n" +
+    "usage: rainver-host <register|unregister|workspace|update|check-read-only|version>\n" +
       "  register --server <url> --code <pairing-code>\n" +
       "  unregister [--local-only]\n" +
       "  workspace add <path> --project <project_id> [--name <name>]\n" +
       "  workspace list\n" +
       "  workspace remove <workspace_id>\n" +
       "  update [--channel <stable|edge|nightly>] [--auto-update|--no-auto-update]\n" +
+      "  check-read-only\n" +
       "  version",
   );
 }

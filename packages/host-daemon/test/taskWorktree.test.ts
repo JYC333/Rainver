@@ -6,8 +6,8 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { saveConfig } from "../src/config.js";
-import { handleLaunch, type LaunchFrame } from "../src/execution.js";
+import { requireConfig, saveConfig } from "../src/config.js";
+import { handleLaunch, handleStdinClose, handleTerminate, type LaunchFrame } from "../src/execution.js";
 import { runHostCommand } from "../src/commandRun.js";
 import { resolveMainBranch } from "../src/mainBranch.js";
 import { checkLocationRepository, deleteTaskBranch, settleTaskRun, sweepTaskWorktrees, TASK_BUSY } from "../src/taskWorktree.js";
@@ -287,6 +287,42 @@ describe("Task worktrees", () => {
     await first.complete();
   });
 
+  it("coordinates a Task checkout with a separately registered physical alias in both directions", async () => {
+    await initRepository(workspaceDir);
+    const task = collect(), alias = collect();
+    const until=async(condition:()=>boolean)=>{
+      const deadline=Date.now()+3000;
+      while(!condition()&&Date.now()<deadline)await new Promise(r=>setTimeout(r,5));
+      expect(condition(),JSON.stringify({task:task.frames,alias:alias.frames})).toBe(true);
+    };
+    try {
+      await handleLaunch({...taskLaunch("task-holder","task-holder","physical","echo TASK_READY; read gate || true"),keep_stdin_open:true},task.send as never,()=>{});
+      await until(()=>task.output().includes("TASK_READY"));
+      const path=join(configDir,"task-alias");
+      await symlink(worktreePath("physical"),path);
+      const config=await requireConfig();
+      await saveConfig({...config,workspaces:{...config.workspaces,"physical-alias":path}});
+      const pending=handleLaunch({run_id:"alias-writer",launch_id:"alias-writer",workspace_location_id:"physical-alias",argv:["sh","-c","echo alias > alias.txt"]},alias.send as never,()=>{});
+      await until(()=>alias.frames.some(f=>f.type==="waiting_for_workspace"));
+      expect(alias.frames.some(f=>f.type==="launched")).toBe(false);
+      handleStdinClose({run_id:"task-holder"});
+      await task.complete();await pending;expect(await alias.complete()).toMatchObject({exit_code:0});
+      expect(await readFile(join(worktreePath("physical"),"alias.txt"),"utf8")).toBe("alias\n");
+
+      const holder=collect(), next=collect();
+      await handleLaunch({run_id:"alias-holder",launch_id:"alias-holder",workspace_location_id:"physical-alias",argv:["sh","-c","echo ALIAS_READY; read gate || true"],keep_stdin_open:true},holder.send as never,()=>{});
+      await until(()=>holder.output().includes("ALIAS_READY"));
+      const waiting=handleLaunch(taskLaunch("task-waiter","task-waiter","physical","echo TASK_AFTER_ALIAS"),next.send as never,()=>{});
+      await until(()=>next.frames.some(f=>f.type==="waiting_for_workspace"));
+      expect(next.frames.some(f=>f.type==="launched")).toBe(false);
+      handleStdinClose({run_id:"alias-holder"});
+      await holder.complete();await waiting;expect(await next.complete()).toMatchObject({exit_code:0});
+      expect(next.output()).toContain("TASK_AFTER_ALIAS");
+    } finally {
+      for(const run_id of ["task-holder","alias-writer","alias-holder","task-waiter"])handleTerminate({run_id,force:true});
+    }
+  });
+
   it("deletes the Task's worktree and exactly its branch, idempotently", async () => {
     await initRepository(workspaceDir);
     git(["branch", "rainver/task-task-del-other"], workspaceDir);
@@ -339,7 +375,7 @@ describe("Task worktrees", () => {
       run_id: "run-ro",
       launch_id: "launch-ro",
       workspace: { kind: "location", workspace_location_id: "folder-1" },
-      isolation: { sandbox_mode: "read_only", egress_profile: "none" },
+      isolation: { sandbox_mode: "read_write", egress_profile: "none" },
       argv: ["pwd"],
     }, run.send as never, () => {});
     const complete = await run.complete();

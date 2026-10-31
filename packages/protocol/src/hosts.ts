@@ -172,6 +172,7 @@ export const RuntimeInstallationSchema = z.object({
 export type RuntimeInstallation = z.infer<typeof RuntimeInstallationSchema>;
 
 export const HostCapabilitiesSchema = z.object({
+  workspace_read_only: z.object({supported:z.boolean(),mechanism:z.literal("bwrap-v1"),reason:z.string().nullable()}).optional(),
   /** PATH binaries the daemon found (vendor CLIs and git), for display only. */
   runtimes: z.array(z.string()),
   versions: z.record(z.string(), z.string()),

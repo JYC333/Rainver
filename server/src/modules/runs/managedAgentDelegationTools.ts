@@ -103,7 +103,7 @@ function agentDelegateToolDefinition(targets: readonly AgentDelegationTarget[]):
           workspace_access: {
             type: "string",
             enum: ["read", "write"],
-            description: "\"read\" for a review: the target reads the Conversation's workspace and cannot change it, and reviews by different agents run at the same time. Omit for ordinary work (\"write\"). From a read-only run only \"read\" is allowed. Enforced read-only CLI reviews require a Conversation on the server Host. A paired native Host is rejected before a review task is created; do not retry by changing it to write.",
+            description: "\"read\" for a review: the target gets kernel-enforced read-only filesystem access to the Conversation's workspace (external service/tool side effects are a separate boundary), and reviews by different agents run at the same time. Omit for ordinary work (\"write\"). From a read-only run only \"read\" is allowed. Enforced read-only CLI reviews require the server Host or an updated personal Linux Host reporting verified bubblewrap read-only support. Unsupported Hosts are rejected before a review task is created; configure the intended Host rather than retrying as writable.",
           },
           budget: {
             type: "object",
