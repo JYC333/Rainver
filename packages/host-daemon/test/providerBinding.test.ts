@@ -276,6 +276,84 @@ describe("linking this installation's login into an Agent profile", () => {
   });
 });
 
+describe("native shared credential storage", () => {
+  const login = { home_subdir: ".claude", credential_file: ".credentials.json", shared_credential_env: "CLAUDE_SECURESTORAGE_CONFIG_DIR" };
+  const nativeFrame = () => frame({ env: {}, profile_env: { CLAUDE_CONFIG_DIR: ".claude" }, credential_source: "host_login", login_link: login });
+
+  it("shares atomic refresh writes and the refresh lock across isolated sessions", async () => {
+    const home = await tempDir();
+    const storage = join(home, ".claude");
+    await mkdir(storage);
+    await writeFile(join(storage, ".credentials.json"), "original-login");
+    const a = await materializeProviderBinding(nativeFrame(), join(await tempDir(), "a"), home);
+    const b = await materializeProviderBinding(nativeFrame(), join(await tempDir(), "b"), home);
+
+    expect(a.CLAUDE_CONFIG_DIR).not.toBe(b.CLAUDE_CONFIG_DIR);
+    expect(a.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(storage);
+    expect(b.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(storage);
+    for (const env of [a, b]) {
+      await expect(lstat(join(env.CLAUDE_CONFIG_DIR!, ".credentials.json"))).rejects.toThrow();
+    }
+
+    // A vendor refresh publishes into the shared store, rather than replacing
+    // one profile's credential symlink and stranding every other session.
+    await writeFile(join(a.CLAUDE_SECURESTORAGE_CONFIG_DIR!, ".credentials.json.tmp"), "rotated-login");
+    await rename(join(storage, ".credentials.json.tmp"), join(storage, ".credentials.json"));
+    await expect(readFile(join(b.CLAUDE_SECURESTORAGE_CONFIG_DIR!, ".credentials.json"), "utf8")).resolves.toBe("rotated-login");
+
+    await mkdir(join(a.CLAUDE_SECURESTORAGE_CONFIG_DIR!, ".oauth_refresh.lock"));
+    await expect(mkdir(join(b.CLAUDE_SECURESTORAGE_CONFIG_DIR!, ".oauth_refresh.lock"))).rejects.toMatchObject({ code: "EEXIST" });
+  });
+
+  it("never promotes a newer cleared legacy profile over the installation's login", async () => {
+    const home = await tempDir();
+    const root = await tempDir();
+    await mkdir(join(home, ".claude"));
+    await mkdir(join(root, ".claude"));
+    const source = join(home, ".claude/.credentials.json");
+    const legacy = join(root, ".claude/.credentials.json");
+    await writeFile(source, "valid-shared-login");
+    const cleared = '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}';
+    await writeFile(legacy, cleared);
+    const later = new Date(Date.now() + 60_000);
+    await utimes(legacy, later, later);
+
+    const lines: string[] = [];
+    const env = await materializeProviderBinding(nativeFrame(), root, home, line => lines.push(line));
+    await materializeProviderBinding(nativeFrame(), root, home, line => lines.push(line));
+    expect(env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(join(home, ".claude"));
+    await expect(readFile(source, "utf8")).resolves.toBe("valid-shared-login");
+    await expect(readFile(legacy, "utf8")).resolves.toBe(cleared);
+    expect(lines).toEqual([]);
+  });
+
+  it("keeps managed installations separate and does not manufacture a missing login", async () => {
+    const firstHome = await tempDir();
+    const secondHome = await tempDir();
+    const a = await materializeProviderBinding(nativeFrame(), await tempDir(), firstHome);
+    const b = await materializeProviderBinding(nativeFrame(), await tempDir(), secondHome);
+    expect(a.CLAUDE_SECURESTORAGE_CONFIG_DIR).not.toBe(b.CLAUDE_SECURESTORAGE_CONFIG_DIR);
+    for (const home of [firstHome, secondHome]) {
+      await expect(lstat(join(home, ".claude/.credentials.json"))).rejects.toThrow();
+    }
+    await expect(materializeProviderBinding(nativeFrame(), await tempDir(), null)).rejects.toThrow(/login home/);
+  });
+
+  it("cannot attach a Host login to a provider-bound run", async () => {
+    await expect(materializeProviderBinding(
+      frame({ login_link: login }), await tempDir(), await tempDir(),
+    )).rejects.toThrow(/provider-bound/);
+  });
+
+  it("refuses credential locations outside this installation's login home", async () => {
+    for (const location of [{ home_subdir: "../another-home" }, { credential_file: "../../another-login" }]) {
+      await expect(materializeProviderBinding(
+        { ...nativeFrame(), login_link: { ...login, ...location } }, await tempDir(), await tempDir(),
+      )).rejects.toThrow(/profile/);
+    }
+  });
+});
+
 describe("keeping a linked login usable over time", () => {
   const login = { home_subdir: ".claude", credential_file: ".credentials.json" };
 

@@ -1220,7 +1220,8 @@ remain server-owned. Sources broker scopes credentials by exact route on every
 hop, requires HTTPS for credentials, combines registry/request cancellation,
 preserves binary bytes, and exposes only bounded incremental metadata. Account
 and endpoint admission/cooldown are durable and atomic (429 and eligible 503 only,
-1s..24h). Current create/scan/repair flows have not enabled free generation; old
+1s..24h). A cooldown takes one DB clock sample per write for all its groups, and
+an in-range HTTP date is stored exactly as given. Current create/scan/repair flows have not enabled free generation; old
 Legacy Level 3 remains frozen. The foundation itself added no goal UI; the
 current goal model and conversation consumer are described in SOURCE_GOALS.
 They reuse the existing scheduler and never add a second scheduler.
@@ -1248,3 +1249,10 @@ snapshot CAS, clears effective transfer markers while retaining audit, and resto
 original manual/Project scheduling rules. Existing legacy deep links resolve
 read-only; paused goal conversation cannot activate collection. See SOURCE_GOALS
 for the exact contract and review-fix evidence for executed checks.
+
+R4 Project-private favorites/deep-reading routes live in `sources/deepReading/`
+and use the existing material processing Run/Job/check/submit path. Favorite
+is only a private user-state boolean; the report remains an independent private
+analysis Snapshot with exact supplied-original lineage, never a body rewrite.
+Public route/list/cancel contracts are documented in [Library](library.md#project-favorites-and-private-deep-reading-api-r4-ui-in-r5)
+and [material processing](../architecture/SOURCE_MATERIAL_PROCESSING.md#project-private-deep-reading-r4).

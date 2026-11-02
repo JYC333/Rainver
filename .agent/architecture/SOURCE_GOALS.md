@@ -1053,3 +1053,164 @@ per-Source latest-finished-check meaning and does not claim recent publication.
 Reuse: existing membership/audit provenance, Reading ACL/collection gate,
 existing Badge and metadata row; no schema migration, client timestamp or
 second freshness store.
+
+
+### Reading-method integration and layered readers
+
+Agent-native collection uses the versioned investigation strategy without changing
+its requester/Source consent or per-reader full/summary projection contract.
+A Project's private brief/constraints/instructions may influence saved material
+only when the connection and canonical output item belong to that Project.
+Otherwise collection continues as ordinary evidence-led reading using the
+Space/system method, with an explicit missing-Project-context note and a null
+Project in both Run and closed WorkContext. It does not request wider Source
+sharing or secretly inject Project instructions. Actual Source revocation still
+fails existing preflight; ordinary layered readership is not authority revocation.
+Delivery and final writer check frozen context, actual egress and output scope.
+
+## Purpose-led analysis handoff
+
+The setup Agent is told that each topic can supply a reusable analysis purpose
+to subsequent reading. It derives `plan.analysis_brief` (1–4000 characters) from
+the person's actual request: why follow, up to three consequential questions,
+any named comparison target, useful evidence and the judgment sought. It includes
+that substance in `plan.summary`, without inventing a Project or baseline facts.
+The field is optional for old plans and uses the existing version-write and
+activation gates; saving a later draft does not change the active purpose.
+
+Agent collection receives the exact collecting version, not mutable draft intent.
+Freshness and deduplication still govern new deliveries; older architecture/docs
+may be supporting evidence when overall understanding is needed. An unchanged
+repository entry is not new news, and a proposed PR is not shipped capability.
+Saved-item rereading also receives eligible topic purpose through the shared
+Sources reading context. This adds no automatic repository scanning, new search
+permissions, scheduler, schema migration or model loop.
+
+## Human and conversational topic revisions
+
+The topic header exposes both Edit topic and Discuss changes; the conversation
+is the existing SourceGoalWorkbench, rather than an alternate chat/Agent loop.
+POST `/:goalId/edit` accepts `SourceGoalEditSchema`: exact revision and idempotency
+key, title, intent, analysis brief, bounded include/exclude terms and optional
+queries for existing Agent-search Sources. It cannot author new endpoints, API
+credentials, cadence or budgets. The owner must also be a Project writer when
+scoped. It refuses an active planning Run or pending dispatch, preserves the
+active plan/collection/material, and stores one immutable human-authored candidate.
+
+Migration `0008_source_goal_manual_versions.sql` adds nullable user provenance,
+makes run provenance nullable and requires exactly one of the two. It preserves
+all earlier Agent authors. Manual save creates no model Run and does not consume
+a planning attempt. Changed Agent-search queries reuse bindNativeSource to obtain
+canonical owned metadata bindings, rather than editing an active channel in place.
+Other source configuration changes remain in the existing conversation workflow.
+A later dialogue uses the manually edited purpose as its base. Activation is
+still an explicit exact-version follow call and revalidates Sources, leases,
+permissions, runtime binding and the already authorized usage envelope.
+
+### Project Reading R1 materialization boundary
+
+For a Source canonically bound to a Project, inline Agent `reading_content` is now
+stored as an independent private analysis summary snapshot. `source_text` remains
+an Agent claim, never the deterministic original. Repeated collection cannot
+replace an already retained article's hash/body/excerpt/read revision with this
+report. New Project items without deterministic extraction remain metadata-only
+with an explicit unavailable original in the records projection. Legacy personal
+collection and old stored versions keep their identity. This storage change does
+not authorize/implement automatic theme or total整理; those require R2/R3 and the
+plan's explicit enablement/confirmation contract.
+
+The R1 original link is the version available at settlement, not an assertion
+that collection read that version: Goal collection does not freeze an expected
+original hash yet. Its existing `content_saved` deduplication must be adapted by
+R2 to the separate analysis lifecycle. This intermediate storage change requires
+the later Reader analysis surface before deployment; it is not a standalone
+end-user release.
+
+## Project Reading R2: explicit theme analysis after collection
+
+A Project Following may separately enable first-stage analysis. Existing collection
+consent never implies model spending: old rows, deployment and GET do not enable
+it. `POST /api/v1/sources/goals/:goalId/theme-analysis` takes
+`{expected_version_id,enabled,agent_id,runtime_profile_id}`; enable requires the
+canonical running plan's exact active version, its owner who is also a Project
+writer, `source.goal.manage`, and an explicitly usable owned execution. The normal
+`follow` confirmation also accepts `theme_analysis` for an exact prepared
+`version_id`, atomically with activation. A changed confirmation cannot reuse an
+old idempotency key. An `analysis_brief` alone is purpose text, not consent.
+Approved `reading.following_synthesis` must first be registered through the normal
+explicit PromptCatalog sync/bootstrap; no GET writes or hardcoded fallback.
+
+`collectionQueue` admits a durable `project_reading_rounds` row for each opted-in
+Following, freezing purpose/version, current authorized Project context, strategy
+version/hash/provenance, execution/Profile fingerprint and binding revisions/audit IDs. Manual actions
+have their own slot and do not alter cadence. A scheduler pass freezes the bounded
+set of due, enabled Following purposes per Project and hashes their persisted
+scheduler slots, not their wall-clock proximity. `execution_json.project_targets`
+is an R3 input boundary, not an implemented Project composition. A collector
+already running is reused; it is not charged as another collection or forced into
+a new Project round.
+
+Persisted `source_goal_runs` terminal audits, plus pending deterministic extraction
+jobs, are the completion barrier. The existing tick, native reconciliation and
+extraction-job completion wake an existing queue job. A deadline job admitted in
+the same transaction makes the barrier recoverable if a wakeup is interrupted;
+there is no new cron or waiting loop. Deterministic collectors with expired leases
+get at most one recovery attempt with a new audit identity under the same target;
+old lease callbacks cannot publish into that attempt. Native Run recovery remains
+owned by canonical Run/Job settlement. Failure codes distinguish Source network,
+quota, permission, timeout and collection failures. At 900 seconds, available
+originals can be analyzed with partial coverage; late originals remain scope
+members/pending for a later round. The first material cutoff is frozen even if
+analysis admission fails. An unchanged successful check reuses the published theme;
+a first genuinely empty check spends no model Run. A failed analysis does not
+silently auto-retry or become “no new material”.
+
+`GET .../:goalId/theme-rounds` returns the latest authorized theme and at most20
+round states, including collection coverage separately from manifest coverage.
+`GET .../:goalId/theme-rounds/:roundId/export` exports that same reauthorized DTO
+within this bounded history. POST `theme-rounds/retry` takes `{round_id}` and
+requires its owner; POST `theme-rounds/:roundId/cancel` requires canonical management
+permission and cancels analysis only, not the separately authorized collection.
+Retries retain the existing version/attempt CAS, maximum3 attempts/version,
+6 Runs/scope per rolling day and900 seconds/Run (tighter canonical budgets still
+apply). Cancellation awaits canonical stop/ACK where needed. No token/currency
+hard cap is claimed. A new purpose needs fresh exact-version consent; paused,
+deleted or changed purposes cannot publish a late result.
+
+R2 exposes the service/API and planning rules. The complete Following confirmation
+and four-view UI are connected by R5; the earlier intermediate stage is not a stand-alone UI
+rollout. Project composition and its local-patch rules are R3, not implemented here.
+
+### R2 optional-analysis admission isolation
+
+An unavailable/disabled/oversized theme method, or another explicit 4xx analysis
+admission refusal, does not revoke collection consent. `enqueueGoalCollection`
+uses a savepoint around optional theme admission, removes any partial round/job
+writes on refusal, records only a bounded code/purpose version/check time in
+`compatibility_json.theme_analysis_admission`, and still queues the independently
+authorized ordinary collector. Source preflight, binding fingerprints and owner
+permissions are unchanged. No substitute method, Agent or spending permission is
+inferred. `theme-rounds.analysis_admission` exposes that safe diagnostic for the
+currently consented purpose; successful next admission clears it. It is not a
+successful round. Manual admission and scheduled cohorts share this behavior.
+Each scheduler cohort has its own transaction; unexpected storage/programming
+failures roll back that cohort, allow the rest of the pass to proceed, then use
+the existing scheduler aggregate-error reporter rather than disappearing as success.
+
+R3 Project composition: explicit theme-analysis enable also records the sticky
+Project cutover marker on the Goal. Its stage-two Job is deterministic and has no
+model cost. Canonical pause/delete queues composition withdrawal in the Goal
+transaction; current/history reads hide stopped theme text immediately even before
+the Job publishes the removal revision. Collection authority is unchanged. See
+[Information Digest](../modules/information-digest.md#project-reading-stage-two-immutable-compositions)
+for the independent total-version and partial-round contracts.
+
+### R5 explicit analysis confirmation
+
+Project Following confirmation/apply-adjustment reuse the existing exact-version
+follow action with optional `theme_analysis`, explicit checkbox, owned execution
+and advertised model/mode selection. Initial creation has no prepared exact purpose
+version: it confirms collection only and explains the later explicit analysis step.
+Leaving analysis unchecked preserves collection only. Current topics expose purpose and a lazy analysis-admission/recent-round panel;
+turning analysis off does not pause collection. A pending purpose is not silently
+authorized. Existing owner controls and server Project-writer/Source gates still apply.

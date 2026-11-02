@@ -73,6 +73,11 @@ function sourceAgentUnavailableReason(item:SourceItemRow):SourceMaterialContentU
  const reason=SourceMaterialContentUnavailableReasonSchema.safeParse(m.reading_unavailable_reason);
  return reason.success?reason.data:item.retention_policy==='metadata_only'?'policy_restricted':'not_read';
 }
+function readerContentRole(metadata:Record<string,unknown>):'original'|'analysis'|'legacy_analysis'|'unknown'{
+ if(metadata.reading_role==='analysis')return 'analysis';
+ if(['structured_html_v1','markdown_v1','plain_text_v1','pdf_text_v1'].includes(String(metadata.extraction_method)))return 'original';
+ return metadata.extraction_method==='agent_provided_v1'?'legacy_analysis':'unknown';
+}
 function sourceReadingInfo(item:SourceItemRow):SourceMaterialReadingInfo|null{
  const m=item.metadata_json as Record<string,unknown>|null;
  if(!m)return null;
@@ -209,6 +214,7 @@ interface SourceSnapshotRow {
 // ── Reader document output ────────────────────────────────────────────────────
 
 interface ReaderDocumentOut {
+  reading_role?: "original"|"analysis"|"legacy_analysis"|"unknown";
   result_provenance?:'agent_provided_unverified'|null;
   reading_info?:SourceMaterialReadingInfo|null;
   content_unavailable_reason?:SourceMaterialContentUnavailableReason|null;
@@ -506,6 +512,7 @@ export class PgReaderRepository {
         agentReading:sourceReadingInfo(item),contentUnavailableReason:sourceAgentUnavailableReason(item),
         resultProvenance: (item.metadata_json as Record<string,unknown>|null)?.result_provenance==='agent_provided_unverified'?'agent_provided_unverified':null,
         agentTextSyntax: version.content.agentTextSyntax,
+        readingRole: readerContentRole(version.content.metadata),
       });
     }
 
@@ -583,6 +590,10 @@ export class PgReaderRepository {
       plainText: text.text,
       contentJson: text.contentJson,
       imagePolicy: text.imagePolicy,
+      agentTextSyntax: text.agentTextSyntax,
+      readingRole: readerContentRole(text.metadata),
+      agentReading: sourceReadingInfo({ metadata_json: text.metadata } as SourceItemRow),
+      resultProvenance: text.metadata.result_provenance === 'agent_provided_unverified' ? 'agent_provided_unverified' : null,
       sourceItemId: snap.source_item_id,
       artifactId: snap.artifact_id,
       sourceSnapshotId: snapshotId,
@@ -679,6 +690,7 @@ export class PgReaderRepository {
     extractedArtifactId: string | null;
     sourceUri: string | null;
     contentState: string | null;
+    readingRole?: "original"|"analysis"|"legacy_analysis"|"unknown";
     resultProvenance?:'agent_provided_unverified'|null;
     agentReading?:SourceMaterialReadingInfo|null;
     agentTextSyntax?: "undeclared" | "plain" | "markdown";
@@ -711,6 +723,7 @@ export class PgReaderRepository {
       source_uri: args.sourceUri,
       content_state: args.contentState,
       retention_policy: args.retentionPolicy,
+      ...(args.projectId&&args.readingRole?{reading_role:args.readingRole}:{}),
       result_provenance: args.resultProvenance??null,
       reading_info:args.agentReading??null,
       ...(args.agentTextSyntax ? { agent_text_syntax: args.agentTextSyntax } : {}),

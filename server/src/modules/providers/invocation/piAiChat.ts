@@ -412,7 +412,9 @@ export async function completePiAiChat(
     responseStatus = response.status;
     return response;
   };
+  body.signal?.throwIfAborted();
   const stream = api.stream(model, context, {
+    signal:body.signal,
     // pi-ai requires a non-empty option before constructing an OpenAI stream,
     // even for registries that explicitly allow keyless endpoints. The value
     // never crosses the adapter boundary: trackedFetch strips Authorization

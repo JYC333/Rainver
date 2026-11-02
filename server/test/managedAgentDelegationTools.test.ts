@@ -133,7 +133,7 @@ describe("ACP agent delegation tools", () => {
     const results = await Promise.all(["a", "b"].map((suffix) => runAgentRoomToolCall({
       id: `tool-call-${suffix}`,
       name: "agent.delegate",
-      arguments_json: JSON.stringify({
+      arguments_json: JSON.stringify({ workspace_access: "read",
         target_agent_id: `agent-reviewer-${suffix}`,
         instruction: "Answer 1+1 independently.",
       }),
@@ -142,12 +142,28 @@ describe("ACP agent delegation tools", () => {
     expect(spawnCalls).toHaveLength(2);
     expect(spawnCalls[0]).toMatchObject({
       identity: { spaceId: "space-1", userId: "user-1" },
-      input: { parent_run_id: "run-manager-turn", root_run_id: "run-root", target_agent_id: "agent-reviewer-a" },
+      input: { parent_run_id: "run-manager-turn", root_run_id: "run-root", target_agent_id: "agent-reviewer-a", workspace_access: "read" },
     });
     expect(results.map((result) => result.modelResult)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ ok: true, target_agent_id: "agent-reviewer-a", child_run_id: "run-child-a" }),
+      expect.objectContaining({ ok: true, target_agent_id: "agent-reviewer-a", child_run_id: "run-child-a", workspace_access: "read", workspace_concurrency: "shared_read" }),
       expect.objectContaining({ ok: true, target_agent_id: "agent-reviewer-b", child_run_id: "run-child-b" }),
     ]));
+  });
+
+  it("requires an explicit workspace contract before dispatch, even when the instruction says read only", async () => {
+    let calls = 0;
+    const binding = (await resolveAgentDelegationToolBinding(config, run(), {
+      targets: [{ agent_id: "reviewer", name: "Reviewer", role: "worker" }],
+      service: { async spawnChildRun() { calls++; throw new Error("Must not dispatch invalid contracts"); } },
+    }))!;
+    expect(binding.toolDefinitions[0]!.input_schema).toMatchObject({ required: expect.arrayContaining(["workspace_access"]) });
+    for (const workspace_access of [undefined, null, "admin"]) {
+      const result = await runAgentRoomToolCall({ id: "invalid-contract", name: "agent.delegate",
+        arguments_json: JSON.stringify({ target_agent_id: "reviewer", instruction: "Read only; do not edit.", workspace_access }),
+      }, binding, run());
+      expect(result.modelResult).toMatchObject({ ok: false, error: expect.stringContaining("workspace_access") });
+    }
+    expect(calls).toBe(0);
   });
 
   it("returns pending dependency information in one bounded tool result", async () => {

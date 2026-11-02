@@ -5,6 +5,10 @@ type Shape<T> = { [K in keyof T]: T[K] extends string ? string : Shape<T[K]> }
 /** 摘要日期、补生成与标注恢复的中文文案。 */
 export const digestReportsZhCN = {
   day_label: '{{date}} · {{timezone}}',
+  loading_day: '正在加载 {{date}}…',
+  loading_latest: '正在加载最新一天…',
+  still_showing: '当前仍显示 {{date}}。',
+  load_failed: '无法加载 {{date}}。',
   scheduled: '计划生成的摘要',
   backfilled: '补生成于 {{when}}',
   backfill_note: '依据当前保留的材料补生成，不含"常规视野之外"部分。',

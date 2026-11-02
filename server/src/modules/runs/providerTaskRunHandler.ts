@@ -91,13 +91,14 @@ export function registerProviderTaskRunHandler(
 
 export async function enqueueProviderTaskRunJob(
   db: Queryable,
-  input: { run_id: string; space_id: string; user_id: string; project_id?: string | null },
+  input: { run_id: string; space_id: string; user_id: string; project_id?: string | null; max_attempts?: number },
 ): Promise<{ id: string; status: string }> {
   const job = await new PgJobQueueRepository(db).enqueue({
     job_type: PROVIDER_TASK_RUN_JOB_TYPE,
     space_id: input.space_id,
     user_id: input.user_id,
     payload: { run_id: input.run_id },
+    max_attempts: input.max_attempts,
   });
   return { id: job.id, status: job.status };
 }
@@ -206,6 +207,8 @@ async function handleProviderTaskRun(
             ? error.message
             : "The provider_task_run job exhausted its retry budget.",
         });
+        const terminal=await repository.getRun(job.space_id,runId);
+        if(terminal&&isTerminalRun(terminal.status))await enqueueRunTerminalReconcilers(db,{space_id:job.space_id,user_id:job.user_id,run_id:runId,workflow_input_json:workflowInput(terminal)});
       }
     }
     throw error;

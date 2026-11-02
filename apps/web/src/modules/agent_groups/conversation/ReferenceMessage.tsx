@@ -18,6 +18,7 @@ const ORIGIN_LABEL: Record<ThreadReferenceProvenance['kind'], string> = {
   messages: 'messages from a conversation',
   imported_session: 'an imported session',
   imported_records: 'records from an imported session',
+  briefing_highlight: 'a briefing highlight',
 }
 
 /**

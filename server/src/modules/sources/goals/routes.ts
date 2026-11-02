@@ -1,3 +1,4 @@
+import {editSourceGoal} from './edit.js';
 import {requestGoalCheck} from './collectionQueue.js';
 import {readBindingReconfirmation,confirmBindingSource} from './reconfirm.js';
 import {nativeSearchAvailability} from './nativeSafety.js';
@@ -28,10 +29,11 @@ export function registerSourceGoalRoutes(app:FastifyInstance,context:ModuleConte
  // A binding stopped because its Source changed: what changed, and the owner's exact confirmation (reconfirm.ts).
  app.get('/api/v1/sources/goals/:goalId/bindings/:bindingId/source-confirmation',async(req,reply)=>{const identity=await resolveIdentity(context.config,req,reply);if(!identity)return reply;try{return reply.send(await readBindingReconfirmation(db(),context.config,identity,String(params(req).goalId),String(params(req).bindingId)));}catch(error){return sendRouteError(reply,error);}});
  app.post('/api/v1/sources/goals/:goalId/bindings/:bindingId/source-confirmation',async(req,reply)=>{const identity=await resolveIdentity(context.config,req,reply);if(!identity)return reply;try{const id=String(params(req).goalId);const gate=await enforceSources(context,identity,'source.goal.manage','source_goal',id);if(gate.blocked)return reply.code(403).send(gate.reply403);const input=SourceGoalBindingConfirmRequestSchema.parse(jsonBody(req));return reply.send(await confirmBindingSource(db(),context.config,identity,id,String(params(req).bindingId),input));}catch(error){return sendRouteError(reply,error);}});
- for(const action of ['explore','preview','save','follow','feedback','check','resume','pause','delete','rollback'] as const)app.post(`/api/v1/sources/goals/:goalId/${action}`,async(req,reply)=>{
+ for(const action of ['edit','explore','preview','save','follow','feedback','check','resume','pause','delete','rollback'] as const)app.post(`/api/v1/sources/goals/:goalId/${action}`,async(req,reply)=>{
   const identity=await resolveIdentity(context.config,req,reply);if(!identity)return reply;
   try{
    const id=String(params(req).goalId),body=jsonBody(req);const gate=await enforceSources(context,identity,'source.goal.manage','source_goal',id);if(gate.blocked)return reply.code(403).send(gate.reply403);
+   if(action==='edit')return reply.send(await editSourceGoal(db(),context.config,identity,id,body));
    if(action==='check')return reply.send(await requestGoalCheck(db(),context.config,identity,id,body));
    if(action==='explore')return reply.send(await queueSourceGoalAgent(db(),context.config,identity,id,'explore'));
    if(action==='preview'){const disconnected=new AbortController();const close=()=>{if(!reply.raw.writableEnded)disconnected.abort();};reply.raw.once('close',close);try{return reply.send(await service().preview(identity,id,String(body.version_id),AbortSignal.any([disconnected.signal,AbortSignal.timeout(120000)])));}finally{reply.raw.off('close',close);}}

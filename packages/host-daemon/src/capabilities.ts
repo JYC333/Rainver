@@ -1,3 +1,4 @@
+import {probeReadOnlyWorkspace} from './readOnlyWorkspace.js';
 import { spawn } from "node:child_process";
 import { helperProcessEnv } from "./providerBinding.js";
 import { heldAccounts, installedTools, loggedIn, managedInstallationId, OWN_INSTALLATION, rollbackTargetFor, type ToolLoginSpec, type ToolManifest, type ToolStateBoundary } from "./tools.js";
@@ -60,6 +61,7 @@ export interface RuntimeLookup {
  * installations.
  */
 export interface DaemonCapabilities {
+  workspace_read_only?:{supported:boolean;mechanism:"bwrap-v1";reason:string|null};
   runtimes: ProbedBinary[];
   versions: Partial<Record<ProbedBinary, string>>;
   /** Every copy of every runtime, keyed by runtime key. */
@@ -297,5 +299,5 @@ export async function detectCapabilities(
     runtimes.push(bin);
     versions[bin] = version;
   }
-  return { runtimes, versions, installations };
+  return { runtimes, versions, installations, workspace_read_only:await probeReadOnlyWorkspace() };
 }

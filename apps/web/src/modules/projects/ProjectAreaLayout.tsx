@@ -1,3 +1,5 @@
+import {useSpace} from '../../contexts/SpaceContext'
+import {registerInMemoryResidue,sessionEpoch} from '../../lib/sessionResidue'
 import { useEffect, useState } from 'react'
 import { useAppTranslation } from '../../i18n'
 import { Link, NavLink, Outlet, useLocation, useParams } from 'react-router-dom'
@@ -48,6 +50,11 @@ export default function ProjectAreaLayout() {
   const { t } = useAppTranslation()
   const { projectId = '', spaceId = '' } = useParams()
   const { pathname } = useLocation()
+  const {userId}=useSpace()
+  const scope=`${spaceId}:${userId}:${projectId}`
+  const [loadedScope,setLoadedScope]=useState('')
+  const [cleared,setCleared]=useState(0)
+  useEffect(()=>registerInMemoryResidue(()=>{setLoadedScope('');setProject(null);setOverview(null);setCleared(n=>n+1)}),[])
   const [project, setProject] = useState<Project | null>(null)
   const [overview, setOverview] = useState<ProjectOverview | null>(null)
 
@@ -56,23 +63,27 @@ export default function ProjectAreaLayout() {
     // only the child) — resolving an attention item on one Area and
     // navigating to another must refresh the sidebar's attention badge, not
     // just wait for the projectId itself to change.
+    let live=true;const epoch=sessionEpoch()
     Promise.all([projectsApi.get(projectId), projectsApi.getOverview(projectId)])
       .then(([nextProject, nextOverview]) => {
+        if(!live||epoch!==sessionEpoch())return
+        setLoadedScope(scope)
         setProject(nextProject)
         setOverview(nextOverview)
       })
-      .catch(() => {
-        setProject(null)
-        setOverview(null)
+      .catch(error => {
+        if(!live||epoch!==sessionEpoch())return
+        if([401,403,404].includes(error?.status)){setLoadedScope('');setProject(null);setOverview(null)}
       })
-  }, [projectId, pathname])
+    return()=>{live=false}
+  }, [projectId, pathname,spaceId,userId,cleared])
 
   useEffect(() => {
-    let active = true
+    let active = true;const epoch=sessionEpoch()
     const refreshOverview = () => {
       void projectsApi.getOverview(projectId)
         .then(nextOverview => {
-          if (active) setOverview(nextOverview)
+          if (active&&epoch===sessionEpoch()) setOverview(nextOverview)
         })
         .catch(() => {
           // Attention is advisory. Keep the last known overview if this
@@ -84,7 +95,7 @@ export default function ProjectAreaLayout() {
       active = false
       window.removeEventListener(REVIEW_ATTENTION_CHANGED_EVENT, refreshOverview)
     }
-  }, [projectId])
+  }, [projectId,spaceId,userId])
 
   // Capture is one affordance in the app shell, not one per Area and not a
   // second one per Project: a thought that arrives while doing an experiment
@@ -104,12 +115,13 @@ export default function ProjectAreaLayout() {
 
   useDeclareProjectCaptureProject(projectId)
 
+  const visibleProject=loadedScope===scope?project:null,visibleOverview=loadedScope===scope?overview:null
   return (
     <ProjectFolderConversationProvider key={projectId} projectId={projectId}>
       <div className="min-h-full lg:h-full lg:min-h-0 lg:overflow-hidden lg:grid lg:grid-cols-[220px_minmax(0,1fr)]">
       <aside data-project-navigation data-shell-chrome className="border-b border-border bg-muted/20 p-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain lg:border-b-0 lg:border-r">
         <div className="flex min-w-0 items-center justify-between gap-3 px-2 lg:mb-5">
-          <p className="truncate font-semibold">{project?.name ?? 'Project'}</p>
+          <p className="min-w-0 break-words font-semibold">{visibleProject?.name ?? 'Project'}</p>
           <button type="button" className="shrink-0 rounded border border-border px-3 py-1.5 text-xs lg:hidden" aria-expanded={navigationOpen} aria-controls="project-navigation-items" onClick={()=>setNavigationOpen(open=>!open)}>{t('monitoring.projectNavigation')} {navigationOpen ? '▴' : '▾'}</button>
         </div>
         <div id="project-navigation-items" className={cn('mt-4 lg:mt-0 lg:block', !navigationOpen && 'hidden')}>
@@ -128,7 +140,7 @@ export default function ProjectAreaLayout() {
               >
                 <span className="flex items-center justify-between gap-2">
                   {item.label}
-                  {item.path === '' && (overview?.attention.length ?? 0) > 0 && <Badge variant="destructive">{overview?.attention.length}</Badge>}
+                  {item.path === '' && (visibleOverview?.attention.length ?? 0) > 0 && <Badge variant="destructive">{visibleOverview?.attention.length}</Badge>}
                 </span>
               </NavLink>
             ))}
@@ -167,11 +179,11 @@ export default function ProjectAreaLayout() {
             Area, not just Overview — an Area page in the middle of an async
             workflow (research scan, screening review, …) has nowhere else to
             point the user back to the exact pending action. */}
-        {(overview?.attention.length ?? 0) > 0 && (
+        {(visibleOverview?.attention.length ?? 0) > 0 && (
           <div className="mt-5 border-t border-border pt-4">
             <p className="mb-2 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Needs attention</p>
             <div className="space-y-1">
-              {overview?.attention.map(item => {
+              {visibleOverview?.attention.map(item => {
                 const href = inProjectHref(projectId, item.href)
                 const className = 'block rounded-md px-2 py-1.5 text-xs hover:bg-muted'
                 const body = (

@@ -261,17 +261,24 @@ export class PgRunRepository {
   }
 
   /**
-   * Orphaned Runs whose current attempt has no finalization yet. A Run the
-   * supervisor leaves orphaned keeps that status after it is finalized, so
-   * without the finalization filter a backlog of finished ones would fill
-   * every page and starve a newly orphaned Task Run of its only sweep.
+   * Runs whose execution owner went away before finalizing them, and whose
+   * current attempt has no finalization yet: orphaned Runs, and Runs their
+   * backing job ended (`jobs/repository.ts`, `endRunBehindJob`: a job whose
+   * retries were exhausted while stuck — `run_abandoned` — or that was
+   * cancelled before it ran — `run_cancelled`). Nothing else finalizes the
+   * latter, so without this their domain's settlement (a briefing version, a
+   * Task) would wait forever. A Run the supervisor leaves orphaned keeps that
+   * status after it is finalized, so without the finalization filter a
+   * backlog of finished ones would fill every page and starve a newly
+   * orphaned Task Run of its only sweep.
    */
   async listOrphanedRunIds(limit = 100): Promise<Array<{ id: string; space_id: string }>> {
     const result = await this.db.query<{ id: string; space_id: string }>(
       `SELECT r.id, r.space_id
          FROM runs r
-        WHERE r.status = 'orphaned'
-          AND r.error_json->>'error_code' = 'orphaned'
+        WHERE ((r.status = 'orphaned' AND r.error_json->>'error_code' = 'orphaned')
+            OR (r.status = 'failed' AND r.error_json->>'error_code' = 'run_abandoned')
+            OR (r.status = 'cancelled' AND r.error_json->>'error_code' = 'run_cancelled'))
           AND NOT EXISTS (
             SELECT 1 FROM run_finalizations f
              WHERE f.space_id = r.space_id AND f.run_id = r.id
@@ -431,6 +438,7 @@ export class PgRunRepository {
    * a refused admission cannot leave a queued Run behind for the worker.
    */
   async createQueuedProviderTaskRun(input: {
+    visibility?: "private" | "space_shared";
     space_id: string;
     user_id: string;
     trigger_origin: string;
@@ -468,7 +476,7 @@ export class PgRunRepository {
          ) VALUES (
            $1, $2, NULL, NULL, 'provider_task',
            $3, $4, 'queued', 'live', $5, $6,
-           $7, $7, 'space_shared', 'full',
+           $7, $7, $12, 'full',
            'none', $8::jsonb, $9, $10,
            $11, $11
          ) RETURNING id, space_id, execution_kind, status`,
@@ -476,7 +484,7 @@ export class PgRunRepository {
           randomUUID(), input.space_id, input.run_type, input.trigger_origin,
           input.prompt, input.instruction ?? null, input.user_id,
           JSON.stringify(contractSnapshot), input.project_id ?? null,
-          input.capability_id ?? null, now,
+          input.capability_id ?? null, now, input.visibility ?? "space_shared",
         ],
       );
       const row = result.rows[0];
@@ -791,7 +799,7 @@ export class PgRunRepository {
           grant.action_id !== "authorization.request" && !grant.side_effecting
         )
       : ((contractSnapshot.workflow_input_json as {source_goal?:{purpose?:string};material_processing?:unknown}|undefined)?.source_goal?.purpose==='collect'||!!(contractSnapshot.workflow_input_json as {material_processing?:unknown}|undefined)?.material_processing)
-        ? declaredToolGrants.filter(grant=>grant.action_id==='source.material.submit') : declaredToolGrants;
+        ? declaredToolGrants.filter(grant=>grant.action_id==='source.material.submit'||(!!(contractSnapshot.workflow_input_json as {material_processing?:{investigation?:boolean}}|undefined)?.material_processing?.investigation&&grant.action_id==='source.material.investigate')) : declaredToolGrants;
     const permissionSnapshotJson = JSON.stringify({
       tool_grants: toolGrants,
       ...(input.scenario_tool_allowance
@@ -1120,9 +1128,15 @@ export class PgRunRepository {
     );
     if (decision === "deny") return null;
     const run = await this.getRun(spaceId, runId);
+    if(run && !await domainRunReadable(this.db,run,userId))return null;
     return run ? { ...run, effective_access_level: decision } : null;
   }
 
+  async readOnlyHostCapabilities(run:RunRecord):Promise<unknown>{
+    const profile=run.runtime_profile_snapshot_json as {execution_host_id?:string}|null;
+    if(!profile?.execution_host_id)return undefined;
+    return (await this.db.query('SELECT capabilities_json FROM hosts WHERE id=$1',[profile.execution_host_id])).rows[0]?.capabilities_json;
+  }
   async listRuns(filters: RunListFilters): Promise<VisibleRunRecord[]> {
     await assertProjectInSpace(this.db, filters.space_id, filters.project_id);
     const clauses = [
@@ -1177,7 +1191,9 @@ export class PgRunRepository {
         LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
       params,
     );
-    return this.withRunsUsage(result.rows);
+    const readable:VisibleRunRecord[]=[];
+    for(const run of result.rows)if(await domainRunReadable(this.db,run,filters.user_id))readable.push(run);
+    return this.withRunsUsage(readable);
   }
 
   /** For read models that need their own query against this repository's connection. */
@@ -3174,4 +3190,16 @@ function scenarioToolAllowanceFromSnapshot(value: unknown): string[] | undefined
     (item): item is string => typeof item === "string" && item.length > 0,
   );
   return normalized.length === allowance.length ? [...new Set(normalized)] : [];
+}
+
+/** Only the new reading-owned contracts need the extra private-input read gate. */
+function isReadingMethodRun(run:{contract_snapshot_json?:unknown}):boolean{const input=(run.contract_snapshot_json as {workflow_input_json?:{reading_method?:unknown;reading_method_trial?:unknown;reading_method_generation?:unknown}}|null)?.workflow_input_json;return !!(input?.reading_method||input?.reading_method_trial||input?.reading_method_generation);}
+
+/** Domain-derived private text keeps its current dependency gate on generic
+ * Run reads as well; the ordinary Run/Room SQL gate remains the first layer. */
+async function domainRunReadable(db:Queryable,run:RunRecord,userId:string):Promise<boolean>{
+ if(isReadingMethodRun(run)&&!await (await import('../prompts/reading/dispatch.js')).readingRunReadable(db,run,userId))return false;
+ const workflow=recordValue(recordValue(run.contract_snapshot_json).workflow_input_json);
+ if(workflow.project_reading_theme)return (await import('../informationDigest/index.js')).themeRunReadable(db,run,userId);
+ return true;
 }

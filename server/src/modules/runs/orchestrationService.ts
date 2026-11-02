@@ -71,6 +71,7 @@ import { authorizeCredentialSpend, CredentialSpendDeniedError } from "../policy/
 import {
   adapterFailureEnvelope,
   canonicalRunOutput,
+  declaredStructuredSchema,
   semanticFailureErrorJson,
   semanticRunFailure,
   errorMessage,
@@ -112,6 +113,7 @@ import { resolveExecutionHost } from "./executionHostResolution.js";
 import { finalizedForPostRun } from "./finalizationOutcome.js";
 
 export interface RunExecutionRepositoryPort {
+  readOnlyHostCapabilities?(run:RunRecord):Promise<unknown>;
   getRun(spaceId: string, runId: string): Promise<RunRecord | null>;
   getLatestRunAttempt?(spaceId: string, runId: string): Promise<RunAttemptRecord | null>;
   resolveRunActorId(
@@ -881,6 +883,8 @@ export class RunOrchestrationService {
         };
       }
       await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,run);
+      await (await import('../informationDigest/briefing/settlement.js')).assertBriefingDispatch(this.config, run);
+      await (await import('../prompts/reading/dispatch.js')).assertReadingDispatch(this.config,run);
       const running = await this.repository.markRunRunning({
         run_id: run.id,
         space_id: run.space_id,
@@ -1038,6 +1042,8 @@ export class RunOrchestrationService {
       });
 
       await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,effectiveRun);
+      await (await import('../informationDigest/briefing/settlement.js')).assertBriefingDispatch(this.config, effectiveRun);
+      await (await import('../prompts/reading/dispatch.js')).assertReadingDispatch(this.config,effectiveRun);
       preparedRuntime = await this.prepareRuntimeContext(
         effectiveRun,
         effectiveInput,
@@ -1073,6 +1079,8 @@ export class RunOrchestrationService {
       let adapterResult: RunAdapterResultEnvelope;
       try {
         await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,effectiveRun);
+        await (await import('../informationDigest/briefing/settlement.js')).assertBriefingDispatch(this.config, effectiveRun);
+      await (await import('../prompts/reading/dispatch.js')).assertReadingDispatch(this.config,effectiveRun);
         adapterResult = await this.invokeAdapter(
           effectiveRun,
           {
@@ -1390,6 +1398,7 @@ export class RunOrchestrationService {
         output_json: canonicalRunOutput({
           success: adapterResult.success && !semanticFailure,
           outputText: adapterResult.output_text,
+          structuredSchema: declaredStructuredSchema(running.contract_snapshot_json ?? effectiveRun.contract_snapshot_json),
           outputJson: {
             ...recordValue(outputJsonWithVerification(
               outputJsonWithRuntimeUsage(adapterResult),
@@ -1842,11 +1851,11 @@ export class RunOrchestrationService {
       projectFolderId: run.project_folder_id,
       workspaceAccess,
     });
-    // Read-only is a guarantee only where something enforces it: the strict
-    // server Host binds the workspace read-only. A paired Host runs natively
-    // and cannot hold the process to it, so a review there is refused rather
-    // than run writable under a read-only label.
-    const readOnlyRefusal = readOnlyWorkspaceHostRefusal(workspaceAccess, run.runtime_key, hostKind);
+    // Require the actual Host capability for a personal review. The daemon
+    // still verifies its namespace and readiness at launch; ordinary personal
+    // writes remain native. Missing capability cannot become writable review.
+    const readHostCaps=workspaceAccess==='read'?await this.repository.readOnlyHostCapabilities?.(run):undefined;
+    const readOnlyRefusal = readOnlyWorkspaceHostRefusal(workspaceAccess, run.runtime_key, hostKind,readHostCaps);
     if (readOnlyRefusal) throw new RunPreparationError("workspace_read_only_unenforceable", readOnlyRefusal);
     if (requiredSandboxLevel === "one_shot_docker" && isVendorCliAdapter(run.runtime_key)) {
       const spec = getRuntimeAdapterSpec(run.runtime_key);
@@ -2921,7 +2930,7 @@ export class RunOrchestrationService {
       return;
     }
     try {
-      await mergeRunQuota(getDbPool(this.config.databaseUrl), {
+      await mergeRunQuota(getDbPool(this.config.databaseUrl!), {
         hostId,
         runtimeKey: adapterResult.runtime_key,
         installation,

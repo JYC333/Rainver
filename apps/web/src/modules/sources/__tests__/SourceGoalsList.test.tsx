@@ -1,4 +1,5 @@
-import {render,screen,within} from '@testing-library/react'
+import {clearSessionResidue} from '../../../lib/sessionResidue'
+import {render,screen,within,act} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {MemoryRouter} from 'react-router-dom'
 import {it,expect,vi,beforeEach} from 'vitest'
@@ -42,3 +43,7 @@ it('REPORTED: the list names a changed Source and a usage limit the same way the
  render(<MemoryRouter><SourceGoalsList/></MemoryRouter>)
  expect(await screen.findByText('Source changed — confirm')).toBeInTheDocument();expect(screen.getByText('Usage limit reached')).toBeInTheDocument();expect(screen.queryByText('Needs permission')).not.toBeInTheDocument()
 })
+
+it('drops a late Following response after logout without repainting topic text',async()=>{
+ let finish!:(v:never)=>void;vi.mocked(sourceGoalsApi.list).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve}));render(<MemoryRouter><SourceGoalsList projectId="p"/></MemoryRouter>);await act(async()=>{clearSessionResidue();finish({goals:[goal('private',{project_id:'p'})]} as never)});expect(screen.queryByText('Robotics private')).not.toBeInTheDocument();
+});

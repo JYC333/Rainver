@@ -1,4 +1,4 @@
-import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, boolean, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, doublePrecision, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { agents } from "./agents.js";
 import { users } from "./auth.js";
@@ -201,6 +201,10 @@ export const sourceSnapshots = pgTable("source_snapshots", {
 	accessLevel: varchar("access_level", { length: 16 }).default('full').notNull(),
 	sourceItemId: varchar("source_item_id", { length: 36 }),
 	connectionId: varchar("connection_id", { length: 36 }),
+	// Immutable project analysis versions reuse snapshots without replacing article bodies.
+	readingRole: varchar("reading_role", { length: 32 }),
+	originRunId: varchar("origin_run_id", { length: 36 }),
+	originalSnapshotId: varchar("original_snapshot_id", { length: 36 }),
 	snapshotType: varchar("snapshot_type", { length: 32 }).notNull(),
 	artifactId: varchar("artifact_id", { length: 36 }),
 	contentHash: varchar("content_hash", { length: 128 }),
@@ -212,6 +216,12 @@ export const sourceSnapshots = pgTable("source_snapshots", {
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
+	unique("uq_source_snapshots_identity_item").on(table.id, table.spaceId, table.sourceItemId),
+	uniqueIndex("uq_source_analysis_run_item").on(table.spaceId, table.sourceItemId, table.originRunId).where(sql`reading_role = 'analysis' AND origin_run_id IS NOT NULL`),
+	foreignKey({columns:[table.originRunId,table.spaceId],foreignColumns:[runs.id,runs.spaceId],name:"source_snapshots_origin_run_fkey"}),
+	foreignKey({columns:[table.originalSnapshotId,table.spaceId,table.sourceItemId],foreignColumns:[table.id,table.spaceId,table.sourceItemId],name:"source_snapshots_original_same_item_fkey"}),
+	check("ck_source_snapshots_reading_role",sql`reading_role IS NULL OR reading_role IN ('original','analysis')`),
+	check("ck_source_snapshots_analysis_shape",sql`reading_role IS DISTINCT FROM 'analysis' OR (snapshot_type='summary' AND project_id IS NOT NULL AND source_item_id IS NOT NULL AND artifact_id IS NOT NULL AND owner_user_id IS NOT NULL AND visibility='private')`),
 	index("ix_source_snapshots_artifact_id").using("btree", table.artifactId.asc().nullsLast()),
 	index("ix_source_snapshots_connection_id").using("btree", table.connectionId.asc().nullsLast()),
 	index("ix_source_snapshots_content_hash").using("btree", table.contentHash.asc().nullsLast()),
@@ -351,6 +361,7 @@ export const sourceConnections = pgTable("source_connections", {
 ]);
 
 export const sourceItemUserStates = pgTable("source_item_user_states", {
+	favorite: boolean("favorite").default(false).notNull(),
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	sourceItemId: varchar("source_item_id", { length: 36 }).notNull(),

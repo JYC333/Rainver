@@ -1,3 +1,5 @@
+import {AgentExecutionPicker,type AgentExecutionSelection} from '../../components/agents/AgentExecutionPicker'
+import {useSpace} from '../../contexts/SpaceContext'
 import {StatusBadge} from '../../components/ui/badge'
 import {useEffect,useRef,useState} from 'react'
 import type {SourceMaterialProcessingState} from '@rainver/protocol'
@@ -12,7 +14,7 @@ const active=new Set(['queued','running','waiting_for_review','waiting_for_depen
 /** Existing Run/Source operation is the only progress state. Remount/reload
  * resumes observation; no browser job runner or second local queue. */
 export function MaterialProcessingPanel({itemId,spaceId,hasContent,onReady,className}:{itemId:string;spaceId?:string;hasContent:boolean;onReady:()=>Promise<void>;className?:string}){
- const {t}=useAppTranslation();const [state,setState]=useState<SourceMaterialProcessingState>({status:'idle'});const [busy,setBusy]=useState(false);const [error,setError]=useState<string|null>(null);const [review,setReview]=useState(false);const [revision,setRevision]=useState(0);const [confirmAgain,setConfirmAgain]=useState(false);const generation=useRef(0);const ready=useRef(onReady);ready.current=onReady;
+ const {t}=useAppTranslation();const {userId}=useSpace();const [execution,setExecution]=useState<AgentExecutionSelection>({agent_id:'',runtime_profile_id:''});const [executionOpen,setExecutionOpen]=useState(false);const partialSelection=!!execution.agent_id!==!!execution.runtime_profile_id;const [state,setState]=useState<SourceMaterialProcessingState>({status:'idle'});const [busy,setBusy]=useState(false);const [error,setError]=useState<string|null>(null);const [review,setReview]=useState(false);const [revision,setRevision]=useState(0);const [confirmAgain,setConfirmAgain]=useState(false);const generation=useRef(0);const ready=useRef(onReady);ready.current=onReady;
  useEffect(()=>{
   const token=++generation.current;let timer:ReturnType<typeof setTimeout>|undefined;
   const poll=async()=>{if(token!==generation.current)return;try{
@@ -25,7 +27,7 @@ export function MaterialProcessingPanel({itemId,spaceId,hasContent,onReady,class
  async function start(allowStorage=false){const token=generation.current;setBusy(true);setError(null);try{
   if(allowStorage){const proposal=await sourcesApi.requestMaterialStorage(itemId,{spaceId});if(token!==generation.current)return;if(proposal.proposal_id)await proposalsApi.accept(proposal.proposal_id,{spaceId});}
   if(token!==generation.current)return;
-  const next=await sourcesApi.prepareMaterial(itemId,{}, {spaceId});if(token!==generation.current)return;setState(next);setReview(next.status==='needs_consent');
+  const next=await sourcesApi.prepareMaterial(itemId,{...(execution.agent_id?execution:{}),investigation:true}, {spaceId});if(token!==generation.current)return;setState(next);setReview(next.status==='needs_consent');
   if(active.has(next.status))setRevision(n=>n+1);
  }catch(e){if(token===generation.current){setError(errMsg(e));setReview(false)}}finally{setBusy(false);}}
  async function cancel(){setBusy(true);try{setState(await sourcesApi.cancelMaterialProcessing(itemId,{spaceId}));setRevision(n=>n+1)}catch(e){setError(errMsg(e))}finally{setBusy(false)}}
@@ -34,15 +36,22 @@ export function MaterialProcessingPanel({itemId,spaceId,hasContent,onReady,class
  // line, not a card: the reading text, not the management action, leads the first screen.
  const quiet=hasContent&&!active.has(state.status)&&state.status!=='failed'&&!error&&!review
  return <div className={cn(quiet?"flex flex-wrap items-center gap-2 text-sm":"space-y-3 rounded-lg border border-border bg-card p-3 text-sm",className)}>
-  <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant={quiet?'ghost':'default'} disabled={state.can_prepare===false||busy||active.has(state.status)} onClick={()=>{if(hasContent)setConfirmAgain(true);else void start()}}>{t(hasContent?'reading.prepareAgain':'reading.prepareMaterial')}</Button>
+  <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant={quiet?'ghost':'default'} disabled={state.can_prepare===false||busy||active.has(state.status)||partialSelection} onClick={()=>{if(hasContent)setConfirmAgain(true);else void start()}}>{t(hasContent?'reading.prepareAgain':'reading.prepareMaterial')}</Button>
+   <Button size="sm" variant="ghost" disabled={state.can_prepare===false||busy||active.has(state.status)} onClick={()=>setExecutionOpen(true)}>{t('reading.executionSettings')}</Button>
+   {execution.agent_id&&<span className="text-xs text-muted-foreground">{t('reading.executionSelected')}</span>}
    {active.has(state.status)&&<><span role="status" aria-live="polite"><StatusBadge status={state.status} label={t('reading.materialState_'+state.status,{defaultValue:state.status})}/></span><Button size="sm" variant="ghost" disabled={busy} onClick={()=>void cancel()}>{t('reading.cancelMaterial')}</Button></>}
    {state.run_id&&<Button size="sm" variant="outline" asChild><SpaceLink to={'/runs/'+state.run_id}>{t('reading.materialRun')}</SpaceLink></Button>}
   </div>
+  {state.execution&&<p className="text-xs text-muted-foreground">{state.execution.agent_name} · {state.execution.profile_name} · {state.execution.runtime_key}</p>}
   {state.status==='failed'&&<p role="alert" className="text-destructive">{t('reading.materialFailed')} {state.error&&reasonKey[state.error]?t('reading.'+reasonKey[state.error]):state.reason}</p>}
   {state.status==='cancelled'&&<p role="status" aria-live="polite" className="text-muted-foreground">{t('reading.materialCancelled')}</p>}
   {state.status==='read_only'&&<p>{t('reading.materialReadOnly')}</p>}
   {state.status==='succeeded'&&<p role="status" aria-live="polite" className="text-muted-foreground">{t('reading.materialReady')}</p>}
   {error&&<p role="alert" className="text-destructive">{error}</p>}
+  <Dialog open={executionOpen} onOpenChange={setExecutionOpen}><DialogContent className="max-h-[85dvh] max-w-[calc(100vw-2rem)] overflow-y-auto sm:max-w-lg"><DialogHeader><DialogTitle>{t('reading.executionSettings')}</DialogTitle><DialogDescription>{t('reading.executionSettingsHint')}</DialogDescription></DialogHeader>
+   {spaceId&&userId&&<AgentExecutionPicker title={t('reading.executionSettings')} spaceId={spaceId} userId={userId} value={execution} onChange={next=>setExecution(previous=>next.agent_id!==previous.agent_id||next.runtime_profile_id!==previous.runtime_profile_id?{agent_id:next.agent_id,runtime_profile_id:next.runtime_profile_id}:next)} disabled={busy||active.has(state.status)}/>}
+   <DialogFooter><Button size="sm" variant="ghost" onClick={()=>setExecution({agent_id:'',runtime_profile_id:''})}>{t('reading.inheritExecution')}</Button><Button size="sm" disabled={partialSelection} onClick={()=>setExecutionOpen(false)}>{t('reading.executionDone')}</Button></DialogFooter></DialogContent>
+  </Dialog>
   {/* Re-reading replaces what is shown with a new version of this one item: say what that means for its annotations before it starts. */}
   <Dialog open={confirmAgain} onOpenChange={setConfirmAgain}><DialogContent><DialogHeader><DialogTitle>{t('reading.prepareAgainTitle')}</DialogTitle><DialogDescription>{t('reading.prepareAgainImpact')}</DialogDescription></DialogHeader><DialogFooter><Button variant="ghost" onClick={()=>setConfirmAgain(false)}>{t('reading.prepareAgainKeep')}</Button><Button disabled={busy} onClick={()=>{setConfirmAgain(false);void start()}}>{t('reading.prepareAgainConfirm')}</Button></DialogFooter></DialogContent></Dialog>
   <Dialog open={review} onOpenChange={setReview}><DialogContent><DialogHeader><DialogTitle>{t('reading.materialConsentTitle')}</DialogTitle><DialogDescription>{t('reading.materialConsentDescription',{source:state.source_name??''})}</DialogDescription></DialogHeader><DialogFooter><Button variant="ghost" onClick={()=>setReview(false)}>{t('reading.materialNotNow')}</Button><Button disabled={busy||!state.can_request_consent} onClick={()=>void start(true)}>{t('reading.materialConsentConfirm')}</Button></DialogFooter></DialogContent></Dialog>

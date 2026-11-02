@@ -1,3 +1,4 @@
+import {ProjectThemeAnalysisSelectionSchema} from './projectReading.js';
 /** Goal orchestration DTOs. These contain references, never credentials or host paths. */
 import {z} from 'zod';
 import {RuntimeSessionConfigSelectionSchema} from './hosts.js';
@@ -30,6 +31,7 @@ export const SourceGoalBindingSpecSchema=z.object({
  supports_history:z.boolean(),
 }).strict();
 export const SourceGoalPlanSchema=z.object({
+ analysis_brief:z.string().trim().min(1).max(4000).describe('Analysis purpose for downstream reading: questions, comparison target, useful evidence and expected judgment. Derived from the user intent, not permissions or invented project facts.').optional(),
  title:z.string().trim().min(1).max(60).describe('Short topic label in the user language, ideally 4–12 Chinese characters or 2–6 words; summarize the subject, not the request.').optional(),
  search_path_snapshot:z.enum(['agent','api']).optional(),
  interval_seconds:z.number().int().min(3600).max(604800).optional(),
@@ -39,12 +41,20 @@ export const SourceGoalPlanSchema=z.object({
  limitations:z.array(z.string().max(1000)).max(20),
 }).strict().superRefine((p,c)=>{if(new Set(p.sources.map(s=>s.source_channel_id)).size!==p.sources.length || new Set(p.sources.map(s=>s.source_connection_id)).size!==p.sources.length)c.addIssue({code:'custom',message:'Duplicate source channel'});});
 export const SourceGoalNativeSourceRequestSchema=z.object({reason:z.string().min(1).max(2000),implementation:z.object({kind:z.literal('agent_search'),query:z.string().trim().min(3).max(1000)}).strict(),supports_history:z.literal(false)}).strict();
-export const SourceGoalVersionWriteSchema=z.object({goal_id:IdSchema,expected_revision:z.number().int().nonnegative(),plan:SourceGoalPlanSchema.or(z.object({title:z.string().trim().min(1).max(60).optional(),summary:z.string().min(1).max(4000),sources:z.array(SourceGoalBindingSpecSchema.or(SourceGoalNativeSourceRequestSchema)).min(1).max(5),limitations:z.array(z.string().max(1000)).max(20),interval_seconds:z.number().int().min(3600).max(604800).optional(),filters:z.object({includes:z.array(z.string()),excludes:z.array(z.string()),excluded_origins:z.array(z.string()).default([])}).optional()}).strict())}).strict();
+export const SourceGoalVersionWriteSchema=z.object({goal_id:IdSchema,expected_revision:z.number().int().nonnegative(),plan:SourceGoalPlanSchema.or(z.object({analysis_brief:z.string().trim().min(1).max(4000).optional(),title:z.string().trim().min(1).max(60).optional(),summary:z.string().min(1).max(4000),sources:z.array(SourceGoalBindingSpecSchema.or(SourceGoalNativeSourceRequestSchema)).min(1).max(5),limitations:z.array(z.string().max(1000)).max(20),interval_seconds:z.number().int().min(3600).max(604800).optional(),filters:z.object({includes:z.array(z.string()),excludes:z.array(z.string()),excluded_origins:z.array(z.string()).default([])}).optional()}).strict())}).strict();
 /** Optional manual save: the owner keeps one fresh exact-version Agent-search
  * preview as reading material without continuous following. Following itself
  * is SourceGoalFollowRequestSchema and never requires a preview. */
 export const SourceGoalSaveSampleSchema=z.object({version_id:IdSchema,preview_id:IdSchema,idempotency_key:z.string().min(1).max(128)}).strict();
 export type SourceGoalSaveSample=z.infer<typeof SourceGoalSaveSampleSchema>;
+/** Owner-authored draft over the existing Source plan; activation stays explicit. */
+export const SourceGoalEditSchema=z.object({
+ expected_revision:z.number().int().nonnegative(),idempotency_key:z.string().min(1).max(128),
+ title:z.string().trim().min(1).max(60),intent:z.string().trim().min(3).max(8000),analysis_brief:z.string().trim().min(1).max(4000),
+ includes:z.array(z.string().trim().min(1).max(200)).max(16),excludes:z.array(z.string().trim().min(1).max(200)).max(16),
+ queries:z.array(z.object({source_connection_id:IdSchema,query:z.string().trim().min(3).max(1000)}).strict()).max(5).default([]),
+}).strict();
+export type SourceGoalEdit=z.infer<typeof SourceGoalEditSchema>;
 export const SourceGoalRepairSchema=z.object({binding_id:IdSchema,expected_revision:z.number().int().nonnegative(),implementation:SourceGoalImplementationSchema}).strict();
 export const SourceGoalStatusSchema=z.enum(['draft','exploring','needs_information','preview_ready','running','paused','needs_intervention','deleted']);
 export const SourceGoalExecutionProgressSchema=z.object({run_id:IdSchema,status:z.string(),phase:z.enum(['queued','working','waiting_for_approval','failed','cancelled','plan_ready','needs_information']),last_action:z.string().nullable(),pending_approvals:z.number().int().nonnegative(),block_reason:z.enum(['source_setup_incomplete','plan_source_unavailable','tool_failed']).nullish(),failure_reason:z.enum(['time_limit','run_failed']).nullable(),updated_at:z.string()}).strict();
@@ -55,6 +65,7 @@ export type SourceGoalExecutionProgress=z.infer<typeof SourceGoalExecutionProgre
  * plan; omitted means the current plan, or the first plan once prepared. */
 export const SourceGoalFollowRequestSchema=z.object({
  idempotency_key:z.string().min(1).max(128),version_id:IdSchema.nullish(),
+ theme_analysis:ProjectThemeAnalysisSelectionSchema.optional(),
  interval_seconds:z.number().int().min(3600).max(604800).optional(),
  requests_per_run:z.number().int().min(1).max(20).optional(),
  items_per_source:z.number().int().min(1).max(100).optional(),
@@ -62,6 +73,7 @@ export const SourceGoalFollowRequestSchema=z.object({
 export type SourceGoalFollowRequest=z.infer<typeof SourceGoalFollowRequestSchema>;
 /** Durable confirmed following intent (source_goals.follow_json). */
 export const SourceGoalFollowSchema=z.object({
+ theme_analysis:ProjectThemeAnalysisSelectionSchema.optional(),
  confirmed_at:z.string(),confirmed_by_user_id:IdSchema,idempotency_key:z.string(),
  version_id:IdSchema.nullable(),interval_seconds:z.number().int(),requests_per_run:z.number().int(),items_per_source:z.number().int(),
  activated_version_id:IdSchema.nullable(),reused_preview_id:IdSchema.nullable(),last_error:z.string().nullable(),

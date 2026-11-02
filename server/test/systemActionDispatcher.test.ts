@@ -126,7 +126,7 @@ describe("SystemActionDispatcher ACP tool projection", () => {
       await dispatcher.dispatch({
         id,
         name: "agent.delegate",
-        arguments_json: JSON.stringify({ target_agent_id: "agent-2", instruction: `Task for ${id}` }),
+        arguments_json: JSON.stringify({ workspace_access: "write" as const, target_agent_id: "agent-2", instruction: `Task for ${id}` }),
       });
     }
 

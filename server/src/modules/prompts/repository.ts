@@ -91,10 +91,11 @@ export class PromptRepository {
     identity: SpaceUserIdentity,
     assetKey: string,
     body: Record<string, unknown>,
+    options: {trustedReadingGeneration?: boolean} = {},
   ): Promise<Record<string, unknown>> {
     const { row, promptType } = await this.requireWritablePromptAssetRow(identity, assetKey);
     const content = await this.validatedPromptContent(promptType, body.content_json);
-    return promptVersionOut(await this.assets.createVersion(identity, row.id, { ...body, content_json: content }));
+    return promptVersionOut(await this.assets.createVersion(identity, row.id, { ...body, content_json: content }, options));
   }
 
   async renderPreview(
@@ -159,6 +160,7 @@ export class PromptRepository {
     const label = normalizedLabel(optionalString(body.label) ?? "production");
     if (label !== "production") throw new HttpError(422, "Only production promotion requires a proposal; use deployments/:label for staging");
     const scope = await this.normalizedDeploymentScope(identity, row, body);
+    if(['reading.project_investigation','prompt.revision.method'].includes(assetKey)&&!['project','space'].includes(scope.scopeType))throw new HttpError(422,'Reading methods deploy only to a Project or the current Space');
     return this.evaluations.createPromotionProposal(identity, row.id, versionId, {
       target_scope_type: scope.scopeType,
       target_scope_id: scope.scopeId,
@@ -200,10 +202,12 @@ export class PromptRepository {
     const { row } = await this.requireWritablePromptAssetRow(identity, assetKey);
     const normalized = normalizedLabel(label);
     const scope = await this.normalizedDeploymentScope(identity, row, body);
+    if(['reading.project_investigation','prompt.revision.method'].includes(assetKey)&&!['project','space'].includes(scope.scopeType))throw new HttpError(422,'Reading methods deploy only to a Project or the current Space');
     const versionId = optionalString(body.version_id);
     if (!versionId) throw new HttpError(422, "version_id is required");
     const version = await this.versionRow(row.id, versionId);
     if (!version) throw new HttpError(422, "version_id does not reference a version of this prompt asset");
+    if(!await canViewVersionScope(this.db,identity,version))throw new HttpError(404,"Prompt version not found");
     validateVersionForDeployment(identity, normalized, scope.scopeType, scope.scopeId, version);
     const proposalId = optionalString(body.promoted_from_proposal_id);
     // Production requires a proposal; any label that names one must name an
@@ -223,6 +227,7 @@ export class PromptRepository {
     const { row } = await this.requireWritablePromptAssetRow(identity, assetKey);
     const label = normalizedLabel(optionalString(body.label) ?? "production");
     const scope = await this.normalizedDeploymentScope(identity, row, body);
+    if(['reading.project_investigation','prompt.revision.method'].includes(assetKey)&&!['project','space'].includes(scope.scopeType))throw new HttpError(422,'Reading methods deploy only to a Project or the current Space');
     const explicitVersionId = optionalString(body.version_id);
     const current = await this.activeDeploymentRef(identity, row.id, scope.scopeType, scope.scopeId, label);
     // A ref a rollback wrote has no "previous" to return to by default: the
@@ -231,8 +236,13 @@ export class PromptRepository {
     if (!explicitVersionId && current?.rolled_back_from_ref_id) {
       throw new HttpError(409, "This deployment is already a rollback; name the version_id to roll back to");
     }
-    const targetVersionId = explicitVersionId
-      ?? await this.previousDeploymentVersionId(identity, row.id, scope.scopeType, scope.scopeId, label);
+    const previous = await this.previousDeploymentVersionId(identity,row.id,scope.scopeType,scope.scopeId,label);
+    // A reading method's first scoped deployment may have inherited its baseline
+    // from system/Space. Roll back to that exact evaluated baseline, not today's parent scope.
+    const inheritedBaseline = ['reading.project_investigation','prompt.revision.method'].includes(assetKey) && current && !previous
+      ? (await this.db.query<{baseline_version_id:string}>(`SELECT baseline_version_id FROM evolvable_asset_evaluation_runs WHERE space_id=$1 AND candidate_version_id=$2 AND evaluator_version='reading_method_pair.v1' AND status='passed' ORDER BY created_at DESC LIMIT 1`,[identity.spaceId,current.version_id])).rows[0]?.baseline_version_id
+      : null;
+    const targetVersionId = explicitVersionId ?? previous ?? inheritedBaseline;
     if (!targetVersionId) throw new HttpError(404, "No previous deployment ref is available for rollback");
     const version = await this.versionRow(row.id, targetVersionId);
     if (!version) throw new HttpError(422, "rollback target version does not reference this prompt asset");
@@ -284,8 +294,8 @@ export class PromptRepository {
   ): Promise<PromptAssetContent> {
     // Version numbers run across every Space and scope of a shared asset, so
     // "latest" means the latest version this caller may see.
-    const result = await this.db.query<{ content_json: unknown; space_id: string | null; scope_type: string; scope_id: string | null }>(
-      `SELECT content_json, space_id, scope_type, scope_id
+    const result = await this.db.query<{ content_json: unknown; space_id: string | null; scope_type: string; scope_id: string | null;status:string }>(
+      `SELECT content_json, space_id, scope_type, scope_id,status
          FROM evolvable_asset_versions
         WHERE asset_id = $1 AND (space_id IS NULL OR space_id = $2)
           ${versionId ? "AND id = $3" : ""}

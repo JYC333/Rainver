@@ -9,6 +9,8 @@ const CONNECTION_ACCESS = contentResourceDefinition("source_connection")!;
 export function sourceJobReadableClause(alias: string, userParam: string, includeOversight = true): string {
   return `(
     (${alias}.source_item_id IS NOT NULL OR ${alias}.connection_id IS NOT NULL)
+    AND (NOT COALESCE(${alias}.metadata_json ? 'deep_project',false)
+      OR ${alias}.metadata_json->>'user_id' = ${userParam})
     AND (${alias}.source_item_id IS NULL OR EXISTS (
       SELECT 1 FROM source_items job_item
        WHERE job_item.space_id = ${alias}.space_id AND job_item.id = ${alias}.source_item_id

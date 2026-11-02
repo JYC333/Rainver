@@ -86,3 +86,13 @@ describe('host capability normalization', () => {
     expect(current.installations.opencode?.[0]?.accounts).toEqual([{ id: 'openai', kind: 'api' }])
   })
 })
+
+it('gates read-only personal Host execution on its normalized capability, never an old or forged mechanism',async()=>{
+ const {readOnlyWorkspaceHostRefusal:refuse}=await import('../src/modules/runs/workspaceAccessPolicy.js');
+ const supported=normalizeHostCapabilities({workspace_read_only:{supported:true,mechanism:'bwrap-v1',reason:null}});
+ expect(refuse('read','codex_cli','remote',supported)).toBeNull();
+ expect(refuse('read','codex_cli','remote',normalizeHostCapabilities({}))).toMatch(/bubblewrap/);
+ expect(refuse('read','claude_code','remote',normalizeHostCapabilities({workspace_read_only:{supported:true,mechanism:'native-prompt'}}))).toMatch(/bubblewrap/);
+ expect(refuse('read','acp_antigravity_acp','remote',{workspace_read_only:{supported:false,mechanism:'bwrap-v1'}})).toMatch(/bubblewrap/);
+ expect(refuse('write','codex_cli','remote',{})).toBeNull();
+});

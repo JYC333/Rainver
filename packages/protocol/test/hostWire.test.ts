@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HostServerFrameSchema, HostFolderReadFrameSchema, HostInstallToolFrameSchema, HostUpdateOwnToolFrameSchema, RuntimeProbeSchema } from "../src/hostWire.js";
+import { HostServerFrameSchema, HostFolderReadFrameSchema, HostInstallToolFrameSchema, HostUpdateOwnToolFrameSchema, RuntimeProbeSchema, HostLaunchProviderBindingSchema } from "../src/hostWire.js";
 import { HostSkillFilesSchema, SkillImportPreviewRequestSchema, SkillImportRequestSchema } from "../src/skills.js";
 
 it("discovers global Skills using opaque ids without accepting a caller filesystem path", () => {
@@ -39,10 +39,14 @@ describe("Host runtime probe identity", () => {
   it("preserves fixed login process settings and post-login verification commands", () => {
     const login = { command: ["claude", "/login"], env: { DISABLE_AUTOUPDATER: "1" },
       verification_command: ["claude", "--version"], managed_verification_command: ["{tree}/claude", "--version"] };
-    const state = { env: { CLAUDE_CONFIG_DIR: ".claude" }, home_subdir: ".claude", credential_file: ".credentials.json" };
+    const state = { env: { CLAUDE_CONFIG_DIR: ".claude" }, home_subdir: ".claude", credential_file: ".credentials.json", shared_credential_env: "CLAUDE_SECURESTORAGE_CONFIG_DIR" };
     const parsed = RuntimeProbeSchema.parse({ ...probe, login, state });
     expect(parsed.login).toEqual(login);
     expect(parsed.state).toEqual(state);
+    expect(HostLaunchProviderBindingSchema.parse({
+      profile_key: "agents/a/conversation/c/claude_code/ambient", env: {}, profile_env: state.env,
+      files: [], credential_source: "host_login", login_link: state,
+    }).login_link?.shared_credential_env).toBe("CLAUDE_SECURESTORAGE_CONFIG_DIR");
     expect(RuntimeProbeSchema.safeParse({ ...probe, login: { ...login, verification_command: [] } }).success).toBe(false);
   });
   it("names a runtime only by runtime_key", () => {

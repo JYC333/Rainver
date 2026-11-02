@@ -4,8 +4,9 @@ import type { HostLaunchIsolation } from "@rainver/protocol";
 
 /**
  * The strict-mode namespace: one rootless bubblewrap mount/PID namespace per
- * Run. A `strict` host wraps every Run; a `trusted` host spawns natively and
- * never reaches this file.
+ * Run. A `strict` host wraps every Run; an updated personal Linux Host also
+ * uses this mechanism for explicit, locally verified read-only reviews.
+ * Ordinary trusted writes remain native.
  *
  * Bind each path at its own path. The daemon is the only component that
  * resolves paths (B64), and the values it has already materialized —
@@ -41,6 +42,10 @@ export const BWRAP_PATH = "/usr/bin/bwrap";
  * before the Run ever starts.
  */
 const SYSTEM_ROOTS = ["/usr", "/bin", "/sbin", "/lib", "/lib64"];
+
+// TCMalloc runtimes read the possible CPU mask during process initialization.
+// Expose only this non-writable topology file, never the surrounding sysfs tree.
+const CPU_TOPOLOGY_FILES = ["/sys/devices/system/cpu/possible"];
 
 /**
  * The minimum an ordinary process needs to resolve users, time zones, DNS and
@@ -127,7 +132,7 @@ function mergeBinds(binds: StrictBind[]): StrictBind[] {
  * be built" stays distinct from "the runtime exited immediately", which are
  * the same exit code otherwise. Do not drop the readiness report.
  */
-export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { command: string; args: string[] } {
+export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { command: string; args: string[]; env:Record<string,string> } {
   const cwd = assertAbsolute("cwd", request.cwd);
   const home = assertAbsolute("home", request.home);
   const args = [
@@ -145,6 +150,7 @@ export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { 
   ];
   for (const root of SYSTEM_ROOTS) if (exists(root)) args.push("--ro-bind", root, root);
   for (const path of ETC) if (exists(path)) args.push("--ro-bind", path, path);
+  for (const path of CPU_TOPOLOGY_FILES) if (exists(path)) args.push("--ro-bind", path, path);
   // `none` receives a network namespace of its own, and is the only profile
   // that *confines* a Run's network. `default` and `install` keep the
   // container's stack and are pointed at the daemon's egress proxy with
@@ -160,10 +166,6 @@ export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { 
     args.push(bind.access === "read_only" ? "--ro-bind" : "--bind", bind.path, bind.path);
   }
 
-  args.push("--setenv", "HOME", home);
-  for (const [key, value] of Object.entries({ ...request.env, ...STRICT_SANDBOX_ENV })) {
-    args.push("--setenv", key, value);
-  }
   args.push(
     "--chdir",
     cwd,
@@ -175,5 +177,5 @@ export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { 
     request.command,
     ...request.args,
   );
-  return { command: BWRAP_PATH, args };
+  return { command: BWRAP_PATH, args, env:{HOME:home,...request.env,...STRICT_SANDBOX_ENV} };
 }

@@ -39,11 +39,17 @@ import type {
   ThreadReferenceDisclosureRequired,
 } from "@rainver/protocol";
 
-interface ResolvedThreadReference {
+export interface ResolvedThreadReference {
   content: string;
   provenance: ThreadReferenceProvenance;
   /** Who can read the source, asked of the same gate the read itself uses. */
   sourceAudienceUserIds: string[];
+  /**
+   * False when no confirmation can widen this content's audience (a
+   * briefing's text rests on Sources the attacher does not own): a target
+   * reaching anyone beyond the source's audience is refused outright.
+   */
+  disclosable?: boolean;
 }
 
 /**
@@ -81,7 +87,7 @@ export const REFERENCE_BATCH_TOKEN_BUDGET = ROOM_SUMMARY_TOKEN_BUDGET;
  *   file, so they are quoted *inside* the fence rather than announced above
  *   it.
  */
-function fenced(
+export function fenced(
   header: string,
   body: string,
   trust: ThreadReferenceProvenance["trust"],
@@ -109,6 +115,8 @@ export async function resolveThreadReference(
   targetProjectId: string,
   budget: number,
 ): Promise<ResolvedThreadReference> {
+  // A briefing highlight has its own resolver (`informationDigest/briefing/followUp.ts`) with its own gates.
+  if (pick.kind === "briefing_highlight") throw new HttpError(422, "A briefing reference is resolved by its own scope rules");
   if (pick.kind === "thread" || pick.kind === "messages") {
     return resolveConversationPick(db, identity, pick, targetProjectId, budget);
   }
@@ -215,7 +223,7 @@ async function conversationHoldsExternalContent(
  * copy would land with no confirmation and become readable the moment a
  * colleague first opens the Project.
  */
-async function roomAudience(
+export async function roomAudience(
   db: Queryable,
   spaceId: string,
   room: { id: string; project_id: string; is_mainline: boolean },

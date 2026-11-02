@@ -111,13 +111,14 @@ export class EvaluationHarnessService {
         ORDER BY created_at DESC, id ASC`,
       [identity.spaceId, assetId],
     );
-    return result.rows.map(caseOut);
+    return result.rows.filter(row => (row.input_json as {kind?:string})?.kind !== 'reading_method_sample.v1').map(caseOut);
   }
 
   async createCase(
     identity: SpaceUserIdentity,
     assetId: string,
     input: CreateEvaluationCaseInput,
+    options: {trustedReadingSample?:boolean} = {},
   ): Promise<Record<string, unknown>> {
     if (input.source_run_id) {
       throw new HttpError(422, "Use the from-run endpoint when source_run_id is provided");
@@ -126,7 +127,7 @@ export class EvaluationHarnessService {
     if (baselineOutput === undefined) {
       throw new HttpError(422, "baseline_output_json is required unless creating a case from a run");
     }
-    return this.insertCase(identity, assetId, input, baselineOutput);
+    return this.insertCase(identity, assetId, input, baselineOutput, options.trustedReadingSample === true);
   }
 
   async createCaseFromRun(
@@ -322,8 +323,10 @@ export class EvaluationHarnessService {
     assetId: string,
     input: CreateEvaluationCaseInput,
     baselineOutput: unknown,
+    trustedReadingSample = false,
   ): Promise<Record<string, unknown>> {
     const asset = await this.requireWritableAsset(identity, assetId);
+    if((input.input_json as {kind?:string}|null)?.kind==='reading_method_sample.v1'&&!trustedReadingSample)throw new HttpError(403,'Reading samples must be prepared through the bounded Source-authorized endpoint');
     const name = optionalString(input.name);
     if (!name) throw new HttpError(422, "name is required");
     const baselineVersionId = optionalString(input.baseline_version_id);
@@ -397,6 +400,7 @@ export class EvaluationHarnessService {
     );
     const row = result.rows[0];
     if (!row) throw new HttpError(404, "Evaluation case not found");
+    if((row.input_json as {kind?:string})?.kind==='reading_method_sample.v1')throw new HttpError(403,'Reading samples use the bounded trial endpoint');
     return row;
   }
 

@@ -21,8 +21,20 @@ source pipeline, subscription model, data model, and API.
 
 ## Owns
 
+- Reading settings contain the primary shared **Reading method** link, scoped to
+  the current Space or Project; daily recommendation preferences and Project
+  source settings reuse it. Method maintenance opens without an article. The
+  Source Reader keeps a secondary result-context shortcut. Reading/Digest cards
+  navigate through titles without duplicate Open Reader or method buttons.
+  Comparing a candidate asks for an authorized material only at comparison time;
+  read, draft and description revision do not require a sample. See
+  [Reading methods](../architecture/READING_METHODS.md) for authority and scope.
+
 - Library shell (`/library`): Shell scene sidebar navigation for reading
   sections; defaults to `/library/reading` (the cross-day pending recommendation list). The navigation labels it Reading. All material uses `/library/reading?view=all`; legacy `/library/items` and type filters remain reachable under By type.
+- Personal briefing at the top of personal Reading (`PersonalBriefingPanel`,
+  owned by Information Digest's briefing kernel): collapsed to status and
+  overview so the list stays within reach; not shown in a Project's Reading.
 - Per-user item stream (`/library/items`): source-scanned items from sources
   the current user follows, items those sources delivered while the user
   followed them (historical eligibility, below), plus manually saved
@@ -131,10 +143,22 @@ source pipeline, subscription model, data model, and API.
   previous or next day up to the latest complete one, and say whether the
   snapshot was scheduled or a backfill. A missing day shows the server's
   explanation and, for a complete day the reader may write, a "Backfill this
-  day" action; viewing never generates. `/library/digests` also shows the
+  day" action; viewing never generates. Stepping to another day keeps the page
+  frame: the navigation moves to the day asked for at once, the earlier day
+  stays dimmed and inert under a status line naming both days (backfill not
+  offered), and it is replaced when the day lands. A day that cannot be read is
+  named in an alert and no earlier content stays under it. On the personal page
+  the daily edition lands, fails and retries on its own, without waiting for
+  Source briefings, the profile or the Project list. Kept content is dropped on
+  a scope change or logout. `/library/digests` also shows the
   reader's own Source annotation failure episodes (`AnnotationRecoveryNotice`):
   a relative and absolute next-retry time only while an automatic retry is
   scheduled, the waiting condition otherwise, and "Retry now".
+- Source Reader version history lists retained extracted snapshots and opens an
+  old body read-only in the same route via `?version=…`, with a return to the
+  latest body. Current annotations and processing actions stay on the latest
+  version. Snapshot access is checked independently, not inferred from the
+  parent item. See [Reader](../architecture/READER.md#retained-source-reading-versions).
 - Single-item reader routes:
   - `/library/items/:itemId`
   - `/library/digests/:connectionId/:date/items/:itemId`
@@ -485,8 +509,9 @@ The Library list opens Reader rather than keeping a second extraction/retry flow
 
 Material preparation uses shared status badges, buttons and theme tokens in both
 Reader and URL saving. The parent owns outer spacing; goal execution settings
-reuse the same picker without nested frames. Reader itself offers no Agent picker;
-material preparation inherits the saved goal or existing owned default configuration. Queued/working/final updates are
+reuse the same picker without nested frames. Material preparation offers Execution
+settings for the next reading Run, using existing owned Agent/Profile choices;
+without an override it inherits the saved goal or owned default configuration. Queued/working/final updates are
 announced through the status region, and failures retain the standard error color.
 
 Saving a link starts its preparation before the dialog mounts the panel, so the
@@ -567,3 +592,151 @@ as its topic links before loading latest audits, and retains material plus
 collecting-Source authorization. This is not publication age or since-last-visit
 state. No read acknowledgement is written by displaying it. See Source Goals'
 latest-collection contract for provenance and failure/empty-check semantics.
+
+## Reading method improvement
+
+Reading and digest cards and the Source Reader have a server-authorized **Improve
+this result** entry to the existing `/prompts` workspace. It verifies the material,
+Project and (for Reader) canonical shown artifact, then shows the actual effective
+method and recorded result provenance; historical unknowns are not guessed. Only
+existing asset maintainers can edit/trial/request activation. The simple workspace
+retains the advanced prompt page via a disclosure, without a new top-level nav.
+See [Reading methods](../architecture/READING_METHODS.md) for version freezing,
+private paired Runs, human judgment, proposals, rollback and verification limits.
+
+The Reading method workspace shows the complete current effective method first,
+then description-driven candidate generation using the authorized Space default
+chat API, without an Agent or personal CLI configuration. One final Advanced disclosure combines explicit manual
+editing, recorded result provenance and the original prompt-management link;
+viewing information does not begin editing. Generation only saves a draft: the existing explicit
+comparison and human approval path still controls activation. Logs are not inputs.
+
+The final Advanced area also offers authorized API Provider/model overrides and
+the real system revision-method workspace. Its own candidates use a fixed prompt-
+revision comparison example, not a Reading investigation case; activation remains
+proposal-gated and manual editing stays available without an API.
+
+### Reading investigation execution
+
+The Source Reader offers **Execution settings** beside **Read again** / **Read and
+prepare**, using the shared Agent execution picker. It selects an existing owned
+Agent/Profile and its advertised model/mode for the next Run; native Antigravity
+and API-bound OpenCode configurations use the same entry. Selecting no override
+keeps the topic/default route. Changes are disabled while processing, and actual
+Run execution is shown separately. Preparing from Reader requests the bounded
+saved-item investigation, including authorized history search and draft coverage
+feedback; it does not change goal collection or method-comparison execution.
+See [material processing](../architecture/SOURCE_MATERIAL_PROCESSING.md#saved-item-investigation-and-execution-selection).
+
+### Shared topic material presentation and progress
+
+Reading and Following topic streams use `ReadingItemCard` for title navigation,
+metadata, topic/recommendation details, private read/set-aside actions and progress.
+`ReadingCard` owns the surface and a full-width progress track pinned to the
+bottom edge, using the clamped maximum of current/furthest progress; the accessible
+percentage remains available. Both lists reuse the same browser-local density
+preference and control. Topic-only exclusion feedback lives within the shared
+details area; it does not introduce another card layout or duplicate Open Reader.
+Topic headers expose Edit topic and Discuss changes. The former saves a human
+plan draft; the latter opens the existing conversation workbench. Applying the
+exact pending plan still uses Following's original confirmation contract.
+
+### Project Reading R1 storage boundary
+
+New Project Agent reports are independent private analysis snapshots, not article
+body replacements. Current-item original annotations/progress are not touched by
+report generation. The Reader records API exposes authorized original/analysis
+references and legacy classification; existing deep links keep their identities.
+Personal Reading/Daily Digest and Research presentation are unchanged. The new
+Project four-view consumer, explicit deep-reading/favorite actions and two-stage
+collection orchestration remain R2–R5 work; R1 does not enable new background spend.
+
+## Project favorites and private deep-reading API (R4, UI in R5)
+
+Favorite is an independent boolean on `source_item_user_states`, keyed by the
+canonical Space/item/user identity. It is not read status, set-aside, Corpus,
+annotation bookmark or a new Following. It does not start acquisition or a Run;
+unfavorite does not cancel an investigation or delete any report. It is not
+input to Project shared synthesis. Lists filter current full material rights and
+canonical Project membership (including collecting Source rights for Following).
+
+Under `/api/v1/spaces/:spaceId/projects/:projectId/reading`:
+- POST `/items/:itemId/favorite` `{favorite}`; GET `/favorites?offset=…` (25/page).
+- POST `/items/:itemId/deep-reads`: optional owned `agent_id`/`runtime_profile_id`
+  together, advertised `session_config`, explicit nullable Following reference,
+  or `retry_of`/`rerun_of` (mutually exclusive). No raw original/context/log fields.
+- GET `/deep-reads?offset=…` and `/deep-reads/:operationId` return only this user's
+  operations, exact frozen original/method/purpose ids, effective time limit and
+  report Snapshot/Artifact link when authorized. Offsets stop at10000. Private
+  results remain discoverable without a favorite and after leaving the page.
+- POST `/deep-reads/:operationId/cancel` is owner-only and uses canonical stop/ACK;
+  it does not need withdrawn content access. Retry/rerun use the start endpoint.
+
+Reports open via existing Reader `source_snapshot` and Artifact export contracts,
+not a second body endpoint. Read/history do not republish private reports into
+Project themes. No R4 UI, notifications, Memory or Research work is implied.
+See [material processing](../architecture/SOURCE_MATERIAL_PROCESSING.md#project-private-deep-reading-r4).
+
+## Project Reading four views (R5)
+
+The existing Project `/projects/:projectId/sources` parent now defaults to the
+persistent **Overview** from R3. The local tabs are Overview, Original materials,
+Following and Deep readings; global navigation and personal Reading are unchanged.
+`apps/web/src/modules/projects/reading/` owns these purpose-specific consumers.
+Old `sources`/`settings`, `raw`/`candidates`, `updates`, `materials`, and daily
+`digest` destinations remain reachable. Settings/candidates keep their old Reader
+processing entry; the new Project reading surface uses explicit private deep reading.
+
+Overview reads current/history and exact-version export projections, not current
+item bodies. It shows quick lines, original topic publication times, short summaries,
+expandable full topic output, frozen purpose, evidence links and latest check coverage.
+No cross-theme conclusion is generated. Retrying composition is an explicit writer-gated
+request to the existing composition Job; it does not rerun topic models. Historical
+versions are read-only and currently withheld sections contain no derived text.
+
+Original materials reuse `useReading` and `ReadingItemCard`. Topic/read/favorite
+filters are server-paged; favorites are private, require full access, and never
+start collection or analysis. Title links ask Reader to resolve the deterministic
+original. When that artifact is still current, the normal item document identity
+preserves its annotations/progress; otherwise Reader uses the exact original snapshot.
+Unknown/legacy saved documents retain their real identity and provenance warning.
+
+Deep readings are the requester's R4 operations, 25 per page with bounded offsets,
+independent of favorites. Active statuses refresh with pure GETs; leaving does not
+cancel. Start, bounded retry/rerun and cancel are explicit. Failed versions leave
+earlier successful reports reachable. Nullable Following selection carries the exact
+Goal/version/collecting connection; Advanced reuses AgentExecutionPicker, including
+advertised model/mode. Reader switches exact original/analysis versions with
+paged records, no annotation/progress migration across bodies. Reader returns
+preserve the bounded Project tab/filter/composition/operation-page context.
+
+Scope/user/page keys, request abort and session epochs reject late A→B→A responses.
+401/403/404 clear derived content; ordinary network errors retain authorized history.
+After Project access is withdrawn, only previously visible active operation ids
+are retained on that mounted page for owner cancellation, without titles or body.
+The cancellation notice does not claim terminal ACK; fresh status requires access.
+Logout clears these handles too. No API or control grants extra Source/Project authority.
+
+For an exact Project analysis Reader, the records endpoint accepts a bounded
+`snapshot_id` filter (offset must be0) under the identical Project/item/full
+dependency gate. The Reader validates this before showing the version. Its
+“original used for this report” action uses that immutable record's original id,
+not the latest author's version. Latest original is labelled separately. Legacy
+settings/candidates/daily-division returns retain their old Source Reader scope,
+including editions containing an item from another permitted Source Project.
+Private operation cards show the frozen purpose label from the immutable Goal
+version, never a newly renamed live Goal; withdrawn labels are null.
+
+Composition retry controls use the existing canonical Project GET
+`current_user_can_write` capability; unknown/failed capability reads hide the
+control, and historical compositions remain read-only. A rejected write is an
+independent operation error and triggers a new composition GET. Only the read's
+own 401/403/404 removes the last read; it is never converted into a false empty
+composition. Refresh clears this operation error and reloads read/capability.
+Other private action denial semantics are unchanged.
+
+
+Project Reading acceptance evidence and the explicit synthetic/real-model boundary
+are maintained in [Project Reading acceptance](../../docs/PROJECT_READING_ACCEPTANCE.md).
+The long-content browser fixture exercises persistent three-topic versions and exact
+original Reader links; it does not grade model quality or enable a runtime feature.

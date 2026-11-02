@@ -19,8 +19,8 @@ export const sourceGoals=pgTable('source_goals',{
 },t=>[unique('uq_source_goals_space_id').on(t.spaceId,t.id),unique('uq_source_goal_creation').on(t.spaceId,t.ownerUserId,t.creationKey),unique('uq_source_goals_legacy_channel').on(t.spaceId,t.legacyChannelId),foreignKey({columns:[t.spaceId,t.projectId],foreignColumns:[projects.spaceId,projects.id]}),check('ck_source_goal_revision',sql`${t.revision}>=0`)]);
 export const sourceGoalVersions=pgTable('source_goal_versions',{
  id:id(),spaceId:varchar('space_id',{length:36}).notNull(),goalId:varchar('goal_id',{length:36}).notNull(),revision:integer().notNull(),
- adjustmentCycle:integer('adjustment_cycle').notNull().default(0),planJson:jsonb('plan_json').notNull(),createdByRunId:varchar('created_by_run_id',{length:36}).notNull(),createdAt:at('created_at'),
-},t=>[unique('uq_source_goal_versions_revision').on(t.goalId,t.revision),unique('uq_source_goal_versions_space_id').on(t.spaceId,t.id),foreignKey({columns:[t.spaceId,t.goalId],foreignColumns:[sourceGoals.spaceId,sourceGoals.id]})]);
+ adjustmentCycle:integer('adjustment_cycle').notNull().default(0),planJson:jsonb('plan_json').notNull(),createdByRunId:varchar('created_by_run_id',{length:36}),createdByUserId:varchar('created_by_user_id',{length:36}).references(()=>users.id),createdAt:at('created_at'),
+},t=>[check('ck_source_goal_version_author',sql`(${t.createdByRunId} IS NOT NULL) <> (${t.createdByUserId} IS NOT NULL)`),unique('uq_source_goal_versions_revision').on(t.goalId,t.revision),unique('uq_source_goal_versions_space_id').on(t.spaceId,t.id),foreignKey({columns:[t.spaceId,t.goalId],foreignColumns:[sourceGoals.spaceId,sourceGoals.id]})]);
 export const sourceGoalPreviews=pgTable('source_goal_previews',{
  id:id(),spaceId:varchar('space_id',{length:36}).notNull(),goalId:varchar('goal_id',{length:36}).notNull(),versionId:varchar('version_id',{length:36}).notNull(),
  status:varchar({length:24}).notNull(),resultJson:jsonb('result_json').notNull(),expiresAt:at('expires_at'),createdAt:at('created_at'),

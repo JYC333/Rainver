@@ -30,7 +30,7 @@ export interface ShownVersion { artifact_id:string; source_snapshot_id:string|nu
 export async function showAgentTextAsMarkdown(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,itemId:string,shown:ShownVersion){
  return withDbTransaction(db,async tx=>{
   // The same authority as reading it again: a writer of the material, under the Source's storage policy.
-  const {source}=await requireProcessingItem(tx,identity,itemId);
+  const {source,item:authorizedItem}=await requireProcessingItem(tx,identity,itemId);
   if(source&&!agentReadingPolicy(source).content)throw new HttpError(403,'source_material_storage_consent_required');
   const item=(await tx.query<{content_hash:string|null;source_uri:string|null}>(`SELECT content_hash,source_uri FROM source_items WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL FOR UPDATE`,[itemId,identity.spaceId])).rows[0];
   if(!item)throw new HttpError(404,'Material not found');
@@ -38,6 +38,7 @@ export async function showAgentTextAsMarkdown(db:Pool,config:ServerConfig,identi
   if(!version||version.artifactId!==shown.artifact_id||version.snapshotId!==shown.source_snapshot_id){const message='The text was updated; look at it again before choosing';throw Object.assign(new HttpError(409,message,{detail:message,code:'reading_version_changed'}),{code:'reading_version_changed'});}
   const syntax=version.content.agentTextSyntax;
   if(syntax!=='undeclared'&&syntax!=='plain')throw new HttpError(409,'Only Agent text shown literally can be shown as Markdown');
+  if(authorizedItem.project_id)throw new HttpError(409,'Project analysis has an independent version; the original document cannot be replaced by a syntax conversion');
   const meta=version.content.metadata;
   const content=SourceMaterialReadingContentSchema.safeParse({kind:meta.reading_content_kind,format:meta.reading_content_format,syntax:'markdown',text:version.content.text,sources:meta.reading_sources});
   if(!content.success)throw new HttpError(409,'The saved Agent text cannot be converted');

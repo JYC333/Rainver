@@ -1,6 +1,22 @@
 /** 关注主题旅程：创建、更新、状态与管理。 */
 export const sourceTopicsZhCN = {
   topics: {
+    'edit': "编辑主题",
+    'discuss': "对话调整",
+    'editHint': "保存为草稿，确认应用后更新跟踪；此前原方案继续运行。保留来源和频率，可修改下方 Agent 搜索词；其他来源设置可通过对话调整。",
+    'editTitle': "主题名称",
+    'editPurpose': "跟踪目的",
+    'editAnalysis': "分析问题与要求",
+    'editIncludes': "关注内容（每行一项）",
+    'editExcludes': "排除内容（每行一项）",
+    'editQuery': "搜索词 · {{source}}",
+    'editSave': "保存草稿",
+    'editSaving': "保存中…",
+    'editCancel': "取消",
+    'editInvalid': "请检查必填项和长度；关注和排除内容各最多 16 行。",
+    'editConflict': "主题已更新或正在调整，请关闭后重新打开以读取最新方案。",
+    'editFailed': "保存失败，已保留编辑内容，请重试。",
+
     newlyCollected: '本次新增',
     newlyCollectedHint: '未读；该来源最近一次已完成采集中首次加入此关注。不表示文章刚发布，也不是上次查看后的新增。',
     createTitle: '关注一个主题',
@@ -102,7 +118,6 @@ export const sourceTopicsZhCN = {
     confirmHint: '该主题已保存，但尚未关注。确认频率和投入后开始后台采集。',
     pendingAdjustment: '调整后的方案已就绪。在你应用之前，当前方案会继续运行。',
     applyAdjustment: '应用调整后的方案',
-    advancedDetail: '方案、可选试跑与 Agent 调整',
     manualOnly: '仅保存了样本，不会自动关注。',
     runDetails: '执行详情',
     filter: '主题',

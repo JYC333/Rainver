@@ -129,7 +129,7 @@ export class AgentGroupRuntimeDelegationMaterializer
           reason: entry.reason ?? "runtime_delegation_output",
           budget_json: objectValue(entry.budget),
           context_policy_json: objectValue(entry.context),
-          workspace_access: entry.workspace_access ?? null,
+          workspace_access: entry.workspace_access,
           tool_call_id: toolCallId,
         },
       );
@@ -169,6 +169,7 @@ export class AgentGroupRuntimeDelegationMaterializer
         delegation_id: result.delegation.id,
         child_run_id: result.child_run_id,
         delegation_status: result.delegation.status,
+        workspace_access: entry.workspace_access,
         policy_decision_record_id: result.policy_decision_record_id,
       });
       return {
@@ -181,6 +182,7 @@ export class AgentGroupRuntimeDelegationMaterializer
           delegation_id: result.delegation.id,
           child_run_id: result.child_run_id,
           delegation_status: result.delegation.status,
+          workspace_access: entry.workspace_access,
           policy_decision_record_id: result.policy_decision_record_id,
           target_agent_id: entry.target_agent_id,
           service_event_written: true,

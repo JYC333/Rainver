@@ -6,3 +6,6 @@ export function agentReadingPolicy(source:Pick<SourceConnectionRow,'capture_poli
  const summary=source.capture_policy!=='reference_only'&&['summary_only','full_text','full_snapshot','archived'].includes(retention);
  return {capture:source.capture_policy,retention,summary,content:summary&&retention!=='summary_only'};
 }
+
+/** The same retained-analysis rule when following a derived Artifact's history refs. */
+export function retainedAnalysisPolicySql(alias:string){return `(${alias}.capture_policy<>'reference_only' AND ${alias}.policy_json->>'retention_policy' IN ('full_text','full_snapshot','archived'))`;}

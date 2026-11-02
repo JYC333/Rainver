@@ -274,3 +274,17 @@ runtime credential policy tests before they are considered wired.
 - `server/src/modules/projectFolders/` — sandbox/Project Folder boundaries
 - `server/src/modules/runs/` and `runtimeAdapters/` — runtime adapter implementations
 - `.agent/modules/runtime-adapters.md` — adapter registry and license notes
+
+
+## Prompt method revision
+
+Reading description generation and controlled method comparisons are bounded
+ProviderTask Runs (`prompt_revision` / `prompt_method_comparison`), not personal
+research Agents. The default is the enabled task-policy primary or granted Space
+chat default; explicit advanced overrides retain credential eligibility and live
+grant checks. Calls pin one concrete Provider/model with no cross-provider fallback.
+`boundedProviderTaskRun.authorizeAttempt` permits a domain guard in the canonical
+Delivery transaction; Reading uses it to fence Source/full-audience authority and
+actual destination. The optional shared abort deadline propagates through the
+existing Pi provider fetch/stream path. See [Reading methods](../architecture/READING_METHODS.md)
+for private origins, two-target versions, quotas and cancellation limits.

@@ -168,7 +168,7 @@ describe("agent group run contracts", () => {
   });
 
   it("models server-internal spawn child requests without secrets", () => {
-    const request = SpawnChildRunRequestSchema.parse({
+    const request = SpawnChildRunRequestSchema.parse({ workspace_access: "write" as const,
       space_id: "space-1",
       group_id: "group-1",
       parent_run_id: "run-parent",
@@ -203,13 +203,18 @@ describe("agent group run contracts", () => {
     expect(SpawnChildRunRequestSchema.safeParse({ ...spawn, workspace_access: "admin" }).success).toBe(false);
     expect(RuntimeDelegationsOutputSchema.safeParse({ delegations: [{ target_agent_id: "reviewer",
       instruction: "Inspect.", workspace_access: "admin" }] }).success).toBe(false);
-    expect(SpawnChildRunRequestSchema.parse(spawn).workspace_access).toBeUndefined();
+    for (const workspace_access of [undefined, null, "admin"]) {
+      expect(SpawnChildRunRequestSchema.safeParse({ ...spawn, workspace_access }).success).toBe(false);
+      expect(RuntimeDelegationsOutputSchema.safeParse({ delegations: [{
+        target_agent_id: "reviewer", instruction: "Read only; do not edit.", workspace_access,
+      }] }).success).toBe(false);
+    }
   });
 
   it("models structured runtime delegation output without free-text parsing", () => {
     const output = RuntimeDelegationsOutputSchema.parse({
       delegations: [
-        {
+        { workspace_access: "write" as const,
           target_agent_id: "agent-reader",
           instruction: "Read the evidence and return a summary.",
           reason: "Specialist review needed.",
@@ -223,7 +228,7 @@ describe("agent group run contracts", () => {
     expect(
       RuntimeDelegationsOutputSchema.safeParse({
         delegations: [
-          {
+          { workspace_access: "write" as const,
             target_agent_id: "agent-reader",
             instruction: "Read raw context.",
             context: { rendered_context: "raw prompt" },

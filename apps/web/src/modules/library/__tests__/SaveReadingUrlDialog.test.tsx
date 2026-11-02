@@ -4,6 +4,7 @@ import {beforeEach,it,expect,vi} from 'vitest'
 import {SaveReadingUrlDialog} from '../SaveReadingUrlDialog'
 import {sourcesApi} from '../../../api/client'
 vi.mock('../../../api/client',()=>({sourcesApi:{createManualUrl:vi.fn(),prepareMaterial:vi.fn(),materialProcessing:vi.fn(),cancelMaterialProcessing:vi.fn(),requestMaterialStorage:vi.fn(),getItem:vi.fn()},proposalsApi:{accept:vi.fn()}}))
+vi.mock('../../../contexts/SpaceContext',()=>({useSpace:()=>({userId:'u'})}))
 vi.mock('../../../core/spaceNav',async()=>({SpaceLink:(await import('react-router-dom')).Link}))
 const api=vi.mocked(sourcesApi)
 beforeEach(()=>{vi.clearAllMocks();api.createManualUrl.mockResolvedValue({id:'item',space_id:'s',title:'Saved',content_state:'metadata_only'} as never)})

@@ -29,6 +29,19 @@ export async function assertSourcePromptEgressAllowed(
   runtimeProfileId?:string,
 ): Promise<void> {
   const destination = await resolveAgentPromptEgressDestination(db, connection.space_id, agentId,runtimeProfileId);
+  await assertSourceEgressAllowedForDestination(db, connection, destination);
+}
+
+/**
+ * The same gate for a caller that already holds the authorized destination of
+ * the model call — a Run whose Delivery fixed it (`runtimeContext/runDestination.ts`),
+ * which an editable runtime Profile no longer describes.
+ */
+export async function assertSourceEgressAllowedForDestination(
+  db: Queryable,
+  connection: SourceConnectionRow,
+  destination: RetrievalEgressDestination,
+): Promise<void> {
   const governance = normalizeSourceConnectionReadGovernance(connection);
   const retrievalSettings = await readSpaceRetrievalSettings(db, connection.space_id);
   if (destination === "external_provider" && !retrievalSettings.externalEgressEnabled) {
@@ -126,4 +139,14 @@ async function resolveAgentPromptEgressDestination(
   // Native runtime egress is conservatively treated as external. The server
   // cannot infer which account or endpoint the runtime owner configured.
   return "external_provider";
+}
+
+/** SQL read-side projection for retained derived text, against its frozen actual
+ * destination. Unknown/legacy consent fields fail closed, never imply consent.
+ * The ordinary read ACL/retention gate remains independent. */
+export function retainedSourceEgressSql(source:string,destination:string){
+ const external=`${source}.consent_json->>'allow_external_model_egress'='true'`;
+ const local=`(${source}.consent_json->>'allow_local_provider_egress'='true' OR ${external})`;
+ const policy=`COALESCE(${source}.policy_json->>'source_egress_class',CASE WHEN ${external} THEN 'external_provider_allowed' WHEN ${local} THEN 'local_provider_allowed' ELSE 'internal_only' END)`;
+ return `(${destination}='internal_process' OR (${destination}='local_provider' AND ${policy} IN ('local_provider_allowed','external_provider_allowed') AND ${local}) OR (${destination}='external_provider' AND ${policy}='external_provider_allowed' AND ${external} AND NOT EXISTS(SELECT 1 FROM settings egress_setting WHERE egress_setting.scope_type='space' AND egress_setting.scope_id=${source}.space_id AND egress_setting.settings_key='retrieval.space.settings' AND egress_setting.settings_json->>'external_egress_enabled'='false')))`;
 }

@@ -1,6 +1,22 @@
 /** Followed-topic journey: create, updates, status and management. */
 export const sourceTopicsEn = {
   topics: {
+    'edit': "Edit topic",
+    'discuss': "Discuss changes",
+    'editHint': "Save a draft, then apply it to update following. Existing collection continues until then. Sources and frequency are retained; Agent search queries can be edited below. Use discussion to change other source settings.",
+    'editTitle': "Topic title",
+    'editPurpose': "Following purpose",
+    'editAnalysis': "Analysis questions and requirements",
+    'editIncludes': "Include (one per line)",
+    'editExcludes': "Exclude (one per line)",
+    'editQuery': "Search query · {{source}}",
+    'editSave': "Save draft",
+    'editSaving': "Saving…",
+    'editCancel': "Cancel",
+    'editInvalid': "Check the required fields and limits; include/exclude lists allow up to 16 lines each.",
+    'editConflict': "The topic changed or an adjustment is running. Close and reopen this editor with the latest plan.",
+    'editFailed': "Could not save the topic. Your edits are still here; try again.",
+
     newlyCollected: 'Just collected',
     newlyCollectedHint: 'Unread; first added to this topic in this source’s latest finished check. This is not its publication age or a since-last-visit marker.',
     createTitle: 'Follow a topic',
@@ -102,7 +118,6 @@ export const sourceTopicsEn = {
     confirmHint: 'This topic is saved but not followed. Confirm frequency and effort to start background collection.',
     pendingAdjustment: 'An adjusted plan is ready. The current plan keeps running until you apply it.',
     applyAdjustment: 'Apply adjusted plan',
-    advancedDetail: 'Plan, optional trial and Agent adjustments',
     manualOnly: 'Saved sample only — not followed automatically.',
     runDetails: 'Execution details',
     filter: 'Topic',

@@ -373,6 +373,23 @@ describe("agentGroupsRuntimeDelegationMaterializer", () => {
   }
 
   describe("AgentGroupRuntimeDelegationMaterializer", () => {
+    it("rejects structured delegations with no execution contract without spawning any children", async () => {
+      let spawned = 0;
+      const events = recordingRunEvents();
+      const materializer = new AgentGroupRuntimeDelegationMaterializer({
+        async spawnChildRun() { spawned++; throw new Error("Invalid contract must not dispatch"); },
+      }, events);
+      for (const workspace_access of [undefined, null, "admin"]) {
+        const result = await materializer.materialize({ run: run(), output_json: { delegations: [
+          { target_agent_id: "agent-reader", instruction: "Read only; do not edit.", workspace_access },
+        ] } });
+        expect(result.items).toMatchObject([{ status: "failed", error_code: "invalid_runtime_delegations" }]);
+        expect(result.errors.join(" ")).toContain("workspace_access");
+      }
+      expect(spawned).toBe(0);
+      expect(events.events).toEqual([]);
+    });
+
     it("uses a stable runtime-output idempotency key across physical retries", async () => {
       const keys: Array<string | null | undefined> = [];
       const materializer = new AgentGroupRuntimeDelegationMaterializer({
@@ -390,7 +407,7 @@ describe("agentGroupsRuntimeDelegationMaterializer", () => {
         },
       }, recordingRunEvents());
       const output = {
-        delegations: [{
+        delegations: [{ workspace_access: "write" as const,
           target_agent_id: "agent-reader",
           instruction: "Summarize the evidence.",
           budget: { max_cost: 2, max_steps: 4 },
@@ -524,7 +541,7 @@ describe("agentGroupsRuntimeDelegationMaterializer", () => {
         run: run(),
         output_json: {
           delegations: [
-            {
+            { workspace_access: "write" as const,
               target_agent_id: "agent-reader",
               instruction: "Use raw context.",
               context: { rendered_context: "raw prompt" },
@@ -578,7 +595,7 @@ describe("agentGroupsRuntimeDelegationMaterializer", () => {
         run: run(),
         output_json: {
           delegations: [
-            {
+            { workspace_access: "write" as const,
               target_agent_id: "agent-reader",
               instruction: "Summarize the evidence.",
             },
@@ -618,7 +635,7 @@ describe("agentGroupsRuntimeDelegationMaterializer", () => {
         run: run({ permission_snapshot_json: { tool_grants: [] } }),
         output_json: {
           delegations: [
-            {
+            { workspace_access: "write" as const,
               target_agent_id: "agent-reader",
               instruction: "Summarize the evidence.",
             },

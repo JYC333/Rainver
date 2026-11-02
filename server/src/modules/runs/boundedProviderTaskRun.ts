@@ -89,6 +89,10 @@ interface BoundedProviderTaskBase {
    * creating a second Run. Absent for a task performed on the request path.
    */
   runId?: string | null;
+  /** Domain gate executed inside the canonical attempt/Delivery transaction. */
+  authorizeAttempt?: (db: Queryable, refs: import('../providers/commands/types.js').ProviderTaskAttemptRefs) => Promise<void>;
+  allowProviderFallback?: boolean;
+  deadlineSeconds?: number;
   /**
    * Whether a failed task marks the Run failed. A job-driven task hands this
    * to the handler instead, which fails the Run only once the job has no
@@ -123,10 +127,12 @@ export async function runBoundedProviderTask(
   try {
     const completion = await completeProviderMessages(resolveProviderCommandStore(config), input.spaceId, {
       provider_id: input.providerId,
+      signal:input.deadlineSeconds?AbortSignal.timeout(Math.max(1,Math.min(180,input.deadlineSeconds))*1000):undefined,
       model: input.model,
       system: input.system,
       messages: input.messages,
       task: input.task,
+      allow_provider_fallback: input.allowProviderFallback,
       ...(input.completion === "structured" ? { output_format: input.outputFormat } : {}),
       metering: {
         ...(input.metering ?? {}),
@@ -142,6 +148,7 @@ export async function runBoundedProviderTask(
         // binds the Run the caller already queued or creates one; the rest
         // find `runId` set and only report it back.
         onAttemptStarted: async (attemptDb, refs) => {
+          await input.authorizeAttempt?.(attemptDb, refs);
           const attemptRuns = new PgRunRepository(attemptDb);
           if (input.runId) {
             const started = await attemptRuns.startQueuedProviderTaskRun({

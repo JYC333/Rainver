@@ -28,7 +28,7 @@ export function readerHrefFor(itemId: string, origin: ReadingItem['reader_origin
 
 // q is the submitted Reading search: trimmed, at most the search field's 500
 // UTF-16 units, no control characters. It is only ever read back as a filter.
-const LIST_PARAMS: Record<string, RegExp> = { view: /^(?:pending|read|all)$/, sort: /^oldest$/, topic: /^[\w-]{1,64}$/, topic_selection: /^(?:important|all)$/, q: /^[^\s\u0000-\u001F\u007F](?:[^\u0000-\u001F\u007F]{0,498}[^\s\u0000-\u001F\u007F])?$/ }
+const LIST_PARAMS: Record<string, RegExp> = { ops_offset:/^(?:[0-9]{1,4}|10000)$/,tab:/^(?:overview|materials|following|deep)$/,favorite:/^only$/,composition:/^[\w-]{1,64}$/,settings: /^reading$/,  view: /^(?:pending|read|all)$/, sort: /^oldest$/, topic: /^[\w-]{1,64}$/, topic_selection: /^(?:important|all)$/, q: /^[^\s\u0000-\u001F\u007F](?:[^\u0000-\u001F\u007F]{0,498}[^\s\u0000-\u001F\u007F])?$/ }
 const TOPIC_PARAMS: Record<string, RegExp> = { selection: /^(?:important|all)$/ }
 /** Only known keys with known values, each once, in a canonical encoding. */
 function boundedQuery(query: string | undefined, allowed: Record<string, RegExp>): boolean {
@@ -64,7 +64,7 @@ export function readingReturnTo(value: string | null, projectId?: string | null)
   const project = /^\/projects\/([\w-]+)\//.exec(value)
   if (projectId && project?.[1] !== projectId) return null
   const list = /^(?:\/library\/reading|\/projects\/[\w-]+\/sources)(?:\?([^?]*))?$/.exec(value)
-  if (list && !/[?]tab=/.test(value)) return boundedQuery(list[1], LIST_PARAMS) ? value : null
+  if (list && !/[?]tab=(?:settings|candidates)(?:&|$)/.test(value) && (!value.startsWith('/library/') || !new URLSearchParams(list[1]).has('tab'))) return boundedQuery(list[1], LIST_PARAMS) ? value : null
   const topic = /^(?:\/library\/reading|\/projects\/[\w-]+\/sources)\/goals\/[\w-]{1,64}(?:\?([^?]*))?$/.exec(value)
   if (topic) return boundedQuery(topic[1], TOPIC_PARAMS) ? value : null
   return value === '/library/reading' || /^\/projects\/[\w-]+\/research\?tab=reading$/.test(value) || /^\/projects\/[\w-]+\/sources(?:\?tab=(?:candidates|settings))?$/.test(value) ? value : null

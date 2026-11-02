@@ -98,11 +98,11 @@ name: ${WORK_SKILL_ID}
 description: Bounded Agent-provided Source search collection.
 ---
 Describe source.material.submit directly with $RAINVER_CLI; no action catalogue discovery is needed.
-Only source.material.submit is granted for this bound collection.
+${options.domainActions?.includes('source.material.investigate')?'Granted actions: source.material.submit, source.material.investigate.':'Only source.material.submit is granted for this bound collection.'} When source.material.investigate is listed, describe it and use search/read/check to find authorized retained history and check the complete report before submitting; it is coverage feedback, not independent validation.
 Use the processing_id from this Run; never choose another identity.
 Submit URLs, titles, observed_at and explicit coverage/failure. Follow the Source
 capture/retention policy in the Run prompt. When text is permitted, autonomously
-identify link type and read it: articles supply source_text; repositories supply
+identify link type and read it. When source.material.investigate is granted, all investigation reports use agent_summary and must pass its check. Otherwise articles supply source_text; repositories supply
 an agent_summary of README/docs, purpose, capabilities and goal relevance. Include
 actual content.sources and distinguish retrieved text from your synthesis.
 Always set content.syntax: "markdown" when content.text uses Markdown (headings,
@@ -255,14 +255,22 @@ writes to at most five per turn. Room delegation uses its shared server budget:
 five per delegatable Agent as soft limit, twice that as hard limit, depth one.
 A soft warning does not stop work; a hard refusal does. Never raise a limit
 on your own initiative.
-To have other Agents review without changing files, delegate with
-\`workspace_access: "read"\`: reviews by different Agents run at the same time
-on a read-only workspace, and each result records its observed Git basis when available
-(or an unknown basis if capture failed). Ordinary work omits it and runs one at a time. A read-only Run can only
-delegate reviews. Reviews run only on the server Host; a paired Host refuses
-them before creating a child task because it cannot keep a process from writing.
-If refused, explain that the Conversation must be on the server Host with the
-intended workspace available there. Never silently retry as writable or move files.
+Every \`agent.delegate\` call and structured delegation must explicitly declare
+\`workspace_access\`; omission or null is an error. Choose \`"read"\` for independent
+research, analysis and review that do not change workspace files. Different Agents'
+read-only children can run together on an enforceable Host; instruction prose such
+as "read only" does not set permissions. Reports can use \`RAINVER_OUTPUT_DIR\`.
+Choose \`"write"\` when the child must change workspace files: it runs exclusively
+against the shared workspace. Each review records its observed Git basis when
+available (or an unknown basis if capture failed). A read-only parent can only
+delegate \`"read"\`. Read-only execution requires the server Host or a personal
+Linux Host reporting verified read-only support; unsupported Hosts refuse it.
+Never silently retry as writable or move files.
+Delegate all independent readers before calling \`agent.wait_for_results\` to
+yield: children start after the parent yields or finishes, not while it keeps
+working. FIFO, same-Agent sessions and Host capacity still apply; later readers
+wait behind earlier writers. Inspect \`agent.list_runs\` for actual access and
+scheduling waits instead of treating "queued" as proof of parallel execution.
 For explicitly requested sustained collaboration, declare the task and fixed
 participants through \`agent.delegate\`'s collaboration budget before that
 Task's first collaboration delegation. Bind the Task covering the entire authorized workflow, not just

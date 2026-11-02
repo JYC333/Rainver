@@ -2,6 +2,16 @@ import { z } from "zod";
 
 export const ReaderDocumentTypeSchema = z.enum(["source_item", "source_snapshot", "research_report", "research_notebook"]);
 
+/** Retained readable bodies of one Source item, newest first. Not prompt versions. */
+export const ReaderSourceVersionSchema = z.object({
+  snapshot_id: z.string(), captured_at: z.string(), is_current: z.boolean(),
+}).strict();
+export type ReaderSourceVersion = z.infer<typeof ReaderSourceVersionSchema>;
+export const ReaderSourceVersionsSchema = z.object({
+  items: z.array(ReaderSourceVersionSchema), next_offset: z.number().int().nonnegative().nullable(),
+}).strict();
+export type ReaderSourceVersions = z.infer<typeof ReaderSourceVersionsSchema>;
+
 export const ReaderAnnotationCreateSchema = z.object({
   document_type: ReaderDocumentTypeSchema,
   document_id: z.string().min(1),
@@ -108,3 +118,19 @@ export type ReaderAnnotationRangeUpdate = z.infer<typeof ReaderAnnotationRangeUp
 export const ReaderDocumentNoteCreateSchema = z.object({ title: z.string().trim().min(1).max(200).optional() }).strict();
 export const ReaderDocumentNoteResponseSchema = z.object({ note: z.object({ id: z.string().min(1), space_id: z.string().min(1), status: z.enum(['active','archived','deleted']) }).strict().nullable() }).strict();
 export type ReaderDocumentNoteResponse = z.infer<typeof ReaderDocumentNoteResponseSchema>;
+
+/** R1: body and derived analysis are distinct immutable document identities.
+ * No automatic collection/generation is implied by this read-only projection. */
+export const ProjectReadingRecordSchema = z.object({
+  snapshot_id:z.string().min(1).max(64), artifact_id:z.string().min(1).max(64), captured_at:z.string().datetime({offset:true}),
+  role:z.enum(['original','analysis','legacy_analysis','unknown']),
+  origin_run_id:z.string().min(1).max(64).nullable(), original_snapshot_id:z.string().min(1).max(64).nullable(),
+  format:z.enum(['source_text','agent_summary','undeclared']),
+}).strict();
+export const ProjectReadingRecordsSchema = z.object({
+  original:ProjectReadingRecordSchema.nullable(),
+  original_availability:z.enum(['retained','not_retained','unknown']),
+  items:z.array(ProjectReadingRecordSchema).max(25),next_offset:z.number().int().nonnegative().max(10000).nullable(),truncated:z.boolean(),
+}).strict();
+export type ProjectReadingRecords = z.infer<typeof ProjectReadingRecordsSchema>;
+export const PROJECT_READING_RECORD_LIMITS = Object.freeze({page:25,maxOffset:10000,bodyCharacters:200000,dependencies:16});

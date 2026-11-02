@@ -7,7 +7,7 @@ export default defineConfig({
   test: {
     ...base.test,
     projects: undefined,
-    include: ['test/readingBrowserAcceptance.browser.ts'],
+    include: ['test/readingBrowserAcceptance.browser.ts','test/projectReading.browser.ts'],
     maxWorkers: 1,
     testTimeout: 120000,
   },

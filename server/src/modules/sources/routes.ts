@@ -1,3 +1,4 @@
+import {registerDeepReadingRoutes} from './deepReading/routes.js';
 import {registerMaterialProcessingRoutes} from './materialProcessing/routes.js';
 import {registerSourceGoalRoutes} from './goals/routes.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -308,7 +309,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   const postProcessing = () => new SourcePostProcessingService(dbPool(context.config), context.config);
   registerCustomSourceRoutes(app, context);
   registerSourceRecipeRoutes(app, context);
-  registerSourceGoalRoutes(app,context);registerMaterialProcessingRoutes(app,context);
+  registerSourceGoalRoutes(app,context);registerMaterialProcessingRoutes(app,context);registerDeepReadingRoutes(app,context);
 
   app.get("/api/v1/sources", sourcesHealth(context));
   app.get("/api/v1/sources/", sourcesHealth(context));

@@ -337,18 +337,24 @@ export class EvolvableAssetRepository {
     return map;
   }
 
-  async createVersion(identity: SpaceUserIdentity, assetId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async createVersion(identity: SpaceUserIdentity, assetId: string, body: Record<string, unknown>, options: {trustedReadingGeneration?:boolean} = {}): Promise<Record<string, unknown>> {
     const asset = await this.requireWritableAsset(identity, assetId);
     const scopeType = enumValue(body.scope_type, OWNER_SCOPE_TYPES, "scope_type") ?? "space";
     const scopeId = await normalizeVersionScopeForWrite(this.db, identity, scopeType, optionalString(body.scope_id));
     assertAssetAllowsTargetScope(asset, identity, scopeType, scopeId);
     const source = enumValue(body.source, VERSION_SOURCES, "source") ?? "user_authored";
     const parentVersionId = optionalString(body.parent_version_id);
+    let parentGeneration: unknown;
+    let originalParentGeneration: unknown;
     if (parentVersionId) {
       const parent = await this.versionRow(assetId, parentVersionId);
-      if (!parent) throw new HttpError(422, "parent_version_id does not reference a version of this asset");
+      if (!parent || !await canViewVersionScope(this.db, identity, parent)) throw new HttpError(422, "parent_version_id does not reference a readable version of this asset");
+      originalParentGeneration=(parent.content_json as {reading_generation?:unknown}|null)?.reading_generation;
+      parentGeneration = ['approved','deprecated'].includes(parent.status)?undefined:originalParentGeneration;
     }
     const contentJson = await validateAssetVersionContent(asset.asset_type, optionalObject(body.content_json));
+    if (!options.trustedReadingGeneration && contentJson?.reading_generation && JSON.stringify(contentJson.reading_generation) !== JSON.stringify(originalParentGeneration)) throw new HttpError(403, "Reading generation provenance is server-owned");
+    if (contentJson && !options.trustedReadingGeneration){if(parentGeneration)contentJson.reading_generation=parentGeneration;else delete contentJson.reading_generation;}
     const contentRef = optionalString(body.content_ref);
     const contentHash = assetVersionContentHash(contentJson, contentRef);
     const nextVersionResult = await this.db.query<{ next: number }>(
@@ -392,9 +398,10 @@ export class EvolvableAssetRepository {
   ): Promise<Record<string, unknown>> {
     const asset = await this.requireWritableAsset(identity, assetId);
     const current = await this.versionRow(assetId, versionId);
-    if (!current) throw new HttpError(404, "Asset version not found");
+    if (!current || !await canViewVersionScope(this.db, identity, current)) throw new HttpError(404, "Asset version not found");
     await normalizeVersionScopeForWrite(this.db, identity, current.scope_type, current.scope_id);
     assertAssetAllowsTargetScope(asset, identity, current.scope_type, current.scope_id);
+    if ((current.content_json as {reading_generation?:unknown}|null)?.reading_generation) throw new HttpError(409, "Generated methods are immutable; create a child version");
     if (current.status !== "draft") {
       throw new HttpError(422, "Only draft versions can be edited — create a child version instead");
     }
@@ -402,6 +409,7 @@ export class EvolvableAssetRepository {
       ? optionalObject(current.content_json)
       : optionalObject(body.content_json);
     const validatedContentJson = await validateAssetVersionContent(asset.asset_type, contentJson);
+    if(validatedContentJson?.reading_generation)throw new HttpError(403,"Reading generation provenance is server-owned");
     const contentRef = body.content_ref === undefined ? current.content_ref : optionalString(body.content_ref);
     const contentHash = assetVersionContentHash(validatedContentJson, contentRef);
     const now = new Date().toISOString();
@@ -426,7 +434,7 @@ export class EvolvableAssetRepository {
   ): Promise<Record<string, unknown>> {
     const asset = await this.requireWritableAsset(identity, assetId);
     const current = await this.versionRow(assetId, versionId);
-    if (!current) throw new HttpError(404, "Asset version not found");
+    if (!current || !await canViewVersionScope(this.db, identity, current)) throw new HttpError(404, "Asset version not found");
     await normalizeVersionScopeForWrite(this.db, identity, current.scope_type, current.scope_id);
     assertAssetAllowsTargetScope(asset, identity, current.scope_type, current.scope_id);
     const status = optionalString(body.status);

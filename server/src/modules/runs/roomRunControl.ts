@@ -5,6 +5,7 @@ import { HttpError } from "../routeUtils/common.js";
 import type { SystemActionDispatchResult } from "../systemActions/toolResult.js";
 import { PgRunRepository, type AgentRunRecord } from "./repository.js";
 import { authorizeRunCommand } from "./runCommandAuthority.js";
+import { readDelegationScheduling } from "../agentGroups/delegationScheduling.js";
 
 /** Room commands deliberately cross user turns, never conversations or people. */
 export class RoomRunControl {
@@ -50,7 +51,8 @@ export class RoomRunControl {
       for (const { id } of candidates.rows) {
         const run = await repository.getVisibleRun(caller.space_id, identity.userId, id);
         if (run) runs.push({ run_id: run.id, agent_id: run.agent_id, status: run.status, created_at: run.created_at,
-          parent_run_id: run.parent_run_id, root_run_id: run.root_run_id });
+          parent_run_id: run.parent_run_id, root_run_id: run.root_run_id,
+          scheduling: await readDelegationScheduling(this.pool(), run) });
       }
       return { modelResult: { ok: true, runs, limit: 100 }, summary: { tool_name: call.name, count: runs.length } };
     } catch (error) {

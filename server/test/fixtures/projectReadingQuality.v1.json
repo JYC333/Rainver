@@ -1,0 +1,458 @@
+{
+  "schema_version": 1,
+  "label": "SYNTHETIC — evidence and human rubric only; no model output or quality verdict",
+  "rubric": [
+    "支持度与精确引用",
+    "差异、同源与反例",
+    "Project事实出处",
+    "目的相关性",
+    "机制与论证深度",
+    "未知与停止边界",
+    "阅读负担"
+  ],
+  "cases": [
+    {
+      "id": "learning",
+      "purposes": [
+        "理解检索练习何时改善延迟记忆"
+      ],
+      "project_facts": [
+        "P1: 项目设计成人词汇练习；不是临床治疗"
+      ],
+      "favorite": false,
+      "inputs": [
+        {
+          "id": "learning-1",
+          "url": "https://synthetic.example/learning/1",
+          "kind": "original",
+          "origin": "study-a",
+          "published_at": "2020-01-01",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "合成研究：20名成人，间隔一天检索词对；一周后词对成绩提高，未测试技能迁移。"
+            }
+          ]
+        },
+        {
+          "id": "learning-2",
+          "url": "https://synthetic.example/learning/2",
+          "kind": "original",
+          "origin": "study-b",
+          "published_at": "2021-01-01",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "合成复核：即时测试无差异，延迟测试受练习次数影响。"
+            }
+          ]
+        }
+      ],
+      "supported": [
+        "特定延迟词对任务有支持，条件和样本有限"
+      ],
+      "unsupported": [
+        "所有学习领域都更有效"
+      ],
+      "gaps": [
+        "技能迁移、长期保持"
+      ],
+      "expected_citations": [
+        {
+          "input_id": "learning-1",
+          "anchor": "p1"
+        },
+        {
+          "input_id": "learning-2",
+          "anchor": "p1"
+        }
+      ],
+      "human_evaluation": null
+    },
+    {
+      "id": "systems",
+      "purposes": [
+        "比较重试机制对不重复扣款的适用性"
+      ],
+      "project_facts": [
+        "P1: 项目要求任务持久化且不能重复扣款"
+      ],
+      "favorite": false,
+      "inputs": [
+        {
+          "id": "systems-1",
+          "url": "https://synthetic.example/systems/1",
+          "kind": "original",
+          "origin": "vendor",
+          "published_at": "2026-01-01",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "合成A：最多三次瞬时错误重试；幂等键由调用方提供；未声明持久化。"
+            }
+          ]
+        },
+        {
+          "id": "systems-2",
+          "url": "https://synthetic.example/systems/2",
+          "kind": "original",
+          "origin": "independent",
+          "published_at": "2026-02-01",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "合成B：磁盘队列可恢复任务；测例中延迟增加，未测跨区故障。"
+            }
+          ]
+        }
+      ],
+      "supported": [
+        "重试和持久化不同，需验证幂等键与故障恢复"
+      ],
+      "unsupported": [
+        "A保证恰好一次且吞吐十倍"
+      ],
+      "gaps": [
+        "真实负载、跨区恢复"
+      ],
+      "expected_citations": [
+        {
+          "input_id": "systems-1",
+          "anchor": "p1"
+        },
+        {
+          "input_id": "systems-2",
+          "anchor": "p1"
+        }
+      ],
+      "human_evaluation": null
+    },
+    {
+      "id": "syndication",
+      "purposes": [
+        "判断寿命翻倍是否独立复现"
+      ],
+      "project_facts": [],
+      "favorite": false,
+      "inputs": [
+        {
+          "id": "syndication-1",
+          "url": "https://synthetic.example/syndication/1",
+          "kind": "original",
+          "origin": "same-release",
+          "published_at": "2026-03-01",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "合成报道甲引用厂商通稿：寿命翻倍，无测量。"
+            }
+          ]
+        },
+        {
+          "id": "syndication-2",
+          "url": "https://synthetic.example/syndication/2",
+          "kind": "original",
+          "origin": "same-release",
+          "published_at": "2026-03-02",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "合成转载乙引用同一厂商通稿：寿命翻倍，无测量。"
+            }
+          ]
+        },
+        {
+          "id": "syndication-3",
+          "url": "https://synthetic.example/syndication/3",
+          "kind": "analysis",
+          "origin": "derived",
+          "published_at": "2026-03-03",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "旧AI摘要称多方验证，此说法未经证据支持。"
+            }
+          ]
+        }
+      ],
+      "supported": [
+        "两个URL共享一个证据起点；AI摘要是派生内容"
+      ],
+      "unsupported": [
+        "三份材料是三个独立验证"
+      ],
+      "gaps": [
+        "独立测量"
+      ],
+      "expected_citations": [
+        {
+          "input_id": "syndication-1",
+          "anchor": "p1"
+        },
+        {
+          "input_id": "syndication-2",
+          "anchor": "p1"
+        },
+        {
+          "input_id": "syndication-3",
+          "anchor": "p1"
+        }
+      ],
+      "human_evaluation": null
+    },
+    {
+      "id": "conflict",
+      "purposes": [
+        "解释看似矛盾的性能结果"
+      ],
+      "project_facts": [],
+      "favorite": false,
+      "inputs": [
+        {
+          "id": "conflict-1",
+          "url": "https://synthetic.example/conflict/1",
+          "kind": "original",
+          "origin": "lab-a",
+          "published_at": "2026-04-01",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "合成测试：v1、内存缓存、单线程，响应5ms。"
+            }
+          ]
+        },
+        {
+          "id": "conflict-2",
+          "url": "https://synthetic.example/conflict/2",
+          "kind": "original",
+          "origin": "lab-b",
+          "published_at": "2026-04-02",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "合成测试：v2、磁盘持久化、十线程，响应40ms。"
+            }
+          ]
+        }
+      ],
+      "supported": [
+        "版本与测试条件不同，不能直接平均或胜负排序"
+      ],
+      "unsupported": [
+        "平均22.5ms代表真实性能"
+      ],
+      "gaps": [
+        "同版本同负载对照"
+      ],
+      "expected_citations": [
+        {
+          "input_id": "conflict-1",
+          "anchor": "p1"
+        },
+        {
+          "input_id": "conflict-2",
+          "anchor": "p1"
+        }
+      ],
+      "human_evaluation": null
+    },
+    {
+      "id": "old-new-discovery",
+      "purposes": [
+        "识别新发现而不是假称新事件"
+      ],
+      "project_facts": [],
+      "favorite": false,
+      "inputs": [
+        {
+          "id": "old-new-discovery-1",
+          "url": "https://synthetic.example/old-new-discovery/1",
+          "kind": "original",
+          "origin": "old-paper",
+          "published_at": "2017-05-01",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "2017年合成旧文指出校准漂移；本轮2026年才收集。"
+            }
+          ]
+        }
+      ],
+      "supported": [
+        "本轮新收集的旧证据，保持原发表时间"
+      ],
+      "unsupported": [
+        "2026年刚发生校准故障"
+      ],
+      "gaps": [
+        "当前版本是否仍适用"
+      ],
+      "expected_citations": [
+        {
+          "input_id": "old-new-discovery-1",
+          "anchor": "p1"
+        }
+      ],
+      "human_evaluation": null
+    },
+    {
+      "id": "homepage-only",
+      "purposes": [
+        "调查机制、API示例和代价"
+      ],
+      "project_facts": [],
+      "favorite": false,
+      "inputs": [
+        {
+          "id": "homepage-only-1",
+          "url": "https://synthetic.example/homepage-only/1",
+          "kind": "original",
+          "origin": "homepage",
+          "published_at": "2026-06-01",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "合成主页：轻松搭建智能工作流。无机制文档、API或实测。"
+            }
+          ]
+        }
+      ],
+      "supported": [
+        "仅主页宣传不足以解释机制"
+      ],
+      "unsupported": [
+        "声称已读不存在的文档并编造API"
+      ],
+      "gaps": [
+        "官方文档不可得、没有代码或实测"
+      ],
+      "expected_citations": [
+        {
+          "input_id": "homepage-only-1",
+          "anchor": "p1"
+        }
+      ],
+      "human_evaluation": null
+    },
+    {
+      "id": "missing-project",
+      "purposes": [
+        "判断与项目关系但不编造事实"
+      ],
+      "project_facts": [],
+      "favorite": false,
+      "inputs": [
+        {
+          "id": "missing-project-1",
+          "url": "https://synthetic.example/missing-project/1",
+          "kind": "original",
+          "origin": "docs",
+          "published_at": "2026-07-01",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "合成文档：队列需要调用方确认，失败可重复投递。"
+            }
+          ]
+        }
+      ],
+      "supported": [
+        "可提出条件式适用问题；项目现状未知"
+      ],
+      "unsupported": [
+        "项目已经使用该队列且存在重复扣款"
+      ],
+      "gaps": [
+        "授权项目事实未提供"
+      ],
+      "expected_citations": [
+        {
+          "input_id": "missing-project-1",
+          "anchor": "p1"
+        }
+      ],
+      "human_evaluation": null
+    },
+    {
+      "id": "unfavorited",
+      "purposes": [
+        "私下深入理解机制与反例"
+      ],
+      "project_facts": [],
+      "favorite": false,
+      "inputs": [
+        {
+          "id": "unfavorited-1",
+          "url": "https://synthetic.example/unfavorited/1",
+          "kind": "original",
+          "origin": "essay",
+          "published_at": "2026-08-01",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "合成文章：柔性膜保护物体，但尖锐边缘可能刺穿。"
+            }
+          ]
+        }
+      ],
+      "supported": [
+        "解释机制与刺穿边界；私人结果不自动共享"
+      ],
+      "unsupported": [
+        "未收藏所以无法查报告或自动公开私人判断"
+      ],
+      "gaps": [
+        "不同材质的实测"
+      ],
+      "expected_citations": [
+        {
+          "input_id": "unfavorited-1",
+          "anchor": "p1"
+        }
+      ],
+      "human_evaluation": null
+    },
+    {
+      "id": "two-purposes",
+      "purposes": [
+        "学习柔性膜原理",
+        "评估生产线校准成本"
+      ],
+      "project_facts": [
+        "P1: 项目评估易碎品生产线，尚未采用该方案"
+      ],
+      "favorite": false,
+      "inputs": [
+        {
+          "id": "two-purposes-1",
+          "url": "https://synthetic.example/two-purposes/1",
+          "kind": "original",
+          "origin": "same-article",
+          "published_at": "2026-09-01",
+          "passages": [
+            {
+              "anchor": "p1",
+              "text": "合成同文：膜变形分散接触力；每批材料需重新校准，未提供工时。"
+            }
+          ]
+        }
+      ],
+      "supported": [
+        "学习目的解释力分散；成本目的强调校准工时未知，两者独立归属"
+      ],
+      "unsupported": [
+        "将两个目的混成同一个已证实结论"
+      ],
+      "gaps": [
+        "工时、成本、故障率"
+      ],
+      "expected_citations": [
+        {
+          "input_id": "two-purposes-1",
+          "anchor": "p1"
+        }
+      ],
+      "human_evaluation": null
+    }
+  ]
+}

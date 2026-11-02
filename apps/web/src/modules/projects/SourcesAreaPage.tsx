@@ -6,7 +6,7 @@ import { Button } from '../../components/ui/button'
 import MonitoringPanel from './sourcesArea/MonitoringPanel'
 import ProjectSourcesPage from './ProjectSourcesPage'
 import ProjectDigestPage from './ProjectDigestPage'
-import ReadingWorkspace from '../library/ReadingWorkspace'
+import ProjectReadingPage from './reading/ProjectReadingPage'
 
 /** Existing Sources deep links remain valid; reading is a consumer of the unified projection. */
 export default function SourcesAreaPage() {
@@ -23,8 +23,8 @@ export default function SourcesAreaPage() {
     setParams(updated, { replace: true })
   }
   // An old materials deep link resolves to the same complete authorized material query.
-  if (tab === 'materials') return <div className="p-4 md:p-6"><ReadingWorkspace projectId={projectId} /></div>
-  if (!tab || tab === 'updates') return <div className="p-4 md:p-6"><ReadingWorkspace projectId={projectId} /></div>
+  if (['materials','following','deep','overview'].includes(tab??'')) return <ProjectReadingPage />
+  if (!tab || tab === 'updates') return <ProjectReadingPage />
   return <div className="space-y-6 p-4 md:p-6">
     <Button size="sm" variant="outline" asChild><SpaceLink to={fromSettings ? `/projects/${projectId}?settings=project` : `/projects/${projectId}/sources`}><ArrowLeft className="size-4" aria-hidden="true" />{t(fromSettings ? 'reading.backSettings' : 'reading.backProject')}</SpaceLink></Button>
     {tab === 'digest' ? <ProjectDigestPage /> : <>

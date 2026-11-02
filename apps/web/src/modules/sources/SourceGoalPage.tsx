@@ -10,7 +10,7 @@ import {TopicDetail} from './topics/TopicDetail'
 export default function SourceGoalPage(){
  const {activeSpaceId,userId}=useSpace();const {goalId,projectId:routeProjectId}=useParams();const [query]=useSearchParams();const projectId=routeProjectId??query.get('project_id');const navigate=useSpaceNavigate()
  if(!activeSpaceId)return null
- const key=`${activeSpaceId}:${projectId??''}:${goalId??'new'}`
+ const key=`${activeSpaceId}:${userId}:${projectId??''}:${goalId??'new'}`
  if(!goalId||goalId==='new')return <TopicCreate key={key} spaceId={activeSpaceId} userId={userId??''} projectId={projectId} legacyChannel={query.get('channel_id')} navigate={navigate}/>
  return <ConversationScope spaceId={activeSpaceId}><TopicDetail key={key} spaceId={activeSpaceId} userId={userId??null} id={goalId} navigate={navigate}/></ConversationScope>
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ReaderAnnotationRangeUpdateSchema, ReaderDocumentNoteCreateSchema, ReaderAppearanceSchema, ReaderPositionWriteSchema } from '../src/index.js';
+import { ProjectReadingRecordsSchema, ReaderAnnotationRangeUpdateSchema, ReaderDocumentNoteCreateSchema, ReaderAppearanceSchema, ReaderPositionWriteSchema } from '../src/index.js';
 
 const mark = { anchor: { block_index: 3, pm_pos: 120, text_offset: 400, quote: 'Paragraph start', before_context: 'previous words ' }, progress: 0.4 };
 
@@ -42,3 +42,11 @@ describe('Reader range and independent note contracts', () => {
     expect(ReaderDocumentNoteCreateSchema.safeParse({ title: 'My observations', visibility: 'space_shared' }).success).toBe(false)
   })
 })
+
+it('keeps Project originals and analyses explicit and bounds records pagination',()=>{
+ const record={snapshot_id:'s',artifact_id:'a',captured_at:'2026-11-01T00:00:00Z',role:'analysis',format:'source_text',origin_run_id:null,original_snapshot_id:null};
+ const payload={original:null,original_availability:'not_retained',items:[record],next_offset:null,truncated:false};
+ expect(ProjectReadingRecordsSchema.parse(payload).items[0].role).toBe('analysis');
+ expect(ProjectReadingRecordsSchema.safeParse({...payload,items:Array(26).fill(record)}).success).toBe(false);
+ expect(ProjectReadingRecordsSchema.safeParse({...payload,next_offset:10025}).success).toBe(false);
+});

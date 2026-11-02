@@ -1,3 +1,4 @@
+import { projectReadingRecords } from './readingRecords.js';
 import { ReaderDocumentNotes } from "./documentNotes.js";
 import { replaceAnnotationRange } from "./annotationRange.js";
 import type { FastifyInstance } from "fastify";
@@ -5,6 +6,7 @@ import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
 import { PgAnnotationRepository, PgCommentRepository, PgReaderActionRepository, PgReaderRepository } from "./repository.js";
 import { ReaderAppearanceSettings, ReaderPositionStore } from "./positions.js";
+import { ReaderSourceVersions } from "./sourceVersions.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const readerRepo = () => new PgReaderRepository(dbPool(context.config), context.config);
@@ -12,6 +14,27 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   const commentRepo = () => new PgCommentRepository(dbPool(context.config));
   const actionRepo = () => new PgReaderActionRepository(dbPool(context.config));
   const base = "/api/v1/reader";
+
+  app.get(`${base}/source-items/:itemId/records`,async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try{return reply.send(await projectReadingRecords(dbPool(context.config),identity,params(request).itemId??'',Number(query(request).offset??0),typeof query(request).project_id==='string'?String(query(request).project_id):undefined,typeof query(request).snapshot_id==='string'?String(query(request).snapshot_id):undefined));}
+    catch(error){return sendRouteError(reply,error);}
+  });
+  app.get(`${base}/source-items/:itemId/versions`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try {
+      const offset = Number(query(request).offset ?? 0);
+      if (!Number.isSafeInteger(offset) || offset < 0) return reply.code(422).send({ detail: 'Invalid offset' });
+      return reply.send(await new ReaderSourceVersions(dbPool(context.config), context.config).list(identity, params(request).itemId ?? '', offset));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
+  app.get(`${base}/source-items/:itemId/versions/:snapshotId`, async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try {
+      const p = params(request);
+      return reply.send(await new ReaderSourceVersions(dbPool(context.config), context.config).get(identity, p.itemId ?? '', p.snapshotId ?? ''));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
 
   app.get(`${base}/documents/:documentType/:documentId`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;

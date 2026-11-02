@@ -200,7 +200,7 @@ export class SourceGoalService {
   * stay in the shared activation path; new permissions keep their own gates. */
  async follow(identity:SpaceUserIdentity,id:string,raw:unknown){
   const input=SourceGoalFollowRequestSchema.parse(raw);
-  const result=await withDbTransaction(this.db,db=>this.followLocked(db,identity,id,input));
+  const result=await withDbTransaction(this.db,async db=>{const result=await this.followLocked(db,identity,id,input);if(input.theme_analysis){if(!input.version_id)throw new HttpError(422,'Analysis consent requires an exact prepared purpose version');await (await import('../../informationDigest/index.js')).configureThemeAnalysis(db,this.config,identity,id,{...input.theme_analysis,expected_version_id:input.version_id});}return result;});
   await this.afterFollow(identity,id,result);
   return result;
  }
@@ -217,7 +217,7 @@ export class SourceGoalService {
    if(g.status==='paused'&&g.compatibility_json?.execution_mode!=='manual')throw sourceGoalError(409,'source_goal_paused_resume_required');
    const prior=g.follow_json??null;
    if(prior?.idempotency_key===input.idempotency_key){
-    if((input.version_id??null)!==prior.version_id||(input.interval_seconds??prior.interval_seconds)!==prior.interval_seconds||(input.requests_per_run??prior.requests_per_run)!==prior.requests_per_run||(input.items_per_source??prior.items_per_source)!==prior.items_per_source)throw sourceGoalError(409,'source_goal_follow_key_changed');
+    if(JSON.stringify(input.theme_analysis??null)!==JSON.stringify(prior.theme_analysis??null)||(input.version_id??null)!==prior.version_id||(input.interval_seconds??prior.interval_seconds)!==prior.interval_seconds||(input.requests_per_run??prior.requests_per_run)!==prior.requests_per_run||(input.items_per_source??prior.items_per_source)!==prior.items_per_source)throw sourceGoalError(409,'source_goal_follow_key_changed');
     // A replay ensures the confirmed bootstrap exists (crash after commit,
     // or a refusal since fixed). It never activates a later draft of an
     // already active goal; preparation is deduplicated and attempt-bounded.
@@ -230,7 +230,7 @@ export class SourceGoalService {
    }
    if(input.version_id&&input.version_id!==g.current_version_id)throw new HttpError(409,'Plan changed; confirm the current plan');
    const budget=SourceGoalBudgetSchema.parse({...g.budget_json,...(input.interval_seconds?{interval_seconds:input.interval_seconds}:{}),...(input.requests_per_run?{requests_per_run:input.requests_per_run}:{}),...(input.items_per_source?{items_per_source:input.items_per_source}:{})});
-   const follow:SourceGoalFollow={confirmed_at:new Date().toISOString(),confirmed_by_user_id:identity.userId,idempotency_key:input.idempotency_key,version_id:input.version_id??null,interval_seconds:budget.interval_seconds,requests_per_run:budget.requests_per_run,items_per_source:budget.items_per_source,activated_version_id:null,reused_preview_id:null,last_error:null};
+   const follow:SourceGoalFollow={...(input.theme_analysis?{theme_analysis:input.theme_analysis}:{}),confirmed_at:new Date().toISOString(),confirmed_by_user_id:identity.userId,idempotency_key:input.idempotency_key,version_id:input.version_id??null,interval_seconds:budget.interval_seconds,requests_per_run:budget.requests_per_run,items_per_source:budget.items_per_source,activated_version_id:null,reused_preview_id:null,last_error:null};
    await db.query('UPDATE source_goals SET budget_json=$2,follow_json=$3,updated_at=now() WHERE id=$1',[id,budget,follow]);
    const goal={...g,budget_json:budget,follow_json:follow};
    const target=input.version_id??g.current_version_id;
@@ -308,6 +308,8 @@ export class SourceGoalService {
    await db.query("UPDATE source_goal_runs SET result_json=result_json||'{\"goal_stopped\":true}'::jsonb WHERE goal_id=$1 AND status='queued' AND result_json ? 'native_run_id'",[id]);
    if(deleted)await cleanGoalSamples(db,this.config,id,true);
    await db.query(`UPDATE scheduler_tasks SET status=$2,next_run_at=NULL WHERE task_type='source_goal_tick' AND task_key=$1`,[id,deleted?'archived':'paused']);
+   const project=(await db.query<{project_id:string|null}>('SELECT project_id FROM source_goals WHERE id=$1',[id])).rows[0]?.project_id;
+   if(project)await (await import('../../informationDigest/index.js')).queueProjectComposition(db,identity.spaceId,project);
    return {status:deleted?'deleted':'paused'};
   });
   const runs=await this.db.query<{id:string}>(`SELECT id FROM runs WHERE space_id=$1 AND contract_snapshot_json->'workflow_input_json'->'source_goal'->>'goal_id'=$2 AND status IN ('queued','running','waiting_for_review','waiting_for_dependency','cancelling')`,[identity.spaceId,id]);

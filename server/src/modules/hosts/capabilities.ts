@@ -181,6 +181,7 @@ export function normalizeHostCapabilities(raw: unknown): HostCapabilities {
   const toolBridges = Array.isArray(source.tool_bridge_protocols) ? strings(source.tool_bridge_protocols) : undefined;
   return HostCapabilitiesSchema.parse({
     runtimes, versions, installations,
+    ...(HostCapabilitiesSchema.shape.workspace_read_only.safeParse(source.workspace_read_only).success?{workspace_read_only:source.workspace_read_only}:{}),
     ...(toolBridges ? { tool_bridge_protocols: toolBridges } : {}),
   });
 }

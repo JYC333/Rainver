@@ -31,3 +31,8 @@ it('keeps collection arrival separate from publication freshness and compatible 
  expect(ReadingTopicLinkSchema.parse({...base,new_in_latest_collection:true})).toMatchObject({delivery_kind:'unknown_freshness',new_in_latest_collection:true});
  expect(ReadingTopicLinkSchema.safeParse({...base,new_in_latest_collection:'new'}).success).toBe(false);
 });
+it('keeps favorites as a private server-side list filter, distinct from read/dismissed state',()=>{
+ expect(ReadingQuerySchema.parse({favorite:'only'})).toMatchObject({favorite:'only'});
+ expect(ReadingQuerySchema.safeParse({favorite:'other-user'}).success).toBe(false);
+ expect(ReadingStateRequestSchema.safeParse({favorite:true}).success).toBe(false);
+});

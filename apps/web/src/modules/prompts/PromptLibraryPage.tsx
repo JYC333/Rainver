@@ -1,3 +1,4 @@
+import ReadingMethodWorkbench from './ReadingMethodWorkbench'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { AlertTriangle, FileCode2, GitBranch, Loader2, RefreshCw, RotateCcw, Search, ShieldCheck } from 'lucide-react'
@@ -100,7 +101,8 @@ function parseMetricsJson(value: string): Record<string, unknown> {
   return parsed as Record<string, unknown>
 }
 
-export default function PromptLibraryPage() {
+export default function PromptLibraryPage(){const [q]=useSearchParams();return q.get('advanced')!=='1'&&!q.has('asset')&&!q.has('tab')?<ReadingMethodWorkbench/>:<AdvancedPromptLibraryPage/>}
+function AdvancedPromptLibraryPage() {
   const { t } = useAppTranslation()
   const { activeSpaceId } = useSpace()
   const [searchParams, setSearchParams] = useSearchParams()

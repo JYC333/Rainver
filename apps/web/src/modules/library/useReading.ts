@@ -7,10 +7,10 @@ export type ReadingTopicFilter = { id: string; selection: 'important' | 'all' }
 
 /** Transports server pages; never derives membership, grouping, counts or cursors.
  * A topic filter is part of every request and cursor, like view and search. */
-export function useReading(spaceId: string | null, projectId?: string, view: 'pending' | 'read' | 'all' = 'pending', q = '', limit = 30, topic?: ReadingTopicFilter, sort: 'newest' | 'oldest' = 'newest') {
+export function useReading(spaceId: string | null, projectId?: string, view: 'pending' | 'read' | 'all' = 'pending', q = '', limit = 30, topic?: ReadingTopicFilter, sort: 'newest' | 'oldest' = 'newest', favorite?:'only') {
   const topicId = topic?.id
   const topicSelection = topic ? topic.selection : undefined
-  const key = JSON.stringify([spaceId, projectId, view, q, limit, topicId, topicSelection, sort])
+  const key = JSON.stringify([spaceId, projectId, view, q, limit, topicId, topicSelection, sort, favorite])
   const current = useRef(key)
   current.current = key
   const generation = useRef(0)
@@ -37,7 +37,7 @@ export function useReading(spaceId: string | null, projectId?: string, view: 'pe
     try {
       const wanted = windowSize ?? limit
       const read = (size: number, after?: string) => informationDigestsApi.reading(
-        spaceId, { view, q: q || undefined, limit: size, cursor: after, topic: topicId, topic_selection: topicSelection, sort: sort === 'newest' ? undefined : sort }, projectId, { signal: controller.signal },
+        spaceId, { favorite, view, q: q || undefined, limit: size, cursor: after, topic: topicId, topic_selection: topicSelection, sort: sort === 'newest' ? undefined : sort }, projectId, { signal: controller.signal },
       )
       let next = await read(Math.min(100, wanted), cursor)
       if (!active()) return
@@ -56,7 +56,7 @@ export function useReading(spaceId: string | null, projectId?: string, view: 'pe
       // Includes failed writes/revalidation, revoked ACL and changed cursors.
       setResult(null); setError(failure)
     } finally { if (active()) setLoading(false) }
-  }, [spaceId, projectId, view, q, limit, topicId, topicSelection, sort, key])
+  }, [spaceId, projectId, view, q, limit, topicId, topicSelection, sort, favorite, key])
   useEffect(() => {
     mutationOwner.current = null
     setResult(null); setError(null); setBusy(false)

@@ -3,6 +3,7 @@ import { IdSchema, ISODateTimeSchema } from './common.js';
 
 export const ReadingPreferenceSchema = z.object({ show_in_my_reading: z.boolean() }).strict();
 export const ReadingQuerySchema = z.object({
+  favorite: z.literal('only').optional(),
   view: z.enum(['pending', 'read', 'all']).default('pending'),
   limit: z.coerce.number().int().min(1).max(100).default(30),
   cursor: z.string().max(4096).optional(),
@@ -58,6 +59,7 @@ export const ReadingContributionSchema = z.object({
 });
 export const ReadingItemSchema = z.object({
   key: z.string(),
+  material_project_id: IdSchema.nullable().optional(),
   source_item_id: IdSchema,
   source_item_ids: z.array(IdSchema),
   topic_change: z.object({id:IdSchema,goal_id:IdSchema,kind:z.enum(['release','update']),evidence_url:z.string().url()}).strict().optional(),
@@ -70,6 +72,7 @@ export const ReadingItemSchema = z.object({
   reader_origin: z.enum(['library', 'serendipity', 'project']),
   read_status: z.enum(['unread', 'skimmed', 'read', 'discussed']),
   dismissed: z.boolean(),
+  favorite: z.boolean().optional(),
   available_at: ISODateTimeSchema,
   contributions: z.array(ReadingContributionSchema),
   topics: z.array(ReadingTopicLinkSchema).default([]),

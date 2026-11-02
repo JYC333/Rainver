@@ -58,8 +58,10 @@ export function itemOut(row: WithAccessLevel<SourceItemRow>) {
 }
 
 export function jobOut(row: ExtractionJobRow) {
-  // Durable observation payload is internal work input, never status/API/model content.
-  const {observation_items: _observationItems, ...statusMetadata} = objectValue(row.metadata_json);
+  // Durable observations, submissions and investigation drafts are internal
+  // work inputs/results, never public job status (including legacy operations).
+  const {observation_items: _observationItems, material_submission: _submission,
+    investigation: _investigation, ...statusMetadata} = objectValue(row.metadata_json);
   return {
     id: row.id,
     space_id: row.space_id,

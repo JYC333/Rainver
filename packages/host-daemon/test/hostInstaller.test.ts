@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -74,7 +74,7 @@ describe("host release installer", () => {
       await writeFile(join(installRoot, "current", "BUILD_ID"), buildIdFile);
       await writeFile(join(installRoot, "current", "app", "dist", "cli.js"), "// installed\n");
       await writeFile(join(installRoot, "channel"), "stable\n");
-      await writeFile(join(binDir, "rainver-host"), "#!/bin/sh\n", { mode: 0o755 });
+      await writeFile(join(binDir, "rainver-host"), "#!/bin/sh\necho 'Read-only parallel review: ready.'\n", { mode: 0o755 });
       await writeFile(join(installRoot, "rainver-host-daemon"), "#!/bin/sh\n", { mode: 0o755 });
       await writeFile(join(systemdDir, "rainver-host.service"), "[Service]\n");
       await writeFile(
@@ -90,6 +90,9 @@ describe("host release installer", () => {
       const result = await runCommand("/bin/bash", [installerPath, "--update", "--auto-update"], {
         ...process.env,
         PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+        RAINVER_HOST_UPDATE_CHANNEL: "stable",
+        RAINVER_HOST_BWRAP: process.execPath, // executable presence; the fixture CLI models the probe
+        XDG_CONFIG_HOME: join(root, "xdg-config"),
         RAINVER_HOST_INSTALL_ROOT: installRoot,
         RAINVER_HOST_BIN_DIR: binDir,
         RAINVER_HOST_SYSTEMD_DIR: systemdDir,
@@ -149,7 +152,7 @@ describe("host release installer", () => {
       await writeFile(join(releaseDir, "BUILD_ID"), buildIdFile);
       await writeFile(join(hostPayload, "BUILD_ID"), buildIdFile);
       await writeFile(join(hostPayload, "app", "package.json"), '{"type":"module"}\n');
-      await writeFile(join(hostPayload, "app", "dist", "cli.js"), 'console.log("0.1.0")\n');
+      await writeFile(join(hostPayload, "app", "dist", "cli.js"), 'if (process.argv[2] === "check-read-only" && process.env.RAINVER_TEST_PROBE_FAIL === "1") process.exit(1); console.log(process.argv[2] === "check-read-only" ? "Read-only parallel review: ready." : "0.1.0")\n');
       await writeFile(join(hostPayload, "app", "dist", "daemon.js"), "\n");
       await writeFile(join(adapterPayload, "BUILD_ID"), buildIdFile);
       await writeFile(join(adapterPayload, "package.json"), '{"private":true}\n');
@@ -162,9 +165,27 @@ describe("host release installer", () => {
       )));
       await writeFile(join(releaseDir, "SHA256SUMS"), `${sums.join("\n")}\n`);
 
+      await expect(runCommand("/bin/bash", [installerPath, "--update"], {
+        ...process.env,
+        RAINVER_TEST_PROBE_FAIL: "1",
+        PATH: `${fakeBin}${delimiter}/usr/bin${delimiter}/bin`,
+        RAINVER_HOST_UPDATE_CHANNEL: "stable",
+        RAINVER_HOST_BWRAP: process.execPath, // executable presence; the fixture CLI models the probe
+        XDG_CONFIG_HOME: join(root, "xdg-config"),
+        RAINVER_HOST_INSTALL_ROOT: installRoot,
+        RAINVER_HOST_BIN_DIR: binDir,
+        RAINVER_HOST_SYSTEMD_DIR: systemdDir,
+        RAINVER_HOST_CONFIG_DIR: configDir,
+        RAINVER_HOST_RELEASE_BASE_URL: `file://${releaseDir}`,
+      })).rejects.toThrow("no new Host build was activated");
+      expect(existsSync(join(installRoot, "current"))).toBe(false);
+      expect(existsSync(join(systemdDir, "rainver-host.service"))).toBe(false);
+
       const result = await runCommand("/bin/bash", [installerPath, "--update"], {
         ...process.env,
         PATH: `${fakeBin}${delimiter}/usr/bin${delimiter}/bin`,
+        RAINVER_HOST_UPDATE_CHANNEL: "stable",
+        RAINVER_HOST_BWRAP: process.execPath, // executable presence; the fixture CLI models the probe
         XDG_CONFIG_HOME: join(root, "xdg-config"),
         RAINVER_HOST_INSTALL_ROOT: installRoot,
         RAINVER_HOST_BIN_DIR: binDir,
@@ -226,7 +247,7 @@ describe("host release installer", () => {
       await writeFile(join(releaseDir, "BUILD_ID"), buildIdFile);
       await writeFile(join(hostPayload, "BUILD_ID"), buildIdFile);
       await writeFile(join(hostPayload, "app", "package.json"), '{"type":"module"}\n');
-      await writeFile(join(hostPayload, "app", "dist", "cli.js"), 'console.log("0.1.0")\n');
+      await writeFile(join(hostPayload, "app", "dist", "cli.js"), 'if (process.argv[2] === "check-read-only" && process.env.RAINVER_TEST_PROBE_FAIL === "1") process.exit(1); console.log(process.argv[2] === "check-read-only" ? "Read-only parallel review: ready." : "0.1.0")\n');
       await writeFile(join(hostPayload, "app", "dist", "daemon.js"), "\n");
       await writeFile(join(adapterPayload, "BUILD_ID"), buildIdFile);
       await writeFile(join(adapterPayload, "package.json"), '{"private":true}\n');
@@ -241,6 +262,8 @@ describe("host release installer", () => {
       await runCommand("/bin/bash", [installerPath, "--update"], {
         ...process.env,
         PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+        RAINVER_HOST_UPDATE_CHANNEL: "stable",
+        RAINVER_HOST_BWRAP: process.execPath, // executable presence; the fixture CLI models the probe
         XDG_CONFIG_HOME: join(root, "xdg-config"),
         RAINVER_HOST_INSTALL_ROOT: installRoot,
         RAINVER_HOST_BIN_DIR: binDir,
@@ -300,7 +323,7 @@ describe("host release installer", () => {
       await writeFile(join(releaseDir, "BUILD_ID"), buildIdFile);
       await writeFile(join(hostPayload, "BUILD_ID"), buildIdFile);
       await writeFile(join(hostPayload, "app", "package.json"), '{"type":"module"}\n');
-      await writeFile(join(hostPayload, "app", "dist", "cli.js"), 'console.log("0.1.0")\n');
+      await writeFile(join(hostPayload, "app", "dist", "cli.js"), 'if (process.argv[2] === "check-read-only" && process.env.RAINVER_TEST_PROBE_FAIL === "1") process.exit(1); console.log(process.argv[2] === "check-read-only" ? "Read-only parallel review: ready." : "0.1.0")\n');
       await writeFile(join(hostPayload, "app", "dist", "daemon.js"), "\n");
       await writeFile(join(adapterPayload, "BUILD_ID"), buildIdFile);
       await writeFile(join(adapterPayload, "package.json"), '{"private":true}\n');
@@ -315,6 +338,8 @@ describe("host release installer", () => {
       const result = await runCommand("/bin/bash", [installerPath, "--update"], {
         ...process.env,
         PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+        RAINVER_HOST_UPDATE_CHANNEL: "stable",
+        RAINVER_HOST_BWRAP: process.execPath, // executable presence; the fixture CLI models the probe
         XDG_CONFIG_HOME: join(root, "xdg-config"),
         RAINVER_HOST_INSTALL_ROOT: installRoot,
         RAINVER_HOST_BIN_DIR: binDir,
@@ -362,7 +387,7 @@ describe("host release installer", () => {
       await writeFile(join(releaseDir, "BUILD_ID"), buildIdFile);
       await writeFile(join(hostPayload, "BUILD_ID"), buildIdFile);
       await writeFile(join(hostPayload, "app", "package.json"), '{"type":"module"}\n');
-      await writeFile(join(hostPayload, "app", "dist", "cli.js"), 'console.log("0.1.0")\n');
+      await writeFile(join(hostPayload, "app", "dist", "cli.js"), 'if (process.argv[2] === "check-read-only" && process.env.RAINVER_TEST_PROBE_FAIL === "1") process.exit(1); console.log(process.argv[2] === "check-read-only" ? "Read-only parallel review: ready." : "0.1.0")\n');
       await writeFile(
         join(hostPayload, "app", "dist", "daemon.js"),
         'import { writeFileSync } from "node:fs"; writeFileSync(process.env.RAINVER_TEST_OUTPUT, process.env.PATH ?? "")\n',
@@ -390,7 +415,9 @@ describe("host release installer", () => {
         // just installed into visible to the daemon even when shell startup
         // did not put it on PATH yet.
         PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
-        XDG_CONFIG_HOME: xdgConfig,
+        RAINVER_HOST_UPDATE_CHANNEL: "stable",
+        RAINVER_HOST_BWRAP: process.execPath, // executable presence; the fixture CLI models the probe
+        XDG_CONFIG_HOME: join(root, "xdg-config"),
         RAINVER_HOST_INSTALL_ROOT: installRoot,
         RAINVER_HOST_BIN_DIR: binDir,
         RAINVER_HOST_SYSTEMD_DIR: systemdDir,

@@ -202,6 +202,29 @@ navigation, metadata, and domain actions.
   a fixed 15px; block hover offsets apply only inside the Reader column, and only
   for a fine pointer (`hover: hover`), so a tap never leaves a block lit.
 
+### Retained Source reading versions
+
+The Source Reader header's **Version history** opens a paginated list of retained
+extracted snapshots (25 per page, newest first, timestamp with seconds, current
+artifact marked). `GET /api/v1/reader/source-items/:itemId/versions` accepts a
+nonnegative `offset`; `.../versions/:snapshotId` reads one version. These are
+body versions, separate from Reading method/prompt versions. No new storage or
+migration is involved. A snapshot must belong to that item, and the parent item,
+Source consent, snapshot, Artifact and originating Room gates all still apply;
+summary-only or denied versions do not appear. Each request rechecks authority.
+
+Library keeps the selected snapshot in `?version=…`, preserving Project/origin
+and return navigation. The retained body uses the shared Reader with its own
+snapshot identity, image policy, declared syntax and provenance, a read-only
+banner and **Back to latest**. It does not record a current-item open, change
+the current Artifact pointer, mark the item read or rewrite annotations.
+Current-item annotations/drafts are not shown or copied onto old bodies; new
+annotations, Markdown conversion, document-note creation and reprocessing are
+not offered there. A private position on the snapshot is independent of the
+current item's position. Restoring an old version and visual diffs are not
+part of this viewing surface. Missing/denied bodies never fall back to another
+version while pretending the requested version was opened.
+
 ### Reading position, appearance and reading tools
 
 **First screen of a source item.** The text leads: when the material has text
@@ -224,9 +247,9 @@ that fits on screen is read through (100%) — a different case.
 **Scope.** Everything below belongs to `ReaderWorkspace`, so it applies to every
 document shown in it: Library source items (`source_item`) and Project research
 reports (`research_report`). The position API and its gate also accept
-`source_snapshot` and `research_notebook`, but no web surface shows those in the
-Reader today (a Note opens in the Notes editor), so no position is recorded for
-them. Reading-list progress, previous/next and "mark read and next" are Library
+`source_snapshot` and `research_notebook`, and the Source history surface now shows `source_snapshot` with its own
+position. No web Reader surface shows `research_notebook` (a Note opens in the
+Notes editor), so no position is recorded for it. Reading-list progress, previous/next and "mark read and next" are Library
 features over the unified Reading list (source items only).
 
 - **Reading position** (`reader_positions`, `modules/reader/positions.ts`,
@@ -492,3 +515,41 @@ Light/dark gallery captures normal, hover, focus, selection, pending/disabled,
 failed save and saved highlight. Delayed synthetic image completion after restore
 also retains the same text anchor. Native mobile selection/keyboard and assistive
 technology still require real-device acceptance; AX/layout proxies are not that.
+
+### Project original/analysis record contract (R1)
+
+`GET /api/v1/reader/source-items/:itemId/records?offset=0` is a read-only,
+Project projection (`project_id` is required for a global material referenced by
+a Project Following) with 25 authorized records/page and max offset10000.
+It returns `original`, `original_availability` (retained/not_retained/unknown),
+and `items` with snapshot/artifact IDs, role (original/analysis/legacy_analysis/
+unknown), captured time, declared provenance format, originating Run and original
+snapshot reference. Pagination returns `truncated=true` rather than an invalid next
+offset when the explicit history bound is reached. There are no body text, private counts or hidden titles in
+this projection. Full parent/Source/snapshot/Artifact/Run/dependency checks precede
+exposure; denied records are omitted. The returned snapshot can be read using the
+existing `documents/source_snapshot/:id` resolver. This GET neither records an
+open nor starts work, mutates current pointers or changes private reading state.
+Project Reader payloads also expose the role of the artifact actually shown.
+
+Original availability is independent of the requested page. `retained` requires
+a currently readable deterministic original. Old/custom/metadata/raw snapshots,
+an existing body pointer, or an inaccessible possible original yield `unknown`,
+not a claim that the original never existed. `not_retained` is used only for
+authorized analysis-only history with no possible-original record or pointer.
+The existence check returns no inaccessible snapshot identity, title or count.
+Analysis reads require both current retention/capture policy and consent for the
+frozen actual destination on every contributing Source, even without an original.
+
+Old item links continue showing their own legacy body and anchors. A deterministic
+retained original is a separate snapshot reference, not a silent replacement of
+that legacy body's identity. Existing `/versions` remains extracted-body history;
+new analysis summary snapshots do not enter its body-version sequence. Project
+four-view UI and original/analysis switch are later R5 work, not shipped by R1.
+
+R4 private Project investigations are ordinary private `source_snapshot` analysis
+versions. Their operation returns the exact report snapshot and supplied-original
+snapshot; Reader does not select a newer original on report open. Current Source,
+Project/purpose, original/history and actual-egress gates remain authoritative,
+including Artifact exports. Original and report keep separate annotation/position
+identities. Opening either does not favorite or start an investigation.

@@ -1,9 +1,11 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { toast } from 'sonner'
 import LibraryModule from '../LibraryModule'
 import { informationDigestsApi, projectsApi, sourcesApi } from '../../../api/client'
+import { clearSessionResidue } from '../../../lib/sessionResidue'
 import type { InformationDigest, InterestProfileSnapshot, SourceChannel, SourceItem } from '../../../types/api'
 
 // First-content guidance is covered by ReadingStart integration tests.
@@ -215,6 +217,216 @@ describe('LibraryPage', () => {
     renderLibrary('/library/digests')
     fireEvent.click(await screen.findByRole('button', { name: 'Previous day' }))
     await waitFor(() => expect(informationDigestsApi.personal).toHaveBeenLastCalledWith('space-1', '2026-08-05'))
+  })
+
+  it('keeps the personal digest frame while another day loads, drops an out-of-order reply, and replaces the content', async () => {
+    const replies: Array<{ date?: string; resolve: (value: never) => void }> = []
+    vi.mocked(informationDigestsApi.personal).mockReset()
+    vi.mocked(informationDigestsApi.personal).mockImplementation(((_space: string, date?: string) => new Promise(resolve => { replies.push({ date, resolve }) })) as never)
+    const digestItem = (title: string) => ({
+      id: `item-${title}`, source_item_id: `source-${title}`, section: 'interest' as const, position: 0,
+      quota_slot: 'interest:1', matched_topic_id: null, serendipity_pool_item_id: null,
+      target_domain_key: null, discovery_origin: null, score: 0.8, component_scores: {}, rationale: 'Fixture rationale.',
+      title, source_uri: null, source_domain: null, author: null, excerpt: null, occurred_at: '2026-08-05T00:00:00Z',
+      domain_key: 'history', depth: 'overview' as const, genre: 'explainer' as const, summary: null, read_status: 'unread' as const,
+      serendipity_feedback: null, stance_target: null, stance_target_key: null, stance_polarity: 'neutral' as const, stance_confidence: 0,
+      anonymous_read_count: null,
+    })
+    const digestFor = (date: string, title: string) => available({
+      id: `digest-${date}`, digest_type: 'personal', owner_user_id: 'user-1', project_id: null, digest_date: date,
+      profile_maturity: 'warm', status: 'ready', settings: {}, created_at: `${date}T07:00:00Z`, updated_at: `${date}T07:00:00Z`,
+      team_aggregates_available: false, team_blind_spot_domains: [], items: [digestItem(title)],
+    })
+    renderLibrary('/library/digests')
+    await waitFor(() => expect(replies).toHaveLength(1))
+    await act(async () => { replies[0]!.resolve(digestFor('2026-08-06', 'First day item') as never) })
+    expect(await screen.findByText('First day item')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous day' }))
+    await waitFor(() => expect(replies).toHaveLength(2))
+    expect(screen.getByText('Aug 5, 2026 · UTC')).toBeInTheDocument()
+    expect(screen.getByTestId('digest-day-pending')).toHaveTextContent('Loading Aug 5, 2026… Still showing Aug 6, 2026.')
+    expect(screen.getByTestId('digest-day-content')).toHaveAttribute('inert')
+    expect(screen.getByText('First day item')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Previous day' }))
+    await waitFor(() => expect(replies).toHaveLength(3))
+    expect(replies[2]!.date).toBe('2026-08-04')
+    await act(async () => { replies[2]!.resolve(digestFor('2026-08-04', 'Asked day item') as never) })
+    expect(await screen.findByText('Asked day item')).toBeInTheDocument()
+    expect(screen.queryByText('First day item')).not.toBeInTheDocument()
+    await act(async () => { replies[1]!.resolve(digestFor('2026-08-05', 'Late day item') as never) })
+    expect(screen.queryByText('Late day item')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('digest-day-pending')).not.toBeInTheDocument()
+  })
+
+  it('on a failed personal day shows no earlier content, names the day and keeps the navigation', async () => {
+    renderLibrary('/library/digests')
+    const earlier = await screen.findByRole('button', { name: 'Previous day' })
+    vi.mocked(informationDigestsApi.personal).mockRejectedValueOnce(new Error('Digest read refused'))
+    fireEvent.click(earlier)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load Aug 5, 2026.')
+    expect(screen.getByRole('alert')).toHaveTextContent('Digest read refused')
+    expect(screen.queryByTestId('digest-day-pending')).not.toBeInTheDocument()
+    expect(screen.getByText('Aug 5, 2026 · UTC')).toBeInTheDocument()
+    expect(screen.queryByText(/^Scheduled digest$/)).not.toBeInTheDocument()
+  })
+
+  describe('personal daily edition beside the slower reads', () => {
+    const ready = (date: string, title: string) => available({
+      id: `digest-${date}`, digest_type: 'personal', owner_user_id: 'user-1', project_id: null, digest_date: date,
+      profile_maturity: 'warm', status: 'ready', settings: {}, created_at: `${date}T07:00:00Z`, updated_at: `${date}T07:00:00Z`,
+      team_aggregates_available: false, team_blind_spot_domains: [], items: [{
+        id: `item-${title}`, source_item_id: `source-${title}`, section: 'interest' as const, position: 0,
+        quota_slot: 'interest:1', matched_topic_id: null, serendipity_pool_item_id: null,
+        target_domain_key: null, discovery_origin: null, score: 0.8, component_scores: {}, rationale: 'Fixture rationale.',
+        title, source_uri: null, source_domain: null, author: null, excerpt: null, occurred_at: `${date}T00:00:00Z`,
+        domain_key: 'history', depth: 'overview' as const, genre: 'explainer' as const, summary: null, read_status: 'unread' as const,
+        serendipity_feedback: null, stance_target: null, stance_target_key: null, stance_polarity: 'neutral' as const, stance_confidence: 0,
+        anonymous_read_count: null,
+      }],
+    })
+    const statusError = (status: number, message: string) => Object.assign(new Error(message), { status })
+    /** Answers no read until the test says so, in the order they were asked. */
+    const held = <T,>() => {
+      const reads: Array<{ resolve: (value: T) => void; reject: (error: unknown) => void }> = []
+      const read = () => new Promise<T>((resolve, reject) => { reads.push({ resolve, reject }) })
+      return { reads, read: read as never }
+    }
+    const opened = async () => {
+      vi.mocked(informationDigestsApi.personal).mockResolvedValueOnce(ready('2026-08-06', 'Old day body') as never)
+      renderLibrary('/library/digests')
+      expect(await screen.findByText('Old day body')).toBeInTheDocument()
+    }
+    const content = () => screen.getByTestId('digest-day-content')
+
+    it.each([
+      [403, 'Digest access revoked'],
+      [503, 'Digest read unavailable'],
+    ])('names a day that fails with %i and offers Retry while the Source history still hangs', async (status, message) => {
+      await opened()
+      const history = held()
+      const day = held<never>()
+      vi.mocked(sourcesApi.briefings).mockImplementation(history.read)
+      vi.mocked(informationDigestsApi.personal).mockImplementationOnce(day.read)
+      fireEvent.click(screen.getByRole('button', { name: 'Previous day' }))
+      await waitFor(() => expect(day.reads).toHaveLength(1))
+      await act(async () => { day.reads[0]!.reject(statusError(status, message)) })
+
+      const alert = screen.getByRole('alert')
+      expect(alert).toHaveTextContent('Could not load Aug 5, 2026.')
+      expect(alert).toHaveTextContent(message)
+      expect(content()).toBeEmptyDOMElement()
+      expect(screen.getByText('Aug 5, 2026 · UTC')).toBeInTheDocument()
+      expect(history.reads).toHaveLength(1)
+
+      vi.mocked(informationDigestsApi.personal).mockResolvedValueOnce(ready('2026-08-05', 'Retried day body') as never)
+      const retry = within(alert).getByRole('button')
+      expect(retry).toBeEnabled()
+      fireEvent.click(retry)
+      expect(await screen.findByText('Retried day body')).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(history.reads).toHaveLength(2)
+    })
+
+    it('clears a same-day Refresh refused with 403 while the Source history hangs, and Refresh stays usable', async () => {
+      await opened()
+      const history = held()
+      const day = held<never>()
+      vi.mocked(sourcesApi.briefings).mockImplementation(history.read)
+      vi.mocked(informationDigestsApi.personal).mockImplementationOnce(day.read)
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+      await waitFor(() => expect(day.reads).toHaveLength(1))
+      expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled()
+      await act(async () => { day.reads[0]!.reject(statusError(403, 'Digest access revoked')) })
+
+      expect(content()).toBeEmptyDOMElement()
+      expect(screen.queryByText('Old day body')).not.toBeInTheDocument()
+      expect(screen.getByRole('alert')).toHaveTextContent('Could not load Aug 6, 2026.')
+      expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled()
+    })
+
+    it('presents the asked day while every other read hangs, and backfill does not wait for them', async () => {
+      const history = held()
+      const profile = held()
+      const projects = held()
+      vi.mocked(sourcesApi.briefings).mockImplementation(history.read)
+      vi.mocked(informationDigestsApi.profile).mockImplementation(profile.read)
+      vi.mocked(projectsApi.list).mockImplementation(projects.read)
+      vi.mocked(informationDigestsApi.personal).mockResolvedValueOnce(ready('2026-08-06', 'Old day body') as never)
+      renderLibrary('/library/digests')
+      expect(await screen.findByText('Old day body')).toBeInTheDocument()
+
+      const missing = {
+        status: 'missing', digest_date: '2026-08-05', timezone: 'UTC',
+        period_start_utc: '2026-08-05T00:00:00.000Z', period_end_utc: '2026-08-06T00:00:00.000Z',
+        reason: 'not_generated', backfill_available: true,
+      }
+      vi.mocked(informationDigestsApi.personal).mockResolvedValueOnce(missing as never)
+      fireEvent.click(screen.getByRole('button', { name: 'Previous day' }))
+      expect(await screen.findByRole('button', { name: 'Backfill this day' })).toBeEnabled()
+      expect(content()).not.toHaveAttribute('inert')
+      expect(screen.queryByTestId('digest-day-pending')).not.toBeInTheDocument()
+    })
+
+    it('lets no late reply of an earlier day touch the day now shown', async () => {
+      await opened()
+      const history = held<never>()
+      const profile = held<never>()
+      const projects = held<never>()
+      const day = held<never>()
+      vi.mocked(sourcesApi.briefings).mockImplementationOnce(history.read)
+      vi.mocked(informationDigestsApi.profile).mockImplementationOnce(profile.read)
+      vi.mocked(projectsApi.list).mockImplementationOnce(projects.read)
+      vi.mocked(informationDigestsApi.personal).mockImplementationOnce(day.read)
+      fireEvent.click(screen.getByRole('button', { name: 'Previous day' }))
+      await waitFor(() => expect(day.reads).toHaveLength(1))
+
+      vi.mocked(sourcesApi.briefings).mockResolvedValue({
+        items: [{
+          source_channel_id: 'channel-1', connection_name: 'Kept channel', project_id: null, date: '2026-08-04', run_ids: ['run-1'], run_count: 1,
+          item_decision_counts: { relevant: 1, maybe: 0, not_relevant: 0 }, digest_artifact_id: null, digest_preview: 'Kept briefing', latest_run_created_at: '2026-08-04T07:00:00Z',
+        }],
+        total: 1, limit: 10, offset: 0,
+      } as never)
+      vi.mocked(informationDigestsApi.personal).mockResolvedValueOnce(ready('2026-08-04', 'New day body') as never)
+      fireEvent.click(screen.getByRole('button', { name: 'Previous day' }))
+      expect(await screen.findByText('New day body')).toBeInTheDocument()
+      expect(await screen.findByText('Kept briefing')).toBeInTheDocument()
+      vi.mocked(toast.error).mockClear()
+
+      await act(async () => {
+        const refused = statusError(403, 'Late refusal')
+        day.reads[0]!.reject(refused)
+        history.reads[0]!.reject(refused)
+        profile.reads[0]!.reject(refused)
+        projects.reads[0]!.reject(refused)
+      })
+      expect(screen.getByText('New day body')).toBeInTheDocument()
+      expect(screen.getByText('Kept briefing')).toBeInTheDocument()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(toast.error).not.toHaveBeenCalled()
+    })
+
+    it('drops what is shown on logout and takes no late reply of that session', async () => {
+      await opened()
+      const history = held<never>()
+      const day = held<never>()
+      vi.mocked(sourcesApi.briefings).mockImplementationOnce(history.read)
+      vi.mocked(informationDigestsApi.personal).mockImplementationOnce(day.read)
+      fireEvent.click(screen.getByRole('button', { name: 'Previous day' }))
+      await waitFor(() => expect(day.reads).toHaveLength(1))
+      vi.mocked(toast.error).mockClear()
+
+      act(() => { clearSessionResidue() })
+      expect(screen.queryByText('Old day body')).not.toBeInTheDocument()
+      await act(async () => {
+        day.reads[0]!.reject(statusError(403, 'Late refusal'))
+        history.reads[0]!.reject(statusError(403, 'Late refusal'))
+      })
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(toast.error).not.toHaveBeenCalled()
+    })
   })
 
   it('shows a countdown only for a scheduled retry, names a waiting condition, and offers a retry only for a paused episode', async () => {

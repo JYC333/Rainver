@@ -1,3 +1,5 @@
+import {createHash} from 'node:crypto';
+import {JobDeferredError} from '../../jobs/handlerRegistry.js';
 import {enqueueGoalCollection} from './collectionQueue.js';
 import {recoverGoalWatermark} from './watermark.js';
 import {MaterialItemProcessingService} from '../materialProcessing/items.js';
@@ -17,6 +19,7 @@ import {randomUUID} from 'node:crypto';
 import {type SourceGoalBindingSpec} from '@rainver/protocol';
 import {HttpError,withDbTransaction,type Pool} from '../../routeUtils/common.js';
 import type {ServerConfig} from '../../../config.js';
+import {throwIfAnyFailed} from '../../scheduler/registry.js';
 import {PgSchedulerTaskStore} from '../../scheduler/taskStore.js';
 import type {JobHandlerRegistry} from '../../jobs/handlerRegistry.js';
 import {getDbPool} from '../../../db/pool.js';
@@ -27,15 +30,33 @@ import type {GoalExecutionPort} from './service.js';
 export interface GoalBindingRow {id:string;space_id:string;goal_id:string;spec_json:SourceGoalBindingSpec;fixture_json?:{authority_sha256?:string};previous_spec_json:SourceGoalBindingSpec|null;revision:number;cursor_json:Record<string,unknown>;gaps_json:unknown[];failures:number;lease_token:string|null;lease_until?:string|null;last_success_at?:string|null;}
 export async function enqueueDueSourceGoals(db:Pool){
  const tasks=await new PgSchedulerTaskStore(db).listDue('source_goal_tick',new Date().toISOString(),25);
- for(const task of tasks)await withDbTransaction(db,async tx=>{
-  const g=await tx.query<GoalRow>(`SELECT * FROM source_goals WHERE id=$1 AND status='running' FOR UPDATE`,[task.task_key]);if(!g.rows[0])return;
-  const current=await new PgSchedulerTaskStore(tx).get('source_goal_tick',task.task_key);
-  if(!current?.next_run_at || new Date(String(current.next_run_at)).getTime()>Date.now())return;
-  await enqueueGoalCollection(tx,g.rows[0]);
-  await new PgSchedulerTaskStore(tx).upsert({taskType:'source_goal_tick',taskKey:task.task_key,scopeType:'space',scopeId:g.rows[0].space_id,spaceId:g.rows[0].space_id,userId:g.rows[0].owner_user_id,nextRunAt:new Date(Date.now()+g.rows[0].budget_json.interval_seconds*1000).toISOString(),lastRunAt:new Date().toISOString(),metadataJson:current.metadata_json});
- });
+ const goals=(await db.query<GoalRow>("SELECT * FROM source_goals WHERE id=ANY($1::varchar[]) AND status='running'",[tasks.map(t=>t.task_key)])).rows;
+ const groups=new Map<string,string[]>();
+ for(const g of goals){const key=g.project_id?`${g.space_id}:${g.project_id}`:g.id;groups.set(key,[...(groups.get(key)??[]),g.id]);}
+ const failures:unknown[]=[];
+ for(const ids of groups.values())try{await withDbTransaction(db,async tx=>{
+  // One logical scheduler cohort is frozen under the same sorted goal locks
+  // used by canonical manual/version admission, never by arrival proximity.
+  const locked=(await tx.query<GoalRow>("SELECT * FROM source_goals WHERE id=ANY($1::varchar[]) AND status='running' ORDER BY id FOR UPDATE",[ids])).rows;
+  const due=[];
+  for(const g of locked){const task=await new PgSchedulerTaskStore(tx).get('source_goal_tick',g.id);if(task?.next_run_at&&Date.parse(String(task.next_run_at))<=Date.now())due.push({g,task});}
+  const enabled=due.filter(({g})=>g.project_id&&(g.compatibility_json?.theme_analysis as {enabled?:boolean;version_id?:string}|undefined)?.enabled===true&&(g.compatibility_json?.theme_analysis as {version_id?:string}).version_id===g.active_version_id);
+  const slot='scheduled:'+createHash('sha256').update(JSON.stringify(enabled.map(({g,task})=>[g.id,task.next_run_at,g.active_version_id]))).digest('hex');
+  const admitted:Array<{goal_id:string;version_id:string|null;round_id:string}>=[];
+  for(const {g,task} of due){
+   const queued=await enqueueGoalCollection(tx,g,enabled.some(e=>e.g.id===g.id)?slot:`scheduled:${task.next_run_at}`);
+   if(queued.status==='queued'&&queued.job_id){const row=(await tx.query<{id:string}>('SELECT id FROM project_reading_rounds WHERE space_id=$1 AND goal_id=$2 AND slot_key=$3',[g.space_id,g.id,slot])).rows[0];if(row)admitted.push({goal_id:g.id,version_id:g.active_version_id,round_id:row.id});}
+   await new PgSchedulerTaskStore(tx).upsert({taskType:'source_goal_tick',taskKey:g.id,scopeType:'space',scopeId:g.space_id,spaceId:g.space_id,userId:g.owner_user_id,nextRunAt:new Date(Date.now()+g.budget_json.interval_seconds*1000).toISOString(),lastRunAt:new Date().toISOString(),metadataJson:task.metadata_json});
+  }
+  // An already-running collector is reused, not admitted into a second
+  // cohort. All new members carry exactly the same durable target versions.
+  if(admitted.length)await tx.query("UPDATE project_reading_rounds SET execution_json=jsonb_set(execution_json,'{project_targets}',$2::jsonb) WHERE id=ANY($1::varchar[])",[admitted.map(a=>a.round_id),JSON.stringify(admitted.map(({goal_id,version_id})=>({goal_id,version_id})))]);
+ });}catch(error){failures.push(error);}
+ // Use the existing scheduler aggregate reporting after every independent
+ // cohort had its chance; unexpected failures remain failures, not success.
+ throwIfAnyFailed(failures,'Source goal collection admission');
 }
-export async function runSourceGoalTick(db:Pool,config:ServerConfig,goalId:string,spaceId:string,executor:GoalExecutionPort=new SourceGoalExecutor(db,config),expectedVersionId?:string){
+export async function runSourceGoalTick(db:Pool,config:ServerConfig,goalId:string,spaceId:string,executor:GoalExecutionPort=new SourceGoalExecutor(db,config),expectedVersionId?:string,roundId?:string){
  const gr=await db.query<GoalRow>('SELECT * FROM source_goals WHERE id=$1 AND space_id=$2',[goalId,spaceId]);let g=gr.rows[0];if(!g || g.status!=='running')return {status:'stopped'};
  if(expectedVersionId!==undefined&&g.active_version_id!==expectedVersionId)return {status:'superseded'};
  await reconcileNativeSearch(db,config,goalId);
@@ -46,10 +67,19 @@ export async function runSourceGoalTick(db:Pool,config:ServerConfig,goalId:strin
  // finishing without publishing a validated candidate never means success.
  await db.query(`UPDATE source_goal_bindings b SET status=CASE WHEN repair_attempts<$2 THEN 'repair_required' ELSE 'paused' END,retry_at=now()+interval '60 seconds' WHERE b.goal_id=$1 AND b.status='repairing' AND EXISTS (SELECT 1 FROM runs r WHERE r.space_id=b.space_id AND r.contract_snapshot_json->'workflow_input_json'->'source_goal'->>'binding_id'=b.id AND r.contract_snapshot_json->'workflow_input_json'->'source_goal'->>'purpose'='repair') AND NOT EXISTS (SELECT 1 FROM source_goal_repairs c WHERE c.binding_id=b.id AND c.base_revision=b.revision AND (c.status='pending' OR c.status='candidate' AND c.validation_json ? 'validation_lease_until')) AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.space_id=b.space_id AND r.status IN ('queued','running','waiting_for_review','waiting_for_dependency','cancelling') AND r.contract_snapshot_json->'workflow_input_json'->'source_goal'->>'binding_id'=b.id AND r.contract_snapshot_json->'workflow_input_json'->'source_goal'->>'purpose'='repair')`,[goalId,g.budget_json.repair_attempts]);
  const rows=await db.query<GoalBindingRow>(`SELECT * FROM source_goal_bindings WHERE goal_id=$1 AND status IN ('active','cooldown') AND (retry_at IS NULL OR retry_at<=now()) ORDER BY last_success_at NULLS FIRST,id`,[goalId]);
+ const {themeCollectionTargets,retryThemeCollectionTarget,wakeThemeRounds}=await import('../../informationDigest/index.js');
+ const targets=roundId?await themeCollectionTargets(db,roundId,spaceId,goalId):undefined;
+ if(roundId&&!targets)return {status:'superseded'};
+ let waitingRecovery=false;
  const results=[];
  for(const b of rows.rows){
-  const token=randomUUID(),runId=randomUUID();
+  const target=targets?.find(t=>t.binding_id===b.id&&t.revision===b.revision);if(targets&&!target)continue;
+  const old=target?(await db.query<{status:string}>("SELECT status FROM source_goal_runs WHERE id=$1",[target.audit_id])).rows[0]:null;
+  if(old&&old.status!=='running')continue;
+  if(old&&b.lease_until&&Date.parse(String(b.lease_until))>Date.now()){waitingRecovery=true;continue;}
+  const token=randomUUID();let runId=target?.audit_id??randomUUID();
   const claim=await db.query(`UPDATE source_goal_bindings SET lease_token=$2,lease_until=now()+interval '5 minutes' WHERE id=$1 AND revision=$3 AND (lease_until IS NULL OR lease_until<now()) AND EXISTS(SELECT 1 FROM source_goals WHERE id=$4 AND status='running' AND active_version_id=$5) RETURNING id`,[b.id,token,b.revision,g.id,g.active_version_id]);if(!claim.rows[0])continue;
+  if(old&&roundId&&target){const next=await withDbTransaction(db,tx=>retryThemeCollectionTarget(tx,roundId,b.id,target.audit_id));if(!next){await db.query("UPDATE source_goal_runs SET status='interrupted',ended_at=now(),result_json=COALESCE(result_json,'{}'::jsonb)||'{\"error\":\"source_collection_recovery_exhausted\"}'::jsonb WHERE id=$1 AND status='running'",[target.audit_id]);await db.query('UPDATE source_goal_bindings SET lease_token=NULL,lease_until=NULL WHERE id=$1 AND lease_token=$2',[b.id,token]);continue;}runId=next;}
   await db.query(`UPDATE source_goal_runs SET status='interrupted',ended_at=now() WHERE binding_id=$1 AND status='running'`,[b.id]);
   await db.query(`INSERT INTO source_goal_runs(id,space_id,goal_id,binding_id,version_id,status) VALUES($1,$2,$3,$4,$5,'running')`,[runId,spaceId,goalId,b.id,g.active_version_id]);
   let committed=false;
@@ -87,11 +117,13 @@ export async function runSourceGoalTick(db:Pool,config:ServerConfig,goalId:strin
  const repairs=await db.query<{id:string}>(`SELECT id FROM source_goal_bindings WHERE goal_id=$1 AND status='repair_required' AND repair_attempts<$2 AND lease_token IS NULL AND (retry_at IS NULL OR retry_at<=now())`,[goalId,g.budget_json.repair_attempts]);
  for(const repair of repairs.rows)await queueSourceGoalAgent(db,config,identity,g.id,'repair',repair.id).catch(async()=>{await db.query(`UPDATE source_goal_bindings SET status='paused' WHERE id=$1 AND status='repair_required'`,[repair.id]);});
  await db.query(`UPDATE source_goal_bindings SET status='paused' WHERE goal_id=$1 AND status='repair_required' AND repair_attempts>=$2`,[goalId,g.budget_json.repair_attempts]);
+ await wakeThemeRounds(db,spaceId,goalId);
+ if(waitingRecovery)throw new JobDeferredError('Existing collection lease has not expired',60000);
  return {results};
 }
 export function registerSourceGoalJob(registry:JobHandlerRegistry,config:ServerConfig){
- runFinalizationReconcilerRegistry.register('source_material_processing',{async reconcile(_db,run){const ctx=(run.contract_snapshot_json as {workflow_input_json?:{source_goal?:{purpose?:string;goal_id?:string}}})?.workflow_input_json?.source_goal;if(ctx?.purpose==='collect'&&ctx.goal_id)await reconcileNativeSearch(getDbPool(config.databaseUrl!),config,ctx.goal_id,run.id);await new MaterialItemProcessingService(getDbPool(config.databaseUrl!),config).reconcileTerminal(run.id);}},'sources');
- registry.register('source_goal_tick',async job=>runSourceGoalTick(getDbPool(config.databaseUrl!),config,String(job.payload.goal_id),job.space_id,undefined,typeof job.payload.version_id==='string'?job.payload.version_id:undefined));
+ runFinalizationReconcilerRegistry.register('source_material_processing',{async reconcile(_db,run){const ctx=(run.contract_snapshot_json as {workflow_input_json?:{source_goal?:{purpose?:string;goal_id?:string}}})?.workflow_input_json?.source_goal;if(ctx?.purpose==='collect'&&ctx.goal_id)await reconcileNativeSearch(getDbPool(config.databaseUrl!),config,ctx.goal_id,run.id);await new MaterialItemProcessingService(getDbPool(config.databaseUrl!),config).reconcileTerminal(run.id);if(ctx?.goal_id)await (await import('../../informationDigest/index.js')).wakeThemeRounds(getDbPool(config.databaseUrl!),run.space_id,ctx.goal_id);}},'sources');
+ registry.register('source_goal_tick',async job=>runSourceGoalTick(getDbPool(config.databaseUrl!),config,String(job.payload.goal_id),job.space_id,undefined,typeof job.payload.version_id==='string'?job.payload.version_id:undefined,typeof job.payload.round_id==='string'?job.payload.round_id:undefined));
 }
 
 /** Keep a determinate authorization/configuration refusal's stable code (so the

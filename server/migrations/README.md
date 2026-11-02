@@ -40,8 +40,9 @@ The following unpublished `dev` suffix `0006_topic_following` through
 remain byte-for-byte unchanged. Topic membership/judgment/change deliveries,
 Reader positions, document-note creation and the Personal Space association
 backfill remain in their exact original order, separated by `RESET search_path`.
-The final former `0012` snapshot is relinked to `0005`; future development appends
-at `0007`. This is one branch increment, not a baseline/schema-epoch rewrite.
+The final former `0012` snapshot is relinked to `0005`; development then resumed
+at `0007` (now consolidated below). This was one branch increment, not a
+baseline/schema-epoch rewrite.
 The managed preparation archived this source/target pair alongside the earlier
 pair; an instance that applied any of `0006`–`0012` needs explicit ADR 0025
 history conversion before normal upgrades, not checksum overrides or a reset.
@@ -53,6 +54,29 @@ tool outside the source tree. Before updating any database that applied the
 former suffix, use ADR 0025's archived-pair discovery and explicit offline
 cutover procedure; ordinary `up` cannot replace its migration history.
 This source consolidation does not perform a database cutover or authorize one.
+
+## Current dev branch consolidation (2026-11-02)
+
+The six unpublished migrations `0007_information_briefings` through
+`0012_project_private_deep_reading` are composed into `0007_project_reading.sql`.
+The published `0000`–`0006` SQL and snapshots are byte-for-byte unchanged.
+All six original SQL bodies, including backfills and per-file `RESET search_path`
+boundaries, remain in order. The final former `0012` snapshot is linked to
+`0006`; the next migration is `0008`.
+
+Reuse / Dependency Check: this consolidation uses the existing ADR 0025
+`prepare` tool, ordered SQL validator and history converter, with no new
+schema generator, dependencies or migration engine.
+
+The managed source/target pair has content identity
+`5bb48ff82dd378d4c88f7902d120db1d1c00a50dee544040c62d9a98098857ba`
+and is retained outside the repository under each configured local mode's
+`db/migration-archives/`. Keep this pair with affected databases/backups;
+external instances need a copy before switching migration chains. A database
+that applied any former `0007`–`0012` must use explicit ADR 0025 conversion,
+not normal `up` against changed history. A database through published `0006`
+or a fresh database uses normal `up`. This source consolidation does not
+convert an instance database, restart services or deploy the application.
 
 ## Changing the schema
 

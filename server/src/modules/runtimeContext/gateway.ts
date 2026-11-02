@@ -9,7 +9,7 @@ import { contentReadSql } from "../access/contentAccessSql.js";
 import { isExplicitReferenceType, roomScopedAgentReadSql } from "./workContextService.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
-import { retrievalEgressAllowed, runtimeProviderEgressDestination, type RetrievalEgressDestination } from "../retrieval/egress/egressPolicy.js";
+import { retrievalEgressAllowed, type RetrievalEgressDestination } from "../retrieval/egress/egressPolicy.js";
 import { excerptAroundQuery } from "../retrieval/normalize.js";
 import { RetrievalRegistry } from "../retrieval/registry.js";
 import {
@@ -41,6 +41,7 @@ import { loadConversationContinuityThroughMessage } from "./conversationContinui
 import { contextItemText } from "./itemNormalizer.js";
 import { instructionInRunRequest } from "./runRequest.js";
 import {
+  briefingReferencesInRecipientInstruction,
   createProductionRuntimeContextPlanningService,
   groupedAgentIdentityContext,
   isRoomConversation,
@@ -53,8 +54,8 @@ import { trimContextText } from "./windowPlanner.js";
 import { PgRuntimeContextAcquisitionRepository } from "./acquisitionRepository.js";
 import { PgRuntimeSkillProvider } from "../skills/runtimeSkillProvider.js";
 import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
-import { effectiveRunProviderModel } from "../runs/remoteProviderBinding.js";
-import { availableModels } from "../providers/dbReader.js";
+import { assertBriefingReferencesDeliverable, lockBriefingReferenceClosure, lockBriefingVersionClosure, pendingBriefingReferences } from "../informationDigest/briefing/referenceDelivery.js";
+import { classifyRunDestination, loadRunProvider } from "./runDestination.js";
 import {
   loadConversationInputResourceDescriptors,
   loadConversationSkillDescriptors,
@@ -240,7 +241,10 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       run_group_id: string | null;
       session_id: string | null;
       model_override_json: unknown;
+      runtime_profile_id: string | null;
       runtime_profile_snapshot_json: unknown;
+      contract_snapshot_json: unknown;
+      root_run_id: string | null;
       agent_id: string | null;
       project_id: string | null;
       project_folder_id: string | null;
@@ -249,7 +253,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     }>(
       `SELECT run.runtime_key,run.model_provider_id,run.owner_user_id,run.instructed_by_user_id,
               run.prompt,run.instruction,run.delegation_id,run.error_json,run.run_group_id,
-              run.session_id,run.model_override_json,run.runtime_profile_snapshot_json,run.agent_id,run.project_id,
+              run.session_id,run.model_override_json,run.runtime_profile_id,run.runtime_profile_snapshot_json,run.contract_snapshot_json,run.root_run_id,run.agent_id,run.project_id,
               run.project_folder_id,run.capability_id,run.capabilities_json
          FROM execution_control_snapshots control_row
          JOIN runs run ON run.id=control_row.run_id AND run.space_id=control_row.space_id
@@ -393,25 +397,12 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       throw new HttpError(409, "Invocation Delivery CLI egress authority no longer matches the adapter");
     }
     if (run.model_provider_id) {
-      const providerResult = await db.query<{ space_id: string; provider_type: string; base_url: string | null; config_json: unknown; default_model: string | null; capabilities_json: unknown }>(
-        `SELECT provider.space_id,provider.provider_type,provider.base_url,provider.config_json,provider.default_model,provider.capabilities_json
-           FROM model_provider_space_grants provider_grant
-           JOIN model_providers provider ON provider.id=provider_grant.provider_id
-          WHERE provider_grant.space_id=$1 AND provider_grant.provider_id=$2
-            AND provider_grant.enabled=TRUE AND provider.enabled=TRUE
-          FOR SHARE OF provider_grant,provider`,
-        [input.spaceId, run.model_provider_id],
-      );
-      const provider = providerResult.rows[0];
+      const provider = await loadRunProvider(db, input.spaceId, run.model_provider_id, { lock: true });
       if (!provider || control.egress.destination_id !== run.model_provider_id
         || !control.egress.allowed_provider_ids.includes(run.model_provider_id)) {
         throw new HttpError(409, "Invocation Delivery provider grant is no longer active");
       }
-      destination = runtimeProviderEgressDestination(
-        run.runtime_key,
-        { ...provider, model: effectiveRunProviderModel(run, { ...provider, available_models: availableModels(provider.capabilities_json) }) },
-        input.spaceId,
-      );
+      destination = classifyRunDestination(run, provider, input.spaceId);
       external = destination === "external_provider";
     }
     if (!external) return { destination, externalEgressEnabled: true };
@@ -440,13 +431,19 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       model_override_json: unknown;
       runtime_key?: string | null;
       agent_id?: string | null;
+      runtime_profile_id?: string | null;
       project_id?: string | null;
       capability_id?: string | null;
       capabilities_json?: unknown;
+      contract_snapshot_json?: unknown;
+      root_run_id?: string | null;
     },
   ): Promise<void> {
     const decisions = new Map(input.envelope.window_plan.decisions.map((decision) => [decision.item_id, decision.decision]));
     const accepted = input.envelope.items.filter((item) => decisions.get(item.id) !== "blocked");
+    await this.authorizeBriefingReferences(db, input, accepted, run, egress.destination);
+    await this.authorizeBriefingGeneration(db, input, run, egress.destination);
+    await this.authorizeReadingMethod(db,input,run);
     for (const item of accepted) {
       if (item.acquisition === "direct" && item.source_ref.type === "message") {
         await this.authorizeMessageSource(db, input, item, run);
@@ -478,6 +475,8 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
           || contextItemText(item) !== roomRoutingInstruction(run.model_override_json)) {
           throw new HttpError(409, "Invocation Delivery Room routing instruction changed after planning");
         }
+      } else if (item.acquisition === "direct" && item.source_ref.type === "room_briefing_reference") {
+        // Verified with this turn's pending references, above.
       } else if (item.acquisition === "direct" && item.source_ref.type === "personal_memory_grant") {
         await this.authorizePersonalMemoryGrant(db, input, item);
       } else if (item.acquisition === "direct" && item.source_ref.type === "project_research_evidence_matrix") {
@@ -489,7 +488,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       } else if (item.acquisition === "direct" && item.source_ref.type === "skill_package_binding") {
         await this.authorizeRuntimeSkill(db, input, control, item);
       } else if (item.acquisition === "continuity") {
-        await this.authorizeContinuitySource(db, input, item, run);
+        await this.authorizeContinuitySource(db, input, item, run, egress.destination);
       } else if (item.acquisition === "runtime_event") {
         // CLI history replay no longer exists: the vendor session holds the
         // conversation and the Context Event ledger is audit, not prompt.
@@ -502,6 +501,160 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
         await this.authorizeExplicitSource(db, input, control, item);
       }
     }
+  }
+
+  /**
+   * A vendor CLI Room turn carries the briefing references attached since the
+   * Agent's last reply — in the recipient instruction of a resumed session,
+   * or as their own items in a fresh one. Each is re-gated here on the
+   * destination this Delivery is authorized for (`authorizeEgress`, from the
+   * Run's own adapter and ModelProvider, not the live Profile;
+   * `informationDigest/briefing/referenceDelivery.ts`), after the
+   * reference messages, the briefing rows and every Source item, Source
+   * connection and subscription the copy rests on are locked: a concurrent
+   * revocation either commits first and is refused here, or waits for this
+   * Delivery to commit. A delivered item must be exactly one of them, as
+   * attached.
+   */
+  private async authorizeBriefingReferences(
+    db: Queryable,
+    input: InvocationAttemptInput,
+    accepted: readonly ContextItem[],
+    run: { session_id: string | null; model_override_json: unknown; runtime_key?: string | null; agent_id?: string | null },
+    destination: RetrievalEgressDestination,
+  ): Promise<void> {
+    const items = accepted.filter((item) => item.source_ref.type === "room_briefing_reference");
+    const currentRef = input.envelope.turn_request.current_message_ref;
+    const roomTurn = currentRef.type === "message" && isRoomConversation(run.model_override_json)
+      && isVendorCliAdapter(run.runtime_key) && Boolean(run.session_id && run.agent_id);
+    if (!roomTurn) {
+      if (items.length) throw new HttpError(409, "Invocation Delivery carries a briefing reference outside a Room turn");
+      return;
+    }
+    const pending = await pendingBriefingReferences(db, {
+      spaceId: input.spaceId,
+      sessionId: run.session_id!,
+      currentMessageId: currentRef.id,
+      agentId: run.agent_id!,
+    });
+    if (pending.length) {
+      await db.query(
+        `SELECT id FROM messages WHERE space_id=$1 AND session_id=$2 AND id=ANY($3::varchar[]) FOR SHARE`,
+        [input.spaceId, run.session_id, pending.map((message) => message.id)],
+      );
+    }
+    await this.lockBriefingReferences(db, input.spaceId, pending);
+    await assertBriefingReferencesDeliverable(db, input.spaceId, pending, destination);
+    const byId = new Map(pending.map((message) => [message.id, message.content]));
+    const inInstruction = briefingReferencesInRecipientInstruction(run.model_override_json);
+    for (const item of items) {
+      if (inInstruction || item.acquisition !== "direct" || byId.get(item.source_ref.id) !== contextItemText(item)) {
+        throw new HttpError(409, "Invocation Delivery briefing reference changed after planning");
+      }
+    }
+  }
+
+  /**
+   * Locks what briefing references rest on, in one order: the briefing rows,
+   * then each Source item with its connection and the attacher's
+   * subscriptions, then every other Source connection behind an analysis or
+   * signal — the same canonical Source locks a retrieved Source item takes.
+   */
+  private async lockBriefingReferences(db: Queryable, spaceId: string, messages: ReadonlyArray<{ id: string; metadata_json?: unknown }>): Promise<void> {
+    const closure = await lockBriefingReferenceClosure(db, spaceId, messages);
+    for (const attacher of closure.attachers) {
+      for (const itemId of closure.itemIds) await this.lockSourceItemDependencies(db, spaceId, itemId, attacher);
+      for (const connectionId of closure.connectionIds) await this.lockSourceConnectionDependencies(db, spaceId, connectionId, attacher);
+    }
+  }
+
+  /**
+   * A briefing Run's request carries the version's frozen material. Its
+   * Delivery re-authorizes that version on the destination this Delivery is
+   * authorized for (`authorizeEgress`: the Run's own adapter and ModelProvider,
+   * never the live, editable Profile), after locking the version's whole
+   * closure — briefing row, audience, context roots, signals, grants and
+   * subscriptions, then its Source items and connections — held to commit.
+   * The same rule as the orchestrator's dispatch guard
+   * (`informationDigest/briefing/settlement.ts`, `assertBriefingVersionDispatchable`).
+   */
+  private async authorizeBriefingGeneration(
+    db: Queryable,
+    input: InvocationAttemptInput,
+    run: { prompt: string | null; instruction: string | null; contract_snapshot_json?: unknown; root_run_id?: string | null },
+    destination: RetrievalEgressDestination,
+  ): Promise<void> {
+    const settlement = await import("../informationDigest/briefing/settlement.js");
+    const context = settlement.briefingRunContext(run);
+    if (!context) return;
+    await this.lockBriefingGenerationAuthority(db, { ...run, id: input.invocationId, space_id: input.spaceId, root_run_id: run.root_run_id ?? null });
+    await settlement.assertBriefingVersionDispatchable(db, {
+      id: input.invocationId,
+      space_id: input.spaceId,
+      prompt: run.prompt,
+      instruction: run.instruction,
+      contract_snapshot_json: run.contract_snapshot_json,
+      root_run_id: run.root_run_id ?? null,
+    }, { destination });
+  }
+
+  /** Canonical whole-version fence, shared by physical Delivery and theme
+   * publication. The caller re-authorizes its actual destination after locking. */
+  async lockBriefingGenerationAuthority(db: Queryable, run: import('../informationDigest/briefing/settlement.js').BriefingDispatchRun): Promise<void> {
+    const {briefingRunContext}=await import('../informationDigest/briefing/settlement.js');
+    const context=briefingRunContext(run);if(!context)return;
+    const requester = (await db.query<{ requested_by_user_id: string }>(
+      `SELECT requested_by_user_id FROM information_briefings WHERE space_id=$1 AND id=$2`,
+      [run.space_id, context.id],
+    )).rows[0]?.requested_by_user_id;
+    if (requester) {
+      const closure = await lockBriefingVersionClosure(db, run.space_id, context.id, requester);
+      for (const itemId of closure.itemIds) await this.lockSourceItemDependencies(db, run.space_id, itemId, requester);
+      for (const connectionId of closure.connectionIds) await this.lockSourceConnectionDependencies(db, run.space_id, connectionId, requester);
+    }
+  }
+
+  private async authorizeReadingMethod(db:Queryable,input:InvocationAttemptInput,request:{contract_snapshot_json?:unknown}):Promise<void>{
+    const workflow=(request.contract_snapshot_json as {workflow_input_json?:{reading_method?:unknown;reading_method_trial?:unknown;reading_method_generation?:unknown}}|null)?.workflow_input_json;
+    if(!workflow?.reading_method&&!workflow?.reading_method_trial&&!workflow?.reading_method_generation)return;
+    const {PgRunRepository}=await import('../runs/repository.js');
+    const full=await new PgRunRepository(db).getRun(input.spaceId,input.invocationId);if(!full)throw new HttpError(403,'Reading Run missing');
+    await this.lockReadingRunAuthority(db,full);
+    await (await import('../prompts/reading/dispatch.js')).assertReadingRunDispatch(db,full);
+  }
+
+  /** Same canonical Source/Project ACL locks at Delivery and Source commit boundaries. */
+  async lockReadingRunAuthority(db:Queryable,full:import('../runs/repository.js').RunRecord):Promise<void>{
+    const reading=await import('../prompts/reading/dispatch.js');
+    const generation=await import('../prompts/reading/generationContract.js');
+    const ref=generation.generationOf(full);
+    const runs=await reading.readingDependencyRuns(db,full);
+    if(ref||runs.length>1){
+      const {readingAsset}=await import('../prompts/reading/access.js');
+      const asset=await readingAsset(db,{spaceId:full.space_id,userId:full.instructed_by_user_id!},false,ref?.target_key??(full.contract_snapshot_json as {workflow_input_json?:{reading_method_trial?:{target_key?:string}}})?.workflow_input_json?.reading_method_trial?.target_key);
+      await (await import('../evolution/assetLocks.js')).lockEvolutionAssets(db,[asset.id]);
+    }
+    const {followingRefOf}=await import('../sources/readingMethods/followingContext.js');
+    const following=runs.map(followingRefOf).filter((r):r is NonNullable<typeof r>=>!!r).sort((a,b)=>a.goal_id.localeCompare(b.goal_id));
+    for(const ref of following)await db.query(`SELECT g.id FROM source_goals g JOIN source_goal_versions v ON v.goal_id=g.id AND v.space_id=g.space_id WHERE g.id=$1 AND v.id=$2 AND g.space_id=$3 FOR SHARE OF g,v`,[ref.goal_id,ref.version_id,full.space_id]);
+    const dependencies=[];
+    for(const run of runs){const deps=await reading.readingRunDependencies(db,run);if(deps)dependencies.push(deps);}
+    const spaceId=full.space_id;
+    const deep=(await import('../sources/index.js')).deepReadOf(full);
+    if(deep?.original)await db.query('SELECT id FROM source_snapshots WHERE id=$1 AND space_id=$2 FOR SHARE',[deep.original.snapshot_id,spaceId]);
+    if(deep?.following)dependencies.push({itemId:null,projectId:deep.project_id,connectionId:deep.following.connection_id,artifactId:null,caseId:null});
+    const {lockProjectAudience,projectReaderIds}=await import('../projects/access.js');
+    for(const id of [...new Set(dependencies.map(d=>d.projectId).filter((id):id is string=>!!id))].sort())await lockProjectAudience(db,spaceId,id);
+    for(const deps of dependencies.sort((a,b)=>(a.itemId??a.connectionId??'').localeCompare(b.itemId??b.connectionId??''))){
+      const readers=deps.projectId?await projectReaderIds(db,spaceId,deps.projectId):[full.instructed_by_user_id!];
+      if(deps.caseId)await db.query(`SELECT id FROM evaluation_cases WHERE id=$1 AND space_id=$2 FOR SHARE`,[deps.caseId,spaceId]);
+      for(const reader of readers.sort()){
+        if(deps.itemId){await this.lockSourceItemDependencies(db,spaceId,deps.itemId,reader);await this.lockContentAclDependencies(db,spaceId,'source_item',deps.itemId,reader);}
+        if(deps.connectionId){await this.lockSourceConnectionDependencies(db,spaceId,deps.connectionId,reader);await this.lockContentAclDependencies(db,spaceId,'source_connection',deps.connectionId,reader);}
+        if(deps.artifactId)await this.lockContentAclDependencies(db,spaceId,'artifact',deps.artifactId,reader);
+      }
+    }
+
   }
 
   private async authorizePersonalMemoryGrant(
@@ -666,6 +819,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     input: InvocationAttemptInput,
     item: ContextItem,
     run: { session_id: string | null },
+    destination: RetrievalEgressDestination,
   ): Promise<void> {
     if (!run.session_id) throw new HttpError(409, "Invocation Delivery continuity has no Session authority");
     await this.lockConversationSession(db, input, run.session_id);
@@ -744,6 +898,10 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       || stableStringArray(messageRefs(item)).join("\0") !== stableStringArray(rendered.messageRefs.map((ref) => ref.id)).join("\0")) {
       throw new HttpError(409, "Invocation Delivery continuity changed after planning");
     }
+    const replayed = new Set(rendered.messageRefs.map((ref) => ref.id));
+    const references = canonical.messages.filter((message) => replayed.has(message.id));
+    await this.lockBriefingReferences(db, input.spaceId, references);
+    await assertBriefingReferencesDeliverable(db, input.spaceId, references, destination);
   }
 
   private async lockConversationSession(
@@ -1048,6 +1206,19 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     }
   }
 
+  /** Canonical Source/Artifact locks for an explicitly bounded reading investigation. */
+  async lockSourceReadingReferences(db:Queryable,spaceId:string,refs:readonly {item_id:string;artifact_id:string}[],userId:string,targetItemId?:string){
+    // Lock publication and history items in one order before any shared locks
+    // are upgraded by the Source writer (two articles may cite each other).
+    if(targetItemId)await db.query(`SELECT id FROM source_items WHERE space_id=$1 AND id=ANY($2::varchar[]) ORDER BY id FOR UPDATE`,[spaceId,[...new Set([targetItemId,...refs.map(ref=>ref.item_id)])].sort()]);
+    if(targetItemId)await db.query(`SELECT id FROM source_snapshots WHERE space_id=$1 AND artifact_id=ANY($2::varchar[]) ORDER BY id FOR SHARE`,[spaceId,refs.map(ref=>ref.artifact_id)]);
+    for(const ref of [...refs].sort((a,b)=>a.item_id.localeCompare(b.item_id))){
+      await this.lockSourceItemDependencies(db,spaceId,ref.item_id,userId);
+      await this.lockContentAclDependencies(db,spaceId,'source_item',ref.item_id,userId);
+      await this.lockContentAclDependencies(db,spaceId,'artifact',ref.artifact_id,userId);
+    }
+  }
+
   private async lockSourceItemDependencies(
     db: Queryable,
     spaceId: string,
@@ -1252,3 +1423,10 @@ export function createProductionRuntimeContextInvocationGateway(
 }
 
 import { selectedSkillInstruction } from "../skills/selectedSkills.js";
+
+/** Caller must hold a transaction through the Source writer/Delivery commit. */
+export async function lockReadingRunAuthority(db:Queryable,run:import('../runs/repository.js').RunRecord){await new PgInvocationDeliveryAuthorizer().lockReadingRunAuthority(db,run);}
+
+export async function lockSourceReadingReferences(db:Queryable,spaceId:string,refs:readonly {item_id:string;artifact_id:string}[],userId:string,targetItemId?:string){await new PgInvocationDeliveryAuthorizer().lockSourceReadingReferences(db,spaceId,refs,userId,targetItemId);}
+
+export async function lockBriefingGenerationAuthority(db:Queryable,run:import('../informationDigest/briefing/settlement.js').BriefingDispatchRun){await new PgInvocationDeliveryAuthorizer().lockBriefingGenerationAuthority(db,run);}

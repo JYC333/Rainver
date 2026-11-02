@@ -84,8 +84,7 @@ export interface PromptSyncResult {
  * system-scope (space_id NULL) evolvable asset, and adds a new immutable
  * 'approved' 'built_in' version whenever the manifest content_hash changes.
  * Existing versions are never overwritten. A bootstrap script or a test calls
- * it. Startup does not, so it never changes runtime behavior on its own. No
- * prompt consumer resolves through this registry.
+ * it. Startup does not, so it never changes runtime behavior on its own. Reading investigation consumers resolve their admitted version through this registry.
  *
  * Built-in versions are written with status='approved' directly. Do not send
  * them through EvolvableAssetRepository's proposal-gated promotion path. That
@@ -93,10 +92,10 @@ export interface PromptSyncResult {
  * file changes. System baseline prompt changes are code and catalog changes.
  * This follows the same direct write as server/src/db/seeds.ts.
  */
-export async function syncBuiltinPrompts(db: Queryable, catalogRoot: string): Promise<PromptSyncResult> {
+export async function syncBuiltinPrompts(db: Queryable, catalogRoot: string, assetKeys?: readonly string[]): Promise<PromptSyncResult> {
   const manifests = await loadPromptManifests(catalogRoot);
   const result: PromptSyncResult = { assetKeys: [], versionsCreated: [] };
-  for (const manifest of manifests) {
+  for (const manifest of manifests.filter(m=>!assetKeys||assetKeys.includes(m.assetKey))) {
     await upsertBuiltinAsset(db, manifest);
     result.assetKeys.push(manifest.assetKey);
     if (await ensureBuiltinVersion(db, manifest)) {

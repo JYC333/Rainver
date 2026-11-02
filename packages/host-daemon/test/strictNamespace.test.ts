@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, realpath } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -36,15 +37,15 @@ function binds(args: string[]): Map<string, "read_only" | "read_write"> {
   return found;
 }
 
-function env(args: string[]): Record<string, string> {
-  const found: Record<string, string> = {};
-  for (let i = 0; i < args.length; i += 1) {
-    if (args[i] === "--setenv") found[args[i + 1]!] = args[i + 2]!;
-  }
-  return found;
-}
 
 describe("the strict-mode namespace", () => {
+  it("exposes only the available CPU mask read-only, without mounting sysfs", () => {
+    for (const mode of ["read_only", "read_write"] as const) {
+      const mounted = binds(buildStrictNamespaceCommand({ ...base, isolation: { ...base.isolation, sandbox_mode: mode } }).args);
+      expect(mounted.get('/sys/devices/system/cpu/possible')).toBe(existsSync('/sys/devices/system/cpu/possible') ? 'read_only' : undefined);
+      for (const parent of ['/sys', '/sys/devices', '/sys/devices/system', '/sys/devices/system/cpu']) expect(mounted.has(parent)).toBe(false);
+    }
+  });
   it("starts from an empty root and runs the command through the readiness handshake", () => {
     const { command, args } = buildStrictNamespaceCommand({ ...base });
     expect(command).toBe(BWRAP_PATH);
@@ -115,8 +116,8 @@ describe("the strict-mode namespace", () => {
   });
 
   it("sets HOME to the namespace's own home and marks the Run as already isolated", () => {
-    const { args } = buildStrictNamespaceCommand({ ...base, env: { LANG: "C.UTF-8" } });
-    expect(env(args)).toMatchObject({ HOME: base.home, LANG: "C.UTF-8", RAINVER_STRICT_SANDBOX: "1" });
+    const { env:environment } = buildStrictNamespaceCommand({ ...base, env: { LANG: "C.UTF-8" } });
+    expect(environment).toMatchObject({ HOME: base.home, LANG: "C.UTF-8", RAINVER_STRICT_SANDBOX: "1" });
   });
 
   it("refuses a relative or unnormalized path rather than building a namespace around it", () => {
@@ -165,6 +166,30 @@ describe("what a strict Run is given besides its workspace", () => {
   it("resolves the install root, not this package, so its dependency trees are inside it", () => {
     expect(daemonRuntimeRoot("file:///opt/rainver-host/node_modules/@rainver/host-daemon/dist/execution.js"))
       .toBe("/opt/rainver-host");
+  });
+
+  it('bounds installed runtime roots in both layouts and through HOME aliases', async () => {
+    const root=await mkdtemp(join(tmpdir(),'runtime-root-home-'));
+    try {
+      const home=join(root,'home'), app=join(home,'.local/releases/x/app');
+      await mkdir(join(app,'dist'),{recursive:true});await mkdir(join(app,'node_modules'));
+      const alias=join(root,'alias');await symlink(home,alias);
+      for(const withModules of [false,true]){
+        if(withModules)await mkdir(join(home,'node_modules'));
+        for(const base of [home,alias]){
+          const url=pathToFileURL(join(base,'.local/releases/x/app/dist/execution.js')).href;
+          const chosen=daemonRuntimeRoot(url,{HOME:home});
+          expect(await realpath(chosen)).toBe(app);
+        }
+      }
+      const pkg=join(home,'node_modules/@rainver/host-daemon');await mkdir(join(pkg,'dist'),{recursive:true});
+      for(const base of [home,alias]){
+        const chosen=daemonRuntimeRoot(pathToFileURL(join(base,'node_modules/@rainver/host-daemon/dist/execution.js')).href,{HOME:home});
+        expect(await realpath(chosen)).toBe(pkg);
+      }
+      // Shared strict mode explicitly retains its existing install-root behavior.
+      expect(daemonRuntimeRoot(pathToFileURL(join(app,'dist/execution.js')).href,null)).toBe(home);
+    }finally{await rm(root,{recursive:true,force:true});}
   });
 
   it("climbs to the highest ancestor holding a dependency tree when there is no node_modules segment", async () => {
@@ -221,6 +246,17 @@ describe("planning a strict launch", () => {
     ...overrides,
   });
 
+  it('rejects whole-HOME runtime and CA roots in the personal read plan',()=>{
+    for(const overrides of [{runtimeRoot:'/owner'},{readOnlyExecutables:['/owner']}]){
+      expect(()=>plan({personalAmbient:{HOME:'/owner'},...overrides})).toThrow(/expose a login HOME/);
+    }
+  });
+
+  it('preserves manifest HOME while the Run planner explicitly chooses private HOME', () => {
+    expect(buildStrictNamespaceCommand({...base, env: {HOME: '/manifest/home'}}).env.HOME).toBe('/manifest/home');
+    expect(plan({derivedEnv: {HOME: '/manifest/home'}}).env.HOME).toBe('/runner/host/runs/run-1/home');
+  });
+
   it("gives the agent an allowlisted environment, never this container's own", () => {
     const { env } = plan();
     expect(env).toMatchObject({ PATH: "/usr/bin", LANG: "C.UTF-8", RAINVER_OUTPUT_DIR: "/runner/host/runs/run-1/outputs" });
@@ -244,6 +280,18 @@ describe("planning a strict launch", () => {
     expect(plan({ derivedEnv: { HOME: "/runner/host/tools/opencode/1.18/home" } }).home)
       .toBe("/runner/host/runs/run-1/home");
     expect(plan().env.HOME).toBe("/runner/host/runs/run-1/home");
+  });
+
+  it("keeps Claude's shared credential store read-only while its session profile stays writable", () => {
+    const loginHome = "/runner/host/managed-state/claude_code/home";
+    const storage = join(loginHome, ".claude");
+    const launch = plan({ loginHome, derivedEnv: {
+      CLAUDE_CONFIG_DIR: "/profile/.claude", CLAUDE_SECURESTORAGE_CONFIG_DIR: storage,
+    } });
+    expect(launch.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(storage);
+    expect(binds(launch.args).get(loginHome)).toBe("read_only");
+    expect(binds(launch.args).get("/profile")).toBe("read_write");
+    expect(binds(launch.args).has(storage)).toBe(false);
   });
 
   it("falls closed when the dispatch stated no isolation policy", () => {
@@ -302,4 +350,10 @@ describe("what a strict run's failure is reported as", () => {
     expect(failure({ exitCode: 2, stderrTail: "usage: agent" })).toBe("usage: agent");
     expect(failure({ exitCode: 0, stderrTail: "a warning" })).toBeNull();
   });
+});
+
+it('passes environment values through the child environment, never the public command line',()=>{
+ const plan=buildStrictNamespaceCommand({...base,env:{SYNTHETIC_TOKEN:'synthetic-secret-value',HTTPS_PROXY:'http://fixture:secret@127.0.0.1:9'}});
+ expect(plan.env.SYNTHETIC_TOKEN).toBe('synthetic-secret-value');expect(plan.env.HTTPS_PROXY).toContain('fixture:secret');
+ expect(plan.args.join(' ')).not.toContain('synthetic-secret-value');expect(plan.args.join(' ')).not.toContain('fixture:secret');
 });

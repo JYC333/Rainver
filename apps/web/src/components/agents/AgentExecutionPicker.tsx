@@ -12,7 +12,7 @@ import {useAppTranslation} from '../../i18n'
 
 export type AgentExecutionSelection={agent_id:string;runtime_profile_id:string;session_config?:RuntimeSessionConfigSelection[]}
 /** Select existing authority; never configure credentials or invent a fallback here. */
-export function AgentExecutionPicker({spaceId,userId,value,onChange,disabled=false,profileLocked=false,sessionId,className}:{spaceId:string;userId:string;value:AgentExecutionSelection;onChange:(v:AgentExecutionSelection)=>void;disabled?:boolean;profileLocked?:boolean;sessionId?:string|null;className?:string}){
+export function AgentExecutionPicker({spaceId,userId,value,onChange,disabled=false,profileLocked=false,sessionId,className,title}:{title?:string;spaceId:string;userId:string;value:AgentExecutionSelection;onChange:(v:AgentExecutionSelection)=>void;disabled?:boolean;profileLocked?:boolean;sessionId?:string|null;className?:string}){
  const selection=useRef(value);selection.current=value;
  const {t}=useAppTranslation();const text=(k:string)=>t(`sourceGoals.${k}`)
  const [agents,setAgents]=useState<AgentOut[]>([]);const [profiles,setProfiles]=useState<AgentRuntimeProfileOut[]>([]);const [loading,setLoading]=useState(true);const [failed,setFailed]=useState(false);const [attempt,setAttempt]=useState(0)
@@ -23,7 +23,7 @@ export function AgentExecutionPicker({spaceId,userId,value,onChange,disabled=fal
  const offered=catalog?.options.find(o=>o.runtime_profile_id===value.runtime_profile_id);const options=offered?.session_config_options??[];
  const selected=profiles.find(p=>p.id===value.runtime_profile_id)
  return <div className={cn("space-y-3 rounded-lg border border-border p-4",className)}>
-  <p className="font-medium">{text('execution')}</p>
+  <p className="font-medium">{title??text('execution')}</p>
   <Select ariaLabel={text('agent')} disabled={disabled||profileLocked||loading} value={value.agent_id} onChange={agent_id=>onChange({agent_id,runtime_profile_id:''})} options={[{value:'',label:text('chooseAgent')},...agents.map(a=>({value:a.id,label:a.name}))]}/>
   <Select ariaLabel={text('profile')} disabled={disabled||profileLocked||loading||!value.agent_id} value={value.runtime_profile_id} onChange={runtime_profile_id=>onChange({...value,runtime_profile_id})} options={[{value:'',label:text('chooseProfile')},...profiles.map(p=>({value:p.id,label:`${p.name} · ${p.runtime_key}${p.provider_binding.model?` · ${p.provider_binding.model}`:''}`}))]}/>
   {options.length>0&&<div className="flex flex-wrap gap-2" aria-label={text('modelAndMode')}>{sessionId?<SavedConversationSessionConfig options={options} value={mergeSessionConfig(options,value.session_config??catalog?.session_config??[])} persistedValue={catalog?.session_config??[]} onChange={session_config=>onChange({...value,session_config})} onSave={async session_config=>{const saved=await agentsApi.saveConversationSessionConfig(value.agent_id,{session_id:sessionId,runtime_profile_id:value.runtime_profile_id,session_config},{spaceId});setCatalog(c=>c?{...c,session_config:saved.session_config}:c);onChange({...value,session_config:saved.session_config})}} disabled={disabled}/>:<><ConversationSessionConfig options={options} value={mergeSessionConfig(options,value.session_config??[])} onChange={session_config=>onChange({...value,session_config})} disabled={disabled}/><p className="text-xs text-muted-foreground">{t('conversation_ui.session_config.first_send')}</p></>}</div>}

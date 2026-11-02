@@ -33,7 +33,7 @@ async function open(width,fixture){
  const page=await browser.newPage({viewport:{width,height:900},serviceWorkers:'block'})
  const unknown=[],errors=[],writes=[]
  page.on('pageerror',e=>errors.push(e.message))
- await page.addInitScript(locale=>localStorage.setItem('rainver:locale',locale),fixture.locale??'en')
+ await page.addInitScript(({locale,theme})=>{localStorage.setItem('rainver:locale',locale);localStorage.setItem('rainver:theme',theme)}, {locale:fixture.locale??'en',theme:fixture.theme??'dark'})
  await page.route('**/api/v1/**',async route=>{
   const req=route.request(),path=new URL(req.url()).pathname.replace('/api/v1','')
   if(req.method()!=='GET'){writes.push({path,body:req.postDataJSON()});const r=fixture.write(path,req.postDataJSON());return route.fulfill(r)}
@@ -45,6 +45,7 @@ async function open(width,fixture){
   else if(path==='/me/agent-attention/snapshot')data={type:'attention.snapshot',seq:1,version:'fixture',unread_count:0,page:{items:[],total:0,next_cursor:null},notices:[]}
   else if(path==='/me/agent-attention/stream')return route.fulfill({status:503,body:''})
   else if(path==='/sources/goal-setup/agent-search/rp')data={supported:false}
+  else if(path==='/spaces/s/information-briefings/personal')data={can_generate:false,latest:null,latest_briefing:null,daily_enabled:false,history:[]}
   else if(path==='/sources/goals/g')data=fixture.detail()
   else if(path==='/sources/goals')data={goals:[fixture.detail().goal]}
   else if(path==='/sources/goals/g/bindings/b/source-confirmation')data=fixture.view()
@@ -141,5 +142,56 @@ test('latest collection replaces the unread chip without adding badges, metadata
   assert.equal(measures[1].metadataHeight,measures[0].metadataHeight,'no new metadata row');
   assert.equal(measures[1].height,measures[0].height,'card height unchanged');
   assert.equal(measures[1].overflow,false,'no horizontal overflow');
+ }
+});
+
+test('Reading and Following share cards, full-width bottom progress, and explicit manual/discussion topic edits',async()=>{
+ for(const theme of ['dark','light'])for(const locale of ['en','zh-CN'])for(const width of [390,1280]){
+  const zh=locale==='zh-CN';let edited=false,applied=false;
+  const row={key:'progress',source_item_id:'progress',source_item_ids:['progress'],title:zh?'系统架构比较：调查材料':'System architecture comparison',summary:zh?'结合跟踪目的比较机制和取舍，保留未验证的项目基线。':'Compare mechanisms and trade-offs against the following purpose, with missing baseline evidence stated.',source_uri:'https://example.test/system',occurred_at:'2026-10-26T09:00:00Z',access_level:'full',reader_origin:'library',read_status:'unread',dismissed:false,available_at:'2026-10-29T09:00:00Z',contributions:[],material_links:[],topics:[{goal_id:'g',project_id:null,title:'System designs',selection_status:'important',selection_reason:'Architecture comparisons',judged_by:'collection_agent',delivery_kind:'baseline',change_evidence_url:null}],reading_progress:{current:0.2,furthest:0.65}};
+  const fixture={locale,theme,items:()=>[row],detail:()=>{
+   const d=detail(followState({phase:'scheduled',health:'ok',sources:[src({status:'active',health:'ok',error:null,attention:null,resolvable_by:null})],pending_adjustment:edited&&!applied}),{status:'active'});
+   d.goal.current_version_id=edited?'v2':'v';d.goal.active_version_id=applied?'v2':'v';d.goal.revision=edited?4:3;
+   if(edited)d.versions.unshift({id:'v2',revision:4,plan_json:{...d.versions[0].plan_json,title:'Updated design focus',analysis_brief:'Compare actual architecture with the project baseline.'}});
+   return d;
+  },view:()=>view(),write:(path,body)=>{
+   if(path==='/sources/goals/g/edit'){assert.equal(body.expected_revision,3);assert.equal(body.title,'Updated design focus');edited=true;return {json:{id:'v2',revision:4}}}
+   if(path==='/sources/goals/g/follow'){assert.equal(body.version_id,'v2');applied=true;return {json:{status:'running',activated:true}}}
+   throw new Error(`Unexpected write: ${path}`);
+  }};
+  const {page,unknown,errors,writes}=await open(width,fixture);
+  try{
+   await page.goto(`${baseUrl}/spaces/s/library/reading`);
+   const outer=page.locator('[data-reading-row]').filter({has:page.getByRole('heading',{name:row.title})});await outer.waitFor();
+   const outerBar=outer.getByRole('progressbar');assert.equal(await outerBar.getAttribute('aria-valuenow'),'65');
+   const outerStyle=await outer.locator('h2').evaluate(el=>{const s=getComputedStyle(el);return {font:s.fontSize,line:s.lineHeight,weight:s.fontWeight}});
+   await page.goto(`${baseUrl}/spaces/s/library/reading/goals/g`);
+   const card=page.locator('li').filter({has:page.getByRole('heading',{name:row.title})});await card.waitFor();
+   assert.deepEqual(await card.locator('h2').evaluate(el=>{const s=getComputedStyle(el);return {font:s.fontSize,line:s.lineHeight,weight:s.fontWeight}}),outerStyle);
+   const bar=card.getByRole('progressbar');assert.equal(await bar.getAttribute('aria-valuenow'),'65');
+   const bounds=await bar.evaluate(el=>{const track=el.getBoundingClientRect(),card=el.parentElement.getBoundingClientRect(),fill=el.firstElementChild.getBoundingClientRect();return {track:track.width,card:card.width,bottom:card.bottom-track.bottom,ratio:fill.width/track.width}});
+   assert.ok(bounds.track>=bounds.card-3,'track spans the whole card, not its text column');assert.ok(Math.abs(bounds.bottom)<=2);assert.ok(Math.abs(bounds.ratio-.65)<.01);
+   await page.getByRole('button',{name:zh?'紧凑':'Compact',exact:true}).click();
+   assert.equal(await card.getByRole('progressbar').getAttribute('aria-valuenow'),'65');
+   await page.getByRole('button',{name:zh?'舒适':'Comfortable',exact:true}).click();
+   if(shots)await page.screenshot({path:`${shots}/unified-${theme}-${locale}-${width}.png`,fullPage:true});
+   const edit=page.getByRole('button',{name:zh?'编辑主题':'Edit topic',exact:true});await edit.click();
+   const dialog=page.getByRole('dialog');await dialog.waitFor();
+   await dialog.getByRole('textbox',{name:zh?'主题名称':'Topic title',exact:true}).fill('Updated design focus');
+   await dialog.getByRole('textbox',{name:zh?'分析问题与要求':'Analysis questions and requirements',exact:true}).fill('Compare actual architecture with the project baseline.');
+   const dialogRect=await dialog.evaluate(async el=>{await Promise.all(el.getAnimations().map(a=>a.finished.catch(()=>{})));const r=el.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom}});
+   assert.ok(dialogRect.left>=-1&&dialogRect.top>=-1&&dialogRect.right<=width+1&&dialogRect.bottom<=901,'editor remains within the viewport after its opening transition');
+   if(shots)await page.screenshot({path:`${shots}/edit-${theme}-${locale}-${width}.png`,fullPage:true,animations:'disabled'});
+   await dialog.getByRole('button',{name:zh?'保存草稿':'Save draft',exact:true}).click();await dialog.waitFor({state:'hidden'});
+   assert.equal(writes.length,1,'save creates a draft only, without an Agent call or follow activation');
+   await page.getByRole('button',{name:zh?'应用调整后的方案':'Apply adjusted plan',exact:true}).click();
+   await page.getByRole('button',{name:zh?'应用调整后的方案':'Apply adjusted plan',exact:true}).waitFor({state:'hidden'});
+   assert.equal(applied,true);
+   await page.getByRole('button',{name:zh?'对话调整':'Discuss changes',exact:true}).click();
+   await page.locator('details[open] textarea').first().waitFor();
+   assert.equal(writes.length,2,'opening discussion does not send a model request');
+   const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);assert.equal(overflow,false);
+   assert.deepEqual(errors,[]);assert.deepEqual(unknown,[]);
+  }finally{await page.close()}
  }
 });

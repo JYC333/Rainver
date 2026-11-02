@@ -1584,6 +1584,7 @@ function referenceDraftLabel(references: readonly ThreadReferencePick[]): string
     case 'messages': return i18n.t('conversation_ui.surface.picks.messages', { count })
     case 'imported_session': return i18n.t('conversation_ui.surface.picks.imported_session')
     case 'imported_records': return i18n.t('conversation_ui.surface.picks.imported_records', { count })
+    case 'briefing_highlight': return i18n.t('conversation_ui.surface.picks.briefing_highlight')
   }
 }
 

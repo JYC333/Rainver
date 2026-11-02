@@ -387,6 +387,47 @@ export async function projectReaders(
 }
 
 /** The same set, as ids — what the disclosure calculus compares on every attach. */
+/**
+ * The Project audience fence: who reads a Project (`projectReadAccessSql` —
+ * its owner and active members who are active Space members, or everyone in a
+ * personal Space) stays as it is until the caller's transaction ends. Locks,
+ * in this order and `FOR SHARE`: the Project row, every `project_members` row
+ * of it (any status), the `users` rows and then the `space_memberships` rows
+ * of its owner and members. An update or removal of any of those waits for
+ * the holder; a new member cannot be inserted unseen because every membership
+ * writer takes `lockProjectAudienceForChange` first, which conflicts with the
+ * Project row share lock. For a holder whose decision rests on the whole
+ * current audience (a briefing reference's model Delivery).
+ */
+export async function lockProjectAudience(db: Queryable, spaceId: string, projectId: string): Promise<void> {
+  const project = (await db.query<{ owner_user_id: string | null }>(
+    `SELECT owner_user_id FROM projects WHERE id=$1 AND space_id=$2 FOR SHARE`,
+    [projectId, spaceId],
+  )).rows[0];
+  if (!project) return;
+  const members = (await db.query<{ user_id: string }>(
+    `SELECT user_id FROM project_members WHERE space_id=$1 AND project_id=$2 ORDER BY id FOR SHARE`,
+    [spaceId, projectId],
+  )).rows.map((row) => row.user_id);
+  const users = [...new Set([...members, ...(project.owner_user_id ? [project.owner_user_id] : [])])].sort();
+  if (!users.length) return;
+  await db.query(`SELECT id FROM users WHERE id=ANY($1::varchar[]) ORDER BY id FOR SHARE`, [users]);
+  await db.query(
+    `SELECT id FROM space_memberships WHERE space_id=$1 AND user_id=ANY($2::varchar[]) ORDER BY id FOR SHARE`,
+    [spaceId, users],
+  );
+}
+
+/**
+ * Taken by every writer of a Project's membership before it writes: it
+ * conflicts with `lockProjectAudience`, so a membership change and a decision
+ * resting on the whole current audience are serialized either way. It does
+ * not check the Project's status — membership rules stay the writer's own.
+ */
+export async function lockProjectAudienceForChange(db: Queryable, spaceId: string, projectId: string): Promise<void> {
+  await db.query(`SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR NO KEY UPDATE`, [projectId, spaceId]);
+}
+
 export async function projectReaderIds(
   db: Queryable,
   spaceId: string,

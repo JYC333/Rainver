@@ -1,6 +1,10 @@
 /** Digest day, backfill and annotation-recovery copy. Merge as `digest_reports: digestReportsEn`. */
 export const digestReportsEn = {
   day_label: '{{date}} · {{timezone}}',
+  loading_day: 'Loading {{date}}…',
+  loading_latest: 'Loading the latest day…',
+  still_showing: 'Still showing {{date}}.',
+  load_failed: 'Could not load {{date}}.',
   scheduled: 'Scheduled digest',
   backfilled: 'Backfilled {{when}}',
   backfill_note: 'Rebuilt later from the material retained now, without the outside-your-usual-view section.',

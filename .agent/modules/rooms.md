@@ -986,8 +986,21 @@ thread, archived with the thread — and needs no per-thread slot, no per-turn i
 and no new acquisition path.
 
 Grains: a whole conversation (carried as its summary), specific messages, a
-whole imported session (its `imported_history_summaries` row), or specific
-imported records. References are attached through
+whole imported session (its `imported_history_summaries` row), specific
+imported records, or one briefing highlight (`briefing_highlight`, resolved by
+`informationDigest/briefing/followUp.ts`). A briefing highlight stays in its
+briefing's scope and is non-disclosable: no confirmation lets it reach anyone
+beyond its own audience. Its provenance names the highlight so it can be
+re-verified. Its model egress is checked twice:
+- at attach, against the enabled runtime Profiles of the Room's active Agents;
+- at every Delivery that carries it, against the destination that Delivery
+  is authorized for (the Run's persisted binding, not the live Profile), with
+  its Source closure locked until the Delivery commits
+  (`informationDigest/briefing/referenceDelivery.ts`,
+  [Information Digest](information-digest.md)).
+
+A fresh vendor session gets the copy as its own Delivery item; nothing else of
+the transcript is replayed. References are attached through
 `POST /rooms/:roomId/conversations/:sessionId/references` after an explicit
 Conversation draft exists; sending is always addressed to that Conversation.
 

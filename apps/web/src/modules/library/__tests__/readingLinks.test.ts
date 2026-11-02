@@ -99,3 +99,8 @@ it.each([
   expect(readingReturnTo(value)).toBeNull()
   expect(readingReturnTo(value, 'project-a')).toBeNull()
 })
+
+it('preserves bounded Project four-view filters, exact composition and private page returns',()=>{
+ for(const path of ['/projects/project-a/sources?tab=materials&view=all&favorite=only','/projects/project-a/sources?tab=deep&ops_offset=25','/projects/project-a/sources?tab=overview&composition=version-a'])expect(readingReturnTo(path,'project-a')).toBe(path)
+ expect(readingReturnTo('/projects/project-a/sources?tab=deep&ops_offset=10001','project-a')).toBeNull();expect(readingReturnTo('/projects/project-b/sources?tab=deep','project-a')).toBeNull()
+})

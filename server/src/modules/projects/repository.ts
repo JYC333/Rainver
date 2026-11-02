@@ -15,7 +15,7 @@ import {
 } from "../routeUtils/common.js";
 import { getDbPool } from "../../db/pool.js";
 import { RetrievalProjectionService } from "../retrieval/index.js";
-import { assertProjectOwnerLevelForMutation, assertProjectWriter, canWriteProject, isProjectOwnerLevel } from "./access.js";
+import { assertProjectOwnerLevelForMutation, assertProjectWriter, canWriteProject, isProjectOwnerLevel, lockProjectAudienceForChange } from "./access.js";
 import { assertProjectReadable } from "./access.js";
 import { projectRetrievalRegistry } from "./retrievalAdapter.js";
 import { isUniqueViolation } from "./projectOperationRepository.js";
@@ -685,14 +685,19 @@ export class PgProjectRepository {
     );
     if (!member.rows[0]) throw new HttpError(422, "user is not an active member of this space");
     const now = new Date().toISOString();
-    const result = await this.db.query<ProjectMemberRow>(
-      `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, 'active', $6, $6)
-       ON CONFLICT (project_id, user_id)
-       DO UPDATE SET role = EXCLUDED.role, status = 'active', updated_at = EXCLUDED.updated_at
-       RETURNING ${MEMBER_COLUMNS}`,
-      [randomUUID(), identity.spaceId, projectId, userId, role, now],
-    );
+    // A membership change is serialized with any decision resting on the
+    // Project's whole current audience (`lockProjectAudience`).
+    const result = await withQueryableTransaction(this.db, async (tx) => {
+      await lockProjectAudienceForChange(tx, identity.spaceId, projectId);
+      return tx.query<ProjectMemberRow>(
+        `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, 'active', $6, $6)
+         ON CONFLICT (project_id, user_id)
+         DO UPDATE SET role = EXCLUDED.role, status = 'active', updated_at = EXCLUDED.updated_at
+         RETURNING ${MEMBER_COLUMNS}`,
+        [randomUUID(), identity.spaceId, projectId, userId, role, now],
+      );
+    });
     return projectMemberToOut(result.rows[0]!);
   }
 
@@ -702,10 +707,13 @@ export class PgProjectRepository {
     // Removing someone gives up the role they hold, so it takes the standing to
     // grant it — otherwise remove-and-re-add would demote anyone.
     await this.assertMayReplaceRole(identity, project, userId);
-    await this.db.query(
-      `DELETE FROM project_members WHERE space_id = $1 AND project_id = $2 AND user_id = $3`,
-      [identity.spaceId, projectId, userId],
-    );
+    await withQueryableTransaction(this.db, async (tx) => {
+      await lockProjectAudienceForChange(tx, identity.spaceId, projectId);
+      await tx.query(
+        `DELETE FROM project_members WHERE space_id = $1 AND project_id = $2 AND user_id = $3`,
+        [identity.spaceId, projectId, userId],
+      );
+    });
   }
 
   /** Mutating project membership requires the project owner or a space owner/admin. */

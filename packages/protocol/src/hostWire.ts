@@ -102,6 +102,8 @@ export const RuntimeStateBoundarySchema = z.object({
   /** Where the credential file sits under a login home or a profile root. */
   home_subdir: z.string(),
   credential_file: z.string(),
+  /** Native credential-directory selector, separate from the sessions/memory root. */
+  shared_credential_env: z.string().regex(/^[A-Z_][A-Z0-9_]*$/).optional(),
   /**
    * How the credential file lists accounts, for a CLI that holds several
    * (OpenCode): a JSON object keyed by provider id whose values carry a
@@ -221,10 +223,10 @@ export type HostHelloInfo = z.infer<typeof HostHelloInfoSchema>;
  * when there is one.
  *
  * Every host-bound Agent run carries this frame, including a run with no
- * ModelProvider: the CLI's own state root — its login, its sessions, its
- * auto-memory — is the profile rather than the machine's `~/.claude` or
- * `~/.codex`, which is what keeps two Agents on one machine, and one Agent in
- * two Rooms, from sharing what the runtime remembers. An unbound run's frame
+ * ModelProvider: sessions and auto-memory live in the profile rather than the
+ * machine's `~/.claude` or `~/.codex`, while the login remains with its
+ * installation. This keeps Agents and Rooms from sharing what the runtime
+ * remembers. An unbound run's frame
  * carries no `files` and no `env`, only `profile_env` and `login_link`.
  */
 export const HostLaunchProviderBindingSchema = z.object({
@@ -254,22 +256,23 @@ export const HostLaunchProviderBindingSchema = z.object({
    * filtered to an allowlist.
    *
    * `host_login` — the run uses the machine's own login, reached through the
-   * link below. B67's closing rule stands: a run with no binding keeps the
+   * directory or file reference below. B67's closing rule stands: a run with no binding keeps the
    * machine's environment, so `~/.gitconfig`, `~/.ssh/config` and the proxy
    * variables a paired machine needs are still there. What the profile
    * replaces is only the runtime's *state root*.
    */
   credential_source: z.enum(["provider_lease", "host_login"]),
   /**
-   * For a `host_login` run: which file to link out of this installation's
-   * login home into the profile, so one login per host × installation serves
-   * every Agent profile on it. The daemon links it and never reads its
-   * contents (ADR 0008). Null for a provider-bound run, which carries its
-   * lease configuration in `files` and needs no login.
+   * For a `host_login` run: the credential location in this installation's
+   * login home. A native shared-directory selector keeps credential writes
+   * and refresh locks there; otherwise the daemon links the named file into
+   * the profile. Neither path reads its contents (ADR 0008). Null for a
+   * provider-bound run, which uses its lease configuration instead.
    */
   login_link: z.object({
     home_subdir: z.string().min(1),
     credential_file: z.string().min(1),
+    shared_credential_env: RuntimeStateBoundarySchema.shape.shared_credential_env,
   }).nullable(),
 });
 export type HostLaunchProviderBinding = z.infer<typeof HostLaunchProviderBindingSchema>;

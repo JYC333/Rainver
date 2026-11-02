@@ -133,6 +133,428 @@ Source item only when every current Project reader has full access without
 relying on Space oversight; hydration rechecks the current reader so revoked
 consent or later membership changes fail closed.
 
+## Briefings (shared kernel; Project scope)
+
+`briefing/` synthesizes one evidence-backed briefing across a scope's sources.
+It is separate from the per-channel `batch_digest` and from monitoring limits,
+which stay as they are. The original shared-briefing implementation plan has
+been retired and deleted; the sections below describe the implemented contract.
+Project Reading R1–R6 are implemented, reviewed and committed; its implementation
+plan was retired by the user after a basic trial on 2026-11-02. Storage and the
+two-stage collection flow are described below; the Project reading consumer is
+documented in [Library](library.md). The
+[acceptance record](../../docs/PROJECT_READING_ACCEPTANCE.md) retains the automated
+evidence map and the limits of real-model, remote-Host and cost verification.
+
+- **Kernel and adapters.** `contract.ts` defines `BriefingScopeAdapter`
+  (scope, audience, `canRead`/`canGenerate`, candidates, context,
+  `allowedItems`, `signalState`, `contextState`). `projectScope.ts` reads
+  Project Following goal items, Project monitoring decisions and the active
+  Corpus, plus the active brief version and at most 8 open Tasks. Every item
+  and Task must be fully readable by every current Project reader
+  (`everyReader` + `sourceItemFullContentReadClause`/`goalCollectionReadableSql`/content
+  access), so no member's private reading enters. Each scope signal carries
+  its collecting Source (Following binding, decision channel, Corpus entry).
+  `personalScope.ts` is the reader's own briefing in one Space; its audience
+  is the owner alone. It draws on what their Reading already uses:
+  - their personal Following;
+  - items their subscribed channels delivered (lens `subscription`; an
+    existing annotation makes them ready);
+  - the Following, deliverable monitoring and Corpus of each Project they opted
+    into Reading (`ReadingPreferences`) and may still read. Project lenses are
+    labelled `Project "<name>": …`; a readable Project is never included
+    without that opt-in.
+
+  It reads nothing about other members, and no other Space. Its only context
+  is their own Following topics (`personal_focus`, goal sources), so cold
+  start works; Memory and the interest profile are neither read nor written.
+  `signalState` admits a Project-derived signal only while that Project is
+  still opted in and readable. Opting out, losing access or deleting the
+  Project therefore withdraws, through the one authorization rule, every
+  version and later comparison resting on it, at dispatch, publication and
+  read.
+- **Dependencies.** Every text that can reach the model is a dependency with a
+  revision and a Source connection: each family member item
+  (`content_hash:body_revision`), its annotation (hash of the summary, so an
+  in-place rewrite is a new revision), and each scope signal (hash of label
+  and text). They are frozen in `information_briefing_inputs.analysis_json.deps`.
+  `authorization.ts` is the one rule used before dispatch, at publication and
+  on every read. A ref stands only while every dependency is readable by the
+  whole current audience. Each annotation and scope signal is also gated on
+  its own collecting Source (`readableCollecting`: the canonical Source reader
+  gate plus full `source_connection` access, without oversight), at
+  preparation and in that same rule; a readable item never carries an analysis
+  or reason from a Source the audience cannot read. At dispatch, every
+  connection behind it must also still consent to the Run's model, and every
+  revision must be unchanged. `everyReader` treats a clause that evaluates to
+  NULL for a member as "may not read".
+- **Manifest.** `manifest.ts` freezes one version:
+  - Families merge by `readingFamilySql`: one capture, not one event. Different
+    URLs about one event stay separate inputs, and the model groups them.
+  - A member, annotation or signal whose own Source refuses the model
+    contributes nothing.
+  - Delta classes: `baseline`, `new_publication`, `newly_found`, `revised`
+    (body or analysis revision), `evidenced_change`, `unknown_time`, and
+    `background` (comparison material that is never news).
+  - Pending inputs are carried to the next version: not analysed, truncated,
+    egress-refused, and not shared with the whole audience. What is compared
+    and what is carried are kept apart:
+    - comparison follows the published chain alone;
+    - carry takes what is still unresolved in the scope's settled (`ready`)
+      versions up to the cutoff (`PgBriefingRepository.pendingSince`). Each
+      item counts by its latest state there, whatever that version's cutoff,
+      so a publication never erases an item still pending:
+      - an attempt that admitted it (`included`) but failed, was cancelled
+        or is still running has not processed it. The next identical request
+        is that version's frozen retry, within 3 attempts, then an explicit
+        `briefing_attempts_exhausted`;
+      - a published version that sent it resolved it;
+      - an item that left the scope is withdrawn: a version that carried it
+        and found it no longer a member recorded `analysis_json.withdrawn`,
+        not counted in coverage, which resolves it.
+
+      Being left out of `candidates` does not mean leaving the scope, because
+      candidates are already filtered by what the whole audience may read. So
+      a carried item `candidates` did not return is classified by
+      `adapter.scopeMembers` (ids only, the adapter's own signal query with
+      its reader gate off, and an empty window, so only pins match):
+      - still a member, i.e. the scope's selection stands but a Source or
+        item is not readable by the whole audience now: `not_shared`.
+        Pending, never read or sent, `complete` false, and re-authorized
+        whenever it is carried again;
+      - no longer a member: withdrawn. Project: the Goal deleted or no longer
+        selecting it, the Corpus entry archived or excluded, the monitoring
+        decision dismissed or its Project link gone. Personal: the same,
+        plus a Reading opt-out, an unsubscribe, or a deleted Project. Either
+        scope: the item deleted, or every Source behind it deleted.
+
+      Losing read access to an opted-in Project is not an opt-out: the
+      personal scope answers membership from the opt-in itself, not from
+      "opted in and readable now".
+    - Oldest first, at most 200 per version. Each is re-offered as a pin
+      through the scope's own candidate gates, which re-authorize it. What a
+      version carries and leaves pending again (e.g. beyond the 40 sent) is
+      re-recorded with a newer state and goes to the back, so a backlog larger
+      than one carry is worked through in turn rather than dropped. The rest
+      is counted in `coverage.truncated` (`complete` false). Only ids are
+      read for this, never text.
+  - The candidate window includes body and analysis changes of in-scope items,
+    so a revision is found without new membership activity.
+  - The previous published version's still-readable highlights, and their
+    material re-gated now, are sent as `<previous_briefing>` plus `background`
+    inputs. Each comparison text is frozen in `comparison_json` with its full
+    dependency closure: the dependencies of every S it cited there, the context
+    source of every C it cited (a done Task still shared with the Project is a
+    valid one), and the closure that version inherited, so it is transitive
+    across generations. If anything in a version's closure no longer stands,
+    nothing of that version stands: dispatch is refused, publication fails, and
+    reads withhold it. They are sent only when there is news, or when the Project context
+    changed: then impact is reassessed and the version is marked
+    `context_changed`. Overview prose is never replayed.
+  - The whole request (prompt + instruction) is held to 48,000 characters:
+    blocks are shortened over three levels, then the lowest-priority inputs are
+    truncated (and carried), and the total is asserted before the Run exists.
+- **Storage.** `information_briefings` holds versions per `scope_key`:
+  - one queued version per scope and a unique `request_key`;
+  - one live (queued/ready/blocked) version per sealed `period_date`, with
+    failed or cancelled days kept as history beside their replacement;
+  - `request_hash` of the exact frozen request, and a `checked_at` bookkeeping
+    time;
+  - a day's `(digest_id, space_id)` reference to its sealed digest uses NO
+    ACTION. A referenced digest is not deleted on its own (SET NULL would also
+    null the tenant column), and deleting the Project removes both through
+    their Project cascades.
+
+  `information_briefing_inputs` holds the frozen refs, revisions, delta classes
+  and dependencies. Migration `0007_information_briefings` is unpublished and
+  regenerated.
+- **Versions and reuse.** The comparison chain runs through the latest
+  published version only. The request key is the substantive state: the
+  published predecessor, input and context hashes, protocol and execution.
+  - The same state returns the same version. A "nothing new" check is reused
+    (`checked_at` is updated) instead of piling up empty versions, and the
+    overview keeps the last published briefing readable as `latest_briefing`.
+  - A failed version is retried only with its exact frozen request, read back
+    from its last Run and verified by `request_hash`. Otherwise it is
+    `409 briefing_version_stale`.
+  - Changed state is a new version.
+- **Execution.** `service.ts` locks the scope, reuses as above, and writes
+  `no_material`/`no_new_material` without a Run. Otherwise it creates a
+  canonical private Run (`createQueuedRunWithBudgetAdmission`) on the
+  requester's own usable Agent and profile:
+  - no tools, `max_attempts 1`, 900 s;
+  - scheduled runs also count against the Automation budget;
+  - managed policy `information_briefing` is fail-fast for both `manual` and
+    `job`; only `job` carries the credential pre-authorization.
+
+  The Run gets its own Work Context setup (scope = the Run) with retrieval off
+  and nothing pinned, so no requester Memory, Library or private material
+  joins a shared result. Then the attempt is CAS-started and `agent_run` is
+  enqueued. Limits: 40 news inputs + 12 background families, 3 attempts per
+  version, 6 Runs per scope per day. There is no token or currency cap during
+  a Run.
+- **Dispatch and settlement.** `orchestrationService` calls
+  `assertBriefingDispatch` at three points: before running, after runtime
+  preparation, and before the adapter. Each call checks:
+  - the current attempt and its `request_hash`;
+  - that the requester can still write;
+  - the closed Work Context (`briefing_context_widened`);
+  - the dependency authorization with egress (`briefing_access_changed`).
+    Egress is judged on where the Run will actually send it. Once the Run is
+    bound to its adapter (`runtime_key`, and a ModelProvider when it calls
+    one), that binding fixes the destination
+    (`runtimeContext/runDestination.ts`, the classification the Delivery's
+    egress authority uses). The live runtime Profile no longer counts: a
+    canonical edit may have changed it since. Only before binding is the
+    candidate Profile checked;
+  - unchanged revisions and context (`briefing_inputs_changed`).
+
+  The last check is the Delivery of the Run's request. The Invocation gateway
+  locks the version's whole closure, the same closure as a briefing
+  reference's (`lockBriefingVersionClosure`). It then re-runs these checks
+  (`assertBriefingVersionDispatchable`) on the destination that Delivery is
+  authorized for, so a Source that refuses that destination leaves no
+  accepted Delivery.
+
+  A refusal is a `RunPreparationError` with that code.
+
+  The model's reply is read from the Run's canonical output, in this order:
+  `result.output_text`; then `result.structured_output`, the reply's
+  `information_briefing.v1` object, which the canonical writer kept because
+  the briefing Run's contract declares that schema (see `RUNS_AND_OUTPUTS.md`);
+  then `result` itself when it is a briefing; then the envelope's `summary`.
+  The structured channel is what keeps a long valid reply whole, since the
+  summary is capped at 32,000 characters. A summary the redactor cut, with no
+  structured briefing, is refused as `briefing_output_truncated`, not taken
+  for the reply. The Supervisor's
+  managed fail-fast rule leaves the Run terminal, never `waiting_for_review`,
+  and the reconciler `information_briefing` (canonical `runSettlement`,
+  replayed by recovery) fails the version, releasing the scope. Settlement
+  settles only the current attempt and validates the output against the
+  manifest:
+  - refs exist; facts cite material; `affects` needs context;
+  - `new` must cite new inputs, and `update` must cite revised or
+    evidenced-change inputs;
+  - background supports `ongoing` only.
+
+  It also refuses publication when the overview's dependencies are no longer
+  readable.
+- **Reads.** `projection.ts` re-authorizes on every GET (which never
+  generates). An overview whose dependencies are not readable withholds the
+  whole briefing; other dependent units are hidden and counted. Outdated
+  Project context is flagged. `source_domains` counts distinct domains, not
+  independent confirmation.
+- **Held sealed days.** A sealed day that cannot start now is held: a
+  `blocked` day row with its reason, its own date and cut-off, and its
+  deferred request (`request_json`: origin, Automation, execution, label).
+  Reasons are another version of the scope in flight
+  (`briefing_scope_busy`), an earlier day still held
+  (`briefing_earlier_day_pending`), or a blocking refusal. The in-flight
+  version is never taken as that day's result. Held days start earliest
+  first: when a version of the scope settles (the briefing projection calls
+  `resumeHeldDays` after its own transaction), on the next daily fire, or on
+  an explicit `POST {date}`. A day is held only if it passes the history
+  rule at that moment: no version of the scope, published or in flight, may
+  have a later cut-off, with the in-flight version excepted because it is
+  only a temporary wait. The blocking-refusal hold path makes the same check.
+  An out-of-order backfill is therefore `422 briefing_history_before_latest`
+  whether the scope is idle or busy, and leaves nothing to resume. Once held,
+  a day is ordered only against later sealed days, so a manual version
+  published while it waits cannot strand it. One Run per scope still holds.
+- **Panel progress.** `ProjectBriefingPanel` re-reads every 4 s while
+  anything is still moving on the server: a queued version, or a day held as
+  `briefing_scope_busy`/`briefing_earlier_day_pending`, whether it is the
+  latest, the selected one or in history. Re-reads are GET only: one at a
+  time, re-armed after each read lands, and capped at 30 minutes per mount or
+  manual refresh. A selected earlier version updates in place. Refusals that
+  need a person (quota, setup) do not poll. Everyone has a read-only Refresh,
+  and Generate stays disabled while any version is in flight.
+- **Routes.** `routes.ts` registers one set of handlers per scope:
+  - `…/projects/:projectId/information-briefings`: reads need Project read
+    access; POST, cancel and settings need write access;
+  - `/api/v1/spaces/:spaceId/information-briefings/personal`: always the
+    caller's own briefing.
+
+  Each has `GET`, `GET /:briefingId`, `POST` (`{date}` briefs a sealed digest
+  day of that scope: `422 briefing_day_not_sealed`, days in order),
+  `POST /:briefingId/cancel` and `PUT /settings`. Daily briefings ride on the
+  scope's existing digest Automation (`config_json.briefing`): the Project's,
+  run as the enabling writer, or the reader's personal one, run as its owner
+  only. A day that cannot start is held as above.
+- **Web.** Under `apps/web/src/modules/library/briefing/`:
+  - `BriefingView.tsx`: the shared display; impact and context labels follow
+    `scope_type`;
+  - `BriefingPanel.tsx`: the shared state, bounded polling, guards, status
+    and history, with a `collapsible` mode;
+  - `PersonalBriefingPanel.tsx`: at the top of personal Reading, collapsed;
+    evidence opens the Reader and returns to `/library/reading`.
+
+  `apps/web/src/modules/projects/ProjectBriefingPanel.tsx` binds the panel to
+  a Project in its Sources digest tab.
+- **Change notices** (`notifications.ts`): built in the settlement
+  transaction that publishes the current attempt; a replay, a failed attempt
+  or a late attempt never reaches it. A notice is sent only for a delta with
+  a highlight the whole audience may read now whose validated novelty is
+  `new` or `update`. A baseline, a "nothing new" check, an `ongoing`-only
+  version or a withheld change sends nothing.
+
+  Each current audience member (Project readers; a personal briefing's owner)
+  gets one private Inbox pointer through `OperationalAlertService` (kind
+  `briefing_changes`). It is keyed `briefing:<scope_key>:<user>`, so a later
+  meaningful version updates the same notice: at most one live notice per
+  scope per person.
+
+  The title and message are generic. The Project, briefing and version live
+  only in the pointer payload, never the notice's `project_id`, so a person
+  who loses access sees no name or text. The Inbox links to the briefing
+  surface, which re-authorizes on open (B24A).
+- **Follow-up** (`followUp.ts`, `highlight.ts`): `POST …/:briefingId/highlights/:index/follow-up`
+  returns the exact text and writes nothing. The web panel holds a
+  `briefing_highlight` Thread Reference and opens a draft:
+  - a Project highlight goes to that Project's mainline Room;
+  - a personal highlight goes to a new private Room (`personal: true`) in a
+    Project the reader picks.
+
+  At the explicit send, `RoomReferenceService.attach` resolves the reference
+  again under the attacher, with these gates:
+  - the whole briefing (comparison closure included) and every dependency of
+    the highlight must still stand;
+  - its Sources must consent to every enabled runtime Profile of the Room's
+    active Agents. An active Agent with no enabled Profile has no execution to
+    check, so the attach fails closed (`briefing_reference_execution_unresolved`,
+    409). A Room with no Agent takes it as a draft only people read;
+  - a Project highlight is accepted only into a Room of the same Project;
+  - a personal highlight is accepted only into a Room whose audience is its
+    owner alone;
+  - the content is non-disclosable: a wider target is refused
+    (`briefing_reference_scope_mismatch`) even with a disclosure
+    confirmation.
+
+  The copy is a system-role `reference` message fenced as untrusted, with
+  provenance (briefing, highlight index, evidence item ids). For people it is
+  then that conversation's own content, as every reference is: copied once,
+  not re-read (the contract of protocol `threadReferences.ts` and
+  [Rooms](rooms.md) "Thread References"; ADR 0018 governs Room audience and
+  visibility, not model egress).
+
+  Model egress is a separate gate, applied at every Delivery that carries the
+  copy (`referenceDelivery.ts`). Attach time cannot know where the text will
+  go: an Agent or Profile may be added, enabled, switched or edited before
+  the send. The Runtime Context planner (`PgDirectProvider`, and
+  `PgCheckpointContinuityProvider` for provider-backed continuity) and the
+  Invocation gateway re-authorize each briefing reference the Delivery would
+  carry, as its attacher reads it.
+  - **Against what.** The model destination the Delivery is authorized for,
+    never the live, editable runtime Profile. It is derived from the Run's own
+    persisted adapter and ModelProvider (`runtimeContext/runDestination.ts`).
+    The gateway uses the destination its own `authorizeEgress` computed under
+    its locks. The planner uses the same classifier without locks.
+  - **Through what.** The one Source consent gate, entered with that
+    destination (`assertSourceEgressAllowedForDestination`; the Profile-based
+    `assertSourcePromptEgressAllowed` resolves a destination and calls it).
+  - **Locks.** Inside the Delivery transaction the gateway first locks the
+    reference messages, then the whole authorization closure of the copy
+    (`lockBriefingReferenceClosure`). The closure is what `authorizedHighlight`
+    reads for the overview, the highlight's refs and the comparison closure of
+    earlier versions. Everything is locked `FOR SHARE` or on the shared side of
+    an advisory lock, in this order:
+    1. the briefing rows;
+    2. the audience. For a Project briefing, the whole Project audience
+       (`projects/access.ts`, `lockProjectAudience`): the Project row, every
+       `project_members` row, then the `users` and `space_memberships` rows of
+       its owner and members. For a personal briefing, the owner's Reading
+       opt-ins (`lockReadingPreferencesShared`, the shared side of the lock
+       `ReadingPreferences.set` takes), the audience of each opted-in Project,
+       and the owner's `users` and Space membership rows;
+    3. context roots: the cited Tasks and personal Following Goals. A Brief
+       version is held through the Project row;
+    4. scope signals: Following goal items with their Goal and binding,
+       monitoring decisions with their Project links, Corpus entries, channel
+       item links with their channel;
+    5. `content_access_grants` on those Tasks, Source items and Source
+       connections, and every user's subscriptions to those connections;
+    6. then, through the gateway's canonical Source locks (as for a retrieved
+       Source item), each Source item with its connection and the attacher's
+       subscriptions, then every other Source connection.
+
+    Only then does it re-verify. The locks are held until the Delivery and its
+    Snapshot commit. A revocation through any canonical writer either commits
+    first and the Delivery is refused, or waits for the Delivery's commit.
+  - **Membership fence.** A new Project member is an insert, which no row lock
+    on existing members would see. Every Project membership writer
+    (`PgProjectRepository.addMember` / `removeMember`) therefore takes
+    `lockProjectAudienceForChange` (`FOR NO KEY UPDATE` on the Project row) in
+    the same transaction as its write. That lock conflicts with the Delivery's
+    Project share lock, so a membership change and a Delivery resting on the
+    whole audience are serialized either way.
+  - **Refusal.** A refusal throws before an envelope is planned or a Delivery
+    accepted. A turn with no known destination carries none
+    (`briefing_reference_execution_unresolved`).
+  - Which references a vendor CLI turn carries: those attached after the
+    Agent's last reply, before the current message.
+  - A resumed session reads them in the Room increment of its recipient
+    instruction.
+  - A fresh session is sent no transcript, so each copy is its own required
+    `room_briefing_reference` item (reference data, `external_untrusted`).
+    The gateway checks that item equals the stored copy.
+  - The transcript is never replayed, and nothing relies on the Agent calling
+    `conversation.read`.
+- **Adoption** (`adoption.ts`):
+  - `POST …/highlights/:index/adoption/preview` drafts the Task and writes
+    nothing. It needs write access: a Project writer, or for a personal
+    briefing its owner.
+  - `POST …/highlights/:index/adoption {preview_hash}` re-authorizes and
+    re-drafts the highlight in one transaction and refuses
+    (`briefing_adoption_changed`, 409) when anything changed since the
+    preview. The Task is created through `PgTaskRepository.createTask`, which
+    writes the Task and its `task.created` event, with the Project lock and
+    writer check.
+  - A Project highlight becomes a shared Task of that Project. A personal one
+    becomes its owner's private Task with no Project, never a shared one.
+  - Scope first: preview and confirm verify that the briefing belongs to the
+    route's scope (Space, Project or owner) and that the caller may write
+    there, with the Project lock, before anything is looked up by its id.
+    Someone outside the scope gets 404 at both.
+  - Idempotent per (briefing, highlight) under an advisory lock and
+    `metadata_json.briefing_adoption.key`. An existing Task is returned, and
+    named in the preview's `existing_task_id`, only through the canonical Task
+    read gate (`PgTaskRepository.findReadableTask`, the gate `getTask` uses).
+    If one exists that the caller cannot read, confirm answers 409
+    `briefing_adoption_exists` and creates no second Task. Provenance records the briefing,
+    version, highlight, refs, evidence item ids and context sources. No
+    Memory or Knowledge is written; afterwards the Task follows ordinary Task
+    sharing.
+- **Limits shown before generating.** The overview DTO carries `limits`
+  (`BriefingLimitsSchema`), filled from the server's own `BRIEFING_LIMITS`
+  and, for this scope, the Runs it started in the last 24 hours as of that
+  read:
+  - Runs per rolling 24 hours, retries included;
+  - attempts per version;
+  - the time limit of one Run;
+  - news inputs, background families and carried items per version;
+  - request characters.
+
+  `token_cap` and `cost_cap` are always null: there is no token or currency
+  cap during a Run, and the cost depends on the runtime. The shared
+  `BriefingPanel` shows them to those who may generate (Project and personal
+  alike); no number is copied into the web app. Counts are never presented as
+  money.
+- **Web actions** (`library/briefing/HighlightActions.tsx`): each set of
+  actions belongs to one highlight: scope, briefing id and the highlight's
+  stable `index` (never its position among the highlights this reader
+  sees). The Panel keys the actions and the View keys the cards by it. A
+  change of owner drops open previews, results and the busy state, and
+  invalidates pending replies. A preview acts only for the highlight it was
+  made for. The busy state belongs to the request that set it: closing a
+  dialog releases it, and an earlier request finishing late does not release
+  a newer one.
+- **Not verified.** Output quality with real models (event grouping,
+  contradiction handling, false merges) and real instances are unverified.
+  A synthetic published Project Instruction was checked with the production
+  planner in two setups: the briefing Run's closed setup, and a legitimately
+  re-bound Project setup with retrieval off and no pins. It was not injected
+  in either; other policies or explicit controls were not tested.
+
 ## Related files
 
 - `server/src/modules/informationDigest/`
@@ -142,6 +564,8 @@ consent or later membership changes fail closed.
 - `apps/web/src/modules/library/InterestProfileControls.tsx`
 - `apps/web/src/modules/projects/ProjectDigestPage.tsx`
 - `server/test/informationDigestDb.test.ts`
+- `server/test/informationBriefingDb.test.ts`, `informationBriefingAccessDb.test.ts`, `informationBriefingDependencyDb.test.ts`, `informationBriefingPersonalDb.test.ts`, `informationBriefingActionsDb.test.ts` (fixture `server/test/support/briefingFixture.ts`)
+- `apps/web/src/modules/projects/ProjectBriefingPanel.tsx`
 - `server/test/interestProfileDb.test.ts`
 
 ## Related docs
@@ -287,3 +711,133 @@ scheduled snapshots across Shanghai and New York's 23/25-hour DST days;
 `projectInformationMonitoringDb.test.ts` protects sealed initial versus daily
 membership and late-settlement coverage. The browser uses real reading,
 preference, edition and Reader routes; shell metadata is fixture-backed.
+
+## Project Reading first-stage theme versions (R2)
+
+`topics/` adapts the existing briefing kernel to `following:<goalId>`: one
+Project Following per scope, immutable version/manifest, existing Run/Job and
+canonical terminal projection. `project_reading_rounds` (append-only migration0010)
+records the collection barrier and links its actual version. `rounds.ts` owns
+admission/wakeup/audit recovery; `service.ts` owns explicit analysis consent,
+barrier decisions/cancel/retry/read; `scope.ts` supplies only this Following's
+shared originals, approved strategy and exact purpose. Sources remains the
+original writer through its facade. R3 Project composition is not implemented.
+
+Inputs are deterministic extracted Snapshot/Artifact/hash references, never an
+Agent's `source_text` assertion, private annotation, private analysis, collection
+excerpt or personal read/favorite state. Only chosen originals' bounded text is
+loaded: up to40 news families, existing bounded comparison/background,6000
+characters per original (lower levels3000/1500), and48000 total prompt+instruction.
+Existing carry bound200 and overflow accounting remain; metadata selection may
+scan the scope's retained membership and is not a claim of constant SQL work.
+Strategy prose is bounded4000. Truncated original blocks make coverage incomplete;
+no clipping is presented as exhaustive reading. The canonical structured output
+channel preserves valid long replies. Theme output adds required `topic.quick_line`
+(240), `topic.summary` (1200) and `topic.stop_reason` (600), alongside existing
+findings/impact/context refs; optional evidence roles are support/challenge/
+supplement/risk, not four compulsory buckets. The overview names every supplied
+reference (bounded64, enough for40 originals plus Project/strategy/coverage
+context). This makes the whole theme's quick line, summary and other prose share
+one conservative authorization closure.
+
+The adapter freezes Project context and approved PromptCatalog method/provenance
+and the selected Profile configuration fingerprint at collection admission, then exact retained originals at material terminal or
+the900-second deadline. Coverage of failed/pending Sources is code-owned context,
+not a model-invented completeness claim. Historical originals remain exact across
+new extraction versions. Dispatch/Delivery/settlement revalidate freshness,
+current consent and whole-audience access; delivery uses the frozen actual Run
+destination and canonical Source locks. Generic Run detail/list additionally use the whole version authority through the Information Digest facade; they cannot copy raw prompt/output around the theme projection. Every read/export rechecks Source
+retention/capture/full read/egress and every context/comparison dependency, with
+no oversight grants. A later public context version is stale history rather than
+secret, but cannot be used to dispatch a stale frozen request. Actual withdrawal
+withholds the whole dependent theme, including its summary/labels/evidence.
+
+A queued attempt uses the existing closed Work Context (retrieval off, no pins,
+no tools); there is no extra search/model loop. A Profile configuration change refuses future admission/dispatch against that frozen round, but is not a historical read-permission withdrawal. Admission refusal rolls back the
+kernel's partial writes before recording a blocked round. Canonical worker death,
+stop ACK, terminal replay and late attempt CAS remain in Runs; completing a Run
+alone is never the collection barrier. R2 intentionally adds no shared-briefing
+notifications, Task adoption, Memory or private reading-state writes. Personal
+briefings, existing Project briefings and sealed daily editions keep their scopes
+and consumers. R3 will consume theme version references, not resend all original
+bodies or relabel an old purpose's output.
+
+R2 collection coverage (`following_coverage`) remains in the frozen prompt,
+manifest and authorization dependencies, and each round exposes its current
+coverage. It is operational metadata, excluded only from the Following adapter's
+semantic context hash: a failure/pending count changing alone does not re-run a
+model or refresh the previously published body's timestamp. Original evidence,
+purpose, approved method and Project fact changes still change semantic input
+and may require reassessment. Ordinary Project/personal briefing hash semantics
+are unchanged. Optional theme-admission refusals are exposed as bounded
+`analysis_admission` metadata without pretending a theme was created; authorized
+collection continues. See Source Goals for the savepoint/cohort failure boundary.
+
+## Project Reading stage two: immutable compositions
+
+`composition/` deterministically references first-stage Following briefings; it
+never resubmits originals to a model, creates no Run, and adds no spending consent.
+`project_reading_compositions` (0011) stores a Project revision, previous version,
+and at most 100 ordered immutable references: goal/purpose version, round and
+sequence, briefing id and its original publication time. Text stays in the theme
+version. There are no generated cross-theme claims (`not_generated`).
+
+A composition Job is persisted with each admitted round's deadline. Theme terminal
+settlement and no-new/blocked/superseded checks wake the same canonical Job type;
+pending wakes coalesce under a narrow advisory lock, running work retains a new
+wake to avoid losing a terminal event. Job failures use existing bounded attempts
+(max3), leases and recovery. GET does not repair or generate. The worker waits
+for the slot's frozen admitted Project targets to be terminal; blocked/partial
+rounds preserve old successful sections and expose latest round coverage/status.
+No first successful theme means no blank total. Identical references mean no new
+version. A failed second stage can retry without rerunning a model.
+
+Publication takes a short Project-specific advisory lock, reads the latest total,
+and patches only newer theme references, preserving all other order/timestamps.
+Old sequence replays cannot replace newer sections. Purpose identity comes from
+the immutable theme context, never the current Goal pointer. Pausing/deleting or
+disabling a theme queues withdrawal; reads hide it immediately, including history.
+
+Routes (same Space identity and canonical Project ACL):
+- GET `/api/v1/spaces/:spaceId/projects/:projectId/reading-compositions` returns
+  latest sections, 20 history metadata entries and latest states for up to100
+  themes. History bodies are loaded only by selecting their version.
+- GET `.../reading-compositions/:compositionId/export` selects that immutable
+  version with current per-section authorization; cross-Project ids are404.
+- POST `.../reading-compositions/retry` requires Project writer and queues only
+  bounded composition work for latest theme rounds, never theme generation.
+
+Every section is resolved through `projectBriefing` and its full current audience,
+Source retention/capture, actual destination, original/context/comparison closure.
+A withheld section has no briefing, summary or quick line. No copied Artifact or
+Run is created as a read bypass. Ordinary configuration drift remains distinct
+from withdrawal of access, as for the referenced historical theme itself.
+
+Explicit theme consent records a sticky `reading_composition_enabled` cutover on
+the Goal. The old Project digest Automation still seals its deterministic daily
+Digest, but skips its independent briefing model (`replaced_by_theme_composition`).
+Existing R2 exact-version enabled analysis consent also qualifies for cutover;
+old collection permission alone does not. Stored legacy schedule preferences and in-flight Runs are not deleted/cancelled;
+their existing terminal settlement and read contracts continue. Personal scopes
+and old Projects without cutover retain their previous behavior. R5 connects the
+new four-view reading surface; sealed daily Digests remain unchanged.
+
+A withdrawn section can rejoin after a successful no-new collection check without
+another model Run. Only a missing section and an actual ready `no_new_material`
+row with null result qualify: the writer resolves that check's frozen previous
+published theme in the same scope (no later than its cutoff), then repeats the
+normal Project/scope/ready/topic/purpose and full current authorization checks.
+The published purpose must match the checked round; the section keeps the old
+briefing id and original publication time. Existing sections still do not create
+a revision for no-new. Empty/malformed/failed/queued outputs do not gain a fallback.
+
+### R5 consumer projections
+
+Authorized composition sections additionally expose bounded `purpose_text` from
+the referenced briefing's frozen `following_purpose` context, never today's Goal
+intent. Withheld sections return null. Theme analysis consent accepts optional
+RuntimeSessionConfigSelection values; existing session validation checks the current
+advertised profile choices, and admission freezes them into round execution and
+canonical Run overrides. Unselected existing briefing consumers keep their contract.
+The Reading query optionally accepts `favorite=only`; filtering precedes totals
+and pagination, is private to the viewer, and is included in cursor scope.

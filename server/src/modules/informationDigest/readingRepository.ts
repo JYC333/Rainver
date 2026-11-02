@@ -9,6 +9,7 @@ import { personalMaterialClause, projectMaterialRowsSql, projectReadingAudienceC
 
 const itemAccess = contentResourceDefinition('source_item')!;
 export interface ReadingRow {
+  material_project_id?:string|null;
   topic_change?:ReadingItem['topic_change'];
   result_provenance?:'agent_provided_unverified'|null;
   key: string; source_item_id: string; source_item_ids: string[]; title: string; source_uri: string | null;
@@ -26,7 +27,7 @@ export class ReadingRepository {
     view: string; limit: number; asOf: string; before?: { at: string; key: string };
     q?: string; projectId?: string; anchorId?: string; topic?: string; topicSelection?: 'important' | 'all';
     /** `oldest` pages from the longest-waiting item forward; the cursor's comparison flips with it. */
-    sort?: 'newest' | 'oldest';
+    favorite?: 'only'; sort?: 'newest' | 'oldest';
   }): Promise<{ rows: ReadingRow[]; total: number; fingerprint: string }> {
     const oldest = input.sort === 'oldest';
     const order = oldest ? 'available_at ASC,key ASC' : 'available_at DESC,key DESC';
@@ -112,6 +113,7 @@ export class ReadingRepository {
         SELECT reading_key AS key,min(available_at) AS available_at,
           (array_agg(id ORDER BY effective_level='full' DESC,kind='personal_digest' DESC NULLS LAST,available_at DESC,id))[1] AS source_item_id,
           array_agg(DISTINCT id ORDER BY id) AS source_item_ids,
+          (array_agg(CASE WHEN effective_level='full' THEN project_id END ORDER BY effective_level='full' DESC,kind='personal_digest' DESC NULLS LAST,available_at DESC,id))[1] AS material_project_id,
           CASE WHEN bool_or(metadata_json->>'result_provenance'='agent_provided_unverified') THEN 'agent_provided_unverified' ELSE NULL END AS result_provenance,
           (array_agg(title ORDER BY effective_level='full' DESC,kind='personal_digest' DESC NULLS LAST,available_at DESC,id))[1] AS title,
           (array_agg(CASE WHEN effective_level='full' THEN COALESCE(source_uri,CASE WHEN metadata_json ? 'page_change' THEN metadata_json->>'page_uri' END) END ORDER BY effective_level='full' DESC,kind='personal_digest' DESC NULLS LAST,available_at DESC,id))[1] AS source_uri,
@@ -182,7 +184,7 @@ export class ReadingRepository {
       ), change_deliveries AS MATERIALIZED (
         SELECT c.id,c.delivered_at AS available_at,'topic-change:'||c.id AS key,
          COALESCE(cs.read_status,'unread') AS read_status,COALESCE(cs.dismissed,0)=1 AS dismissed,
-         jsonb_build_object('key','topic-change:'||c.id,'source_item_id',i.id,'source_item_ids',jsonb_build_array(i.id),
+         jsonb_build_object('key','topic-change:'||c.id,'source_item_id',i.id,'source_item_ids',jsonb_build_array(i.id),'material_project_id',i.project_id,
           'title',i.title,'source_uri',i.source_uri,'occurred_at',i.occurred_at,'summary',NULL,'access_level','full',
           'result_provenance',i.metadata_json->>'result_provenance','available_at',c.delivered_at,'contributions','[]'::jsonb,'material_links','[]'::jsonb,
           'topic_change',jsonb_build_object('id',c.id,'goal_id',g.id,'kind',c.change_kind,'evidence_url',c.evidence_url),
@@ -205,11 +207,14 @@ export class ReadingRepository {
         UNION ALL
         SELECT key,available_at,payload||jsonb_build_object('read_status',read_status,'dismissed',dismissed) FROM change_deliveries
          WHERE ($5='all' OR ($5='read' AND read_status IN ('read','discussed')) OR ($5='pending' AND read_status IN ('unread','skimmed') AND NOT dismissed))
+      ), favorite_queue AS (
+        SELECT q.key,q.available_at,q.item || jsonb_build_object('favorite',(q.item->>'access_level'='full') AND EXISTS(SELECT 1 FROM source_item_user_states fs WHERE fs.space_id=$1 AND fs.user_id=$2 AND fs.favorite AND fs.source_item_id=q.item->>'source_item_id')) AS item FROM queue q
+        WHERE ($14::boolean=false OR (q.item->>'access_level'='full') AND EXISTS(SELECT 1 FROM source_item_user_states fs WHERE fs.space_id=$1 AND fs.user_id=$2 AND fs.favorite AND fs.source_item_id=q.item->>'source_item_id'))
       ), paged AS (
-        SELECT key,available_at,item FROM queue WHERE ($6::timestamptz IS NULL OR (available_at,key)${oldest ? '>' : '<'}($6::timestamptz,$7::text))
+        SELECT key,available_at,item FROM favorite_queue WHERE ($6::timestamptz IS NULL OR (available_at,key)${oldest ? '>' : '<'}($6::timestamptz,$7::text))
         ORDER BY ${order} LIMIT $8
-      ) SELECT jsonb_build_object('fingerprint',(SELECT md5(COALESCE(string_agg(reading_key || ':' || id || ':' || COALESCE(delivery_id,'') || ':' || effective_level,',' ORDER BY reading_key,id,delivery_id),'')) FROM authorized) || (SELECT md5(COALESCE(string_agg(reading_key || ':' || goal_id,',' ORDER BY reading_key,goal_id),'')) FROM topic_links) || (SELECT md5(COALESCE(string_agg(id || ':' || read_status || ':' || dismissed::text,',' ORDER BY id),'')) FROM change_deliveries),'total',(SELECT count(*) FROM queue),'rows',COALESCE((SELECT jsonb_agg(item ORDER BY ${order}) FROM paged),'[]')) AS payload
-    `, [identity.spaceId, identity.userId, enabled, input.asOf, input.view, input.before?.at ?? null, input.before?.key ?? null, input.limit, input.q === undefined ? null : `%${escapeLikePattern(input.q)}%`, input.projectId ?? null, input.anchorId ?? null, input.topic ?? null, input.topicSelection ?? 'all']);
+      ) SELECT jsonb_build_object('fingerprint',(SELECT md5(COALESCE(string_agg(reading_key || ':' || id || ':' || COALESCE(delivery_id,'') || ':' || effective_level,',' ORDER BY reading_key,id,delivery_id),'')) FROM authorized) || (SELECT md5(COALESCE(string_agg(reading_key || ':' || goal_id,',' ORDER BY reading_key,goal_id),'')) FROM topic_links) || (SELECT md5(COALESCE(string_agg(id || ':' || read_status || ':' || dismissed::text,',' ORDER BY id),'')) FROM change_deliveries),'total',(SELECT count(*) FROM favorite_queue),'rows',COALESCE((SELECT jsonb_agg(item ORDER BY ${order}) FROM paged),'[]')) AS payload
+    `, [identity.spaceId, identity.userId, enabled, input.asOf, input.view, input.before?.at ?? null, input.before?.key ?? null, input.limit, input.q === undefined ? null : `%${escapeLikePattern(input.q)}%`, input.projectId ?? null, input.anchorId ?? null, input.topic ?? null, input.topicSelection ?? 'all',input.favorite==='only']);
     return result.rows[0]!.payload;
   }
 }

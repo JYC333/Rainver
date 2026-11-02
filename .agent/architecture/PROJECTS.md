@@ -153,6 +153,12 @@ concrete project memory is readable only by the project owner or an active
 project member; `viewer` can read gated memory but cannot mutate project
 metadata or public summaries.
 
+Every membership write (`PgProjectRepository.addMember` / `removeMember`) runs in
+one transaction that first takes `lockProjectAudienceForChange` (`FOR NO KEY
+UPDATE` on the Project row). This is the fence that `lockProjectAudience`
+(`projects/access.ts`) shares with any decision resting on the Project's whole
+current audience, for example a briefing reference's model Delivery.
+
 Project roles are `viewer` < `member` < `owner`. Adding a member or changing a
 role goes through `assertCanGrantRole` (`access/roles.ts`): the Project's owner
 and the Space's owner may hand out any role, a Space admin up to `member`, and

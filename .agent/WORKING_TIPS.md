@@ -39,6 +39,9 @@ existing external directory is available only on a paired trusted host.
 
 ## Frontend UI Components
 
+Read [UI Style Guide](architecture/UI_STYLE_GUIDE.md) for the shared visual
+contract and acceptance checklist before changing presentation.
+
 **Always use `Select` from `components/ui/select.tsx` for dropdowns.**
 
 Never use a bare `<select>` element — it won't pick up the design system

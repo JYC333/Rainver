@@ -95,6 +95,7 @@ export function TopicCreate({spaceId,userId,projectId,legacyChannel,navigate}:{s
    <form className="space-y-5" onSubmit={e=>{e.preventDefault();void confirm()}}>
     <div className="space-y-1.5"><label htmlFor="topic-intent" className="text-sm font-medium">{t('topics.topic')}</label><Textarea id="topic-intent" rows={4} maxLength={8000} value={text} disabled={busy} onChange={e=>setText(e.target.value)} placeholder={t('topics.topicPlaceholder')}/><p className="text-xs text-muted-foreground">{t('sourceGoals.noSecrets')}</p></div>
     <TopicFollowFields value={choice} onChange={setChoice} disabled={busy}/>
+    {projectId&&<p className="text-sm text-muted-foreground">{t('projectReading.analysisAfterPreparation')}</p>}
     <details className="rounded-lg border border-border p-3" open={advanced} onToggle={e=>setAdvanced((e.currentTarget as HTMLDetailsElement).open)}>
      <summary className="cursor-pointer text-sm font-medium">{t('topics.advanced')}</summary>
      <div className="mt-3 space-y-3">

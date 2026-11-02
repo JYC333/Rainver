@@ -1,5 +1,7 @@
+import {retainedSourceEgressSql} from './sourcePromptEgress.js';
+import {retainedAnalysisPolicySql} from './materialProcessing/policy.js';
 import { registeredEntities } from "../ontology/entities.js";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql, projectReadAccessSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 
 const SOURCE_SNAPSHOT_ACCESS = contentResourceDefinition("source_snapshot")!;
@@ -184,7 +186,52 @@ export const SOURCE_DERIVED_ARTIFACT_TYPES = ["source_reader_document", "source_
  * Other artifacts are unaffected.
  */
 export function sourceDerivedArtifactReadableClause(artifactAlias: string, userParam: string, requireFull = false): string {
-  return `(
+  const analysisSourcePolicy=`(${artifactAlias}.metadata_json->>'reading_role' IS DISTINCT FROM 'analysis' OR NOT EXISTS (
+    SELECT 1 FROM source_connections analysis_source
+    WHERE analysis_source.space_id=${artifactAlias}.space_id AND analysis_source.id IN (
+      SELECT parent_item.connection_id FROM source_snapshots parent_snapshot JOIN source_items parent_item ON parent_item.id=parent_snapshot.source_item_id AND parent_item.space_id=parent_snapshot.space_id WHERE parent_snapshot.artifact_id=${artifactAlias}.id AND parent_snapshot.space_id=${artifactAlias}.space_id
+      UNION SELECT NULLIF(${artifactAlias}.metadata_json->'deep_read'->'following'->>'connection_id','')
+      UNION SELECT dependency.connection_id FROM jsonb_array_elements(CASE WHEN jsonb_typeof(${artifactAlias}.metadata_json->'reading_history_refs')='array' THEN ${artifactAlias}.metadata_json->'reading_history_refs' ELSE '[]'::jsonb END) ref JOIN source_items dependency ON dependency.id=ref->>'item_id' AND dependency.space_id=${artifactAlias}.space_id
+    ) AND NOT COALESCE((
+      ${retainedAnalysisPolicySql('analysis_source')}
+      AND ${retainedSourceEgressSql('analysis_source',`${artifactAlias}.metadata_json->>'reading_analysis_destination'`)}
+    ),false)
+  ))`;
+  const deepContext=`(${artifactAlias}.metadata_json->'deep_read' IS NULL OR (
+    ${artifactAlias}.owner_user_id=${userParam}
+    AND ${projectReadAccessSql(`${artifactAlias}.space_id`,`${artifactAlias}.metadata_json->'deep_read'->>'project_id'`,userParam)}
+    AND (${artifactAlias}.metadata_json->'deep_read'->'original' IS NULL OR ${artifactAlias}.metadata_json->'deep_read'->'original'='null'::jsonb OR EXISTS(
+      SELECT 1 FROM source_snapshots deep_original JOIN artifacts deep_original_artifact ON deep_original_artifact.id=deep_original.artifact_id AND deep_original_artifact.space_id=deep_original.space_id
+      LEFT JOIN source_connections deep_original_source ON deep_original_source.space_id=deep_original.space_id AND deep_original_source.id=deep_original.connection_id
+      WHERE deep_original.space_id=${artifactAlias}.space_id AND deep_original.id=${artifactAlias}.metadata_json->'deep_read'->'original'->>'snapshot_id'
+      AND deep_original.artifact_id=${artifactAlias}.metadata_json->'deep_read'->'original'->>'artifact_id' AND deep_original.content_hash=${artifactAlias}.metadata_json->'deep_read'->'original'->>'content_hash'
+      AND ${contentReadSql('source_snapshot','deep_original',userParam,{includeOversight:false})} AND ${contentAccessLevelSql({definition:SOURCE_SNAPSHOT_ACCESS,alias:'deep_original',userExpr:userParam,includeOversight:false})}='full'
+      AND ${contentReadSql('artifact','deep_original_artifact',userParam,{includeOversight:false})} AND ${contentAccessLevelSql({definition:contentResourceDefinition('artifact')!,alias:'deep_original_artifact',userExpr:userParam,includeOversight:false})}='full'
+      AND (deep_original.connection_id IS NULL OR (${sourceConnectionReaderConsentClause('deep_original_source',userParam,'deep_original.captured_at',{includeOversight:false})} AND ${retainedAnalysisPolicySql('deep_original_source')} AND ${retainedSourceEgressSql('deep_original_source',`${artifactAlias}.metadata_json->>'reading_analysis_destination'`)}))
+    ))
+    AND (${artifactAlias}.metadata_json->'deep_read'->'following' IS NULL OR ${artifactAlias}.metadata_json->'deep_read'->'following'='null'::jsonb OR EXISTS(
+      SELECT 1 FROM source_goals deep_goal JOIN source_goal_versions deep_version ON deep_version.space_id=deep_goal.space_id AND deep_version.goal_id=deep_goal.id AND deep_version.id=${artifactAlias}.metadata_json->'deep_read'->'following'->>'version_id'
+      WHERE deep_goal.space_id=${artifactAlias}.space_id AND deep_goal.project_id=${artifactAlias}.project_id AND deep_goal.status<>'deleted' AND deep_goal.id=${artifactAlias}.metadata_json->'deep_read'->'following'->>'goal_id'
+      AND EXISTS(SELECT 1 FROM source_connections deep_following_source WHERE deep_following_source.space_id=${artifactAlias}.space_id AND deep_following_source.id=${artifactAlias}.metadata_json->'deep_read'->'following'->>'connection_id'
+       AND ${sourceConnectionReaderConsentClause('deep_following_source',userParam,`${artifactAlias}.created_at`,{includeOversight:false})} AND ${contentReadSql('source_connection','deep_following_source',userParam,{includeOversight:false})} AND ${contentAccessLevelSql({definition:contentResourceDefinition('source_connection')!,alias:'deep_following_source',userExpr:userParam,includeOversight:false})}='full'
+       AND ${retainedAnalysisPolicySql('deep_following_source')} AND ${retainedSourceEgressSql('deep_following_source',`${artifactAlias}.metadata_json->>'reading_analysis_destination'`)})
+
+    ))
+  ))`;
+  return `(${deepContext} AND ${analysisSourcePolicy} AND NOT EXISTS (
+    SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(${artifactAlias}.metadata_json->'reading_history_refs')='array' THEN ${artifactAlias}.metadata_json->'reading_history_refs' ELSE '[]'::jsonb END) history_ref
+    LEFT JOIN source_items history_item ON history_item.space_id=${artifactAlias}.space_id AND history_item.id=history_ref->>'item_id' AND history_item.deleted_at IS NULL
+    LEFT JOIN source_connections history_connection ON history_connection.space_id=history_item.space_id AND history_connection.id=history_item.connection_id
+    LEFT JOIN artifacts history_artifact ON history_artifact.space_id=${artifactAlias}.space_id AND history_artifact.id=history_ref->>'artifact_id'
+    LEFT JOIN source_snapshots history_snapshot ON history_snapshot.space_id=${artifactAlias}.space_id AND history_snapshot.id=history_ref->>'snapshot_id'
+    WHERE history_item.id IS NULL OR history_artifact.id IS NULL
+      OR (history_item.connection_id IS NOT NULL AND (history_connection.id IS NULL OR NOT COALESCE(${retainedAnalysisPolicySql('history_connection')},false)))
+      OR (history_ref->>'snapshot_id' IS NOT NULL AND (history_snapshot.id IS NULL OR NOT COALESCE(${contentReadSql('source_snapshot','history_snapshot',userParam,{includeOversight:false})},false) OR ${contentAccessLevelSql({definition:SOURCE_SNAPSHOT_ACCESS,alias:'history_snapshot',userExpr:userParam,includeOversight:false})}<>'full'))
+      OR NOT COALESCE(${sourceItemFullContentReadClause('history_item',userParam)},false)
+      OR NOT COALESCE(${contentReadSql('artifact','history_artifact',userParam,{includeOversight:false})},false)
+      OR NOT COALESCE(${roomRunReadAccessSql('history_artifact.run_id','history_artifact.space_id',userParam)},false)
+      OR ${contentAccessLevelSql({definition:contentResourceDefinition('artifact')!,alias:'history_artifact',userExpr:userParam,includeOversight:false})}<>'full'
+  )) AND (
     ${artifactAlias}.artifact_type NOT IN (${SOURCE_DERIVED_ARTIFACT_TYPES.map((type) => `'${type}'`).join(", ")})
     OR EXISTS (
       SELECT 1 FROM source_items artifact_item

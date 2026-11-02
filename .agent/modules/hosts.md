@@ -65,7 +65,8 @@ any host's real filesystem paths.
 
 Both kinds run the **same** daemon (`packages/host-daemon`), in one of two
 trust modes chosen at registration (ADR 0016 §2). A paired machine is
-`trusted`: native spawn, no namespace. The built-in host is `strict`: the
+`trusted`: ordinary writes spawn natively; explicit locally verified read-only
+reviews use the namespace described below. The built-in host is `strict`: the
 daemon runs inside the `sandbox-runner` container and wraps every Run in its
 own rootless bubblewrap namespace.
 
@@ -477,7 +478,7 @@ session a Conversation × Agent continues; nothing else keeps a copy that could
 disagree with it. The server does not materialize CLI state directories on a
 remote Host.
 
-### Login state: one per host × installation, shared by link
+### Login state: one per host × installation
 
 An Agent-managed login (a subscription, no ModelProvider binding) is the main
 path for CLI conversations — the driving need is that subscription quota is
@@ -488,11 +489,19 @@ logins by Agents × Rooms. So the login stays where it was:
   `~/.claude` / `~/.codex` / OpenCode data directory for `own`, the adapter's
   stable managed HOME for `managed:<version>` — and login happens there through the
   existing login stream;
-- when the daemon materializes a profile for an **unbound** run, it links
-  **only** the runtime's credential file (the `credential_file` under
-  `home_subdir` the adapter's state boundary names) from that login home into
-  the profile. Everything else in the profile — sessions, auto-memory,
-  settings — is the profile's own;
+- when the daemon materializes a profile for an **unbound** run, it references
+  that installation's login without reading credential bytes. Everything else
+  in the profile — sessions, auto-memory, settings — is the profile's own;
+- Claude declares `shared_credential_env: CLAUDE_SECURESTORAGE_CONFIG_DIR` in
+  its state boundary, carried in the launch's `login_link`. The daemon resolves
+  that directory under the installation's login HOME, while `CLAUDE_CONFIG_DIR`
+  still names the Agent × container profile. Claude reads, refreshes and locks
+  its credentials in that single shared store, including alongside native CLI
+  sessions and capability probes. A refresh's atomic rename cannot detach one
+  profile from the login. Old profile credential files and links are left
+  untouched but unused: their modification time must never promote a cleared
+  login stub over a valid installation login. Missing login state still prompts
+  for login; the daemon does not manufacture or migrate credentials;
 - a runtime that declares **no** state boundary (`credentials.state`) is not
   host-executable. Moving it into an empty profile would break
   authentication, while leaving it in the managed copy's shared home would mix
@@ -505,13 +514,15 @@ logins by Agents × Rooms. So the login stays where it was:
   product's state layout is known (Antigravity: `GEMINI_HOME`,
   `.gemini/antigravity-acp/acp_token.json`), logging in through ACP Agent
   Auth. The registry itself carries none of this, and nothing infers it;
-- a link, never a copy and never a token in the environment. Passing the
+- for runtimes without a separate credential-directory selector, a file link,
+  never a copy and never a token in the environment. Passing the
   credential through `CLAUDE_CODE_OAUTH_TOKEN` or its equivalents would mean
   Rainver read a credential and injected it into a subprocess, the shape
   [ADR 0008](../decisions/0008-credential-channel-isolation.md) forbids. A
   symlink is tried first and a hard link is the fallback, because Windows
   refuses `symlink` without Developer Mode;
-- missing login file → the profile is created without the link, and the first
+- for the file-link fallback, missing login file → the profile is created
+  without the link, and the first
   dispatch surfaces the runtime's own login prompt. That is the intended
   behavior. A symlink already at the target is removed then, because it points
   into a login home that has no credential any more (for example after logout)
@@ -532,11 +543,11 @@ logins by Agents × Rooms. So the login stays where it was:
   followed (relinked); a profile that refreshed itself later holds the live
   token and the login home the spent one, so the private file is **handed
   back** — renamed over the login home's credential (an inode move, no bytes
-  read) and the profile linked to it again. Claude Code does refresh by
-  temp-file rename on a paired host, and the rotated refresh token does
-  invalidate the siblings: without the hand-back every other profile asked
-  for a login again about once a day. A hand-back that fails (another
-  filesystem, an unwritable login home) leaves the profile its private copy
+  read) and the profile linked to it again. This fallback does not apply to
+  Claude: recency cannot distinguish a successful refresh from a newer cleared
+  credential, and its refresh lock must be shared with the credential store.
+  A hand-back that fails (another filesystem, an unwritable login home)
+  leaves the profile its private copy
   and logs, once per launch, that it no longer shares the login (a hard link
   to the same inode, the Windows fallback, is not divergence). A link that
   *fails* throws rather than leaving the run to discover it has no
@@ -545,6 +556,19 @@ logins by Agents × Rooms. So the login stays where it was:
   configuration and no login link, because linking the machine's subscription
   credential into a profile that is not using it puts a credential where it
   does not belong.
+
+The built-in strict Host still exposes the login HOME **read-only**. Selecting
+Claude's shared store does not grant a Run permission to acquire locks or write
+credentials there; renewal must happen outside the Run namespace, through the
+Host's vendor login/helpers. A trusted paired Host permits the owner's native
+CLI to renew its own login. Update both the control plane (which declares the
+selector) and the Host daemon (which applies it); an older daemon continues its
+old file-link behavior. This path requires a Claude version supporting the
+separate credential selector; it was verified with 2.1.312.
+
+Reuse / Dependency Check: reuse the adapter state boundary, Host profile
+materializer and Claude's native credential store and refresh locks. No OAuth
+client, credential parser, synchronizer, lock manager or dependency is added.
 
 ### Archiving what an Agent leaves behind
 
@@ -1791,35 +1815,41 @@ mode, written with the credential it registered with. A config with no
 
 ### Location lease, Task worktrees and `git_after`
 
-Strict read-only reviews take shared Location leases; writers take exclusive
+Enforced read-only reviews take shared Location leases; writers take exclusive
 leases. Different Agents in the same Room can review together, while writers
 wait for existing readers and writers. FIFO admission allows a consecutive
 reader prefix and prevents new readers overtaking an already queued writer.
 Ordinary multi-recipient messages and discussions retain their serial policy;
-only explicit `workspace_access: "read"` delegations opt into review admission.
+every new delegation must explicitly choose `workspace_access: "read"` or
+`"write"`; only `read` opts into review admission. Missing/null access is a
+correctable input error, never a silent write fallback. Existing Run contracts
+without a value retain their historical write behavior.
 The Conversation × Agent vendor thread remains exclusive in either mode.
 
 `src/locationLease.ts` acquires primary and attachment Location ids in sorted
-order before baseline capture. A strict read-only launch takes shared leases
+order before baseline capture. An enforced read-only launch takes shared leases
 for all its Locations and downgrades every workspace attachment to read-only.
 A writer takes exclusive leases for its primary Location and writable
-attachments; a Task worktree takes its own exclusive Task key instead. Managed
-workspaces without Location ids have no Location lease. Paired native launches
-are always treated as writers by the daemon: native execution does not enforce
-read-only access, so server admission rejects explicit reviews on paired Hosts
-with `workspace_read_only_unenforceable` rather than silently weakening them.
+attachments; a Task worktree takes its own exclusive Task key instead. Managed workspaces also take canonical physical-path leases. Personal
+read-only launches require verified namespace capability, then share the same
+reader leases; unsupported personal Hosts refuse rather than run natively
+under a read-only label.
 
 Holders and waiters are launch attempts (`launch_id`), not logical Run ids.
 A waiting attempt emits `waiting_for_workspace`; cancellation removes only that
 attempt. Leases release in `finally` after the exit tree and diff are captured,
 or on launch failure. A queued attempt counts toward `hasInFlightRuns` but not
-`launchingRuns`; revocation also cancels waiters. Different Location ids pointing
-to overlapping paths remain an existing alias boundary.
+`launchingRuns`; revocation also cancels waiters. Physical-path and git-common keys also serialize configured overlapping
+roots and aliases; these supplement the same attempt-scoped FIFO leases.
 
 A read-only review records `review_basis` (HEAD, branch, captured Git tree and
 whether Git-visible content changed during review). This is an observed Git
 basis, not an immutable snapshot of ignored files or external edits. It uploads
-no code diff artifact, so another writer's edits cannot become its output.
+no code diff artifact, so another writer's edits cannot become its output. Personal
+read-only Git basis capture runs inside its own RO namespace with an ephemeral
+index/object store outside the repository; clean filters cannot write back into
+the workspace. Only the resulting tree hash is retained. If capture is unavailable
+the tree/change fields remain unknown, never a fabricated clean result.
 The namespace keeps Run output, temporary files and runtime profile state
 writable outside the source directory; reports belong in `RAINVER_OUTPUT_DIR`.
 
@@ -2267,6 +2297,12 @@ later send: the CLI reads the checkout itself.
 
 ### Strict mode (`strictNamespace.ts`)
 
+The fixed `/sys/devices/system/cpu/possible` file is also bound read-only when
+present: TCMalloc-based runtimes require it before even help/ACP initialization.
+No sysfs directory or sibling topology file is exposed. The optional-file rule
+keeps absent-file platforms from failing namespace setup; a CLI that requires it
+may still refuse startup. Native trusted writes do not use this builder.
+
 In strict mode `execution.ts` does not spawn the runtime — it spawns `bwrap`
 around it. The namespace uses `--die-with-parent
 --new-session --unshare-pid`, a tmpfs root, `--proc`/`--dev`, a private
@@ -2510,7 +2546,7 @@ uploading. An install keeps the new build and the one it replaced, and while
 an earlier restart request is still pending (the running daemon may be on an
 older build than either) it removes no release at all. Each channel also publishes its checksummed `BUILD_ID` as a small
 standalone asset. An update compares it with the active build before fetching
-Node, daemon, or adapter archives and returns immediately on a match; changing
+Node, daemon, or adapter archives, verifies local read-only protection and returns on a match; changing
 the timer setting still takes effect on that no-op path. The archive's own
 `BUILD_ID` must match the standalone metadata before installation. After the
 one-time installer bootstrap, `rainver-host update` owns manual updates,
@@ -2734,3 +2770,86 @@ Room 只读委派在创建子 Run 前检查会话固定的目标 backend/Host：
 不占线程或扣委派额度。不会自动将工作目录移到另一台机器，亦不降级为可写。
 需使用 intended workspace 在 server Host 可用的会话重新审查。
 执行期仍保留同一能力校验，防止接纳后配置变化绕过强制只读限制。
+
+## Explicit read-only review on a personal Linux Host
+
+An updated personal Host can execute `workspace_access: read` in a rootless
+bubblewrap mount/PID namespace. Ordinary trusted writes remain native. This is a
+workspace-write protection contract, not a claim of full-machine confidentiality
+or mandatory network isolation. The declared egress policy remains separate.
+The local Host probes executable namespace support (cached at most 60 seconds)
+and reports `workspace_read_only` with mechanism `bwrap-v1` in hello/heartbeat.
+The server normalizes it and checks it before Room child admission and again at
+execution; old/missing/unsupported capabilities fail closed. The actual Host
+also checks locally, and namespace readiness must succeed before `launched`.
+No writable fallback, automatic Host move or workspace copy occurs.
+
+Prerequisites are Linux x64/arm64 with usable unprivileged mount/PID namespaces,
+seccomp filtering and bubblewrap (`/usr/bin/bwrap`). An owner may configure the daemon startup variable
+`RAINVER_HOST_BWRAP` for an explicitly managed binary path. This is host-local
+configuration, never a Run environment override. macOS/Windows and Linux without
+that mechanism are not supported by this read mode. Install/configure prerequisites
+and upgrade/reconnect both sides before retrying; do not change the review to write.
+The Linux installer and updater now install missing bubblewrap through the
+existing apt-get/dnf/yum/zypper/pacman/apk package manager, then reuse the daemon's
+real probe via `rainver-host check-read-only`. The already-current update path
+also verifies capability without downloading release archives. Checks load the
+same owner startup environment as the service, including an explicitly configured
+binary. Interactive sudo may request permission; unattended updates use sudo -n
+and fail rather than wait for a password. Failed installation or capability
+verification leaves the current release/service active; no kernel/sysctl or
+container security policy is changed. Adapter-only downloads do not install
+system dependencies. Source checkout edits alone do not upgrade a running installed daemon.
+
+The existing strict namespace/readiness and runtime/profile/credential plumbing
+are reused. Primary/attached roots and linked-worktree git common metadata are
+read-only even when a prior vendor profile requested writes. Writable runtime,
+HOME, output and cache roots must be disjoint from all protected paths (including
+realpath aliases); hard-linked writable files are refused. Scan failures are
+reported generically to the control plane, with details only in the local log.
+The own-install HOME is not mounted wholesale: only the runtime definition's
+login credential file is bound RO; executable/dependency trees and configured CA
+files are separate RO binds. Executable roots and aliases are checked against
+both the daemon login HOME and the effective HOME; neither HOME nor an ancestor
+can become an executable bind. The same bound applies to the daemon runtime
+installation root (both node_modules-prefix and directory-layout ancestry),
+managed tool roots and configured CA roots in personal read plans. A whole-HOME
+CA directory is refused, not silently mounted or ignored. Ordinary strict Host
+install-root selection retains its existing layout. The daemon's concrete package
+and declared dependencies use the same bounded package resolver when the install
+root must be narrowed. A binary directly in HOME is bound as a file.
+Node packages use their concrete package roots and installed declared dependency
+closure via Node lookup (bounded to 1024 packages), never the prefix before
+`node_modules`. An unsafe dependency alias fails closed; undeclared dynamic
+plugins are not supplied by mounting the whole HOME. A host-login runtime without a declared relocatable
+state/login boundary refuses rather than discarding its login. Codex, Claude
+and Antigravity use their existing declared state boundaries. Credential refresh
+that replaces a bound login file may fail; this mode does not copy credentials
+or rewrite login configuration. Native proxy/CA environment settings are retained
+for personal reads after the existing vendor-key cleanup. Strict ServerHost
+ambient filtering stays unchanged. Environment values are inherited, not put in
+bubblewrap's public argv.
+
+A per-process seccomp filter (anonymous FD, also inherited by subprocesses)
+rejects creation of named Unix clients, Unix datagram/seqpacket socketpairs,
+foreign syscall ABIs and io_uring setup. This closes socket helpers in login,
+executable, profile and workspace mounts, including later-created/abstract Unix
+addresses. Stream socketpairs remain available for Node child IPC. Runtimes
+requiring named Unix clients may refuse; no unsafe native fallback is supplied.
+TCP/UDP and loopback networking remain governed by the existing egress contract.
+An authorized external tool/service could still perform writes on a caller's
+behalf; filesystem RO and these IPC restrictions do not prove those services
+side-effect-free. Shared reader scheduling assumes no such external writer,
+just as it excludes an owner editor. This is explicitly not whole-machine or
+mandatory network isolation.
+
+Leases retain FIFO and attempt ownership. Canonical physical roots (including
+configured overlapping Locations and managed cwd) and git common directories
+join Location keys so path aliases cannot turn a writer into an independent
+lease. Two enforced readers share these keys; writers wait for all readers.
+A later reader cannot jump a queued writer. Non-Task in-place launches also serialize shared git metadata conservatively.
+Task writes retain independent worktree concurrency: they lock the Task key and
+its actual physical worktree path, not the original Location/git-common root.
+Normal strict ServerHost writers retain writable git metadata. External owner processes editing files are outside
+this in-daemon scheduling contract. Same-Agent vendor-thread serialization,
+Host concurrency, quota, cancellation, kill and settlement remain independent.

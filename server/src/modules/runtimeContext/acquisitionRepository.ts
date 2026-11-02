@@ -65,6 +65,8 @@ export interface RunContextRecord {
   capability_id: string | null;
   trigger_origin: string | null;
   runtime_key?: string | null;
+  runtime_profile_id?: string | null;
+  model_provider_id?: string | null;
   runtime_profile_snapshot_json?: unknown;
   execution_kind?: "agent" | "provider_task";
   data_exposure_level: string | null;
@@ -113,7 +115,7 @@ export class PgRuntimeContextAcquisitionRepository {
                 ORDER BY execution.created_at DESC, execution.id DESC
                 LIMIT 1) AS workflow_execution_id,
               r.instructed_by_user_id, r.owner_user_id, r.capability_id, r.trigger_origin, r.runtime_key,
-              r.execution_kind, r.runtime_profile_snapshot_json,
+              r.runtime_profile_id, r.model_provider_id, r.execution_kind, r.runtime_profile_snapshot_json,
               r.data_exposure_level, r.trust_level, r.visibility,
               r.has_context_taint, r.context_taint_json,
               r.contract_snapshot_json,

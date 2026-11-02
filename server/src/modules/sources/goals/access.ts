@@ -94,3 +94,11 @@ export async function canRequestGoalSourceActivation(db:Queryable,run:import('..
  if(!g||g.owner_user_id!==run.owner_user_id||g.agent_id!==run.agent_id||g.project_id!==run.project_id||g.session_id!==run.session_id||(g.adjustment_cycle??0)!==(goal.adjustment_cycle??0))return false;
  return !!(await db.query(`SELECT 1 FROM messages WHERE space_id=$1 AND session_id=$2 AND run_id=$3 AND role='user' AND user_id=$4 AND metadata_json->>'source_goal_cycle'=$5`,[g.space_id,g.session_id,run.id,g.owner_user_id,String(g.adjustment_cycle??0)])).rows[0];
 }
+/** Analysis opt-in changes future spend, so it keeps the canonical goal
+ * management policy in addition to owner and Project-writer authority. */
+export async function assertGoalAnalysisManagement(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,id:string){
+ const g=await requireGoal(db,identity,id,true);
+ const decision=await enforce(config,await loadActionRegistry(),{action:'source.goal.manage',actor_type:'user',actor_id:identity.userId,space_id:identity.spaceId,resource_type:'source_goal',resource_id:id,force_record:false});
+ if(decision.status==='blocked')throw new HttpError(403,'Source goal management policy refused analysis consent');
+ return g;
+}

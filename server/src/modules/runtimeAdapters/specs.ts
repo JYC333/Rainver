@@ -49,6 +49,8 @@ export interface RuntimeStateBoundary {
   env: Record<string, string>;
   home_subdir: string;
   credential_file: string;
+  /** Native credential-directory selector; sessions and memory still use `env`. */
+  shared_credential_env?: string;
   /** Declared for a CLI that holds several accounts in its credential file (see the protocol schema). */
   accounts_format?: "json_object_by_provider";
 }
@@ -396,6 +398,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
         // `claude /login` exits non-zero from its REPL; the credential file is
         // the reliable success signal.
         credential_file: ".credentials.json",
+        shared_credential_env: "CLAUDE_SECURESTORAGE_CONFIG_DIR",
       },
       credential_mode: "cli_profile",
       credential_runtime_name: "claude_code",

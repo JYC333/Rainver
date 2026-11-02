@@ -1410,6 +1410,7 @@ export class PgSourcesRepository {
           AND source_item_id = $2
           AND job_type = $3
           AND status IN ('pending', 'running')
+          AND NOT COALESCE(metadata_json ? 'deep_project',false)
         LIMIT 1`,
       [identity.spaceId, sourceItemId, jobType],
     );

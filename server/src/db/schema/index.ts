@@ -32,6 +32,7 @@ export * from "./inquiryAdvice.js";
 export * from "./inquirySignals.js";
 export * from "./interestProfiles.js";
 export * from "./informationDigests.js";
+export * from "./informationBriefings.js";
 export * from "./jobs.js";
 export * from "./knowledge.js";
 export * from "./knowledgePromotion.js";
@@ -93,3 +94,6 @@ export * from './projectInformationMonitoring.js';
 export * from "./sourceGoals.js";
 
 export * from "./readerNotes.js";
+export * from './projectReadingRounds.js';
+
+export * from "./projectReadingCompositions.js";

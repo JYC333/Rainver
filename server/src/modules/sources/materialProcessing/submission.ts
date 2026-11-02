@@ -53,6 +53,14 @@ export async function submitMaterialResults(config:ServerConfig,run:RunRecord,ra
   const denied=input.items.flatMap((item,index)=>[...(!policy.summary&&item.summary?[{field:`items.${index}.summary`,message:'Source policy is metadata-only; use null'}]:[]),...(!policy.content&&item.content?[{field:`items.${index}.content`,message:'Source policy does not allow retained reading content; use null'}]:[])]);if(denied.length)return {issues:denied};
   // The submitter says how content.text is written; an undeclared text would be shown literally, Markdown marks and all.
   const undeclared=input.items.flatMap((item,index)=>item.content&&!item.content.syntax?[{field:`items.${index}.content.syntax`,message:'Required: "markdown" when content.text uses Markdown (# headings, - lists, **bold**, code fences, tables), otherwise "plain"'}]:[]);if(undeclared.length)return {issues:undeclared};
+  if(itemContext&&input.status==='succeeded'&&input.items[0]?.content){
+   const {assertInvestigationReport,investigationOf}=await import('./investigation.js');
+   if(investigationOf(current)){
+    if(input.items[0].content.format!=='agent_summary')return {issues:[{field:'items.0.content.format',message:'An investigation report must be agent_summary'}]};
+    try{await assertInvestigationReport(tx,config,current,input.items[0].content.text);}
+    catch(error){if(error instanceof HttpError&&error.statusCode===422)return {issues:[{field:'items.0.content.text',message:error.message}]};throw error;}
+   }
+  }
   try{assertSafeGoalMessage(JSON.stringify(input));}catch{return {issues:[{field:"items",message:"Use the secure credential channel; recognizable secret material is not accepted"}]};}
   if(input.processing_id!==audit.id)return {issues:[{field:'processing_id',message:'Use the processing_id bound to this Run'}]};
   const now=Date.now();if(input.items.some(i=>Date.parse(i.observed_at)>now+60000||Date.parse(i.observed_at)<Date.parse(String(current.started_at))-60000))return {issues:[{field:'items.observed_at',message:'Observation must belong to this collection Run, not a guessed publication date'}]};

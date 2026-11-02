@@ -1,5 +1,5 @@
 import type { ReaderDocumentNoteResponse, ReaderAnnotationRangeUpdate } from "@rainver/protocol"
-import type { ReaderAppearance, ReaderPositionResult, ReaderPositionWrite, ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol'
+import type { Briefing, BriefingAdoptionPreview, BriefingAdoptionResult, BriefingFollowUpPreview, BriefingGenerateResponse, BriefingOverviewResponse, ReaderAppearance, ReaderPositionResult, ReaderPositionWrite, ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol'
 import type { RunFilePreview } from "@rainver/protocol"
 import type { ProjectMonitoringState,ProjectMonitoringConfig,MonitoringVersion } from "@rainver/protocol";
 import { mergeAbortSignals } from '../lib/mergeAbortSignals'
@@ -2528,6 +2528,49 @@ export const activityApi = {
 }
 
 // ── Source / Evidence ────────────────────────────────────────────────────
+/** Project briefings: reads never generate; generating, cancelling and the daily setting need Project write access. */
+export const informationBriefingsApi = {
+  project: (spaceId: string, projectId: string, options: RequestOptions = {}) =>
+    get<BriefingOverviewResponse>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings`, options),
+  get: (spaceId: string, projectId: string, briefingId: string, options: RequestOptions = {}) =>
+    get<Briefing>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/${encodeURIComponent(briefingId)}`, options),
+  /** Briefs the current cut-off; an identical in-flight or unchanged request answers with the existing version. */
+  generate: (spaceId: string, projectId: string) =>
+    post<BriefingGenerateResponse>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings`, {}),
+  cancel: (spaceId: string, projectId: string, briefingId: string) =>
+    post<Briefing>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/${encodeURIComponent(briefingId)}/cancel`),
+  setDaily: (spaceId: string, projectId: string, daily_enabled: boolean) =>
+    put<{ daily_enabled: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/settings`, { daily_enabled }),
+  /** The text a follow-up in this Project would carry. Writes nothing. */
+  followUp: (spaceId: string, projectId: string, briefingId: string, index: number) =>
+    post<BriefingFollowUpPreview>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/${encodeURIComponent(briefingId)}/highlights/${index}/follow-up`, {}),
+  /** The Task a highlight would become. Writes nothing. */
+  previewAdoption: (spaceId: string, projectId: string, briefingId: string, index: number) =>
+    post<BriefingAdoptionPreview>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/${encodeURIComponent(briefingId)}/highlights/${index}/adoption/preview`, {}),
+  adopt: (spaceId: string, projectId: string, briefingId: string, index: number, preview_hash: string) =>
+    post<BriefingAdoptionResult>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/${encodeURIComponent(briefingId)}/highlights/${index}/adoption`, { preview_hash }),
+}
+
+/** The caller's own personal briefing in this Space (never another person's). */
+export const personalBriefingsApi = {
+  overview: (spaceId: string, options: RequestOptions = {}) =>
+    get<BriefingOverviewResponse>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal`, options),
+  get: (spaceId: string, briefingId: string, options: RequestOptions = {}) =>
+    get<Briefing>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}`, options),
+  generate: (spaceId: string) =>
+    post<BriefingGenerateResponse>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal`, {}),
+  cancel: (spaceId: string, briefingId: string) =>
+    post<Briefing>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/cancel`),
+  setDaily: (spaceId: string, daily_enabled: boolean) =>
+    put<{ daily_enabled: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/settings`, { daily_enabled }),
+  followUp: (spaceId: string, briefingId: string, index: number) =>
+    post<BriefingFollowUpPreview>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/highlights/${index}/follow-up`, {}),
+  previewAdoption: (spaceId: string, briefingId: string, index: number) =>
+    post<BriefingAdoptionPreview>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/highlights/${index}/adoption/preview`, {}),
+  adopt: (spaceId: string, briefingId: string, index: number, preview_hash: string) =>
+    post<BriefingAdoptionResult>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/highlights/${index}/adoption`, { preview_hash }),
+}
+
 export const informationDigestsApi = {
   reading: (spaceId: string, input: Partial<ReadingQuery> = {}, projectId?: string, options: RequestOptions = {}) => {
     const search = new URLSearchParams()
@@ -2586,7 +2629,7 @@ export const sourcesApi = {
   materialProcessing: (itemId:string,options?:RequestOptions)=>get<import('@rainver/protocol').SourceMaterialProcessingState>(`/sources/items/${itemId}/processing`,options),
   /** Shows the named version of this material's literal Agent text as Markdown: a new version through the canonical writer (one material, on request; 409 if the shown version changed). */
   showAgentTextAsMarkdown:(itemId:string,shown:{artifact_id:string;source_snapshot_id:string|null},options?:RequestOptions)=>post<{artifact_id:string}>(`/sources/items/${itemId}/reading-syntax`,{syntax:'markdown',...shown},options),
-  prepareMaterial:(itemId:string,selection:{agent_id?:string;runtime_profile_id?:string;session_config?:import('@rainver/protocol').RuntimeSessionConfigSelection[]}={},options?:RequestOptions)=>post<import('@rainver/protocol').SourceMaterialProcessingState>(`/sources/items/${itemId}/processing/start`,selection,options),
+  prepareMaterial:(itemId:string,selection:{investigation?:boolean;agent_id?:string;runtime_profile_id?:string;session_config?:import('@rainver/protocol').RuntimeSessionConfigSelection[]}={},options?:RequestOptions)=>post<import('@rainver/protocol').SourceMaterialProcessingState>(`/sources/items/${itemId}/processing/start`,selection,options),
   cancelMaterialProcessing:(itemId:string,options?:RequestOptions)=>post<import('@rainver/protocol').SourceMaterialProcessingState>(`/sources/items/${itemId}/processing/cancel`,{},options),
   requestMaterialStorage:(itemId:string,options?:RequestOptions)=>post<{proposal_id?:string;source_name?:string;allowed?:boolean}>(`/sources/items/${itemId}/processing/request_storage`,{},options),
   providers: (options?: RequestOptions) => get<SourceProvider[]>('/sources/providers', options),
@@ -2903,6 +2946,10 @@ export const sourcesApi = {
 
 // ── Reader ────────────────────────────────────────────────────────────────
 export const readerApi = {
+  sourceVersions: (itemId: string, offset = 0) =>
+    get<import('@rainver/protocol').ReaderSourceVersions>(`/reader/source-items/${itemId}/versions?offset=${offset}`),
+  sourceVersion: (itemId: string, snapshotId: string) =>
+    get<ReaderDocumentPayload>(`/reader/source-items/${itemId}/versions/${encodeURIComponent(snapshotId)}`),
   /** `origin: 'serendipity'` marks an open that came from the digest's serendipity section; it is not interest evidence. */
   getDocument: (documentType: string, documentId: string, options: { origin?: 'library' | 'serendipity' | 'project' } = {}) =>
     get<ReaderDocumentPayload>(`/reader/documents/${documentType}/${documentId}${options.origin ? `?origin=${options.origin}` : ''}`),
@@ -2972,7 +3019,7 @@ export const projectsApi = {
     return get<Page<Project>>('/projects?' + new URLSearchParams(q), options)
   },
   create: (data: ProjectCreate) => post<Project>('/projects', data),
-  get: (id: string) => get<Project>(`/projects/${id}`),
+  get: (id: string, options?: RequestOptions) => get<Project>(`/projects/${id}`,options),
   update: (id: string, data: ProjectUpdate) => patch<Project>(`/projects/${id}`, data),
   archive: (id: string) => post<Project>(`/projects/${id}/archive`),
   /** Draft and published snapshot side by side, for Project writers. */
@@ -4244,6 +4291,7 @@ export const projectMonitoringApi = {
 
 // Goal collection uses the same scoped transport and canonical Run stream.
 export const sourceGoalsApi={
+ edit:(id:string,body:import('@rainver/protocol').SourceGoalEdit,options:RequestOptions={})=>post<{id:string;revision:number}>(`/sources/goals/${encodeURIComponent(id)}/edit`,body,options),
  check:(id:string,body:{expected_version_id:string|null},options:RequestOptions={})=>post<{status:'queued'|'in_progress';job_id?:string}>(`/sources/goals/${encodeURIComponent(id)}/check`,body,options),
  nativeAvailability:(profile:string,options:RequestOptions={})=>get<{supported:boolean;reason?:string;supported_modes?:string[]}>(`/sources/goal-setup/agent-search/${encodeURIComponent(profile)}`,options),
  findLegacy:(channel:string,options:RequestOptions={})=>get<{goal_id:string|null}>(`/sources/goal-setup/legacy/${encodeURIComponent(channel)}`,options),
@@ -4265,4 +4313,40 @@ export const sourceGoalsApi={
  /** Tightening-only owner feedback on a followed topic. */
  feedback:(id:string,body:import('@rainver/protocol').SourceGoalFeedbackRequest,options:RequestOptions={})=>post<{applied:boolean;duplicate:boolean;kind:string;affected:number}>(`/sources/goals/${encodeURIComponent(id)}/feedback`,body,options),
  follow:(id:string,body:import('@rainver/protocol').SourceGoalFollowRequest,options:RequestOptions={})=>post<{goal_id:string;status:string;activated:boolean;prepare:boolean;follow:import('@rainver/protocol').SourceGoalFollow}>(`/sources/goals/${encodeURIComponent(id)}/follow`,body,options),
+}
+
+// Reading method workspace: all writes remain explicit; GET never starts a trial.
+export const readingMethodsApi={
+ generate:(body:unknown)=>post<import('@rainver/protocol').ReadingMethodGenerationView>('/prompts/reading-method/generations',body),
+ generation:(id:string)=>get<import('@rainver/protocol').ReadingMethodGenerationView>(`/prompts/reading-method/generations/${encodeURIComponent(id)}`),
+ cancelGeneration:(id:string)=>post<import('@rainver/protocol').ReadingMethodGenerationView>(`/prompts/reading-method/generations/${encodeURIComponent(id)}/cancel`,{}),
+ readSample:(id:string)=>get<{name:string;pages:Array<{url:string;text:string}>}>(`/prompts/reading-method/samples/${encodeURIComponent(id)}`),
+ entry:(projectId?:string|null)=>get<{can_manage:boolean;project_id:string|null}>(`/prompts/reading-method/entry?${new URLSearchParams(projectId?{project_id:projectId}:{})}`),
+ cliOptions:(projectId?:string|null)=>get<import('@rainver/protocol').ReadingMethodContext['runtimes']>(`/prompts/reading-method/cli-options${projectId?`?${new URLSearchParams({project_id:projectId})}`:''}`),
+ context:(itemId:string|null,projectId?:string|null,artifactId?:string|null,targetKey?:string)=>get<import('@rainver/protocol').ReadingMethodContext>(`/prompts/reading-method?${new URLSearchParams({...(itemId?{item_id:itemId}:{}),...(projectId?{project_id:projectId}:{}),...(artifactId?{artifact_id:artifactId}:{}),...(targetKey?{target_key:targetKey}:{})})}`),
+ initialize:()=>post('/prompts/reading-method/initialize',{}),
+ draft:(body:unknown)=>post<{id:string}>('/prompts/reading-method/drafts',body),
+ sample:(body:unknown)=>post<{id:string}>('/prompts/reading-method/samples',body),
+ trial:(body:unknown)=>post<import('@rainver/protocol').ReadingMethodTrialView>('/prompts/reading-method/trials',body),
+ judge:(id:string,body:unknown)=>post(`/prompts/reading-method/trials/${encodeURIComponent(id)}/judgment`,body),
+ cancel:(id:string)=>post(`/prompts/reading-method/trials/${encodeURIComponent(id)}/cancel`,{}),
+ promote:(body:unknown)=>post<{id:string;proposal_id?:string}>('/prompts/reading-method/promote',body),
+ rollback:(body:unknown)=>post('/prompts/reading-method/rollback',body),
+}
+
+
+// Project Reading consumes the durable stage-two and private operation contracts.
+export const projectReadingApi={
+ favoriteStatus:(space:string,project:string,item:string,options:RequestOptions={})=>get<{item_id:string;favorite:boolean}>(`/spaces/${space}/projects/${project}/reading/items/${item}/favorite`,{...options,spaceId:space}),
+ composition:(space:string,project:string,version?:string,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectReadingResponse>(`/spaces/${space}/projects/${project}/reading-compositions${version?`/${encodeURIComponent(version)}/export`:''}`,{...options,spaceId:space}),
+ retryComposition:(space:string,project:string)=>post(`/spaces/${space}/projects/${project}/reading-compositions/retry`,{},{spaceId:space}),
+ themes:(goal:string,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectThemeRoundsResponse>(`/sources/goals/${encodeURIComponent(goal)}/theme-rounds`,options),
+ consent:(goal:string,body:unknown,options:RequestOptions={})=>post(`/sources/goals/${encodeURIComponent(goal)}/theme-analysis`,body,options),
+ operations:(space:string,project:string,offset=0,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectDeepReadList>(`/spaces/${space}/projects/${project}/reading/deep-reads?offset=${offset}`,{...options,spaceId:space}),
+ purposes:(space:string,project:string,item:string,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectDeepReadPurposes>(`/spaces/${space}/projects/${project}/reading/items/${item}/purposes`,{...options,spaceId:space}),
+ start:(space:string,project:string,item:string,body:unknown)=>post<{status:string;run_id?:string;processing_id?:string}>(`/spaces/${space}/projects/${project}/reading/items/${item}/deep-reads`,body,{spaceId:space}),
+ cancel:(space:string,project:string,id:string)=>post(`/spaces/${space}/projects/${project}/reading/deep-reads/${id}/cancel`,{},{spaceId:space}),
+ favorite:(space:string,project:string,item:string,favorite:boolean)=>post(`/spaces/${space}/projects/${project}/reading/items/${item}/favorite`,{favorite},{spaceId:space}),
+ record:(space:string,project:string,item:string,snapshot:string,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectReadingRecords>(`/reader/source-items/${item}/records?project_id=${project}&snapshot_id=${encodeURIComponent(snapshot)}`,{...options,spaceId:space}),
+ records:(space:string,project:string,item:string,offset=0,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectReadingRecords>(`/reader/source-items/${item}/records?project_id=${project}&offset=${offset}`,{...options,spaceId:space}),
 }

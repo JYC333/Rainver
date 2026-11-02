@@ -1,3 +1,8 @@
+import type {ProjectThemeAnalysisSelection} from '@rainver/protocol'
+import {ThemeConsentFields} from '../../projects/reading/ThemeConsentFields'
+import {ThemeAnalysis} from '../../projects/reading/ThemeAnalysis'
+import {TopicEditor} from './TopicEditor'
+import {scrollBehavior} from '../../../lib/motion'
 import {topicTitle} from './topicTitle'
 import {ArrowLeft,Settings2} from 'lucide-react'
 import {useCallback,useEffect,useRef,useState} from 'react'
@@ -27,16 +32,22 @@ export function TopicDetail({spaceId,userId,id,navigate}:{spaceId:string;userId:
  const {t}=useAppTranslation()
  const [params,setParams]=useSearchParams()
  const selection=params.get('selection')==='all'?'all':'important'
+ const [editorOpen,setEditorOpen]=useState(false),[conversationOpen,setConversationOpen]=useState(false)
+ const conversationRef=useRef<HTMLDetailsElement>(null)
+ useEffect(()=>{if(conversationOpen){conversationRef.current?.scrollIntoView?.({block:'nearest',behavior:scrollBehavior()});conversationRef.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus()}},[conversationOpen])
  const [detail,setDetail]=useState<SourceGoalDetail|null>(null)
  const [error,setError]=useState<unknown>(null)
  const [busy,setBusy]=useState(false)
  const [updatesVersion,setUpdatesVersion]=useState(0)
  const lock=useRef(false);const lifetime=useRef<AbortController|null>(null);const followKey=useRef(crypto.randomUUID())
+ const [analysis,setAnalysis]=useState<ProjectThemeAnalysisSelection|undefined>()
  const [choice,setChoice]=useState<FollowChoice|null>(null)
  const reload=useCallback(async()=>{try{setDetail(await sourceGoalsApi.read(id,{spaceId,signal:lifetime.current?.signal}))}catch(e){if(!lifetime.current?.signal.aborted)setDetail(null);throw e}},[id,spaceId])
  useEffect(()=>{const c=new AbortController();lifetime.current=c;void reload().catch(e=>{if(!c.signal.aborted)setError(e)});return()=>c.abort()},[reload])
+ useEffect(()=>setAnalysis(undefined),[detail?.goal.current_version_id])
  const goal=detail?.goal;const state=goal?.follow_state
- const working=!!detail&&(detail.agent_runs.some(r=>ACTIVE_RUN.includes(r.status)||(['succeeded','degraded'].includes(r.status)&&r.chat_completed===false))||detail.previews.some(p=>p.status==='running'&&Date.parse(p.expires_at)>Date.now())||(detail.native_runs??[]).some(r=>[...ACTIVE_RUN,'validating'].includes(r.phase??r.status))||WORKING_PHASES.includes(state?.phase??'')||(state?.collections?.queued??0)+(state?.collections?.running??0)>0)
+ const planning=!!detail&&detail.agent_runs.some(r=>ACTIVE_RUN.includes(r.status)||(['succeeded','degraded'].includes(r.status)&&r.chat_completed===false))
+ const working=!!detail&&(planning||detail.previews.some(p=>p.status==='running'&&Date.parse(p.expires_at)>Date.now())||(detail.native_runs??[]).some(r=>[...ACTIVE_RUN,'validating'].includes(r.phase??r.status))||WORKING_PHASES.includes(state?.phase??'')||(state?.collections?.queued??0)+(state?.collections?.running??0)>0)
  // Persisted server state is polled while background work is in flight.
  useEffect(()=>{if(!working)return;const timer=setInterval(()=>{void reload().then(()=>setUpdatesVersion(n=>n+1)).catch(e=>setError(e))},5000);return()=>clearInterval(timer)},[working,reload])
  async function act(action:()=>Promise<unknown>){if(lock.current)return;lock.current=true;setBusy(true);setError(null);try{await action();await reload();setUpdatesVersion(n=>n+1)}catch(e){if(e&&typeof e==='object'&&'status' in e&&[403,404].includes(Number(e.status)))setDetail(null);setError(e)}finally{lock.current=false;setBusy(false)}}
@@ -51,14 +62,16 @@ export function TopicDetail({spaceId,userId,id,navigate}:{spaceId:string;userId:
  return <div className="flex min-w-0 flex-col gap-5 p-4 md:p-6">
   <header className="space-y-3 border-b border-border pb-4">
    <div className="flex flex-wrap gap-2"><Button variant="ghost" size="sm" asChild><SpaceLink to={back}><ArrowLeft className="size-4"/>{t('sourceGoals.back')}</SpaceLink></Button><Button variant="ghost" size="sm" asChild><SpaceLink to={readingGoalsPath(projectId)}>{t('sourceGoals.goals')}</SpaceLink></Button></div>
-   {goal?<h1 title={title} className="line-clamp-2 break-words text-xl font-semibold tracking-tight">{title}</h1>:!error&&<p role="status">{t('sourceGoals.loading')}</p>}
+   {goal?<div className="flex flex-wrap items-center justify-between gap-3"><h1 title={title} className="min-w-0 line-clamp-2 break-words text-xl font-semibold tracking-tight">{title}</h1>{canManage&&<div className="flex shrink-0 flex-wrap gap-2"><Button size="sm" variant="outline" disabled={busy||planning||!detail?.versions.length} onClick={()=>setEditorOpen(true)}>{t('topics.edit')}</Button><Button size="sm" variant="outline" disabled={busy} aria-expanded={conversationOpen} onClick={()=>setConversationOpen(v=>!v)}>{t('topics.discuss')}</Button></div>}</div>:!error&&<p role="status">{t('sourceGoals.loading')}</p>}
   </header>
   {kind&&!['apiDecision','apiPathDecision'].includes(kind)&&<Card role="alert" className="space-y-2 p-4"><p>{t(`sourceGoals.${kind}`)}</p><div className="flex flex-wrap gap-2">{['errorHint','errorConflict','errorAccess','errorSetup'].includes(kind)&&<Button variant="outline" size="sm" onClick={()=>void act(reload)}>{t('sourceGoals.retry')}</Button>}{['errorCredentials','errorSetup','errorAccess'].includes(kind)&&<Button variant="outline" size="sm" asChild><SpaceLink to="/sources/access"><Settings2 className="size-4"/>{t('sourceGoals.credentials')}</SpaceLink></Button>}</div></Card>}
   {goal&&detail&&<>
    <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
     <div className="min-w-0 space-y-5">
-     {needsConfirm&&<Card className="space-y-4 p-5"><div className="space-y-1"><h2 className="text-lg font-semibold">{t('topics.confirmTitle')}</h2><p className="text-sm text-muted-foreground">{t(manual?'topics.manualOnly':'topics.confirmHint')}</p></div><TopicFollowFields value={choice??choiceFromBudget(goal.budget_json)} onChange={setChoice} disabled={busy}/><Button disabled={busy} onClick={()=>void act(()=>sourceGoalsApi.follow(goal.id,followRequest(choice??choiceFromBudget(goal.budget_json),`follow:${followKey.current}`),{spaceId}))}>{t(busy?'topics.confirming':'topics.confirm')}</Button></Card>}
-     {canManage&&state?.pending_adjustment&&goal.current_version_id&&<Card role="status" className="flex flex-wrap items-center justify-between gap-3 p-4"><p className="text-sm">{t('topics.pendingAdjustment')}</p><Button size="sm" disabled={busy} onClick={()=>void act(()=>sourceGoalsApi.follow(goal.id,{version_id:goal.current_version_id,idempotency_key:`follow:${goal.current_version_id}`},{spaceId}))}>{t('topics.applyAdjustment')}</Button></Card>}
+     {canManage&&projectId&&userId&&goal.current_version_id&&(needsConfirm||!!state?.pending_adjustment)&&<ThemeConsentFields key={goal.current_version_id} space={spaceId} user={userId} value={analysis} onChange={setAnalysis} disabled={busy}/>}
+     {projectId&&userId&&<ThemeAnalysis space={spaceId} user={userId} goal={goal.id} version={goal.active_version_id} canManage={canManage}/>}
+     {needsConfirm&&<Card className="space-y-4 p-5"><div className="space-y-1"><h2 className="text-lg font-semibold">{t('topics.confirmTitle')}</h2><p className="text-sm text-muted-foreground">{t(manual?'topics.manualOnly':'topics.confirmHint')}</p></div><TopicFollowFields value={choice??choiceFromBudget(goal.budget_json)} onChange={setChoice} disabled={busy}/><Button disabled={busy||!!analysis?.enabled&&(!analysis.agent_id||!analysis.runtime_profile_id)} onClick={()=>void act(()=>sourceGoalsApi.follow(goal.id,{...followRequest(choice??choiceFromBudget(goal.budget_json),`follow:${followKey.current}`,analysis?goal.current_version_id:null),...(analysis?{theme_analysis:analysis}:{})},{spaceId}))}>{t(busy?'topics.confirming':'topics.confirm')}</Button></Card>}
+     {canManage&&state?.pending_adjustment&&goal.current_version_id&&<Card role="status" className="flex flex-wrap items-center justify-between gap-3 p-4"><p className="text-sm">{t('topics.pendingAdjustment')}</p><Button size="sm" disabled={busy||!!analysis?.enabled&&(!analysis.agent_id||!analysis.runtime_profile_id)} onClick={()=>void act(()=>sourceGoalsApi.follow(goal.id,{version_id:goal.current_version_id,idempotency_key:`follow:${goal.current_version_id}`, ...(analysis?{theme_analysis:analysis}:{})},{spaceId}))}>{t('topics.applyAdjustment')}</Button></Card>}
      <TopicUpdates revision={updatesVersion} spaceId={spaceId} projectId={projectId} goalId={goal.id} state={state} selection={selection} onSelection={v=>{const next=new URLSearchParams(params);if(v==='all')next.set('selection','all');else next.delete('selection');setParams(next,{replace:true})}} canManage={canManage} onFeedback={()=>void reload().catch(e=>setError(e))}/>
     </div>
     <aside className="min-w-0 space-y-5 rounded-lg border border-border bg-card p-4">
@@ -67,7 +80,8 @@ export function TopicDetail({spaceId,userId,id,navigate}:{spaceId:string;userId:
      <TopicManage goal={goal} spaceId={spaceId} canManage={canManage} busy={busy} act={act} onDeleted={()=>navigate(readingGoalsPath(projectId))}/>
     </aside>
    </div>
-   <details className="rounded-lg border border-border bg-card p-4"><summary className="cursor-pointer font-medium">{t('topics.advancedDetail')}</summary><div className="mt-4"><SourceGoalWorkbench spaceId={spaceId} userId={userId} detail={detail} canManage={canManage} busy={busy} error={error} setError={setError} act={act} reload={reload}/></div></details>
+   {editorOpen&&<TopicEditor key={`${goal.id}:${goal.revision}`} detail={detail} spaceId={spaceId} onClose={()=>setEditorOpen(false)} onSaved={()=>{setEditorOpen(false);void act(reload)}}/>}
+   <details ref={conversationRef} open={conversationOpen} onToggle={e=>setConversationOpen(e.currentTarget.open)} className="rounded-lg border border-border bg-card p-4"><summary className="cursor-pointer font-medium">{t('topics.discuss')}</summary><div className="mt-4"><SourceGoalWorkbench spaceId={spaceId} userId={userId} detail={detail} canManage={canManage} busy={busy} error={error} setError={setError} act={act} reload={reload}/></div></details>
   </>}
  </div>
 }

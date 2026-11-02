@@ -7,14 +7,14 @@ import { ReadingPreferences } from './readingPreferences.js';
 import { ReadingRepository } from './readingRepository.js';
 import { ReaderPositionStore } from '../reader/positions.js';
 
-interface Cursor { fingerprint: string; space: string; user: string; view: string; q: string; project: string; topic: string; selection: string; sort: string; asOf: string; at: string; key: string }
+interface Cursor { fingerprint: string; space: string; user: string; view: string; q: string; project: string; topic: string; selection: string; sort: string; favorite?: string; asOf: string; at: string; key: string }
 export class ReadingService {
   constructor(private readonly db: Queryable) {}
   async list(identity: SpaceUserIdentity, input: ReadingQuery, projectId?: string): Promise<ReadingPage> {
     if (projectId) await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const enabled = await new ReadingPreferences(this.db).enabled(identity);
     if (input.topic) await assertReadingTopicVisible(this.db, identity, input.topic, projectId, enabled);
-    const scope = { space: identity.spaceId, user: identity.userId, view: input.view ?? 'pending', q: input.q ?? '', project: projectId ?? '', topic: input.topic ?? '', selection: input.topic_selection ?? 'all', sort: input.sort ?? 'newest' };
+    const scope = { space: identity.spaceId, user: identity.userId, view: input.view ?? 'pending', q: input.q ?? '', project: projectId ?? '', topic: input.topic ?? '', selection: input.topic_selection ?? 'all', sort: input.sort ?? 'newest', favorite: input.favorite ?? '' };
     const cursor = input.cursor ? decodeCursor(input.cursor) : null;
     if (cursor && Object.entries(scope).some(([key, value]) => cursor[key as keyof Cursor] !== value)) {
       throw new HttpError(422, 'Cursor belongs to another reading query');
@@ -22,7 +22,7 @@ export class ReadingService {
     const asOf = cursor?.asOf ?? new Date().toISOString();
     const result = await new ReadingRepository(this.db).rows(identity, enabled, {
       view: input.view ?? 'pending', q: input.q, projectId, asOf, before: cursor ? { at: cursor.at, key: cursor.key } : undefined, limit: (input.limit ?? 30) + 1,
-      topic: input.topic, topicSelection: input.topic_selection ?? 'all', sort: input.sort ?? 'newest',
+      favorite: input.favorite, topic: input.topic, topicSelection: input.topic_selection ?? 'all', sort: input.sort ?? 'newest',
     });
     if (cursor && cursor.fingerprint !== result.fingerprint) throw new HttpError(409, 'Reading access or membership changed; reload from the first page');
     const limit = input.limit ?? 30;
@@ -58,6 +58,7 @@ export class ReadingService {
 function decodeCursor(value: string): Cursor {
   try {
     const c = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Cursor;
+    if(c&&c.favorite===undefined)c.favorite='';
     if (c && c.sort === undefined) c.sort = 'newest'; // cursors issued before sorting existed
     if (!c || ['fingerprint','space','user','view','q','project','topic','selection','sort','asOf','at','key'].some(k => typeof c[k as keyof Cursor] !== 'string')
       || !Number.isFinite(Date.parse(c.asOf)) || !Number.isFinite(Date.parse(c.at)) || Date.parse(c.asOf) > Date.now()) throw new Error();

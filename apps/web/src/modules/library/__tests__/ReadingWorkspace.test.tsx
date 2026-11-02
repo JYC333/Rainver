@@ -4,7 +4,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReadingItem, ReadingPage } from '@rainver/protocol'
 import ReadingWorkspace, { ReadingPreview } from '../ReadingWorkspace'
-import { sourceGoalsApi,informationDigestsApi } from '../../../api/client'
+import { readingMethodsApi,sourceGoalsApi,informationDigestsApi } from '../../../api/client'
 import { useReading } from '../useReading'
 import { ProjectReadingPreference } from '../ReadingPreferences'
 import { readingReturnTo } from '../readingLinks'
@@ -13,20 +13,32 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), dismiss: v
 
 // Empty guidance has its own source/collection integration coverage.
 vi.mock('../ReadingStart', () => ({ ReadingStart: () => <p>No pending recommendations</p> }))
+// The personal briefing panel has its own component and browser coverage.
+vi.mock('../briefing/PersonalBriefingPanel', () => ({ PersonalBriefingPanel: ({ spaceId }: { spaceId: string }) => <section data-testid="personal-briefing">{spaceId}</section> }))
 let space = 'space-a'
-vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpaceId: space, preferredSpaceId: space }) }))
+let userId: string | undefined
+vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpaceId: space, preferredSpaceId: space, userId }) }))
 vi.mock('../../../core/spaceNav', async () => {
   const { Link, useNavigate } = await import('react-router-dom')
   return { SpaceLink: Link, useSpaceNavigate: useNavigate }
 })
-vi.mock('../../../api/client', () => ({ sourceGoalsApi:{list:vi.fn().mockResolvedValue({goals:[]})},informationDigestsApi: { reading: vi.fn(), readingState: vi.fn(), readingPreference: vi.fn(), setReadingPreference: vi.fn() }, projectsApi: { list: vi.fn().mockResolvedValue({ items: [{ id: 'project-a', name: 'Project A' }] }) }, projectMonitoringApi: { state: vi.fn().mockResolvedValue({ active: null, latest_run: null }) } }))
+vi.mock('../../../api/client', () => ({ readingMethodsApi:{entry:vi.fn().mockResolvedValue({can_manage:true,project_id:null})},sourceGoalsApi:{list:vi.fn().mockResolvedValue({goals:[]})},informationDigestsApi: { reading: vi.fn(), readingState: vi.fn(), readingPreference: vi.fn(), setReadingPreference: vi.fn() }, projectsApi: { list: vi.fn().mockResolvedValue({ items: [{ id: 'project-a', name: 'Project A' }] }) }, projectMonitoringApi: { state: vi.fn().mockResolvedValue({ active: null, latest_run: null }) } }))
 const item: ReadingItem = { key: 'server-group', source_item_id: 'article', source_item_ids: ['article','copy'], title: 'A retained recommendation', summary: 'Frozen summary', source_uri: null, occurred_at: '2026-01-01T00:00:00Z', access_level: 'full', reader_origin: 'project', read_status: 'unread', dismissed: false, available_at: '2026-01-02T00:00:00Z', contributions: [{ delivery_id: 'first', source_item_id:'article',kind:'project_initial',project_id:'project-a',project_name:'Project A',digest_id:null,digest_date:null,timezone:null,available_at:'2026-01-02T00:00:00Z',position:0,section:null,summary:null,rationale:'Original initial reason' }, { delivery_id:'daily',source_item_id:'copy',kind:'personal_digest',project_id:null,project_name:null,digest_id:'edition',digest_date:'2026-01-03',timezone:'Asia/Shanghai',available_at:'2026-01-04T00:00:00Z',position:0,section:'interest',summary:null,rationale:'Original daily reason' }], material_links:[], topics:[] }
 const page = (items: ReadingItem[] = [item], next_cursor: string | null = null): ReadingPage => ({ items, total: items.length, next_cursor })
 function deferred<T>() { let resolve!: (v:T) => void; const promise = new Promise<T>(r => { resolve = r }); return { promise, resolve } }
 function QueryLocation() { return <output data-testid="query">{useLocation().search}</output> }
 const ui = (projectId?: string) => <MemoryRouter><ReadingWorkspace projectId={projectId} /><QueryLocation /></MemoryRouter>
-beforeEach(() => { vi.clearAllMocks(); window.sessionStorage.clear(); window.localStorage.clear(); space = 'space-a'; vi.mocked(informationDigestsApi.reading).mockResolvedValue(page()); vi.mocked(informationDigestsApi.readingState).mockResolvedValue({updated:2}); vi.mocked(informationDigestsApi.readingPreference).mockResolvedValue({show_in_my_reading:false}) })
+beforeEach(() => { vi.clearAllMocks(); window.sessionStorage.clear(); window.localStorage.clear(); space = 'space-a'; userId=undefined; vi.mocked(informationDigestsApi.reading).mockResolvedValue(page()); vi.mocked(informationDigestsApi.readingState).mockResolvedValue({updated:2}); vi.mocked(informationDigestsApi.readingPreference).mockResolvedValue({show_in_my_reading:false}) })
 describe('unified reading presentation', () => {
+  it('offers the personal briefing above personal Reading only, not in a Project\'s Reading', async () => {
+    const personal = render(ui())
+    expect(await screen.findByTestId('personal-briefing')).toHaveTextContent('space-a')
+    personal.unmount()
+    render(ui('project-1'))
+    await screen.findByRole('link', { name: item.title })
+    expect(screen.queryByTestId('personal-briefing')).not.toBeInTheDocument()
+  })
+
   it('renders server grouping, all original reasons and distinct initial/edition times, with Reader origin', async () => {
     render(ui())
     const link = await screen.findByRole('link', { name: item.title })
@@ -83,7 +95,7 @@ describe('unified reading presentation', () => {
     vi.mocked(informationDigestsApi.setReadingPreference).mockResolvedValue({show_in_my_reading:true})
     render(ui())
     await screen.findByText(item.title)
-    fireEvent.click(screen.getByRole('button',{name:'Project reading preferences'}))
+    fireEvent.click(screen.getByRole('button',{name:'Reading settings'}))
     expect(screen.getAllByText('Off by default. This changes only your reading list, never the team’s collection direction, schedule or budget.')).toHaveLength(1)
     const checkbox=await screen.findByRole('checkbox')
     await waitFor(()=>expect(checkbox).toBeEnabled())
@@ -161,7 +173,7 @@ it('does not link a summary-only Home preview into Reader', async () => {
 
 it.each([
   [{read_status:'read'} as const,'Mark read'],
-  [{dismissed:true} as const,'Set aside for me'],
+  [{dismissed:true} as const,'Set aside'],
   [{read_status:'unread'} as const,'Restore unread'],
 ])('retains a loaded multi-page window after %j and continues with the new server cursor',async(body,label)=>{
   const items=Array.from({length:90},(_,i)=>({...item,key:`key-${i}`,source_item_id:`id-${i}`,title:`Window item ${i}`,read_status:label==='Restore unread'?'read' as const:'unread' as const}))
@@ -376,7 +388,7 @@ describe('Reading state undo', () => {
 
   it('undoes setting aside through the state API', async () => {
     render(ui())
-    fireEvent.click(await screen.findByRole('button', { name: 'Set aside for me' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Set aside' }))
     await waitFor(() => expect(toast.success).toHaveBeenCalled())
     const options = vi.mocked(toast.success).mock.calls[0][1] as unknown as { action: { onClick: () => Promise<void> } }
     await act(async () => options.action.onClick())
@@ -429,4 +441,27 @@ it('a filtered Reading topic does not borrow a new-arrival marker from another t
  const base={project_id:null,title:'Following',selection_status:'important' as const,selection_reason:null,judged_by:null,delivery_kind:'baseline' as const,change_evidence_url:null};
  vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([{...item,topics:[{...base,goal_id:'topic-a'},{...base,goal_id:'topic-b',new_in_latest_collection:true}]}]));
  render(<MemoryRouter initialEntries={['/?topic=topic-a']}><ReadingWorkspace/></MemoryRouter>);const card=await screen.findByRole('listitem',{name:item.title});expect(within(card).getByText('Unread')).toBeVisible();expect(within(card).queryByText('Just collected')).not.toBeInTheDocument();
+});
+
+it('keeps shared method maintenance in Reading settings and opens Reader from card titles',async()=>{
+ userId='maintainer';
+ vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([item,{...item,key:'other',source_item_id:'other',title:'Second example'}]));
+ render(ui());
+ const card=await screen.findByRole('listitem',{name:item.title});
+ expect(within(card).getByRole('link',{name:item.title})).toHaveAttribute('href',expect.stringContaining('/library/items/article'));
+ expect(screen.queryByRole('button',{name:'Improve result'})).not.toBeInTheDocument();
+ expect(screen.queryByRole('link',{name:'Open Reader'})).not.toBeInTheDocument();
+ expect(screen.queryByRole('link',{name:'Reading method'})).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Reading settings'}));
+ const entry=await screen.findByRole('link',{name:'Reading method'});
+ expect(screen.getByText('After activation, this method is the Space default. Projects can override it.')).toBeInTheDocument();
+ const url=new URL(entry.getAttribute('href')!,'https://app.test');
+ expect(url.searchParams.get('reading_method')).toBe('1');expect(url.searchParams.has('item_id')).toBe(false);
+ expect(entry.closest('header')).toBeNull();expect(readingMethodsApi.entry).toHaveBeenCalledTimes(1);
+});
+it('Reading settings can open a scope-only method even with no full articles available',async()=>{
+ userId='maintainer';vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([{...item,access_level:'summary'}]));
+ render(ui());await screen.findByText(item.title);fireEvent.click(screen.getByRole('button',{name:'Reading settings'}));
+ const entry=await screen.findByRole('link',{name:'Reading method'});expect(entry.getAttribute('href')).not.toContain('item_id');
+ expect(screen.queryByRole('link',{name:item.title})).not.toBeInTheDocument();
 });

@@ -375,9 +375,12 @@ with the executable. Agent sessions remain in their separate Agent profiles.
 host owner's action on a trusted host and an instance admin's on the built-in
 one; either way it is a terminal the daemon runs on a PTY and relays, the
 daemon initiates nothing, and it stores nothing beyond what the vendor CLI
-writes into that copy's HOME. A Run gets its Agent's profile with that copy's
-credential **linked** into it — never copied into a shared credential store,
-never handed to a subprocess as a token, and never brokered per Run.
+writes into that copy's HOME. A Run gets its Agent's profile and references
+that copy's login through the vendor's separate credential-directory selector
+when declared, otherwise a credential-file link. A native selector keeps the
+credential writes and refresh locks together while sessions and auto-memory
+remain in the Agent's profile. Credentials are never copied into a shared
+credential store, handed to a subprocess as a token, or brokered per Run.
 
 Enabling a registry agent for the deployment is instance-admin gated,
 separately from installing it on a host.
@@ -556,3 +559,19 @@ way: it would be another strict daemon registered from another machine.
   Runtime Context Gateway for Agent Runs on both built-in and paired Hosts.
   Delivery is sent through ACP; the Host still owns physical paths and the
   opaque vendor session, and a mismatch starts a fresh session.
+
+## 2026-10-31 amendment: explicit personal read-only workspace review
+
+The owner-only trusted-Host authority remains unchanged. Updated personal Linux
+Hosts may opt into an explicit `workspace_access: read` Run using the existing
+rootless bubblewrap mount/PID namespace and readiness protocol. This narrows
+workspace writes; it does not turn the Host into the shared strict trust mode,
+add mandatory network isolation or grant another user access to the machine.
+Declared login files replace whole-HOME exposure for this mode. A local seccomp
+filter blocks named Unix clients and io_uring, but network/authorized external
+services remain a separate side-effect boundary; reader leases do not coordinate
+those external writers.
+Ordinary trusted writes remain native. Both server and daemon must fail closed
+without the locally verified mechanism. The current implementation, lease
+boundaries and prerequisites are recorded in modules/hosts.md. Installation or
+restart of a running personal daemon remains a separate operator action.

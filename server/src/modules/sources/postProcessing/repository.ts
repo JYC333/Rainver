@@ -1878,6 +1878,7 @@ export class PgSourcePostProcessingRepository {
             AND ej.source_item_id::text = ANY($2::text[])
             AND ej.job_type = 'extract_text'
             AND ej.status IN ('pending', 'running')
+            AND NOT COALESCE(ej.metadata_json ? 'deep_project',false)
           RETURNING ej.id, ej.source_item_id
        ), eligible AS (
          SELECT ii.id

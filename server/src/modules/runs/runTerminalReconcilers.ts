@@ -25,6 +25,7 @@ export async function enqueueRunTerminalReconcilers(
     ? input.workflow_input_json.kind
     : null;
   const queue = new PgJobQueueRepository(db);
+  if(input.workflow_input_json.reading_method_generation||input.workflow_input_json.reading_method_trial){await queue.enqueue({job_type:'reading_method_reconcile',space_id:input.space_id,user_id:input.user_id,payload:{run_id:input.run_id}});return;}
   if (kind === "knowledge_candidate_extraction") {
     await queue.enqueue({
       job_type: "knowledge_candidate_extraction_reconcile",

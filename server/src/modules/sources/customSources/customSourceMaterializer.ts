@@ -40,7 +40,7 @@ interface CustomSourceHandlerRunContext {
   sourceConnectionId: string;
   handlerVersionId: string;
   /** Server-owned operational provenance, independent of content retention. */
-  goal?: {id:string;bindingId:string;bindingRevision:number;implementationSha256:string|null;resultProvenance?:'agent_provided_unverified'};
+  goal?: {projectId?:string|null;id:string;bindingId:string;bindingRevision:number;implementationSha256:string|null;resultProvenance?:'agent_provided_unverified'};
 }
 
 interface CustomSourceMaterializationResult {
@@ -172,7 +172,7 @@ export class CustomSourceMaterializationService {
         const { itemId, created } = await this.upsertItem(run, item, retentionPolicy, descriptor);
         itemIds.push(itemId);
         if(item.reading_content){
-          await saveSourceReadingDocument(this.db,{spaceId:run.spaceId,itemId,document:agentReadingDocument(item.reading_content,item.source_uri),agentProvided:true,summary:item.excerpt,metadata:agentReadingMetadata(item.reading_content)});
+          await saveSourceReadingDocument(this.db,{spaceId:run.spaceId,itemId,document:agentReadingDocument(item.reading_content,item.source_uri),agentProvided:true,analysisProjectId:run.goal?.projectId,summary:item.excerpt,metadata:{...agentReadingMetadata(item.reading_content),...(run.goal?.resultProvenance?{reading_method_provenance:item.metadata?.reading_method_provenance??null,agent_run_id:item.metadata?.agent_run_id??null}:{})}});
         }
         if (created) itemsCreated++;
         else itemsUpdated++;
@@ -232,8 +232,9 @@ export class CustomSourceMaterializationService {
         LIMIT 1`,
       [run.spaceId, run.sourceConnectionId, item.external_id, item.source_uri],
     );
-    const contentState = materializedItemContentState(item);
-    const contentHash = sha256(item.excerpt ?? item.title ?? item.source_uri);
+    const projectAnalysis=!!item.reading_content&&(!!run.goal?.projectId||(await this.db.query('SELECT 1 FROM source_connections WHERE space_id=$1 AND id=$2 AND project_id IS NOT NULL',[run.spaceId,run.sourceConnectionId])).rows.length>0);
+    const contentState = projectAnalysis?'metadata_only':materializedItemContentState(item);
+    const contentHash = projectAnalysis?null:sha256(item.excerpt ?? item.title ?? item.source_uri);
     const metadata = JSON.stringify({
       capture_method: descriptor.captureMethod,
       [descriptor.implementationVersionMetadataKey]: run.handlerVersionId,
@@ -244,7 +245,7 @@ export class CustomSourceMaterializationService {
     });
     // Column limits: title varchar(1024), excerpt varchar(2048), author varchar(512).
     const title = item.title.slice(0, 1024);
-    const excerpt = item.excerpt?.slice(0, 2048) ?? null;
+    const excerpt = projectAnalysis?null:item.excerpt?.slice(0, 2048) ?? null;
     const author = item.author?.slice(0, 512) ?? null;
 
     if (existing.rows[0]) {
@@ -256,9 +257,10 @@ export class CustomSourceMaterializationService {
                 excerpt = COALESCE($5, excerpt),
                 author = COALESCE($6, author),
                 occurred_at = COALESCE($7::timestamptz, occurred_at),
-                content_hash = $8,
+                content_hash = CASE WHEN $15::boolean THEN content_hash ELSE $8 END,
                 last_seen_at = $9,
                 content_state = CASE
+                  WHEN $15::boolean THEN content_state
                   WHEN content_state IN ('metadata_only', 'excerpt_saved', 'extraction_failed') THEN $10::varchar
                   WHEN content_state = 'content_saved'
                     AND $10::text <> 'content_saved'
@@ -290,6 +292,7 @@ export class CustomSourceMaterializationService {
           retentionPolicy,
           run.sourceConnectionId,
           item.external_id,
+          projectAnalysis,
         ],
       );
       return { itemId, created: false };

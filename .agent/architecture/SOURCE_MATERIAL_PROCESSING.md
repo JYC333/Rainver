@@ -16,7 +16,7 @@ rows. This adds no scheduler, model loop, CLI adapter or credential channel.
 `materialProcessing/dispatch.ts` guards both shapes before actual dispatch and
 submission. The public payload has one `processing_id`; Space, user, item or
 immutable goal/version, Agent/Profile and configuration come from the persisted
-Run. The grant contains only `source.material.submit`. It does not include
+Run. Collection grants only `source.material.submit`; Reader saved-item investigation also grants the bound `source.material.investigate` feedback action. It does not include
 `authorization.request` or broad Source writes. The gateway retains its registered
 approval configuration and binds policy checks to the actual goal or item.
 Invalid submissions follow the same gateway policy/audit path and have at most
@@ -25,7 +25,7 @@ credential-text checks precede persistence. Actual permissions failures never
 become a correctable formatting error.
 
 Existing goal selections remain pinned, including advertised model/mode values.
-The item preparation API can bind explicit selections for callers, but Reader exposes no per-article Agent settings. An active operation
+The item preparation API can bind explicit selections for callers, and Reader exposes the same explicit Agent/Profile/model/mode selection through Execution settings. An active operation
 refuses a changed selection. Unbound items select an eligible owned Agent's
 existing default Profile. Configured OpenCode profiles use the ordinary adapter;
 no managed Room assistant is borrowed for a headless Run. If no executable owned
@@ -134,8 +134,8 @@ No legacy default is inferred as human consent, and no bulk live-data migration
 runs. Changed Source authority makes old exact-preview proofs stale before a
 new automatic model Run is admitted.
 
-Single-item instructions bound reading to the main resource and up to two relevant
-documentation pages, require per-fetch timeouts and stopping after repeated
+Standard API preparation bounds reading to the main resource and up to two relevant
+documentation pages; Reader investigation permits up to eight relevant evidence pages, require per-fetch timeouts and stopping after repeated
 failures, prohibit dependency installation, and reserve time for submission. These
 are Agent instructions, not a guarantee that every external page is readable; the
 canonical admitted Run deadline remains enforced. Submission and recovery read
@@ -156,3 +156,295 @@ Reuse / Dependency Check: canonical Run/job admission, Source extraction records
 Source consent and egress, proposal applier, Source materializer, existing Reader
 JSON and read-version guards are reused. Existing HTML/PDF extractors remain
 valid deterministic executors. No new dependency, table or instance migration.
+
+## Versioned investigation method
+
+Saved-link preparation and Agent-native goal collection both resolve
+`reading.project_investigation` through the approved-only prompts resolver at
+Run admission. Its exact version, content/render hashes, resolution provenance
+and authorized Project-context hash are frozen in `workflow_input_json.reading_method`.
+A queued Run never selects a newer deployment on recovery. Missing catalog or
+production resolution is an explicit initialization error, not a hardcoded fallback.
+Catalog sync remains explicit; opening a Reader or the method workspace does not write.
+
+The strategy directs bounded primary-document/example investigation rather than
+homepage paraphrase. The existing submit schema, three-submission limit, egress,
+retention, URL limits, runtime permissions and ten-minute budget remain code-owned.
+Production investigation uses the requester’s existing Source/material access.
+Project context is injected only into material canonically bound to that Project;
+broader native collection stays ordinary reading with no Project WorkContext.
+Trial comparisons still require the complete current Project audience. Dispatch, accepted Delivery and final materialization recheck the
+frozen context and actual Run destination. Delivery/Source commit reuse the canonical
+Source ACL locks; a lost permission cannot be turned into a content write by replaying
+an accepted native-search batch. Work Context disables automatic retrieval and pins;
+formal Project Runs retain their canonically bound Project context/instructions.
+
+The canonical Source writer records the method provenance and originating Run on
+Reader artifacts and items. Reader's improvement entry checks the version actually
+shown (including extracted-snapshot fallback); unknown historical attribution stays
+unknown. Reprocessing still writes the material's own scope: a Project edition link
+does not turn a shared original into a privately Project-specific document.
+
+The controlled comparison workspace is described in [Reading methods](READING_METHODS.md).
+Its private trial Runs have no material-submit capability and cannot replace Reader
+content, annotations, reading state or Following cursors. Neutral annotations and
+closed briefing generation are unchanged; briefing excerpts remain bounded.
+
+## Saved-item investigation and execution selection
+
+Reader preparation now explicitly sends `investigation: true` on the existing
+start endpoint. It still executes one canonical Agent Run on the selected ACP
+Profile; there is no second server model loop or automatic delegation. Existing
+API clients that omit the flag and goal collection keep their existing bounded
+submission contract. Starting a different investigation mode while an operation
+is active is refused, like changing its execution selection.
+
+The Reader's **Execution settings** reuses `AgentExecutionPicker`: choose an owned
+Agent, an enabled existing Profile, and the model/mode options its actual runtime
+advertises. OpenCode can use an existing `model_provider` Profile; an installed
+Antigravity Profile can use its existing account. Opening settings makes no model
+call, creates no Run and changes no credentials. Reset restores topic/default
+inheritance. A running operation cannot be changed. The processing projection
+shows its actual Agent/Profile/runtime. Selecting another Profile clears the
+previous Profile's model/mode overrides.
+
+Investigation admits only `source.material.submit` and the new bound
+`source.material.investigate` action, through the existing Dispatcher/Gateway.
+`search` wraps the existing Source retrieval registry in lexical mode (no extra
+embedding/rewrite/model calls), at most three queries/eight candidates per query;
+`read` opens at most five eligible Reader bodies, up to 12000 characters each,
+with their own synthesis provenance and explicit truncation. Twelve successful
+investigation actions fit within the same admitted ten-minute deadline. There
+are no generic Knowledge/Memory tools and no ambient retrieval expansion.
+
+History is filtered to the report audience (without oversight), compatible
+visibility/Project scope, Source retention/egress and Artifact/Room access.
+Historical references, including bounded inherited references, are frozen in the
+operation and rechecked before submission and publication using canonical Source
+locks. Frozen versions can still resolve their retained snapshots after a later revision; missing, changed or unauthorized dependencies fail closed. The final Artifact retains
+those references; the shared Source-derived Artifact gate checks them on Reader,
+Artifact list/detail/export reads too. A history-derived Agent summary is not
+copied into the Source excerpt/index. Temporary investigation state is removed
+at terminal settlement. No private history is made shared just because its
+requester can read it; read/accepted status is not guessed.
+
+`check` accepts the full report draft plus one to three question records with
+finding, explanation, citations, limitations and alternative explanations, the
+historical comparison, remaining gaps and stopping reason. Records quote report
+passages: a checklist beside a shallow report does not satisfy the check. It
+returns missing-coverage feedback in the same Agent tool loop. Only the exact
+checked `agent_summary` is accepted for an investigation; unavailable primary
+material may still follow the existing truthful unavailable/failure path.
+This is a deterministic coverage/consistency check, not independent fact checking
+or a semantic quality verdict. Ordinary fetches remain runtime tools; observed
+round counts and real-model quality are not inferred from a successful submission.
+The primary resource may be followed by up to eight relevant evidence pages,
+not a fixed quota; no dependency installation, account fallback or unbounded
+research is introduced. Source network/retention controls remain authoritative.
+
+### Following purpose in saved-item analysis
+
+Preparation resolves the owned topic's active plan (or retained material version
+when no plan is active) and freezes its reference as `reading_following`. The
+versioned intent, title and optional `analysis_brief` accompany authorized Project
+context in the reading input. Same Space, goal owner, Project and Source-version
+binding are required; personal purpose does not copy into shared material.
+Legacy plans without a brief use their saved intent, or retained plan summary
+when legacy intent provenance is missing; ordinary saved links remain
+ordinary reading. Context hash checks at dispatch and acceptance refuse changed
+or revoked admitted context. Later draft conversations never rewrite a queued
+Run's purpose. Investigation instructions require checked findings to address
+that purpose and disclose missing baseline evidence; coverage checking still
+does not prove relevance, factual truth or semantic depth.
+
+## Project Reading R1: immutable analysis separate from original
+
+For canonically Project-bound items, and Project Following output referencing a
+global material, new Agent output (including declared
+`source_text`) is unverified analysis, not a deterministic capture. The canonical
+writer creates a private `summary` Source snapshot with `reading_role=analysis`,
+its own Reader Artifact, originating Run and optional deterministic original
+snapshot reference. It never changes the item's extracted pointer, hash, excerpt,
+body revision, annotations or reading positions. One Run/item can publish one
+immutable analysis; replay reuses it, differing content conflicts. Original text
+still comes from the existing deterministic extraction writer/policy, which marks
+its extracted snapshots `original`. No new fetch, archive grant or model call is
+introduced by a read. Missing originals remain not retained/unknown, not a
+successful original capture inferred from a report. Personal material writes
+retain their existing behavior in this phase.
+
+Snapshots add nullable role/Run/original reference fields (migration 0009).
+The original-reference FK stays within one Space/item; Run FK stays in Space.
+`original_snapshot_id` associates the latest deterministic original available at
+settlement; it is not proof the Run actually consumed that version. Goal
+collection does not currently supply an expected original hash. Separately frozen
+history refs retain their own exact identities; later stages must freeze the
+actual input before claiming a consumed-original version.
+Existing rows are not rewritten: read-time classification treats known extractor
+metadata as original, Agent artifacts as legacy analysis, everything else unknown.
+Existing item and snapshot deep links/anchors/progress retain their identities;
+a legacy item showing analysis is not silently switched to another body's
+identity. Retained deterministic originals are separately discoverable via the
+Reader records projection. A raw archive without readable extraction is not
+relabelled a Reader original. No bulk refetch/backfill runs during migration.
+
+Analyses default private to the originating requester (legacy missing Run uses
+item owner with unknown Run attribution); they never inherit the item's shared
+reader grants. A Project Following can reference a global original without
+changing that original's scope/body: the private analysis carries its own Project,
+while its canonical item and original snapshot remain global. This does not
+promote a private result to shared theme input. Legacy Project analysis remains
+readable at its old identity; the old current-item Markdown conversion refuses
+409 rather than copying a private analysis into the original slot. Personal
+conversion behavior stays unchanged; analysis-specific editing is not a R1 UI.
+
+Artifact/Source snapshot/Project/current Source retention and
+original/history dependency gates remain active on generic Artifact and Reader
+reads. The frozen actual model destination is recorded from the canonical Run;
+retained derived reads also fail closed when Source egress to that destination
+is withdrawn. Missing legacy egress consent is not inferred as approval.
+Both retention/capture and destination consent apply to the parent Source and
+every supporting Source, including analysis-only records without original refs.
+Restoring those permissions restores reads; personal single-document semantics
+are unchanged. Reader's live availability projection is page-independent and
+keeps uncertain, custom, raw or inaccessible original evidence `unknown`.
+Publication of shared theme outputs, explicit deep-reading operations and
+favorites are later R2–R4 contracts, not implicit sharing of these private rows.
+
+R1 bounds are 200000 persisted text characters per document (the existing Agent
+submit per-item limit is tighter at 60000), 16 total original/history dependency
+refs, 25 records/page and offset at most 10000. Existing canonical Run duration,
+submission count and SourceGoal budgets are unchanged; no token/money hard cap
+is claimed. No per-topic/total-stage scheduler is introduced here.
+
+### R2 original preparation for explicitly enabled Project themes
+
+After canonical Following membership materialization, `themePreparation.ts`
+queues existing deterministic `queue_content` extraction for at most20 eligible
+items per batch, under the existing requester's Source/retention/network/storage
+and quota gates. This is only for an exact-version opted-in Project theme and
+missing original content or a newly recorded cited change, not a blanket refetch
+of duplicate saved items. Existing Project Agent reports are no longer used as
+`content_saved` deduplication or overwritten on each check. An Agent report does
+not become original evidence; the actual extraction terminal is independently
+awaited, with honest pending/failure coverage. Personal material behavior is
+unchanged. `sharedOriginalVersions` is the narrow Sources facade for exact,
+deterministic historical snapshots: every current Project reader must fully read
+the Snapshot, Artifact, original Source and collecting provenance. It never copies
+private analysis into theme input. The associated exact original/hash is the text
+actually supplied to theme synthesis, unlike R1's settlement-time availability
+reference on older individual reports.
+
+## Project private deep reading (R4)
+
+`deepReading/` is the private Project request adapter over this same material
+processing pipeline, not a new queue, Agent loop or report database. The public
+Project `reading` routes freeze Project + explicit optional Following version,
+the deterministic original Snapshot/Artifact/hash actually supplied (at most6000
+characters, truncation declared), approved `reading.project_investigation`
+version/hash/context and owned Agent/Profile/advertised model/mode. No Following
+is inferred for these requests; null means ordinary investigation. A selected
+purpose must be active/confirmed and the material must belong to it. The context
+contains authorized Project facts, not Project Folder files, Memory or logs.
+An unknown/unretained original remains unknown; Agent `source_text` never creates
+an original, and report submission requires the existing investigation check.
+
+The existing private canonical Agent Run and `extraction_jobs` row record the
+requester, Project, exact original and purpose, method/configuration fingerprint,
+input key and generation. The item lock serializes duplicate admission; equal
+inputs reuse the operation (including terminal results). `retry_of` / `rerun_of`
+name the exact current terminal operation; duplicates reuse its successor,
+changed inputs require a fresh request, and at most3 generations share an input
+key. Canonical budgets may tighten the requested600 seconds. There are3 total
+submissions,12 feedback tool calls,3 history searches,5 history documents and16
+dependency references; frozen prompt+instruction are bounded to48000 characters.
+There is no token/currency hardcap or quality claim.
+
+Read/list are owner-private and pure: they do not reconcile, generate, mark read
+or repair. A Run that ended before result projection shows `settling`, not a
+completed report. Canonical terminal reconciliation owns publication/recovery.
+Cancellation uses canonical Run stop/ACK using only requester/Project/operation
+identity, even after Source or Project access is revoked; it does not expose the
+withdrawn prompt/report or pretend `cancelling` is final. Late old submissions
+are refused by the existing active Run/operation guards.
+
+The exact original snapshot is revalidated at dispatch/physical Delivery and
+publication. Author re-extraction may change the current item hash without
+switching the frozen version. R4 passes an explicit original id (or explicit
+unknown) to the R1 analysis writer; it no longer selects a settlement-time newer
+original for these operations. D/D2 stay independent private summary snapshots,
+with server-owned Run origin and history dependency metadata. They never replace
+Source text, excerpt, retrieval index, annotations or reading progress. Failed
+reruns leave earlier reports available through the operation history.
+
+Full live item/Source, retained-analysis policy, actual Run destination, exact
+original, Project/purpose and history permissions protect request, dispatch,
+physical Delivery, publication and reads. The generic Run gate uses the same
+private dependencies; the Artifact/Reader/records/export SQL gate also checks
+R4's Project, exact original's own Source and selected Following's Source so a
+private context cannot bypass withdrawal via copied output. Profile freshness
+is required for execution; reading a past output does not require the current
+Profile fingerprint to match. Automatic retrieval/pins remain closed. Private
+history is admitted only for its owner and cannot enter shared themes/totals.
+Existing preparation APIs keep their writer semantics and exclude R4 operations
+from their old per-item aggregated state; personal preparation is unchanged.
+
+R4 additionally uses the canonical managed fail-fast policy kind
+`source_deep_reading` (manual only, **not** a standing credential authorization).
+Extra adapter artifacts/files/proposals/activities are rejected by the existing
+Run materializer before any such write; only the checked `source.material.submit`
+result can produce this private report. A forbidden output becomes a terminal
+failed operation, not a new approval hold or an unguarded copied Artifact.
+
+Historical deep-reading access rechecks live permissions rather than requiring
+Source configuration bytes to equal admission. The operation exposes only a
+`source_configuration_changed` flag when still authorized. For example, granting
+another reader access must not erase this requester's past report. Execution
+still requires the frozen Source authority fingerprint in
+`assertItemProcessingDispatch` before dispatch, submission and settlement; actual
+Source/Project/original/history/egress withdrawal withholds every derived read.
+
+R4 private operations are also owner-filtered in the generic Source jobs list
+and run-job gate, without an oversight exception or count disclosure. All public
+job projections remove internal material submissions and investigation drafts,
+including legacy non-deep jobs; durable payloads stay intact for settlement.
+Private `deep_project` operations do not occupy deterministic original extraction
+slots or the shared theme original barrier. Ordinary jobs with null metadata
+retain their existing deduplication and pending-coverage behavior.
+
+The post-processing `queueFullTextExtractionForItems` existing-job merge also
+excludes private `deep_project` rows: it must neither append shared follow-ups
+to private metadata nor return a private job id as a shared run output. Ordinary
+jobs, including null metadata, still deduplicate and merge follow-ups normally.
+
+### R5 private Reading consumers
+
+GET `.../projects/:projectId/reading/items/:itemId/favorite` returns only the
+caller's favorite after the same Project-material/full-read gate as the write.
+GET `.../items/:itemId/deep-reads/purposes` supplies at most100 current confirmed
+material/Following/collecting-connection choices (200-character labels plus a
+truncation flag), each revalidated by the canonical deep-reading context. It does
+not start a Run, fetch an original or inspect private operation output.
+Private operation projections include authorized material title, exact Following
+reference and existing execution selection for explicit retries; these are null
+when withheld. They never expose internal submission/check payloads.
+Reader source-version GET supports authorized independent analysis summary
+snapshots in addition to original extracted snapshots; it preserves exact snapshot
+identity and the existing live derived-artifact dependency gate. No list/export
+or generic Source jobs authority is widened.
+
+R5 operation `purpose_label` is bounded to200 characters, resolved from the frozen
+Goal version only after live private-read authorization; it is null on withholding.
+Reader records can select one exact snapshot with `snapshot_id` and offset0 under
+the same gates. Original availability remains page/filter-independent. This keeps
+a report's supplied original reference distinct from an author's newer version.
+
+
+## Acceptance evidence
+
+[Project Reading acceptance](../../docs/PROJECT_READING_ACCEPTANCE.md) maps durable
+private investigation recovery and deterministic original capture tests to A1–A12.
+The private SIGKILL test uses the existing Job/Run terminal reconciler, not a GET
+to finish work. Cancellation is stored as a failed extraction job with
+`source_material_cancelled` and projected as cancelled only after canonical terminal
+Run settlement. Synthetic Host evidence is not a live remote Host or semantic quality verdict.
