@@ -38,6 +38,19 @@ async function publish(text = output()) {
 }
 
 describe("Project briefing (shared kernel, real PostgreSQL)", () => {
+  it('projects a bounded source excerpt without substituting private analysis and withdraws it with access', async () => {
+    const item = await material('Source preview');
+    const lead = 'Article opening. '.repeat(40);
+    await db.pool.query('UPDATE source_items SET excerpt=$2 WHERE id=$1', [item, lead]);
+    const id = await publish();
+    const shown = await service().get(adapter(), MEMBER, id);
+    expect(shown.evidence[0].excerpt).toBe(lead.slice(0, 400));
+    expect(shown.evidence[0].excerpt).not.toContain('Source preview summary');
+    await db.pool.query("UPDATE source_items SET visibility='private',owner_user_id=$2 WHERE id=$1", [item, OWNER]);
+    const withheld = await service().get(adapter(), MEMBER, id);
+    expect(withheld.evidence).toEqual([]);
+    expect(JSON.stringify(withheld)).not.toContain('Article opening.');
+  });
   it("runs request → frozen manifest → canonical Run → canonical settlement → re-authorized read, then a delta version", async (ctx) => {
     if (!db.available) return ctx.skip();
     const first = await material("Gripper launch report", { uri: "https://news.test/gripper", publishedHoursAgo: 4, addedHoursAgo: 3 });
@@ -202,7 +215,7 @@ describe("Project briefing (shared kernel, real PostgreSQL)", () => {
     expect(project.inputs.map((input) => [input.lead!.source_item_id, input.delta_class, input.lenses.map((lens) => lens.kind)]))
       .toEqual([[shared, "baseline", ["corpus"]]]);
     // A personal briefing's only context is the reader's own stated topics.
-    expect(personal.context.map((entry) => [entry.kind, entry.label])).toEqual([["personal_focus", "Following: Personal robotics"]]);
+    expect(personal.context.map((entry) => [entry.kind, entry.label])).toEqual([["personal_focus", "Following"]]);
     expect(project.context.map((entry) => entry.kind)).toEqual(["project_goal", "project_constraints"]);
     expect(await personalBriefingScope(SPACE, OWNER).canRead(db.pool, MEMBER)).toBe(false);
     expect(await adapter().audience(db.pool)).toEqual(expect.arrayContaining([OWNER, MEMBER]));
@@ -212,7 +225,7 @@ describe("Project briefing (shared kernel, real PostgreSQL)", () => {
     expect((await buildManifest(db.pool, adapter(), options)).inputs.map((input) => input.status)).toEqual(["not_shared"]);
   });
 
-  it("serves the HTTP surface: readers read, writers generate, GET never generates", async (ctx) => {
+  it("keeps the historical HTTP read surface but retires duplicate Project generation", async (ctx) => {
     if (!db.available) return ctx.skip();
     await material("Gripper launch report");
     const app = await buildModuleServer(config(), [informationDigestModule]);
@@ -225,19 +238,17 @@ describe("Project briefing (shared kernel, real PostgreSQL)", () => {
       expect(await count("information_briefings")).toBe(0);
       expect((await app.inject({ method: "POST", url, payload: {} })).statusCode).toBe(403);
       __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
-      const created = await app.inject({ method: "POST", url, payload: {} });
-      expect(created.statusCode).toBe(201);
-      expect((await app.inject({ method: "POST", url, payload: {} })).statusCode).toBe(200);
-      const overview = (await app.inject({ method: "GET", url })).json();
-      expect(overview).toMatchObject({ can_generate: true, latest: { status: "queued", run_status: "queued" }, latest_briefing: null, history: [{ version: 1 }] });
-      const cancelled = await app.inject({ method: "POST", url: `${url}/${created.json().briefing.id}/cancel` });
-      expect(cancelled.statusCode).toBe(200);
+      const retired = await app.inject({ method: "POST", url, payload: {} });
+      expect(retired.statusCode).toBe(410);
+      expect(retired.json()).toMatchObject({code:'project_daily_briefing_replaced'});
+      expect((await app.inject({method:'GET',url})).json()).toMatchObject({can_generate:false,latest:null,daily_enabled:false});
+      expect(await count('runs')).toBe(0);
     } finally {
       await app.close();
     }
   });
 
-  it("rides the Project's own daily digest Automation: one day, one version, a blocked day stated, history kept in order", async (ctx) => {
+  it("preserves legacy day-request settlement, blocked recovery and history after retiring Project scheduling", async (ctx) => {
     if (!db.available) return ctx.skip();
     await material("Gripper launch report", { publishedHoursAgo: 40, addedHoursAgo: 30 });
     const automation = await new PgAutomationRepository(db.pool).create({
@@ -245,18 +256,21 @@ describe("Project briefing (shared kernel, real PostgreSQL)", () => {
       configJson: { target_type: "information_digest", scope: "project", operation: "daily", project_id: PROJECT, cron: "0 7 * * *", timezone: "UTC" },
       preflightSnapshot: { executable: true, target_type: "information_digest" },
     });
-    // Only a writer may enable it, on their own validated Agent.
+    // Writer access is checked before refusing the retired setting.
     await expect(setDailyBriefing(db.pool, adapter(), MEMBER, { daily_enabled: true })).rejects.toMatchObject({ statusCode: 403 });
-    expect(await setDailyBriefing(db.pool, adapter(), OWNER, { daily_enabled: true })).toMatchObject({ enabled: true, user_id: OWNER, agent_id: AGENT });
+    await expect(setDailyBriefing(db.pool, adapter(), OWNER, { daily_enabled: true })).rejects.toMatchObject({statusCode:410});
     registerInformationDigestAutomationTarget();
     const handler = automationTargetHandlerRegistry.get("information_digest")!;
     const fire = async () => {
       const row = (await new PgAutomationRepository(db.pool).get(SPACE, automation.id))!;
-      return await handler.execute({
+      const fired=await handler.execute({
         config: config(), repo: new PgAutomationRepository(db.pool), host: {} as never, automation: { ...row, next_run_at: new Date().toISOString() },
         fireInput: { spaceId: SPACE, automationId: automation.id, actorUserId: OWNER, triggerType: "schedule" }, triggerType: "schedule",
         responsibility: { triggerOrigin: "automation", instructedByUserId: OWNER }, preflightSnapshot: {}, advanceSchedule: false,
       } as never) as Record<string, unknown>;
+      const digest=(await db.pool.query('SELECT id,digest_date,period_end_utc FROM information_digests WHERE project_id=$1',[PROJECT])).rows[0];
+      await service().requestDay(adapter(),OWNER,{kind:'daily',day:{date:new Date(digest.digest_date).toISOString().slice(0,10),digestId:digest.id,cutoff:new Date(digest.period_end_utc).toISOString()},execution:{},origin:'job',automationId:automation.id,label:'the Project'});
+      return fired;
     };
     await fire();
     const day = (await db.pool.query(`SELECT * FROM information_briefings`)).rows;
@@ -269,8 +283,7 @@ describe("Project briefing (shared kernel, real PostgreSQL)", () => {
       budget_sources: expect.arrayContaining([expect.objectContaining({ source: { kind: "automation", id: automation.id } })]),
       policy_context_json: { managed_execution: "information_briefing", credential_pre_authorized: true, failure_policy: "fail_fast" },
     });
-    expect((await db.pool.query(`SELECT native_result_json FROM automation_runs WHERE automation_id=$1`, [automation.id])).rows[0].native_result_json)
-      .toMatchObject({ briefing: { briefing_id: day[0].id, status: "queued" } });
+    expect((await db.pool.query(`SELECT native_result_json FROM automation_runs WHERE automation_id=$1`, [automation.id])).rows[0].native_result_json).not.toHaveProperty('briefing');
     // A replayed fire of the same slot reuses the sealed day's version.
     await fire();
     expect(await count("information_briefings")).toBe(1);
@@ -299,16 +312,18 @@ describe("Sealed days held behind another version", () => {
       configJson: { target_type: "information_digest", scope: "project", operation: "daily", project_id: PROJECT, cron: "0 7 * * *", timezone: "UTC" },
       preflightSnapshot: { executable: true, target_type: "information_digest" },
     });
-    await setDailyBriefing(db.pool, adapter(), OWNER, { daily_enabled: true });
     registerInformationDigestAutomationTarget();
     const handler = automationTargetHandlerRegistry.get("information_digest")!;
     const fire = async () => {
       const row = (await new PgAutomationRepository(db.pool).get(SPACE, automation.id))!;
-      return await handler.execute({
+      const fired=await handler.execute({
         config: config(), repo: new PgAutomationRepository(db.pool), host: {} as never, automation: { ...row, next_run_at: new Date().toISOString() },
         fireInput: { spaceId: SPACE, automationId: automation.id, actorUserId: OWNER, triggerType: "schedule" }, triggerType: "schedule",
         responsibility: { triggerOrigin: "automation", instructedByUserId: OWNER }, preflightSnapshot: {}, advanceSchedule: false,
       } as never) as Record<string, unknown>;
+      const digest=(await db.pool.query('SELECT id,digest_date,period_end_utc FROM information_digests WHERE project_id=$1',[PROJECT])).rows[0];
+      await service().requestDay(adapter(),OWNER,{kind:'daily',day:{date:new Date(digest.digest_date).toISOString().slice(0,10),digestId:digest.id,cutoff:new Date(digest.period_end_utc).toISOString()},execution:{},origin:'job',automationId:automation.id,label:'the Project'});
+      return fired;
     };
     const finalize = async (runId: string, text: string) => {
       const done = await finishRun(runId, text);
@@ -327,8 +342,7 @@ describe("Sealed days held behind another version", () => {
     })]);
     expect(new Date(held[0].cutoff_at).toISOString()).toBe(new Date(digest.period_end_utc).toISOString());
     expect(fired).toMatchObject({ digest_id: digest.id });
-    expect((await db.pool.query(`SELECT native_result_json FROM automation_runs WHERE automation_id=$1`, [automation.id])).rows[0].native_result_json)
-      .toMatchObject({ briefing: { briefing_id: held[0].id, status: "blocked", error_code: "briefing_scope_busy" } });
+    expect((await db.pool.query(`SELECT native_result_json FROM automation_runs WHERE automation_id=$1`, [automation.id])).rows[0].native_result_json).not.toHaveProperty('briefing');
     expect(await count("runs")).toBe(1);
     expect((await service().get(adapter(), MEMBER, held[0].id))).toMatchObject({ status: "blocked", error_code: "briefing_scope_busy", period_date: digest.digest_date });
 
@@ -692,17 +706,19 @@ describe("Briefing versions: frozen inputs, reuse and change detection", () => {
   });
 });
 
-it('an explicitly switched Project keeps daily digest but suppresses the duplicate legacy briefing model, without cancelling old Runs',async()=>{
+it('Project daily scheduling ignores retired AI opt-in and creates no content version without analysis',async()=>{
  if(!db.available)return;
  await material('Existing daily material',{publishedHoursAgo:40,addedHoursAgo:30});
  const automation=await new PgAutomationRepository(db.pool).create({spaceId:SPACE,ownerUserId:OWNER,agentId:AGENT,projectId:PROJECT,name:'Project daily',triggerType:'schedule',configJson:{target_type:'information_digest',scope:'project',operation:'daily',project_id:PROJECT,cron:'0 7 * * *',timezone:'UTC'},preflightSnapshot:{executable:true,target_type:'information_digest'}});
- await setDailyBriefing(db.pool,adapter(),OWNER,{daily_enabled:true});
+ await db.pool.query("UPDATE automations SET config_json=config_json||$2::jsonb WHERE id=$1",[automation.id,JSON.stringify({briefing:{enabled:true,user_id:OWNER,agent_id:AGENT,runtime_profile_id:PROFILE}})]);
  // A pre-existing legacy Run remains independently owned and readable.
  const legacy=await service().request(adapter(),OWNER,manual);const countBefore=await count('runs');
- const goal=randomUUID();await db.pool.query(`INSERT INTO source_goals(id,space_id,project_id,owner_user_id,intent_json,budget_json,status,compatibility_json) VALUES($1,$2,$3,$4,'{"intent":"Opted-in"}','{}','running','{"reading_composition_enabled":true}')`,[goal,SPACE,PROJECT,OWNER]);
+ const goal=randomUUID();await db.pool.query(`INSERT INTO source_goals(id,space_id,project_id,owner_user_id,intent_json,budget_json,status,compatibility_json) VALUES($1,$2,$3,$4,'{"intent":"Following"}','{}','running','{}')`,[goal,SPACE,PROJECT,OWNER]);
  registerInformationDigestAutomationTarget();const row=(await new PgAutomationRepository(db.pool).get(SPACE,automation.id))!;
  await automationTargetHandlerRegistry.get('information_digest')!.execute({config:config(),repo:new PgAutomationRepository(db.pool),host:{} as never,automation:{...row,next_run_at:new Date().toISOString()},fireInput:{spaceId:SPACE,automationId:automation.id,actorUserId:OWNER,triggerType:'schedule'},triggerType:'schedule',responsibility:{triggerOrigin:'automation',instructedByUserId:OWNER},preflightSnapshot:{},advanceSchedule:false} as never);
  expect(await count('runs')).toBe(countBefore);expect(await count('information_digests')).toBe(1);expect((await rowOf(legacy.briefing.id)).status).toBe('queued');
- expect((await db.pool.query('SELECT native_result_json FROM automation_runs WHERE automation_id=$1',[automation.id])).rows[0].native_result_json).toMatchObject({briefing:{status:'replaced_by_theme_composition'}});
+ expect((await db.pool.query('SELECT native_result_json FROM automation_runs WHERE automation_id=$1',[automation.id])).rows[0].native_result_json).not.toHaveProperty('briefing');
+ expect((await db.pool.query("SELECT id FROM jobs WHERE job_type='project_reading_compose' AND status='pending'")).rows).toEqual([]);
+ expect(await count('project_reading_compositions')).toBe(0);
  await settleBriefingRun(db.pool,await finishRun((await rowOf(legacy.briefing.id)).run_id!,output()));expect((await rowOf(legacy.briefing.id)).status).toBe('ready');
 });

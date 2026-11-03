@@ -258,6 +258,7 @@ class ScanDb implements Queryable {
         rowCount: 1,
       };
     }
+    if (sql.includes('SELECT DISTINCT gi.goal_id')) return { rows: [], rowCount: 0 };
     throw new Error(`unexpected SQL: ${sql}`);
   }
 

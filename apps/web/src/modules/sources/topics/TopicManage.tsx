@@ -1,4 +1,3 @@
-import {TopicCheckButton} from './TopicCheckButton'
 import {useState} from 'react'
 import type {SourceGoalDetail,SourceGoalFeedbackRequest} from '@rainver/protocol'
 import {sourceGoalsApi} from '../../../api/client'
@@ -24,7 +23,6 @@ export function TopicManage({goal,spaceId,canManage,busy,act,onDeleted}:{goal:So
  const lifecycle=lifecycleAction(goal)
  return <section aria-labelledby="topic-manage" className="space-y-3">
   <h2 id="topic-manage" className="text-sm font-semibold">{t('topics.manage')}</h2>
-  {canManage&&<TopicCheckButton key={`${spaceId}:${goal.id}:${goal.active_version_id}`} goal={goal} spaceId={spaceId} busy={busy} act={act}/>}
   {manual&&<p className="text-xs text-muted-foreground">{t('topics.manualOnly')}</p>}
   <div className="flex flex-wrap gap-2">
    {lifecycle&&<Button size="sm" variant="outline" disabled={!canManage||busy} onClick={()=>void act(()=>sourceGoalsApi.action(goal.id,lifecycle,{version_id:goal.active_version_id},{spaceId}))}>{t(`sourceGoals.${lifecycle}`)}</Button>}

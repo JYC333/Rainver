@@ -82,7 +82,8 @@ const markdownAnnotations = [
   staleAnchor('ann-ambiguous', 'Repeated sentence here'),
 ]
 
-async function mockApi(page, { annotations = 'ok', created } = {}) {
+async function mockApi(page, { annotations = 'ok', created, toolbar = false, readerDocument = doc, appearanceWidth } = {}) {
+  let appearance = appearanceWidth ? { width: appearanceWidth } : {}
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname.replace('/api/v1', '')
     const method = route.request().method()
@@ -90,7 +91,15 @@ async function mockApi(page, { annotations = 'ok', created } = {}) {
     if (path === '/me') data = { id: 'user-reader', name: 'Reader tester', email: 'reader@example.test', default_space_id: spaceId, instance_role: 'member' }
     else if (path === '/me/spaces') data = [{ id: spaceId, name: 'Reader Space', type: 'personal', role: 'owner' }]
     else if (path === '/plugins/effective') data = { plugins: {} }
-    else if (path === '/reader/documents/source_item/item-1') data = doc
+    else if (toolbar && path === '/prompts/reading-method/entry') data = { can_manage: true, project_id: projectId }
+    else if (toolbar && path === '/reader/source-items/item-1/records') data = { original: null, items: [], next_offset: null }
+    else if (toolbar && path.endsWith('/reading/items/item-1/favorite')) data = { item_id: 'item-1', favorite: false }
+    else if (toolbar && path === '/reader/source-items/item-1/versions') data = { items: [], next_offset: null }
+    else if (path === '/reader/preferences/appearance') {
+      if (method === 'PUT') appearance = route.request().postDataJSON()
+      data = appearance
+    }
+    else if (path === '/reader/documents/source_item/item-1') data = readerDocument
     else if (path === '/reader/documents/source_item/item-md') data = markdownDoc
     else if (path === '/reader/documents/source_item/item-md/annotations') data = { items: markdownAnnotations }
     else if (path === '/sources/items/item-md/processing') data = { status: 'idle' }
@@ -140,6 +149,70 @@ async function openReader({ width, height = 900, locale = 'en', theme = 'dark', 
 
 const settle = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 
+test('Reader navigation and tools stay usable with Project return and sequence in narrow containers', async () => {
+  const returnTo = `/projects/${projectId}/sources?tab=materials`
+  for (const locale of ['en', 'zh-CN']) for (const theme of ['light', 'dark']) for (const width of [390, 1280]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 2, hasTouch: width === 390, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(({ locale, theme, returnTo, spaceId, projectId }) => {
+        localStorage.setItem('rainver:locale', locale); localStorage.setItem('rainver:theme', theme)
+        sessionStorage.setItem('rainver:reading-sequence', JSON.stringify({
+          spaceId, projectId, returnTo, query: { view: 'all' }, next_cursor: null,
+          entries: ['item-0', 'item-1', 'item-2'].map(source_item_id => ({ source_item_id, key: source_item_id, reader_origin: 'project', full: true, unread: true, topic_change_id: null })),
+        }))
+      }, { locale, theme, returnTo, spaceId, projectId })
+      await mockApi(page, { toolbar: true })
+      await page.goto(`${baseUrl}/spaces/${spaceId}/library/items/item-1?${new URLSearchParams({ from: 'project', projectId, returnTo })}`)
+      await page.locator('.reader-surface p').first().waitFor()
+      const header = page.locator('.reader-workspace > header')
+      const method = header.locator('a[href*="reading_method="]')
+      await method.waitFor()
+      await page.evaluate(() => document.fonts.ready)
+      const back = header.locator('a').first()
+      await back.screenshot({ path: `/tmp/reader-back-${locale}-${theme}-${width}.png` })
+      await back.focus()
+      assert.ok(await back.evaluate(el => el === document.activeElement && getComputedStyle(el).outlineStyle !== 'none'))
+      const verify = async () => {
+        const geometry = await header.evaluate(el => {
+          const frame = el.getBoundingClientRect()
+          const controls = [...el.querySelectorAll('button, a[href]')].map(control => {
+            const r = control.getBoundingClientRect()
+            return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height }
+          })
+          const title = el.querySelector('p')
+          return { left: frame.left, right: frame.right, controls, titleVisible: getComputedStyle(title).display !== 'none', titleWidth: title.clientWidth, titleMin: parseFloat(getComputedStyle(title).minWidth) }
+        })
+        assert.ok(geometry.controls.length >= 8, JSON.stringify(geometry))
+        for (const [i, control] of geometry.controls.entries()) {
+          const minTarget = width === 390 ? 44 : 24
+          assert.ok(control.x >= geometry.left && control.right <= geometry.right && control.width >= minTarget && control.height >= minTarget, JSON.stringify(geometry))
+          for (const other of geometry.controls.slice(i + 1)) {
+            assert.ok(control.right <= other.x || other.right <= control.x || control.bottom <= other.y || other.bottom <= control.y, JSON.stringify(geometry))
+          }
+        }
+        assert.ok(!geometry.titleVisible || geometry.titleWidth >= Math.max(100, geometry.titleMin), JSON.stringify(geometry))
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+        await page.getByRole('heading', { level: 1, name: doc.title }).waitFor()
+      }
+      await verify()
+      await page.screenshot({ path: `/tmp/reader-toolbar-${locale}-${theme}-${width}.png` })
+      // A desktop Shell can leave a narrow Reader even with a wide viewport.
+      if (width === 1280) {
+        await page.locator('.reader-workspace').evaluate(el => { el.style.width = '480px' })
+        await settle(page); await verify()
+        assert.equal(await header.locator('p').isVisible(), false)
+        await page.screenshot({ path: `/tmp/reader-toolbar-${locale}-${theme}-container.png` })
+      }
+      const history = header.getByRole('button', { name: locale === 'en' ? 'Version history' : '版本历史', exact: true })
+      await history.focus(); await page.keyboard.press('Enter')
+      await page.getByRole('dialog').waitFor(); await page.keyboard.press('Escape')
+      await page.getByRole('dialog').waitFor({ state: 'hidden' })
+      assert.equal(await header.locator('a').first().getAttribute('href'), `/spaces/${spaceId}${returnTo}`)
+      assert.match(await method.getAttribute('href'), /item_id=item-1/)
+    } finally { await page.close() }
+  }
+})
+
 const measure = page => page.evaluate(() => {
   const surface = document.querySelector('.reader-surface')
   const top = el => parseFloat(getComputedStyle(el).marginTop)
@@ -155,6 +228,10 @@ const measure = page => page.evaluate(() => {
     viewport: document.documentElement.clientWidth, documentWidth: document.documentElement.scrollWidth,
     shellClient: shell.clientWidth, shellScroll: shell.scrollWidth,
     columnWidth: column.getBoundingClientRect().width,
+    textWidth: blocks[0].getBoundingClientRect().width,
+    contentWidth: column.clientWidth - parseFloat(getComputedStyle(column).paddingLeft) - parseFloat(getComputedStyle(column).paddingRight),
+    textLeft: blocks[0].getBoundingClientRect().left,
+    contentLeft: column.getBoundingClientRect().left + parseFloat(getComputedStyle(column).paddingLeft),
     fontSize: parseFloat(getComputedStyle(surface).fontSize), lineHeight: parseFloat(getComputedStyle(surface).lineHeight),
     pAfterP: top(pAfterP), pAfterH2: top(pAfterH2), h2: top(surface.querySelector('h2')), ul: top(ul),
     quoteP: top(quote.children[1]), cellP: top(cell.children[1]),
@@ -174,9 +251,11 @@ test('Reader body has visible paragraph and heading rhythm and no page-wide hori
         assert.ok(desktop.pAfterP >= 14 && desktop.pAfterP <= 18, JSON.stringify(desktop))
         assert.ok(desktop.h2 > desktop.pAfterP && desktop.pAfterH2 > 0 && desktop.pAfterH2 < desktop.pAfterP, JSON.stringify(desktop))
         assert.ok(desktop.ul > 0 && desktop.quoteP > 0 && desktop.cellP > 0, JSON.stringify(desktop))
-        assert.ok(desktop.columnWidth <= 18 * 38 + 1, JSON.stringify(desktop))
+        assert.ok(Math.abs(desktop.columnWidth - desktop.shellClient) <= 1, JSON.stringify(desktop))
+        assert.ok(Math.abs(desktop.textWidth - desktop.contentWidth) <= 1, JSON.stringify(desktop))
+        assert.ok(Math.abs(desktop.textLeft - desktop.contentLeft) <= 1, JSON.stringify(desktop))
         assert.equal(desktop.leadTitle, doc.title)
-        assert.ok(desktop.inspector, 'desktop opens with the inspector')
+        assert.equal(desktop.inspector, false, 'text leads; the inspector opens on demand')
         await page.screenshot({ path: `/tmp/reader-stage1-desktop-${locale}-${theme}.png` })
 
         for (const width of [1024, 768, 390, 320]) {
@@ -227,6 +306,7 @@ test('a phone opens on the text; the drawer opens on demand, stays closable and 
 test('an annotation outage leaves the body readable and says so', async () => {
   const page = await openReader({ width: 1280, options: { annotations: 'fail' } })
   try {
+    await page.getByRole('button', { name: 'Show inspector', exact: true }).click()
     const inspector = page.getByRole('complementary', { name: 'Reader inspector' })
     await inspector.getByRole('alert').waitFor()
     assert.match(await inspector.getByRole('alert').textContent(), /Annotation service unavailable/)
@@ -288,7 +368,7 @@ test('Research report keeps the shared Reader typography, a single main heading 
       if (width > 768) {
         await page.getByRole('button', { name: '显示检查面板' }).click()
         const opened = await page.evaluate(() => ({ overlay: Boolean(document.querySelector('.reader-inspector-overlay')), column: document.querySelector('.reader-column').getBoundingClientRect().width }))
-        assert.ok(opened.column >= result.column - 1, JSON.stringify({ width, opened, result }))
+        assert.ok(opened.column >= Math.min(560, result.column) - 1, JSON.stringify({ width, opened, result }))
         await page.screenshot({ path: `/tmp/reader-stage1-research-${width}-panel.png` })
       }
     } finally {
@@ -330,6 +410,7 @@ test('an unsent comment survives Shell navigation and browser history, and a mod
   const created = []
   const page = await openReader({ width: 1280, options: { created } })
   try {
+    await page.getByRole('button', { name: 'Show inspector', exact: true }).click()
     const inspector = page.getByRole('complementary', { name: 'Reader inspector' })
     await inspector.getByRole('button', { name: /阅读体验的第一步/ }).click()
     await inspector.getByPlaceholder('Add a comment…').fill('Draft kept across navigation')
@@ -402,6 +483,7 @@ test('declared Markdown renders its structure and stale anchors are relocated or
       assert.ok(result.documentWidth <= result.viewport + 1, JSON.stringify(result))
       assert.equal(result.tableOverflow, 'auto')
       if (width > 768) {
+        await page.getByRole('button', { name: 'Show inspector', exact: true }).click()
         const inspector = page.getByRole('complementary', { name: 'Reader inspector' })
         await inspector.getByText('The text has changed: 1 annotation cannot be placed in it. Its quote and comments are kept below.').waitFor()
         await inspector.getByText('Not located', { exact: true }).waitFor()
@@ -434,7 +516,7 @@ test('reading an Agent document again as a source page never fetches the Agent d
     await page.route('**/api/v1/sources/items/item-rp/processing', route => route.fulfill({ json: reprocessed ? { status: 'succeeded', run_id: 'run-rp' } : { status: 'idle' } }))
     await page.route('**/api/v1/sources/items/item-rp/processing/start', route => { reprocessed = true; return route.fulfill({ json: { status: 'queued', run_id: 'run-rp' } }) })
     // Real network interception: any request to either image host is recorded and answered locally.
-    await page.route(/https:\/\/(tracker|news)\.example\//, route => { imageRequests.push(route.request().url()); return route.fulfill({ status: 204, body: '' }) })
+    await page.route(/https:\/\/(tracker|news)\.example\//, route => { imageRequests.push(route.request().url()); return route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="80"><rect width="160" height="80" fill="gray"/></svg>' }) })
 
     await page.goto(`${baseUrl}/spaces/${spaceId}/library/items/item-rp`)
     await page.locator('a[data-external-image][href="https://tracker.example/old-agent.jpg"]').waitFor()
@@ -534,6 +616,7 @@ test('paragraph selection can be dismissed by repeating the click, blank space, 
 test('Reader docked panels resize with pointer and keyboard, remember widths, and leave phone drawers alone', async () => {
   const page = await openReader({ width: 1600, theme: 'light' })
   try {
+    await page.getByRole('button', { name: 'Show inspector', exact: true }).click()
     const inspector = page.locator('.reader-inspector')
     const resize = page.getByRole('separator', { name: 'Resize annotation panel' })
     await resize.waitFor()
@@ -573,4 +656,69 @@ test('Reader docked panels resize with pointer and keyboard, remember widths, an
     assert.equal((await inspector.boundingBox()).width, changed)
     await page.screenshot({ path: '/tmp/reader-plan-resize-desktop.png' })
   } finally { await page.close() }
+})
+
+
+test('Reader media keeps natural proportions, text and media have independent measures, and Full width persists', async () => {
+  const mediaContent = { type: 'doc', content: [
+    p(zh + en),
+    { type: 'image', attrs: { src: 'https://media.example/icon.svg', alt: 'Small icon', width: 20, height: 20 } },
+    p(en),
+    { type: 'image', attrs: { src: 'https://media.example/chart.svg', alt: 'Wide diagram' } },
+    { type: 'image', attrs: { src: 'https://media.example/tall.svg', alt: 'Tall diagram', width: 600, height: 2400 } },
+  ] }
+  for (const locale of ['en', 'zh-CN']) for (const theme of ['light', 'dark']) for (const width of [390, 1280]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(({ locale, theme }) => { localStorage.setItem('rainver:locale', locale); localStorage.setItem('rainver:theme', theme) }, { locale, theme })
+      await mockApi(page, { readerDocument: { ...doc, content_json: mediaContent, image_policy: 'remote_reference' }, appearanceWidth: 'medium' })
+      await page.route('https://media.example/**', route => {
+        const path = new URL(route.request().url()).pathname
+        const [w, h] = path === '/icon.svg' ? [40, 40] : path === '/chart.svg' ? [1600, 800] : [600, 2400]
+        return route.fulfill({ contentType: 'image/svg+xml', body: `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><rect width="${w}" height="${h}" fill="#888"/><text x="8" y="16">${path}</text></svg>` })
+      })
+      await page.goto(`${baseUrl}/spaces/${spaceId}/library/items/item-1`)
+      const icon = page.getByRole('img', { name: 'Small icon', exact: true })
+      await icon.waitFor()
+      const picture = page.getByRole('img', { name: 'Wide diagram', exact: true })
+      await picture.scrollIntoViewIfNeeded()
+      await page.waitForFunction(() => [...document.querySelectorAll('.reader-surface img')].slice(0, 2).every(img => img.complete && img.naturalWidth > 0))
+      const before = await page.evaluate(() => {
+        const surface = document.querySelector('.reader-surface')
+        const box = el => { const r = el.getBoundingClientRect(); return { x: r.x, width: r.width, height: r.height } }
+        const [icon, chart, tall] = surface.querySelectorAll('img')
+        const style = getComputedStyle(icon)
+        return { text: box(surface.querySelector('p')), surface: box(surface), icon: box(icon), chart: box(chart), tall: box(tall), border: style.borderWidth, padding: style.paddingLeft }
+      })
+      assert.equal(before.icon.width, 20, JSON.stringify(before))
+      assert.equal(before.icon.height, 20, JSON.stringify(before))
+      assert.equal(before.border, '0px')
+      assert.equal(before.padding, '0px')
+      assert.ok(Math.abs(before.chart.width / before.chart.height - 2) < 0.01, JSON.stringify(before))
+      assert.ok(before.tall.height > 900, JSON.stringify(before))
+      assert.ok(Math.abs(before.icon.x + 10 - (before.surface.x + before.surface.width / 2)) <= 1, JSON.stringify(before))
+      if (width > 768) assert.ok(before.chart.width > before.text.width + 100, JSON.stringify(before))
+      await page.locator('.reader-document-shell').evaluate(el => el.scrollTop = 0)
+      await page.screenshot({ path: `/tmp/reader-media-${locale}-${theme}-${width}.png` })
+      const appearanceLabel = locale === 'en' ? 'Reader appearance' : '阅读外观'
+      await page.getByRole('button', { name: appearanceLabel, exact: true }).click()
+      await page.getByRole('button', { name: locale === 'en' ? 'Larger text' : '增大字号', exact: true }).click()
+      const resizedWidth = await page.locator('.reader-surface > p').first().evaluate(el => el.getBoundingClientRect().width)
+      assert.ok(Math.abs(resizedWidth - before.text.width) < 1, 'font size does not change the chosen measure')
+      await page.getByRole('button', { name: locale === 'en' ? 'Full width' : '铺满', exact: true }).click()
+      const after = await page.locator('.reader-surface > p').first().evaluate(el => el.getBoundingClientRect().width)
+      assert.ok(Math.abs(after - before.surface.width) <= 1, JSON.stringify({ before, after }))
+      await page.waitForTimeout(650)
+      await page.keyboard.press('Escape')
+      await page.reload()
+      await page.locator('.reader-surface p').first().waitFor()
+      await settle(page)
+      assert.ok(Math.abs(await page.locator('.reader-surface > p').first().evaluate(el => el.getBoundingClientRect().width) - after) <= 1)
+      await picture.focus()
+      await page.keyboard.press('Enter')
+      await page.getByRole('dialog').waitFor()
+      assert.equal(await page.getByRole('dialog').getByRole('img').getAttribute('src'), 'https://media.example/chart.svg')
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+    } finally { await page.close() }
+  }
 })

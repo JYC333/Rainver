@@ -4,10 +4,9 @@ import { describe, expect, it, vi } from 'vitest'
 import SourcesAreaPage from '../SourcesAreaPage'
 vi.mock('../../../core/spaceNav',async()=>({SpaceLink:(await import('react-router-dom')).Link}))
 vi.mock('../reading/ProjectReadingPage',()=>({default:()=> <div>Project Reading views</div>}))
-vi.mock('../sourcesArea/MonitoringPanel',()=>({default:({mode='config'}:{mode?:string})=><div>{mode==='results'?'Recommended reading':mode==='config'?'Configure collection':'All candidates'}</div>}))
+vi.mock('../sourcesArea/MonitoringPanel',()=>({default:()=> <div>All candidates</div>}))
 vi.mock('../ProjectSourcesPage',()=>({default:({view}:{view:string})=><div>{view==='materials'?'Project material':'Linked source manager'}</div>}))
 vi.mock('../ProjectRawMaterialPage',()=>({default:()=> <div>Approval queue</div>}))
-vi.mock('../ProjectDigestPage',()=>({default:()=> <div>Frozen daily edition</div>}))
 function Location(){const l=useLocation();return <output>{l.pathname+l.search}</output>}
 function page(search='') {render(<MemoryRouter initialEntries={['/projects/project-1/sources'+search]}><Routes><Route path="/projects/:projectId/sources" element={<><SourcesAreaPage/><Location/></>}/><Route path="/projects/:projectId" element={<Location/>}/></Routes></MemoryRouter>)}
 describe('Project reading entry',()=>{
@@ -22,7 +21,7 @@ describe('Project reading entry',()=>{
     expect(screen.getByText('Project Reading views')).toBeInTheDocument()
     expect(screen.queryByText('Project material')).not.toBeInTheDocument()
   })
-  it.each([['sources','Configure collection'],['raw','All candidates'],['digest','Frozen daily edition']])('preserves the existing %s destination', (tab,text)=>{
+  it.each([['sources','Linked source manager'],['raw','All candidates'],['digest','Project Reading views']])('preserves the existing %s destination', (tab,text)=>{
     page('?tab='+tab)
     expect(screen.getByText(text)).toBeInTheDocument()
   })
@@ -41,3 +40,7 @@ it('preserves the settings return while switching source-management tabs',()=>{
   fireEvent.click(screen.getByRole('link',{name:'Back to project settings'}))
   expect(screen.getByRole('status').textContent).toBe('/projects/project-1?settings=project')
 })
+
+it('old dated daily links open the unified overview at the same archived day',()=>{
+ page('?tab=digest&date=2026-01-01');expect(screen.getByRole('status').textContent).toBe('/projects/project-1/sources?tab=overview&date=2026-01-01');expect(screen.getByText('Project Reading views')).toBeVisible();
+});

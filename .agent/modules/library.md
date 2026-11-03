@@ -429,8 +429,20 @@ use the same reading presentation as personal editions. Reading preferences foll
 the shared card/form styling, and interest controls use the English/Chinese locale
 catalogs. Reader toolbar controls use the shared small icon size and explicit
 border tokens; long-form document typography remains specific to Reader.
+Reader return navigation uses the shared small ghost Button with a scoped
+SpaceLink and font-relative Lucide arrow. The label uses cap-height trimming
+with symmetric padding to retain descenders when truncated; the Reader's
+existing touch target and keyboard focus treatment still apply.
 
-The Library Reader wrapper shows a short title in its toolbar and passes the full
+The Reader canvas fills the available pane; text and media have separate width
+limits. Full width / 铺满 is the default; narrower text measures remain selectable. The inspector starts
+closed unless the browser has an explicit open preference. See the Reader guide
+for shared typography, image sizing and annotation geometry.
+
+The Library Reader wrapper shows a short title in its toolbar only when the
+Reader container has room; narrow containers keep the title in the document
+lead. Back/sequence navigation and tools wrap as separate groups without
+squeezing controls or leaving a sliver of repeated title. It passes the full
 title plus source metadata (Agent-provided label, document type/content state,
 source host) as the Reader lead above the body. The document loads on its own
 and the annotation list through the shared `useReaderAnnotations`: a missing
@@ -447,7 +459,9 @@ keep following?” in EN/ZH. “Follow a topic” opens the shared topic creatio
 with optional Project context; it creates nothing until the topic, frequency and
 effort are confirmed once, after which preparation and the first collection run
 in the background (see [Topic reading journey](../architecture/SOURCE_GOALS.md#topic-reading-journey-ui)).
-Topic pages recover their update stream, status and plan on return/refresh.
+Topic pages recover their management state and effective plan on return/refresh.
+Collected articles open in Reading with the topic already selected (Project
+Reading uses its Original materials tab); the detail does not duplicate the list.
 
 Save an article still uses the existing URL writer and extraction jobs, with
 Project writer checks. Only a completed save revalidates the Reading list;
@@ -488,6 +502,12 @@ cards and Reader details (EN/ZH). The public Reading/Reader DTO projects only th
 status from metadata, not raw Source metadata or content. Metadata-only Agent links
 open with an empty body and their original link; no summary or verification is invented.
 
+Following updates are delivered through one clearable Inbox pointer per topic
+and person, linking to the corresponding personal/Project topic page. New
+material or delivered changes re-surface it; unchanged checks remain silent.
+Clearing it does not mark the articles read. Normal background collection and
+theme Runs remain execution history rather than Agent Work unread results.
+
 Reading places Following alongside Source management in the same tools row,
 with a badge counting confirmed following in the current personal/Project scope
 (`follow_state.intent === 'following'`, including background preparation).
@@ -496,8 +516,16 @@ inflate the badge. There
 is no separate top goal banner. The management page has a scoped Back to reading
 link at the top and grouped controls with shared spacing. Goal titles and deletion
 confirmation belong in that list and detail; collected material is retained.
-The plan conversation (topic Advanced section) links only the latest search Run's
-execution details; collection progress is not repeated in the chat.
+The unified adjustment dialog keeps the existing plan conversation and optional
+trial tools. Recent checks on the management page use authorized collection
+audits; technical Run links stay folded and collection progress is not repeated
+in the chat.
+
+Following's Agent collection uses broad relevance discovery rather than the
+manual Reading method. Relevant link-only materials can enter Reading without
+an original body or deep report; body retrieval and manual investigation stay
+separate. Existing Source permissions, spending limits and URL deduplication
+still apply. Changing the deep-reading method does not change collection.
 
 ### Preparing saved material
 
@@ -541,11 +569,16 @@ viewer's currently visible set, not hidden historical inventory.
 
 Reading, topic updates, daily editions and legacy type lists share `ReadingCard`:
 two-line title and summary, quiet metadata and compact topic links, with actions
-on the right from `sm` and a wrapping action row on narrow screens. Expanding
+on the right when the card's own content container is at least 28rem wide,
+and a wrapping action row below the text in narrower cards, including desktop
+columns. Expanding
 “Why this is here” reveals the full summary and original recommendation,
 judgment and material associations. Agent-provided/unverified provenance stays
-visible. Topic titles prefer the planning Agent's short label; old topics retain
-the original subject as a fallback and truncate visually.
+visible. Topic titles use the selected immutable plan's short label; unlabelled
+topics awaiting their first prepared plan use a translated neutral label. Following cards show the same plan's
+short summary and compact check metadata; analysis settings live in topic detail.
+The single-column detail separates summary, collection scope and analysis purpose,
+with literal search queries folded. Neither card nor direction renders raw chat.
 
 ### Reading list preview and state undo
 
@@ -630,16 +663,18 @@ See [material processing](../architecture/SOURCE_MATERIAL_PROCESSING.md#saved-it
 
 ### Shared topic material presentation and progress
 
-Reading and Following topic streams use `ReadingItemCard` for title navigation,
+Reading lists and Project Original materials use `ReadingItemCard` for title navigation,
 metadata, topic/recommendation details, private read/set-aside actions and progress.
 `ReadingCard` owns the surface and a full-width progress track pinned to the
 bottom edge, using the clamped maximum of current/furthest progress; the accessible
-percentage remains available. Both lists reuse the same browser-local density
-preference and control. Topic-only exclusion feedback lives within the shared
-details area; it does not introduce another card layout or duplicate Open Reader.
-Topic headers expose Edit topic and Discuss changes. The former saves a human
-plan draft; the latter opens the existing conversation workbench. Applying the
-exact pending plan still uses Following's original confirmation contract.
+percentage remains available. Personal Reading keeps its browser-local density preference and control.
+When an owned topic is selected, relevance/site feedback lives within the shared
+details area in personal Reading and Project Original materials; it does not introduce another card layout or duplicate Open Reader.
+Topic headers expose Adjust following, opening one dialog with Direct edit and
+Discuss changes. The former saves a human plan draft; the latter reuses the
+existing conversation workbench. Effective direction always comes from the
+active version. Applying the exact pending plan still uses Following's original
+confirmation contract; editing/discussing/closing never applies it.
 
 ### Project Reading R1 storage boundary
 
@@ -687,12 +722,69 @@ Old `sources`/`settings`, `raw`/`candidates`, `updates`, `materials`, and daily
 `digest` destinations remain reachable. Settings/candidates keep their old Reader
 processing entry; the new Project reading surface uses explicit private deep reading.
 
+Overview is a daily edition in the Project's configured digest timezone, with a
+visible date navigator, day-local revision selector and permanent **History & archive**
+entry. Scheduled and manual analysis share the same publication writer. Round/audit
+records supply progress while the body is pending; only successful new analysis
+publishes a content version. Empty, no-new and failed checks retain progress without
+a version, and yesterday’s body remains in yesterday’s edition. Date views follow
+that day’s unfinished work; exact published versions retain their saved check state.
+The archive is paged beyond20 entries, listing dated editions and unattached topic
+analyses. Each opens its exact read-only body; reading never triggers generation.
+The `tab=digest` route redirects to the normal Overview while retaining its date.
+There is no old-data adapter, undated-version mode or automatic date backfill.
+There is one date/history surface, not a second daily page.
+The version selector lists concrete day-local versions once, marking the newest
+as Latest. Reading an older body retains the day's version directory and returning
+to Latest retains that edition date. The bounded directory keeps a pinned version
+selectable even when it lies beyond the newest20; the archive supplies older pages.
+Duplicate legacy monitoring results and configuration Goal lists are removed;
+Source management and candidates stay.
+Paused Following / disabled analysis preserve published history; real access withdrawal
+still withholds content.
+
 Overview reads current/history and exact-version export projections, not current
-item bodies. It shows quick lines, original topic publication times, short summaries,
-expandable full topic output, frozen purpose, evidence links and latest check coverage.
+item bodies. Its single-column reading view shows each topic once, with the original
+analysis publication time, a three-line summary excerpt and at most two cited findings.
+There is no separate At a glance block or repeated latest-check list. Normal completion
+adds no status row; active/failed/partial checks sit beside their own topic, retaining
+older authorized content with its real publication date. Topics without a published
+analysis expose their actual state and a filtered material link, never an invented report.
+The retained report order is unchanged; more than three topics gain a title-only anchor
+navigation. Current unanalysed goals follow the published sections; history uses its saved check snapshot and does not append current goals.
+
+Read full analysis enters a single-column focus view in the same Overview tab,
+using bounded `analysis` and `analysisVersion` parameters to pin the exact composition.
+It reuses BriefingView, frozen purpose and exact-original links. The overview stays
+mounted but hidden, and returning (including browser Back) restores its entry focus
+and both the Project/Shell scroll positions within that mounted scope. No saved text or
+position is persisted. A report read refusal clears its content and revalidates the
+Overview; existing request abort/session guards still apply. Reader returns accept
+these paired parameters only on the same Project Overview, with canonical bounded
+values and no arbitrary redirects. Switching a Reading tab clears focus parameters.
 No cross-theme conclusion is generated. Retrying composition is an explicit writer-gated
 request to the existing composition Job; it does not rerun topic models. Historical
 versions are read-only and currently withheld sections contain no derived text.
+
+Overview excerpts and complete reports share `BriefingCitations`: source references
+show the authorized material title within a bounded width plus its existing source
+number, rather than an opaque S-key and repeated external-link icon. The title is
+visually ellipsized, never rewritten or inferred from a domain. Known S/C tokens
+inside prose resolve through the same authorized maps; accompanying structured refs
+are deduplicated. Citation groups initially show two sources, with an explicit
+expansion for the remainder. The full numbered source directory stays readable.
+Hover or keyboard focus opens a source card with full title, a four-line
+source-text preview when available, domain/change metadata and unverified status.
+Inline citation text is a real link: mouse click, touch tap and keyboard Enter
+navigate directly, preserving native new-tab and copy-link behavior. Opening a
+preview must not consume link activation. The card title and preview are also one direct exact-original/context link; no separate
+Read source action repeats it. Unknown
+inline tokens remain literal and absent references expose no invented card or link.
+Reuse / Dependency Check: shared theme-token Popover content wraps the already
+installed Radix Popover (also used for runtime quota details); focus, portals,
+collision handling and dismissal stay with Radix. No new dependency, model-generated
+label or data write is introduced. The optional evidence `excerpt` is bounded by
+the shared protocol and projected by the briefing reader under its existing gates.
 
 Original materials reuse `useReading` and `ReadingItemCard`. Topic/read/favorite
 filters are server-paged; favorites are private, require full access, and never
@@ -738,5 +830,13 @@ Other private action denial semantics are unchanged.
 
 Project Reading acceptance evidence and the explicit synthetic/real-model boundary
 are maintained in [Project Reading acceptance](../../docs/PROJECT_READING_ACCEPTANCE.md).
-The long-content browser fixture exercises persistent three-topic versions and exact
+The long-content browser fixture exercises persistent three-topic sections, full-analysis focus and exact
 original Reader links; it does not grade model quality or enable a runtime feature.
+
+Topic full-analysis Evidence lists the article title, domain, delivery status and
+the surface's authorized structured topic short title, replacing the stored lens
+label for display. Other multi-scope briefings retain their lens labels. Frozen
+evidence is not rewritten to achieve this presentation. New Following lens labels in Project, personal and topic
+briefings read the structured title of the active (or current) goal version;
+a frozen topic run uses its exact version. Missing titles use a neutral Following
+label, never the raw intent or mutable compatibility title.

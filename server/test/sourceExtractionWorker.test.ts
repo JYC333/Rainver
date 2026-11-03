@@ -132,6 +132,7 @@ class FakeDb implements Queryable {
     if (sql.includes("SELECT") && sql.includes("FROM extraction_jobs")) {
       return { rows: [{ ...jobRow(this.jobType), status: this.status }], rowCount: 1 } as { rows: Row[]; rowCount: number };
     }
+    if (sql.includes('SELECT DISTINCT gi.goal_id')) return { rows: [], rowCount: 0 };
     throw new Error(`unexpected SQL: ${sql}`);
   }
 }

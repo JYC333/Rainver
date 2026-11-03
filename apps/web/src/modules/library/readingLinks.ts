@@ -26,9 +26,12 @@ export function readerHrefFor(itemId: string, origin: ReadingItem['reader_origin
   const query=new URLSearchParams({from:origin,returnTo});if(changeId)query.set('change',changeId);return `/library/items/${itemId}?${query}`
 }
 
+export function projectReaderHref(project:string,item:string,back:string,version?:string|null){return `/library/items/${encodeURIComponent(item)}?${new URLSearchParams({from:'project',projectId:project,returnTo:back,...(version?{version}:{})})}`}
+
 // q is the submitted Reading search: trimmed, at most the search field's 500
 // UTF-16 units, no control characters. It is only ever read back as a filter.
 const LIST_PARAMS: Record<string, RegExp> = { ops_offset:/^(?:[0-9]{1,4}|10000)$/,tab:/^(?:overview|materials|following|deep)$/,favorite:/^only$/,composition:/^[\w-]{1,64}$/,settings: /^reading$/,  view: /^(?:pending|read|all)$/, sort: /^oldest$/, topic: /^[\w-]{1,64}$/, topic_selection: /^(?:important|all)$/, q: /^[^\s\u0000-\u001F\u007F](?:[^\u0000-\u001F\u007F]{0,498}[^\s\u0000-\u001F\u007F])?$/ }
+const ANALYSIS_PARAMS = {archive:/^theme$/,briefing:/^[\w-]{1,64}$/,date:/^\d{4}-\d{2}-\d{2}$/,analysis:/^[\w-]{1,64}$/,analysisVersion:/^[\w-]{1,64}$/}
 const TOPIC_PARAMS: Record<string, RegExp> = { selection: /^(?:important|all)$/ }
 /** Only known keys with known values, each once, in a canonical encoding. */
 function boundedQuery(query: string | undefined, allowed: Record<string, RegExp>): boolean {
@@ -64,7 +67,13 @@ export function readingReturnTo(value: string | null, projectId?: string | null)
   const project = /^\/projects\/([\w-]+)\//.exec(value)
   if (projectId && project?.[1] !== projectId) return null
   const list = /^(?:\/library\/reading|\/projects\/[\w-]+\/sources)(?:\?([^?]*))?$/.exec(value)
-  if (list && !/[?]tab=(?:settings|candidates)(?:&|$)/.test(value) && (!value.startsWith('/library/') || !new URLSearchParams(list[1]).has('tab'))) return boundedQuery(list[1], LIST_PARAMS) ? value : null
+  if (list && !/[?]tab=(?:settings|candidates)(?:&|$)/.test(value) && (!value.startsWith('/library/') || !new URLSearchParams(list[1]).has('tab'))) {
+    const query=new URLSearchParams(list[1]),hasAnalysis=query.has('analysis')||query.has('analysisVersion')
+    if(hasAnalysis&&(value.startsWith('/library/')||!query.has('analysis')||!query.has('analysisVersion')||query.has('tab')&&query.get('tab')!=='overview'))return null
+    if(query.has('archive')&&(value.startsWith('/library/')||query.get('archive')==='theme'&&!query.has('briefing')||query.has('tab')&&query.get('tab')!=='overview'))return null
+    if(query.has('briefing')&&query.get('archive')!=='theme')return null
+    return validEditionDate(query.get('date')??undefined)&&boundedQuery(list[1], {...LIST_PARAMS,...ANALYSIS_PARAMS}) ? value : null
+  }
   const topic = /^(?:\/library\/reading|\/projects\/[\w-]+\/sources)\/goals\/[\w-]{1,64}(?:\?([^?]*))?$/.exec(value)
   if (topic) return boundedQuery(topic[1], TOPIC_PARAMS) ? value : null
   return value === '/library/reading' || /^\/projects\/[\w-]+\/research\?tab=reading$/.test(value) || /^\/projects\/[\w-]+\/sources(?:\?tab=(?:candidates|settings))?$/.test(value) ? value : null

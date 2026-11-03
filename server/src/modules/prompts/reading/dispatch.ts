@@ -9,11 +9,13 @@ import {assertClosedReadingContext} from './closedContext.js';
 import {HttpError} from '../../routeUtils/common.js';
 import {readingMethodOf,assertFrozenReadingMethod} from './runtime.js';
 import {trialContext,assertReadingTrialRun,assertReadingTrialReadable} from './trials.js';
-import {readingProjectContext,assertReadingAudience,assertReadingRunEgress,deepReadOf,deepReadingContext,assertDeepReadingAccess} from '../../sources/index.js';
+import {readingProjectContext,assertReadingAudience,assertReadingRunEgress,deepReadOf,deepReadingContext,assertDeepReadingAccess,sourceCollectionContextOf,assertSourceCollectionContext} from '../../sources/index.js';
 export async function readingRunDependencies(db:Queryable,run:RunRecord){
  const generation=generationOf(run);
  if(generation)return {itemId:generation.item_id,projectId:generation.project_id,artifactId:null,caseId:null,connectionId:generation.item_id?(await db.query<{connection_id:string|null}>(`SELECT connection_id FROM source_items WHERE id=$1 AND space_id=$2`,[generation.item_id,run.space_id])).rows[0]?.connection_id??null:null};
  const deep=deepReadOf(run);if(deep){const workflow=(run.contract_snapshot_json as {workflow_input_json:{material_processing:{item_id:string}}}).workflow_input_json;const connection=(await db.query<{connection_id:string|null}>('SELECT connection_id FROM source_items WHERE id=$1 AND space_id=$2',[workflow.material_processing.item_id,run.space_id])).rows[0];return {itemId:workflow.material_processing.item_id,projectId:deep.project_id,connectionId:connection?.connection_id??null,artifactId:deep.original?.artifact_id??null,caseId:null};}
+ const collection=sourceCollectionContextOf(run);
+ if(collection){const goal=(run.contract_snapshot_json as {workflow_input_json:{source_goal:{source_connection_id:string;project_id?:string|null}}}).workflow_input_json.source_goal;return {itemId:null,projectId:goal.project_id??collection.project_id,connectionId:goal.source_connection_id,artifactId:null,caseId:null};}
  const trial=trialContext(run);const method=readingMethodOf(run);if(!trial&&!method)return null;
  const workflow=(run.contract_snapshot_json as {workflow_input_json?:{material_processing?:{item_id:string};source_goal?:{goal_id?:string;project_id?:string|null;source_connection_id?:string}}})?.workflow_input_json;
  if(trial){const row=(await db.query<{eval_suite_ref_json:{item_id:string;project_id:string|null;case_id:string}}>(`SELECT eval_suite_ref_json FROM evolvable_asset_evaluation_runs WHERE id=$1 AND space_id=$2`,[trial.evaluation_id,run.space_id])).rows[0];if(!row)throw new HttpError(403,'Trial missing');return {itemId:row.eval_suite_ref_json.item_id,projectId:row.eval_suite_ref_json.project_id,artifactId:((await db.query<{input_json:{authority_proof?:{artifact_id?:string}}}>(`SELECT input_json FROM evaluation_cases WHERE id=$1 AND space_id=$2`,[row.eval_suite_ref_json.case_id,run.space_id])).rows[0]?.input_json.authority_proof?.artifact_id)??null,caseId:row.eval_suite_ref_json.case_id,connectionId:(await db.query<{connection_id:string|null}>(`SELECT connection_id FROM source_items WHERE id=$1 AND space_id=$2`,[row.eval_suite_ref_json.item_id,run.space_id])).rows[0]?.connection_id??null};}
@@ -24,6 +26,7 @@ export async function readingRunDependencies(db:Queryable,run:RunRecord){
 export async function assertReadingRunDispatch(db:Queryable,run:RunRecord){
  if(generationOf(run)){await assertGenerationDispatch(db,run);return;}
  if(trialContext(run)){await assertReadingTrialRun(db,run);return;}
+ if(sourceCollectionContextOf(run)){await assertSourceCollectionContext(db,run);return;}
  const frozen=readingMethodOf(run);if(!frozen)return;
  const deep=deepReadOf(run);if(deep){await assertClosedReadingContext(db,run.space_id,run.id,deep.project_id);await assertDeepReadingAccess(db,run);const id=(run.contract_snapshot_json as {workflow_input_json:{material_processing:{item_id:string}}}).workflow_input_json.material_processing.item_id;await assertFrozenReadingMethod(db,frozen,await deepReadingContext(db,{spaceId:run.space_id,userId:run.instructed_by_user_id!},deep.project_id,id,deep.following));return;}
  await assertClosedReadingContext(db,run.space_id,run.id,frozen.project_id);
@@ -36,12 +39,12 @@ export async function assertReadingRunDispatch(db:Queryable,run:RunRecord){
  await assertReadingRunEgress(db,run,deps.connectionId);
 }
 export async function readingRunReadable(db:Queryable,run:RunRecord,viewerUserId?:string){
- if(viewerUserId && (trialContext(run)||readingMethodOf(run)||generationOf(run)) && viewerUserId!==run.instructed_by_user_id)return false;
- try{if(deepReadOf(run))await assertDeepReadingAccess(db,run);else if(generationOf(run))await assertGenerationReadable(db,{spaceId:run.space_id,userId:viewerUserId??run.instructed_by_user_id!},run);else if(trialContext(run))await assertReadingTrialReadable(db,run);else if(readingMethodOf(run)){const deps=await readingRunDependencies(db,run);const identity={spaceId:run.space_id,userId:run.instructed_by_user_id!};await readingProjectContext(db,identity,deps!.projectId);await assertReadingAudience(db,identity,null,deps!.itemId,deps!.connectionId);await assertReadingRunEgress(db,run,deps!.connectionId);}return true;}
+ if(viewerUserId && (trialContext(run)||readingMethodOf(run)||generationOf(run)||sourceCollectionContextOf(run)) && viewerUserId!==run.instructed_by_user_id)return false;
+ try{if(sourceCollectionContextOf(run))await assertSourceCollectionContext(db,run);else if(deepReadOf(run))await assertDeepReadingAccess(db,run);else if(generationOf(run))await assertGenerationReadable(db,{spaceId:run.space_id,userId:viewerUserId??run.instructed_by_user_id!},run);else if(trialContext(run))await assertReadingTrialReadable(db,run);else if(readingMethodOf(run)){const deps=await readingRunDependencies(db,run);const identity={spaceId:run.space_id,userId:run.instructed_by_user_id!};await readingProjectContext(db,identity,deps!.projectId);await assertReadingAudience(db,identity,null,deps!.itemId,deps!.connectionId);await assertReadingRunEgress(db,run,deps!.connectionId);}return true;}
  catch(e){if(e instanceof HttpError&&[403,404,409,422].includes(e.statusCode))return false;throw e;}
 }
 
-export async function assertReadingDispatch(config:ServerConfig,run:RunRecord){if(!trialContext(run)&&!readingMethodOf(run)&&!generationOf(run))return;if(!config.databaseUrl)throw new HttpError(403,'Reading execution requires canonical storage');await assertReadingRunDispatch(getDbPool(config.databaseUrl),run);}
+export async function assertReadingDispatch(config:ServerConfig,run:RunRecord){if(!trialContext(run)&&!readingMethodOf(run)&&!generationOf(run)&&!sourceCollectionContextOf(run))return;if(!config.databaseUrl)throw new HttpError(403,'Reading execution requires canonical storage');await assertReadingRunDispatch(getDbPool(config.databaseUrl),run);}
 
 /** Private candidate provenance must also guard later comparisons made with that strategy. Published method text follows the accepted deployment's scope. */
 export async function readingDependencyRuns(db:Queryable,run:RunRecord):Promise<RunRecord[]>{

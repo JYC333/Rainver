@@ -1,8 +1,11 @@
+import {TopicCollectionProgress,activeCollectionRun} from './TopicCollectionProgress'
 import type {ProjectThemeAnalysisSelection} from '@rainver/protocol'
 import {ThemeConsentFields} from '../../projects/reading/ThemeConsentFields'
 import {ThemeAnalysis} from '../../projects/reading/ThemeAnalysis'
-import {TopicEditor} from './TopicEditor'
-import {scrollBehavior} from '../../../lib/motion'
+import {TopicAdjustmentDialog} from './TopicAdjustmentDialog'
+import {TopicDirection} from './TopicDirection'
+import {TopicExecutions} from './TopicExecutions'
+import {TopicCheckButton} from './TopicCheckButton'
 import {topicTitle} from './topicTitle'
 import {ArrowLeft,Settings2} from 'lucide-react'
 import {useCallback,useEffect,useRef,useState} from 'react'
@@ -13,32 +16,26 @@ import {Button} from '../../../components/ui/button'
 import {Card} from '../../../components/ui/card'
 import {SpaceLink,type useSpaceNavigate} from '../../../core/spaceNav'
 import {useAppTranslation} from '../../../i18n'
-import {SourceGoalWorkbench} from '../SourceGoalWorkbench'
 import {sourceGoalErrorKind} from '../sourceGoalErrors'
 import {readingGoalsPath} from '../sourceGoalNavigation'
 import {choiceFromBudget,followRequest,type FollowChoice} from './followOptions'
 import {TopicChanges} from './TopicChanges'
 import {TopicFollowFields} from './TopicFollowFields'
 import {TopicManage} from './TopicManage'
-import {TopicStatus} from './TopicStatus'
-import {TopicUpdates} from './TopicUpdates'
+import {TopicStatus,TopicSources} from './TopicStatus'
 
 const ACTIVE_RUN=['queued','running','waiting_for_review','waiting_for_dependency','cancelling']
 const WORKING_PHASES=['preparing','first_collection','checking']
-/** A followed topic: its update stream first, then status, changes and
- * management. Planning conversation, trial sample and Agent choice are
- * secondary (Advanced). Leaving or refreshing never stops following. */
+/** Single-column management of one Following. Material reading stays in Reading;
+ * adjustments share one dialog. All writes retain their original domain actions. */
 export function TopicDetail({spaceId,userId,id,navigate}:{spaceId:string;userId:string|null;id:string;navigate:ReturnType<typeof useSpaceNavigate>}){
  const {t}=useAppTranslation()
- const [params,setParams]=useSearchParams()
- const selection=params.get('selection')==='all'?'all':'important'
- const [editorOpen,setEditorOpen]=useState(false),[conversationOpen,setConversationOpen]=useState(false)
- const conversationRef=useRef<HTMLDetailsElement>(null)
- useEffect(()=>{if(conversationOpen){conversationRef.current?.scrollIntoView?.({block:'nearest',behavior:scrollBehavior()});conversationRef.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus()}},[conversationOpen])
+ const [params]=useSearchParams()
+ const [adjustOpen,setAdjustOpen]=useState(false)
+ const adjustTrigger=useRef<HTMLButtonElement>(null)
  const [detail,setDetail]=useState<SourceGoalDetail|null>(null)
  const [error,setError]=useState<unknown>(null)
  const [busy,setBusy]=useState(false)
- const [updatesVersion,setUpdatesVersion]=useState(0)
  const lock=useRef(false);const lifetime=useRef<AbortController|null>(null);const followKey=useRef(crypto.randomUUID())
  const [analysis,setAnalysis]=useState<ProjectThemeAnalysisSelection|undefined>()
  const [choice,setChoice]=useState<FollowChoice|null>(null)
@@ -47,41 +44,51 @@ export function TopicDetail({spaceId,userId,id,navigate}:{spaceId:string;userId:
  useEffect(()=>setAnalysis(undefined),[detail?.goal.current_version_id])
  const goal=detail?.goal;const state=goal?.follow_state
  const planning=!!detail&&detail.agent_runs.some(r=>ACTIVE_RUN.includes(r.status)||(['succeeded','degraded'].includes(r.status)&&r.chat_completed===false))
- const working=!!detail&&(planning||detail.previews.some(p=>p.status==='running'&&Date.parse(p.expires_at)>Date.now())||(detail.native_runs??[]).some(r=>[...ACTIVE_RUN,'validating'].includes(r.phase??r.status))||WORKING_PHASES.includes(state?.phase??'')||(state?.collections?.queued??0)+(state?.collections?.running??0)>0)
+ const working=!!detail&&(planning||detail.previews.some(p=>p.status==='running')||(detail.native_runs??[]).some(r=>[...ACTIVE_RUN,'validating'].includes(r.phase??r.status))||WORKING_PHASES.includes(state?.phase??'')||(state?.collections?.queued??0)+(state?.collections?.running??0)>0)
  // Persisted server state is polled while background work is in flight.
- useEffect(()=>{if(!working)return;const timer=setInterval(()=>{void reload().then(()=>setUpdatesVersion(n=>n+1)).catch(e=>setError(e))},5000);return()=>clearInterval(timer)},[working,reload])
- async function act(action:()=>Promise<unknown>){if(lock.current)return;lock.current=true;setBusy(true);setError(null);try{await action();await reload();setUpdatesVersion(n=>n+1)}catch(e){if(e&&typeof e==='object'&&'status' in e&&[403,404].includes(Number(e.status)))setDetail(null);setError(e)}finally{lock.current=false;setBusy(false)}}
+ useEffect(()=>{if(!working)return;const timer=setInterval(()=>{void reload().catch(e=>setError(e))},5000);return()=>clearInterval(timer)},[working,reload])
+ async function act(action:()=>Promise<unknown>){
+  if(lock.current)return;lock.current=true;setBusy(true);setError(null)
+  try{await action();await reload()}catch(e){
+   // A refused operation does not prove the readable goal was revoked. Hide
+   // cached content while checking; only a fresh authorized read restores it.
+   if(e&&typeof e==='object'&&'status' in e&&[401,403,404,409].includes(Number(e.status))){setDetail(null);try{await reload()}catch{/* reload clears content on read failure */}}
+   setError(e)
+  }finally{lock.current=false;setBusy(false)}
+ }
  const projectId=goal?.project_id??null
  const back=projectId?`/projects/${projectId}/sources`:'/library/reading'
  const canManage=!!goal&&goal.owner_user_id===userId&&detail?.can_manage!==false
  const manual=goal?.compatibility_json?.execution_mode==='manual'
  // Unfollowed topics and manual-save-only topics offer the one follow confirmation.
  const needsConfirm=!!goal&&canManage&&(state?.intent==='unconfirmed'||manual)
- const title=goal?topicTitle(goal):''
+ const collection=detail&&canManage?activeCollectionRun(detail):undefined
+ const title=goal?topicTitle(goal,t('topics.untitled')):''
  const kind=error==null?null:sourceGoalErrorKind(error)
- return <div className="flex min-w-0 flex-col gap-5 p-4 md:p-6">
+ const confirmation=goal&&detail&&<>
+     {canManage&&projectId&&userId&&goal.current_version_id&&(needsConfirm||!!state?.pending_adjustment)&&<ThemeConsentFields key={goal.current_version_id} space={spaceId} user={userId} value={analysis} onChange={setAnalysis} disabled={busy}/>}
+     {needsConfirm&&<Card className="space-y-4 p-5"><div className="space-y-1"><h2 className="text-lg font-semibold">{t('topics.confirmTitle')}</h2><p className="text-sm text-muted-foreground">{t(manual?'topics.manualOnly':'topics.confirmHint')}</p></div><TopicFollowFields value={choice??choiceFromBudget(goal.budget_json)} onChange={setChoice} disabled={busy}/><Button disabled={busy||!!analysis?.enabled&&(!analysis.agent_id||!analysis.runtime_profile_id)} onClick={()=>void act(()=>sourceGoalsApi.follow(goal.id,{...followRequest(choice??choiceFromBudget(goal.budget_json),`follow:${followKey.current}`,analysis?goal.current_version_id:null),...(analysis?{theme_analysis:analysis}:{})},{spaceId}))}>{t(busy?'topics.confirming':'topics.confirm')}</Button></Card>}
+     {canManage&&state?.pending_adjustment&&goal.current_version_id&&<Card role="status" className="flex flex-wrap items-center justify-between gap-3 p-4"><div className="min-w-0 space-y-2"><p className="text-sm">{t('topics.pendingAdjustment')}</p><details><summary className="cursor-pointer text-sm">{t('topics.reviewDraft')}</summary><div className="mt-3"><TopicDirection detail={detail} draft/></div></details></div><Button size="sm" disabled={busy||!!analysis?.enabled&&(!analysis.agent_id||!analysis.runtime_profile_id)} onClick={()=>void act(()=>sourceGoalsApi.follow(goal.id,{version_id:goal.current_version_id,idempotency_key:`follow:${goal.current_version_id}`, ...(analysis?{theme_analysis:analysis}:{})},{spaceId}))}>{t('topics.applyAdjustment')}</Button></Card>}
+ </>
+ return <div data-topic-management className="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-5 p-4 md:p-6">
   <header className="space-y-3 border-b border-border pb-4">
    <div className="flex flex-wrap gap-2"><Button variant="ghost" size="sm" asChild><SpaceLink to={back}><ArrowLeft className="size-4"/>{t('sourceGoals.back')}</SpaceLink></Button><Button variant="ghost" size="sm" asChild><SpaceLink to={readingGoalsPath(projectId)}>{t('sourceGoals.goals')}</SpaceLink></Button></div>
-   {goal?<div className="flex flex-wrap items-center justify-between gap-3"><h1 title={title} className="min-w-0 line-clamp-2 break-words text-xl font-semibold tracking-tight">{title}</h1>{canManage&&<div className="flex shrink-0 flex-wrap gap-2"><Button size="sm" variant="outline" disabled={busy||planning||!detail?.versions.length} onClick={()=>setEditorOpen(true)}>{t('topics.edit')}</Button><Button size="sm" variant="outline" disabled={busy} aria-expanded={conversationOpen} onClick={()=>setConversationOpen(v=>!v)}>{t('topics.discuss')}</Button></div>}</div>:!error&&<p role="status">{t('sourceGoals.loading')}</p>}
+   {goal?<div className="flex flex-wrap items-center justify-between gap-3"><h1 title={title} className="min-w-0 line-clamp-2 break-words text-xl font-semibold tracking-tight">{title}</h1>{canManage&&<Button ref={adjustTrigger} size="sm" onClick={()=>setAdjustOpen(true)}>{t('topics.adjust')}</Button>}</div>:!error&&<p role="status">{t('sourceGoals.loading')}</p>}
   </header>
-  {kind&&!['apiDecision','apiPathDecision'].includes(kind)&&<Card role="alert" className="space-y-2 p-4"><p>{t(`sourceGoals.${kind}`)}</p><div className="flex flex-wrap gap-2">{['errorHint','errorConflict','errorAccess','errorSetup'].includes(kind)&&<Button variant="outline" size="sm" onClick={()=>void act(reload)}>{t('sourceGoals.retry')}</Button>}{['errorCredentials','errorSetup','errorAccess'].includes(kind)&&<Button variant="outline" size="sm" asChild><SpaceLink to="/sources/access"><Settings2 className="size-4"/>{t('sourceGoals.credentials')}</SpaceLink></Button>}</div></Card>}
+  {kind&&!['apiDecision','apiPathDecision'].includes(kind)&&<Card role="alert" className="space-y-2 p-4"><p>{t(`sourceGoals.${kind}`)}</p><div className="flex flex-wrap gap-2">{['errorHint','errorConflict','errorAccess','errorSetup'].includes(kind)&&<Button variant="outline" size="sm" onClick={()=>void act(reload)}>{t('sourceGoals.retry')}</Button>}{['errorCredentials','errorSetup'].includes(kind)&&<Button variant="outline" size="sm" asChild><SpaceLink to="/sources/access"><Settings2 className="size-4"/>{t('sourceGoals.credentials')}</SpaceLink></Button>}</div></Card>}
   {goal&&detail&&<>
-   <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
-    <div className="min-w-0 space-y-5">
-     {canManage&&projectId&&userId&&goal.current_version_id&&(needsConfirm||!!state?.pending_adjustment)&&<ThemeConsentFields key={goal.current_version_id} space={spaceId} user={userId} value={analysis} onChange={setAnalysis} disabled={busy}/>}
+   <Card className="mb-0 min-w-0 space-y-4 p-4">
+    {state?<TopicStatus state={state} refreshing={busy} onRefresh={()=>void act(reload)} actions={canManage&&<TopicCheckButton compact key={`${spaceId}:${goal.id}:${goal.active_version_id}`} goal={goal} spaceId={spaceId} busy={busy} act={act}/>}/>:canManage&&<TopicCheckButton goal={goal} spaceId={spaceId} busy={busy} act={act}/>}
+    {collection&&<TopicCollectionProgress key={`${spaceId}:${collection.id}`} run={collection} spaceId={spaceId} onReload={reload}/>}
+   </Card>
+   {!adjustOpen&&confirmation}
+   <Card className="mb-0 min-w-0 p-4"><TopicDirection detail={detail}/></Card>
+   {state&&<Card className="mb-0 min-w-0 p-4"><TopicSources state={state} bindings={detail.bindings} refreshing={busy} goalId={goal.id} spaceId={spaceId} act={act}/></Card>}
+   <Card className="mb-0 min-w-0 p-4"><TopicExecutions detail={detail}/></Card>
+   <Card className="mb-0 space-y-3 p-4"><h2 className="text-sm font-semibold">{t('topics.collected')}</h2><p className="text-sm text-muted-foreground">{t('topics.collectedHint')}</p><Button size="sm" variant="outline" asChild><SpaceLink to={projectId?`${back}?tab=materials&view=all&topic=${encodeURIComponent(goal.id)}`:`${back}?view=all&topic=${encodeURIComponent(goal.id)}&topic_selection=${params.get('selection')==='important'?'important':'all'}`}>{t('topics.viewArticles')}</SpaceLink></Button><details><summary className="cursor-pointer text-xs text-muted-foreground">{t('topics.changes')}</summary><div className="mt-3"><TopicChanges changes={detail.changes??[]}/></div></details></Card>
      {projectId&&userId&&<ThemeAnalysis space={spaceId} user={userId} goal={goal.id} version={goal.active_version_id} canManage={canManage}/>}
-     {needsConfirm&&<Card className="space-y-4 p-5"><div className="space-y-1"><h2 className="text-lg font-semibold">{t('topics.confirmTitle')}</h2><p className="text-sm text-muted-foreground">{t(manual?'topics.manualOnly':'topics.confirmHint')}</p></div><TopicFollowFields value={choice??choiceFromBudget(goal.budget_json)} onChange={setChoice} disabled={busy}/><Button disabled={busy||!!analysis?.enabled&&(!analysis.agent_id||!analysis.runtime_profile_id)} onClick={()=>void act(()=>sourceGoalsApi.follow(goal.id,{...followRequest(choice??choiceFromBudget(goal.budget_json),`follow:${followKey.current}`,analysis?goal.current_version_id:null),...(analysis?{theme_analysis:analysis}:{})},{spaceId}))}>{t(busy?'topics.confirming':'topics.confirm')}</Button></Card>}
-     {canManage&&state?.pending_adjustment&&goal.current_version_id&&<Card role="status" className="flex flex-wrap items-center justify-between gap-3 p-4"><p className="text-sm">{t('topics.pendingAdjustment')}</p><Button size="sm" disabled={busy||!!analysis?.enabled&&(!analysis.agent_id||!analysis.runtime_profile_id)} onClick={()=>void act(()=>sourceGoalsApi.follow(goal.id,{version_id:goal.current_version_id,idempotency_key:`follow:${goal.current_version_id}`, ...(analysis?{theme_analysis:analysis}:{})},{spaceId}))}>{t('topics.applyAdjustment')}</Button></Card>}
-     <TopicUpdates revision={updatesVersion} spaceId={spaceId} projectId={projectId} goalId={goal.id} state={state} selection={selection} onSelection={v=>{const next=new URLSearchParams(params);if(v==='all')next.set('selection','all');else next.delete('selection');setParams(next,{replace:true})}} canManage={canManage} onFeedback={()=>void reload().catch(e=>setError(e))}/>
-    </div>
-    <aside className="min-w-0 space-y-5 rounded-lg border border-border bg-card p-4">
-     {state&&<TopicStatus state={state} bindings={detail.bindings} refreshing={busy} onRefresh={()=>void act(reload)} goalId={goal.id} spaceId={spaceId} act={act}/>}
-     <TopicChanges changes={detail.changes??[]}/>
-     <TopicManage goal={goal} spaceId={spaceId} canManage={canManage} busy={busy} act={act} onDeleted={()=>navigate(readingGoalsPath(projectId))}/>
-    </aside>
-   </div>
-   {editorOpen&&<TopicEditor key={`${goal.id}:${goal.revision}`} detail={detail} spaceId={spaceId} onClose={()=>setEditorOpen(false)} onSaved={()=>{setEditorOpen(false);void act(reload)}}/>}
-   <details ref={conversationRef} open={conversationOpen} onToggle={e=>setConversationOpen(e.currentTarget.open)} className="rounded-lg border border-border bg-card p-4"><summary className="cursor-pointer font-medium">{t('topics.discuss')}</summary><div className="mt-4"><SourceGoalWorkbench spaceId={spaceId} userId={userId} detail={detail} canManage={canManage} busy={busy} error={error} setError={setError} act={act} reload={reload}/></div></details>
+   <Card className="mb-0 p-4"><TopicManage goal={goal} spaceId={spaceId} canManage={canManage} busy={busy} act={act} onDeleted={()=>navigate(readingGoalsPath(projectId))}/></Card>
+   {adjustOpen&&canManage&&<TopicAdjustmentDialog spaceId={spaceId} userId={userId} detail={detail} canManage={canManage} busy={busy} error={error} setError={setError} act={act} reload={reload} planning={planning} confirmation={confirmation} returnFocus={()=>adjustTrigger.current?.focus()} onClose={()=>setAdjustOpen(false)} onSaved={()=>{setAdjustOpen(false);void act(reload)}}/>}
   </>}
  </div>
 }

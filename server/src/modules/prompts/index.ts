@@ -18,7 +18,7 @@ export { promptProvenanceOf, withPromptProvenance } from "./provenance.js";
 export type { PromptProvenance } from "./provenance.js";
 export { freezeReadingMethod, assertFrozenReadingMethod, readingMethodBlock, readingMethodOf } from './reading/runtime.js';
 
-export {closeReadingContext} from './reading/closedContext.js';
+export {closeReadingContext,assertClosedReadingContext} from './reading/closedContext.js';
 
 export {registerRevisionProviderRuns} from "./reading/providerGeneration.js";
 

@@ -32,13 +32,23 @@ no managed Room assistant is borrowed for a headless Run. If no executable owned
 selection exists, the caller must configure/select one rather than changing
 Agent, provider, model or account silently.
 
-The Agent chooses how to inspect articles, repositories and other resources,
-within existing runtime permissions and a ten-minute requested execution budget
-(subject to tighter owner-set canonical budgets). It
+Collection prioritizes broad relevant discovery: brief relevance checks and distinct
+links across appropriate query angles and sources, without requiring a body or a
+deep analysis report. Deep reading is a separate manual operation. The Agent
+uses existing runtime permissions without a collection-imposed total duration;
+explicit owner-set canonical budgets still apply. Saved-item preparation retains
+its separately admitted ten-minute default. The collecting Agent
 submits retrieved source text or clearly attributed synthesis with supporting
 URLs. Read failure and link-only results are not fabricated into a body. An actual
 empty search remains distinct from an unavailable tool or failed read. Native
 request counts and cost can be unknown.
+
+HTML extraction retains positive integer image dimensions through the shared
+Reader normalizer and keeps figure captions as text. Images explicitly marked
+`aria-hidden="true"` or with `role="presentation"` / `role="none"` are omitted;
+empty or absent alt text alone never makes an image decorative. CSS from the
+source page is not carried into Reader. This affects new extraction only; no
+stored document or historical version is rewritten.
 
 ## Storage and recovery
 
@@ -157,9 +167,30 @@ Source consent and egress, proposal applier, Source materializer, existing Reade
 JSON and read-version guards are reused. Existing HTML/PDF extractors remain
 valid deterministic executors. No new dependency, table or instance migration.
 
+## Broad Agent-native collection
+
+New native collection Runs use the code-owned `goals/collectionPrompt.ts`
+discovery contract, not the manual investigation method. They collect broadly
+within the existing item/time/spending limits; preview alone may use a small
+representative sample. A title, excerpt or brief page check can establish
+relevance. Missing original text, a publication date or a completed analysis
+report does not block a valid link. Optional descriptions/available source text
+still follow Source retention policy and the existing submission validator.
+Importance does not exclude valid unjudged candidates. Familiar unchanged pages
+are avoided; canonical URL deduplication and evidenced-change delivery remain.
+
+`workflow_input_json.source_collection` freezes the authorized topic/Project
+context hash and output Project independently of any deep-reading deployment.
+The shared closed Work Context, dependency locks, Source audience/egress checks,
+originating goal Project access and exact goal/version/Profile/lease checks
+still apply at Delivery, dispatch and acceptance. Manual method changes or an
+uninitialized/disabled investigation method cannot block new discovery Runs.
+Collection output does not claim deep-reading method provenance. Already queued
+legacy Runs with `reading_method` retain their admitted method and checks.
+
 ## Versioned investigation method
 
-Saved-link preparation and Agent-native goal collection both resolve
+Saved-link preparation and manually triggered investigation resolve
 `reading.project_investigation` through the approved-only prompts resolver at
 Run admission. Its exact version, content/render hashes, resolution provenance
 and authorized Project-context hash are frozen in `workflow_input_json.reading_method`.
@@ -172,7 +203,7 @@ homepage paraphrase. The existing submit schema, three-submission limit, egress,
 retention, URL limits, runtime permissions and ten-minute budget remain code-owned.
 Production investigation uses the requester’s existing Source/material access.
 Project context is injected only into material canonically bound to that Project;
-broader native collection stays ordinary reading with no Project WorkContext.
+broader native collection stays topic discovery with no Project WorkContext.
 Trial comparisons still require the complete current Project audience. Dispatch, accepted Delivery and final materialization recheck the
 frozen context and actual Run destination. Delivery/Source commit reuse the canonical
 Source ACL locks; a lost permission cannot be turned into a content write by replaying
@@ -448,3 +479,14 @@ The private SIGKILL test uses the existing Job/Run terminal reconciler, not a GE
 to finish work. Cancellation is stored as a failed extraction job with
 `source_material_cancelled` and projected as cancelled only after canonical terminal
 Run settlement. Synthetic Host evidence is not a live remote Host or semantic quality verdict.
+
+### Following discovery submissions
+
+The shared submit schema includes a bounded optional `coverage.discovery`.
+Following collection admission requires it; saved-item preparation and manual
+investigation do not acquire this requirement. This reports dynamic search
+angles, actual queries/outcomes, remaining gaps and stop reason as unverified
+Agent statements. The native collector uses existing canonical Run events as
+separate execution evidence and the shared goal selector for filtering/deduplication
+before caps. See [Source Goals](SOURCE_GOALS.md#broad-discovery-and-bounded-continuity)
+for bounded cross-check context, authority revalidation and persistence.

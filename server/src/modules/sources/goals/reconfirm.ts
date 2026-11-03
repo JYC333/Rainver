@@ -2,7 +2,9 @@ import type {ServerConfig} from '../../../config.js';
 import type {SourceGoalBindingSpec} from '@rainver/protocol';
 import {SourceGoalPlanSchema} from '@rainver/protocol';
 import {HttpError,withDbTransaction,type Pool,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
-import {activeGoalIntent,goalSourceFingerprint,goalSourceScope,requireGoal,type GoalRow,type GoalSourceScope} from './access.js';
+import {activeGoalIntent,goalSourceRow,goalSourceFingerprint,goalSourceScope,requireGoal,type GoalRow,type GoalSourceScope} from './access.js';
+import {canRestoreGoalChannel,confirmChannelRestorationState} from './channelRestoration.js';
+import {assertLegacySourceOwner} from './compatibility.js';
 import {preflightGoalSource} from './preflight.js';
 import {sourceGoalError} from './dispatchError.js';
 
@@ -69,6 +71,7 @@ export interface BindingReconfirmation{
  related_changes:{kind:string;at:string}[];
  /** Opaque token of the state shown; confirming requires the same. */
  authority:string|null;
+ restore_channel?:boolean;
 }
 
 export async function readBindingReconfirmation(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,goalId:string,bindingId:string):Promise<BindingReconfirmation>{
@@ -76,17 +79,18 @@ export async function readBindingReconfirmation(db:Queryable,config:ServerConfig
  const b=(await db.query<BindingRow>('SELECT id,goal_id,source_connection_id,spec_json,status,revision,lease_token,last_success_at::text,fixture_json FROM source_goal_bindings WHERE id=$1 AND goal_id=$2 AND space_id=$3',[bindingId,goalId,identity.spaceId])).rows[0];
  if(!b)throw new HttpError(404,'Binding not found');
  const empty={binding_id:b.id,binding_revision:b.revision,source_name:null,current:null,changed:null,related_changes:[],authority:null};
- if(!(await sourceChangeBlocked(db,b))||!(await activeSources(db,g)).has(b.source_connection_id))return {...empty,resolvable_by:'not_needed'};
+ const restore=canRestoreGoalChannel(g,b,await goalSourceRow(db,g.space_id,b.spec_json));
+ if((!restore&&!(await sourceChangeBlocked(db,b)))||!(await activeSources(db,g)).has(b.source_connection_id))return {...empty,resolvable_by:'not_needed'};
  if(g.owner_user_id!==identity.userId)return {...empty,resolvable_by:'topic_owner'};
  // Every gate of activation, as the owner, for the Source as it is now.
  let c;
- try{c=await preflightGoalSource(db,config,identity,await activeGoalIntent(db,g),b.spec_json);}
+ try{c=await preflightGoalSource(db,config,identity,await activeGoalIntent(db,g),b.spec_json,restore);}
  catch(error){if(error instanceof HttpError&&[403,404,409].includes(error.statusCode)||error instanceof Error&&/^source_[a-z_]+$/.test(error.message))return {...empty,resolvable_by:'source_access'};throw error;}
  const scope=goalSourceScope(c);
  const related=await db.query<{proposal_type:string;at:string}>(`SELECT proposal_type,COALESCE(reviewed_at,updated_at)::text AS at FROM proposals WHERE space_id=$1 AND status='accepted' AND payload_json->>'source_connection_id'=$2 AND COALESCE(reviewed_at,updated_at)>COALESCE($3::timestamptz,'-infinity'::timestamptz) ORDER BY COALESCE(reviewed_at,updated_at) LIMIT 10`,[identity.spaceId,b.source_connection_id,b.fixture_json?.confirmed_at&&b.last_success_at?(b.fixture_json.confirmed_at>b.last_success_at?b.fixture_json.confirmed_at:b.last_success_at):b.fixture_json?.confirmed_at??b.last_success_at]);
  return {binding_id:b.id,binding_revision:b.revision,resolvable_by:'you',source_name:c.name,
   current:{capture_policy:scope.capture_policy,retention_policy:scope.retention_policy,source_status:scope.source_status,channel_status:scope.channel_status,uses_credential:scope.uses_credential},
-  changed:changedKeys(b.fixture_json?.authority_scope,scope),related_changes:related.rows.map(r=>({kind:r.proposal_type,at:new Date(r.at).toISOString()})),authority:goalSourceFingerprint(c)};
+  changed:changedKeys(b.fixture_json?.authority_scope,scope),related_changes:related.rows.map(r=>({kind:r.proposal_type,at:new Date(r.at).toISOString()})),authority:goalSourceFingerprint(c),...(restore?{restore_channel:true}:{})};
 }
 
 /**
@@ -110,26 +114,34 @@ async function lockSourceAuthority(tx:Queryable,spaceId:string,spec:SourceGoalBi
  * same binding revision and fingerprint, compared under the Source locks above;
  * repeats of a confirmation that already took effect return the binding as it is.
  */
-export async function confirmBindingSource(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,goalId:string,bindingId:string,input:{binding_revision:number;authority:string}){
+export async function confirmBindingSource(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,goalId:string,bindingId:string,input:{binding_revision:number;authority:string;restore_channel?:boolean}){
  try{return await withDbTransaction(db,async tx=>{
   await tx.query('SELECT id FROM source_goals WHERE id=$1 AND space_id=$2 FOR UPDATE',[goalId,identity.spaceId]);
   const g=await requireGoal(tx,identity,goalId,true);
   const b=(await tx.query<BindingRow>('SELECT id,goal_id,source_connection_id,spec_json,status,revision,lease_token,last_success_at::text,fixture_json FROM source_goal_bindings WHERE id=$1 AND goal_id=$2 AND space_id=$3 FOR UPDATE',[bindingId,goalId,identity.spaceId])).rows[0];
   if(!b)throw new HttpError(404,'Binding not found');
   // The same confirmation, already applied (a retried request): nothing more to do.
-  if(b.revision===input.binding_revision+1&&b.status!=='paused'&&b.fixture_json?.authority_sha256===input.authority)return {binding_id:b.id,binding_revision:b.revision,status:b.status};
+  if(b.revision===input.binding_revision+1&&b.status!=='paused'&&(b.fixture_json?.authority_sha256===input.authority||input.restore_channel&&(b.fixture_json as Record<string,unknown>)?.restored_from_authority===input.authority))return {binding_id:b.id,binding_revision:b.revision,status:b.status};
   if(b.revision!==input.binding_revision)throw sourceGoalError(409,'source_binding_changed');
-  if(!(await sourceChangeBlocked(tx,b)))throw sourceGoalError(409,'source_binding_not_blocked');
+  if(!input.restore_channel&&!(await sourceChangeBlocked(tx,b)))throw sourceGoalError(409,'source_binding_not_blocked');
   if(b.lease_token)throw new HttpError(409,'Source execution in progress');
   if(g.status==='deleted'||!(await activeSources(tx,g)).has(b.source_connection_id))throw sourceGoalError(409,'source_binding_not_active');
+  if(input.restore_channel&&g.project_id)await tx.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR UPDATE',[g.project_id,identity.spaceId]);
   await lockSourceAuthority(tx,identity.spaceId,b.spec_json);
   // Every gate of activation, then the fingerprint, both read under those locks.
-  const c=await preflightGoalSource(tx,config,identity,await activeGoalIntent(tx,g),b.spec_json);
+  let c=await preflightGoalSource(tx,config,identity,await activeGoalIntent(tx,g),b.spec_json,!!input.restore_channel);
   const now=goalSourceFingerprint(c);
   if(now!==input.authority)throw sourceGoalError(409,'source_scope_changed');
+  if(input.restore_channel){
+   if(!canRestoreGoalChannel(g,b,c))throw sourceGoalError(409,'source_scope_changed');
+   await assertLegacySourceOwner(tx,identity.spaceId,b.spec_json.source_channel_id,g.id);
+   await tx.query("UPDATE source_channels SET status='active' WHERE id=$1 AND space_id=$2",[b.spec_json.source_channel_id,identity.spaceId]);
+   await confirmChannelRestorationState(tx,g,b.spec_json.source_channel_id);
+   c=await preflightGoalSource(tx,config,identity,await activeGoalIntent(tx,g),b.spec_json);
+  }
   const updated=(await tx.query<{revision:number;status:string}>(`UPDATE source_goal_bindings SET status='active',retry_at=NULL,failures=0,revision=revision+1,updated_at=now(),
      fixture_json=(COALESCE(fixture_json,'{}'::jsonb)-'collection_error'-'repair_block_reason')||$2::jsonb WHERE id=$1 RETURNING revision,status`,
-   [b.id,{authority_sha256:now,authority_scope:goalSourceScope(c),confirmed_at:new Date().toISOString(),reconfirmed_by:identity.userId}])).rows[0];
+   [b.id,{authority_sha256:goalSourceFingerprint(c),authority_scope:goalSourceScope(c),confirmed_at:new Date().toISOString(),reconfirmed_by:identity.userId,...(input.restore_channel?{restored_from_authority:input.authority}:{})}])).rows[0];
   return {binding_id:b.id,binding_revision:updated.revision,status:updated.status};
  });}catch(error){
   // A Source write holding its rows in the opposite order: the Source is being changed now. Nothing was confirmed.

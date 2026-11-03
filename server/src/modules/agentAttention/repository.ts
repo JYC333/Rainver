@@ -13,6 +13,7 @@ export interface WorkTarget {
   identity: AgentWorkItem["identity"];
 }
 export interface RunFact extends WorkRunFacts {
+  reading_background?: boolean;
   agent_name?: string | null;
   runtime_key?: string | null;
   automation_id: string | null;
@@ -241,6 +242,10 @@ export class AgentAttentionRepository {
         r.output_json->'waiting_for_results'->>'scope' AS wait_scope,
         r.output_json->'waiting_for_results'->'depends_on_run_ids' AS dependencies,
         CASE WHEN r.contract_snapshot_json->'source'->>'kind' IS NOT NULL THEN jsonb_build_object('kind',r.contract_snapshot_json->'source'->>'kind','id',r.contract_snapshot_json->'source'->>'id') END AS contract_source,
+        COALESCE(r.trigger_origin IN ('system','job') AND (
+          r.contract_snapshot_json->'workflow_input_json'->'source_goal'->>'purpose'='collect'
+          OR r.contract_snapshot_json->'workflow_input_json'->'information_briefing'->>'scope_key' LIKE 'following:%'
+        ),false) AS reading_background,
         r.model_override_json->'chat_turn'->>'retry_of_run_id' AS retry_of_run_id,
         r.model_override_json->'chat_turn'->>'schema_version'='chat_turn.v1' AS is_chat_turn,
         r.error_json->>'authorization_request_id' AS authorization_request_id,
@@ -251,7 +256,7 @@ export class AgentAttentionRepository {
     SELECT r.id,r.space_id,r.execution_kind,r.agent_id,r.status,r.owner_user_id,r.instructed_by_user_id,
       CASE WHEN r.effective_level='full' THEN left(agent.name,500) END AS agent_name,r.runtime_key,
       COALESCE(r.project_id,g.project_id,s.project_id) AS project_id,r.session_id,r.parent_run_id,r.root_run_id,r.cause_run_id,r.delegation_id,
-      r.trigger_origin,r.run_role,r.run_group_id,r.contract_source,
+      r.trigger_origin,r.run_role,r.run_group_id,r.contract_source,r.reading_background,
       COALESCE(origin.automation_id,workflow_origin.automation_id) AS automation_id,COALESCE(origin.workflow_execution_id,workflow_origin.id) AS workflow_execution_id,ac.id AS autonomy_candidate_id,ac.launch_tick_id AS autonomy_tick_id,
       COALESCE((r.wait_flags->>'waiting_for_quota')::boolean,false) AS wait_quota,COALESCE((r.wait_flags->>'waiting_for_turn')::boolean,false) AS wait_turn,
       r.wait_scope,

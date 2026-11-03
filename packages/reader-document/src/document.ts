@@ -160,7 +160,11 @@ function block(node: Record<string, unknown>): ReaderNode | null {
     case "image": {
       const src = stringAttr(attrs.src);
       if (!src) return null;
-      return { type: "image", attrs: { src, alt: stringAttr(attrs.alt) ?? "", title: stringAttr(attrs.title) } };
+      const dimensions = Object.fromEntries(["width", "height"].flatMap(key => {
+        const value = attrs[key];
+        return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 100_000 ? [[key, value]] : [];
+      }));
+      return { type: "image", attrs: { src, alt: stringAttr(attrs.alt) ?? "", title: stringAttr(attrs.title), ...dimensions } };
     }
     case "table": {
       const rows = (Array.isArray(node.content) ? node.content : []).map(row => {

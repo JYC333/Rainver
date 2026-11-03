@@ -16,6 +16,24 @@ export const SourceMaterialContentUnavailableReasonSchema=z.enum(['not_read','ac
 export type SourceMaterialContentUnavailableReason=z.infer<typeof SourceMaterialContentUnavailableReasonSchema>;
 export const SourceMaterialReadingInfoSchema=SourceMaterialReadingContentSchema.omit({text:true}).extend({method:z.enum(['agent','extractor'])});
 export type SourceMaterialReadingInfo=z.infer<typeof SourceMaterialReadingInfoSchema>;
+/** Collection-only search account. These are Agent statements, never tool evidence. */
+export const SourceCollectionDiscoverySchema=z.object({
+ angles:z.array(z.object({
+  direction:z.string().trim().min(1).max(200),
+  queries:z.array(z.string().trim().min(1).max(500)).max(8),
+  outcome:z.enum(['results_found','no_results','failed','not_attempted']),
+  note:z.string().trim().min(1).max(500),
+ }).strict()).min(1).max(8),
+ remaining_gaps:z.array(z.string().trim().min(1).max(300)).max(8),
+ stop_reason:z.object({code:z.enum(['item_limit','budget','diminishing_returns','preview_sample','tool_unavailable','search_failed']),detail:z.string().trim().min(1).max(500)}).strict(),
+}).strict().superRefine((v,c)=>{
+ if(!v.angles.some(a=>a.outcome!=='not_attempted'))c.addIssue({code:z.ZodIssueCode.custom,path:['angles'],message:'Report an attempted search or an actual tool failure'});
+ for(const [i,a] of v.angles.entries()){
+  if(['results_found','no_results'].includes(a.outcome)&&!a.queries.length)c.addIssue({code:z.ZodIssueCode.custom,path:['angles',i,'queries'],message:'Report the queries actually used'});
+  if(a.outcome==='not_attempted'&&a.queries.length)c.addIssue({code:z.ZodIssueCode.custom,path:['angles',i,'queries'],message:'An unattempted direction cannot claim executed queries'});
+ }
+});
+export type SourceCollectionDiscovery=z.infer<typeof SourceCollectionDiscoverySchema>;
 /** Agent-provided material, not independently verified search/tool evidence. */
 export const SourceMaterialSubmissionSchema=z.object({
  processing_id:IdSchema,
@@ -35,7 +53,10 @@ export const SourceMaterialSubmissionSchema=z.object({
  /** Topic judgment could not be completed in this Run; candidates are still kept. */
  judgment_failure:z.object({message:z.string().trim().min(1).max(500)}).strict().nullish(),
  failure:z.object({code:z.enum(['unavailable','permission_denied','failed']),message:z.string().min(1).max(500)}).strict().nullable(),
- coverage:z.object({truncated:z.boolean(),exhaustive:z.literal(false),limitations:z.array(z.string().max(500)).max(10)}).strict(),
+ coverage:z.object({
+  /** Required by Following collection admission; saved-item processing has no discovery step. */
+  discovery:SourceCollectionDiscoverySchema.optional(),
+  truncated:z.boolean(),exhaustive:z.literal(false),limitations:z.array(z.string().max(500)).max(10)}).strict(),
 }).strict().superRefine((v,c)=>{if(v.status==='failed'&&(!v.failure||v.items.length))c.addIssue({code:z.ZodIssueCode.custom,path:['failure'],message:'Failed searches require a failure and zero items'});if(v.items.reduce((n,i)=>n+(i.content?.text.length??0)+(i.summary?.length??0),0)>200000||new TextEncoder().encode(JSON.stringify(v)).length>350000)c.addIssue({code:z.ZodIssueCode.custom,path:['items'],message:'Total reading text exceeds 200000 characters; submit fewer useful items'});if(v.status==='succeeded'&&v.failure)c.addIssue({code:z.ZodIssueCode.custom,path:['failure'],message:'Successful searches must have failure:null'});});
 export type SourceMaterialSubmission=z.infer<typeof SourceMaterialSubmissionSchema>;
 

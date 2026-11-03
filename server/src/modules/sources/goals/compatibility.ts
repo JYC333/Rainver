@@ -16,7 +16,9 @@ export async function mapLegacyGoal(db:Pool,identity:SpaceUserIdentity,channelId
  return withDbTransaction(db,async tx=>{
   const r=await tx.query(`SELECT ch.*,sc.owner_user_id,sc.project_id,sc.name AS source_name FROM source_channels ch JOIN source_connections sc ON sc.id=ch.source_connection_id AND sc.space_id=ch.space_id WHERE ch.id=$1 AND ch.space_id=$2 AND sc.deleted_at IS NULL FOR UPDATE OF ch`,[channelId,identity.spaceId]);const c=r.rows[0];if(!c || c.owner_user_id!==identity.userId)throw new HttpError(404,'Source not found');
   await assertSourceConnectionManageable(tx,identity,String(c.source_connection_id));await resolveContentCreationContext(tx,{userId:identity.userId,requestSpaceId:identity.spaceId,projectId:c.project_id as string|null});if(await contentDecisionFromDb(tx,identity,'source_connection',String(c.source_connection_id),{includeOversight:false})!=='full')throw new HttpError(403,'Source content unavailable');
-  const existing=await tx.query('SELECT * FROM source_goals WHERE space_id=$1 AND legacy_channel_id=$2',[identity.spaceId,channelId]);if(existing.rows[0])return {goal:existing.rows[0],created:false,dry_run:dryRun};
+  const existing=await tx.query('SELECT * FROM source_goals WHERE space_id=$1 AND legacy_channel_id=$2',[identity.spaceId,channelId]);
+  await assertLegacySourceOwner(tx,identity.spaceId,channelId,existing.rows[0]?.id);
+  if(existing.rows[0])return {goal:existing.rows[0],created:false,dry_run:dryRun};
   const intent=`${c.source_name} — ${c.name}`;if(dryRun)return {created:false,dry_run:true,source_connection_id:c.source_connection_id,source_channel_id:channelId,intent};
   const profile=await tx.query(`SELECT a.id,p.id AS profile_id FROM agents a JOIN agent_runtime_profiles p ON p.agent_id=a.id AND p.space_id=a.space_id WHERE a.space_id=$1 AND a.owner_user_id=$2 AND a.status='active' AND p.enabled=true ORDER BY (a.agent_kind='system_assistant') DESC,p.is_default DESC,a.created_at LIMIT 1`,[identity.spaceId,identity.userId]);
   const scheduler=await tx.query(`SELECT * FROM scheduler_tasks WHERE space_id=$1 AND ((task_type='source_channel_scan' AND task_key=$2) OR (task_type='project_information_monitoring' AND task_key=$3 AND EXISTS(SELECT 1 FROM projects p JOIN project_information_monitoring_versions v ON v.id=p.active_information_monitoring_version_id WHERE p.id=$3 AND v.config_json->>'source_channel_id'=$2)))`,[identity.spaceId,channelId,c.project_id]);
@@ -62,11 +64,18 @@ export async function rollbackGoalCompatibility(db:Pool,identity:SpaceUserIdenti
 export async function setLegacyGoalPaused(db:Queryable,identity:SpaceUserIdentity,goalId:string,paused:boolean,config:ServerConfig){
  const g=await requireGoal(db,identity,goalId,true);if(!g.legacy_channel_id || g.compatibility_json?.scheduler_owner!=='legacy')return false;
  await requireLegacyGoalSource(db,config,identity,g,true);
+ if(g.project_id)await db.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR UPDATE',[g.project_id,identity.spaceId]);
+ const channel=(await db.query('SELECT * FROM source_channels WHERE id=$1 AND space_id=$2 FOR UPDATE',[g.legacy_channel_id,identity.spaceId])).rows[0];if(!channel)throw new HttpError(404,'Source unavailable');
+ // A stale compatibility alias can be stopped/deleted without touching the
+ // channel now owned by another Following. Resuming it must not double-schedule.
+ if(await hasGoalSchedulingOwner(db,identity.spaceId,g.legacy_channel_id,g.id)){
+  if(paused)return false;
+  throw new HttpError(409,'source_goal_owns_schedule');
+ }
  if(g.project_id){
   const monitoring=(await db.query(`SELECT p.active_information_monitoring_version_id AS id FROM projects p JOIN project_information_monitoring_versions v ON v.id=p.active_information_monitoring_version_id WHERE p.id=$1 AND p.space_id=$2 AND v.config_json->>'source_channel_id'=$3`,[g.project_id,identity.spaceId,g.legacy_channel_id])).rows[0];
   if(monitoring){const {ProjectMonitoringService}=await import('../../projects/monitoring/service.js');await new ProjectMonitoringService(db,config).setPaused(identity,g.project_id,String(monitoring.id),paused);}
  }
- const channel=(await db.query('SELECT * FROM source_channels WHERE id=$1 AND space_id=$2 FOR UPDATE',[g.legacy_channel_id,identity.spaceId])).rows[0];if(!channel)throw new HttpError(404,'Source unavailable');
  await db.query('UPDATE source_channels SET status=$2 WHERE id=$1',[g.legacy_channel_id,paused?'paused':'active']);
  const rule=channel.schedule_rule_json as import('../sourceScheduleInput.js').SourceScheduleRule|null;
  const scheduled=!paused&&channel.fetch_frequency!=='manual';
@@ -76,8 +85,11 @@ export async function setLegacyGoalPaused(db:Queryable,identity:SpaceUserIdentit
  if(!scheduled)await db.query("UPDATE scheduler_tasks SET status='paused',next_run_at=NULL WHERE space_id=$1 AND task_type='source_channel_scan' AND task_key=$2",[identity.spaceId,g.legacy_channel_id]);return true;
 }
 
-export async function assertLegacySourceOwner(db:Queryable,spaceId:string,channelId:string){
- const owner=await db.query(`SELECT 1 FROM source_goal_bindings b JOIN source_goals g ON g.id=b.goal_id AND g.space_id=b.space_id WHERE g.space_id=$1 AND b.spec_json->>'source_channel_id'=$2 AND g.active_version_id IS NOT NULL AND g.status<>'deleted'`,[spaceId,channelId]);if(owner.rows.length)throw new HttpError(409,'source_goal_owns_schedule');
+async function hasGoalSchedulingOwner(db:Queryable,spaceId:string,channelId:string,exceptGoalId?:string){
+ const owner=await db.query(`SELECT 1 FROM source_goal_bindings b JOIN source_goals g ON g.id=b.goal_id AND g.space_id=b.space_id WHERE g.space_id=$1 AND b.spec_json->>'source_channel_id'=$2 AND g.active_version_id IS NOT NULL AND g.status<>'deleted' AND ($3::varchar IS NULL OR g.id<>$3)`,[spaceId,channelId,exceptGoalId??null]);return owner.rows.length>0;
+}
+export async function assertLegacySourceOwner(db:Queryable,spaceId:string,channelId:string,exceptGoalId?:string){
+ if(await hasGoalSchedulingOwner(db,spaceId,channelId,exceptGoalId))throw new HttpError(409,'source_goal_owns_schedule');
 }
 
 /** Read projection only; the original task/cursor remains authoritative until transfer. */

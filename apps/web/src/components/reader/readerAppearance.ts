@@ -13,8 +13,8 @@ let cached: ReaderAppearance | null = null
 registerInMemoryResidue(() => { cached = null })
 
 const LINE_HEIGHT = { compact: 1.55, normal: 1.75, relaxed: 1.95 } as const
-const MEASURE = { narrow: '32em', medium: '38em', wide: '46em' } as const
-const FONT = { sans: 'inherit', serif: 'ui-serif, Georgia, "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", serif' } as const
+const MEASURE = { narrow: '36rem', medium: '52rem', wide: '68rem', full: 'none' } as const
+const FONT = { sans: 'var(--font-sans)', serif: 'ui-serif, Georgia, "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", serif' } as const
 
 /** The column's custom properties for an appearance (see .reader-column in index.css). */
 export function appearanceStyle(appearance: ReaderAppearance): CSSProperties {

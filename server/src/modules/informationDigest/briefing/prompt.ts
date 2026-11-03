@@ -62,6 +62,7 @@ export function renderInstruction(comparison: "baseline" | "delta", contextChang
   return [
     "Read the material and write one synthesis, not a per-article summary.",
     "- Group reports of the same event into one highlight; keep contradictions in `contradictions`. Reposts of one report are not independent confirmation, and different source domains are not proof of independent confirmation either. If unsure two reports are the same event, keep them separate.",
+    '- suggested_action must be exactly one of "act", "watch", "none". Use "act" for a concrete action, "watch" for monitoring, or "none" when no action follows. Never use "adopt" or other synonyms.',
     "- At most 6 highlights, most important first. Importance comes from the context, the change and the evidence — not from popularity or a title match. Unrelated material may be left out of highlights.",
     comparison === "baseline"
       ? "- novelty: use \"baseline\" for every highlight."

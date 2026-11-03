@@ -30,6 +30,15 @@ channels in one transaction, refuses pending legacy work, pauses their old
 scan/Project-monitoring tasks, and sets manual channel frequency before creating
 the single goal task. Mapping alone never transfers schedules.
 
+Project collection admission freezes the existing daily Automation's timezone
+and slot-local date in the collection Job payload. Optional analysis rounds and
+`source_goal_runs.reading_date/reading_timezone` carry that same identity; a delayed
+worker or native Agent completion cannot silently move the check into another day.
+`goals/readingDay.ts` owns safe collection-only day checks and audit-day completion
+metadata, using the Information Digest facade for admitted theme dates.
+It exposes no source body or runtime diagnostic. Collection-only checks remain visible as day progress without publishing a content
+version or starting an analysis Run. Personal collection has no Project edition.
+
 The existing SystemActionDispatcher exposes bound `source.goal.read`, `sources`,
 `inspect`, `write_version`, `repair_candidate` actions to the existing Agent Run.
 A queued Run carries goal, purpose and (for repair) exact binding in its immutable
@@ -49,14 +58,22 @@ stage-one sequential `request(url)` channel. Dependencies, native network,
 ambient credentials, arbitrary host directories and unsafe runner fallback are
 not offered. Host capability describes executability only, never authorization.
 
-Planning may supply an optional `plan.title` (trimmed, 1–60 characters), a short
-subject label in the user's language. The existing author-bound, revision-checked
-version write stores it in the immutable plan and the goal's
-`compatibility_json.display_title` in the same transaction. Goal lists, detail,
-filters and authorized Reading topic links prefer that label; older plans work
-without one. The label changes presentation only, never collection intent,
-approved scope, cadence or budgets. Existing topics receive a label on their
-next planning write; opening a page never launches a naming Run.
+New planning writes require `plan.title` (trimmed, 1–60 characters) and a
+separate `plan.summary` (1–400 characters). The existing bound version action
+validates these structured outputs. Planning synthesizes the agreed topic from
+the authorized conversation, excluding retries and other operational messages;
+detailed questions belong in `analysis_brief`, and Source reasons describe scope.
+Lists and detail receive `goal.display`, projected from the active immutable
+plan, or the current plan before first activation. They never take their title
+or description from conversation input or the mutable display-title cache. A
+topic without a prepared plan has a translated neutral title. Briefing scopes
+use the public `goalPresentationTitleSql` read projection with the same version
+precedence; a frozen topic scope specifies its exact version. Neutral missing
+labels never recover conversation text or mutable cached titles. Stored plans
+require a title and short summary on reads and writes alike; there is no
+untitled-plan compatibility contract or page-open model call. Candidate names and summaries
+appear only in the proposed-direction preview until activation. This changes no
+search query, Source authority, cadence, budget or collection execution.
 
 ## Authority, preview and execution
 
@@ -267,7 +284,7 @@ Goal and message request keys make reconnect/replay idempotent. An interrupted
 queue leaves a recoverable pending message; another message cannot race it.
 Read projection returns `can_manage`; the server still rechecks every mutation.
 
-This conversation is the topic page's Advanced section (see
+This conversation is the topic page's adjustment dialog (see
 [Topic reading journey](#topic-reading-journey-ui)), not the setup path: it
 adjusts the plan, shows reasons, bounded cadence/usage, include/exclude
 preferences and an optional real trial sample (retained title, origin, time and
@@ -307,6 +324,11 @@ runner. Host capabilities confer no Source authorization.
 
 Channel row locking and the database legacy-job admission guard serialize a
 late old scheduler against takeover. Competing goals cannot both own a channel.
+Mapping checks the current binding owner under the channel lock before creating
+another compatibility identity. A stale legacy alias may be paused or deleted
+without changing the channel or Project-monitoring trigger owned by another
+Following (even when that owner is paused); resuming the alias is refused.
+Stop takes the goal lock, with Project then channel locks before legacy writes.
 Repeated plan changes preserve the first transfer snapshot rather than replacing
 it with an already-manual state. Project manual monitoring is also refused while
 an active goal owns its source. Goal stop leaves successful SourceItems intact.
@@ -569,14 +591,19 @@ The dispatcher exposes the actual action schema. Invalid submissions return fiel
 paths; at most three format/semantic submissions are allowed in the same Run,
 without new model Runs or renewed model-attempt budgets. Identical accepted
 submissions are idempotent; a different replacement is refused. Each call reloads
-the persisted running Run, its sole grant, deadline, owner/Space/Project, selected
+the persisted running Run, its sole grant, any explicit owner-set deadline, owner/Space/Project, selected
 Agent/Profile/configuration and Source/version authority. Cancellation, expiry,
 revocation and stale results fail closed. A corrected submission may settle a Run
 degraded solely by this action's field-validation errors (including transcribed
 bound IDs). Once a valid submission exists, this action's already-recorded/limit
 refusals do not discard it. Actual authority revocation and any other action
-failure still prevent acceptance. Queued time does not consume the 600-second dispatched
-execution budget; deadline recovery takes effect on the next existing tick/read.
+failure still prevent acceptance. Collection adds no total-duration budget. Explicit owner/administrator Run budgets
+remain authoritative; only those admitted deadlines may expire a live search.
+Queued time does not consume an explicit execution budget. Host/process failure,
+worker lease recovery and canonical cancellation remain in their existing owners.
+An active native preview does not expire during search; its fifteen-minute
+freshness window starts when collection settles. Duplicate preview admission
+still refuses an existing live native Run even after the initial freshness date.
 
 New Agent-search drafts request extract_text/full_text so the Agent can autonomously
 read articles or repository README/docs and submit readable, attributed material.
@@ -644,7 +671,69 @@ readable results over a long link list. Repository results may summarize README
 and documentation; article results may supply text or a clearly labeled synthesis.
 Item limits remain ceilings, not targets. Access failures keep the link with an
 explicit reason. Coverage remains non-exhaustive; tool failure without results is
-submitted as failure rather than waiting for the deadline.
+submitted as failure when the tool cannot run, rather than waiting indefinitely.
+
+### Broad discovery and bounded continuity
+
+`collectionPrompt.ts` owns collection instructions, separately from manual deep
+reading. The selected Agent plans dynamic topic-appropriate directions, begins
+with unrestricted-site discovery unless the approved topic limits sites, and
+uses targeted searches to fill gaps. An Agent-search Source is an execution
+channel, not a website allowlist. There are no domain percentages, required
+source categories or fixed multi-Agent research stages. Relevance checks stay
+shallow; newly discovered older relevant material is allowed.
+
+Following admission requires `coverage.discovery` on `source.material.submit`:
+1–8 directions, each with at most8 actual queries (500 characters each), an
+outcome and a short note; up to8 remaining gaps; and an explicit bounded stop
+reason. An untried direction cannot claim queries, and a tool failure can report
+no queries with an honest explanation. The common submission schema leaves this
+field optional for saved-item processing, which has no discovery stage; collection
+admission requires it for success, zero results and failure alike. Existing
+same-Run correction and explicit owner budget controls apply. Structural completeness does
+not prove relevance or adequate coverage and missing source categories do not
+fail a Run.
+
+`collectionDiscovery.ts` adds at most30 recent URLs (12000 URL characters) from
+full-readable memberships stored in the same collecting Source; it never copies
+bodies, excerpts or reading state. Canonical materials stored in another Source
+are excluded rather than bypassing that Source's independent egress authority.
+It also passes directions/outcomes, gaps and stopping reason from the latest
+terminal collection of the exact plan version and Source, when a valid structured
+account exists; actual query arrays are not recopied into the next prompt. This
+bounded history is advisory and incomplete. Source authority/egress and frozen
+item membership, URL and full-read access are rechecked at dispatch, submission
+and materialization. New history never replaces the frozen list during a Run. The frozen context
+uses the existing pure `evolution/hash.ts#sha256Json` helper to remain stable
+across PostgreSQL JSONB key ordering; no Evolution service authority is involved.
+
+Settlement keeps coverage in existing collection audit JSON even after temporary
+submission/body copies are scrubbed. Manual-save and continuous bootstrap carry
+the preview's coverage through the same recovery path. Both use
+`manualSearch.ts#stageAcceptedPreview` to stage the lease and accepted audit,
+while retaining their own authorization, eligibility and replay checks.
+`verification` remains
+`agent_provided_unverified`; `execution_evidence` references the canonical Run's
+existing `run_events`, with `search_queries: not_recorded`. Current runtime
+semantic events record tool lifecycle/name, not complete trustworthy query/result
+arguments. No vendor log parser, self-reported query attestation or web-coverage
+claim is introduced.
+
+Native candidates are URL-deduplicated and scope-filtered before any item cap.
+Live batches then use the shared `selectGoalResult`/`selectGoalPage` selector so
+already-stored goal members do not consume new-material slots; their evidenced
+change signals can still be processed. Preview caps apply after scope filtering.
+Counts distinguish observed, unique, eligible and returned materialization candidates;
+truncation stays explicit. This does not rewrite stored bodies or publish a
+Reading content version merely because collection completed.
+
+Reuse / Dependency Check: retain the canonical Agent Run, submission gateway,
+Zod contracts, Source item ACL/egress predicates, selector, materializer and audit
+JSON. Public research patterns informed the separation of breadth/depth and
+incremental discovery; adopting LangChain/GPT Researcher or a new paid search
+provider would duplicate execution and policy authority without helping these
+domain changes. No new dependency, scheduler, fetcher, model loop, schema
+migration or historical-data backfill is needed.
 
 ## Continuous following: confirmation, lifecycle and topic membership
 
@@ -799,6 +888,36 @@ retried identical request returns the result. Nothing else refreshes a
 fingerprint: reads, list, ticks and resume keep refusing, so old topics recover
 only by this explicit owner step, without rebuilding the topic.
 
+A channel paused by an old compatibility alias can be restored through that same
+confirmation endpoint. The GET includes `restore_channel:true` only when the
+Source remains active, its owner/Project match, the goal still owns the active
+binding and transfer, and changing only channel status back to active reproduces
+the binding's exact previously confirmed fingerprint. The UI names restoration
+explicitly, shows the paused channel, and POST must include `restore_channel:true`
+with the shown revision and current fingerprint. No lease or repair admission may
+be in flight. Under the canonical Source/goal gates and locks, confirmation
+restores only channel status, validates the original transfer snapshot and records
+revision+1 plus the restored authority. It accepts a touched legacy task update
+clock alone, acknowledging that clock in the transfer's expected snapshot;
+task identity, status, cadence, cursor, metadata and backfills must still match.
+It does not change schedules, budgets, Source configuration or goal intent, or
+start a Run. Reading/listing/checking alone never restores a channel.
+
+After authorized Source/owner/Project checks, an inactive Source or channel
+returns 409 `source_goal_source_inactive`, distinct from a permission refusal.
+The manual check does not enqueue work on that refusal; repair still treats an
+inactive Source as revoked execution authority. The topic shows the state issue
+without sending the person to credentials. On an operation 401/403/404/409, the
+page hides cached details while independently re-reading the goal; only a fresh
+authorized read restores them. A failed read leaves content cleared. Generic
+operation refusals do not claim a missing credential or spending approval.
+
+Reuse / Dependency Check: this repair extends the existing channel scheduling
+owner check, Source preflight, transfer CAS and exact-binding reconfirmation;
+UI uses the existing confirmation dialog and translated controls. No new scheduler,
+credential path, persistence framework or dependency is introduced. These are
+Following-specific authority semantics, with no commodity implementation to add.
+
 Goal list and detail stay available to a viewer who may manage or read the goal
 even when a bound or historical Source is deleted or no longer readable. Only a
 Source access refusal (403/404) marks it unavailable; other errors propagate.
@@ -942,21 +1061,23 @@ Project's read/write and Source ACL; nothing is shared across scopes.
   existing mapping read-only, or maps it, sends the described topic as its first
   message and follows; on return, follow is continued only if that message is
   shown committed. Recognized secrets are refused before any write.
-- **Topic page** (`topics/TopicDetail.tsx`): the update stream comes first —
-  the canonical Reading API filtered by `topic` with `topic_selection`
-  `important` (default) or `all` (`?selection=all` survives refresh). Items show
-  freshness (background / new / changed / unknown), judgment, its stated reason
-  and who judged, cited change evidence and the unverified Agent label. Reader
-  links return to the exact topic view. Empty states distinguish preparing,
-  first collection, paused, "checked, nothing new" and "nothing important yet".
-  The side panel shows `follow_state` dimensions (phase, health, queued/running
+- **Topic page** (`topics/TopicDetail.tsx`): single-column management, with
+  status, effective direction, Sources, recent checks, collected-material entry
+  and lifecycle controls. Current direction comes from the active version; a
+  newer candidate is shown separately for explicit application. The material
+  link opens personal Reading filtered by `topic` and `topic_selection=all`
+  (an explicit `?selection=important` retains that choice), or the Project's
+  Original materials tab filtered by `topic`. Articles retain the canonical
+  freshness/judgment/provenance, read state and Reader contracts there.
+  The status section shows `follow_state` dimensions (phase, health, queued/running
   collections, last/next check, last outcome, per-source health with localized
   reasons by `attention`/`resolvable_by`; missing permission is never "no
   updates"). A `source_changed` source offers "Review change and continue": a
   dialog with the current scope, what changed or related decisions, and the
   effect; confirming sends the shown revision and token and a 409 shows the
-  current state again. The Source page link appears only for `access` problems
-  (not for a change, setup or limit the topic resolves); badges and the waiting
+  current state again. For a Source needing attention, its remediation link appears only for `access`
+  problems (not for a change, setup or limit the topic resolves); healthy Sources
+  retain a configuration link inside Source details; badges and the waiting
   phase name the category and who is waited for (`topics/attention.ts`), the
   change history, and management: pause/resume, delete (material kept),
   tightening-only feedback (not relevant, hide a site, exclude a word, check
@@ -968,12 +1089,17 @@ Project's read/write and Source ACL; nothing is shared across scopes.
   is recorded as the follow's blocked reason, not charged again). Unconfirmed
   drafts and manual-save topics offer neither. A binding whose Source the viewer
   can no longer read arrives redacted (`SourceGoalUnavailableBindingSchema`:
-  identity and state only); the status panel shows it as an unavailable Source
+  identity and state only); the Sources section shows it as an unavailable Source
   with no details or link, while healthy Sources stay listed. An unfollowed or manual-save-only topic offers the same follow
   confirmation; a pending adjusted plan is applied with `follow` on that exact
   version. The plan conversation, plan details, optional trial sample, manual
-  save and Agent/model/mode settings are folded under Advanced. Collection
-  progress is shown only in the status panel, not repeated in the chat.
+  save and Agent/model/mode settings are folded in the adjustment dialog. Its
+  Direct edit and Discuss changes tabs share one single-column surface; the
+  composer stays inside the bounded viewport. Collection progress is shown
+  only in the status section, not repeated in the chat. Recent checks use the
+  existing authorized collection audits, without inventing missing counts or
+  exposing redacted Source details. Relevance/site feedback moves to article
+  details in owned-topic filtered Reading/Project Original materials.
 - **List** (`SourceGoalsList.tsx`): each topic with its phase, health,
   important/total/changes counts, last/next check, open, pause/resume and
   delete.
@@ -1015,7 +1141,7 @@ job, live native Run or unexpired binding lease is reused instead of starting a 
 An expired lease or abandoned/terminal audit alone never blocks the recovery tick.
 The job carries the active version; a superseded version stops without executing.
 The worker still enforces Source authority, budgets, runtime, cooldowns, cursors
-and materialization. No pause, repair or cooldown is cleared, no history reset,
+and materialization. Ordinary Check clears no pause, repair or cooldown and never resets history,
 and manual admission does not change the automatic cadence. Queue acknowledgement
 is not collection success; pending ticks appear in the existing follow-state
 queue counts until per-source collection audits take over.
@@ -1074,11 +1200,20 @@ The setup Agent is told that each topic can supply a reusable analysis purpose
 to subsequent reading. It derives `plan.analysis_brief` (1–4000 characters) from
 the person's actual request: why follow, up to three consequential questions,
 any named comparison target, useful evidence and the judgment sought. It includes
-that substance in `plan.summary`, without inventing a Project or baseline facts.
+the topic's overall purpose in the short `plan.summary`, without duplicating
+the full brief or inventing a Project or baseline facts.
 The field is optional for old plans and uses the existing version-write and
 activation gates; saving a later draft does not change the active purpose.
 
 Agent collection receives the exact collecting version, not mutable draft intent.
+Its code-owned discovery contract uses that purpose for topic relevance only;
+it does not execute the manual deep-reading method or require architecture
+investigation, comparison, source-code reading or a final judgment before intake.
+Ongoing collection explores varied relevant queries and sources within the
+authorized item/spending caps; only preview may stop at a representative sample. Relevant
+link-only candidates are valid, and deep reading remains manually triggered.
+The frozen `source_collection` context keeps the original Source/Project/egress
+and version checks independently of the deep-reading method deployment.
 Freshness and deduplication still govern new deliveries; older architecture/docs
 may be supporting evidence when overall understanding is needed. An unchanged
 repository entry is not new news, and a proposed PR is not shipped capability.
@@ -1088,10 +1223,13 @@ permissions, scheduler, schema migration or model loop.
 
 ## Human and conversational topic revisions
 
-The topic header exposes both Edit topic and Discuss changes; the conversation
-is the existing SourceGoalWorkbench, rather than an alternate chat/Agent loop.
+The topic header exposes Adjust following. Its shared dialog contains Direct
+edit and Discuss changes; the conversation is the existing SourceGoalWorkbench,
+rather than an alternate chat/Agent loop. Opening, changing tabs and closing
+are local UI operations. The form freezes the initial expected revision and
+retains edits across tab changes; a conflict keeps the draft for the person.
 POST `/:goalId/edit` accepts `SourceGoalEditSchema`: exact revision and idempotency
-key, title, intent, analysis brief, bounded include/exclude terms and optional
+key, title, short summary, intent, analysis brief, bounded include/exclude terms and optional
 queries for existing Agent-search Sources. It cannot author new endpoints, API
 credentials, cadence or budgets. The owner must also be a Project writer when
 scoped. It refuses an active planning Run or pending dispatch, preserves the
@@ -1197,13 +1335,12 @@ Each scheduler cohort has its own transaction; unexpected storage/programming
 failures roll back that cohort, allow the rest of the pass to proceed, then use
 the existing scheduler aggregate-error reporter rather than disappearing as success.
 
-R3 Project composition: explicit theme-analysis enable also records the sticky
-Project cutover marker on the Goal. Its stage-two Job is deterministic and has no
-model cost. Canonical pause/delete queues composition withdrawal in the Goal
-transaction; current/history reads hide stopped theme text immediately even before
-the Job publishes the removal revision. Collection authority is unchanged. See
+R3 Project composition: explicit theme-analysis enable records exact-version
+analysis consent on the Goal. Its stage-two Job is deterministic and has no
+model cost. Pause preserves published history; deletion withholds the deleted topic
+at read time without generating a content version. Collection authority is unchanged. See
 [Information Digest](../modules/information-digest.md#project-reading-stage-two-immutable-compositions)
-for the independent total-version and partial-round contracts.
+for the content-version publication and round-progress contracts.
 
 ### R5 explicit analysis confirmation
 
@@ -1214,3 +1351,123 @@ version: it confirms collection only and explains the later explicit analysis st
 Leaving analysis unchecked preserves collection only. Current topics expose purpose and a lazy analysis-admission/recent-round panel;
 turning analysis off does not pause collection. A pending purpose is not silently
 authorized. Existing owner controls and server Project-writer/Source gates still apply.
+
+### Analysis refresh and preparation completion
+
+Project composition and an open topic-analysis disclosure refresh pure GETs every
+five seconds while their returned rounds are collecting/generating. Completion,
+read failures, scope/session changes, unmount and historical composition views
+stop refreshes. Initial analysis settings render only a loading/error state until
+the authorized settings read succeeds; unknown enablement never shows opt-in or
+Agent selection controls. Refreshes never start collection, analysis or consent.
+
+Original extract-text/snapshot settlement wakes existing collecting theme rounds
+for that material through `wakeThemeRoundsForItem` and the canonical durable Job
+queue. Both success and failure release the barrier for reevaluation. Private
+Project deep-reading jobs do not wake shared themes. A running barrier job cannot
+swallow a later material-completion wake; pending/claimed immediate jobs coalesce,
+and the original deadline job remains a fallback. No new scheduler or collection
+budget is added. Reuse: existing Source extraction lifecycle, theme-round queue,
+Source/Project authority and page resource request generations.
+
+### Retry ownership and visible failures
+
+Project Reading overview reports blocked topic analysis with a localized reason
+and a scoped link to that Following's `#topic-analysis` disclosure. It does not
+retry analysis or collection. The disclosure opens from this link and offers
+explicit `theme-rounds/retry` for a blocked, current, enabled purpose only; Source
+collection failures, changed scope/access and exhausted limits direct the person
+to their cause instead. Its notice says the Agent may run again using the frozen
+purpose/material under existing limits, without reacquiring articles. The existing
+server gate, exact round, scope/context checks, attempt budget and single-flight
+admission remain authoritative. Old attempts keep their exact frozen request;
+new requests explicitly list suggested_action's act/watch/none enum (adopt is
+invalid), without normalizing invalid output into publication.
+
+Composition reads expose an optional `composition_status`, derived from the latest
+Project composition Job and latest topic barriers: idle, waiting_for_analysis,
+queued, running, complete or failed. No Job internals or model text are returned.
+The overview offers composition retry only on failed composition with no blocked
+or active analysis barrier, and only to a current Project writer. Queued/running
+composition is polled through the existing page resource, with honest progress.
+The retry route independently checks the same state; active composition is
+idempotent and other nonfailure states refuse with composition_not_failed. It
+never starts a theme Run. History remains read-only; source/Project read gates
+and sensitive-content clearing on authorization loss remain unchanged.
+
+Reuse / Dependency Check: existing theme retry HTTP contract, briefing admission,
+Job queue/status and page-owned resources supply all behavior. Shared Buttons,
+SpaceLink and translations render it; no dependency, schema migration, alternate
+model loop or retry scheduler is added.
+
+### Current analysis state and disclosure lifetime
+
+Topic and overview share `topics/roundProjection.ts` for missing-result reads.
+Output-invalid/truncated errors describe an actual analysis version. If that
+version is absent, the read DTO reports `awaiting_analysis` with no old output
+error, rather than claiming the removed result is still the current failure.
+This is a read projection only: the durable collection barrier and its audit
+are unchanged, no migration or silent retry occurs. Admission, budget, Source,
+context and superseded errors remain valid independently of a generated result.
+Composition stays waiting for analysis. The same existing Retry analysis action
+and all of its owner/version/context/budget checks apply.
+
+After first opening, the analysis disclosure retains its scoped component,
+loaded controls and unsent setup choices across collapse. Closed panels stop
+periodic reads. Reopening revalidates through the existing page resource, keeping
+same-scope content and disabling actions while the GET is pending. A refused
+read clears cached content/controls; scope/version remount and session epochs
+still reject late responses. Initial unknown settings still show loading only.
+Reuse: existing read projection, bounded DTO enum, page resource and lifecycle;
+there is no global cache, alternate control or additional execution path.
+
+## Live collection activity
+
+The owner sees `TopicCollectionProgress` directly inside the Following status
+card. It consumes the existing authorized Run-turn SSE (`runsApi.streamTurn`),
+not a new progress table, action, event bus or guessed percentage. Subscription
+requires an accessible collection audit/binding or preview contribution. It
+shows the last two real tool calls, completed/total tool counts, a bounded recent
+public assistant update and last observed activity. Reasoning, tool inputs and
+outputs are not rendered in this compact surface. A new Run/Space remounts the
+view; refused 401/403/404 reads clear retained activity and stop reconnecting.
+Network interruptions reconnect after five seconds; a blocked stream that closes
+also reconnects so a later decision can resume it. Existing five-second domain
+polling still settles collection state after the Run ends.
+
+The five-minute quiet indication is advisory only, including when a long tool
+call is in progress; it never stops a Run or proves a deadlock. Current tools do
+not expose enough evidence for an automatic deadlock verdict. The Agent is asked
+to publish brief ordinary progress and to stop discovery when useful results are
+exhausted or repeated tool failures prevent progress. Only an explicit user stop,
+an admitted owner budget, or actual runtime/Host failure ends it externally.
+The Stop control reuses canonical `runsApi.stop`; a stop request is not presented
+as confirmed process exit. The execution link retains detailed diagnostics and
+normal authorization/resource recovery. No paid recovery Run is launched by a
+progress read or a lost browser connection.
+
+Reuse / Dependency Check: existing Run-turn transport, Run stop action, Source
+ACL/redaction, lifecycle/recovery and theme-token controls own these concerns;
+no additional search watchdog or scheduling framework is introduced.
+
+### Explicit recovery of failed Agent collection
+
+`SourceGoalFollowState.sources[].retryable` is a server-derived owner capability
+for a running topic with Project write access, readable unchanged Source and a
+known native execution failure. The top Check action becomes **Retry collection**
+with a concise explanation. Source cards retain automatic-backoff timing but do
+not redirect an execution failure to Source setup or suggest creating a preview.
+Waiting on permission, setup, account budgets or provider quota is not retryable.
+
+The existing Check endpoint accepts `retry_failed: true` only as an explicit
+owner request. It locks the current goal/bindings, scopes them to the active
+version, preflights eligible Sources/Profile and verifies saved authority hashes.
+Only after admitting a new canonical collection Job does it release known native
+execution-failure cooldown/pauses. Already queued/live work is reused without
+reopening another binding. The shared `collectionRetry.ts` predicate is used in
+both capability projection and admission. No new retry endpoint, writer, Run
+loop or generic state-reset operation exists. Failure counts, historical audits,
+cursors, Source settings, automatic cadence, spend consent and account limits
+are preserved. A successful collection clears failure history through existing
+settlement; an unsuccessful explicit retry returns to the normal bounded failure
+policy. User-paused topics still require their existing Resume action.

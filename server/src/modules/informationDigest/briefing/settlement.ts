@@ -211,7 +211,7 @@ async function settleVersion(db: Queryable, run: RunRecord, context: NonNullable
     }
     const published = await repository.settle(row.space_id, row.id, run.id, { status: "ready", result: validated as unknown as Record<string, unknown> });
     // Only this transition notifies: a replay, a late attempt or a failure never reaches here with `published`.
-    if (published && !goalOfKey(row.scope_key) && isMeaningfulChange(row, validated, authorization.allowed)) await notifyMeaningfulChange(tx, adapter, row);
+    if (published && isMeaningfulChange(row, validated, authorization.allowed)) await notifyMeaningfulChange(tx, adapter, row);
     return adapter;
   });
 }

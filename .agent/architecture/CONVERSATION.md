@@ -635,7 +635,11 @@ Only a new authenticated user message opens a finite cycle; canonical Run/Profil
 admission remains authoritative. Dispatch failures release pending claims, and
 message-key retries reuse a committed Run. The shared draft hook accepts an
 optional persistence predicate; only the goal composer opts into recognized-secret
-filtering and clearing old forbidden drafts. Other consumers remain unchanged.
+filtering and clearing old forbidden drafts. Its adjustment dialog also opts
+into `flushOnUnmount`: the hook flushes through the same persistence predicate
+when the dialog closes before its 250ms debounce, only after restore is ready
+and while the destination and session epoch still match. Logout cannot
+recreate a cleared draft. Other consumers keep the default debounce behavior.
 
 `ConversationComposer.inputAttachmentsEnabled` defaults to true, including legacy
 consumers without a parts callback (for example Notebook). Only the goal surface

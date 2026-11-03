@@ -111,6 +111,8 @@ export const BriefingEvidenceSchema = z.object({
   original_artifact_id:IdSchema.optional(),
   original_content_hash:z.string().max(128).optional(),
   title: z.string(),
+  /** Bounded, currently authorized source text. A retained reference uses its exact original, never a newer body or private analysis. */
+  excerpt: z.string().max(400).nullable().optional(),
   source_domain: z.string().nullable(),
   occurred_at: ISODateTimeSchema.nullable(),
   delta_class: BriefingDeltaClassSchema,

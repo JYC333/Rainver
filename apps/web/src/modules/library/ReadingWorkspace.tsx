@@ -1,3 +1,4 @@
+import {TopicMaterialFeedback} from '../sources/topics/TopicMaterialFeedback'
 import {ReadingMethodEntry} from '../prompts/ReadingMethodEntry'
 import { toast } from 'sonner'
 import { sessionEpoch } from '../../lib/sessionResidue'
@@ -40,6 +41,7 @@ export default function ReadingWorkspace({ projectId }: { projectId?: string }) 
 }
 
 function ScopedReading({ spaceId, projectId }: { spaceId: string; projectId?: string }) {
+  const {userId}=useSpace()
   const { t } = useAppTranslation()
   const [params, setParams] = useSearchParams()
   const requested = params.get('view')
@@ -175,7 +177,7 @@ function ScopedReading({ spaceId, projectId }: { spaceId: string; projectId?: st
       <div className="flex flex-wrap gap-x-3 text-xs text-muted-foreground"><p>{t('reading.total', { count: feed.page.total })}</p><p className="hidden md:block">{t('reading.listKeysHint')}</p></div>
       {feed.page.items.length === 0 ? (!q && !topic && view !== 'read' ? <ReadingStart key={`${spaceId}:${projectId ?? ''}:${view}`} spaceId={spaceId} projectId={projectId} view={view} onChanged={() => void feed.refresh()} /> : <EmptyState title={t(topic && !q ? (topicSelection === 'important' ? 'topics.empty.importantNone' : 'topics.empty.none') : q ? 'reading.noMatches' : 'reading.noRead')} description={topic && !q ? undefined : t(q ? 'reading.searchHint' : 'reading.emptyHint')} />) : <div className="reading-preview-layout"><div ref={listRef} role="list" aria-label={t('reading.list')} onKeyDown={onListKey} className={`grid min-w-0 ${density === 'compact' ? 'gap-1.5' : 'gap-3'}`}>{feed.page.items.map((item, index) => <div key={item.key} role="listitem" data-reading-row data-key={item.key}
         tabIndex={index === 0 ? 0 : -1} aria-label={item.title} onFocus={() => setPreviewKey(item.key)} data-preview-selected={previewKey === item.key || undefined}
-        className="rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring"><ReadingItemCard item={item} href={itemHref(item)} compact={density==='compact'} topicId={topic||undefined} busy={feed.busy||feed.loading} onOpen={()=>remember(item)} onPreview={()=>setPreviewKey(item.key)} onStateChange={field=>void changePersonalState(item,field)}/></div>)}</div><ReadingItemPreview item={previewItem} href={previewItem ? itemHref(previewItem) : ''} onOpen={() => { if (previewItem) remember(previewItem) }} /></div>}
+        className="rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring"><ReadingItemCard item={item} href={itemHref(item)} compact={density==='compact'} topicId={topic||undefined} busy={feed.busy||feed.loading} onOpen={()=>remember(item)} onPreview={()=>setPreviewKey(item.key)} onStateChange={field=>void changePersonalState(item,field)} extraDetails={topic&&topics.goals?.some(g=>g.id===topic&&g.owner_user_id===userId)&&<TopicMaterialFeedback key={`${spaceId}:${userId}:${topic}:${item.key}`} spaceId={spaceId} goalId={topic} item={item} onSaved={async()=>{await feed.refresh();topics.retry()}}/>}/></div>)}</div><ReadingItemPreview item={previewItem} href={previewItem ? itemHref(previewItem) : ''} onOpen={() => { if (previewItem) remember(previewItem) }} /></div>}
       {feed.page.next_cursor && <Button variant="outline" disabled={feed.loading || feed.busy} onClick={() => void feed.more()}>{t('reading.more')}</Button>}
     </>}
   </section>

@@ -5,12 +5,12 @@
 const KEY = 'rainver:reader-layout'
 
 export interface ReaderLayout { outline: boolean; inspector: boolean; outlineWidth: number; inspectorWidth: number }
-const DEFAULT: ReaderLayout = { outline: false, inspector: true, outlineWidth: 248, inspectorWidth: 320 }
+const DEFAULT: ReaderLayout = { outline: false, inspector: false, outlineWidth: 248, inspectorWidth: 320 }
 
 export function readReaderLayout(): ReaderLayout {
   try {
     const value = JSON.parse(window.localStorage.getItem(KEY) ?? 'null') as Partial<ReaderLayout> | null
-    return { outline: value?.outline === true, inspector: value?.inspector !== false,
+    return { outline: value?.outline === true, inspector: value?.inspector === true,
       outlineWidth: panelWidth(value?.outlineWidth, 248, 200, 360),
       inspectorWidth: panelWidth(value?.inspectorWidth, 320, 280, 480) }
   } catch {

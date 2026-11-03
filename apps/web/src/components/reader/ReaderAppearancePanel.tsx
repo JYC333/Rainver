@@ -37,7 +37,7 @@ export function ReaderAppearancePanel({ appearance, onChange, onReset }: { appea
     <Choice label={t('reading.appearanceLineHeight')} value={appearance.line_height} onChange={line_height => onChange({ line_height })}
       options={(['compact', 'normal', 'relaxed'] as const).map(value => ({ value, label: t(`reading.lineHeight_${value}`) }))} />
     <Choice label={t('reading.appearanceWidth')} value={appearance.width} onChange={width => onChange({ width })}
-      options={(['narrow', 'medium', 'wide'] as const).map(value => ({ value, label: t(`reading.width_${value}`) }))} />
+      options={(['narrow', 'medium', 'wide', 'full'] as const).map(value => ({ value, label: t(`reading.width_${value}`) }))} />
     <Choice label={t('reading.appearanceFont')} value={appearance.font} onChange={font => onChange({ font })}
       options={(['sans', 'serif'] as const).map(value => ({ value, label: t(`reading.font_${value}`) }))} />
     <Choice label={t('reading.appearanceTheme')} value={appearance.theme} onChange={theme => onChange({ theme })}

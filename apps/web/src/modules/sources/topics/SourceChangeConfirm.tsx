@@ -34,13 +34,14 @@ export function SourceChangeConfirm({goalId,bindingId,spaceId,act,disabled}:{goa
   if(!view?.authority||sending)return
   setSending(true);setError(null)
   try{
-   await sourceGoalsApi.confirmSource(goalId,bindingId,{binding_revision:view.binding_revision,authority:view.authority},{spaceId})
+   await sourceGoalsApi.confirmSource(goalId,bindingId,{binding_revision:view.binding_revision,authority:view.authority,...(view.restore_channel?{restore_channel:true}:{})},{spaceId})
    setOpen(false)
    // The topic reloads through the page's own action (one at a time, with its error handling).
    await act(()=>Promise.resolve())
   }catch(e){
    // Refused: stay here and say why. Something changed since it was shown (409): show the current state to decide again.
-   const code=e instanceof ApiRequestError?String(e.code??e.payload?.error??''):''
+   const raw=e instanceof ApiRequestError?String(e.code??e.payload?.error??''):''
+   const code=raw==='source_goal_transfer_changed'?'source_scope_changed':raw
    setError(REFUSALS.has(code)?t(`topics.sourceChange.refused.${code}`):errMsg(e))
    if(e instanceof ApiRequestError&&e.status===409)setAttempt(n=>n+1)
   }finally{setSending(false)}
@@ -50,7 +51,7 @@ export function SourceChangeConfirm({goalId,bindingId,spaceId,act,disabled}:{goa
   <Dialog open={open} onOpenChange={next=>{setOpen(next);if(next)setError(null)}}>
    <DialogContent>
     <DialogHeader>
-     <DialogTitle>{t('topics.sourceChange.title')}</DialogTitle>
+     <DialogTitle>{t(view?.restore_channel?'topics.sourceChange.restoreTitle':'topics.sourceChange.title')}</DialogTitle>
      <DialogDescription>{t('topics.sourceChange.why')}</DialogDescription>
     </DialogHeader>
     {!view&&!error&&<p role="status" className="text-sm text-muted-foreground">{t('topics.sourceChange.loading')}</p>}
@@ -59,16 +60,16 @@ export function SourceChangeConfirm({goalId,bindingId,spaceId,act,disabled}:{goa
     {view?.current&&<div className="space-y-3 text-sm">
      <p className="font-medium">{view.source_name}</p>
      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
-      {(['capture_policy','retention_policy','source_status','uses_credential'] as const).map(key=><div key={key} className="contents"><dt className="text-muted-foreground">{t(`topics.sourceChange.field.${key}`)}</dt><dd>{value(key,view.current![key])}</dd></div>)}
+      {(['capture_policy','retention_policy','source_status','channel_status','uses_credential'] as const).map(key=><div key={key} className="contents"><dt className="text-muted-foreground">{t(`topics.sourceChange.field.${key}`)}</dt><dd>{value(key==='channel_status'?'source_status':key,view.current![key])}</dd></div>)}
      </dl>
      {view.changed?<p>{view.changed.length?t('topics.sourceChange.changed',{fields:view.changed.map(key=>t(`topics.sourceChange.field.${key}`,{defaultValue:t('topics.sourceChange.field.other')})).filter((v,i,a)=>a.indexOf(v)===i).join(', ')}):t('topics.sourceChange.changedUnknown')}</p>
       :<p className="text-muted-foreground">{t('topics.sourceChange.notRecorded')}</p>}
      {view.related_changes.length>0&&<ul className="list-disc space-y-1 pl-5">{view.related_changes.map(c=><li key={c.kind+c.at}>{t(`topics.sourceChange.related.${c.kind}`,{defaultValue:c.kind})} · {formatDateTime(c.at)}</li>)}</ul>}
-     <p className="text-muted-foreground">{t('topics.sourceChange.effect')}</p>
+     <p className="text-muted-foreground">{t(view.restore_channel?'topics.sourceChange.restoreEffect':'topics.sourceChange.effect')}</p>
     </div>}
     <DialogFooter>
      <Button variant="ghost" onClick={()=>setOpen(false)}>{t('topics.sourceChange.keepStopped')}</Button>
-     {view?.resolvable_by==='you'&&<Button disabled={disabled||sending||!view.authority} onClick={()=>void confirm()}>{t('topics.sourceChange.confirm')}</Button>}
+     {view?.resolvable_by==='you'&&<Button disabled={disabled||sending||!view.authority} onClick={()=>void confirm()}>{t(view.restore_channel?'topics.sourceChange.restoreConfirm':'topics.sourceChange.confirm')}</Button>}
     </DialogFooter>
    </DialogContent>
   </Dialog>

@@ -12,9 +12,8 @@ import { Card } from '../../../components/ui/card'
 import { projectMonitoringApi } from '../../../api/client'
 
 /** Reading presentation over the existing monitoring state; owns no acquisition or permission logic. */
-export function MonitoringReadingView({ state, mode, busy, action, more }: {
+export function MonitoringReadingView({ state, busy, action, more }: {
   state: ProjectMonitoringState
-  mode: 'results' | 'candidates'
   busy: boolean
   action: (fn: () => Promise<unknown>) => Promise<void>
   more: () => Promise<void>
@@ -24,7 +23,7 @@ export function MonitoringReadingView({ state, mode, busy, action, more }: {
   const text = (key: string) => t(`monitoring.${key}`)
   const active = state.active
   const run = state.latest_run
-  const items = state.candidates.filter(item => mode === 'candidates' || item.recommended)
+  const items = state.candidates
   const settingsHref = `/projects/${projectId}/sources?tab=settings`
   if (!active && !state.draft) return (
     <Card className="mx-auto max-w-2xl space-y-4 p-8 md:p-12">
@@ -51,7 +50,7 @@ export function MonitoringReadingView({ state, mode, busy, action, more }: {
       {state.draft ? text('awaitingConfirmation') : text(String(run?.progress.reason))}
     </div>}
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <h2 className="flex items-center gap-2 font-semibold"><Sparkles className="size-4 text-primary" />{text(mode === 'results' ? 'worthReading' : 'allCandidates')}</h2>
+      <h2 className="flex items-center gap-2 font-semibold"><Sparkles className="size-4 text-primary" />{text('allCandidates')}</h2>
       <span className="text-xs text-muted-foreground">{text('latestAvailable')}</span>
     </div>
     {items.length ? <div className="space-y-3">{items.map(item => <Card key={item.id} className="flex min-w-0 flex-col gap-3 p-4">
@@ -59,7 +58,7 @@ export function MonitoringReadingView({ state, mode, busy, action, more }: {
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           {item.occurred_at && <time>{formatDateTime(item.occurred_at)}</time>}
           {item.change && <Badge variant="outline">{text('pageChanges')}</Badge>}
-          {mode === 'candidates' && <Badge variant="outline">{text(item.recommended ? 'recommended' : 'unselected')}</Badge>}
+          {<Badge variant="outline">{text(item.recommended ? 'recommended' : 'unselected')}</Badge>}
         </div>
         <h3 className="text-sm font-medium leading-snug break-words"><SpaceLink className="hover:underline" to={readingHref({ source_item_id: item.id, reader_origin: 'project' }, projectId, 'candidates')}>{item.title}</SpaceLink></h3>
         {item.summary && <p className="text-sm leading-relaxed text-muted-foreground break-words">{item.summary}</p>}
@@ -73,7 +72,7 @@ export function MonitoringReadingView({ state, mode, busy, action, more }: {
         </div>
       </div>
     </Card>)}</div> : <Card className="space-y-2 p-8 text-center"><h3 className="font-medium">{text('nothingRecommended')}</h3><p className="text-sm text-muted-foreground">{text('nothingRecommendedDescription')}</p></Card>}
-    {mode === 'candidates' && state.candidates_next_offset != null && <Button variant="outline" disabled={busy} onClick={()=>void more()}>{text('more')}</Button>}
+    {state.candidates_next_offset != null && <Button variant="outline" disabled={busy} onClick={()=>void more()}>{text('more')}</Button>}
     {run && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer py-2">{text('collectionDetails')}</summary><div className="space-y-2 rounded-lg border border-border p-3">
       <p>{text('phase')}: {text(String(run.progress.phase ?? run.status))}</p>
       {!!run.progress.coverage && <p>{text(String(run.progress.coverage))}</p>}

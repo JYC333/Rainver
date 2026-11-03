@@ -615,8 +615,8 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
   }
 
   private async authorizeReadingMethod(db:Queryable,input:InvocationAttemptInput,request:{contract_snapshot_json?:unknown}):Promise<void>{
-    const workflow=(request.contract_snapshot_json as {workflow_input_json?:{reading_method?:unknown;reading_method_trial?:unknown;reading_method_generation?:unknown}}|null)?.workflow_input_json;
-    if(!workflow?.reading_method&&!workflow?.reading_method_trial&&!workflow?.reading_method_generation)return;
+    const workflow=(request.contract_snapshot_json as {workflow_input_json?:{source_collection?:unknown;reading_method?:unknown;reading_method_trial?:unknown;reading_method_generation?:unknown}}|null)?.workflow_input_json;
+    if(!workflow?.source_collection&&!workflow?.reading_method&&!workflow?.reading_method_trial&&!workflow?.reading_method_generation)return;
     const {PgRunRepository}=await import('../runs/repository.js');
     const full=await new PgRunRepository(db).getRun(input.spaceId,input.invocationId);if(!full)throw new HttpError(403,'Reading Run missing');
     await this.lockReadingRunAuthority(db,full);

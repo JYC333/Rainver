@@ -88,14 +88,25 @@ topics at `/projects/:projectId/sources/goals[/new|/:goalId]` inside the Project
 layout; `/sources/access` remains the dedicated credential route. Source
 list/detail and Project Sources/settings links carry scope into the same page.
 The create page is a single centered form (topic, frequency, effort, folded
-Advanced). The topic page is a two-column grid at `lg` and above — the update
-stream in a `minmax(0,1fr)` column and a 20rem status/changes/manage aside with
-a bordered card surface — and stacks the aside below the stream on narrow screens. The
-plan conversation, trial and Agent settings sit in a folded Advanced section
-below both columns, where the conversation and plan share a two-column grid only
-at `xl`. Selection toggles use the shared muted segmented style with
-`aria-pressed`; status uses a polite live region. No independent chat engine or
-new navigation platform is introduced.
+Advanced). Each topic detail is a single-column management page at every width:
+status and current checks, the effective direction, Sources and their execution
+state, recent collection audits, a scoped Reading link and management. It does
+not repeat the article stream. The Project's existing navigation/chat sidecar
+may still surround it; the topic itself never adds another side column.
+
+One Adjust following button opens a wide shared dialog (full-screen on phones).
+Direct edit and Discuss changes are tabs in the same single-column surface.
+Both stay mounted while switching tabs, so an unsaved form and a conversation
+draft are retained. This dialog opts into the shared draft hook’s guarded
+unmount flush, so closing within its 250ms debounce retains the last input;
+a changed session epoch prevents a post-logout flush. The form freezes its original expected revision; polling
+cannot silently rebase it. Conversation tools, plan details and optional trials
+are folded above the flex-bounded conversation, whose composer stays visible.
+Pending-plan confirmation moves into the dialog while it is open, preserving
+the same explicit follow action and Project analysis consent. Closing returns
+keyboard focus and neither applies a draft nor cancels a running operation.
+Status remains a polite live region; Source change confirmation still uses its
+existing exact-revision dialog. No new chat engine or route is introduced.
 
 Goal composer draft persistence is an opt-in predicate on the shared draft hook:
 recognized secret patterns clear older session storage before another write.

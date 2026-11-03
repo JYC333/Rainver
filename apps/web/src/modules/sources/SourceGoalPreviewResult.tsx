@@ -26,7 +26,7 @@ export function SourceGoalPreviewResult({preview,pending,sources}:{preview?:Prev
  const {t}=useAppTranslation();const text=(key:string)=>t(`sourceGoals.${key}`)
  if(pending)return <p role="status" aria-live="polite">{text('previewWorking')}</p>
  if(!preview)return <p>{text('previewNeeded')}</p>
- const expired=Date.parse(preview.expires_at)<=Date.now()
+ const expired=preview.status!=='running'&&Date.parse(preview.expires_at)<=Date.now()
  return <>
   {preview.status==='running'?<p role="status">{text('previewWorking')}</p>:preview.status==='partial'?<p role="status">{text('partial')}</p>:null}
   {expired&&<p role="status">{text('previewExpired')}</p>}

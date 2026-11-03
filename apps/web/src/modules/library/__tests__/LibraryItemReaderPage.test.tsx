@@ -262,6 +262,8 @@ function simulateSelection(selection: TextSelection | null) {
 }
 
 beforeEach(() => {
+  // Most cases exercise an already-open notebook; its state is an explicit preference.
+  window.localStorage.setItem('rainver:reader-layout', JSON.stringify({ inspector: true }))
   vi.clearAllMocks()
   vi.mocked(useSpace).mockReturnValue({ activeSpaceId: 'space-1', activeSpaceName: 'Space One' } as ReturnType<typeof useSpace>)
   __clearCommentDraftsForTests()
@@ -320,6 +322,15 @@ describe('LibraryItemReaderPage', () => {
     // The full title is the article heading; the header repeats it only as short orientation text.
     expect(screen.getByRole('heading', { level: 1, name: 'Signals in Long-Form Reading' })).toBeInTheDocument()
     expect(screen.getByTestId('reader-content')).toHaveTextContent('First paragraph.')
+  })
+
+  it('opens on the article by default and exposes the notebook on request', async () => {
+    window.localStorage.removeItem('rainver:reader-layout')
+    await renderPage()
+    expect(screen.queryByRole('complementary', { name: 'Reader inspector' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('reader-content')).toHaveTextContent('First paragraph.')
+    await userEvent.click(screen.getByRole('button', { name: 'Show inspector' }))
+    expect(screen.getByRole('region', { name: 'Annotation notebook' })).toHaveTextContent('First paragraph.')
   })
 
   it('renders existing annotations in the notebook list', async () => {

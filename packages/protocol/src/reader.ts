@@ -85,7 +85,7 @@ export type ReaderPositionResult = z.infer<typeof ReaderPositionResultSchema>;
 export const ReaderAppearanceSchema = z.object({
   font_size: z.number().int().min(14).max(26).nullable().default(null),
   line_height: z.enum(['compact', 'normal', 'relaxed']).default('normal'),
-  width: z.enum(['narrow', 'medium', 'wide']).default('medium'),
+  width: z.enum(['narrow', 'medium', 'wide', 'full']).default('full'),
   font: z.enum(['sans', 'serif']).default('sans'),
   theme: z.enum(['app', 'light', 'sepia', 'dark']).default('app'),
 }).strict();

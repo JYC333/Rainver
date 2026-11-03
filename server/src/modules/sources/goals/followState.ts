@@ -1,7 +1,10 @@
+import {canWriteProject} from '../../projects/access.js';
+import {retryableNativeCollection} from './collectionRetry.js';
 import {goalCollectionReadableSql,goalItemReadableSql} from './itemVisibility.js';
 import type {SourceGoalExecutionProgress,SourceGoalFollowState} from '@rainver/protocol';
 import type {Queryable} from '../../routeUtils/common.js';
-import {goalSourceRow,type GoalRow} from './access.js';
+import {goalSourceRow,goalSourceFingerprint,type GoalRow} from './access.js';
+import {canRestoreGoalChannel} from './channelRestoration.js';
 import type {SourceGoalBindingSpec} from '@rainver/protocol';
 /** Errors that mean "an authorization or setup decision is needed", which must
  * never be shown as "no new items" or as an ordinary transient failure. */
@@ -33,12 +36,14 @@ export async function goalFollowState(db:Queryable,g:GoalWithFollow,explore:Sour
  const attentionOf=async(b:BindingRow,error:string|null):Promise<{attention:Attention|null;resolvable_by:'you'|'topic_owner'|'source_owner'|null}>=>{
   if(!error)return {attention:null,resolvable_by:null};
   if(unavailable.has(b.source_connection_id))return {attention:'access',resolvable_by:'source_owner'};
+  if(error==='source_goal_source_inactive'){const restore=canRestoreGoalChannel(g,b,await goalSourceRow(db,g.space_id,b.spec_json));return {attention:restore?'source_changed':'access',resolvable_by:restore?owner:'source_owner'};}
   if(BUDGET_ERRORS.has(error))return {attention:'budget',resolvable_by:owner};
   if(SETUP_ERRORS.has(error))return {attention:'setup',resolvable_by:owner};
   if(CHANGED_ERRORS.has(error)&&b.status==='paused'){
    // Source changed (still the topic owner's Source, in its Project): the topic owner confirms the new state.
    // Otherwise its owner or access changed, which this topic cannot resolve.
    const row=await goalSourceRow(db,g.space_id,b.spec_json);
+   if(canRestoreGoalChannel(g,b,row))return {attention:'source_changed',resolvable_by:owner};
    // Only an active Source and channel can be confirmed (the confirmation runs activation's gates); archived or paused is access.
    // A Source changed back to its confirmed state stays confirmable too: the binding is still paused and only the owner resumes it.
    if(row&&row.status==='active'&&row.channel_status==='active'&&row.owner_user_id===g.owner_user_id&&row.project_id===g.project_id)return {attention:'source_changed',resolvable_by:owner};
@@ -47,10 +52,16 @@ export async function goalFollowState(db:Queryable,g:GoalWithFollow,explore:Sour
   if(PERMISSION_ERRORS.has(error))return {attention:'access',resolvable_by:owner};
   return {attention:null,resolvable_by:null};
  };
- const sources=await Promise.all(bindings.map(async b=>{const last=latest.get(b.id);const error=unavailable.has(b.source_connection_id)?'source_unavailable':b.fixture_json?.collection_error??b.fixture_json?.repair_block_reason??(last&&last.status!=='succeeded'&&last.status!=='insufficient'&&!confirmedSince(b,last.ended_at)?last.error:null)??null;
+ const mayRetry=viewerId===g.owner_user_id&&g.status==='running'&&(!g.project_id||await canWriteProject(db,g.space_id,g.project_id,viewerId));
+ const sources=await Promise.all(bindings.map(async b=>{
+  const last=latest.get(b.id);
+  const current=unavailable.has(b.source_connection_id)?undefined:await goalSourceRow(db,g.space_id,b.spec_json);
+  const recorded=b.fixture_json?.collection_error??b.fixture_json?.repair_block_reason??(last&&last.status!=='succeeded'&&last.status!=='insufficient'&&!confirmedSince(b,last.ended_at)?last.error:null)??null;
+  const inactive=current&&(current.status!=='active'||current.channel_status!=='active');
+  const error=unavailable.has(b.source_connection_id)?'source_unavailable':inactive&&(!recorded||!CHANGED_ERRORS.has(recorded))?'source_goal_source_inactive':recorded;
   const {attention,resolvable_by}=await attentionOf(b,error);
   const health=attention==='source_changed'||attention==='access'?'needs_permission':b.status==='collecting'?'collecting':b.status==='active'?'ok':b.status==='cooldown'?'backoff':['repair_required','repairing'].includes(b.status)?'failing':b.status==='paused'?(error?'failing':'stopped'):'failing';
-  return {binding_id:b.id,source_connection_id:b.source_connection_id,status:b.status,health,error,failures:b.failures,last_success_at:b.last_success_at?new Date(b.last_success_at).toISOString():null,retry_at:b.retry_at?new Date(b.retry_at).toISOString():null,attention,resolvable_by} as SourceGoalFollowState['sources'][number];}));
+  return {retryable:mayRetry&&!attention&&!!current&&b.fixture_json?.authority_sha256===goalSourceFingerprint(current)&&retryableNativeCollection(b),binding_id:b.id,source_connection_id:b.source_connection_id,status:b.status,health,error,failures:b.failures,last_success_at:b.last_success_at?new Date(b.last_success_at).toISOString():null,retry_at:b.retry_at?new Date(b.retry_at).toISOString():null,attention,resolvable_by} as SourceGoalFollowState['sources'][number];}));
  const health:SourceGoalFollowState['health']=!sources.length?'unknown':sources.some(s=>s.health==='needs_permission')?'needs_permission':sources.every(s=>['ok','collecting'].includes(s.health))?'ok':sources.some(s=>['ok','collecting'].includes(s.health))?'partial':'failing';
  const counts=(await db.query<{total:number;important:number;unjudged:number;not_selected:number;judgment_failed:number;baseline:number;new_publication:number;evidenced_change:number;unknown_freshness:number;changes:number}>(`SELECT count(*)::int total,count(*) FILTER(WHERE selection_status='important')::int important,count(*) FILTER(WHERE selection_status='unjudged')::int unjudged,count(*) FILTER(WHERE selection_status='not_selected')::int not_selected,count(*) FILTER(WHERE selection_status='judgment_failed')::int judgment_failed,count(*) FILTER(WHERE delivery_kind='baseline')::int baseline,count(*) FILTER(WHERE delivery_kind='new_publication')::int new_publication,count(*) FILTER(WHERE delivery_kind='evidenced_change')::int evidenced_change,count(*) FILTER(WHERE delivery_kind='unknown_freshness')::int unknown_freshness ,(SELECT count(*)::int FROM source_goal_item_changes c JOIN source_items changed_item ON changed_item.id=c.source_item_id AND changed_item.space_id=c.space_id WHERE c.goal_id=$1 AND c.space_id=$2 AND c.delivery_kind='evidenced_change' AND ${goalItemReadableSql('changed_item','$3',true)} AND ${goalCollectionReadableSql('c','$3')} AND NOT(c.binding_id IN (SELECT id FROM source_goal_bindings WHERE source_connection_id=ANY($4::varchar[])))) changes FROM source_goal_items gi JOIN source_items item ON item.id=gi.source_item_id AND item.space_id=gi.space_id WHERE gi.goal_id=$1 AND gi.space_id=$2 AND ${goalItemReadableSql('item','$3')} AND NOT(gi.source_connection_id=ANY($4::varchar[]))`,[g.id,g.space_id,viewerId,[...unavailable]])).rows[0];
  const checks=[...latest.values()].filter(r=>bindings.some(b=>b.id===r.binding_id));

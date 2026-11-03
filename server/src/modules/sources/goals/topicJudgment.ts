@@ -28,10 +28,11 @@ type Judgment={status:string;reason:string|null;by:string}|null;
  * then deterministic topic rules (an include term in the title), then a
  * reported judgment failure; otherwise unjudged. Owner feedback is final. */
 export async function applyTopicJudgment(tx:Queryable,input:{spaceId:string;goalId:string;goalRunId:string;bindingId:string;versionId:string;insertedIds:readonly string[];memberIds:readonly string[];baseline:boolean;previousWatermark:string|null;includes:readonly string[];rules:Rules|null|undefined;signals:TopicSignals|null|undefined}){
- const ids=[...new Set([...input.insertedIds,...input.memberIds])];if(!ids.length)return;
+ const ids=[...new Set([...input.insertedIds,...input.memberIds])];if(!ids.length)return 0;
  const rows=(await tx.query<Row>(`SELECT gi.source_item_id,gi.selection_status,gi.selection_reason,gi.selection_source,i.source_uri,i.title,i.occurred_at FROM source_goal_items gi JOIN source_items i ON i.id=gi.source_item_id AND i.space_id=gi.space_id WHERE gi.goal_id=$1 AND gi.space_id=$2 AND gi.source_item_id=ANY($3::varchar[])`,[input.goalId,input.spaceId,ids])).rows;
  const agentRunId=(await tx.query<{id:string|null}>(`SELECT result_json->>'native_run_id' AS id FROM source_goal_runs WHERE id=$1 AND goal_id=$2`,[input.goalRunId,input.goalId])).rows[0]?.id??null;
  const inserted=new Set(input.insertedIds);const previous=input.previousWatermark?Date.parse(input.previousWatermark):NaN;
+ let deliveredChanges=0;
  for(const row of rows){
   const signal=row.source_uri?input.signals?.items[canonical(row.source_uri)]:undefined;
   const isNew=inserted.has(row.source_item_id);
@@ -40,6 +41,7 @@ export async function applyTopicJudgment(tx:Queryable,input:{spaceId:string;goal
   const changeRecorded=cited?(await tx.query(`INSERT INTO source_goal_item_changes(id,space_id,goal_id,source_item_id,change_kind,evidence_url,delivery_kind,goal_run_id,agent_run_id,binding_id,version_id,selection_status,selection_reason,judged_by,delivered_at)
    VALUES(gen_random_uuid()::text,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,CASE WHEN $14::boolean THEN now() ELSE NULL END) ON CONFLICT(goal_id,source_item_id,evidence_url) DO NOTHING RETURNING id`,
    [input.spaceId,input.goalId,row.source_item_id,cited.kind,cited.evidence_url,input.baseline?'baseline':'evidenced_change',input.goalRunId,agentRunId,input.bindingId,input.versionId,changeJudgment?.status??'unjudged',changeJudgment?.reason??null,changeJudgment?.by??null,!isNew&&!input.baseline])).rows.length>0:false;
+  if(changeRecorded&&!isNew&&!input.baseline)deliveredChanges++;
   const stated=row.occurred_at?Date.parse(row.occurred_at):NaN;
   const newer=Number.isFinite(stated)&&Number.isFinite(previous)&&stated>previous&&stated<=Date.now()+5*60_000;
   const delivery=isNew?(input.baseline?'baseline':changeRecorded?'evidenced_change':newer?'new_publication':'unknown_freshness'):(changeRecorded&&!input.baseline?'evidenced_change':null);
@@ -52,6 +54,7 @@ export async function applyTopicJudgment(tx:Queryable,input:{spaceId:string;goal
    judged_by=CASE WHEN $5::varchar IS NULL THEN judged_by ELSE $7 END,judged_at=CASE WHEN $5::varchar IS NULL THEN judged_at ELSE now() END,updated_at=now()
    WHERE goal_id=$1 AND source_item_id=$2 AND (selection_source<>'owner_feedback' OR $5::varchar IS NULL)`,[input.goalId,row.source_item_id,delivery,delivery==='evidenced_change'?cited?.evidence_url??null:null,judgment?.status??null,judgment?.reason??null,judgment?.by??null]);
  }
+ return deliveredChanges;
 }
 function judge(row:Row,signal:TopicSignals['items'][string]|undefined,input:{includes:readonly string[];rules:Rules|null|undefined;signals:TopicSignals|null|undefined}):Judgment{
  const owner=ownerExclusion(row,input.rules);if(owner)return {status:'not_selected',reason:owner,by:'owner'};

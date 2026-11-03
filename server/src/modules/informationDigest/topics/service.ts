@@ -1,3 +1,4 @@
+import {projectRoundState} from './roundProjection.js';
 import {queueProjectComposition} from '../composition/service.js';
 import {assertGoalAnalysisManagement,nativeProfileFingerprint} from '../../sources/index.js';
 import type {ThemeGoal} from './types.js';
@@ -28,8 +29,6 @@ export async function configureThemeAnalysis(db:Queryable,config:ServerConfig,id
   if(input.enabled){const method=await freezeReadingMethod(tx,{...identity,projectId:g.project_id},{goal_id:id,version_id:input.expected_version_id},TOPIC_METHOD);if(!method.frozen.content_hash||method.text.length>4000)throw new HttpError(409,'Theme method must be initialized and at most 4000 characters');}
   const consent={enabled:input.enabled,version_id:input.expected_version_id,...execution,confirmed_by:identity.userId,confirmed_at:new Date().toISOString(),limits:PROJECT_THEME_LIMITS};
   await tx.query(`UPDATE source_goals SET compatibility_json=jsonb_set(COALESCE(compatibility_json,'{}'::jsonb),'{theme_analysis}',$3::jsonb),updated_at=now() WHERE space_id=$1 AND id=$2`,[g.space_id,id,consent]);
-  if(input.enabled)await tx.query("UPDATE source_goals SET compatibility_json=jsonb_set(compatibility_json,'{reading_composition_enabled}','true') WHERE id=$1",[id]);
-  await queueProjectComposition(tx,g.space_id,g.project_id);
   return {analysis:consent,notice:'Explicit theme-analysis consent; collection authority, Source permissions and existing budgets are not expanded. No token/currency hard cap.'};
  });
 }
@@ -86,7 +85,8 @@ export async function readThemeRounds(db:Queryable,identity:SpaceUserIdentity,go
  const published=await repository.latestPublished(adapter.scope);
  return {analysis:g.compatibility_json?.theme_analysis??null,analysis_admission:g.compatibility_json?.theme_analysis?.enabled&&g.compatibility_json?.theme_analysis?.version_id===g.active_version_id?g.compatibility_json?.theme_analysis_admission??null:null,latest:published?await projectBriefing(db,repository,adapter,published):null,rounds:await Promise.all(rounds.map(async r=>{
   const row=r.briefing_id?await repository.get(identity.spaceId,r.briefing_id):null;const shown=row?await projectBriefing(db,repository,adapter,row):null;
-  return {id:r.id,sequence:r.sequence,version_id:r.version_id,status:r.status==='superseded'||r.status==='blocked'?r.status:shown?.status==='ready'?'complete':shown?.status==='failed'||shown?.status==='cancelled'?'blocked':r.status,coverage:r.coverage_json,error_code:shown?.error_code??r.error_code,briefing:shown,topic:shown?.visibility==='visible'&&row?.result_json?.topic?row.result_json.topic:null};
+  const state=projectRoundState(r,!!row);
+  return {id:r.id,sequence:r.sequence,version_id:r.version_id,status:['superseded','blocked','awaiting_analysis'].includes(state.status)?state.status:shown?.status==='ready'?'complete':shown?.status==='failed'||shown?.status==='cancelled'?'blocked':r.status,coverage:r.coverage_json,error_code:shown?.error_code??state.error_code,briefing:shown,topic:shown?.visibility==='visible'&&row?.result_json?.topic?row.result_json.topic:null};
  }))};
 }
 

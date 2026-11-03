@@ -33,11 +33,17 @@ navigation, metadata, and domain actions.
 
 ### Workspace presentation and interaction contract
 
-- Typography: the document pane is a CSS size container. The column is 38em
-  wide at 18px (17px when the pane is at most 560px), line-height 1.75, with
-  0.9em between top-level blocks, more above headings and a tight join below
-  them. Paragraph/list resets use `:where()` and precede the spacing rule so
-  they cannot zero it. These values are design starting points to calibrate.
+- Typography: the document pane is a CSS size container and the canvas fills
+  it. Body text is 18px (17px when the pane is at most 560px), line-height 1.75,
+  with 0.9em between top-level blocks. Text has an independent rem-based measure
+  (36/52/68rem or full width) so changing font size does not widen the column.
+  Full width is the default (also on Reset); only an explicitly saved width
+  constrains the text. Media can use the entire canvas; images keep
+  their intrinsic or declared width, scale down proportionally and have no
+  viewport-height cap, framing border or text-hover padding. Tall diagrams
+  remain readable inline and can still open in the existing lightbox. Paragraph
+  hover changes paint, never geometry. Title sizes are subordinate to the
+  reading hierarchy rather than inheriting source-page styles.
 - Lead: a wrapper may pass `lead` (the shared `ReaderDocumentLead`) for the full
   title and source metadata. It renders outside the ProseMirror tree, so
   annotation positions are unaffected. If the body opens with the same title as
@@ -45,7 +51,8 @@ navigation, metadata, and domain actions.
   with the same title at a lower level, the lead keeps a screen-reader-only h1
   so the Reader always has exactly one main heading. Library passes the article
   title; Research passes the research question.
-- Inspector: open by default on wide screens and closed below 769px, where it
+- Inspector: closed by default, including on wide screens, and opened on demand.
+  A saved explicit panel-open preference is retained. Below 769px it
   is an on-demand drawer (see the mobile client guide). The Reader also
   measures its own row: below 960px (Shell, Project navigation and side panes
   included) the inspector starts closed and overlays the text when opened
@@ -126,7 +133,8 @@ navigation, metadata, and domain actions.
   `@rainver/reader-document`'s normalizer, so an unsupported node degrades to
   text instead of hiding the document. The Reader schema shows bold, italic,
   strike, inline code, links, h1–h6, verbatim code blocks, nested lists, tables
-  (with spans), block images and rules. Every stored tree is normalized to
+  (with spans), block images and rules. Positive integer image width/height
+  (at most 100,000px) survive normalization; arbitrary source styles do not. Every stored tree is normalized to
   that schema (`readerSchemaValidity.test.ts` checks it with the Reader's own
   extensions, `readerContentExtensions()`): inline code carries no other mark
   (links included), and a list item opens with a paragraph (a heading there

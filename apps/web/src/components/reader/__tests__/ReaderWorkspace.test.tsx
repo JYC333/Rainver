@@ -56,6 +56,7 @@ const alpha = annotation('ann-a', 'Alpha')
 const beta = annotation('ann-b', 'Beta')
 
 beforeEach(() => {
+  window.localStorage.setItem('rainver:reader-layout', JSON.stringify({ inspector: true }))
   listThreads.mockReset()
   createComment.mockReset()
   updateThread.mockReset()

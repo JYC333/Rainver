@@ -210,6 +210,10 @@ export function projectWorks(input: {
         code: wait,
         dependency_run_ids: run.dependency_run_ids.slice(0, 100)
       }, run.id);
+      // Content delivery owns successful Following results. Existing stored Run
+      // unread flags must not keep creating reminders for background checks.
+      const quietResult = run.reading_background && !['failed', 'degraded', 'cancelled', 'orphaned'].includes(run.status) && !run.question_open;
+      if (quietResult) continue;
       if (full && run.message_id && run.message_revision && run.message_at) {
         add({
           kind: "message",

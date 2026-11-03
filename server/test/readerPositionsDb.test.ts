@@ -254,9 +254,9 @@ describe('reading position privacy and side effects', () => {
 describe('Reader appearance settings', () => {
   it('keeps each person’s appearance in their own user settings, with defaults and validation', async () => {
     const settings = new ReaderAppearanceSettings(db.pool);
-    expect(await settings.get(identity)).toEqual({ font_size: null, line_height: 'normal', width: 'medium', font: 'sans', theme: 'app' });
-    await settings.set(identity, { font_size: 20, line_height: 'relaxed', width: 'wide', font: 'serif', theme: 'sepia' });
-    expect(await settings.get(identity)).toMatchObject({ font_size: 20, theme: 'sepia' });
+    expect(await settings.get(identity)).toEqual({ font_size: null, line_height: 'normal', width: 'full', font: 'sans', theme: 'app' });
+    await settings.set(identity, { font_size: 20, line_height: 'relaxed', width: 'full', font: 'serif', theme: 'sepia' });
+    expect(await settings.get(identity)).toMatchObject({ font_size: 20, width: 'full', theme: 'sepia' });
     expect(await settings.get({ spaceId: space, userId: other })).toMatchObject({ font_size: null, theme: 'app' });
     await expect(settings.set(identity, { font_size: 99 })).rejects.toMatchObject({ statusCode: 422 });
   });

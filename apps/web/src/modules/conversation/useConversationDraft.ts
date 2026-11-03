@@ -3,6 +3,7 @@ import type { ConversationInputPart } from '@rainver/protocol'
 import { conversationInputApi } from '../../api/client'
 import type { ConversationInputFileSource } from './ConversationInputComposer'
 import { useConversationScope } from './ConversationScope'
+import { sessionEpoch } from '../../lib/sessionResidue'
 import {
   clearConversationDraft,
   draftFileSearchQuery,
@@ -28,6 +29,8 @@ interface ConversationDraftOptions<T> {
   destination: string
   /** Opt-in domain policy, checked before restore and every storage write. */
   isTextPersistable?: (text: string) => boolean
+  /** Dialog composers can close before the ordinary debounce has elapsed. */
+  flushOnUnmount?: boolean
   initialValue: () => T
   textOf: (value: T) => string
   withText: (value: T, text: string) => T
@@ -152,6 +155,14 @@ export function useConversationDraft<T>(options: ConversationDraftOptions<T>) {
     const timer = window.setTimeout(persist, 250)
     return () => window.clearTimeout(timer)
   }, [destination, parts, routeChoice, text, persist])
+
+  useEffect(() => {
+    const epoch = sessionEpoch()
+    return () => {
+      if (optionsRef.current.flushOnUnmount && optionsRef.current.destination === destination
+        && readyRef.current === destination && epoch === sessionEpoch()) persist()
+    }
+  }, [destination, persist])
 
   return { value, parts, setValue, setParts, draftRef, readyRef }
 }

@@ -60,6 +60,25 @@ Delegated Runs' own `awaiting_answer` questions are excluded by
 `sessions/messagePath.ts` (`delegation_id IS NULL`): they create no personal reason
 and do not promote the parent for that question.
 
+## Reading automation and result presentation
+
+Following collection (`source_goal.purpose=collect`, system/job origin) and
+Following theme synthesis (`information_briefing.scope_key=following:…`,
+system/job origin) are identified from the persisted Run contract. Their normal
+results create no Agent Attention reading subjects, including previously unread
+results. Routine works remain visible in current lists, snapshots, History and authorized
+item/Run details; execution visibility is independent from unread delivery.
+Failures, degraded results, cancellations, resource waits and human decisions remain visible;
+ordinary system Runs, manual previews and planning conversations are unaffected.
+Content updates use the existing clearable Inbox pointers, owned by Reading.
+
+A non-conversation detail presents one result directly, acknowledging only its
+successfully loaded Turn. Earlier executions sit behind one collapsed history
+control, with Agent names, dates and statuses rather than Run IDs as headings.
+UIDs live in technical details. A conversation continues to own its turns and
+has no duplicate execution list. Opening history or loading child pages does
+not acknowledge undisplayed results; existing revision/CAS guards still apply.
+
 ## Readers and authority
 
 `repository.ts` reads authorized source facts in batched queries,
@@ -327,7 +346,7 @@ readOnly mode, with no composer, Proposal decisions or discussion mutations.
 No read initializes a Session or execution context. The actual Room manager / direct
 Agent is labelled above the surface, with a complete source-Space conversation link.
 
-Without a reply Session, expanded full-access members use `WorkRun`'s bounded
+Without a reply Session, the primary result and expanded history members use `WorkRun`'s bounded
 canonical Turn read and ConversationRunControls, not RunDetailPage. These controls
 continue to use `useRunActions`. The workbench passes source membership and user
 identity as UI eligibility filters: Run stop/abandon/supervisor resume require owner
@@ -345,7 +364,7 @@ not during loading or beside completed results. Shared control copy belongs to
 all commands. Task and Proposal lifecycle review links go to their owning pages;
 there is no synthetic Run message sender. Summary access never mounts Turn bodies.
 
-`useWorkReading` confirms only successfully rendered expanded Run
+`useWorkReading` confirms only successfully rendered primary or expanded Run
 results/decisions and authorization reasons, or Task/merge state actually
 displayed; message views are the embedded surface's own report through
 `useAttentionViewing`, and the hook merely remembers which messages this open

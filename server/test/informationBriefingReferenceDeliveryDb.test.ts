@@ -432,6 +432,10 @@ async function personalFocus() {
      VALUES ($1, $2, $3, $4, $5, '{"intent":"PRIVATE_FOCUS_CONTEXT"}', '{}')`,
     [goal, SPACE, OWNER, AGENT, PROFILE],
   );
+  const version = randomUUID();
+  await db.pool.query(`INSERT INTO source_goal_versions (id,space_id,goal_id,revision,plan_json,created_by_user_id)
+    VALUES ($1,$2,$3,1,'{"title":"PRIVATE_FOCUS_CONTEXT"}'::jsonb,$4)`, [version, SPACE, goal, OWNER]);
+  await db.pool.query(`UPDATE source_goals SET active_version_id=$2,current_version_id=$2 WHERE id=$1`, [goal, version]);
   return goal;
 }
 

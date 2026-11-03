@@ -10,6 +10,7 @@ import {
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { informationDigestModule } from "../src/modules/informationDigest/index.js";
 import { ReadingPreferences } from "../src/modules/informationDigest/readingPreferences.js";
+import { goalPresentationTitleSql } from "../src/modules/sources/goals/presentation.js";
 import { personalBriefingScope } from "../src/modules/informationDigest/briefing/personalScope.js";
 import { buildManifest } from "../src/modules/informationDigest/briefing/manifest.js";
 import { assertBriefingDispatch, settleBriefingRun } from "../src/modules/informationDigest/briefing/settlement.js";
@@ -107,6 +108,27 @@ function mineOutput(overrides: Parameters<typeof outputValue>[0] = {}, novelty: 
 
 const manifest = (scope = personal()) => buildManifest(db.pool, scope, { cutoff: new Date().toISOString(), previous: null, label: "personal", egressAllowed: async () => true });
 
+it('uses versioned topic labels without leaking raw intent, draft titles or compatibility metadata', async () => {
+  const item = await delivered('Topic label evidence');
+  const goal = await follow(item, 'Raw conversation, retry again');
+  const active = randomUUID(), draft = randomUUID();
+  await db.pool.query(`INSERT INTO source_goal_versions (id,space_id,goal_id,revision,plan_json,created_by_user_id)
+    VALUES ($1,$3,$4,1,$5::jsonb,$7),($2,$3,$4,2,$6::jsonb,$7)`,
+    [active,draft,SPACE,goal,JSON.stringify({title:'Confirmed topic'}),JSON.stringify({title:'Unconfirmed draft'}),OWNER]);
+  await db.pool.query(`UPDATE source_goals SET active_version_id=$2,current_version_id=$3,compatibility_json=$4::jsonb WHERE id=$1`,
+    [goal,active,draft,JSON.stringify({display_title:'Wrong mutable title'})]);
+  const built = await manifest();
+  expect(built.inputs.find(input => input.lead?.source_item_id === item)?.lenses)
+    .toContainEqual({kind:'following',label:'Confirmed topic'});
+  expect((await personal().context(db.pool)).find(entry=>entry.source.id===goal)?.label).toBe('Following: Confirmed topic');
+  const frozen = await db.pool.query<{title:string}>(`SELECT ${goalPresentationTitleSql('g', '$2::varchar')} AS title FROM source_goals g WHERE g.id=$1`,[goal,draft]);
+  expect(frozen.rows[0]?.title).toBe('Unconfirmed draft');
+  // A missing title remains neutral; it must not recover the conversation as a label.
+  await db.pool.query(`UPDATE source_goal_versions SET plan_json='{}'::jsonb WHERE id=$1`,[active]);
+  expect((await manifest()).inputs.find(input=>input.lead?.source_item_id===item)?.lenses)
+    .toContainEqual({kind:'following',label:'Following'});
+});
+
 describe("Personal briefing: what a reader's own Reading draws on, and nothing else", () => {
   it("selects own Following, own subscriptions and opted-in readable Projects; never another person's topics, an unselected Project or another Space", async (ctx) => {
     if (!db.available) return ctx.skip();
@@ -131,7 +153,7 @@ describe("Personal briefing: what a reader's own Reading draws on, and nothing e
     expect(built.inputs.find((input) => input.lead?.source_item_id === othersTopic)?.lenses.map((lens) => lens.kind)).toEqual(["subscription"]);
     expect(built.inputs.find((input) => input.lead?.source_item_id === corpus)?.lenses).toEqual(expect.arrayContaining([{ kind: "corpus", label: 'Project "Robotics": Corpus' }]));
     // Only my own stated focus is context; cold start (no topics) is fine too.
-    expect(built.context.map((entry) => [entry.kind, entry.label])).toEqual([["personal_focus", "Following: Soft grippers"]]);
+    expect(built.context.map((entry) => [entry.kind, entry.label])).toEqual([["personal_focus", "Following"]]);
     expect((await manifest(personalBriefingScope(SPACE, NEWCOMER))).context).toEqual([]);
 
     // Another Space is never read, even for the same person.

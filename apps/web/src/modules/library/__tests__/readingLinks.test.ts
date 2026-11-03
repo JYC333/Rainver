@@ -104,3 +104,8 @@ it('preserves bounded Project four-view filters, exact composition and private p
  for(const path of ['/projects/project-a/sources?tab=materials&view=all&favorite=only','/projects/project-a/sources?tab=deep&ops_offset=25','/projects/project-a/sources?tab=overview&composition=version-a'])expect(readingReturnTo(path,'project-a')).toBe(path)
  expect(readingReturnTo('/projects/project-a/sources?tab=deep&ops_offset=10001','project-a')).toBeNull();expect(readingReturnTo('/projects/project-b/sources?tab=deep','project-a')).toBeNull()
 })
+it('returns to a bounded pinned topic analysis only within its Project Overview',()=>{
+ const path='/projects/project-a/sources?tab=overview&analysis=topic-a&analysisVersion=version-a'
+ expect(readingReturnTo(path,'project-a')).toBe(path)
+ for(const value of [path.replace('project-a','project-b'),path.replace('overview','materials'),path.replace('&analysisVersion=version-a',''),path.replace('/projects/project-a/sources','/library/reading'),path+'&analysis=other',path.replace('version-a','https%3A%2F%2Fother.test')])expect(readingReturnTo(value,'project-a')).toBeNull()
+})

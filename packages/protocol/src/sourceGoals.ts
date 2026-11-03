@@ -30,18 +30,22 @@ export const SourceGoalBindingSpecSchema=z.object({
  reason:z.string().min(1).max(2000),implementation:SourceGoalImplementationSchema,
  supports_history:z.boolean(),
 }).strict();
+const SourceGoalPresentationFields={
+ title:z.string().trim().min(1).max(60).describe('Stable subject label in the user language. Synthesize the agreed topic; never use a raw request or retry instruction.'),
+ summary:z.string().trim().min(1).max(400).describe('One or two sentences summarizing what is followed and why. Integrate the conversation decisions, omit operational chatter and detailed analysis questions.'),
+};
 export const SourceGoalPlanSchema=z.object({
+ ...SourceGoalPresentationFields,
  analysis_brief:z.string().trim().min(1).max(4000).describe('Analysis purpose for downstream reading: questions, comparison target, useful evidence and expected judgment. Derived from the user intent, not permissions or invented project facts.').optional(),
- title:z.string().trim().min(1).max(60).describe('Short topic label in the user language, ideally 4–12 Chinese characters or 2–6 words; summarize the subject, not the request.').optional(),
  search_path_snapshot:z.enum(['agent','api']).optional(),
  interval_seconds:z.number().int().min(3600).max(604800).optional(),
  filters:z.object({includes:z.array(z.string().max(200)).max(16),excludes:z.array(z.string().max(200)).max(16),excluded_origins:z.array(z.string().url()).max(20).default([])}).strict().optional(),
  intent_snapshot:z.object({intent:z.string().max(8000),includes:z.array(z.string()),excludes:z.array(z.string())}).optional(),
- summary:z.string().min(1).max(4000),sources:z.array(SourceGoalBindingSpecSchema).min(1).max(5),
+ sources:z.array(SourceGoalBindingSpecSchema).min(1).max(5),
  limitations:z.array(z.string().max(1000)).max(20),
 }).strict().superRefine((p,c)=>{if(new Set(p.sources.map(s=>s.source_channel_id)).size!==p.sources.length || new Set(p.sources.map(s=>s.source_connection_id)).size!==p.sources.length)c.addIssue({code:'custom',message:'Duplicate source channel'});});
 export const SourceGoalNativeSourceRequestSchema=z.object({reason:z.string().min(1).max(2000),implementation:z.object({kind:z.literal('agent_search'),query:z.string().trim().min(3).max(1000)}).strict(),supports_history:z.literal(false)}).strict();
-export const SourceGoalVersionWriteSchema=z.object({goal_id:IdSchema,expected_revision:z.number().int().nonnegative(),plan:SourceGoalPlanSchema.or(z.object({analysis_brief:z.string().trim().min(1).max(4000).optional(),title:z.string().trim().min(1).max(60).optional(),summary:z.string().min(1).max(4000),sources:z.array(SourceGoalBindingSpecSchema.or(SourceGoalNativeSourceRequestSchema)).min(1).max(5),limitations:z.array(z.string().max(1000)).max(20),interval_seconds:z.number().int().min(3600).max(604800).optional(),filters:z.object({includes:z.array(z.string()),excludes:z.array(z.string()),excluded_origins:z.array(z.string()).default([])}).optional()}).strict())}).strict();
+export const SourceGoalVersionWriteSchema=z.object({goal_id:IdSchema,expected_revision:z.number().int().nonnegative(),plan:SourceGoalPlanSchema.or(z.object({...SourceGoalPresentationFields,analysis_brief:z.string().trim().min(1).max(4000).optional(),sources:z.array(SourceGoalBindingSpecSchema.or(SourceGoalNativeSourceRequestSchema)).min(1).max(5),limitations:z.array(z.string().max(1000)).max(20),interval_seconds:z.number().int().min(3600).max(604800).optional(),filters:z.object({includes:z.array(z.string()),excludes:z.array(z.string()),excluded_origins:z.array(z.string()).default([])}).optional()}).strict())}).strict();
 /** Optional manual save: the owner keeps one fresh exact-version Agent-search
  * preview as reading material without continuous following. Following itself
  * is SourceGoalFollowRequestSchema and never requires a preview. */
@@ -50,7 +54,7 @@ export type SourceGoalSaveSample=z.infer<typeof SourceGoalSaveSampleSchema>;
 /** Owner-authored draft over the existing Source plan; activation stays explicit. */
 export const SourceGoalEditSchema=z.object({
  expected_revision:z.number().int().nonnegative(),idempotency_key:z.string().min(1).max(128),
- title:z.string().trim().min(1).max(60),intent:z.string().trim().min(3).max(8000),analysis_brief:z.string().trim().min(1).max(4000),
+ title:z.string().trim().min(1).max(60),summary:z.string().trim().min(1).max(400),intent:z.string().trim().min(3).max(8000),analysis_brief:z.string().trim().min(1).max(4000),
  includes:z.array(z.string().trim().min(1).max(200)).max(16),excludes:z.array(z.string().trim().min(1).max(200)).max(16),
  queries:z.array(z.object({source_connection_id:IdSchema,query:z.string().trim().min(3).max(1000)}).strict()).max(5).default([]),
 }).strict();
@@ -105,6 +109,8 @@ export const SourceGoalFollowStateSchema=z.object({
  blocked_reason:z.string().nullable(),
  health:z.enum(['unknown','ok','partial','needs_permission','failing']),
  sources:z.array(z.object({binding_id:IdSchema,source_connection_id:IdSchema,status:z.string(),health:SourceGoalSourceHealthSchema,error:z.string().nullable(),failures:z.number().int(),last_success_at:z.string().nullable(),retry_at:z.string().nullable(),
+  /** An explicit owner Check may retry this failed execution after live reauthorization. */
+  retryable:z.boolean().optional(),
   /** What kind of decision a stopped source waits for: its Source changed and needs the topic owner's confirmation, access to it is missing, a usage limit was reached, or setup is incomplete. */
   attention:z.enum(['source_changed','access','budget','setup']).nullable().optional(),
   /** Who can resolve it: the viewer, the topic's owner, or nobody through this topic (the Source's owner or access must change first). */
@@ -122,6 +128,7 @@ export const SourceGoalFollowStateSchema=z.object({
 }).strict();
 export type SourceGoalFollowState=z.infer<typeof SourceGoalFollowStateSchema>;
 export const SourceGoalOutSchema=z.object({
+ display:z.object({version_id:IdSchema.nullable(),title:z.string().nullable(),summary:z.string().nullable()}).strict().optional(),
  id:IdSchema,space_id:IdSchema,owner_user_id:IdSchema,project_id:IdSchema.nullable(),
  execution:SourceGoalExecutionProgressSchema.nullish(),intent_json:JsonObject,budget_json:SourceGoalBudgetSchema,status:SourceGoalStatusSchema,
  revision:z.number().int(),current_version_id:IdSchema.nullable(),active_version_id:IdSchema.nullable(),
@@ -166,11 +173,12 @@ export const SourceGoalBindingReconfirmationSchema=z.object({
  changed:z.array(z.string()).nullable(),
  related_changes:z.array(z.object({kind:z.string(),at:z.string()}).strict()),
  authority:z.string().nullable(),
+ restore_channel:z.boolean().optional(),
 }).strict();
 export type SourceGoalBindingReconfirmation=z.infer<typeof SourceGoalBindingReconfirmationSchema>;
 /** The owner confirms exactly what was shown: the binding revision and the Source state token. */
-export const SourceGoalBindingConfirmRequestSchema=z.object({binding_revision:z.number().int().nonnegative(),authority:z.string().min(16).max(128)}).strict();
+export const SourceGoalBindingConfirmRequestSchema=z.object({binding_revision:z.number().int().nonnegative(),authority:z.string().min(16).max(128),restore_channel:z.boolean().optional()}).strict();
 export type SourceGoalBindingConfirmRequest=z.infer<typeof SourceGoalBindingConfirmRequestSchema>;
 
 /** Manual collection binds to the active plan currently shown; null is legacy-only. */
-export const SourceGoalCheckRequestSchema=z.object({expected_version_id:IdSchema.nullable()}).strict();
+export const SourceGoalCheckRequestSchema=z.object({expected_version_id:IdSchema.nullable(),retry_failed:z.literal(true).optional()}).strict();

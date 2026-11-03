@@ -1618,6 +1618,17 @@ the binding's and the machine's, and removes the directory when the Run ends.
 runs — the command is a script, not an executable, and nothing is installed
 onto `PATH` (ADR 0016 §7).
 
+The CLI handles `--help` and `-h` locally, including `rainver call --help`
+and `rainver call <action> --help` (also `list` and `describe`). These print
+the matching subcommand's help and exit successfully without a Run identity,
+bridge request or HTTP request. `call` help explains inline JSON, `@file`,
+stdin, the empty-object default and exit statuses. Only top-level help prints
+the general command overview. Action schemas still come from
+`rainver describe <action>`; local help never claims to describe that action's fields. Help
+text inside a JSON input is ordinary data. Actual action calls retain the
+same server authorization and refusal behavior; help does not create an
+action-denial event that degrades an otherwise successful collection Run.
+
 Which Skill a Run gets is decided from the Run (`workSkillOptionsForRun`): a
 conversation turn — it has a Session — reads "your reply is the message the
 person reads; the commands record the Project alongside it" and names

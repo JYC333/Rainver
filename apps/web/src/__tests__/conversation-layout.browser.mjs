@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
 import { chromium } from 'playwright-core'
 import { preview } from 'vite'
-import { work, page as workPage } from '../modules/agent_work/fixtures.test-support.ts'
+import { work, workRun, run, turn, page as workPage } from '../modules/agent_work/fixtures.test-support.ts'
 
 // Exercise the built app, including Shell and Project layout. No request reaches
 // a backend: the same mixed Markdown reply is read in Rooms and Agent Work.
@@ -622,6 +622,52 @@ test('Reply files open Files & Code and images preview in a closable dialog on d
       await page.locator('.cm-editor').waitFor()
       assert.equal(new URL(page.url()).searchParams.get('folder'), folder.id)
       assert.equal(errors.length, 0, errors.join('\n'))
+    } finally { await page.close() }
+  }
+})
+
+
+test('Agent Work presents results before folded history across themes, languages and phone widths', async () => {
+  for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
+    const page = await browser.newPage({ viewport: { width, height: 960 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(({ locale, theme }) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+      }, { locale, theme })
+      await mockApi(page)
+      const currentId = '55555555-5555-4555-8555-555555555555'
+      const olderId = '66666666-6666-4666-8666-666666666666'
+      const selected = work({ title: '阅读结果 · Reading result', space_id: room.space_id, project_id: null,
+        identity: { kind: 'run', source_id: currentId },
+        runs: [workRun({ run_id: currentId, agent_name: 'Reading assistant', started_at: now, ended_at: now }), workRun({ run_id: olderId, agent_name: 'Reading assistant' })],
+        visible_run_count: 2, unread: false, read_states: [] })
+      await page.route('**/api/v1/**', async route => {
+        const path = new URL(route.request().url()).pathname.replace('/api/v1', '')
+        if (path === '/me/agent-attention/item') return route.fulfill({ json: selected })
+        if (path === '/me/agent-attention') return route.fulfill({ json: workPage([selected]) })
+        if (path === '/me/agent-attention/snapshot') return route.fulfill({ json: { type: 'attention.snapshot', seq: 1, version: 'result', unread_count: 0, page: workPage([selected]), notices: [] } })
+        if (path.startsWith('/runs/')) {
+          const id = path.split('/')[2]
+          if (path.endsWith('/turn')) return route.fulfill({ json: turn({ run_id: id, parts: [{ type: 'text', index: 0, text: id === currentId ? '本次结果已经可以阅读。The result is ready to read.' : 'Earlier result' }] }) })
+          if (path.endsWith('/authorization-requests')) return route.fulfill({ json: [] })
+          if (path === `/runs/${id}`) return route.fulfill({ json: run({ id, space_id: room.space_id }) })
+        }
+        return route.fallback()
+      })
+      await page.goto(baseUrl + '/agent-work')
+      await page.locator('[data-work-row]').first().click()
+      await page.getByText('本次结果已经可以阅读。The result is ready to read.').waitFor()
+      const history = page.getByRole('button', { name: locale === 'en' ? /Execution history/ : /执行记录/ })
+      assert.equal(await history.getAttribute('aria-expanded'), 'false')
+      assert.equal(await page.getByText(currentId, { exact: true }).isVisible(), false)
+      await page.screenshot({ path: `/tmp/rainver-work-result-${locale}-${theme}-${width}.png` })
+      await history.click()
+      const earlier = page.getByRole('button', { name: locale === 'en' ? /Execution 2/ : /第 2 次执行/ })
+      await earlier.click()
+      await page.getByText('Earlier result', { exact: true }).waitFor()
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
+      if (width === 390) await page.screenshot({ path: `/tmp/rainver-work-history-${locale}-${theme}.png` })
     } finally { await page.close() }
   }
 })

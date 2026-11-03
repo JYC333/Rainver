@@ -1,9 +1,7 @@
-import {projectReadingSwitched} from './composition/service.js';
 import type { ServerConfig } from "../../config.js";
 import { InformationBriefingService } from "./briefing/service.js";
-import { projectBriefingScope } from "./briefing/projectScope.js";
 import { dailyBriefingSetting } from "./briefing/schedule.js";
-import { PERSONAL_BRIEFING_LABEL, projectBriefingLabel } from "./briefing/routes.js";
+import { PERSONAL_BRIEFING_LABEL } from "./briefing/routes.js";
 import { personalBriefingScope } from "./briefing/personalScope.js";
 import { getDbPool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
@@ -105,7 +103,7 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
         : await new InformationDigestService(pool).scheduledProject(fireInput.spaceId, request.project_id!, fireInput.actorUserId, period, started.automationRunId)
       : null;
     const digest = generated?.digest ?? null;
-    // After the digest committed, outside its transaction: the day's briefing, when a writer enabled it.
+    // Only the personal scope still has an independently authorized daily model.
     const briefing = digest ? await dailyBriefing(pool, config, automation, request.scope === "project" ? request.project_id! : null, digest) : null;
     await withTransaction(pool, async (client) => {
       await new PgAutomationRepository(client).completeNativeAutomationRun({
@@ -178,12 +176,12 @@ async function dailyBriefing(
   projectId: string | null,
   digest: { id: string; digest_date: string; period_end_utc: string },
 ): Promise<Record<string, unknown> | null> {
-  if(projectId&&await projectReadingSwitched(pool,automation.space_id,projectId))return {status:'replaced_by_theme_composition'};
+  if(projectId)return null;
   const setting = dailyBriefingSetting(automation.config_json);
   if (!setting.enabled || !setting.user_id) return null;
   // A personal briefing is only ever its owner's.
-  if (!projectId && setting.user_id !== automation.owner_user_id) return null;
-  const adapter = projectId ? projectBriefingScope(automation.space_id, projectId) : personalBriefingScope(automation.space_id, automation.owner_user_id);
+  if (setting.user_id !== automation.owner_user_id) return null;
+  const adapter = personalBriefingScope(automation.space_id, automation.owner_user_id);
   try {
     const { briefing } = await new InformationBriefingService(pool, config).requestDay(
       adapter, setting.user_id, {
@@ -192,7 +190,7 @@ async function dailyBriefing(
         execution: { agent_id: setting.agent_id ?? undefined, runtime_profile_id: setting.runtime_profile_id ?? undefined },
         origin: "job",
         automationId: automation.id,
-        label: projectId ? await projectBriefingLabel(pool, automation.space_id, projectId) : PERSONAL_BRIEFING_LABEL,
+        label: PERSONAL_BRIEFING_LABEL,
       });
     return { briefing_id: briefing.id, status: briefing.status, error_code: briefing.error_code };
   } catch (error) {

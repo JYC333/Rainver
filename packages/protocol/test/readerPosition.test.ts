@@ -20,7 +20,8 @@ describe('Reader position contract', () => {
   });
 
   it('gives appearance defaults and refuses unknown values', () => {
-    expect(ReaderAppearanceSchema.parse({})).toEqual({ font_size: null, line_height: 'normal', width: 'medium', font: 'sans', theme: 'app' });
+    expect(ReaderAppearanceSchema.parse({})).toEqual({ font_size: null, line_height: 'normal', width: 'full', font: 'sans', theme: 'app' });
+    expect(ReaderAppearanceSchema.parse({ width: 'full' }).width).toBe('full');
     expect(ReaderAppearanceSchema.safeParse({ font_size: 40 }).success).toBe(false);
     expect(ReaderAppearanceSchema.safeParse({ theme: 'neon' }).success).toBe(false);
   });

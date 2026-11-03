@@ -19,7 +19,7 @@ export async function checkRepairCalibration(db:Queryable,config:ServerConfig,id
   // establish independent synthetic/live evidence before it can publish.
 
   }catch(error){
-   const authorizationError=error instanceof HttpError&&([403,404].includes(error.statusCode)||(error.responseBody as {error?:string}|undefined)?.error==='source_authority_revoked')||error instanceof Error&&error.message==='source_policy_refused';
+   const authorizationError=error instanceof HttpError&&([403,404].includes(error.statusCode)||['source_authority_revoked','source_goal_source_inactive'].includes((error.responseBody as {error?:string}|undefined)?.error??''))||error instanceof Error&&error.message==='source_policy_refused';
    if(!authorizationError)throw error;
    if(!pauseRevoked)throw sourceGoalError(error instanceof HttpError?error.statusCode:403,'source_authority_revoked');
    unavailable=true;await db.query(`UPDATE source_goal_bindings SET status='paused',retry_at=NULL,fixture_json=COALESCE(fixture_json,'{}'::jsonb)||$2::jsonb,updated_at=now() WHERE id=$1`,[b.id,{repair_block_reason:'source_authority_revoked'}]);

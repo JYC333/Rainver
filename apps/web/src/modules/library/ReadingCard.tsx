@@ -13,8 +13,8 @@ export function ReadingCard({title,summary,metadata,topics,details,actions,compa
  const {t}=useAppTranslation()
  const [expanded,setExpanded]=useState(false)
  const read=progress?Math.round(Math.min(1,Math.max(0,Number.isFinite(progress.current)?progress.current:0,Number.isFinite(progress.furthest)?progress.furthest:0))*100):0
- return <Card className={`relative mb-0 min-w-0 overflow-hidden ${compact?'px-3 py-2':'p-4'}`}>
-  <div className={`flex min-w-0 flex-col sm:flex-row ${compact?'gap-2 sm:items-center sm:gap-4':'gap-3 sm:gap-5'}`}>
+ return <Card className={`@container/reading-card relative mb-0 min-w-0 overflow-hidden ${compact?'px-3 py-2':'p-4'}`}>
+  <div className={`flex min-w-0 flex-col @md/reading-card:flex-row ${compact?'gap-2 @md/reading-card:items-center @md/reading-card:gap-4':'gap-3 @md/reading-card:gap-5'}`}>
    <div className={`min-w-0 flex-1 ${compact?'space-y-1':'space-y-2'}`}>
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">{metadata}</div>
     <h2 className={`${compact?'line-clamp-1 text-sm':'line-clamp-2 text-base'} break-words font-semibold leading-snug`}>{title}</h2>
@@ -29,7 +29,7 @@ export function ReadingCard({title,summary,metadata,topics,details,actions,compa
      </div>
     </details>}
    </div>
-   <div className={`reading-touch flex shrink-0 flex-wrap items-center justify-end gap-1 ${compact?'sm:flex-row':'sm:w-28 sm:flex-col sm:items-stretch sm:justify-start'} [&_button]:h-auto [&_button]:min-h-7 [&_button]:whitespace-normal [&_a]:h-auto [&_a]:min-h-7 [&_a]:whitespace-normal`}>{actions}</div>
+   <div className={`reading-touch flex shrink-0 flex-wrap items-center justify-end gap-1 ${compact?'@md/reading-card:flex-row':'@md/reading-card:w-28 @md/reading-card:flex-col @md/reading-card:items-stretch @md/reading-card:justify-start'} [&_button]:h-auto [&_button]:min-h-7 [&_button]:whitespace-normal [&_a]:h-auto [&_a]:min-h-7 [&_a]:whitespace-normal`}>{actions}</div>
   </div>
   {progress&&read>0&&<div role="progressbar" aria-label={t('reading.readProgress',{percent:read})} title={t('reading.readProgress',{percent:read})} aria-valuemin={0} aria-valuemax={100} aria-valuenow={read} className="absolute inset-x-0 bottom-0 h-0.5 bg-muted"><div className="h-full bg-primary/60" style={{width:`${read}%`}}/></div>}
  </Card>

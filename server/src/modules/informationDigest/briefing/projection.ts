@@ -3,6 +3,7 @@ import type { Queryable } from "../../routeUtils/common.js";
 import { authorizeVersion, visibleResult, inputDeps } from "./authorization.js";
 import type { BriefingScopeAdapter } from "./contract.js";
 import type { BriefingRow, PgBriefingRepository } from "./repository.js";
+import { sharedOriginalVersions } from '../../sources/index.js';
 
 const iso = (value: string | null): string | null => (value ? new Date(value).toISOString() : null);
 
@@ -44,23 +45,32 @@ export async function projectBriefing(
   let visibility: Briefing["visibility"] = shown.withheld ? "withheld" : shown.shown < shown.units ? "partial" : "visible";
   if (!row.result_json) visibility = "visible";
 
-  const material = inputs.filter((input) => input.ref_kind === "source_item" && input.ref_key && input.status === "included" && allowed.has(input.ref_key));
+  const material = inputs.filter((input) => !shown.withheld && input.ref_kind === "source_item" && input.ref_key && input.status === "included" && allowed.has(input.ref_key));
   const items = material.length
-    ? (await db.query<{ id: string; title: string; occurred_at: string | null }>(
-      `SELECT id, title, occurred_at::text FROM source_items WHERE space_id = $1 AND id = ANY($2::varchar[])`,
+    ? (await db.query<{ id: string; title: string; occurred_at: string | null; excerpt: string | null }>(
+      `SELECT id, title, occurred_at::text, left(excerpt, 400) AS excerpt FROM source_items WHERE space_id = $1 AND id = ANY($2::varchar[])`,
       [row.space_id, material.map((input) => input.source_item_id!)],
     )).rows
     : [];
   const itemById = new Map(items.map((item) => [item.id, item]));
+  const snapshots = shown.withheld ? [] : material.flatMap(input => inputDeps(input).items.flatMap(dep => dep.id === input.source_item_id && dep.original ? [dep.original.snapshot_id] : []));
+  const originals = snapshots.length ? await sharedOriginalVersions(db, row.space_id, await adapter.audience(db), { snapshotIds: snapshots }) : [];
+  const originalById = new Map(originals.map(original => [original.snapshot_id, original]));
   const evidence: BriefingEvidence[] = shown.withheld ? [] : material
     .filter((input) => itemById.has(input.source_item_id!))
     .map((input) => {
       const item = itemById.get(input.source_item_id!)!;
+      const frozen = inputDeps(input).items.find(dep => dep.id === input.source_item_id)?.original;
+      const original = frozen ? originalById.get(frozen.snapshot_id) : undefined;
+      // Never fall back to the current excerpt when an exact original was cited.
+      let text = item.excerpt;
+      if (frozen) text = original?.item_id === item.id && original.artifact_id === frozen.artifact_id && original.content_hash === frozen.content_hash ? original.plain_text : null;
       return {
         key: input.ref_key!,
         source_item_id: input.source_item_id!,
         ...(inputDeps(input).items.find(d=>d.id===input.source_item_id)?.original?{original_snapshot_id:inputDeps(input).items.find(d=>d.id===input.source_item_id)!.original!.snapshot_id,original_artifact_id:inputDeps(input).items.find(d=>d.id===input.source_item_id)!.original!.artifact_id,original_content_hash:inputDeps(input).items.find(d=>d.id===input.source_item_id)!.original!.content_hash}:{}),
         title: item.title,
+        excerpt: text?.replace(/\s+/g, ' ').trim().slice(0, 400) || null,
         source_domain: (input.analysis_json.source_domain as string | null | undefined) ?? null,
         occurred_at: iso(item.occurred_at),
         delta_class: input.delta_class as BriefingEvidence["delta_class"],

@@ -28,6 +28,7 @@ describe('stored Reader documents are valid for the Reader schema', () => {
     ['code with a link mark (HTML <a><code>)', { type: 'paragraph', content: [{ type: 'text', text: 'x', marks: [{ type: 'code' }, { type: 'link', attrs: { href: 'https://e.test' } }] }] }],
     ['list item opening with heading', { type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'T' }] }] }] }],
     ['list item opening with a list', { type: 'orderedList', content: [{ type: 'listItem', content: [{ type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'paragraph' }] }] }] }] }],
+    ['sized image', { type: 'image', attrs: { src: 'https://e.test/chart.png', width: 1200, height: 800 } }],
     ['list item opening with an image', { type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'image', attrs: { src: 'https://e.test/a.png' } }] }] }],
     ['marks on code block text', { type: 'codeBlock', content: [{ type: 'text', text: '  x', marks: [{ type: 'bold' }] }] }],
     ['empty text nodes', { type: 'paragraph', content: [{ type: 'text', text: '' }] }],

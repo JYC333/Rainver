@@ -26,14 +26,57 @@ const USAGE = `rainver — report to Rainver about the work you were given
   rainver describe <action>       one action's JSON input schema
   rainver call <action> [input]   invoke it; input is JSON, @file, or - for stdin
 
+Use --help or -h after a subcommand or action for that subcommand's usage.
+Use rainver describe <action> for that action's input schema.
+
 Uses this Run's Host tool bridge when supplied. Direct callers use
 RAINVER_API_URL, RAINVER_RUN_ID and RAINVER_TOOL_TOKEN.`;
 
+const SUBCOMMAND_USAGE = {
+  list: `Usage: rainver list
+
+List the actions this Run may call. Prints the server's JSON tool catalogue.
+Only listed actions are available to this Run.
+
+  --help, -h   show this help locally without requesting the catalogue`,
+  describe: `Usage: rainver describe <action>
+
+Read one action's JSON input schema from this Run's tool surface.
+<action> is an exact action name from rainver list.
+
+  --help, -h   show this command's help locally, not an action's schema
+
+Exit status: 0 on success, 1 on request failure, 2 on invalid CLI input or missing Run identity.`,
+  call: `Usage: rainver call <action> [input]
+
+Invoke one action granted to this Run and print its JSON result.
+<action> is an exact action name from rainver list.
+Use rainver describe <action> to read that action's input schema first.
+
+Input (must be a JSON object):
+  '{"key":"value"}'   inline JSON; quote it for your shell
+  @file.json          read JSON from a UTF-8 file
+  -                   read JSON from standard input
+  omitted             send an empty object {}
+
+  --help, -h   show this command's help locally without invoking an action
+
+Exit status: 0 on success, 1 on action refusal or request failure,
+2 on invalid CLI input or missing Run identity.`,
+};
+
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
-  if (!command || command === "help" || command === "--help" || command === "-h") {
+  if (!command || command === "help" || isHelpFlag(command)) {
     process.stdout.write(`${USAGE}\n`);
     return command ? 0 : 2;
+  }
+  // Help is CLI syntax, never an action sent to the control plane. Inspect
+  // only the command/action slots so JSON payload text stays untouched.
+  if ((command === "list" || command === "describe" || command === "call")
+    && (isHelpFlag(rest[0]) || (command !== "list" && isHelpFlag(rest[1])))) {
+    process.stdout.write(`${SUBCOMMAND_USAGE[command]}\n`);
+    return 0;
   }
   let env: Environment;
   try {
@@ -84,6 +127,10 @@ async function main(argv: string[]): Promise<number> {
       process.stderr.write(`Unknown command '${command}'.\n\n${USAGE}\n`);
       return 2;
   }
+}
+
+function isHelpFlag(value: string | undefined): boolean {
+  return value === "--help" || value === "-h";
 }
 
 function readEnvironment(): Environment {

@@ -8,6 +8,7 @@ import {HttpError,type Queryable,type SpaceUserIdentity} from '../../routeUtils/
 import {contentDecisionFromDb} from '../../access/contentAccessQuery.js';
 import {canReadProject,canWriteProject} from '../../projects/access.js';
 import {assertSourceConnectionManageable,assertSourceConnectionReadable} from '../sourceConnectionAccess.js';
+import {sourceGoalError} from './dispatchError.js';
 export interface GoalRow {
  id:string;space_id:string;owner_user_id:string;project_id:string|null;agent_id:string;runtime_profile_id:string;
  intent_json:{intent:string;includes:string[];excludes:string[]};budget_json:SourceGoalBudget;
@@ -26,8 +27,11 @@ export async function requireGoalSource(db:Queryable,config:ServerConfig,identit
  if(write){const policy=await enforce(config,await loadActionRegistry(),{action:'source.connection.manage',actor_type:'user',actor_id:identity.userId,space_id:identity.spaceId,resource_type:'source_connection',resource_id:spec.source_connection_id,force_record:false});if(policy.status==='blocked')throw new Error('source_policy_refused');}
  if(write)await assertSourceConnectionManageable(db,identity,spec.source_connection_id);else await assertSourceConnectionReadable(db,identity,spec.source_connection_id);
  if(await contentDecisionFromDb(db,identity,'source_connection',spec.source_connection_id,{includeOversight:false})!=='full')throw new HttpError(403,'Full source content access required');
- const c=await goalSourceRow(db,identity.spaceId,spec,{activeOnly:write,allowPausedChannel});
- if(!c || c.owner_user_id!==goal.owner_user_id || c.project_id!==goal.project_id)throw new HttpError(403,'Source context/owner mismatch or source inactive');
+ const c=await goalSourceRow(db,identity.spaceId,spec);
+ if(!c || c.owner_user_id!==goal.owner_user_id || c.project_id!==goal.project_id)throw new HttpError(403,'Source context/owner mismatch');
+ // The caller already passed the owner, Project, policy and full-content gates.
+ // Inactive execution state is a conflict, not a request for credentials or cost approval.
+ if(write&&(!['active',...(allowPausedChannel?['paused']:[])].includes(c.status)||!['active',...(allowPausedChannel?['paused']:[])].includes(c.channel_status)))throw sourceGoalError(409,'source_goal_source_inactive');
  return c;
 }
 export async function requireAuthorRun(db:Queryable,g:GoalRow,runId:string,purpose:'explore'|'repair',bindingId?:string){

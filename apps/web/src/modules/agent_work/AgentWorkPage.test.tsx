@@ -59,7 +59,7 @@ function choose(label: string, option: string) {
 function row(title = 'Build the report') { return screen.getByRole('button', { name: new RegExp(title) }) }
 async function openRun() {
   fireEvent.click(await screen.findByRole('button', { name: /Build the report/ }))
-  fireEvent.click(await screen.findByRole('button', { name: /Run run-b/ }))
+  await screen.findByRole('heading', { name: 'Build the report' })
 }
 function roomWork(): AgentWorkItem {
   return work({ identity: { kind: 'session', source_id: 'session-b' }, operations: [{ kind: 'open_session', space_id: 'space-b', session_id: 'session-b', room_id: 'room-b', agent_id: 'agent-b' }],
@@ -177,7 +177,8 @@ describe('Agent Work page', () => {
     vi.mocked(runsApi.get).mockResolvedValue(run({ started_at: '2026-10-20T10:00:00Z' }))
     renderPage()
     await openRun()
-    expect((await screen.findByRole('link', { name: 'Open full Run' })).closest('section')).toHaveTextContent('2 hr')
+    fireEvent.click(await screen.findByText('Technical details'))
+    expect((await screen.findByRole('link', { name: 'Execution details' })).closest('section')).toHaveTextContent('2 hr')
   })
   it('gives a conversation the detail pane without a duplicate Run list or execution IDs', async () => {
     const source = { ...roomWork(), visible_run_count: 120, runs_next_cursor: 'older-executions' }
@@ -304,6 +305,15 @@ describe('Agent Work page', () => {
     expect(await screen.findByText('The report is ready.')).toBeVisible()
     await waitFor(() => expect(agentAttentionApi.setReadState).toHaveBeenCalledWith({ identity: work().identity, space_id: 'space-b', subject: work().read_states[0]!.subject, state_version: 0, action: 'read' }, expect.objectContaining({ spaceId: 'space-b' })))
     expect(runsApi.turn).toHaveBeenCalledWith('run-b', expect.objectContaining({ spaceId: 'space-b' }))
+  })
+  it('shows a standalone result immediately without a redundant Run row or visible UID', async () => {
+    renderPage()
+    await openRun()
+    expect(await screen.findByText('The report is ready.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: /Run run-b/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Execution history/ })).not.toBeInTheDocument()
+    expect(screen.getByText('run-b', { selector: 'p' })).not.toBeVisible()
+    expect(screen.getByText('Technical details')).toBeVisible()
   })
   it('does not acknowledge a failed Turn read', async () => {
     vi.mocked(runsApi.turn).mockRejectedValue(new Error('unavailable'))
@@ -585,13 +595,14 @@ describe('Agent Work page', () => {
       ? work({ runs: [second], read_states: [childRead], runs_next_cursor: null }) : source)
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: /Build the report/ }))
+    if ((await screen.findByRole('button', { name: /Execution history/ })).getAttribute('aria-expanded') === 'false') fireEvent.click(screen.getByRole('button', { name: /Execution history/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Load more members/ }))
-    expect(await screen.findByRole('button', { name: /Run run-child/ })).toBeVisible()
+    expect(await screen.findByRole('button', { name: /Execution 2 ·/ })).toBeVisible()
     expect(screen.queryByRole('button', { name: /Load more members/ })).not.toBeInTheDocument()
-    expect(agentAttentionApi.setReadState).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: /Run run-child/ }))
+    expect(vi.mocked(agentAttentionApi.setReadState).mock.calls.every(([input]) => input.subject.kind === 'run_result' && input.subject.run_id !== 'run-child')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: /Execution 2 ·/ }))
     await waitFor(() => expect(agentAttentionApi.setReadState).toHaveBeenCalledWith(expect.objectContaining({ subject: childRead.subject }), expect.objectContaining({ spaceId: 'space-b' })))
-    expect(agentAttentionApi.setReadState).toHaveBeenCalledTimes(1)
+    expect(agentAttentionApi.setReadState).toHaveBeenCalledTimes(2)
   })
   it('shows pending reasons and proposal links from every loaded child page', async () => {
     // The server cuts child pages at 100 read states: 120 Runs, each with a
@@ -615,20 +626,23 @@ describe('Agent Work page', () => {
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: /Build the report/ }))
     expect(await screen.findAllByRole('link', { name: 'Review Proposal' })).toHaveLength(50)
+    if ((await screen.findByRole('button', { name: /Execution history/ })).getAttribute('aria-expanded') === 'false') fireEvent.click(screen.getByRole('button', { name: /Execution history/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Load more members/ }))
-    expect(await screen.findByRole('button', { name: /Run run-099/ })).toBeVisible()
+    expect(await screen.findByRole('button', { name: /Execution 100 ·/ })).toBeVisible()
+    if ((await screen.findByRole('button', { name: /Execution history/ })).getAttribute('aria-expanded') === 'false') fireEvent.click(screen.getByRole('button', { name: /Execution history/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Load more members/ }))
-    expect(await screen.findByRole('button', { name: /Run run-119/ })).toBeVisible()
+    expect(await screen.findByRole('button', { name: /Execution 120 ·/ })).toBeVisible()
     const links = screen.getAllByRole('link', { name: 'Review Proposal' })
     expect(links).toHaveLength(120)
     expect(links.some(link => link.getAttribute('href')?.endsWith('/proposals/proposal-119'))).toBe(true)
     // The list row keeps its first-page reasons; the detail shows all 120 loaded ones.
     expect(screen.getAllByText('Proposal needs review')).toHaveLength(50 + 120)
-    expect(agentAttentionApi.setReadState).not.toHaveBeenCalled()
+    expect(vi.mocked(agentAttentionApi.setReadState).mock.calls.every(([input]) => input.subject.kind === 'run_result' && input.subject.run_id === 'run-000')).toBe(true)
   })
   it('discards an older item response after another work is opened', async () => {
     const pending = deferred<AgentWorkItem>()
-    const second = work({ title: 'Other work', work_key: 'second-key', identity: { kind: 'run', source_id: 'other-run' } })
+    const second = work({ title: 'Other work', work_key: 'second-key', identity: { kind: 'run', source_id: 'other-run' }, runs: [workRun({ run_id: 'other-run' })],
+      read_states: [{ ...work().read_states[0]!, subject: { kind: 'run_result', schema_version: 1, run_id: 'other-run', attempt_id: 'other-attempt', revision: 'other-rev' } }] })
     vi.mocked(agentAttentionApi.list).mockResolvedValue(page([work(), second]))
     vi.mocked(agentAttentionApi.item).mockReturnValueOnce(pending.promise).mockResolvedValueOnce(second)
     renderPage()
@@ -637,7 +651,11 @@ describe('Agent Work page', () => {
     expect(await screen.findByRole('heading', { name: 'Other work' })).toBeVisible()
     await act(async () => pending.resolve(work()))
     expect(screen.queryByRole('heading', { name: 'Build the report' })).not.toBeInTheDocument()
-    expect(agentAttentionApi.setReadState).not.toHaveBeenCalled()
+    expect(agentAttentionApi.item).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(agentAttentionApi.setReadState).toHaveBeenCalledTimes(1))
+    expect(agentAttentionApi.setReadState).toHaveBeenCalledWith(expect.objectContaining({ identity: second.identity, subject: second.read_states[0]!.subject }), expect.any(Object))
+    expect(vi.mocked(runsApi.turn).mock.calls.map(([id]) => id)).toEqual(['other-run'])
+    expect(screen.getByRole('heading', { name: 'Other work' })).toBeVisible()
   })
   it('keeps the snapshot on network failure and labels it stale', async () => {
     renderPage()
@@ -711,18 +729,19 @@ describe('Agent Work page', () => {
     vi.mocked(runsApi.get).mockImplementation(async id=>run({id}))
     vi.mocked(runsApi.turn).mockImplementation(async id=>turn({run_id:id}))
     renderPage(); fireEvent.click(await screen.findByRole('button',{name:/Build the report/}))
+    if ((await screen.findByRole('button', { name: /Execution history/ })).getAttribute('aria-expanded') === 'false') fireEvent.click(screen.getByRole('button', { name: /Execution history/ }))
     fireEvent.click(await screen.findByRole('button',{name:/Load more members/}))
-    const focused=await screen.findByRole('button',{name:/Run run-child/})
+    const focused=await screen.findByRole('button',{name:/Execution 2 ·/})
     fireEvent.click(focused)
-    await waitFor(()=>expect(agentAttentionApi.setReadState).toHaveBeenCalledTimes(1))
+    await waitFor(()=>expect(agentAttentionApi.setReadState).toHaveBeenCalledTimes(2))
     focused.focus()
     const reads=vi.mocked(runsApi.turn).mock.calls.length
     const itemReads=vi.mocked(agentAttentionApi.item).mock.calls.length
     await act(async()=>streamSink({type:'attention.invalidation',seq:2,version:'other-work-changed',page:null,unread_count:1,notices:[]}))
     await waitFor(()=>expect(agentAttentionApi.item).toHaveBeenCalledTimes(itemReads+2))
-    expect(screen.getByRole('button',{name:/Run run-child/})).toBe(focused); expect(focused).toHaveFocus()
+    expect(screen.getByRole('button',{name:/Execution 2 ·/})).toBe(focused); expect(focused).toHaveFocus()
     expect(runsApi.turn).toHaveBeenCalledTimes(reads)
-    expect(agentAttentionApi.setReadState).toHaveBeenCalledTimes(1)
+    expect(agentAttentionApi.setReadState).toHaveBeenCalledTimes(2)
     const refreshed={...source,title:'Changed selected work',runs_next_cursor:'fresh-child'}
     const updatedChildren={...children,runs:[{...child,status:'failed' as const}],read_states:[{...childRead,subject:{...childRead.subject,revision:'child-v2'}}]}
     vi.mocked(agentAttentionApi.item).mockImplementation(async input=>structuredClone(input.runs_cursor ? updatedChildren : refreshed))
@@ -732,7 +751,7 @@ describe('Agent Work page', () => {
     expect(agentAttentionApi.item).toHaveBeenLastCalledWith(expect.objectContaining({runs_cursor:'fresh-child'}),expect.any(Object))
     await waitFor(()=>expect(vi.mocked(runsApi.turn).mock.calls.length).toBeGreaterThan(reads))
     expect(focused).toBeVisible(); expect(focused).toHaveFocus()
-    expect(agentAttentionApi.setReadState).toHaveBeenCalledTimes(1)
+    expect(agentAttentionApi.setReadState).toHaveBeenCalledTimes(2)
   })
   it('keeps a Room composer, draft and source read when another work invalidates', async () => {
     const source=roomWork()
@@ -759,6 +778,7 @@ describe('Agent Work page', () => {
       return fresh.promise
     })
     renderPage();fireEvent.click(await screen.findByRole('button',{name:/Build the report/}))
+    fireEvent.click(await screen.findByRole('button', { name: /Execution history/ }))
     const more=await screen.findByRole('button',{name:/Load more members/})
     fireEvent.click(more)
     await act(async()=>streamSink({type:'attention.invalidation',seq:2,version:'new-members',page:null,unread_count:1,notices:[]}))
@@ -767,7 +787,7 @@ describe('Agent Work page', () => {
     expect(agentAttentionApi.item).toHaveBeenCalledTimes(3)
     await act(async()=>fresh.resolve({...source,runs_next_cursor:'fresh-child'}))
     fireEvent.click(screen.getByRole('button',{name:/Load more members/}))
-    expect(await screen.findByRole('button',{name:/Run new-child/})).toBeVisible()
+    expect(await screen.findByRole('button',{name:/Execution 2 ·/})).toBeVisible()
     expect(agentAttentionApi.item).toHaveBeenLastCalledWith(expect.objectContaining({runs_cursor:'fresh-child'}),expect.any(Object))
   })
 

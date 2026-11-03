@@ -157,13 +157,19 @@ function LibraryItemReader() {
   // The Reading list this was opened from, if any (validated like the back link).
   const listReturn = readingReturnTo(searchParams.get('returnTo'), searchParams.get('projectId')); const backTo = dayScoped ? `/library/digests/${connectionId}/${date}` : (readingReturnTo(searchParams.get('returnTo'), searchParams.get('projectId')) ?? '/library/items')
   const backLabel = dayScoped ? (briefing?.connection_name ?? t('reading.day')) : t(/\/goals\/[\w-]+(?:\?|$)/.test(backTo) ? 'topics.backToTopic' : backTo.startsWith('/library/digests') || /[?]tab=digest(?:&date=\d{4}-\d{2}-\d{2})?$/.test(backTo) ? 'reading.editions' : backTo.includes('/research?') ? 'reading.researchReturn' : /[?]tab=(candidates|settings)$/.test(backTo) ? 'reading.sources' : backTo.startsWith('/projects/') ? 'reading.project' : 'nav.library'); const itemPath = (id: string) => `/library/digests/${connectionId}/${date}/items/${id}`
+  const backLink = <Button variant="ghost" size="sm" className="max-w-full" asChild>
+    <Link to={backTo} title={backLabel}>
+      <ArrowLeft className="size-[1em] shrink-0"/>
+      <span className="max-w-56 truncate py-1 [text-box:trim-both_cap_alphabetic]">{backLabel}</span>
+    </Link>
+  </Button>
 
   if (loading || (document && (versionId ? document.document_id !== versionId : document.document_type !== 'source_item'))) return <div className="max-w-3xl space-y-4 p-6"><Skeleton className="h-6 w-32"/><Skeleton className="h-8 w-64"/><Skeleton className="h-96 w-full"/></div>
   if (!document) {
     const status = documentError && typeof documentError === 'object' && 'status' in documentError ? documentError.status : null
     // Missing, not permitted and failed are different answers; only a failure invites a retry.
     const missing = !documentError || status === 404 || isNotFoundError(documentError)
-    return <div className="p-6"><Button variant="ghost" size="sm" asChild><Link to={backTo}><ArrowLeft className="mr-1 size-4"/>{backLabel}</Link></Button>
+    return <div className="p-6">{backLink}
       {versionId && <Button size="sm" variant="outline" onClick={() => chooseVersion(null)}>{t('reading.latestVersion')}</Button>}
       {missing ? <EmptyState title={t('reading.documentMissing')} description={t('reading.documentMissingHint')}/>
         : status === 403 ? <EmptyState title={t('reading.noAccess')} description={t('reading.documentForbiddenHint')}/>
@@ -185,23 +191,29 @@ function LibraryItemReader() {
       {document.content_state && <span>{t(`reading.document_${document.document_type}`)} · {t(`reading.content_${document.content_state}`, { defaultValue: document.content_state })}</span>}
       {sourceHost && <span>{sourceHost}</span>}
     </>}/>}
-    header={({ panelOpen, togglePanel, unsentComments }) => <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-2">
-      <Button variant="ghost" size="sm" asChild><Link to={backTo}><ArrowLeft className="mr-1 size-4"/>{backLabel}</Link></Button>
-      {dayScoped && <div className="flex shrink-0 items-center gap-0.5">
-        <Button variant="ghost" size="icon-sm" disabled={!previous} asChild={Boolean(previous)}>{previous ? <Link to={itemPath(previous)} aria-label={t('reading.previousItem')}><ChevronLeft className="size-4"/></Link> : <ChevronLeft className="size-4"/>}</Button>
-        <Button variant="ghost" size="icon-sm" disabled={!next} asChild={Boolean(next)}>{next ? <Link to={itemPath(next)} aria-label={t('reading.nextItem')}><ChevronRight className="size-4"/></Link> : <ChevronRight className="size-4"/>}</Button>
-      </div>}
-      {!dayScoped && activeSpaceId && listReturn && <ReadingSequenceNav spaceId={activeSpaceId} itemId={itemId} changeId={changeId} returnTo={listReturn} />}
-      {/* A short title for orientation; the full title is the body's heading. */}
-      <p className="min-w-0 flex-1 truncate text-sm font-medium" title={document.title}>{document.title}</p>
-      {safeHttpUrl(document.source_uri) && <Button variant="ghost" size="icon-sm" asChild><SafeExternalLink href={document.source_uri} aria-label={t('reading.openSource')}><ExternalLink className="size-4"/></SafeExternalLink></Button>}
-      {!versionId && <ReadingMethodEntry itemId={itemId} projectId={searchParams.get('projectId')} artifactId={document.artifact_id} readerHref={`${dayScoped?itemPath(itemId):`/library/items/${itemId}`}?${searchParams.toString()}`}/>}
-      <ReaderVersionHistory key={activeSpaceId+':'+itemId+':'+(versionId??'current')} itemId={itemId} onChoose={chooseVersion} onDenied={error => {
-        ++documentRequest.current; setDocument(null); setDocumentError(error)
-        if (activeSpaceId) clearDocumentCommentDrafts({ spaceId: activeSpaceId, documentType: 'source_item', documentId: itemId })
-        reloadAnnotations()
-      }}/>
-      {!versionId && <ReaderPanelToggle panelOpen={panelOpen} togglePanel={togglePanel} unsentComments={unsentComments}/>}
+    header={({ panelOpen, togglePanel, unsentComments }) => <header className="@container min-w-0 shrink-0 border-b border-border px-4 py-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+        <div className="flex max-w-full flex-none flex-wrap items-center gap-2">
+          {backLink}
+          {dayScoped && <div className="flex shrink-0 items-center gap-0.5">
+            <Button variant="ghost" size="icon-sm" disabled={!previous} asChild={Boolean(previous)}>{previous ? <Link to={itemPath(previous)} aria-label={t('reading.previousItem')}><ChevronLeft className="size-4"/></Link> : <ChevronLeft className="size-4"/>}</Button>
+            <Button variant="ghost" size="icon-sm" disabled={!next} asChild={Boolean(next)}>{next ? <Link to={itemPath(next)} aria-label={t('reading.nextItem')}><ChevronRight className="size-4"/></Link> : <ChevronRight className="size-4"/>}</Button>
+          </div>}
+          {!dayScoped && activeSpaceId && listReturn && <ReadingSequenceNav spaceId={activeSpaceId} itemId={itemId} changeId={changeId} returnTo={listReturn} />}
+        </div>
+        {/* Narrow Reader containers keep the full title in the document lead. */}
+        <p className="hidden min-w-40 flex-1 truncate text-sm font-medium @4xl:block" title={document.title}>{document.title}</p>
+        <div className="ml-auto flex max-w-full flex-none flex-wrap items-center gap-1">
+          {safeHttpUrl(document.source_uri) && <Button variant="ghost" size="icon-sm" asChild><SafeExternalLink href={document.source_uri} aria-label={t('reading.openSource')}><ExternalLink className="size-4"/></SafeExternalLink></Button>}
+          {!versionId && <ReadingMethodEntry itemId={itemId} projectId={searchParams.get('projectId')} artifactId={document.artifact_id} readerHref={`${dayScoped?itemPath(itemId):`/library/items/${itemId}`}?${searchParams.toString()}`}/>}
+          <ReaderVersionHistory key={activeSpaceId+':'+itemId+':'+(versionId??'current')} itemId={itemId} onChoose={chooseVersion} onDenied={error => {
+            ++documentRequest.current; setDocument(null); setDocumentError(error)
+            if (activeSpaceId) clearDocumentCommentDrafts({ spaceId: activeSpaceId, documentType: 'source_item', documentId: itemId })
+            reloadAnnotations()
+          }}/>
+          {!versionId && <ReaderPanelToggle panelOpen={panelOpen} togglePanel={togglePanel} unsentComments={unsentComments}/>}
+        </div>
+      </div>
     </header>}
     banner={<>{projectContext&&activeSpaceId&&userId&&<ProjectReaderTools key={`${activeSpaceId}:${userId}:${projectContext}:${itemId}`} space={activeSpaceId} user={userId} project={projectContext} item={itemId} version={versionId} currentArtifact={document.artifact_id} onChoose={chooseVersion} onDenied={error=>{++documentRequest.current;setDocument(null);setDocumentError(error);if(activeSpaceId)clearDocumentCommentDrafts({spaceId:activeSpaceId,documentType:'source_item',documentId:itemId});reloadAnnotations()}}/>}{versionId && <div role="status" className="mx-4 mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card p-3 text-sm"><p>{t('reading.historicalVersion', { date: formatDateTime(document.version_captured_at) })}</p><Button variant="outline" size="sm" onClick={() => chooseVersion(null)}>{t('reading.latestVersion')}</Button></div>}{!versionId && changeId&&<div className="mx-4 mt-3 rounded-lg border p-3"><Button disabled={changeBusy||changeAcknowledged} onClick={async()=>{if(!activeSpaceId)return;const scope=currentChange.current;setChangeBusy(true);try{await informationDigestsApi.readingState(activeSpaceId,itemId,{topic_change_id:changeId,read_status:'read'},searchParams.get('projectId')??undefined);if(currentChange.current===scope)setChangeAcknowledged(true)}catch(e){if(currentChange.current===scope)toast.error(errMsg(e))}finally{if(currentChange.current===scope)setChangeBusy(false)}}}>{t(changeAcknowledged?'reading.changeRead':'reading.markChangeRead')}</Button></div>}{!versionId && !projectContext && <MaterialProcessingPanel className="mx-4 mt-3" key={activeSpaceId+':'+itemId} itemId={itemId} spaceId={activeSpaceId??undefined} hasContent={!!document.plain_text.trim()} onReady={async()=>{await reloadDocument()}}/>}{(document.reading_info||document.result_provenance==='agent_provided_unverified'||!document.plain_text.trim()) && <div role="status" className="mx-4 mt-3 space-y-2 rounded-lg border border-border bg-card px-3 py-2 text-sm">
       <p>{document.plain_text.trim()?t(document.reading_info?.format==='agent_summary'?'reading.agentSummaryContent':document.reading_info?.method==='extractor'?'reading.sourceTextContent':'reading.agentRetrievedContent'):t('reading.agentNoContent')}</p>

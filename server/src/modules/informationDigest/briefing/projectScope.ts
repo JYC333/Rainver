@@ -9,6 +9,8 @@ import {
   type BriefingContextEntry, type BriefingScopeAdapter, type BriefingSignalDep, type BriefingWindow,
 } from "./contract.js";
 
+import { goalPresentationTitleSql } from "../../sources/index.js";
+
 const TASK_ACCESS = contentResourceDefinition("task")!;
 
 /**
@@ -31,7 +33,7 @@ export function projectBriefingScope(spaceId: string, projectId: string): Briefi
       const rows = await db.query<CandidateSignal>(
         `WITH following AS (
            SELECT gi.source_item_id, 'following'::text AS lens_kind,
-                  COALESCE(NULLIF(g.compatibility_json->>'display_title',''), g.intent_json->>'intent', 'Following') AS lens_label,
+                  ${goalPresentationTitleSql("g")} AS lens_label,
                   gi.selection_reason AS signal,
                   GREATEST(gi.associated_at, gi.updated_at) AS activity_at,
                   (SELECT max(c.detected_at) FROM source_goal_item_changes c
@@ -145,7 +147,7 @@ export function projectBriefingScope(spaceId: string, projectId: string): Briefi
       // Permission and current text only: a later triage change is not a revocation.
       const rows = await db.query<{ kind: BriefingSignalDep["kind"]; id: string; label: string; text: string | null }>(
         `SELECT 'goal_item' AS kind, gi.id,
-                COALESCE(NULLIF(g.compatibility_json->>'display_title',''), g.intent_json->>'intent', 'Following') AS label,
+                ${goalPresentationTitleSql("g")} AS label,
                 gi.selection_reason AS text
            FROM source_goal_items gi
            JOIN source_goals g ON g.id = gi.goal_id AND g.space_id = gi.space_id

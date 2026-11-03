@@ -39,7 +39,7 @@ beforeEach(async()=>{if(!db.available)return;root=await mkdtemp(join(tmpdir(),'r
  await db.pool.query("UPDATE source_channels SET fetch_frequency='manual' WHERE id=$1",[CHANNEL]);
  goalId=randomUUID();versionId=randomUUID();bindingId=randomUUID();
  await db.pool.query(`INSERT INTO source_goals(id,space_id,project_id,owner_user_id,agent_id,runtime_profile_id,intent_json,budget_json,status,active_version_id,compatibility_json) VALUES($1,$2,$3,$4,$5,$6,'{"intent":"Understand mechanisms and risks","includes":[],"excludes":[]}','{"requests_per_run":8,"items_per_source":20,"agent_attempts":2,"repair_attempts":0,"interval_seconds":86400}','running',$7,'{}')`,[goalId,SPACE,PROJECT,OWNER,AGENT,PROFILE,versionId]);
- await db.pool.query(`INSERT INTO source_goal_versions(id,space_id,goal_id,revision,plan_json,created_by_user_id) VALUES($1,$2,$3,1,$4,$5)`,[versionId,SPACE,goalId,{summary:'Purpose',analysis_brief:'Understand mechanisms and independent counter-evidence',sources:[spec],limitations:[]},OWNER]);
+ await db.pool.query(`INSERT INTO source_goal_versions(id,space_id,goal_id,revision,plan_json,created_by_user_id) VALUES($1,$2,$3,1,$4,$5)`,[versionId,SPACE,goalId,{title:'System mechanisms',summary:'Purpose',analysis_brief:'Understand mechanisms and independent counter-evidence',sources:[spec],limitations:[]},OWNER]);
  const source=await goalSourceRow(db.pool,SPACE,spec);
  await db.pool.query('INSERT INTO source_goal_bindings(id,space_id,goal_id,source_connection_id,spec_json,fixture_json) VALUES($1,$2,$3,$4,$5,$6)',[bindingId,SPACE,goalId,CONNECTION,spec,{authority_sha256:goalSourceFingerprint(source!)}]);
  itemId=await w.material('Evidence article',{uri:'https://news.test/article'});await db.pool.query('UPDATE source_items SET project_id=$2 WHERE id=$1',[itemId,PROJECT]);await original('Original mechanism A with limitations.');
@@ -48,7 +48,7 @@ async function original(text:string){return saveSourceReadingDocument(db.pool,{s
 async function enable(){return configureThemeAnalysis(db.pool,config(),identity,goalId,{expected_version_id:versionId,enabled:true,agent_id:AGENT,runtime_profile_id:PROFILE});}
 async function collect(){const admission=await requestGoalCheck(db.pool,config(),identity,goalId,{expected_version_id:versionId});const job=(await db.pool.query('SELECT payload_json FROM jobs WHERE id=$1',[admission.job_id])).rows[0];expect(job.payload_json.round_id).toBeTruthy();const collected=await runSourceGoalTick(db.pool,config(),goalId,SPACE,executor,versionId,job.payload_json.round_id);if(!fail)expect(collected,JSON.stringify(collected)).toMatchObject({results:[{status:'succeeded'}]});await db.pool.query("UPDATE jobs SET status='completed' WHERE id=$1",[admission.job_id]);return job.payload_json.round_id as string;}
 async function round(id:string){return (await db.pool.query('SELECT * FROM project_reading_rounds WHERE id=$1',[id])).rows[0];}
-async function publish(id:string,novelty:'baseline'|'ongoing'='baseline'){await settleThemeRound(db.pool,config(),id);const r=await round(id);const run=await w.runOf(r.briefing_id);const refs=(await db.pool.query('SELECT ref_key FROM information_briefing_inputs WHERE briefing_id=$1 AND status=\'included\' ORDER BY ref_key',[r.briefing_id])).rows.map(x=>x.ref_key);const text=JSON.stringify(outputValue({overview:{text:'Mechanisms and limitations affect the purpose.',refs},topic:{quick_line:'Evidence identifies a useful mechanism and a limit.',summary:'The retained original explains the mechanism. Its limits remain important.',stop_reason:'Only the authorized retained evidence was available.'}},novelty));const done=await w.finishRun(run.id,text);await new PostRunFinalizationService(new PgRunRepository(db.pool),undefined,undefined,undefined,runSettlement(config(),db.pool)).finalize(done.id,SPACE);return r.briefing_id as string;}
+async function publish(id:string,novelty:'baseline'|'ongoing'|'update'='baseline'){await settleThemeRound(db.pool,config(),id);const r=await round(id);const run=await w.runOf(r.briefing_id);const refs=(await db.pool.query('SELECT ref_key FROM information_briefing_inputs WHERE briefing_id=$1 AND status=\'included\' ORDER BY ref_key',[r.briefing_id])).rows.map(x=>x.ref_key);const text=JSON.stringify(outputValue({overview:{text:'Mechanisms and limitations affect the purpose.',refs},topic:{quick_line:'Evidence identifies a useful mechanism and a limit.',summary:'The retained original explains the mechanism. Its limits remain important.',stop_reason:'Only the authorized retained evidence was available.'}},novelty));const done=await w.finishRun(run.id,text);await new PostRunFinalizationService(new PgRunRepository(db.pool),undefined,undefined,undefined,runSettlement(config(),db.pool)).finalize(done.id,SPACE);return r.briefing_id as string;}
 it('requires explicit exact-version analysis consent; metadata reads never enqueue',async()=>{
  const before=await w.count('runs');const g=(await db.pool.query<GoalRow>('SELECT * FROM source_goals WHERE id=$1',[goalId])).rows[0];await withDbTransaction(db.pool,tx=>enqueueGoalCollection(tx,g,'old-consent'));
  expect(await w.count('project_reading_rounds')).toBe(0);expect((await readThemeRounds(db.pool,identity,goalId)).analysis).toBeNull();expect(await w.count('runs')).toBe(before);
@@ -76,6 +76,10 @@ it('source/retention/whole-audience withdrawal hides theme output and rejects qu
 it('freezes actual original versions across subsequent extraction and never relabels report as original',async()=>{
  await enable();const id=await collect();await settleThemeRound(db.pool,config(),id);const r=await round(id),run=await w.runOf(r.briefing_id);const refs=await w.inputsOf(r.briefing_id);const frozen=refs.find(x=>x.status==='included').analysis_json.deps.items[0].original;
  await original('Later author version Z');expect(run.prompt).toContain('Original mechanism A');expect(run.prompt).not.toContain('Later author version Z');await expect(assertBriefingDispatch(config(),run,db.pool)).resolves.toBeUndefined();expect(frozen.snapshot_id).toBeTruthy();
+ await publish(id);
+ const shown=await readThemeRounds(db.pool,identity,goalId);
+ expect(shown.latest?.evidence[0]).toMatchObject({original_snapshot_id:frozen.snapshot_id,excerpt:'Original mechanism A with limitations.'});
+ expect(JSON.stringify(shown.latest?.evidence)).not.toContain('Later author version Z');
 });
 it('pending audit is not material terminal, deadline partial differs from failure and stopped purpose cannot publish',async()=>{
  await enable();const g=(await db.pool.query<GoalRow>('SELECT * FROM source_goals WHERE id=$1',[goalId])).rows[0];const admitted=await withDbTransaction(db.pool,tx=>enqueueGoalCollection(tx,g,'pending-slot'));const job=(await db.pool.query('SELECT payload_json FROM jobs WHERE id=$1',[admitted.job_id])).rows[0];const id=job.payload_json.round_id;
@@ -93,7 +97,9 @@ it('new deterministic capture must finish before synthesis; actual extraction wo
  await enable();const id=await collect();const extraction=(await db.pool.query("SELECT id,status FROM extraction_jobs WHERE source_item_id=$1 AND job_type='extract_text'",[itemId])).rows[0];expect(extraction).toMatchObject({status:'pending'});
  await settleThemeRound(db.pool,config(),id);expect((await round(id)).status).toBe('collecting');expect(await w.count('runs')).toBe(0);
  vi.spyOn(globalThis,'fetch').mockResolvedValue(new Response('<html><article><h1>Mechanism</h1><p>The device uses a compliant membrane to protect fragile objects. Calibration remains necessary.</p></article></html>',{status:200,headers:{'content-type':'text/html'}}));
+ await db.pool.query("UPDATE jobs SET status='running' WHERE job_type='project_reading_theme' AND scheduled_at<=now()");
  const extracted=await new SourceExtractionWorker(db.pool,config(),publicAddressGuard).runPendingJob(extraction.id,SPACE);expect(extracted.status).toBe('succeeded');
+ expect((await db.pool.query("SELECT count(*)::int n FROM jobs WHERE job_type='project_reading_theme' AND payload_json->>'round_id'=$1 AND status='pending' AND scheduled_at<=now()",[id])).rows[0].n).toBe(1);
  const published=await publish(id);const run=await w.runOf(published);expect(run.prompt).toContain('compliant membrane');expect((await readThemeRounds(db.pool,identity,goalId)).latest?.evidence[0]?.original_snapshot_id).toBeTruthy();
 });
 it('real worker/orchestrator/Host wire Delivery settles a theme, without fixture finishRun',async()=>{
@@ -177,7 +183,7 @@ it('worker SIGKILL recovery settles the failed attempt, explicit retry publishes
 },60000);
 it('an activated new purpose needs new consent and reassesses unchanged originals without relabeling old history',async()=>{
  await enable();const oldRound=await collect(),oldVersion=await publish(oldRound);await composeProjectReading(db.pool,SPACE,PROJECT,oldRound);const oldTotal=(await readProjectComposition(db.pool,identity,PROJECT)).latest!;const next=randomUUID();
- await db.pool.query('INSERT INTO source_goal_versions(id,space_id,goal_id,revision,plan_json,created_by_user_id) VALUES($1,$2,$3,2,$4,$5)',[next,SPACE,goalId,{summary:'New learning purpose',analysis_brief:'Evaluate failure modes rather than adoption',sources:[spec],limitations:[]},OWNER]);
+ await db.pool.query('INSERT INTO source_goal_versions(id,space_id,goal_id,revision,plan_json,created_by_user_id) VALUES($1,$2,$3,2,$4,$5)',[next,SPACE,goalId,{title:'Failure mechanisms',summary:'New learning purpose',analysis_brief:'Evaluate failure modes rather than adoption',sources:[spec],limitations:[]},OWNER]);
  await db.pool.query('UPDATE source_goals SET current_version_id=$2,active_version_id=$2 WHERE id=$1',[goalId,next]);
  await expect(configureThemeAnalysis(db.pool,config(),identity,goalId,{expected_version_id:versionId,enabled:true,agent_id:AGENT,runtime_profile_id:PROFILE})).rejects.toMatchObject({statusCode:409});
  await configureThemeAnalysis(db.pool,config(),identity,goalId,{expected_version_id:next,enabled:true,agent_id:AGENT,runtime_profile_id:PROFILE});versionId=next;
@@ -303,7 +309,7 @@ it('F1 an unexpected PostgreSQL cohort failure is reported after independent gro
 
 // Stage-two tests use the same real collection, original writer and canonical
 // theme settlement fixtures as stage one; no synthetic successful briefing rows.
-import {composeProjectReading,readProjectComposition,projectReadingSwitched} from '../src/modules/informationDigest/composition/service.js';
+import {composeProjectReading,readProjectComposition} from '../src/modules/informationDigest/composition/service.js';
 async function anotherTheme(){
  const prior={goalId,versionId,bindingId};goalId=randomUUID();versionId=randomUUID();bindingId=randomUUID();
  await db.pool.query(`INSERT INTO source_goals(id,space_id,project_id,owner_user_id,agent_id,runtime_profile_id,intent_json,budget_json,status,active_version_id,compatibility_json) SELECT $2,space_id,project_id,owner_user_id,agent_id,runtime_profile_id,intent_json,budget_json,status,$3,'{}' FROM source_goals WHERE id=$1`,[prior.goalId,goalId,versionId]);
@@ -352,11 +358,32 @@ it('scheduled cohort waits for every frozen target, then combines themes once; c
  const count=await compositionCount();await composeProjectReading(db.pool,SPACE,PROJECT,admitted[0].id);expect(await compositionCount()).toBe(count);
 
 });
-it('composition empty/no-new/failed checks do not create blank versions or spend another theme Run',async()=>{
+it('one admitted collection and analysis publishes exactly one version; a later analysis publishes the next',async()=>{
+ await enable();const id=await collect();
+ expect(await compositionCount()).toBe(0);expect(await composeProjectReading(db.pool,SPACE,PROJECT,id)).toBeNull();
+ await settleThemeRound(db.pool,config(),id);
+ const preparing=await readProjectComposition(db.pool,identity,PROJECT);
+ expect(preparing.latest).toBeNull();expect(preparing.history).toEqual([]);expect(preparing.rounds[0].status).toBe('generating');
+ expect(await composeProjectReading(db.pool,SPACE,PROJECT,id)).toBeNull();
+ await publish(id);await Promise.all([composeProjectReading(db.pool,SPACE,PROJECT,id),composeProjectReading(db.pool,SPACE,PROJECT,id)]);
+ const first=(await readProjectComposition(db.pool,identity,PROJECT)).latest!;
+ expect(first.day_revision).toBe(1);expect(await compositionCount()).toBe(1);
+ expect((await db.pool.query("SELECT payload_json FROM jobs WHERE job_type='project_reading_compose'")).rows.every(j=>typeof j.payload_json.round_id==='string'&&!j.payload_json.edition)).toBe(true);
+ await changedThemeMethod('Reassess the authorized evidence with independent counter-evidence and explain limitations.');
+ const next=await collect();await settleThemeRound(db.pool,config(),next);
+ expect(await composeProjectReading(db.pool,SPACE,PROJECT,next)).toBeNull();
+ expect((await readProjectComposition(db.pool,identity,PROJECT)).latest!.id).toBe(first.id);
+ await publish(next,'ongoing');await composeProjectReading(db.pool,SPACE,PROJECT,next);
+ expect((await readProjectComposition(db.pool,identity,PROJECT)).latest!.day_revision).toBe(2);expect(await compositionCount()).toBe(2);
+ expect((await readProjectComposition(db.pool,identity,PROJECT,first.id)).latest).toEqual(first);
+});
+
+it('publishes only a new analysis body; empty, no-new and failed checks stay execution state',async()=>{
  await enable();empty=true;await db.pool.query('DELETE FROM source_goal_items WHERE goal_id=$1',[goalId]);const e=await collect();await settleThemeRound(db.pool,config(),e);await composeProjectReading(db.pool,SPACE,PROJECT,e);expect(await compositionCount()).toBe(0);
- empty=false;const a=await collect();await publish(a);await composeProjectReading(db.pool,SPACE,PROJECT,a);const before=(await readProjectComposition(db.pool,identity,PROJECT)).latest;
+ expect((await readProjectComposition(db.pool,identity,PROJECT)).latest).toBeNull();
+ empty=false;const a=await collect();await publish(a);await composeProjectReading(db.pool,SPACE,PROJECT,a);const before=(await readProjectComposition(db.pool,identity,PROJECT)).latest!;
  const noNew=await collect();await settleThemeRound(db.pool,config(),noNew);const runs=await w.count('runs');await composeProjectReading(db.pool,SPACE,PROJECT,noNew);expect(await w.count('runs')).toBe(runs);expect(await compositionCount()).toBe(1);
- fail=true;const failed=await collect();await settleThemeRound(db.pool,config(),failed);await composeProjectReading(db.pool,SPACE,PROJECT,failed);const shown=await readProjectComposition(db.pool,identity,PROJECT);expect(shown.latest).toEqual(before);expect(shown.rounds[0].status).toBe('blocked');
+ fail=true;const failed=await collect();await settleThemeRound(db.pool,config(),failed);await composeProjectReading(db.pool,SPACE,PROJECT,failed);const shown=await readProjectComposition(db.pool,identity,PROJECT);expect(shown.latest).toEqual(before);expect(shown.rounds[0].status).toBe('blocked');expect(await compositionCount()).toBe(1);
 });
 it('composition history and export hide revoked Source segments and enforce Project scope without writes',async()=>{
  await enable();const a=await collect();await publish(a);await composeProjectReading(db.pool,SPACE,PROJECT,a);const first=(await readProjectComposition(db.pool,identity,PROJECT)).latest!;
@@ -366,35 +393,33 @@ it('composition history and export hide revoked Source segments and enforce Proj
  await db.pool.query(`UPDATE source_connections SET consent_json=consent_json||'{"allow_external_model_egress":false}'::jsonb WHERE id=$1`,[CONNECTION]);expect((await readProjectComposition(db.pool,identity,PROJECT,first.id)).latest!.sections[0].briefing).toBeNull();
  await db.pool.query(`UPDATE source_connections SET consent_json=consent_json||'{"allow_external_model_egress":true}'::jsonb WHERE id=$1`,[CONNECTION]);expect((await readProjectComposition(db.pool,identity,PROJECT,first.id)).latest!.sections[0].visibility).toBe('visible');
  await db.pool.query('DELETE FROM project_members WHERE project_id=$1 AND user_id=$2',[PROJECT,MEMBER]);await expect(readProjectComposition(db.pool,{spaceId:SPACE,userId:MEMBER},PROJECT,first.id)).rejects.toMatchObject({statusCode:404});
- await db.pool.query("UPDATE source_goals SET status='paused' WHERE id=$1",[goalId]);expect((await readProjectComposition(db.pool,identity,PROJECT,first.id)).latest!.sections[0].briefing).toBeNull();await composeProjectReading(db.pool,SPACE,PROJECT);expect((await readProjectComposition(db.pool,identity,PROJECT)).latest!.sections).toHaveLength(0);
+ await db.pool.query("UPDATE source_goals SET status='paused' WHERE id=$1",[goalId]);expect((await readProjectComposition(db.pool,identity,PROJECT,first.id)).latest!.sections[0].visibility).toBe('visible');expect((await readProjectComposition(db.pool,identity,PROJECT)).latest!.sections).toHaveLength(1);
 });
 it('composition storage failure retries only the second stage, preserving the first-stage output and Run count',async()=>{
  await enable();const a=await collect();await publish(a);const runs=await w.count('runs');
  await db.pool.query(`CREATE FUNCTION reject_composition() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture disk failure'; END $$; CREATE TRIGGER reject_composition BEFORE INSERT ON project_reading_compositions FOR EACH ROW EXECUTE FUNCTION reject_composition()`);
  try{await expect(composeProjectReading(db.pool,SPACE,PROJECT,a)).rejects.toThrow('fixture disk failure');}finally{await db.pool.query('DROP TRIGGER reject_composition ON project_reading_compositions; DROP FUNCTION reject_composition()');}
- expect(await compositionCount()).toBe(0);await composeProjectReading(db.pool,SPACE,PROJECT,a);expect(await compositionCount()).toBe(1);expect(await w.count('runs')).toBe(runs);expect(await projectReadingSwitched(db.pool,SPACE,PROJECT)).toBe(true);
+ expect(await compositionCount()).toBe(0);await composeProjectReading(db.pool,SPACE,PROJECT,a);expect(await compositionCount()).toBe(1);expect(await w.count('runs')).toBe(runs);expect((await readProjectComposition(db.pool,identity,PROJECT)).date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 });
 
 
-it('canonical Goal stop withdraws the current segment, queues composition and leaves the old immutable reference intact',async()=>{
+it('Goal deletion withholds the segment without manufacturing a new content version',async()=>{
  const {SourceGoalService}=await import('../src/modules/sources/goals/service.js');
  await enable();const a=await collect();await publish(a);await composeProjectReading(db.pool,SPACE,PROJECT,a);const old=(await readProjectComposition(db.pool,identity,PROJECT)).latest!;
  await new SourceGoalService(db.pool,config(),executor).stop(identity,goalId,true);
  expect((await readProjectComposition(db.pool,identity,PROJECT,old.id)).latest!.sections[0].briefing).toBeNull();
- expect((await db.pool.query("SELECT id FROM jobs WHERE job_type='project_reading_compose' AND payload_json->>'project_id'=$1 AND status IN ('pending','claimed')",[PROJECT])).rows.length).toBeGreaterThan(0);
- await composeProjectReading(db.pool,SPACE,PROJECT);expect((await readProjectComposition(db.pool,identity,PROJECT)).latest!.sections).toHaveLength(0);
+ expect((await readProjectComposition(db.pool,identity,PROJECT)).latest!.sections[0].visibility).toBe('withheld');expect(await compositionCount()).toBe(1);
  expect((await db.pool.query('SELECT sections_json FROM project_reading_compositions WHERE id=$1',[old.id])).rows[0].sections_json[0].briefing_id).toBe(old.sections[0].briefing_id);
 });
-it('cancelled theme retains last successful section, and purpose consent cutover covers existing R2 opt-in without covering mere collection',async()=>{
- expect(await projectReadingSwitched(db.pool,SPACE,PROJECT)).toBe(false);await enable();
- await db.pool.query("UPDATE source_goals SET compatibility_json=compatibility_json-'reading_composition_enabled' WHERE id=$1",[goalId]);expect(await projectReadingSwitched(db.pool,SPACE,PROJECT)).toBe(true);
+it('cancelled analysis records a blocked check and retains the last successful section',async()=>{
+ expect((await readProjectComposition(db.pool,identity,PROJECT)).latest).toBeNull();await enable();
  const a=await collect();await publish(a);await composeProjectReading(db.pool,SPACE,PROJECT,a);const old=(await readProjectComposition(db.pool,identity,PROJECT)).latest!;
  await changedThemeMethod('Reassess mechanisms and contradictions against the authorized purpose; return the required complete theme JSON with explicit limitations.');const b=await collect();await settleThemeRound(db.pool,config(),b);
  const {cancelThemeRound}=await import('../src/modules/informationDigest/topics/service.js');await cancelThemeRound(db.pool,config(),identity,goalId,b);await composeProjectReading(db.pool,SPACE,PROJECT,b);
- expect((await readProjectComposition(db.pool,identity,PROJECT)).latest).toEqual(old);expect((await readProjectComposition(db.pool,identity,PROJECT)).rounds[0].status).toBe('blocked');
+ expect((await readProjectComposition(db.pool,identity,PROJECT)).latest!.sections).toEqual(old.sections);expect((await readProjectComposition(db.pool,identity,PROJECT)).rounds[0].status).toBe('blocked');
 });
 
-it.each(['pause','disable'] as const)('restores a withdrawn %s theme after a real no-new check without rerunning the model or changing other sections',async mode=>{
+it.each(['pause','disable'] as const)('preserves %s theme history through a real no-new check without rerunning the model or changing other sections',async mode=>{
  const {SourceGoalService}=await import('../src/modules/sources/goals/service.js');
  await enable();const a=await collect();await publish(a);await composeProjectReading(db.pool,SPACE,PROJECT,a);
  await anotherTheme();await enable();const bIdentity={goalId,versionId,bindingId};const b=await collect();const published=await publish(b);await composeProjectReading(db.pool,SPACE,PROJECT,b);
@@ -404,21 +429,20 @@ it.each(['pause','disable'] as const)('restores a withdrawn %s theme after a rea
  const oldB=originalTotal.sections[1];({goalId,versionId,bindingId}=bIdentity);
  const goals=new SourceGoalService(db.pool,config(),executor);
  if(mode==='pause')await goals.stop(identity,goalId);else await configureThemeAnalysis(db.pool,config(),identity,goalId,{expected_version_id:versionId,enabled:false});
- await composeProjectReading(db.pool,SPACE,PROJECT);
- const withdrawn=(await readProjectComposition(db.pool,identity,PROJECT)).latest!;expect(withdrawn.sections.map(s=>s.goal_id)).toEqual([originalTotal.sections[0].goal_id,originalTotal.sections[2].goal_id]);
+ const withdrawn=(await readProjectComposition(db.pool,identity,PROJECT)).latest!;expect(withdrawn.sections).toEqual(originalTotal.sections);
  if(mode==='pause')await goals.resume(identity,goalId,versionId);
  await enable();const runCount=await w.count('runs'),check=await collect();await settleThemeRound(db.pool,config(),check);
  const checked=await round(check),noNew=await w.rowOf(checked.briefing_id);expect(checked.status).toBe('complete');expect(noNew).toMatchObject({status:'ready',outcome:'no_new_material',result_json:null});
  await composeProjectReading(db.pool,SPACE,PROJECT,check);
  const restored=(await readProjectComposition(db.pool,identity,PROJECT)).latest!;
- expect(restored.id).not.toBe(withdrawn.id);expect(restored.sections.slice(0,2)).toEqual(withdrawn.sections);
+ expect(restored.id).toBe(withdrawn.id);expect(restored.sections).toEqual(withdrawn.sections);
  expect(restored.sections.find(s=>s.goal_id===goalId)).toMatchObject({briefing_id:published,purpose_version_id:oldB.purpose_version_id,published_at:oldB.published_at,visibility:'visible'});
  expect(await w.count('runs')).toBe(runCount);
  expect((await db.pool.query('SELECT sections_json FROM project_reading_compositions WHERE id=$1',[originalTotal.id])).rows[0].sections_json).toEqual(originalRefs);
  const n=await compositionCount();await composeProjectReading(db.pool,SPACE,PROJECT,check);expect(await compositionCount()).toBe(n);
 });
 
-it.each(['capture','egress','project'] as const)('restoring a missing no-new section rechecks current %s authority before attaching the original published reference',async gate=>{
+it.each(['capture','egress','project'] as const)('a no-new check cannot copy an unattached report; its original publication rechecks %s authority',async gate=>{
  await enable();const first=await collect(),published=await publish(first);const originalRow=await w.rowOf(published);const before=await w.count('runs');
  // The theme exists, but publication was not yet incorporated in a total.
  const check=await collect();await settleThemeRound(db.pool,config(),check);const r=await round(check);expect(r.status).toBe('complete');expect(await w.rowOf(r.briefing_id)).toMatchObject({outcome:'no_new_material',result_json:null,previous_briefing_id:published});
@@ -427,9 +451,10 @@ it.each(['capture','egress','project'] as const)('restoring a missing no-new sec
   else if(gate==='egress')await db.pool.query('UPDATE source_connections SET consent_json=consent_json||$2::jsonb WHERE id=$1',[CONNECTION,JSON.stringify({allow_external_model_egress:allowed})]);
   else await db.pool.query('UPDATE projects SET deleted_at=$2 WHERE id=$1',[PROJECT,allowed?null:new Date().toISOString()]);
  };
- await authority(false);await composeProjectReading(db.pool,SPACE,PROJECT,check);expect(await compositionCount()).toBe(0);
+ await authority(false);await composeProjectReading(db.pool,SPACE,PROJECT,check);
+ expect(await compositionCount()).toBe(0);
  if(gate==='project')await expect(readProjectComposition(db.pool,identity,PROJECT)).rejects.toMatchObject({statusCode:404});
- await authority(true);await composeProjectReading(db.pool,SPACE,PROJECT,check);
+ await authority(true);await composeProjectReading(db.pool,SPACE,PROJECT,check);expect(await compositionCount()).toBe(0);await composeProjectReading(db.pool,SPACE,PROJECT,first);
  const total=(await readProjectComposition(db.pool,identity,PROJECT)).latest!;expect(total.sections[0]).toMatchObject({briefing_id:published,purpose_version_id:versionId,published_at:new Date(originalRow.completed_at!).toISOString(),visibility:'visible'});
  expect(await w.count('runs')).toBe(before);const n=await compositionCount();await composeProjectReading(db.pool,SPACE,PROJECT,check);expect(await compositionCount()).toBe(n);
 });
@@ -458,4 +483,129 @@ it('exact analysis consent freezes advertised model and mode into the theme Run 
  const session_config=[{id:'model',type:'select',category:'model',value:'m2'},{id:'mode',type:'select',category:'mode',value:'review'}];
  await configureThemeAnalysis(db.pool,config(),identity,goalId,{expected_version_id:versionId,enabled:true,agent_id:AGENT,runtime_profile_id:PROFILE,session_config});const id=await collect();await settleThemeRound(db.pool,config(),id);const run=await w.runOf((await round(id)).briefing_id);expect((run.model_override_json as {acp_session_config:unknown}).acp_session_config).toEqual(session_config);
  await expect(configureThemeAnalysis(db.pool,config(),identity,goalId,{expected_version_id:versionId,enabled:true,agent_id:AGENT,runtime_profile_id:PROFILE,session_config:[{...session_config[0],value:'not-advertised'}]})).rejects.toBeTruthy();
+});
+
+it('publishes meaningful Following theme changes through the existing private aggregate notification',async()=>{
+ await enable();await publish(await collect());
+ await db.pool.query("UPDATE activity_records SET status='processed' WHERE payload_json->>'pointer_type'='following_updates'");
+ await original('Revised mechanism with new independent evidence and changed limitations.');
+ const next=await collect();const briefing=await publish(next,'update');
+ const row=await w.rowOf(briefing);expect(row.status).toBe('ready');
+ const notices=(await db.pool.query("SELECT * FROM activity_records WHERE payload_json->>'pointer_type'='following_updates' ORDER BY user_id")).rows;
+ expect(notices.map(n=>n.user_id).sort()).toEqual([OWNER,MEMBER].sort());
+ expect(notices.every(n=>n.visibility==='private'&&n.project_id===null&&n.status==='raw'&&n.payload_json.goal_id===goalId&&n.payload_json.briefing_id===briefing)).toBe(true);
+ await db.pool.query("UPDATE activity_records SET status='processed' WHERE payload_json->>'pointer_type'='following_updates'");
+ await settleThemeRound(db.pool,config(),next);
+ expect((await db.pool.query("SELECT status FROM activity_records WHERE payload_json->>'pointer_type'='following_updates'")).rows.every(n=>n.status==='processed')).toBe(true);
+});
+
+it('invalid suggested_action is explained as analysis failure; HTTP retry reruns analysis only and then permits composition',async()=>{
+ await enable();const id=await collect();await settleThemeRound(db.pool,config(),id);const r=await round(id),run=await w.runOf(r.briefing_id);
+ expect(run.instruction).toContain('Never use "adopt"');
+ const bad=outputValue({topic:{quick_line:'Mechanism',summary:'Evidence and limitations',stop_reason:'Bounded evidence'}});(bad.highlights[0] as unknown as {suggested_action:string}).suggested_action='adopt';
+ const done=await w.finishRun(run.id,JSON.stringify(bad));await new PostRunFinalizationService(new PgRunRepository(db.pool),undefined,undefined,undefined,runSettlement(config(),db.pool)).finalize(done.id,SPACE);
+ expect(await round(id)).toMatchObject({status:'blocked',error_code:'briefing_output_invalid'});
+ const app=buildModuleServer(config(),[informationDigestModule]);__setAuthIdentityForTests(identity);
+ try{
+  const base=`/api/v1/spaces/${SPACE}/projects/${PROJECT}/reading-compositions`;
+  expect((await app.inject({method:'GET',url:base})).json().composition_status).toBe('waiting_for_analysis');
+  const jobsBefore=await w.count('jobs');expect((await app.inject({method:'POST',url:base+'/retry',payload:{}})).statusCode).toBe(409);expect(await w.count('jobs')).toBe(jobsBefore);
+  const collections=await w.count('source_goal_runs');
+  const response=await app.inject({method:'POST',url:`/api/v1/sources/goals/${goalId}/theme-rounds/retry`,payload:{round_id:id}});expect(response.statusCode,response.body).toBe(200);expect(response.json().rounds[0].status).toBe('generating');
+  expect(await w.count('source_goal_runs')).toBe(collections);expect(await w.count('runs')).toBe(2);expect((await w.rowOf(r.briefing_id)).attempt).toBe(2);
+  await app.inject({method:'POST',url:`/api/v1/sources/goals/${goalId}/theme-rounds/retry`,payload:{round_id:id}});expect(await w.count('runs')).toBe(2);
+  await publish(id);
+  // Simulate the composition worker's own failure, after analysis succeeded.
+  await db.pool.query("UPDATE jobs SET status='failed' WHERE job_type='project_reading_compose' AND payload_json->>'project_id'=$1",[PROJECT]);
+  expect((await app.inject({method:'GET',url:base})).json().composition_status).toBe('failed');
+  expect((await app.inject({method:'POST',url:base+'/retry',payload:{}})).statusCode).toBe(200);
+  expect((await app.inject({method:'GET',url:base})).json().composition_status).toBe('queued');expect(await w.count('runs')).toBe(2);
+  // An older active queue entry outranks a newer failed job; repeated retry is idempotent.
+  const {PgJobQueueRepository}=await import('../src/modules/jobs/repository.js');
+  const later=await new PgJobQueueRepository(db.pool).enqueue({job_type:'project_reading_compose',space_id:SPACE,user_id:OWNER,payload:{project_id:PROJECT,round_id:id},max_attempts:1});
+  await db.pool.query("UPDATE jobs SET status='failed' WHERE id=$1",[later.id]);
+  expect((await app.inject({method:'GET',url:base})).json().composition_status).toBe('queued');
+  const queuedJobs=await w.count('jobs');expect((await app.inject({method:'POST',url:base+'/retry',payload:{}})).statusCode).toBe(200);expect(await w.count('jobs')).toBe(queuedJobs);
+
+ }finally{await app.close()}
+});
+
+it('does not project a removed analysis output as a current failure and keeps existing retry usable',async()=>{
+ await enable();const id=await collect();await settleThemeRound(db.pool,config(),id);const r=await round(id),run=await w.runOf(r.briefing_id);
+ const done=await w.finishRun(run.id,JSON.stringify(outputValue()));await new PostRunFinalizationService(new PgRunRepository(db.pool),undefined,undefined,undefined,runSettlement(config(),db.pool)).finalize(done.id,SPACE);
+ expect((await round(id)).status).toBe('blocked');
+ await withDbTransaction(db.pool,async tx=>{await tx.query('UPDATE project_reading_rounds SET briefing_id=NULL WHERE id=$1',[id]);await tx.query('DELETE FROM information_briefings WHERE id=$1',[r.briefing_id]);});
+ const runs=await w.count('runs'),collections=await w.count('source_goal_runs');
+ const view=await readThemeRounds(db.pool,identity,goalId);expect(view.rounds[0]).toMatchObject({status:'awaiting_analysis',error_code:null,briefing:null});
+ const {readProjectComposition}=await import('../src/modules/informationDigest/composition/service.js');const overview=await readProjectComposition(db.pool,identity,PROJECT);
+ expect(overview.composition_status).toBe('waiting_for_analysis');expect(overview.rounds[0]).toMatchObject({status:'awaiting_analysis',error_code:null});
+ expect(await w.count('runs')).toBe(runs);expect(await w.count('source_goal_runs')).toBe(collections);expect(await round(id)).toMatchObject({status:'blocked',error_code:'briefing_output_invalid'});
+ await settleThemeRound(db.pool,config(),id,true);expect((await round(id)).status).toBe('generating');expect(await w.count('source_goal_runs')).toBe(collections);expect(await w.count('runs')).toBe(runs+1);
+});
+it.each(['briefing_daily_limit','briefing_attempts_exhausted','theme_scope_busy','source_network_failed'])('keeps real admission/collection error %s without an analysis record',async error_code=>{
+ await enable();const id=await collect();await db.pool.query("UPDATE project_reading_rounds SET status='blocked',error_code=$2 WHERE id=$1",[id,error_code]);expect((await readThemeRounds(db.pool,identity,goalId)).rounds[0]).toMatchObject({status:'blocked',error_code});
+});
+
+it('a new day has no content version until its own analysis succeeds, while older exact editions remain readable',async()=>{
+ await enable();const firstRound=await collect();await publish(firstRound);await composeProjectReading(db.pool,SPACE,PROJECT,firstRound);
+ const first=(await readProjectComposition(db.pool,identity,PROJECT)).latest!,runs=await w.count('runs');
+ const nextDate=new Date(`${first.edition_date}T00:00:00Z`);nextDate.setUTCDate(nextDate.getUTCDate()+1);const date=nextDate.toISOString().slice(0,10);
+ expect((await readProjectComposition(db.pool,identity,PROJECT,undefined,date)).latest).toBeNull();
+ expect((await readProjectComposition(db.pool,identity,PROJECT,first.id)).latest).toEqual(first);expect(await w.count('runs')).toBe(runs);expect(await compositionCount()).toBe(1);
+});
+
+it('freezes a delayed scheduler slot day in both round and collection audit, including a DST timezone',async()=>{
+ const {PgAutomationRepository}=await import('../src/modules/automations/repository.js');
+ await new PgAutomationRepository(db.pool).create({spaceId:SPACE,ownerUserId:OWNER,agentId:AGENT,projectId:PROJECT,name:'Daily',triggerType:'schedule',configJson:{target_type:'information_digest',scope:'project',operation:'daily',cron:'0 7 * * *',timezone:'America/New_York'},preflightSnapshot:{}});
+ await enable();await new PgSchedulerTaskStore(db.pool).upsert({taskType:'source_goal_tick',taskKey:goalId,scopeType:'space',scopeId:SPACE,spaceId:SPACE,userId:OWNER,nextRunAt:'2026-11-01T03:30:00Z',metadataJson:{}});
+ await enqueueDueSourceGoals(db.pool);const admitted=(await db.pool.query("SELECT payload_json FROM jobs WHERE job_type='source_goal_tick'")).rows[0].payload_json;
+ expect(admitted.edition).toEqual({date:'2026-10-31',timezone:'America/New_York'});
+ expect((await round(admitted.round_id)).execution_json.edition).toEqual(admitted.edition);
+ await runSourceGoalTick(db.pool,config(),goalId,SPACE,executor,versionId,admitted.round_id);
+ const audit=(await db.pool.query('SELECT reading_date::text,reading_timezone FROM source_goal_runs WHERE goal_id=$1',[goalId])).rows[0];
+ expect(audit).toEqual({reading_date:'2026-10-31',reading_timezone:'America/New_York'});
+ await publish(admitted.round_id);await composeProjectReading(db.pool,SPACE,PROJECT,admitted.round_id);
+ expect((await readProjectComposition(db.pool,identity,PROJECT,undefined,'2026-10-31')).latest).toMatchObject({edition_date:'2026-10-31',timezone:'America/New_York',day_revision:1});
+ expect((await readProjectComposition(db.pool,identity,PROJECT)).latest).toBeNull();
+});
+
+it('collection without analysis exposes its day check but creates no content version or composition work',async()=>{
+ const q=await requestGoalCheck(db.pool,config(),identity,goalId,{expected_version_id:versionId});const payload=(await db.pool.query('SELECT payload_json FROM jobs WHERE id=$1',[q.job_id])).rows[0].payload_json;
+ expect(payload.round_id).toBeUndefined();await runSourceGoalTick(db.pool,config(),goalId,SPACE,executor,versionId,undefined,payload.edition);
+ const state=await readProjectComposition(db.pool,identity,PROJECT);expect(state.latest).toBeNull();expect(state.history).toEqual([]);expect(state.rounds).toMatchObject([{goal_id:goalId,status:'complete'}]);expect(await w.count('runs')).toBe(0);expect(await compositionCount()).toBe(0);
+ expect((await db.pool.query("SELECT id FROM jobs WHERE job_type='project_reading_compose'")).rows).toEqual([]);
+});
+
+it.each([2,25])('keeps the day version directory and pinned selection when reading version 1 of %s',async count=>{
+ await db.pool.query(`INSERT INTO project_reading_compositions(id,space_id,project_id,revision,edition_date,timezone,day_revision,sections_json,rounds_json,reason) SELECT 'selector-'||n,$1,$2,n,'2001-02-03','UTC',n,'[]','[]','theme_terminal' FROM generate_series(1,$3::integer) n`,[SPACE,PROJECT,count]);
+ const runs=await w.count('runs');
+ const pinned=await readProjectComposition(db.pool,identity,PROJECT,'selector-1');
+ expect(pinned.date).toBe('2001-02-03');expect(pinned.latest).toMatchObject({id:'selector-1',day_revision:1});
+ expect(pinned.history[0]).toMatchObject({id:`selector-${count}`,day_revision:count});
+ expect(pinned.history).toHaveLength(Math.min(count,20));
+ expect(pinned.history.filter(v=>v.id==='selector-1')).toHaveLength(1);
+ const latest=await readProjectComposition(db.pool,identity,PROJECT,undefined,pinned.date);
+ expect(latest.latest?.id).toBe(`selector-${count}`);
+ if(count===2)expect(pinned.history).toEqual(latest.history);
+ expect(await w.count('runs')).toBe(runs);
+});
+
+it('daily history pages beyond twenty revisions and lists unattached analyses',async()=>{
+ const {readReadingHistory}=await import('../src/modules/informationDigest/composition/history.js');
+ const {readArchivedTheme}=await import('../src/modules/informationDigest/composition/analysis.js');
+ await enable();const r=await collect(),briefing=await publish(r);
+ await db.pool.query(`INSERT INTO project_reading_compositions(id,space_id,project_id,revision,edition_date,timezone,day_revision,sections_json,rounds_json,reason) SELECT 'history-'||n,$1,$2,n,('2001-01-01'::date+n-1),'UTC',1,'[]','[]','theme_terminal' FROM generate_series(1,25) n`,[SPACE,PROJECT]);
+ // Adjacent records inside the same millisecond exercise full PG timestamp precision.
+ await db.pool.query("UPDATE project_reading_compositions SET created_at='2026-11-01T02:03:04.123456Z'");
+ const entries=[];let cursor:string|undefined;
+ do{const page=await readReadingHistory(db.pool,identity,PROJECT,{cursor});entries.push(...page.items);cursor=page.next_cursor??undefined;}while(cursor);
+ expect(entries).toHaveLength(26);expect(new Set(entries.map(e=>`${e.kind}:${e.id}`)).size).toBe(26);
+ expect(entries).toEqual(expect.arrayContaining([expect.objectContaining({kind:'edition',date:'2001-01-25'}),expect.objectContaining({kind:'theme_analysis',id:briefing})]));
+ const today=(await round(r)).execution_json.edition.date;await composeProjectReading(db.pool,SPACE,PROJECT,r);
+ expect((await readReadingHistory(db.pool,identity,PROJECT,{date:today})).items.some(e=>e.kind==='theme_analysis')).toBe(false);
+ await db.pool.query("UPDATE source_goals SET status='paused' WHERE id=$1",[goalId]);expect((await readArchivedTheme(db.pool,identity,PROJECT,briefing)).visibility).toBe('visible');
+ await db.pool.query("UPDATE source_connections SET capture_policy='reference_only' WHERE id=$1",[CONNECTION]);expect((await readArchivedTheme(db.pool,identity,PROJECT,briefing)).visibility).toBe('withheld');
+ await expect(readReadingHistory(db.pool,identity,PROJECT,{cursor:'broken'})).rejects.toMatchObject({statusCode:422});
+ await expect(readReadingHistory(db.pool,identity,PROJECT,{date:'2026-02-30'})).rejects.toMatchObject({statusCode:422});
+ await db.pool.query('DELETE FROM project_members WHERE project_id=$1 AND user_id=$2',[PROJECT,MEMBER]);await expect(readReadingHistory(db.pool,{spaceId:SPACE,userId:MEMBER},PROJECT,{})).rejects.toMatchObject({statusCode:404});
 });

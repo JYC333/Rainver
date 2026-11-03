@@ -8,7 +8,7 @@ import {
   type BriefingContextEntry, type BriefingScopeAdapter, type BriefingSignalDep, type BriefingWindow,
 } from "./contract.js";
 
-const TOPIC = (goal: string) => `COALESCE(NULLIF(${goal}.compatibility_json->>'display_title',''), ${goal}.intent_json->>'intent', 'Following')`;
+import { goalPresentationTitleSql as TOPIC } from "../../sources/index.js";
 /** A lens label names its Project, so one item seen from a topic and from a Project keeps both views. */
 const PROJECT_LABEL = (project: string, what: string) => `'Project "' || left(${project}.name, 120) || '": ' || ${what}`;
 
@@ -140,7 +140,7 @@ export function personalBriefingScope(spaceId: string, userId: string): Briefing
       );
       return goals.rows.map((goal): BriefingContextEntry => ({
         kind: "personal_focus",
-        label: `Following: ${goal.title}`.slice(0, 200),
+        label: goal.title === "Following" ? "Following" : `Following: ${goal.title}`.slice(0, 200),
         text: (goal.intent && goal.intent !== goal.title ? `${goal.title} — ${goal.intent}` : goal.title).slice(0, 1200),
         source: { type: "goal", id: goal.id, revision: new Date(goal.updated_at).toISOString() },
       }));

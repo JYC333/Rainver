@@ -53,6 +53,7 @@ export interface WorkSkillOptions {
   /** Exact grants for a headless domain Run without Task/Artifact reporting. */
   domainActions?: readonly string[];
   materialProcessing?: boolean;
+  sourceCollection?: boolean;
 }
 
 /**
@@ -101,14 +102,14 @@ Describe source.material.submit directly with $RAINVER_CLI; no action catalogue 
 ${options.domainActions?.includes('source.material.investigate')?'Granted actions: source.material.submit, source.material.investigate.':'Only source.material.submit is granted for this bound collection.'} When source.material.investigate is listed, describe it and use search/read/check to find authorized retained history and check the complete report before submitting; it is coverage feedback, not independent validation.
 Use the processing_id from this Run; never choose another identity.
 Submit URLs, titles, observed_at and explicit coverage/failure. Follow the Source
-capture/retention policy in the Run prompt. When text is permitted, autonomously
+capture/retention policy in the Run prompt. ${options.sourceCollection?`This is broad link discovery, not deep reading. Judge relevance from titles, excerpts or brief inspections. Keep useful distinct links even without saved text. Submit coverage.discovery with actual search angles/queries/outcomes, gaps and stop reason. Provide concise ordinary progress updates as work advances. Finish when discovery stops producing useful results or tools cannot continue; do not loop on identical failures. No collection-imposed total duration applies. Existing explicit owner budgets still apply.`:`When text is permitted, autonomously
 identify link type and read it. When source.material.investigate is granted, all investigation reports use agent_summary and must pass its check. Otherwise articles supply source_text; repositories supply
 an agent_summary of README/docs, purpose, capabilities and goal relevance. Include
 actual content.sources and distinguish retrieved text from your synthesis.
 Always set content.syntax: "markdown" when content.text uses Markdown (headings,
 lists, bold, code fences, tables), otherwise "plain" (shown literally). It is required.
 Prefer fewer readable items to a long link list. Keep reading bounded and reserve
-time to submit. If unavailable, keep the link with unavailable_reason. Never invent
+time to submit.`} If unavailable, keep the link with unavailable_reason. Never invent
 missing content. Metadata-only/reference-only sources require summary:null and
 content:null; do not read or submit bodies against that policy. Do not inspect
 environment variables or unrelated files. State coverage limitations.

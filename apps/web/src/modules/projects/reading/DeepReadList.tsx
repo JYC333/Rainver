@@ -10,7 +10,7 @@ import {formatDateTime,formatNumber} from '../../../i18n/format'
 import {useReadingAction,useReadingResource} from './useReadingResource'
 import {ReadingFeedback} from './ReadingFeedback'
 import {DeepReadRequest,type DeepOperation} from './DeepReadRequest'
-import {projectReaderHref} from './ProjectComposition'
+import {projectReaderHref} from '../../library/readingLinks'
 const ACTIVE=['pending','queued','running','cancelling','settling','waiting_for_dependency','waiting_for_review']
 export function DeepReadList({space,project,user}:{space:string;project:string;user:string}){
  const {t}=useAppTranslation();const {pathname,search}=useLocation();const back=pathname.replace(/^\/spaces\/[^/]+/,'')+search

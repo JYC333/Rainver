@@ -32,6 +32,39 @@ describe('global Agent Attention snapshot', () => {
     const removed = await readAttentionSnapshot(db.pool, user);
     expect(removed.page.items).toEqual([]); expect(removed.unread_count).toBe(0); expect(removed.signals.size).toBe(0);
   });
+  it('shows routine Following checks without unread or delivery, while preserving failures and decisions', async () => {
+    const collected = await seedAttentionRun(db.pool, { space, owner: user });
+    const synthesis = await seedAttentionRun(db.pool, { space, owner: user });
+    // First read can predate this fix: old stored unread must no longer nag.
+    const before = await readAttentionSnapshot(db.pool, user);
+    const old = before.page.items.find(item => item.identity.source_id === collected)!;
+    await changeReadState(db.pool, user, { space_id: space, identity: old.identity, subject: old.read_states[0]!.subject, state_version: 0, action: 'unread' });
+    await db.pool.query(`UPDATE runs SET trigger_origin='system',contract_snapshot_json=$2 WHERE id=$1`, [collected, { workflow_input_json: { source_goal: { purpose: 'collect', goal_id: randomUUID() } } }]);
+    await db.pool.query(`UPDATE runs SET trigger_origin='job',contract_snapshot_json=$2 WHERE id=$1`, [synthesis, { workflow_input_json: { information_briefing: { scope_key: 'following:' + randomUUID() } } }]);
+    const quiet = await readAttentionSnapshot(db.pool, user);
+    expect(quiet.page.items).toHaveLength(2); expect(quiet.unread_count).toBe(0); expect(quiet.signals.size).toBe(0);
+    __setAuthIdentityForTests({ spaceId: space, userId: user });
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [agentAttentionModule]);
+    try {
+      const current = await app.inject({ method: 'GET', url: '/api/v1/me/agent-attention' });
+      expect(current.json().items).toHaveLength(2);
+      const history = await app.inject({ method: 'GET', url: '/api/v1/me/agent-attention?view=history' });
+      expect(history.json().items).toHaveLength(2);
+      expect(history.json().items.every((item: AgentWorkItem) => !item.unread)).toBe(true);
+      const detail = await app.inject({ method: 'GET', url: `/api/v1/me/agent-attention/item?space_id=${space}&kind=run&source_id=${collected}` });
+      expect(detail.statusCode).toBe(200); expect(detail.json().runs[0].run_id).toBe(collected);
+    } finally { await app.close() }
+    await db.pool.query(`UPDATE runs SET status='failed' WHERE id=$1`, [collected]);
+    const failed = await readAttentionSnapshot(db.pool, user);
+    expect(failed.page.items).toHaveLength(2); expect(failed.unread_count).toBe(1);
+    expect([...failed.signals.values()].map(value => value.notice.kind)).toEqual(['failed']);
+    await db.pool.query(`UPDATE runs SET status='degraded' WHERE id=$1`, [collected]);
+    expect((await readAttentionSnapshot(db.pool, user)).unread_count).toBe(1);
+    await db.pool.query(`UPDATE runs SET status='waiting_for_review',error_json='{"supervisor_review":true}' WHERE id=$1`, [synthesis]);
+    expect((await readAttentionSnapshot(db.pool, user)).page.counts.needs_you).toBe(1);
+    await db.pool.query(`UPDATE runs SET trigger_origin='manual',status='succeeded',error_json=NULL WHERE id=$1`, [synthesis]);
+    expect((await readAttentionSnapshot(db.pool, user)).page.items).toHaveLength(2);
+  });
   it('reads a silent user snapshot through the HTTP boundary without active Space authority', async () => {
     await seedAttentionRun(db.pool, { space, owner: user });
     __setAuthIdentityForTests({ spaceId: randomUUID(), userId: user });

@@ -2,10 +2,12 @@ import {useCallback,useEffect,useRef,useState} from 'react'
 import {registerInMemoryResidue,sessionEpoch} from '../../../lib/sessionResidue'
 /** One page-owned request generation. Same-scope transient failures retain history;
  * permission failures and scope changes remove it, including A→B→A replies. */
-export function useReadingResource<T>(key:string,read:(signal:AbortSignal)=>Promise<T>){
+export function useReadingResource<T>(key:string,read:(signal:AbortSignal)=>Promise<T>,options?:{pollWhile:(data:T)=>boolean}){
  const getter=useRef(read);getter.current=read
  const [revision,setRevision]=useState(0),[state,setState]=useState<{key:string;data:T|null;error:unknown;loading:boolean}>({key,data:null,error:null,loading:true})
  useEffect(()=>{const c=new AbortController(),epoch=sessionEpoch();setState(s=>({key,data:s.key===key?s.data:null,error:null,loading:true}));getter.current(c.signal).then(data=>{if(!c.signal.aborted&&epoch===sessionEpoch())setState({key,data,error:null,loading:false})}).catch(error=>{if(!c.signal.aborted&&epoch===sessionEpoch())setState(s=>({key,data:[401,403,404].includes(error?.status)?null:s.key===key?s.data:null,error,loading:false}))});const unregister=registerInMemoryResidue(()=>{c.abort();setState({key,data:null,error:null,loading:false})});return()=>{unregister();c.abort()}},[key,revision])
+ const polling=state.key===key&&!state.loading&&!state.error&&state.data!==null&&!!options?.pollWhile(state.data)
+ useEffect(()=>{if(!polling)return;const timer=setTimeout(()=>setRevision(n=>n+1),5000);return()=>clearTimeout(timer)},[key,polling,state.data])
  return {...(state.key===key?state:{data:null,error:null,loading:true}),reload:useCallback(()=>setRevision(n=>n+1),[])}
 }
 export function useReadingAction(){

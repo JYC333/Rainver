@@ -133,6 +133,12 @@ Source item only when every current Project reader has full access without
 relying on Space oversight; hydration rechecks the current reader so revoked
 consent or later membership changes fail closed.
 
+Following display labels in the briefing scopes use Sources' public
+`goalPresentationTitleSql`, matching the active/current version precedence of
+`goalPresentation`. Topic synthesis passes its frozen version explicitly. Raw
+intent and mutable compatibility titles are not label fallbacks; purpose text
+remains analysis context. Signal revision reads use the same label resolution.
+
 ## Briefings (shared kernel; Project scope)
 
 `briefing/` synthesizes one evidence-backed briefing across a scope's sources.
@@ -361,36 +367,27 @@ evidence map and the limits of real-model, remote-Host and cost verification.
   whether the scope is idle or busy, and leaves nothing to resume. Once held,
   a day is ordered only against later sealed days, so a manual version
   published while it waits cannot strand it. One Run per scope still holds.
-- **Panel progress.** `ProjectBriefingPanel` re-reads every 4 s while
-  anything is still moving on the server: a queued version, or a day held as
-  `briefing_scope_busy`/`briefing_earlier_day_pending`, whether it is the
-  latest, the selected one or in history. Re-reads are GET only: one at a
-  time, re-armed after each read lands, and capped at 30 minutes per mount or
-  manual refresh. A selected earlier version updates in place. Refusals that
-  need a person (quota, setup) do not poll. Everyone has a read-only Refresh,
-  and Generate stays disabled while any version is in flight.
-- **Routes.** `routes.ts` registers one set of handlers per scope:
-  - `…/projects/:projectId/information-briefings`: reads need Project read
-    access; POST, cancel and settings need write access;
-  - `/api/v1/spaces/:spaceId/information-briefings/personal`: always the
-    caller's own briefing.
-
-  Each has `GET`, `GET /:briefingId`, `POST` (`{date}` briefs a sealed digest
-  day of that scope: `422 briefing_day_not_sealed`, days in order),
-  `POST /:briefingId/cancel` and `PUT /settings`. Daily briefings ride on the
-  scope's existing digest Automation (`config_json.briefing`): the Project's,
-  run as the enabling writer, or the reader's personal one, run as its owner
-  only. A day that cannot start is held as above.
-- **Web.** Under `apps/web/src/modules/library/briefing/`:
-  - `BriefingView.tsx`: the shared display; impact and context labels follow
-    `scope_type`;
-  - `BriefingPanel.tsx`: the shared state, bounded polling, guards, status
-    and history, with a `collapsible` mode;
-  - `PersonalBriefingPanel.tsx`: at the top of personal Reading, collapsed;
-    evidence opens the Reader and returns to `/library/reading`.
-
-  `apps/web/src/modules/projects/ProjectBriefingPanel.tsx` binds the panel to
-  a Project in its Sources digest tab.
+- **Current consumers and routes.** Personal Reading keeps `BriefingPanel` /
+  `PersonalBriefingPanel` and its bounded GET polling, explicit generation,
+  cancellation and daily setting. Project Reading uses the dated composition
+  surface described below. The old Project briefing panel and separate daily
+  page are retired; the unified archive reads exact old briefings through the
+  same permission projection. Project `POST information-briefings` and
+  `PUT information-briefings/settings` refuse with410
+  `project_daily_briefing_replaced` after authorization; Project overview reports
+  `can_generate:false` and `daily_enabled:false`. Historical GET/cancel/adoption
+  and already-admitted canonical settlement remain. Personal routes are unchanged.
+- **Shared web display.** `library/briefing/BriefingView.tsx` renders both retained
+  Project analyses and personal briefings, including exact evidence links and
+  current withholding. Archived Project bodies never mix with a latest briefing.
+  Evidence can include an optional source-text `excerpt` of at most400 characters
+  for the citation card. Only currently authorized, included material is projected.
+  Retained references re-read the exact snapshot via `sharedOriginalVersions` under
+  the whole current audience and match item/artifact/hash; they never substitute a
+  newer body or the mutable item excerpt. Other references use the readable item's
+  source excerpt. Private analysis/annotations are not a preview fallback. Withheld
+  results do not load or expose preview text; unavailable text remains absent. This
+  reuses the existing bounded original projection without new generation or storage.
 - **Change notices** (`notifications.ts`): built in the settlement
   transaction that publishes the current attempt; a replay, a failed attempt
   or a late attempt never reaches it. A notice is sent only for a delta with
@@ -562,10 +559,9 @@ evidence map and the limits of real-model, remote-Host and cost verification.
 - `server/src/modules/sourceAnnotation/`
 - `apps/web/src/modules/library/InformationDigestView.tsx`
 - `apps/web/src/modules/library/InterestProfileControls.tsx`
-- `apps/web/src/modules/projects/ProjectDigestPage.tsx`
+- `apps/web/src/modules/projects/reading/{ProjectComposition,TopicAnalysisArchive,ReadingHistory}.tsx`
 - `server/test/informationDigestDb.test.ts`
 - `server/test/informationBriefingDb.test.ts`, `informationBriefingAccessDb.test.ts`, `informationBriefingDependencyDb.test.ts`, `informationBriefingPersonalDb.test.ts`, `informationBriefingActionsDb.test.ts` (fixture `server/test/support/briefingFixture.ts`)
-- `apps/web/src/modules/projects/ProjectBriefingPanel.tsx`
 - `server/test/interestProfileDb.test.ts`
 
 ## Related docs
@@ -777,35 +773,62 @@ collection continues. See Source Goals for the savepoint/cohort failure boundary
 
 `composition/` deterministically references first-stage Following briefings; it
 never resubmits originals to a model, creates no Run, and adds no spending consent.
-`project_reading_compositions` (0011) stores a Project revision, previous version,
-and at most 100 ordered immutable references: goal/purpose version, round and
-sequence, briefing id and its original publication time. Text stays in the theme
-version. There are no generated cross-theme claims (`not_generated`).
+`project_reading_compositions` stores immutable ordered references (at most100)
+without copying theme text: goal/purpose version, round/sequence, briefing id and
+its original publication time. Migration0008 adds the edition's local date,
+IANA timezone, per-day revision, frozen safe check states and day indexes. The
+existing global revision remains an internal uniqueness/order identity. Publication
+and reads use the dated format only. Existing data must be normalized operationally;
+runtime code does not infer historical dates or adapt undated records.
+There are no generated cross-theme claims (`not_generated`).
 
-A composition Job is persisted with each admitted round's deadline. Theme terminal
-settlement and no-new/blocked/superseded checks wake the same canonical Job type;
-pending wakes coalesce under a narrow advisory lock, running work retains a new
-wake to avoid losing a terminal event. Job failures use existing bounded attempts
-(max3), leases and recovery. GET does not repair or generate. The worker waits
-for the slot's frozen admitted Project targets to be terminal; blocked/partial
-rounds preserve old successful sections and expose latest round coverage/status.
-No first successful theme means no blank total. Identical references mean no new
-version. A failed second stage can retry without rerunning a model.
+The existing Project daily digest Automation retains its sealed complete-day
+selection for Inbox/delivery consumers; it does not publish Reading content versions.
+Personal digest/briefing behavior is unchanged. Collection admission freezes the
+Project timezone and slot-local date in the Job, theme round and collection audit.
 
-Publication takes a short Project-specific advisory lock, reads the latest total,
-and patches only newer theme references, preserving all other order/timestamps.
-Old sequence replays cannot replace newer sections. Purpose identity comes from
-the immutable theme context, never the current Goal pointer. Pausing/deleting or
-disabling a theme queues withdrawal; reads hide it immediately, including history.
+Existing theme rounds are the preparation lifecycle, including their frozen input
+snapshot, collection/analysis progress, failures and retry identity. Date reads
+project that day's round/audit progress even before a body exists; no draft edition
+store or copied previous-day report stands in for unfinished analysis. An exact
+published-version read retains its immutable check snapshot.
+
+Only admitted analysis rounds can queue the composition writer. Under the existing
+Project lock, publication waits for every frozen cohort target to complete, resolves
+new authorized analysis bodies, and adds at most one content version for that cohort.
+The base contains only the same day's published sections. No-new, empty, failed,
+cancelled or superseded checks do not increment versions. Replayed callbacks and
+concurrent cohort completions reuse existing references. A later successful analysis
+can publish the next day-local version; a new calendar day alone cannot. No-new
+checks never relabel an earlier day's report as a new body. An unattached real report
+retains its archive entry and its own original publication retry.
+
+Pausing Following or disabling analysis preserves published history. Goal deletion
+and Source/Project access withdrawal withhold content at read time without creating
+a synthetic content version. GET never publishes, repairs or starts work. This
+reuses the existing round store, JobQueue, Project lock and authorization projection;
+no additional queue, lifecycle table, model invocation or dependency is introduced.
 
 Routes (same Space identity and canonical Project ACL):
-- GET `/api/v1/spaces/:spaceId/projects/:projectId/reading-compositions` returns
-  latest sections, 20 history metadata entries and latest states for up to100
-  themes. History bodies are loaded only by selecting their version.
-- GET `.../reading-compositions/:compositionId/export` selects that immutable
-  version with current per-section authorization; cross-Project ids are404.
-- POST `.../reading-compositions/retry` requires Project writer and queues only
-  bounded composition work for latest theme rounds, never theme generation.
+- GET `/api/v1/spaces/:spaceId/projects/:projectId/reading-compositions?date=…`
+  reads the selected day's latest revision and up to20 day-local revisions; no
+  date means today in the Project timezone. Date views follow that day's admitted
+  work, including work delayed past midnight; exact revisions use saved check states.
+  Missing analysis bodies remain missing.
+- GET `.../reading-compositions/:compositionId/export` reads the exact immutable
+  dated version with current per-section authorization. Its version directory
+  still lists the selected edition's newest20 revisions, retaining the pinned
+  revision within that bound if older. Selecting a body never narrows navigation
+  to that body alone; metadata does not hydrate sibling report content.
+- GET `.../reading-compositions/history?cursor=…&date=…` is the single archive:
+  dated editions and unattached published topic analyses. Attached topic reports are read
+  through their edition rather than duplicated as archive rows. It returns20 metadata rows and
+  a keyset cursor retaining PostgreSQL timestamp precision, with no20-record expiry.
+- GET `.../reading-compositions/analyses/:briefingId` reads an exact archived topic
+  through its original scope and full permission closure, without generation consent.
+- POST `.../reading-compositions/retry` is writer-gated and only retries failed
+  publication of today's completed analysis bodies; it neither creates a version
+  for a collection-only check nor starts another model Run.
 
 Every section is resolved through `projectBriefing` and its full current audience,
 Source retention/capture, actual destination, original/context/comparison closure.
@@ -813,14 +836,11 @@ A withheld section has no briefing, summary or quick line. No copied Artifact or
 Run is created as a read bypass. Ordinary configuration drift remains distinct
 from withdrawal of access, as for the referenced historical theme itself.
 
-Explicit theme consent records a sticky `reading_composition_enabled` cutover on
-the Goal. The old Project digest Automation still seals its deterministic daily
-Digest, but skips its independent briefing model (`replaced_by_theme_composition`).
-Existing R2 exact-version enabled analysis consent also qualifies for cutover;
-old collection permission alone does not. Stored legacy schedule preferences and in-flight Runs are not deleted/cancelled;
-their existing terminal settlement and read contracts continue. Personal scopes
-and old Projects without cutover retain their previous behavior. R5 connects the
-new four-view reading surface; sealed daily Digests remain unchanged.
+The old Project-wide AI briefing schedule is retired for every Project, including
+stored opt-ins, rather than selected by a sticky goal flag. No sticky cutover is
+written/read. Existing preferences and in-flight Runs are not deleted or cancelled;
+their terminal settlement and historical read contracts remain. Following analysis
+still requires its exact-purpose execution consent, independent of daily publication.
 
 A withdrawn section can rejoin after a successful no-new collection check without
 another model Run. Only a missing section and an actual ready `no_new_material`
@@ -828,8 +848,8 @@ row with null result qualify: the writer resolves that check's frozen previous
 published theme in the same scope (no later than its cutoff), then repeats the
 normal Project/scope/ready/topic/purpose and full current authorization checks.
 The published purpose must match the checked round; the section keeps the old
-briefing id and original publication time. Existing sections still do not create
-a revision for no-new. Empty/malformed/failed/queued outputs do not gain a fallback.
+briefing id and original publication time. An unchanged section retains its identity; the new check may still create a
+daily revision through its check snapshot. Empty/malformed/failed/queued outputs do not gain a fallback.
 
 ### R5 consumer projections
 

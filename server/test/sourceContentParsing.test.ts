@@ -60,6 +60,22 @@ describe("extractStructuredReaderContent", () => {
     });
   });
 
+  it("preserves useful image dimensions and captions while omitting explicitly decorative images", () => {
+    const result = extractStructuredReaderContent(`<article><h1>Image story</h1><p>Body text.</p>
+      <img src="/decor.svg" aria-hidden="true"><img src="/decor2.svg" role="presentation">
+      <figure><img src="/chart.png" width="1200" height="800" alt="Chart"><figcaption>Chart caption</figcaption></figure>
+      <img src="/icon.svg" width="20" height="20" alt="">
+      <img src="/untrusted.png" width="100%" height="-2" style="width:999999px">
+      </article>`, "https://example.test/article");
+    const images = result.content_json.content.filter(node => node.type === "image");
+    expect(images).toHaveLength(3);
+    expect(images[0]?.attrs).toMatchObject({ width: 1200, height: 800, alt: "Chart" });
+    expect(images[1]?.attrs).toMatchObject({ width: 20, height: 20 });
+    expect(images[2]?.attrs).not.toHaveProperty("width");
+    expect(images[2]?.attrs).not.toHaveProperty("height");
+    expect(result.plain_text).toContain("Chart caption");
+  });
+
   it("reads a numeric entity outside Unicode as the replacement character instead of failing the page", () => {
     const result = extractStructuredReaderContent(
       `<html><body><article>

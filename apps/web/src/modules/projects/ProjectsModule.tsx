@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
 import { Skeleton } from '../../components/ui/skeleton'
 
 // Each project sub-route is its own page. The research Area pulls in a
@@ -47,7 +47,7 @@ export default function ProjectsModule() {
         <Route path="sources/goals/:goalId" element={<Suspense fallback={<PageFallback />}><GoalPage /></Suspense>} />
         <Route path="sources" element={<Suspense fallback={<PageFallback />}><SourcesAreaPage /></Suspense>} />
         {/* `digest` and `raw` redirect to Sources tabs. */}
-        <Route path="digest" element={<Navigate to="../sources?tab=digest" replace />} />
+        <Route path="digest" element={<ProjectDailyRedirect />} />
         <Route path="raw" element={<Navigate to="../sources?tab=raw" replace />} />
         <Route path="files" element={<Suspense fallback={<PageFallback />}><ProjectFilesPage /></Suspense>} />
         <Route path="folders/:folderId" element={<Suspense fallback={<PageFallback />}><ProjectFolderSettingsPage /></Suspense>} />
@@ -84,4 +84,10 @@ export default function ProjectsModule() {
       </Route>
     </Routes>
   )
+}
+
+/** Preserve dated bookmarks before the Sources entry canonicalizes the archive. */
+function ProjectDailyRedirect(){
+ const [params]=useSearchParams(),next=new URLSearchParams(params);next.set('tab','digest');
+ return <Navigate to={`../sources?${next}`} replace/>;
 }

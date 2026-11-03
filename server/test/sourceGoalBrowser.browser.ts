@@ -85,7 +85,7 @@ it.each([['en',1440,1000,false],['zh-CN',390,844,false],['en',1440,1000,true]] a
  const resumed=(await db.pool.query("SELECT id FROM runs WHERE contract_snapshot_json->'workflow_input_json'->'source_goal'->>'goal_id'=$1 AND status='queued'",[goal.id])).rows;expect(resumed).toHaveLength(1);planning[0]=resumed[0];expect(hits).toBe(0);
  // Fixture planning Agent: the bound Run writes its plan; the confirmed follow activates it in the same transaction.
  await db.pool.query(`UPDATE runs r SET status='running',runtime_profile_id=p.id,runtime_key=p.runtime_key,runtime_profile_snapshot_json=to_jsonb(p) FROM agent_runtime_profiles p WHERE r.id=$1 AND p.id=r.requested_runtime_profile_id`,[planning[0].id]);
- await service.writeVersion(identity,{goal_id:goal.id,expected_revision:goal.revision,plan:{summary:'Robotics research and industry feeds',sources:specs,limitations:['Deterministic planning fixture; no model invocation.'],filters:{includes:['robotics'],excludes:[],excluded_origins:[]}}},planning[0].id);
+ await service.writeVersion(identity,{goal_id:goal.id,expected_revision:goal.revision,plan:{title:'Robotics',summary:'Robotics research and industry feeds',sources:specs,limitations:['Deterministic planning fixture; no model invocation.'],filters:{includes:['robotics'],excludes:[],excluded_origins:[]}}},planning[0].id);
  await db.pool.query(`UPDATE runs SET status='succeeded',output_json=$2 WHERE id=$1`,[planning[0].id,{schema_version:'run_output.v1',summary:'Fixture planning boundary: plan written.',result:{}}]);
  const active=(await db.pool.query('SELECT status,active_version_id,current_version_id FROM source_goals WHERE id=$1',[goal.id])).rows[0];expect(active.status).toBe('running');expect(active.active_version_id).toBe(active.current_version_id);
  await page.getByText(L('First collection','首次采集'),{exact:true}).waitFor({timeout:15000});
@@ -129,11 +129,11 @@ it.each([['en',1440,1000,false],['zh-CN',390,844,false],['en',1440,1000,true]] a
  const sourcesPanel=page.getByRole('heading',{name:L('Status','状态'),exact:true}).locator('xpath=ancestor::section[1]');
  await sourcesPanel.getByText(L('Source no longer available','来源已不可用'),{exact:true}).waitFor();await sourcesPanel.getByText('Research evidence',{exact:true}).waitFor();expect(await sourcesPanel.getByText('Industry developments',{exact:true}).count()).toBe(0);
  await page.getByRole('button',{name:L('Pause','暂停'),exact:true}).waitFor();await shot(page,'deleted-source');
- await page.goto(prefix+goalsPath);await page.getByRole('link',{name:'Follow robotics research and industry updates',exact:true}).waitFor();await page.getByText(L('Source access needed','需要来源访问'),{exact:true}).waitFor();await page.goto(topicUrl);
+ await page.goto(prefix+goalsPath);await page.getByRole('link',{name:'Robotics',exact:true}).waitFor();await page.getByText(L('Source access needed','需要来源访问'),{exact:true}).waitFor();await page.goto(topicUrl);
  // 8. Important / All and refresh recovery of the chosen view.
  await page.getByRole('button',{name:L('All collected','全部已采集'),exact:true}).click();await page.waitForURL(/selection=all/);await page.reload();expect(await page.getByRole('button',{name:L('All collected','全部已采集'),exact:true}).getAttribute('aria-pressed')).toBe('true');
  // 9. Reading: topic filter, reason, Reader and return to the same filtered scope; read state persists.
- await page.goto(prefix+readingPath);await page.getByRole('button',{name:L('Topic','主题'),exact:true}).click();await page.getByRole('option',{name:'Follow robotics research and industry updates'}).click();await page.waitForURL(/topic=/);
+ await page.goto(prefix+readingPath);await page.getByRole('button',{name:L('Topic','主题'),exact:true}).click();await page.getByRole('option',{name:'Robotics'}).click();await page.waitForURL(/topic=/);
  await page.getByRole('link',{name:'Robotics research new result',exact:true}).first().waitFor();await shot(page,'reading-topic');const filtered=page.url();
  await page.getByRole('link',{name:'Robotics research new result',exact:true}).first().click();await page.waitForURL(/\/library\/items\//);
  const back=page.locator(`a[href*="${readingPath}?topic="]`).first();await back.waitFor();await back.click();await page.waitForURL(filtered);

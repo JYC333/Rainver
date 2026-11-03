@@ -96,6 +96,7 @@ export const briefingEn = {
   unverified: 'Rests on agent-provided material that nobody verified.',
   unverified_short: 'Unverified',
   evidence: 'Evidence',
+  citation: { inspect: 'View source: {{title}}', more: 'Show remaining sources ({{count}})', less: 'Show fewer' },
   context: 'Project context',
   context_personal: 'Your stated focus',
   delta: {

@@ -1,4 +1,4 @@
-import {pgTable,varchar,integer,jsonb,timestamp,text,unique,foreignKey,index,check} from 'drizzle-orm/pg-core';
+import {pgTable,varchar,integer,jsonb,timestamp,date,text,unique,foreignKey,index,check} from 'drizzle-orm/pg-core';
 import {sql} from 'drizzle-orm';
 import {spaces} from './spaces.js';
 import {users} from './auth.js';
@@ -39,8 +39,9 @@ export const sourceGoalRepairs=pgTable('source_goal_repairs',{
 },t=>[unique('uq_source_goal_repair_run_revision').on(t.bindingId,t.createdByRunId,t.baseRevision),foreignKey({columns:[t.spaceId,t.bindingId],foreignColumns:[sourceGoalBindings.spaceId,sourceGoalBindings.id]})]);
 export const sourceGoalRuns=pgTable('source_goal_runs',{
  id:id(),spaceId:varchar('space_id',{length:36}).notNull(),goalId:varchar('goal_id',{length:36}).notNull(),bindingId:varchar('binding_id',{length:36}),versionId:varchar('version_id',{length:36}).notNull(),
+ readingDate:date('reading_date'),readingTimezone:varchar('reading_timezone',{length:100}),
  status:varchar({length:24}).notNull(),resultJson:jsonb('result_json'),startedAt:at('started_at'),endedAt:timestamp('ended_at',{withTimezone:true,mode:'string'}),
-},t=>[index('ix_source_goal_runs_goal').on(t.goalId,t.startedAt),foreignKey({columns:[t.spaceId,t.goalId],foreignColumns:[sourceGoals.spaceId,sourceGoals.id]})]);
+},t=>[check('ck_source_goal_runs_reading_day',sql`(reading_date IS NULL AND reading_timezone IS NULL) OR (reading_date IS NOT NULL AND reading_timezone IS NOT NULL)`),index('ix_source_goal_runs_day').on(t.spaceId,t.readingDate,t.goalId),index('ix_source_goal_runs_goal').on(t.goalId,t.startedAt),foreignKey({columns:[t.spaceId,t.goalId],foreignColumns:[sourceGoals.spaceId,sourceGoals.id]})]);
 /** Server-recorded Goal ↔ SourceItem membership. Written only by the goal
  * materializer from the actual goal/version/binding/collection, never from
  * model-supplied metadata. One SourceItem may belong to many goals. */

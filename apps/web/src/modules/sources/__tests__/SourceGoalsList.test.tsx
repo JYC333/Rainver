@@ -8,7 +8,7 @@ import {sourceGoalsApi} from '../../../api/client'
 vi.mock('../../../contexts/SpaceContext',()=>({useSpace:()=>({activeSpaceId:'s',userId:'u'})}))
 vi.mock('../../../api/client',()=>({sourceGoalsApi:{list:vi.fn(async()=>({goals:[]})),action:vi.fn(async()=>({}))},sourcesApi:{channels:vi.fn()}}))
 const results={items_total:5,important_total:2,unjudged_total:0,not_selected_total:3,judgment_failed_total:0,baseline_total:5,new_publication_total:0,evidenced_change_total:0,unknown_freshness_total:0,changes_total:1,last_outcome:'no_new' as const,last_new_items:0,last_checked_at:'2026-10-28T10:00:00Z',last_success_at:'2026-10-28T10:00:00Z',next_check_at:'2026-10-29T10:00:00Z'}
-const goal=(id:string,over:Record<string,unknown>={})=>({id,space_id:'s',owner_user_id:'u',project_id:null,intent_json:{intent:'Robotics '+id},budget_json:{requests_per_run:8,items_per_source:20,agent_attempts:2,repair_attempts:2,interval_seconds:86400},status:'running',revision:1,current_version_id:'v',active_version_id:'v',follow_state:{intent:'following',collections:{queued:0,running:0},pending_adjustment:false,phase:'scheduled',blocked_reason:null,health:'ok',sources:[],results},...over})
+const goal=(id:string,over:Record<string,unknown>={})=>({id,display:{version_id:'v',title:'Robotics '+id,summary:'Research and product updates'},space_id:'s',owner_user_id:'u',project_id:null,intent_json:{intent:'Robotics '+id},budget_json:{requests_per_run:8,items_per_source:20,agent_attempts:2,repair_attempts:2,interval_seconds:86400},status:'running',revision:1,current_version_id:'v',active_version_id:'v',follow_state:{intent:'following',collections:{queued:0,running:0},pending_adjustment:false,phase:'scheduled',blocked_reason:null,health:'ok',sources:[],results},...over})
 beforeEach(()=>{vi.mocked(sourceGoalsApi.list).mockResolvedValue({goals:[]});vi.mocked(sourceGoalsApi.action).mockClear()})
 it.each([[undefined,'/spaces/s/library/reading'],['p','/spaces/s/projects/p/sources']])('provides a top scoped return link for %s',async(projectId,href)=>{
  render(<MemoryRouter initialEntries={['/spaces/s/library/reading/goals']}><SourceGoalsList projectId={projectId}/></MemoryRouter>);expect(await screen.findByRole('link',{name:'Back to reading'})).toHaveAttribute('href',href);expect(screen.getByRole('link',{name:'Follow a topic'})).toBeInTheDocument();
@@ -30,12 +30,14 @@ it('a confirmed topic still preparing can be paused from the list, and its pause
  const d=screen.getByRole('link',{name:'Robotics d'}).closest('li')!;expect(within(d).queryByRole('button',{name:/Pause|Resume/})).not.toBeInTheDocument()
 })
 
-it('uses the Agent short title while preserving original intent as a fallback for older topics',async()=>{
- vi.mocked(sourceGoalsApi.list).mockResolvedValue({goals:[goal('a',{compatibility_json:{display_title:'Robot learning'},intent_json:{intent:'Please keep following a long detailed robotics research question'}}),goal('old')]} as never);
- render(<MemoryRouter><SourceGoalsList/></MemoryRouter>);
+it('shows only version-bound presentation, never raw intent or a mutable draft label',async()=>{
+ vi.mocked(sourceGoalsApi.list).mockResolvedValue({goals:[goal('a',{project_id:'p',compatibility_json:{display_title:'UNAPPLIED DRAFT'},intent_json:{intent:'RAW REQUEST\nRetry please'},display:{version_id:'v',title:'Robot learning',summary:'Track robotics research and product designs.'}}),goal('preparing',{project_id:'p',status:'exploring',active_version_id:null,current_version_id:null,display:{version_id:null,title:null,summary:null}})]} as never);
+ render(<MemoryRouter><SourceGoalsList projectId="p"/></MemoryRouter>);
  expect(await screen.findByRole('link',{name:'Robot learning'})).toBeInTheDocument();
- expect(screen.queryByText('Please keep following a long detailed robotics research question')).not.toBeInTheDocument();
- expect(screen.getByRole('link',{name:'Robotics old'})).toBeInTheDocument();
+ expect(screen.getByText('Track robotics research and product designs.')).toBeInTheDocument();
+ expect(screen.getByRole('link',{name:'Untitled topic'})).toBeInTheDocument();
+ expect(screen.queryByText(/RAW REQUEST|Retry please|UNAPPLIED DRAFT/)).not.toBeInTheDocument();
+ expect(screen.queryByText('Topic analysis and recent rounds')).not.toBeInTheDocument();
 });
 it('REPORTED: the list names a changed Source and a usage limit the same way the topic does, not as a generic permission',async()=>{
  const src=(over:Record<string,unknown>)=>({binding_id:'b',source_connection_id:'c',status:'paused',health:'needs_permission',error:'source_authority_revoked',failures:0,last_success_at:null,retry_at:null,...over})

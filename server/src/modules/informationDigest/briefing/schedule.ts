@@ -33,6 +33,7 @@ export function dailyBriefingSetting(config: Record<string, unknown> | null | un
 }
 
 export async function readDailyBriefingSetting(db: Queryable, adapter: BriefingScopeAdapter): Promise<DailyBriefingSetting> {
+  if(adapter.scope.type==='project')return {enabled:false,user_id:null,agent_id:null,runtime_profile_id:null};
   return dailyBriefingSetting((await scopeDigestAutomation(db, adapter))?.config_json);
 }
 
@@ -51,6 +52,7 @@ export async function setDailyBriefing(
 ): Promise<DailyBriefingSetting> {
   return withQueryableTransaction(db, async (tx) => {
     if (!(await adapter.canGenerate(tx, userId))) throw new HttpError(403, "Changing the daily briefing requires write access", { code: "briefing_writer_required" });
+    if(adapter.scope.type==='project')throw new HttpError(410,'Project daily analysis is managed by Following',{code:'project_daily_briefing_replaced'});
     const automation = await scopeDigestAutomation(tx, adapter, true);
     if (!automation) throw new HttpError(409, "This scope has no daily digest schedule yet", { code: "digest_schedule_missing" });
     const execution = input.daily_enabled ? await selectExecution(tx, adapter.scope.spaceId, userId, input) : null;

@@ -210,6 +210,8 @@ const ReaderImage = Node.create<{ remoteImagesAllowed: () => boolean }>({
       src: { default: null },
       alt: { default: '' },
       title: { default: null },
+      width: { default: null },
+      height: { default: null },
     }
   },
 

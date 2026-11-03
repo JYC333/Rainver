@@ -161,6 +161,17 @@ describe('ActivityInboxPage', () => {
     expect(screen.getByRole('link', { name: 'Your briefing has new changes' })).toHaveAttribute('href', '/library/reading')
   })
 
+  it('opens personal and Project Following updates without changing article reading state', async () => {
+    vi.mocked(activityApi.list).mockResolvedValue([
+      activityRecord({ id: 'following-personal', title: 'Personal update', metadata_json: { pointer_type: 'following_updates', goal_id: 'goal-1', project_id: null } }),
+      activityRecord({ id: 'following-project', title: 'Project update', metadata_json: { pointer_type: 'following_updates', goal_id: 'goal-2', project_id: 'project-1' } }),
+    ])
+    renderPage()
+    expect(await screen.findByRole('link', { name: 'Personal update' })).toHaveAttribute('href', '/library/reading/goals/goal-1')
+    expect(screen.getByRole('link', { name: 'Project update' })).toHaveAttribute('href', '/projects/project-1/sources/goals/goal-2')
+    expect(screen.getAllByRole('link', { name: 'Open reading' })).toHaveLength(2)
+  })
+
   it('routes a Project-free Agent persona pointer to the Memory review surface', async () => {
     vi.mocked(activityApi.list).mockResolvedValue([
       activityRecord({

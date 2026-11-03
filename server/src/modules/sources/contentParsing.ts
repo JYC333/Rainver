@@ -572,6 +572,8 @@ function htmlToReaderPmDoc(html: string, sourceUri: string | null): ReaderPmDoc 
     }
 
     if (tag === "img") {
+      // Explicit decorative semantics are safe to omit; a missing alt is not.
+      if (attrValue(value, "aria-hidden") === "true" || ["presentation", "none"].includes(attrValue(value, "role") ?? "")) continue;
       const src = resolveRemoteUrl(attrValue(value, "src") ?? firstSrcsetUrl(attrValue(value, "srcset")), sourceUri);
       if (src) {
         closeCurrentBlock();
@@ -581,6 +583,8 @@ function htmlToReaderPmDoc(html: string, sourceUri: string | null): ReaderPmDoc 
             src,
             alt: attrValue(value, "alt") ?? "",
             title: attrValue(value, "title") ?? null,
+            width: Number(attrValue(value, "width")),
+            height: Number(attrValue(value, "height")),
           },
         });
       }

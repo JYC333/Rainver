@@ -379,19 +379,24 @@ pre {
   container-type: inline-size;
 }
 
-/* Centered long-form reading column. Typography starting points (18px desktop,
-   17px narrow, line-height 1.75, ~0.9em paragraph gap) are design defaults to
-   calibrate, not a copy of another product. The measure is in em so it keeps
-   roughly 38 CJK characters / 70 Latin characters per line at any size. */
+/* The canvas uses the available pane; text and media have separate measures.
+   Rem-based measures do not change when the reader adjusts the type size. */
 .reader-column {
   --reader-font-size: 18px;
+  --reader-measure: none;
   width: 100%;
-  max-width: var(--reader-measure, 38em);
   font-size: var(--reader-font-size);
-  font-family: var(--reader-font-family, inherit);
-  padding-inline: clamp(1rem, 5cqi, 2.5rem);
-  padding-block: 2rem 4rem;
+  font-family: var(--reader-font-family, var(--font-sans));
+  padding-inline: clamp(1rem, 3cqi, 2rem);
+  padding-block: 1.75rem 4rem;
   overflow-wrap: anywhere;
+}
+
+.reader-column .reader-lead,
+.reader-column .reader-surface > :not(img) {
+  width: 100%;
+  max-width: var(--reader-measure);
+  margin-inline: auto;
 }
 
 @container (max-width: 560px) {
@@ -403,7 +408,7 @@ pre {
 
 /* Full title and source metadata above the body; never part of the anchored tree. */
 .reader-lead {
-  margin-bottom: 1.75em;
+  margin-bottom: 1.5em;
 }
 
 .reader-lead-compact {
@@ -415,7 +420,7 @@ pre {
 }
 
 .reader-lead-title {
-  font-size: 1.6em;
+  font-size: 1.45em;
   font-weight: 650;
   line-height: 1.3;
   letter-spacing: -0.01em;
@@ -486,18 +491,15 @@ pre {
   text-underline-offset: 0.18em;
 }
 
-/* Blocks are annotation targets: hover reveals them without turning
-   paragraphs into heavy cards. Negative inline margins keep text aligned. */
-.reader-column .reader-surface > * {
+/* Hover changes paint only: media must never inherit a text block’s insets. */
+.reader-column .reader-surface > :not(img) {
   border-radius: calc(var(--radius) - 2px);
-  padding-inline: 0.625rem;
-  margin-inline: -0.625rem;
   transition: background-color 120ms ease;
 }
 
 /* Only a real pointer hovers; a touch tap must not leave a block lit. */
 @media (hover: hover) and (pointer: fine) {
-  .reader-column .reader-surface > *:hover {
+  .reader-column .reader-surface > :not(img):hover {
     background: color-mix(in oklch, var(--foreground) 4%, transparent);
   }
 }
@@ -524,8 +526,8 @@ pre {
   line-height: 1.35;
 }
 
-.reader-surface h1 { font-size: 1.45em; }
-.reader-surface h2 { font-size: 1.3em; }
+.reader-surface h1 { font-size: 1.3em; }
+.reader-surface h2 { font-size: 1.2em; }
 .reader-surface h3 { font-size: 1.15em; }
 .reader-surface h4 { font-size: 1.05em; }
 .reader-surface h5,
@@ -535,17 +537,8 @@ pre {
    the right). The marker sits outside the item, inside this indent. */
 .reader-surface ul,
 .reader-surface ol {
-  padding-inline-start: 1.55rem;
+  padding-inline-start: 1.8em;
 }
-
-/* A top-level list is also a hover block (padding and negative margin of
-   0.625rem, see above); that rule is more specific than the list indent and
-   would cut it to 0.625rem, leaving markers at the screen edge on a phone.
-   Restore the indent on top of the block's own inset. */
-.reader-column .reader-surface > :is(ul, ol) {
-  padding-inline-start: calc(1.55rem + 0.625rem);
-}
-
 
 .reader-surface ul { list-style: disc; }
 .reader-surface ol { list-style: decimal; }
@@ -567,14 +560,13 @@ pre {
 
 .reader-surface img {
   display: block;
-  width: auto;
   max-width: 100%;
   height: auto;
-  max-height: 70vh;
   object-fit: contain;
   margin-inline: auto;
-  border: 1px solid var(--border);
-  border-radius: calc(var(--radius) - 2px);
+  border: 0;
+  padding: 0;
+  border-radius: 0;
   background: transparent;
 }
 

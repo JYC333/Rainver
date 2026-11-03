@@ -75,6 +75,7 @@ describe('annotation feedback and undo', () => {
   })
 
   it('undoes a removal through the server, which restores the annotation with its comments', async () => {
+    window.localStorage.setItem('rainver:reader-layout', JSON.stringify({ inspector: true }))
     api.deleteAnnotation.mockResolvedValue(null)
     api.updateAnnotation.mockResolvedValue(annotation('ann-1'))
     render(<Harness initial={[annotation('ann-1')]} />)
@@ -89,6 +90,7 @@ describe('annotation feedback and undo', () => {
   })
 
   it('does not put a restored annotation into a document opened since', async () => {
+    window.localStorage.setItem('rainver:reader-layout', JSON.stringify({ inspector: true }))
     api.deleteAnnotation.mockResolvedValue(null)
     let answer: (value: ReaderAnnotation) => void = () => {}
     api.updateAnnotation.mockReturnValue(new Promise(resolve => { answer = resolve }))
@@ -118,6 +120,7 @@ describe('copying a selection', () => {
 
 describe('notebook', () => {
   it('filters annotations by type and back to all', () => {
+    window.localStorage.setItem('rainver:reader-layout', JSON.stringify({ inspector: true }))
     render(<Harness initial={[annotation('ann-h'), annotation('ann-c', 'comment'), annotation('ann-e', 'excerpt')]} />)
     const filters = screen.getByRole('group', { name: 'Filter annotations by type' })
     fireEvent.click(within(filters).getByRole('button', { name: 'Comment 1' }))
@@ -164,15 +167,17 @@ describe('Reader tools', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Reader appearance' }))
       fireEvent.click(screen.getByRole('button', { name: 'Larger text' }))
       fireEvent.click(screen.getByRole('button', { name: 'Sepia' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Full width' }))
       const column = document.querySelector('.reader-column') as HTMLElement
       expect(column.style.getPropertyValue('--reader-font-size')).toBe('19px')
       expect(document.querySelector('.reader-document-shell')).toHaveAttribute('data-reader-theme', 'sepia')
       expect(api.putAppearance).not.toHaveBeenCalled()
       await act(async () => { vi.advanceTimersByTime(600) })
       expect(api.putAppearance).toHaveBeenCalledTimes(1)
-      expect(api.putAppearance).toHaveBeenCalledWith({ font_size: 19, line_height: 'normal', width: 'medium', font: 'sans', theme: 'sepia' })
+      expect(api.putAppearance).toHaveBeenCalledWith({ font_size: 19, line_height: 'normal', width: 'full', font: 'sans', theme: 'sepia' })
       fireEvent.click(screen.getByRole('button', { name: 'Restore defaults' }))
       expect(column.style.getPropertyValue('--reader-font-size')).toBe('')
+      expect(column.style.getPropertyValue('--reader-measure')).toBe('none')
     } finally {
       vi.useRealTimers()
     }
@@ -184,6 +189,9 @@ describe('Reader tools', () => {
     const outline = screen.getByRole('navigation', { name: 'Contents' })
     fireEvent.click(within(outline).getByRole('button', { name: 'Methods' }))
     expect(handle.scrollToPos).toHaveBeenCalledWith(30, expect.any(HTMLElement), true)
+    expect(screen.queryByRole('complementary', { name: 'Reader inspector' })).not.toBeInTheDocument()
+    fireEvent.keyDown(window, { key: ']' })
+    expect(screen.getByRole('complementary', { name: 'Reader inspector' })).toBeInTheDocument()
     fireEvent.keyDown(window, { key: ']' })
     expect(screen.queryByRole('complementary', { name: 'Reader inspector' })).not.toBeInTheDocument()
     unmount()

@@ -18,11 +18,12 @@ export const informationDigestModule: ServerModule = {
   },
 };
 
-export {beginThemeRound,wakeThemeRounds,themeCollectionTargets,retryThemeCollectionTarget} from './topics/rounds.js';
+export {themeCollectionDay,beginThemeRound,wakeThemeRounds,wakeThemeRoundsForItem,themeCollectionTargets,retryThemeCollectionTarget} from './topics/rounds.js';
 export {registerProjectReadingJobs} from './topics/jobs.js';
 
 export {configureThemeAnalysis} from './topics/service.js';
 
 export {themeRunReadable} from './topics/runAccess.js';
 
-export {queueProjectComposition} from './composition/service.js';
+export {projectReadingDay} from './composition/day.js';
+export type {EditionDay} from './composition/types.js';

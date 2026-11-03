@@ -84,3 +84,10 @@ it('keeps unrelated headless, Task, conversation and artifact skill consumers un
 it('a collection skill describes actual grants and refuses to invent a missing submission action',()=>{
  const render=(domainActions:string[])=>renderWorkSkill({materialProcessing:true,domainActions,deliverOutputs:false});expect(render([])).toContain('No result submission action is granted');expect(render(['source.material.submit'])).toContain('Only source.material.submit is granted');expect(render(['source.material.submit'])).toContain('NOT independently verified');expect(render(['source.material.submit'])).not.toContain('native tool evidence');
 });
+
+it('Following discovery reports ordinary progress without inheriting saved-item deep-reading instructions',()=>{
+ const skill=renderWorkSkill({deliverOutputs:false,materialProcessing:true,sourceCollection:true,domainActions:['source.material.submit']});
+ expect(skill).toContain('coverage.discovery');expect(skill).toContain('ordinary progress updates');
+ expect(skill).not.toContain('Prefer fewer readable items');expect(skill).not.toContain('ten-minute');
+ expect(skill).toContain('Existing explicit owner budgets still apply');
+});

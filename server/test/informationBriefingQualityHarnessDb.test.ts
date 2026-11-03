@@ -191,6 +191,10 @@ async function follow(item: string, topic: string) {
     [goal, SPACE, OWNER, AGENT, PROFILE, JSON.stringify({ intent: topic })],
   );
   await db.pool.query(`INSERT INTO source_goal_bindings (id,space_id,goal_id,source_connection_id,spec_json) VALUES ($1,$2,$3,$4,'{}')`, [binding, SPACE, goal, CONNECTION]);
+  const version = randomUUID();
+  await db.pool.query(`INSERT INTO source_goal_versions (id,space_id,goal_id,revision,plan_json,created_by_user_id)
+    VALUES ($1,$2,$3,1,$4::jsonb,$5)`, [version, SPACE, goal, JSON.stringify({title:topic}), OWNER]);
+  await db.pool.query(`UPDATE source_goals SET active_version_id=$2,current_version_id=$2 WHERE id=$1`, [goal, version]);
   await db.pool.query(
     `INSERT INTO source_goal_items (id,space_id,goal_id,source_item_id,source_connection_id,binding_id,version_id,first_goal_run_id,last_goal_run_id,selection_status,selection_reason,delivery_kind,associated_at,updated_at)
      VALUES ($1,$2,$3,$4,$5,$6,'v','r','r','important',$7,'new_publication',now() - interval '1 hour',now() - interval '1 hour')`,

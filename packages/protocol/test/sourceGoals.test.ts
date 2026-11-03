@@ -2,11 +2,11 @@ import {it,expect} from 'vitest';
 import {SourceGoalBeginRequestSchema,SourceGoalMessageRequestSchema,SourceGoalLegacyRequestSchema,SourceGoalCompatibilityRollbackSchema,SourceGoalPlanSchema} from '../src/index.js';
 it('accepts natural-language Personal or Project setup without provider parameters',()=>{expect(SourceGoalBeginRequestSchema.parse({intent:'Follow robotics',project_id:'project',idempotency_key:'one'})).toMatchObject({project_id:'project'});expect(SourceGoalBeginRequestSchema.safeParse({intent:'Follow robotics',api_key:'forbidden'}).success).toBe(false)});
 it('requires explicit bounded identities for messages and compatibility operations',()=>{expect(SourceGoalMessageRequestSchema.safeParse({goal_id:'goal',content:'Follow robotics',idempotency_key:''}).success).toBe(false);expect(SourceGoalLegacyRequestSchema.parse({channel_id:'channel',dry_run:true})).toEqual({channel_id:'channel',dry_run:true});expect(SourceGoalCompatibilityRollbackSchema.safeParse({goal_id:'goal',force:true}).success).toBe(false)});
-it('allows one source while bounding user-facing cadence and content preferences',()=>{const plan={summary:'Robotics plan',sources:[{source_connection_id:'source',source_channel_id:'channel',reason:'Research evidence',supports_history:false,implementation:{kind:'connector'}}],limitations:[],filters:{includes:['robotics'],excludes:[],excluded_origins:['https://example.test']},interval_seconds:86400};expect(SourceGoalPlanSchema.parse(plan).sources).toHaveLength(1);expect(SourceGoalPlanSchema.safeParse({...plan,interval_seconds:1}).success).toBe(false);expect(SourceGoalPlanSchema.safeParse({...plan,filters:{...plan.filters,excludes:Array(17).fill('spam')}}).success).toBe(false)});
+it('allows one source while bounding user-facing cadence and content preferences',()=>{const plan={title:'Robotics',summary:'Robotics plan',sources:[{source_connection_id:'source',source_channel_id:'channel',reason:'Research evidence',supports_history:false,implementation:{kind:'connector'}}],limitations:[],filters:{includes:['robotics'],excludes:[],excluded_origins:['https://example.test']},interval_seconds:86400};expect(SourceGoalPlanSchema.parse(plan).sources).toHaveLength(1);expect(SourceGoalPlanSchema.safeParse({...plan,interval_seconds:1}).success).toBe(false);expect(SourceGoalPlanSchema.safeParse({...plan,filters:{...plan.filters,excludes:Array(17).fill('spam')}}).success).toBe(false)});
 
 it('keeps Agent and profile selection paired at setup and message boundaries',()=>{for(const schema of [SourceGoalBeginRequestSchema,SourceGoalMessageRequestSchema]){const body=schema===SourceGoalBeginRequestSchema?{intent:'Follow robotics'}:{goal_id:'goal',content:'Follow robotics',idempotency_key:'one'};expect(schema.safeParse({...body,agent_id:'agent'}).success).toBe(false);expect(schema.safeParse({...body,agent_id:'agent',runtime_profile_id:'profile'}).success).toBe(true)}});
 it('accepts a native search proposal without provider IDs and rejects unbounded queries',async()=>{
- const {SourceGoalVersionWriteSchema}=await import('../src/index.js');const input={goal_id:'goal',expected_revision:0,plan:{summary:'Native search',sources:[{reason:'Selected Agent',implementation:{kind:'agent_search',query:'robotics research'},supports_history:false}],limitations:[]}};expect(SourceGoalVersionWriteSchema.safeParse(input).success).toBe(true);expect(SourceGoalVersionWriteSchema.safeParse({...input,plan:{...input.plan,sources:[{...input.plan.sources[0],implementation:{kind:'agent_search',query:'x'.repeat(1001)}}]}}).success).toBe(false);
+ const {SourceGoalVersionWriteSchema}=await import('../src/index.js');const input={goal_id:'goal',expected_revision:0,plan:{title:'Robotics',summary:'Native search',sources:[{reason:'Selected Agent',implementation:{kind:'agent_search',query:'robotics research'},supports_history:false}],limitations:[]}};expect(SourceGoalVersionWriteSchema.safeParse(input).success).toBe(true);expect(SourceGoalVersionWriteSchema.safeParse({...input,plan:{...input.plan,sources:[{...input.plan.sources[0],implementation:{kind:'agent_search',query:'x'.repeat(1001)}}]}}).success).toBe(false);
 });
 
 it('requires strict Agent result provenance fields and distinguishes zero results from failure',async()=>{
@@ -77,7 +77,7 @@ it('manual checking requires the exact shown version and accepts null only as th
 
 it('accepts bounded downstream analysis briefs for API and Agent plans without requiring them on old plans',async()=>{
  const {SourceGoalVersionWriteSchema}=await import('../src/index.js');
- const plan={summary:'Comparison purpose is visible here',analysis_brief:'Compare system mechanisms using actual architecture and code evidence.',sources:[{source_connection_id:'s',source_channel_id:'c',reason:'Evidence',supports_history:false,implementation:{kind:'connector'}}],limitations:[]};
+ const plan={title:'System designs',summary:'Comparison purpose is visible here',analysis_brief:'Compare system mechanisms using actual architecture and code evidence.',sources:[{source_connection_id:'s',source_channel_id:'c',reason:'Evidence',supports_history:false,implementation:{kind:'connector'}}],limitations:[]};
  expect(SourceGoalPlanSchema.parse(plan).analysis_brief).toBe(plan.analysis_brief);
  expect(SourceGoalVersionWriteSchema.safeParse({goal_id:'g',expected_revision:0,plan:{...plan,sources:[{reason:'Evidence',supports_history:false,implementation:{kind:'agent_search',query:'system architecture'}}]}}).success).toBe(true);
  expect(SourceGoalPlanSchema.safeParse({...plan,analysis_brief:'x'.repeat(4001)}).success).toBe(false);
@@ -85,8 +85,37 @@ it('accepts bounded downstream analysis briefs for API and Agent plans without r
  expect(SourceGoalPlanSchema.safeParse({...plan,analysis_brief:undefined}).success).toBe(true);
 });
 it('bounds human topic edits without accepting a new Source, credentials or cadence',async()=>{
- const {SourceGoalEditSchema}=await import('../src/index.js');const edit={expected_revision:2,idempotency_key:'edit',title:'Systems',intent:'Compare system designs',analysis_brief:'Inspect architecture and mechanisms.',includes:[],excludes:[],queries:[]};
+ const {SourceGoalEditSchema}=await import('../src/index.js');const edit={expected_revision:2,idempotency_key:'edit',title:'Systems',summary:'Compare system architecture and mechanisms.',intent:'Compare system designs',analysis_brief:'Inspect architecture and mechanisms.',includes:[],excludes:[],queries:[]};
  expect(SourceGoalEditSchema.safeParse(edit).success).toBe(true);
  for(const extra of [{interval_seconds:1},{source_connection_id:'new-source'},{credential:'secret'}])expect(SourceGoalEditSchema.safeParse({...edit,...extra}).success).toBe(false);
  expect(SourceGoalEditSchema.safeParse({...edit,includes:Array(17).fill('x')}).success).toBe(false);
+});
+
+it('requires an explicit channel restoration flag alongside the same bounded confirmation identity',async()=>{
+ const {SourceGoalBindingConfirmRequestSchema,SourceGoalBindingReconfirmationSchema}=await import('../src/index.js');
+ const input={binding_revision:1,authority:'a'.repeat(64)};
+ expect(SourceGoalBindingConfirmRequestSchema.parse(input)).toEqual(input);
+ expect(SourceGoalBindingConfirmRequestSchema.parse({...input,restore_channel:true})).toMatchObject({restore_channel:true});
+ expect(SourceGoalBindingConfirmRequestSchema.safeParse({...input,restore_channel:'true'}).success).toBe(false);
+ expect(SourceGoalBindingConfirmRequestSchema.safeParse({...input,force:true}).success).toBe(false);
+ expect(SourceGoalBindingReconfirmationSchema.parse({binding_id:'b',binding_revision:1,resolvable_by:'you',source_name:'Feed',current:{capture_policy:'reference_only',retention_policy:'metadata_only',source_status:'active',channel_status:'paused',uses_credential:false},changed:['channel_status'],related_changes:[],authority:input.authority,restore_channel:true})).toHaveProperty('restore_channel',true);
+});
+
+it('bounds discovery reports and distinguishes attempted searches from untried directions',async()=>{
+ const {SourceCollectionDiscoverySchema}=await import('../src/index.js');
+ const angle={direction:'Product announcements',queries:['agent control plane products'],outcome:'results_found',note:'Found official announcements'};
+ const report={angles:[angle],remaining_gaps:['Engineering case studies'],stop_reason:{code:'budget',detail:'Reserved time for submission'}};
+ expect(SourceCollectionDiscoverySchema.safeParse(report).success).toBe(true);
+ for(const angles of [[],Array(9).fill(angle),[{...angle,queries:[]}],[{...angle,outcome:'not_attempted'}],[{...angle,outcome:'not_attempted',queries:[]}]])expect(SourceCollectionDiscoverySchema.safeParse({...report,angles}).success).toBe(false);
+ expect(SourceCollectionDiscoverySchema.safeParse({...report,verified:true}).success).toBe(false);
+ expect(SourceCollectionDiscoverySchema.safeParse({...report,angles:[{...angle,outcome:'failed',queries:[]}],stop_reason:{code:'tool_unavailable',detail:'Tool could not run'}}).success).toBe(true);
+ // Legitimately narrow topics may have one direction; no domain quotas.
+ expect(SourceCollectionDiscoverySchema.safeParse({...report,remaining_gaps:[]}).success).toBe(true);
+});
+
+it('requires an explicit retry flag and keeps it separate from ordinary checking',async()=>{
+ const {SourceGoalCheckRequestSchema}=await import('../src/index.js');
+ expect(SourceGoalCheckRequestSchema.parse({expected_version_id:'v',retry_failed:true})).toEqual({expected_version_id:'v',retry_failed:true});
+ expect(SourceGoalCheckRequestSchema.safeParse({expected_version_id:'v',retry_failed:'true'}).success).toBe(false);
+ expect(SourceGoalCheckRequestSchema.safeParse({expected_version_id:'v',retry_failed:true,ignore_budget:true}).success).toBe(false);
 });

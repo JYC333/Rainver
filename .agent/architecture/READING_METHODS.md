@@ -160,13 +160,16 @@ logout/401; no persistent/global cross-user permission cache. Workspace and writ
 still perform material/full-audience authorization. A navigation affordance is
 not an access grant.
 
+New Agent-native collection uses a code-owned broad-discovery contract and a
+frozen `source_collection` context, independently of this manually triggered
+investigation method. Legacy admitted Runs keep their frozen method.
 Production Source collection keeps requester consent and per-reader projection;
 it does not impose the briefing/trial full-audience gate. Newly added Project
 brief/constraints/instructions are used only when the material's canonical
 Project matches that context. Source materializers bind items/snapshots to their
 connection's Project and canonical Reader denies non-Project readers even when
-visibility is space_shared. A broader/different Source uses ordinary reading,
-Space/system method and null Project Run/WorkContext (no implicit Project
+visibility is space_shared. A broader/different Source uses ordinary topic discovery,
+no investigation method and null Project Run/WorkContext (no implicit Project
 instruction injection). The prompt explicitly identifies the context omission.
 Final dispatch/writer rechecks exact output Project binding. No Source grants or
 storage scope are widened. Trial comparisons remain full-audience controlled.

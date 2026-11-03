@@ -21,7 +21,7 @@ it('rejects missing time, duplicate identities, irrelevant data and stable-ID dr
 });
 it('cannot bind two channels of the same Source as separate contributions',()=>{
  const source={source_connection_id:'one',source_channel_id:'a',reason:'coverage',supports_history:false,implementation:{kind:'connector'}};
- expect(SourceGoalPlanSchema.safeParse({summary:'A plan',sources:[source,{...source,source_channel_id:'b'}],limitations:[]}).success).toBe(false);
+ expect(SourceGoalPlanSchema.safeParse({title:'Robotics',summary:'A plan',sources:[source,{...source,source_channel_id:'b'}],limitations:[]}).success).toBe(false);
 });
 
 it('keeps captured real Agent implementations hash-locked without evaluating generated code outside isolation',()=>{
@@ -92,13 +92,15 @@ it('upstream continuation reads only explicit connector contracts',async()=>{
  expect(upstreamContinuation({token:'x',watermark:'2026-10-26T00:00:00Z'})).toBe('unknown');expect(upstreamContinuation({})).toBe('unknown');
 });
 
-it('accepts bounded short planning titles and remains compatible with untitled plans',()=>{
+it('requires bounded authored titles in both stored plans and planning writes',()=>{
  const source={source_connection_id:'one',source_channel_id:'a',reason:'coverage',supports_history:false,implementation:{kind:'connector'}};
  const plan={summary:'A plan',sources:[source],limitations:[]};
  expect(SourceGoalPlanSchema.parse({...plan,title:'  Robotics  '}).title).toBe('Robotics');
  const native={goal_id:'goal',expected_revision:0,plan:{...plan,title:'Robotics',sources:[{reason:'Coverage',supports_history:false,implementation:{kind:'agent_search',query:'robotics research'}}]}};
  expect(SourceGoalVersionWriteSchema.parse(native).plan.title).toBe('Robotics');
- expect(SourceGoalPlanSchema.safeParse(plan).success).toBe(true);
+ expect(SourceGoalVersionWriteSchema.safeParse({...native,plan:{...native.plan,title:undefined}}).success).toBe(false);
+ expect(SourceGoalVersionWriteSchema.safeParse({...native,plan:{...native.plan,summary:'x'.repeat(401)}}).success).toBe(false);
+ expect(SourceGoalPlanSchema.safeParse(plan).success).toBe(false);
  expect(SourceGoalPlanSchema.safeParse({...plan,title:'x'.repeat(61)}).success).toBe(false);
  expect(SourceGoalPlanSchema.safeParse({...plan,title:'  '}).success).toBe(false);
 });

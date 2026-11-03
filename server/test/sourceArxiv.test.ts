@@ -361,6 +361,7 @@ class ExtractionDb implements Queryable {
     if (sql.includes("SELECT") && sql.includes("FROM extraction_jobs")) {
       return { rows: [{ ...this.jobRow(), status: this.status }] as Row[], rowCount: 1 };
     }
+    if (sql.includes('SELECT DISTINCT gi.goal_id')) return { rows: [], rowCount: 0 };
     throw new Error(`unexpected SQL: ${sql}`);
   }
 

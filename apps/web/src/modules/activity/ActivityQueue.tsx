@@ -104,7 +104,14 @@ function projectSourceCollectionPointer(record: ActivityInboxRecord): ProjectSou
 /** A briefing's "new changes" notice: a pointer to the briefing surface, which re-authorizes on open. */
 function briefingChangesPath(record: ActivityInboxRecord): string | null {
   const metadata = recordValue(record.metadata_json)
-  if (stringValue(metadata?.pointer_type) !== 'briefing_changes') return null
+  const kind = stringValue(metadata?.pointer_type)
+  if (kind === 'following_updates') {
+    const goalId = stringValue(metadata?.goal_id)
+    if (!goalId) return null
+    const projectId = stringValue(metadata?.project_id)
+    return projectId ? `/projects/${encodeURIComponent(projectId)}/sources/goals/${encodeURIComponent(goalId)}` : `/library/reading/goals/${encodeURIComponent(goalId)}`
+  }
+  if (kind !== 'briefing_changes') return null
   const projectId = stringValue(metadata?.project_id)
   return projectId ? `/projects/${encodeURIComponent(projectId)}/sources?tab=digest` : '/library/reading'
 }
@@ -348,7 +355,7 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
                   >
                     <Link to={targetPath}>
                       {briefing && <Newspaper className="size-3.5 mr-1" />}
-                      {briefing ? t('activity_ui.queue.open_digest') : recommendation ? t('activity_ui.queue.review_source') : projectCollection ? t('activity_ui.queue.open_sources') : persona ? t('activity_ui.queue.review_persona') : t('activity_ui.queue.generate_proposals')}
+                      {briefingChanges ? t('activity_ui.queue.open_reading') : briefing ? t('activity_ui.queue.open_digest') : recommendation ? t('activity_ui.queue.review_source') : projectCollection ? t('activity_ui.queue.open_sources') : persona ? t('activity_ui.queue.review_persona') : t('activity_ui.queue.generate_proposals')}
                     </Link>
                   </Button>
                   <Button

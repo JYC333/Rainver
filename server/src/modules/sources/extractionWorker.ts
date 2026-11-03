@@ -241,6 +241,9 @@ export class SourceExtractionWorker {
         );
       }
     }
+    if (job.source_item_id && ['extract_text','snapshot'].includes(job.job_type) && !record(job.metadata_json).deep_project) {
+      await (await import('../informationDigest/index.js')).wakeThemeRoundsForItem(this.db, spaceId, job.source_item_id);
+    }
     if (runChildrenAfterSuccess) {
       await this.runPendingConnectionScanChildren(job);
     }

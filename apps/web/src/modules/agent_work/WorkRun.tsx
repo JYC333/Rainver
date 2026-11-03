@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { StatusBadge } from '../../components/ui/badge'
 import { runsApi } from '../../api/client'
 import type { Run, RunTurn } from '../../types/api'
 import { ConversationTurn } from '../conversation/ConversationTurn'
@@ -30,9 +31,14 @@ export function WorkRun({ runId, revision, onDisplayed, onChanged }: {
   if (!data) return <p role="status" className="border-t border-border px-3 py-2 text-xs text-muted-foreground">{t('agent_work.loading')}</p>
   const duration = data.run.started_at ? (Date.parse(data.run.ended_at ?? data.run.updated_at) - Date.parse(data.run.started_at)) / 1000 : null
   return <section className="space-y-2 border-t border-border bg-muted/20 p-3">
-    <p className="text-xs text-muted-foreground">{t('agent_work.run_target', { id: runId })} · {data.run.selected_runtime_key ?? t('agent_work.runtime_unknown')} · {formatDateTime(data.run.started_at)}{duration !== null && <> · {t('agent_work.duration', { value: formatWorkDuration(Math.max(0, duration)) })}</>}</p>
+    <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><StatusBadge status={data.run.status} label={t(`agent_work.status.${data.run.status}`)} /><span>{formatDateTime(data.run.started_at)}{duration !== null && <> · {t('agent_work.duration', { value: formatWorkDuration(Math.max(0, duration)) })}</>}</span></p>
     <ConversationTurn turn={data.turn} runHref={`/runs/${runId}`} />
     <ConversationRunControls runId={runId} run={data.run} projectId={data.run.project_id} onChanged={onChanged} onAuthorizationDisplayed={authorizationDisplayed} />
-    <ConversationLink className="text-xs font-medium text-accent-foreground underline-offset-2 hover:underline" to={`/runs/${runId}`}>{t('agent_work.open_run')}</ConversationLink>
+    <details className="text-xs text-muted-foreground">
+      <summary className="cursor-pointer">{t('agent_work.technical_details')}</summary>
+      <p className="mt-2 break-all font-mono">{runId}</p>
+      <p className="my-2">{data.run.selected_runtime_key ?? t('agent_work.runtime_unknown')}</p>
+      <ConversationLink className="text-xs font-medium text-accent-foreground underline-offset-2 hover:underline" to={`/runs/${runId}`}>{t('agent_work.open_run')}</ConversationLink>
+    </details>
   </section>
 }

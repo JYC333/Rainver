@@ -55,6 +55,13 @@
       "version": "7",
       "when": 1793549976628,
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793661032166,
+      "tag": "0008_reading_daily_editions",
+      "breakpoints": true
     }
   ],
   "version": "7",

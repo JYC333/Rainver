@@ -56,16 +56,36 @@ R1–R6提交依次为 `62f5e964`、`faff6beb`、`3280b213`、`e582dd05`、
 | A8 | `projectReadingThemesDb` “freezes purpose/method/context…”、“an activated new purpose…”；deep “global material…” | 精确目的/方法/原文，旧报告不重标新目的；不混两个目的 |
 | A9 | 同文件 publication canonical fence、history/export、restore authority；deep physical Delivery/source withdrawal/private Source jobs/postprocessing | 实际目的地/受众/Source闭包与双向锁、export/generic入口、私作业投影；不是已送vendor context可撤回承诺 |
 | A10 | deep “private investigation preserves explicit opencode…”、“API-bound OpenCode…”、“HTTP favorites/list…”；themes advertised mode | 合成Profile/API-bound/CLI同规范选择、禁用不fallback；不冒实际厂商账号或真实CLI质量 |
-| A11 | `projectReading.browser.ts`原八矩阵及`READING_LONG_REVIEW=1`；web `ProjectReadingPage`/`LibraryItemReaderPage` | 四视图、长多主题两级摘要/折叠/定位/时间/历史/exact原文/无收藏解读入口；Sidecar关闭，未验开启后的任意布局或全a11y |
+| A11 | `projectReading.browser.ts`原八矩阵及`READING_LONG_REVIEW=1`；web `ProjectReadingPage`/`LibraryItemReaderPage` | 四视图、多主题分节摘要/完整分析阅读/定位/时间/历史/exact原文/无收藏解读入口；Sidecar关闭，未验开启后的任意布局或全a11y |
 | A12 | `readingMigrationDb`全部现chain升级；`readerSourceVersionsDb`；`informationBriefingPersonalDb`；`researchAreaDb` | 空库/旧开发结构经规范历史转换到正式0007（原0012终态）、旧正文/状态/身份、个人与Research受影响consumer；不是实例迁移/完整Research重验 |
+
+## 每日版与历史链路（2026-11-02重构）
+
+Overview按Project时区展示每日进度，但只有新的分析正文发布后才形成内容版本。
+同一轮采集、等待分析、生成正文共用现有round身份，不生成中间内容版本；
+无新增、失败及跨日只有检查的情况保留进度，不复制昨天正文、不增加版本。
+历史入口分页覆盖按日版本及未挂入每日版的主题分析；日期链接进入同一入口。
+删除重复Project日报/分析面板及无人使用的monitoring结果分支，Project独立AI日报入口退役；
+个人日报、历史Run结算、原文及私人深读保留现有边界。
+
+专项断言入口：`projectReadingThemesDb` 的单轮发布/no-new/idempotence、delayed scheduler
+slot/DST、collection-only progress、paged archive/current Source authority；
+`informationBriefingDb` 的retired Project generation/preserved old Run，
+`TopicAnalysisArchive`/`ReadingHistory`/`SourcesAreaPage` 的日期、分页、入口和拒绝读取；
+`reader-journeys` 的Overview八矩阵增加当日修订和前一天历史。
+迁移由Drizzle生成；本轮未连接运行实例或应用迁移，模型质量仍未评估。
+
+2026-11-03按用户要求移除本轮新增的旧格式适配器、未按日版本分支及日期推断。
+测试实例既有记录以一次性手动SQL规范化，仓库不包含回填脚本或自动回填逻辑。
+正常每日版历史、独立主题分析、原文与私人解读的读取和权限检查继续保留。
 
 ## 长文阅读人工检查
 
 复用现built Chromium fixture；`READING_LONG_REVIEW=1`仅为测试选择，不是产品开关。
 三个主题由真实collector入口、canonical theme terminal projection、composition writer入库，
 引用同一个实际保留原文snapshot（不伪造三份独立证据）。主题输出标明synthetic。
-检查父Project导航→默认总版，三条速读/两级摘要，键盘打开B、一次只展开一个，
-真实主题时间、折叠后目录、历史只一主题、返回当前三主题、C引用进入精确原文和返回。
+检查父Project导航→默认总版，三个主题各显示一次摘要和引用重点，键盘进入B的完整分析并返回，
+真实主题时间、返回后分节、历史只一主题、返回当前三主题、C引用进入精确原文和返回。
 原R5八矩阵覆盖dark/light×en/zh-CN×390/1280；R6新增en/dark桌面和zh-CN/light手机，
 当时人工抽样检查了入口与目标页截图；临时截图现已清理，浏览器fixture仍可重跑。
 不能只凭no-overflow/截图存在/DOM类名宣称视觉通过。

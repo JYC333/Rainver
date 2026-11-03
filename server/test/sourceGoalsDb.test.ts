@@ -60,7 +60,7 @@ beforeEach(async()=>{vi.restoreAllMocks();
  }
 });
 afterEach(async()=>{if(upstream){await new Promise<void>(resolve=>upstream!.close(()=>resolve()));upstream=undefined;}if(root)await rm(root,{recursive:true,force:true});});
-const plan=():SourceGoalPlan=>({summary:'Research and industry coverage',sources:specs,limitations:[]});
+const plan=():SourceGoalPlan=>({title:'Robotics',summary:'Research and industry coverage',sources:specs,limitations:[]});
 async function allowSamples(){samplesAllowed=true;await db.pool.query(`UPDATE source_connections SET capture_policy='archive_original',policy_json=jsonb_set(policy_json,'{retention_policy}','"full_snapshot"') WHERE space_id=$1`,[identity.spaceId]);}
 async function version(){return service.writeVersion(identity,{goal_id:goalId,expected_revision:0,plan:plan()},runId);}
 async function start(){const v=await version();const p=await service.preview(identity,goalId,v.id,new AbortController().signal);expect(p,JSON.stringify(p.contributions)).toMatchObject({complete:true});await service.follow(identity,goalId,{version_id:v.id,idempotency_key:'first'});return {v,p};}
@@ -102,6 +102,20 @@ it('commits material before watermarks, preserves successful history and exclude
  await db.pool.query(`UPDATE source_goal_bindings SET lease_token=$2,lease_until=now()+interval '1 minute' WHERE id=$1`,[b.id,randomUUID()]);
  const runs=(await db.pool.query('SELECT count(*)::int AS n FROM source_goal_runs')).rows[0].n;await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,executor);expect((await db.pool.query('SELECT count(*)::int AS n FROM source_goal_runs')).rows[0].n).toBe(runs+1);
  await db.pool.query(`UPDATE source_goal_bindings SET lease_until=now()-interval '1 second' WHERE id=$1`,[b.id]);await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,executor);expect((await db.pool.query('SELECT lease_token FROM source_goal_bindings WHERE id=$1',[b.id])).rows[0].lease_token).toBeNull();
+});
+it('aggregates Following updates privately and leaves a handled notice alone until new material arrives',async ctx=>{
+ if(!db.available)return ctx.skip();await start();await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,executor);
+ const notices=async()=>(await db.pool.query("SELECT * FROM activity_records WHERE payload_json->>'pointer_type'='following_updates'")).rows;
+ const first=await notices();expect(first).toHaveLength(1);expect(first[0]).toMatchObject({visibility:'private',owner_user_id:identity.userId,project_id:null,status:'raw'});
+ expect(first[0].payload_json).toMatchObject({goal_id:goalId,project_id:null});
+ await db.pool.query("UPDATE activity_records SET status='processed' WHERE id=$1",[first[0].id]);
+ const due=()=>db.pool.query("UPDATE source_goal_bindings SET retry_at=now()-interval '1 second',last_success_at=now()-interval '2 days' WHERE goal_id=$1",[goalId]);
+ await due();await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,executor);
+ expect((await notices())[0].status).toBe('processed');
+ data[specs[0].source_connection_id].push(item('fresh'));
+ await due();await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,executor);
+ const next=await notices();expect(next).toHaveLength(1);expect(next[0].id).toBe(first[0].id);expect(next[0].status).toBe('raw');
+ expect(JSON.stringify(next[0].payload_json)).not.toContain('Robotics');
 });
 it('isolates network/quota recovery from AI repair and records honest gaps',async ctx=>{
  if(!db.available)return ctx.skip();await start();fail=specs[0].source_connection_id;await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,executor);
@@ -479,7 +493,7 @@ it('uses canonical built-in search queries and metadata provenance without inven
  if(!db.available)return ctx.skip();await db.pool.query("UPDATE source_connectors SET connector_key='openalex_api' WHERE id='connector-custom-source'");const {SourceChannelService}=await import('../src/modules/sources/channels/sourceChannelService.js');const ch=await new SourceChannelService(db.pool,config).create(identity,{provider_key:'custom_source',query:{search:'robotics',per_page:2},_force_create:true,name:'Robotics search',fetch_frequency:'manual'});const spec:SourceGoalBindingSpec={source_connection_id:String(ch.source_connection_id),source_channel_id:String(ch.id),reason:'Research search',supports_history:false,implementation:{kind:'connector'}};
  const {requireGoalSource,goalSourceFingerprint}=await import('../src/modules/sources/goals/access.js');const goal=await requireGoal(db.pool,identity,goalId,true);const source=await requireGoalSource(db.pool,config,identity,goal,spec);expect(source.provider_query_json).toMatchObject({search:'robotics'});expect((await db.pool.query('SELECT provider_query_json FROM source_channels WHERE id=$1',[ch.id])).rows[0].provider_query_json).toBeNull();
  const fixture={responses:[{sequence:1,status:200,content_type:'application/json',final_url:'https://api.openalex.org/works',headers:{},body_base64:Buffer.from(JSON.stringify({results:[{id:'https://openalex.org/W123',title:'Robotics systems',primary_location:{landing_page_url:'https://papers.test/robotics'}}],meta:{next_cursor:null}})).toString('base64')}]};
- const real=new SourceGoalExecutor(db.pool,config);const port:GoalExecutionPort={execute:(i,g,s,c,signal)=>real.execute(i,g,s,c,signal,fixture)};const searchService=new SourceGoalService(db.pool,config,port);const version=await searchService.writeVersion(identity,{goal_id:goalId,expected_revision:0,plan:{summary:'Robotics search',sources:[spec],limitations:['Publication date may be unknown.']}},runId);const preview=await searchService.preview(identity,goalId,version.id,AbortSignal.timeout(2000));expect(preview.complete,JSON.stringify(preview.contributions)).toBe(true);expect(preview.contributions[0].output?.items[0].published_at).toBeNull();expect(preview.contributions[0].output?.items[0].source_uri).toBe('https://papers.test/robotics');
+ const real=new SourceGoalExecutor(db.pool,config);const port:GoalExecutionPort={execute:(i,g,s,c,signal)=>real.execute(i,g,s,c,signal,fixture)};const searchService=new SourceGoalService(db.pool,config,port);const version=await searchService.writeVersion(identity,{goal_id:goalId,expected_revision:0,plan:{title:'Robotics',summary:'Robotics search',sources:[spec],limitations:['Publication date may be unknown.']}},runId);const preview=await searchService.preview(identity,goalId,version.id,AbortSignal.timeout(2000));expect(preview.complete,JSON.stringify(preview.contributions)).toBe(true);expect(preview.contributions[0].output?.items[0].published_at).toBeNull();expect(preview.contributions[0].output?.items[0].source_uri).toBe('https://papers.test/robotics');
  await searchService.follow(identity,goalId,{version_id:version.id,idempotency_key:'search-start'});await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,port);expect((await db.pool.query('SELECT source_uri FROM source_items WHERE connection_id=$1',[spec.source_connection_id])).rows).toEqual([{source_uri:'https://papers.test/robotics'}]);
  const captured=await real.execute(identity,goal,spec,{},AbortSignal.timeout(2000),fixture);expect((captured.envelope as {allowed_network_origins:string[]}).allowed_network_origins).toEqual(['https://api.openalex.org']);await captured.cleanup();const original=goalSourceFingerprint(source);await db.pool.query("UPDATE source_search_specs SET compiled_provider_query_json=jsonb_set(compiled_provider_query_json,'{search}','\"different scope\"') WHERE source_channel_id=$1",[ch.id]);expect(goalSourceFingerprint(await requireGoalSource(db.pool,config,identity,goal,spec))).not.toBe(original);
 });
@@ -493,16 +507,17 @@ it('recovers an in-flight preview as empty pending data and refuses a second res
 async function nativePlan(analysisBrief?:string){
  const {seedNativeSearchCatalog}=await import('../src/modules/sources/catalog/nativeSearchCatalog.js');await seedNativeSearchCatalog(db.pool);const host=randomUUID();await seedServerHost(db.pool,{id:host});await db.pool.query(`UPDATE agent_runtime_profiles SET runtime_key='claude_code',execution_host_id=$2,workspace_mode='managed',runtime_installation='own' WHERE id=$1`,[profile,host]);
  await db.pool.query("UPDATE hosts SET kind='remote',environment_kind='linux_native',owner_user_id=$2,capabilities_json=$3,last_heartbeat_at=now() WHERE id=$1",[host,identity.userId,{runtimes:['claude_code'],versions:{claude_code:'fixture'},installations:{claude_code:[{id:'own',version:'fixture',logged_in:true,options:{session_available:true,config_options:[]},health_check_protocol:'acp'}]}}]);
- const real=new SourceGoalService(db.pool,config,new SourceGoalExecutor(db.pool,config));const v=await real.writeVersion(identity,{goal_id:goalId,expected_revision:0,plan:{...(analysisBrief?{analysis_brief:analysisBrief}:{}),summary:'Native robotics search',sources:[{reason:'Search through selected Agent',implementation:{kind:'agent_search',query:'robotics research'},supports_history:false}],limitations:['Native search capability/usage unknown until trial']}},runId);return {real,v};
+ const real=new SourceGoalService(db.pool,config,new SourceGoalExecutor(db.pool,config));const v=await real.writeVersion(identity,{goal_id:goalId,expected_revision:0,plan:{title:'Robotics',...(analysisBrief?{analysis_brief:analysisBrief}:{}),summary:'Native robotics search',sources:[{reason:'Search through selected Agent',implementation:{kind:'agent_search',query:'robotics research'},supports_history:false}],limitations:['Native search capability/usage unknown until trial']}},runId);return {real,v};
 }
+const discoveryReport={angles:[{direction:'Public robotics updates',queries:['robotics research updates'],outcome:'results_found',note:'Relevant public results found'}],remaining_gaps:['Closed-source product announcements'],stop_reason:{code:'diminishing_returns',detail:'Further queries repeated the same results'}};
 async function submitted(run:string,items=[{url:'https://evidence.test/robotics',title:'Robotics actual search result'}],extra:Record<string,unknown>={}){
  await db.pool.query(`UPDATE runs r SET status='running',started_at=now(),runtime_profile_id=p.id,runtime_key=p.runtime_key,runtime_profile_snapshot_json=to_jsonb(p) FROM agent_runtime_profiles p WHERE r.id=$1 AND p.id=r.requested_runtime_profile_id`,[run]);
  const r=(await new PgRunRepository(db.pool).getRun(identity.spaceId,run))!;if(r.execution_kind!=='agent')throw new Error('Expected Agent Run');
  const c=(r.contract_snapshot_json as {workflow_input_json:{source_goal:{goal_id:string;version_id:string;collection_id:string}}}).workflow_input_json.source_goal;
- return {run:r,input:{processing_id:c.collection_id,status:'succeeded',failure:null,items:items.map(i=>({...i,summary:null,observed_at:new Date().toISOString()})),coverage:{truncated:false,exhaustive:false,limitations:[]},...extra}};
+ return {run:r,input:{processing_id:c.collection_id,status:'succeeded',failure:null,items:items.map(i=>({...i,summary:null,observed_at:new Date().toISOString()})),coverage:{truncated:false,exhaustive:false,limitations:[],discovery:discoveryReport},...extra}};
 }
 async function finishNative(run:string,proof=true,items=[{url:'https://evidence.test/robotics',title:'Robotics actual search result'}]){
- if(proof){const s=await submitted(run,items);const {CliAgentToolTransport}=await import('../src/modules/runs/cliToolTransport.js');const accepted=await new CliAgentToolTransport(config).call(s.run,{id:'fixture-submit',name:'source.material.submit',arguments:s.input});expect(accepted).toMatchObject({ok:true});}
+ if(proof){const s=await submitted(run,items);const {CliAgentToolTransport}=await import('../src/modules/runs/cliToolTransport.js');const accepted=await new CliAgentToolTransport(config).call(s.run,{id:'fixture-submit',name:'source.material.submit',arguments:s.input});expect(accepted,JSON.stringify(accepted)).toMatchObject({ok:true});}
  await db.pool.query(`UPDATE runs r SET status='succeeded',runtime_profile_id=p.id,runtime_key=p.runtime_key,runtime_profile_snapshot_json=to_jsonb(p),output_json=$2 FROM agent_runtime_profiles p WHERE r.id=$1 AND p.id=r.requested_runtime_profile_id`,[run,{schema_version:'run_output.v1',status:'succeeded',summary:'Fixture Agent completion, not a real model call',result:{output_text:JSON.stringify({items})},outputs:[]}]);
 }
 it('native search previews asynchronously through canonical Run, restores and materializes only explicitly submitted results',async ctx=>{
@@ -527,11 +542,11 @@ it('native scheduled execution refuses budget/setup without entering automatic A
 });
 it('native dispatch rechecks actual Source and rejects ordinary chat collector identities',async ctx=>{
  if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));const read=await real.read(identity,goalId);const repo=new PgRunRepository(db.pool);const run=(await repo.getRun(identity.spaceId,read.native_runs[0].id))!;const {assertNativeCollectionDispatch}=await import('../src/modules/sources/goals/nativeDispatch.js');await assertNativeCollectionDispatch(config,run);const context=run.contract_snapshot_json as {workflow_input_json:{source_goal:{collection_id:string}}};
- await expect(assertNativeCollectionDispatch(config,{...run,id:runId})).rejects.toMatchObject({statusCode:403});await db.pool.query(`UPDATE source_connections SET status='archived' WHERE id=(SELECT result_json->'spec'->>'source_connection_id' FROM source_goal_runs WHERE id=$1)`,[context.workflow_input_json.source_goal.collection_id]);await expect(assertNativeCollectionDispatch(config,run)).rejects.toMatchObject({statusCode:403});expect((await db.pool.query('SELECT count(*)::int n FROM source_items')).rows[0].n).toBe(0);
+ await expect(assertNativeCollectionDispatch(config,{...run,id:runId})).rejects.toMatchObject({statusCode:403});await db.pool.query(`UPDATE source_connections SET status='archived' WHERE id=(SELECT result_json->'spec'->>'source_connection_id' FROM source_goal_runs WHERE id=$1)`,[context.workflow_input_json.source_goal.collection_id]);await expect(assertNativeCollectionDispatch(config,run)).rejects.toMatchObject({statusCode:409,responseBody:{error:'source_goal_source_inactive'}});expect((await db.pool.query('SELECT count(*)::int n FROM source_items')).rows[0].n).toBe(0);
 });
 it('a new native draft cannot change the active collection filters or consume its result',async ctx=>{
  if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));let read=await real.read(identity,goalId);await finishNative(read.native_runs[0].id);await real.read(identity,goalId);await freshCheckOnly();await real.follow(identity,goalId,{version_id:v.id,idempotency_key:'active'});await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,new SourceGoalExecutor(db.pool,config));read=await real.read(identity,goalId);const pending=read.native_runs.find(r=>r.status==='queued')!;
- await db.pool.query('UPDATE source_goals SET intent_json=$2 WHERE id=$1',[goalId,{intent:'Follow climate',includes:['climate'],excludes:[]}]);await real.writeVersion(identity,{goal_id:goalId,expected_revision:1,plan:{summary:'Unconfirmed climate draft',sources:[{reason:'Climate native',implementation:{kind:'agent_search',query:'climate research'},supports_history:false}],limitations:[]}},runId);await db.pool.query("UPDATE source_goals SET compatibility_json=compatibility_json||jsonb_build_object('search_path','api') WHERE id=$1",[goalId]);await finishNative(pending.id);await real.read(identity,goalId);expect((await db.pool.query('SELECT count(*)::int n FROM source_items')).rows[0].n).toBe(1);expect((await db.pool.query('SELECT active_version_id FROM source_goals WHERE id=$1',[goalId])).rows[0].active_version_id).toBe(v.id);
+ await db.pool.query('UPDATE source_goals SET intent_json=$2 WHERE id=$1',[goalId,{intent:'Follow climate',includes:['climate'],excludes:[]}]);await real.writeVersion(identity,{goal_id:goalId,expected_revision:1,plan:{title:'Robotics',summary:'Unconfirmed climate draft',sources:[{reason:'Climate native',implementation:{kind:'agent_search',query:'climate research'},supports_history:false}],limitations:[]}},runId);await db.pool.query("UPDATE source_goals SET compatibility_json=compatibility_json||jsonb_build_object('search_path','api') WHERE id=$1",[goalId]);await finishNative(pending.id);await real.read(identity,goalId);expect((await db.pool.query('SELECT count(*)::int n FROM source_items')).rows[0].n).toBe(1);expect((await db.pool.query('SELECT active_version_id FROM source_goals WHERE id=$1',[goalId])).rows[0].active_version_id).toBe(v.id);
 });
 it('native accepted-output recovery reclaims its lease and never re-runs the model or duplicates history',async ctx=>{
  if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));let read=await real.read(identity,goalId);await finishNative(read.native_runs[0].id);await real.read(identity,goalId);await freshCheckOnly();await real.follow(identity,goalId,{version_id:v.id,idempotency_key:'recover'});await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,new SourceGoalExecutor(db.pool,config));read=await real.read(identity,goalId);await finishNative(read.native_runs.find(r=>r.status==='queued')!.id);
@@ -554,8 +569,8 @@ it('native normal empty polling remains active and commits no fabricated item',a
 it('native user cancellation pauses without retry; explicit resume has no cooldown',async ctx=>{
  if(!db.available)return ctx.skip();const {real,v}=await readyNative();const run=await nativeTick(real);await db.pool.query("UPDATE runs SET status='cancelled' WHERE id=$1",[run]);await real.read(identity,goalId);expect((await db.pool.query('SELECT status,retry_at FROM source_goal_bindings')).rows[0]).toEqual({status:'paused',retry_at:null});const count=(await db.pool.query('SELECT count(*)::int n FROM runs')).rows[0].n;await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,new SourceGoalExecutor(db.pool,config));expect((await db.pool.query('SELECT count(*)::int n FROM runs')).rows[0].n).toBe(count);await real.stop(identity,goalId);await real.resume(identity,goalId,v.id);expect((await db.pool.query('SELECT status,retry_at FROM source_goal_bindings')).rows[0]).toEqual({status:'active',retry_at:null});
 });
-it.for(['waiting_for_review','waiting_for_dependency'])('native %s deadline prevents silent renewed spend',async(status,ctx)=>{
- if(!db.available)return ctx.skip();const {real}=await readyNative();const run=await nativeTick(real);await db.pool.query('UPDATE runs SET status=$2,runtime_profile_id=$3,runtime_profile_selection_source=$4,runtime_key=$5,runtime_profile_snapshot_json=$6 WHERE id=$1',[run,status,profile,'explicit','claude_code',{}]);await db.pool.query("UPDATE runs SET started_at=now()-interval '601 seconds' WHERE id=$1",[run]);await real.read(identity,goalId);expect((await db.pool.query('SELECT status,retry_at,fixture_json FROM source_goal_bindings')).rows[0]).toMatchObject({status:'paused',retry_at:null,fixture_json:{collection_error:'source_native_deadline_exceeded'}});
+it.for(['waiting_for_review','waiting_for_dependency'])('native %s obeys an explicitly assigned owner time limit',async(status,ctx)=>{
+ if(!db.available)return ctx.skip();const {real}=await readyNative();const run=await nativeTick(real);await db.pool.query('UPDATE runs SET status=$2,runtime_profile_id=$3,runtime_profile_selection_source=$4,runtime_key=$5,runtime_profile_snapshot_json=$6 WHERE id=$1',[run,status,profile,'explicit','claude_code',{}]);await db.pool.query("UPDATE runs SET started_at=now()-interval '601 seconds',contract_snapshot_json=jsonb_set(contract_snapshot_json,'{max_duration_seconds}','600'::jsonb) WHERE id=$1",[run]);await real.read(identity,goalId);expect((await db.pool.query('SELECT status,retry_at,fixture_json FROM source_goal_bindings')).rows[0]).toMatchObject({status:'paused',retry_at:null,fixture_json:{collection_error:'source_native_deadline_exceeded'}});
 });
 it('native failures stop after three attempts and clear paused retry time',async ctx=>{
  if(!db.available)return ctx.skip();const {real}=await readyNative();for(let i=1;i<=3;i++){await db.pool.query("UPDATE source_goal_bindings SET retry_at=NULL WHERE status='cooldown'");const run=await nativeTick(real);await db.pool.query("UPDATE runs SET status='failed' WHERE id=$1",[run]);await real.read(identity,goalId);expect((await db.pool.query('SELECT failures FROM source_goal_bindings')).rows[0].failures).toBe(i);}expect((await db.pool.query('SELECT status,retry_at FROM source_goal_bindings')).rows[0]).toEqual({status:'paused',retry_at:null});
@@ -604,7 +619,7 @@ it('three malformed submissions exhaust only same-Run corrections without anothe
  if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));const s=await submitted((await real.read(identity,goalId)).native_runs[0].id);const {CliAgentToolTransport}=await import('../src/modules/runs/cliToolTransport.js');const t=new CliAgentToolTransport(config);for(let i=0;i<3;i++)expect(await t.call(s.run,{id:'bad-'+i,name:'source.material.submit',arguments:{}})).toMatchObject({ok:false,error_code:'source_material_submission_invalid'});expect(await t.call(s.run,{id:'late-correction',name:'source.material.submit',arguments:s.input})).toMatchObject({ok:false,error:expect.stringContaining('source_material_submission_limit')});expect((await db.pool.query("SELECT (result_json->>'submission_attempts')::int n FROM source_goal_runs WHERE result_json->>'native_run_id'=$1",[s.run.id])).rows[0].n).toBe(3);expect((await db.pool.query("SELECT count(*)::int n FROM jobs WHERE payload_json->>'run_id'=$1",[s.run.id])).rows[0].n).toBe(1);
 });
 it.for(['cancelled','deadline','profile','source','version','grant'] as const)('submission reauthorizes %s before durable acceptance',async(mode,ctx)=>{
- if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));const s=await submitted((await real.read(identity,goalId)).native_runs[0].id);if(mode==='cancelled')await db.pool.query("UPDATE runs SET status='cancelled' WHERE id=$1",[s.run.id]);if(mode==='deadline')await db.pool.query("UPDATE runs SET started_at=now()-interval '601 seconds' WHERE id=$1",[s.run.id]);if(mode==='profile')await db.pool.query("UPDATE agent_runtime_profiles SET enabled=false,is_default=false WHERE id=$1",[profile]);if(mode==='source')await db.pool.query("UPDATE source_connections SET status='archived' WHERE id=(SELECT result_json->'spec'->>'source_connection_id' FROM source_goal_runs WHERE result_json->>'native_run_id'=$1)",[s.run.id]);if(mode==='version')await db.pool.query('UPDATE source_goals SET current_version_id=NULL WHERE id=$1',[goalId]);if(mode==='grant')await db.pool.query("UPDATE runs SET permission_snapshot_json='{}' WHERE id=$1",[s.run.id]);const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');await expect(submitMaterialResults(config,s.run,s.input)).rejects.toThrow();expect((await db.pool.query("SELECT result_json ? 'search_submission' has FROM source_goal_runs WHERE result_json->>'native_run_id'=$1",[s.run.id])).rows[0].has).toBe(false);
+ if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));const s=await submitted((await real.read(identity,goalId)).native_runs[0].id);if(mode==='cancelled')await db.pool.query("UPDATE runs SET status='cancelled' WHERE id=$1",[s.run.id]);if(mode==='deadline')await db.pool.query("UPDATE runs SET started_at=now()-interval '601 seconds',contract_snapshot_json=jsonb_set(contract_snapshot_json,'{max_duration_seconds}','600'::jsonb) WHERE id=$1",[s.run.id]);if(mode==='profile')await db.pool.query("UPDATE agent_runtime_profiles SET enabled=false,is_default=false WHERE id=$1",[profile]);if(mode==='source')await db.pool.query("UPDATE source_connections SET status='archived' WHERE id=(SELECT result_json->'spec'->>'source_connection_id' FROM source_goal_runs WHERE result_json->>'native_run_id'=$1)",[s.run.id]);if(mode==='version')await db.pool.query('UPDATE source_goals SET current_version_id=NULL WHERE id=$1',[goalId]);if(mode==='grant')await db.pool.query("UPDATE runs SET permission_snapshot_json='{}' WHERE id=$1",[s.run.id]);const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');await expect(submitMaterialResults(config,s.run,s.input)).rejects.toThrow();expect((await db.pool.query("SELECT result_json ? 'search_submission' has FROM source_goal_runs WHERE result_json->>'native_run_id'=$1",[s.run.id])).rows[0].has).toBe(false);
 });
 it('reported search failure and actual zero results remain distinct',async ctx=>{
  if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));const s=await submitted((await real.read(identity,goalId)).native_runs[0].id,[],{status:'failed',failure:{code:'unavailable',message:'No search tool in selected configuration'}});const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');await submitMaterialResults(config,s.run,s.input);await db.pool.query("UPDATE runs SET status='succeeded' WHERE id=$1",[s.run.id]);const d=await real.read(identity,goalId);expect(d.previews[0].result_json.contributions[0]).toMatchObject({status:'failed',error:'source_material_unavailable'});expect(d.previews[0].status).toBe('partial');
@@ -616,7 +631,7 @@ it('accepted corrected fields survive only validation degradation, not permissio
  if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));const d=await real.read(identity,goalId);await finishNative(d.native_runs[0].id);const id=d.native_runs[0].id;await new PgRunRepository(db.pool).appendRunEvent({run_id:id,space_id:identity.spaceId,event_type:'action_completed',status:'failed',error_code:'source_material_submission_invalid',metadata_json:{action_id:'source.material.submit'}});await db.pool.query("UPDATE runs SET status='degraded' WHERE id=$1",[id]);expect((await real.read(identity,goalId)).previews[0].status).toBe('ready');
 });
 it.for(['opencode','codex_cli','claude_code'])('Agent submission remains runtime-neutral and preserves explicit %s routing',async(runtime,ctx)=>{
- if(!db.available)return ctx.skip();const {real}=await nativePlan();await db.pool.query("UPDATE agent_runtime_profiles SET runtime_key=$2 WHERE id=$1",[profile,runtime]);await db.pool.query("UPDATE hosts SET capabilities_json=$2 WHERE id=(SELECT execution_host_id FROM agent_runtime_profiles WHERE id=$1)",[profile,{runtimes:[runtime],versions:{[runtime]:'fixture'},installations:{[runtime]:[{id:'own',version:'fixture',logged_in:true,options:{session_available:true,config_options:[]},health_check_protocol:'acp'}]}}]);const v=await real.writeVersion(identity,{goal_id:goalId,expected_revision:1,plan:{summary:'New selected runtime plan',sources:[{reason:'Selected runtime',implementation:{kind:'agent_search',query:'robotics research'},supports_history:false}],limitations:[]}},runId);await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));const s=await submitted((await real.read(identity,goalId)).native_runs[0].id);expect(s.run.requested_runtime_profile_id).toBe(profile);expect(s.run.runtime_key).toBe(runtime);const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');expect(await submitMaterialResults(config,s.run,s.input)).toMatchObject({recorded:true,verification:'agent_provided_unverified'});
+ if(!db.available)return ctx.skip();const {real}=await nativePlan();await db.pool.query("UPDATE agent_runtime_profiles SET runtime_key=$2 WHERE id=$1",[profile,runtime]);await db.pool.query("UPDATE hosts SET capabilities_json=$2 WHERE id=(SELECT execution_host_id FROM agent_runtime_profiles WHERE id=$1)",[profile,{runtimes:[runtime],versions:{[runtime]:'fixture'},installations:{[runtime]:[{id:'own',version:'fixture',logged_in:true,options:{session_available:true,config_options:[]},health_check_protocol:'acp'}]}}]);const v=await real.writeVersion(identity,{goal_id:goalId,expected_revision:1,plan:{title:'Robotics',summary:'New selected runtime plan',sources:[{reason:'Selected runtime',implementation:{kind:'agent_search',query:'robotics research'},supports_history:false}],limitations:[]}},runId);await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));const s=await submitted((await real.read(identity,goalId)).native_runs[0].id);expect(s.run.requested_runtime_profile_id).toBe(profile);expect(s.run.runtime_key).toBe(runtime);const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');expect(await submitMaterialResults(config,s.run,s.input)).toMatchObject({recorded:true,verification:'agent_provided_unverified'});
 });
 it('rejects a degraded collection with an unrelated permission refusal even after submission',async ctx=>{
  if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));const id=(await real.read(identity,goalId)).native_runs[0].id;await finishNative(id);await new PgRunRepository(db.pool).appendRunEvent({run_id:id,space_id:identity.spaceId,event_type:'action_completed',status:'failed',error_code:'system_action_not_granted',metadata_json:{action_id:'task.create'}});await db.pool.query("UPDATE runs SET status='degraded' WHERE id=$1",[id]);expect((await real.read(identity,goalId)).previews[0].status).toBe('partial');
@@ -658,7 +673,7 @@ it.for(['personal','project'] as const)('followed %s intake reaches pending with
  expect(saved).toMatchObject({result_provenance:'agent_provided_unverified',summary:null,contributions:[]});
  expect((await db.pool.query('SELECT count(*)::int n FROM information_digest_items')).rows[0].n).toBe(0);
  expect((await db.pool.query('SELECT count(*)::int n FROM source_item_annotations')).rows[0].n).toBe(0);
- if(projectId){expect((await reading.list(identity,{view:'pending',limit:30})).items).toHaveLength(0);const {ReadingPreferences}=await import('../src/modules/informationDigest/readingPreferences.js');await new ReadingPreferences(db.pool).set(identity,projectId,true);expect((await reading.list(identity,{view:'pending',limit:30})).items.map(i=>i.key)).toEqual([saved.key]);expect((await reading.list(identity,{view:'pending',limit:30,topic:goalId})).items.map(i=>i.key)).toEqual([saved.key]);expect((await reading.list(identity,{view:'pending',limit:30,topic:goalId},projectId)).items[0].topics).toEqual([{goal_id:goalId,selection_status:'unjudged',selection_reason:null,judged_by:null,delivery_kind:'baseline',new_in_latest_collection:true,change_evidence_url:null,title:'Follow robotics research',project_id:projectId??null}]);await expect(reading.list({...identity,userId:'outsider'},{view:'pending',limit:30,topic:goalId})).rejects.toMatchObject({statusCode:404});}
+ if(projectId){expect((await reading.list(identity,{view:'pending',limit:30})).items).toHaveLength(0);const {ReadingPreferences}=await import('../src/modules/informationDigest/readingPreferences.js');await new ReadingPreferences(db.pool).set(identity,projectId,true);expect((await reading.list(identity,{view:'pending',limit:30})).items.map(i=>i.key)).toEqual([saved.key]);expect((await reading.list(identity,{view:'pending',limit:30,topic:goalId})).items.map(i=>i.key)).toEqual([saved.key]);expect((await reading.list(identity,{view:'pending',limit:30,topic:goalId},projectId)).items[0].topics).toEqual([{goal_id:goalId,selection_status:'unjudged',selection_reason:null,judged_by:null,delivery_kind:'baseline',new_in_latest_collection:true,change_evidence_url:null,title:'Robotics',project_id:projectId??null}]);await expect(reading.list({...identity,userId:'outsider'},{view:'pending',limit:30,topic:goalId})).rejects.toMatchObject({statusCode:404});}
  await reading.state(identity,saved.source_item_id,{dismissed:true},projectId);expect((await reading.list(identity,{view:'pending',limit:30},projectId)).items).toHaveLength(0);
  await reading.state(identity,saved.source_item_id,{dismissed:false,read_status:'read'},projectId);expect((await reading.list(identity,{view:'pending',limit:30},projectId)).items).toHaveLength(0);expect((await reading.list(identity,{view:'read',limit:30},projectId)).items.map(i=>i.key)).toEqual([saved.key]);
  await reading.state(identity,saved.source_item_id,{read_status:'unread'},projectId);
@@ -678,8 +693,8 @@ it.for(['article','repository'] as const)('Agent %s content survives real submis
  const result=await t.call(s.run,{id:'readable',name:'source.material.submit',arguments:{...s.input,items:[{...s.input.items[0],summary:'Robotics capabilities relevant to the goal',content}]}});expect(result).toMatchObject({ok:true});
  await db.pool.query("UPDATE runs SET status='succeeded' WHERE id=$1",[s.run.id]);expect((await real.read(identity,goalId)).previews[0].status).toBe('ready');
  await real.saveSample(identity,goalId,{version_id:v.id,preview_id:preview.id,idempotency_key:'readable-content'});
- const item=(await db.pool.query('SELECT * FROM source_items')).rows[0];expect(item).toMatchObject({content_state:'content_saved',retention_policy:'full_text',excerpt:'Robotics capabilities relevant to the goal'});expect(item.metadata_json).not.toHaveProperty('reading_info');expect(item.metadata_json.reading_method_provenance?.asset_key).toBe('reading.project_investigation');expect(item.metadata_json.reading_method_provenance?.version_id).toBe((s.run.contract_snapshot_json as {workflow_input_json:{reading_method:{version_id:string}}}).workflow_input_json.reading_method.version_id);
- const {PgReaderRepository}=await import('../src/modules/reader/repository.js');const doc=await new PgReaderRepository(db.pool,config).getDocument(identity,'source_item',item.id);expect(doc).toMatchObject({plain_text:text,result_provenance:'agent_provided_unverified',reading_info:{kind,format:content.format,sources:content.sources}});expect(JSON.stringify(doc?.content_json)).toContain('<script>literal, not HTML</script>');const {readingWorkspace}=await import('../src/modules/prompts/reading/workspace.js');const methodView=await readingWorkspace(db.pool,identity,item.id,null,false,config,doc!.artifact_id!);expect(methodView.result_provenance?.version_id).toBe(item.metadata_json.reading_method_provenance.version_id);await expect(readingWorkspace(db.pool,identity,item.id,null,false,config,'wrong-artifact')).rejects.toMatchObject({statusCode:409});
+ const item=(await db.pool.query('SELECT * FROM source_items')).rows[0];expect(item).toMatchObject({content_state:'content_saved',retention_policy:'full_text',excerpt:'Robotics capabilities relevant to the goal'});expect(item.metadata_json).not.toHaveProperty('reading_info');expect(item.metadata_json.reading_method_provenance).toBeNull();expect(s.run.contract_snapshot_json).not.toHaveProperty('workflow_input_json.reading_method');
+ const {PgReaderRepository}=await import('../src/modules/reader/repository.js');const doc=await new PgReaderRepository(db.pool,config).getDocument(identity,'source_item',item.id);expect(doc).toMatchObject({plain_text:text,result_provenance:'agent_provided_unverified',reading_info:{kind,format:content.format,sources:content.sources}});expect(JSON.stringify(doc?.content_json)).toContain('<script>literal, not HTML</script>');const {readingWorkspace}=await import('../src/modules/prompts/reading/workspace.js');const methodView=await readingWorkspace(db.pool,identity,item.id,null,false,config,doc!.artifact_id!);expect(methodView.result_provenance).toBeNull();await expect(readingWorkspace(db.pool,identity,item.id,null,false,config,'wrong-artifact')).rejects.toMatchObject({statusCode:409});
  const snapshots=await db.pool.query('SELECT * FROM source_snapshots WHERE source_item_id=$1',[item.id]);expect(snapshots.rows).toHaveLength(1);expect(snapshots.rows[0].snapshot_type).toBe('extracted');
  await real.read(identity,goalId);expect((await db.pool.query('SELECT count(*)::int n FROM source_snapshots')).rows[0].n).toBe(1);
 });
@@ -749,8 +764,8 @@ it.for(['html','pdf_text','pdf_snapshot'] as const)('ordinary %s extraction uses
 it('accepts saved material after three minutes under its admitted ten-minute Run budget',async ctx=>{
  if(!db.available)return ctx.skip();const item=await savedMaterialForProcessing();const {MaterialItemProcessingService}=await import('../src/modules/sources/materialProcessing/items.js');const service=new MaterialItemProcessingService(db.pool,config);const queued=await service.start(identity,item.id);const run=await runningMaterial(queued.run_id!);expect(run.contract_snapshot_json).toMatchObject({max_duration_seconds:600});await db.pool.query("UPDATE runs SET started_at=now()-interval '301 seconds' WHERE id=$1",[run.id]);expect(await service.read(identity,item.id)).toMatchObject({status:'running'});const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');expect(await submitMaterialResults(config,run,{processing_id:queued.processing_id,status:'succeeded',items:[{url:item.source_uri,title:item.title,summary:null,observed_at:new Date().toISOString(),content:{kind:'article',format:'source_text',syntax:'plain',text:'Robotics readable after five minutes',sources:[item.source_uri]}}],failure:null,coverage:{truncated:false,exhaustive:false,limitations:[]}})).toMatchObject({recorded:true});await db.pool.query("UPDATE runs SET status='succeeded' WHERE id=$1",[run.id]);expect(await service.read(identity,item.id)).toMatchObject({status:'succeeded'});
 });
-it('keeps an in-progress search alive after three minutes and accepts its submission',async ctx=>{
- if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));const s=await submitted((await real.read(identity,goalId)).native_runs[0].id);expect(s.run.contract_snapshot_json).toMatchObject({max_duration_seconds:600});await db.pool.query("UPDATE runs SET started_at=now()-interval '301 seconds' WHERE id=$1",[s.run.id]);await real.read(identity,goalId);expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[s.run.id])).rows[0].status).toBe('running');const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');expect(await submitMaterialResults(config,s.run,s.input)).toMatchObject({recorded:true});
+it('keeps an active search alive beyond an hour without a collection-imposed deadline',async ctx=>{
+ if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));const s=await submitted((await real.read(identity,goalId)).native_runs[0].id);expect(s.run.contract_snapshot_json).toMatchObject({max_duration_seconds:null});await db.pool.query("UPDATE runs SET started_at=now()-interval '1 hour' WHERE id=$1",[s.run.id]);await real.read(identity,goalId);expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[s.run.id])).rows[0].status).toBe('running');const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');expect(await submitMaterialResults(config,s.run,s.input)).toMatchObject({recorded:true});
 });
 it('submission respects an explicitly tighter admitted Run budget',async ctx=>{
  if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));const s=await submitted((await real.read(identity,goalId)).native_runs[0].id);await db.pool.query("UPDATE runs SET started_at=now()-interval '31 seconds',contract_snapshot_json=jsonb_set(contract_snapshot_json,'{max_duration_seconds}','30'::jsonb) WHERE id=$1",[s.run.id]);const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');await expect(submitMaterialResults(config,s.run,s.input)).rejects.toThrow('source_material_submission_inactive');
@@ -856,7 +871,7 @@ it('one material belongs to several topics; Reading filters by visible topic, se
  expect((await reading.list(identity,{view:'pending',limit:30,topic:first})).total).toBe(2);
  expect((await reading.list(identity,{view:'pending',limit:30,topic:first,topic_selection:'important'})).total).toBe(2);
  await db.pool.query(`UPDATE source_goal_items SET selection_status='not_selected',selection_reason='Off topic',selection_source='topic_judgment' WHERE goal_id=$1 AND source_item_id<>$2`,[first,shared[0].source_item_id]);
- const important=await reading.list(identity,{view:'pending',limit:30,topic:first,topic_selection:'important'});expect(important.items.map(i=>i.key)).toEqual([sharedItem.key]);expect(important.items[0].topics.find(t=>t.goal_id===first)).toEqual({goal_id:first,project_id:null,title:'Follow robotics research and industry updates',selection_status:'important',selection_reason:'Title mentions the topic term "robotics"',judged_by:'topic_rules',delivery_kind:'baseline',new_in_latest_collection:true,change_evidence_url:null});
+ const important=await reading.list(identity,{view:'pending',limit:30,topic:first,topic_selection:'important'});expect(important.items.map(i=>i.key)).toEqual([sharedItem.key]);expect(important.items[0].topics.find(t=>t.goal_id===first)).toEqual({goal_id:first,project_id:null,title:'Robotics',selection_status:'important',selection_reason:'Title mentions the topic term "robotics"',judged_by:'topic_rules',delivery_kind:'baseline',new_in_latest_collection:true,change_evidence_url:null});
  const page=await reading.list(identity,{view:'pending',limit:1,topic:first});expect(page.items).toHaveLength(1);expect(page.next_cursor).toBeTruthy();expect(page.total).toBe(2);
  const next=await reading.list(identity,{view:'pending',limit:1,topic:first,cursor:page.next_cursor!});expect(next.items[0].key).not.toBe(page.items[0].key);
  await expect(reading.list(identity,{view:'pending',limit:1,topic:other.id,cursor:page.next_cursor!})).rejects.toMatchObject({statusCode:422});
@@ -885,7 +900,7 @@ it('REVIEW: deleted historical source does not hide an owned followed topic deta
 it('REVIEW: another channel on the same connection still records already collected material for its own topic',async ctx=>{
  if(!db.available)return ctx.skip();await version();await service.follow(identity,goalId,{idempotency_key:'first-topic'});await tick();const first=goalId;
  const {SourceChannelService}=await import('../src/modules/sources/channels/sourceChannelService.js');const ch=await new SourceChannelService(db.pool,config).create(identity,{provider_key:'custom_source',source_connection_id:specs[0].source_connection_id,endpoint_url:'https://fixture.test/alternate',fetch_frequency:'manual',name:'Alternate topic channel'});
- const other=await service.create(identity,{intent:'Other robotics',agent_id:'goal-agent',runtime_profile_id:profile});const author=await secondGoalRun(other.id);await service.writeVersion(identity,{goal_id:other.id,expected_revision:0,plan:{summary:'Other topic',sources:[{...specs[0],source_channel_id:ch.id}],limitations:[]}},author);await service.follow(identity,other.id,{idempotency_key:'other'});goalId=other.id;await tick();goalId=first;
+ const other=await service.create(identity,{intent:'Other robotics',agent_id:'goal-agent',runtime_profile_id:profile});const author=await secondGoalRun(other.id);await service.writeVersion(identity,{goal_id:other.id,expected_revision:0,plan:{title:'Robotics',summary:'Other topic',sources:[{...specs[0],source_channel_id:ch.id}],limitations:[]}},author);await service.follow(identity,other.id,{idempotency_key:'other'});goalId=other.id;await tick();goalId=first;
  expect((await db.pool.query('SELECT count(*)::int n FROM source_goal_items WHERE goal_id=$1',[other.id])).rows[0].n).toBe(1);
 });
 it('REVIEW: Agent Profile revocation is a blocked setup state for the owner, not a Source permission',async ctx=>{
@@ -895,14 +910,14 @@ it('REVIEW: Agent Profile revocation is a blocked setup state for the owner, not
 });
 it('REVIEW: a delayed old activation must not cancel the newly active version collection',async ctx=>{
  if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.follow(identity,goalId,{idempotency_key:'old-activation'});
- const v2=await real.writeVersion(identity,{goal_id:goalId,expected_revision:1,plan:{summary:'Second robotics plan',sources:[{reason:'new source scope',implementation:{kind:'agent_search',query:'robotics updates'},supports_history:false}],limitations:[]}},runId);await real.follow(identity,goalId,{idempotency_key:'new-activation',version_id:v2.id});await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,new SourceGoalExecutor(db.pool,config));const current=(await real.read(identity,goalId)).native_runs.find(r=>r.status==='queued')!;expect(current).toBeTruthy();
+ const v2=await real.writeVersion(identity,{goal_id:goalId,expected_revision:1,plan:{title:'Robotics',summary:'Second robotics plan',sources:[{reason:'new source scope',implementation:{kind:'agent_search',query:'robotics updates'},supports_history:false}],limitations:[]}},runId);await real.follow(identity,goalId,{idempotency_key:'new-activation',version_id:v2.id});await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,new SourceGoalExecutor(db.pool,config));const current=(await real.read(identity,goalId)).native_runs.find(r=>r.status==='queued')!;expect(current).toBeTruthy();
  const {cancelSupersededCollections}=await import('../src/modules/sources/goals/activation.js');await cancelSupersededCollections(db.pool,config,identity,goalId,v.id);
  expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[current.id])).rows[0].status).toBe('queued');
 });
 it('stale cleanup leaves a running current-version collection alone; the current version still cancels an older one',async ctx=>{
  if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.follow(identity,goalId,{idempotency_key:'v1'});
  const old=await nativeTick(real);
- const v2=await real.writeVersion(identity,{goal_id:goalId,expected_revision:1,plan:{summary:'Second plan',sources:[{reason:'new scope',implementation:{kind:'agent_search',query:'robotics updates'},supports_history:false}],limitations:[]}},runId);
+ const v2=await real.writeVersion(identity,{goal_id:goalId,expected_revision:1,plan:{title:'Robotics',summary:'Second plan',sources:[{reason:'new scope',implementation:{kind:'agent_search',query:'robotics updates'},supports_history:false}],limitations:[]}},runId);
  // Activate V2 without its own trailing cleanup, then run V2's collection.
  await withSourceGoalLock(async tx=>{const {activateGoalVersion}=await import('../src/modules/sources/goals/activation.js');const g=(await tx.query('SELECT * FROM source_goals WHERE id=$1',[goalId])).rows[0];await activateGoalVersion(tx,config,identity,g,{versionId:v2.id,mode:'continuous',key:'v2',requirePreview:false,reusePreview:true});});
  await db.pool.query(`UPDATE runs r SET status='running',started_at=now(),runtime_profile_id=p.id,runtime_key=p.runtime_key,runtime_profile_snapshot_json=to_jsonb(p) FROM agent_runtime_profiles p WHERE r.id=$1 AND p.id=r.requested_runtime_profile_id`,[old]);
@@ -923,7 +938,7 @@ it('a second topic on another channel of the same connection keeps existing mate
  await db.pool.query(`INSERT INTO source_item_user_states(id,space_id,source_item_id,user_id,read_status,read_origin,created_at,updated_at) VALUES($1,$2,$3,$4,'read','library',now(),now())`,[randomUUID(),identity.spaceId,item,identity.userId]);
  const before=(await db.pool.query('SELECT title,content_hash,updated_at FROM source_items WHERE id=$1',[item])).rows[0];
  const {SourceChannelService}=await import('../src/modules/sources/channels/sourceChannelService.js');const ch=await new SourceChannelService(db.pool,config).create(identity,{provider_key:'custom_source',source_connection_id:specs[0].source_connection_id,endpoint_url:'https://fixture.test/alternate',fetch_frequency:'manual',name:'Alternate topic channel'});
- const other=await service.create(identity,{intent:'Other robotics',agent_id:'goal-agent',runtime_profile_id:profile,creation_key:'other-channel'});const author=await secondGoalRun(other.id);await service.writeVersion(identity,{goal_id:other.id,expected_revision:0,plan:{summary:'Other topic',sources:[{...specs[0],source_channel_id:ch.id}],limitations:[]}},author);await service.follow(identity,other.id,{idempotency_key:'other'});
+ const other=await service.create(identity,{intent:'Other robotics',agent_id:'goal-agent',runtime_profile_id:profile,creation_key:'other-channel'});const author=await secondGoalRun(other.id);await service.writeVersion(identity,{goal_id:other.id,expected_revision:0,plan:{title:'Robotics',summary:'Other topic',sources:[{...specs[0],source_channel_id:ch.id}],limitations:[]}},author);await service.follow(identity,other.id,{idempotency_key:'other'});
  goalId=other.id;await tick();
  const m1=(await db.pool.query('SELECT source_item_id,first_goal_run_id,last_goal_run_id FROM source_goal_items WHERE goal_id=$1',[other.id])).rows;expect(m1).toEqual([expect.objectContaining({source_item_id:item})]);
  await db.pool.query('UPDATE source_goal_bindings SET retry_at=NULL WHERE goal_id=$1',[other.id]);await tick();goalId=first;
@@ -985,7 +1000,7 @@ it('the shipped 0006 backfill restores only provable memberships, is idempotent 
 async function secondTopicOnSameConnection(cap:number){
  const {SourceChannelService}=await import('../src/modules/sources/channels/sourceChannelService.js');const ch=await new SourceChannelService(db.pool,config).create(identity,{provider_key:'custom_source',source_connection_id:specs[0].source_connection_id,endpoint_url:'https://fixture.test/alternate',fetch_frequency:'manual',name:'Alternate topic channel'});
  const other=await service.create(identity,{intent:'Other robotics',agent_id:'goal-agent',runtime_profile_id:profile,creation_key:'batch-'+cap});const author=await secondGoalRun(other.id);
- await service.writeVersion(identity,{goal_id:other.id,expected_revision:0,plan:{summary:'Other topic',sources:[{...specs[0],source_channel_id:ch.id}],limitations:[]}},author);await service.follow(identity,other.id,{idempotency_key:'batch-'+cap,items_per_source:cap});return other.id;
+ await service.writeVersion(identity,{goal_id:other.id,expected_revision:0,plan:{title:'Robotics',summary:'Other topic',sources:[{...specs[0],source_channel_id:ch.id}],limitations:[]}},author);await service.follow(identity,other.id,{idempotency_key:'batch-'+cap,items_per_source:cap});return other.id;
 }
 const otherTick=async(other:string)=>{const first=goalId;goalId=other;await db.pool.query('UPDATE source_goal_bindings SET retry_at=NULL WHERE goal_id=$1',[other]);try{await tick();}finally{goalId=first;}};
 const membersOf=async(goal:string)=>(await db.pool.query('SELECT source_item_id,first_goal_run_id FROM source_goal_items WHERE goal_id=$1 ORDER BY source_item_id',[goal])).rows;
@@ -1138,7 +1153,7 @@ it('a stable material records each newly cited change once per topic, keeps owne
  if(!db.available)return ctx.skip();const {real}=await nativePlan();
  // Topic B follows an API Source that stores the same canonical link first.
  const b=await service.create(identity,{intent:'Industry feed',agent_id:'goal-agent',runtime_profile_id:profile,creation_key:'iso-b'});const bRun=await secondGoalRun(b.id);
- await service.writeVersion(identity,{goal_id:b.id,expected_revision:0,plan:{summary:'Feed',sources:specs.slice(0,1),limitations:[]}},bRun);await service.follow(identity,b.id,{idempotency_key:'iso-b'});
+ await service.writeVersion(identity,{goal_id:b.id,expected_revision:0,plan:{title:'Robotics',summary:'Feed',sources:specs.slice(0,1),limitations:[]}},bRun);await service.follow(identity,b.id,{idempotency_key:'iso-b'});
  const first=goalId;goalId=b.id;await tick();goalId=first;
  const url='https://fixture.test/feed';await real.follow(identity,goalId,{idempotency_key:'changes'});
  await finishNative(await nativeTick(real),true,[{url,title:'Robotics feed'}]);await real.read(identity,goalId);
@@ -1283,7 +1298,7 @@ it.for(['paused','running'] as const)('a manual-save topic (%s) converts to cont
 
 // Holistic contract regressions: real PostgreSQL, deterministic external Agent submissions.
 it('HOLISTIC: changes of a canonical shared material obey its actual source ACL',async ctx=>{
- if(!db.available)return ctx.skip();const {real}=await nativePlan();const other=await service.create(identity,{intent:'Robotics feed',agent_id:'goal-agent',runtime_profile_id:profile,creation_key:'original-source'});const author=await secondGoalRun(other.id);await service.writeVersion(identity,{goal_id:other.id,expected_revision:0,plan:{summary:'Original feed',sources:specs.slice(0,1),limitations:[]}},author);await service.follow(identity,other.id,{idempotency_key:'original-source'});const current=goalId;goalId=other.id;await tick();goalId=current;
+ if(!db.available)return ctx.skip();const {real}=await nativePlan();const other=await service.create(identity,{intent:'Robotics feed',agent_id:'goal-agent',runtime_profile_id:profile,creation_key:'original-source'});const author=await secondGoalRun(other.id);await service.writeVersion(identity,{goal_id:other.id,expected_revision:0,plan:{title:'Robotics',summary:'Original feed',sources:specs.slice(0,1),limitations:[]}},author);await service.follow(identity,other.id,{idempotency_key:'original-source'});const current=goalId;goalId=other.id;await tick();goalId=current;
  const url='https://fixture.test/feed';await real.follow(identity,goalId,{idempotency_key:'shared-copy'});await finishNative(await nativeTick(real),true,[{url,title:'Robotics shared article'}]);await real.read(identity,goalId);
  await finishNative(await nativeTick(real),true,[{url,title:'Robotics updated article',change:{kind:'update',evidence_url:'https://fixture.test/restricted-change'},topic_judgment:{importance:'important',reason:'Restricted source update reason'}}] as never);await real.read(identity,goalId);expect(await changesOf(goalId)).toHaveLength(1);
  const item=(await db.pool.query('SELECT id,connection_id FROM source_items WHERE source_uri=$1',[url])).rows[0];expect(item.connection_id).toBe(specs[0].source_connection_id);
@@ -1588,6 +1603,7 @@ it('settlement projects only its named native Run and never issues deadline canc
  await submitted(native);
  await db.pool.query("UPDATE runs SET started_at=now()-interval '1 hour' WHERE id=$1",[native]);
  const {reconcileNativeSearch}=await import('../src/modules/sources/goals/nativeSearchResults.js');
+ await db.pool.query("UPDATE runs SET contract_snapshot_json=jsonb_set(contract_snapshot_json,'{max_duration_seconds}','600'::jsonb) WHERE id=$1",[native]);
  // Another Run's settlement must not expire or consume this active collection.
  await reconcileNativeSearch(db.pool,config,goalId,randomUUID());
  // Its own nonterminal projection is also a no-op, even past its deadline.
@@ -1786,7 +1802,7 @@ it('Following analysis purpose is versioned and delivered to native collection i
  await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));
  const id=(await real.read(identity,goalId)).native_runs[0].id;
  const row=(await db.pool.query('SELECT prompt,contract_snapshot_json FROM runs WHERE id=$1',[id])).rows[0];
- expect(row.prompt).toContain(brief);expect(row.prompt).toContain('Follow robotics research and industry updates');expect(row.prompt).not.toContain('UNAPPROVED_OTHER_TOPIC');
+ expect(row.prompt).toContain(brief);expect(row.prompt).toContain('Deep reading and analysis reports are separate, manually triggered operations');expect(row.prompt).toContain('Follow robotics research and industry updates');expect(row.prompt).not.toContain('UNAPPROVED_OTHER_TOPIC');
  expect(row.contract_snapshot_json.workflow_input_json.reading_following).toMatchObject({goal_id:goalId,version_id:v.id});
  // The actual submission path reassembles the same frozen context.
  await finishNative(id);expect((await real.read(identity,goalId)).previews[0].status).toBe('ready');
@@ -1845,12 +1861,14 @@ it.for([false,true])('manual topic editing creates an honest human draft, preser
  if(legacy){await db.pool.query("UPDATE source_goal_versions SET plan_json=plan_json-'intent_snapshot' WHERE id=$1",[v.id]);await db.pool.query(`UPDATE source_goals SET compatibility_json=COALESCE(compatibility_json,'{}'::jsonb)||'{"active_intent_snapshot":{"version_id":"older-version","intent_json":{"intent":"old intent","includes":[],"excludes":[]}}}'::jsonb WHERE id=$1`,[goalId]);}
  await db.pool.query("UPDATE runs SET status='succeeded' WHERE id=$1",[runId]);
  const {editSourceGoal}=await import('../src/modules/sources/goals/edit.js');const {activeGoalIntent,requireGoal}=await import('../src/modules/sources/goals/access.js');
- const input={expected_revision:1,idempotency_key:'human-edit',title:'Robotics design',intent:'Compare robotics designs with our system',analysis_brief:'Explain architecture and reusable design choices using actual baseline evidence.',includes:['robotics'],excludes:['advertising'],queries:[]};
+ const input={expected_revision:1,idempotency_key:'human-edit',title:'Robotics design',summary:'Robotics architecture and reusable designs.',intent:'Compare robotics designs with our system',analysis_brief:'Explain architecture and reusable design choices using actual baseline evidence.',includes:['robotics'],excludes:['advertising'],queries:[]};
  const before=Number((await db.pool.query('SELECT count(*) AS n FROM runs')).rows[0].n),items=Number((await db.pool.query('SELECT count(*) AS n FROM source_items')).rows[0].n);
  const edited=await editSourceGoal(db.pool,config,identity,goalId,input);
  expect(await editSourceGoal(db.pool,config,identity,goalId,input)).toEqual(edited);
  const row=(await db.pool.query('SELECT * FROM source_goal_versions WHERE id=$1',[edited.id])).rows[0];
- expect(row).toMatchObject({created_by_user_id:identity.userId,created_by_run_id:null,plan_json:{title:input.title,analysis_brief:input.analysis_brief,intent_snapshot:{intent:input.intent}}});
+ expect(row).toMatchObject({created_by_user_id:identity.userId,created_by_run_id:null,plan_json:{title:input.title,summary:input.summary,analysis_brief:input.analysis_brief,intent_snapshot:{intent:input.intent}}});
+ expect((await service.read(identity,goalId)).goal.display).toMatchObject({version_id:v.id,title:'Robotics',summary:'Research and industry coverage'});
+ expect((await service.list(identity)).goals.find(g=>g.id===goalId)?.display).toMatchObject({version_id:v.id,title:'Robotics'});
  const g=await requireGoal(db.pool,identity,goalId);expect(g.active_version_id).toBe(v.id);expect(g.current_version_id).toBe(edited.id);
  expect((await activeGoalIntent(db.pool,g)).intent_json.intent).toBe('Follow robotics research and industry updates');
  expect(Number((await db.pool.query('SELECT count(*) AS n FROM runs')).rows[0].n)).toBe(before);
@@ -1858,6 +1876,7 @@ it.for([false,true])('manual topic editing creates an honest human draft, preser
  await expect(editSourceGoal(db.pool,config,{...identity,userId:'not-owner'},goalId,input)).rejects.toMatchObject({statusCode:404});
  await service.follow(identity,goalId,{version_id:edited.id,idempotency_key:'apply-manual'});
  expect((await requireGoal(db.pool,identity,goalId)).active_version_id).toBe(edited.id);
+ expect((await service.read(identity,goalId)).goal.display).toEqual({version_id:edited.id,title:input.title,summary:input.summary});
  expect(Number((await db.pool.query('SELECT count(*) AS n FROM source_items')).rows[0].n)).toBe(items);
 });
 
@@ -1865,7 +1884,7 @@ it('manual native query edits use canonical Source bindings and never invent an 
  if(!db.available)return ctx.skip();const {v}=await nativePlan();await db.pool.query("UPDATE runs SET status='succeeded' WHERE id=$1",[runId]);
  const plan=(await db.pool.query('SELECT plan_json FROM source_goal_versions WHERE id=$1',[v.id])).rows[0].plan_json;
  const {editSourceGoal}=await import('../src/modules/sources/goals/edit.js');
- const input={expected_revision:1,idempotency_key:'native-edit',title:'System designs',intent:'Follow robotics system designs',analysis_brief:'Inspect architecture rather than only release notes.',includes:['robotics'],excludes:[],queries:[{source_connection_id:plan.sources[0].source_connection_id,query:'robotics system architecture source code'}]};
+ const input={expected_revision:1,idempotency_key:'native-edit',title:'System designs',summary:'Follow robotics architecture and design choices.',intent:'Follow robotics system designs',analysis_brief:'Inspect architecture rather than only release notes.',includes:['robotics'],excludes:[],queries:[{source_connection_id:plan.sources[0].source_connection_id,query:'robotics system architecture source code'}]};
  const before=Number((await db.pool.query('SELECT count(*) AS n FROM runs')).rows[0].n);
  await expect(editSourceGoal(db.pool,config,identity,goalId,{...input,queries:[{source_connection_id:specs[0].source_connection_id,query:'unbound query'}]})).rejects.toMatchObject({statusCode:422});
  const result=await editSourceGoal(db.pool,config,identity,goalId,input);
@@ -1899,4 +1918,207 @@ it('R1 actual saved-item submission/settlement publishes Project analysis withou
  const records=await projectReadingRecords(db.pool,identity,item.id);
  expect(records.items.filter(r=>r.role==='analysis')).toHaveLength(1);expect(records.items.find(r=>r.role==='analysis')!.origin_run_id).toBe(run.id);
  await processing.reconcileTerminal(run.id);expect((await projectReadingRecords(db.pool,identity,item.id)).items.filter(r=>r.role==='analysis')).toHaveLength(1);
+});
+
+it('ongoing Following collects a broad link-only batch without the manual deep-reading method',async ctx=>{
+ if(!db.available)return ctx.skip();const n=await readyNative();
+ const asset=(await db.pool.query("SELECT id,status FROM evolvable_assets WHERE asset_key='reading.project_investigation' AND space_id IS NULL")).rows[0];
+ await db.pool.query("UPDATE evolvable_assets SET status='disabled' WHERE id=$1",[asset.id]);
+ try{
+  const {freezeReadingMethod}=await import('../src/modules/prompts/reading/runtime.js');
+  await expect(freezeReadingMethod(db.pool,{spaceId:identity.spaceId,userId:identity.userId},null)).rejects.toMatchObject({statusCode:409});
+  await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,new SourceGoalExecutor(db.pool,config));
+  const pending=(await n.real.read(identity,goalId)).native_runs.find(r=>r.status==='queued')!;
+  const items=Array.from({length:15},(_,i)=>({url:`https://evidence.test/robotics-${i}`,title:`Robotics relevant material ${i}`}));
+  const s=await submitted(pending.id,items);expect(s.run.contract_snapshot_json).toHaveProperty('workflow_input_json.source_collection.schema_version','source_collection.v1');
+  expect(s.run.contract_snapshot_json).not.toHaveProperty('workflow_input_json.reading_method');
+  expect(s.run.capabilities_json).toEqual(['source.material.submit']);
+  expect(s.run.contract_snapshot_json).toMatchObject({max_attempts:1,max_duration_seconds:null});
+  const {CliAgentToolTransport}=await import('../src/modules/runs/cliToolTransport.js');
+  const response=await new CliAgentToolTransport(config).call(s.run,{id:'broad-links',name:'source.material.submit',arguments:{...s.input,items:s.input.items.map(item=>({...item,content:null,unavailable_reason:'not_read'}))}});expect(response,JSON.stringify(response)).toMatchObject({ok:true});
+  await finishNative(pending.id,false);await n.real.read(identity,goalId);
+  const audit=(await db.pool.query('SELECT id,status,result_json FROM source_goal_runs WHERE result_json->>\'native_run_id\'=$1',[pending.id])).rows[0];
+  expect(audit).toMatchObject({status:'succeeded',result_json:{goal_items_new:15}});
+  expect((await db.pool.query('SELECT count(*)::int n FROM source_goal_items WHERE first_goal_run_id=$1',[audit.id])).rows[0].n).toBe(15);
+  expect((await db.pool.query('SELECT count(*)::int n FROM source_snapshots')).rows[0].n).toBe(0);
+ }finally{await db.pool.query('UPDATE evolvable_assets SET status=$2 WHERE id=$1',[asset.id,asset.status]);}
+});
+
+it('collection rechecks its frozen topic context and rejects changed purpose before accepting links',async ctx=>{
+ if(!db.available)return ctx.skip();const {real,v}=await nativePlan('Track robotics design evidence.');await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));
+ const id=(await real.read(identity,goalId)).native_runs[0].id,s=await submitted(id);
+ await db.pool.query(`UPDATE source_goal_versions SET plan_json=jsonb_set(plan_json,'{analysis_brief}','"Changed after admission"') WHERE id=$1`,[v.id]);
+ const {CliAgentToolTransport}=await import('../src/modules/runs/cliToolTransport.js');
+ expect(await new CliAgentToolTransport(config).call(s.run,{id:'changed-collection-context',name:'source.material.submit',arguments:s.input})).toMatchObject({ok:false});
+ expect((await db.pool.query('SELECT count(*)::int n FROM source_items')).rows[0].n).toBe(0);
+ const audit=(await db.pool.query('SELECT result_json FROM source_goal_runs WHERE result_json->>\'native_run_id\'=$1',[id])).rows[0];expect(audit.result_json).not.toHaveProperty('search_submission');
+});
+
+it.for(['active','paused'] as const)('restores only an explicitly confirmed paused channel with binding %s to its exact approved state without changing schedules or collecting',async(bindingStatus,ctx)=>{
+ if(!db.available)return ctx.skip();const {v}=await start();const s=specs[0];
+ const b=(await db.pool.query('SELECT * FROM source_goal_bindings WHERE goal_id=$1 AND source_connection_id=$2',[goalId,s.source_connection_id])).rows[0];
+ // The stale compatibility pause also touches the old task's clock.
+ await db.pool.query("UPDATE scheduler_tasks SET updated_at=now() WHERE task_type='source_channel_scan' AND task_key=$1",[s.source_channel_id]);
+ const before=(await db.pool.query('SELECT to_jsonb(t) row FROM scheduler_tasks t ORDER BY id')).rows;
+ await db.pool.query("UPDATE source_channels SET status='paused' WHERE id=$1",[s.source_channel_id]);
+ await expect(requestGoalCheck(db.pool,config,identity,goalId,{expected_version_id:v.id})).rejects.toMatchObject({statusCode:409,responseBody:{error:'source_goal_source_inactive'}});
+ if(bindingStatus==='paused')await db.pool.query("UPDATE source_goal_bindings SET status='paused',fixture_json=fixture_json||'{\"collection_error\":\"source_authority_revoked\"}'::jsonb WHERE id=$1",[b.id]);
+ expect((await service.read(identity,goalId)).goal.follow_state!.sources.find(s=>s.binding_id===b.id)).toMatchObject({health:'needs_permission',attention:'source_changed',resolvable_by:'you'});
+ const {readBindingReconfirmation,confirmBindingSource}=await import('../src/modules/sources/goals/reconfirm.js');
+ const view=await readBindingReconfirmation(db.pool,config,identity,goalId,b.id);
+ expect(view).toMatchObject({resolvable_by:'you',restore_channel:true,current:{source_status:'active',channel_status:'paused'}});
+ const input={binding_revision:b.revision,authority:view.authority!,restore_channel:true};
+ await expect(confirmBindingSource(db.pool,config,identity,goalId,b.id,{...input,restore_channel:false})).rejects.toMatchObject({statusCode:409});
+ await expect(confirmBindingSource(db.pool,config,identity,goalId,b.id,{...input,authority:'0'.repeat(64)})).rejects.toMatchObject({statusCode:409});
+ expect((await db.pool.query('SELECT status FROM source_channels WHERE id=$1',[s.source_channel_id])).rows[0].status).toBe('paused');
+ const done=await confirmBindingSource(db.pool,config,identity,goalId,b.id,input);
+ expect(done).toMatchObject({status:'active',binding_revision:b.revision+1});
+ expect(await confirmBindingSource(db.pool,config,identity,goalId,b.id,input)).toEqual(done);
+ expect((await db.pool.query('SELECT status,fetch_frequency FROM source_channels WHERE id=$1',[s.source_channel_id])).rows[0]).toEqual({status:'active',fetch_frequency:'manual'});
+ expect((await db.pool.query('SELECT fixture_json FROM source_goal_bindings WHERE id=$1',[b.id])).rows[0].fixture_json.authority_sha256).toBe(b.fixture_json.authority_sha256);
+ expect((await db.pool.query('SELECT to_jsonb(t) row FROM scheduler_tasks t ORDER BY id')).rows).toEqual(before);
+ expect((await db.pool.query('SELECT count(*)::int n FROM source_goal_runs WHERE goal_id=$1',[goalId])).rows[0].n).toBe(0);
+ expect((await service.read(identity,goalId)).goal.follow_state!.sources.find(s=>s.binding_id===b.id)).toMatchObject({health:'ok',attention:null});
+ expect(await requestGoalCheck(db.pool,config,identity,goalId,{expected_version_id:v.id})).toMatchObject({status:'queued'});
+});
+for(const kind of ['scope','scheduler','source-paused','lease','repair'] as const)it(`channel restoration refuses ${kind} drift atomically`,async ctx=>{
+ if(!db.available)return ctx.skip();await start();const s=specs[0];const b=(await db.pool.query('SELECT * FROM source_goal_bindings WHERE goal_id=$1 AND source_connection_id=$2',[goalId,s.source_connection_id])).rows[0];
+ await db.pool.query("UPDATE source_channels SET status='paused' WHERE id=$1",[s.source_channel_id]);
+ const {readBindingReconfirmation,confirmBindingSource}=await import('../src/modules/sources/goals/reconfirm.js');
+ const view=await readBindingReconfirmation(db.pool,config,identity,goalId,b.id);
+ if(kind==='scope')await db.pool.query("UPDATE source_channels SET endpoint_url=endpoint_url||'?changed' WHERE id=$1",[s.source_channel_id]);
+ if(kind==='scheduler')await db.pool.query("UPDATE scheduler_tasks SET status='active',next_run_at=now() WHERE task_key=$1 AND task_type='source_channel_scan'",[s.source_channel_id]);
+ if(kind==='source-paused')await db.pool.query("UPDATE source_connections SET status='paused' WHERE id=$1",[s.source_connection_id]);
+ if(kind==='lease')await db.pool.query("UPDATE source_goal_bindings SET lease_token='in-flight' WHERE id=$1",[b.id]);
+ if(kind==='repair')await db.pool.query("UPDATE source_goal_bindings SET status='repair_required' WHERE id=$1",[b.id]);
+ await expect(confirmBindingSource(db.pool,config,identity,goalId,b.id,{binding_revision:b.revision,authority:view.authority!,restore_channel:true})).rejects.toMatchObject({statusCode:409});
+ expect((await db.pool.query('SELECT status FROM source_channels WHERE id=$1',[s.source_channel_id])).rows[0].status).toBe('paused');
+ expect((await db.pool.query('SELECT revision,fixture_json FROM source_goal_bindings WHERE id=$1',[b.id])).rows[0]).toMatchObject({revision:b.revision,fixture_json:{authority_sha256:b.fixture_json.authority_sha256}});
+});
+
+it('requires structured collection coverage while correcting in the same Run',async ctx=>{
+ if(!db.available)return ctx.skip();
+ const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));
+ const s=await submitted((await real.read(identity,goalId)).native_runs[0].id);
+ const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');
+ const {discovery,...coverage}=s.input.coverage;
+ await expect(submitMaterialResults(config,s.run,{...s.input,coverage})).rejects.toMatchObject({code:'source_material_submission_invalid'});
+ expect(await submitMaterialResults(config,s.run,s.input)).toMatchObject({recorded:true});
+ expect((await db.pool.query("SELECT (result_json->>'submission_attempts')::int n FROM source_goal_runs WHERE result_json->>'native_run_id'=$1",[s.run.id])).rows[0].n).toBe(2);
+});
+
+it('filters scope and stored memberships before applying native collection caps and carries gaps into the next Run',async ctx=>{
+ if(!db.available)return ctx.skip();
+ const {real,v}=await nativePlan();await real.follow(identity,goalId,{idempotency_key:'breadth'});
+ await db.pool.query("UPDATE source_goals SET budget_json=jsonb_set(budget_json,'{items_per_source}','2') WHERE id=$1",[goalId]);
+ const first=await nativeTick(real);await finishNative(first,true,[{url:'https://evidence.test/old',title:'Robotics existing'}]);await real.read(identity,goalId);
+ const source=(await db.pool.query('SELECT source_connection_id FROM source_goal_bindings WHERE goal_id=$1',[goalId])).rows[0].source_connection_id;
+ await db.pool.query("UPDATE source_items SET excerpt='PRIVATE ARTICLE BODY MUST NOT BE CONTEXT' WHERE connection_id=$1",[source]);
+ await db.pool.query("UPDATE source_goal_versions SET plan_json=jsonb_set(plan_json,'{filters}', $2) WHERE id=$1",[v.id,{includes:['robotics'],excludes:[],excluded_origins:['https://excluded.test']}]);
+ const second=await nativeTick(real);
+ const queued=(await new PgRunRepository(db.pool).getRun(identity.spaceId,second))!;
+ expect(queued.prompt).toContain('https://evidence.test/old');expect(queued.prompt).toContain('Closed-source product announcements');expect(queued.prompt).not.toContain('PRIVATE ARTICLE BODY');
+ await finishNative(second,true,[
+  {url:'https://evidence.test/old',title:'Robotics existing'},
+  {url:'https://excluded.test/robot',title:'Robotics excluded'},
+  {url:'https://evidence.test/other',title:'Unrelated topic'},
+  {url:'https://evidence.test/new-a',title:'Robotics new A'},
+  {url:'https://evidence.test/new-b',title:'Robotics new B'},
+  {url:'https://evidence.test/new-c',title:'Robotics new C'},
+ ]);await real.read(identity,goalId);
+ const items=(await db.pool.query('SELECT source_uri FROM source_items WHERE connection_id=$1 ORDER BY source_uri',[source])).rows;
+ expect(items.map(i=>i.source_uri)).toEqual(['https://evidence.test/new-a','https://evidence.test/new-b','https://evidence.test/old']);
+ const audit=(await db.pool.query("SELECT result_json FROM source_goal_runs WHERE result_json->>'native_run_id'=$1",[second])).rows[0].result_json;
+ expect(audit.coverage).toMatchObject({observed_items:6,unique_items:6,eligible_items:4,returned_items:2,truncated:true,verification:'agent_provided_unverified',discovery:discoveryReport,execution_evidence:{source:'run_events',run_id:second,search_queries:'not_recorded'}});
+ // Completed transport bodies are scrubbed; the bounded coverage account survives.
+ expect(audit).not.toHaveProperty('search_submission');
+ const third=await nativeTick(real);const frozen=(await new PgRunRepository(db.pool).getRun(identity.spaceId,third))!;
+ const history=(frozen.contract_snapshot_json as {workflow_input_json:{source_collection:{discovery:{recent_items:unknown[];previous_coverage:unknown}}}}).workflow_input_json.source_collection.discovery;
+ expect(history.recent_items).toHaveLength(3);expect(history.previous_coverage).toMatchObject({truncated:true,remaining_gaps:discoveryReport.remaining_gaps});
+});
+
+it('reauthorizes frozen discovery links instead of replacing them with newer history',async ctx=>{
+ if(!db.available)return ctx.skip();const {real}=await nativePlan();await real.follow(identity,goalId,{idempotency_key:'frozen-links'});
+ await finishNative(await nativeTick(real));await real.read(identity,goalId);
+ const next=await nativeTick(real);const s=await submitted(next);
+ await db.pool.query('UPDATE source_items SET deleted_at=now() WHERE source_uri=$1',['https://evidence.test/robotics']);
+ const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');
+ await expect(submitMaterialResults(config,s.run,s.input)).rejects.toMatchObject({statusCode:403});
+ const audit=(await db.pool.query("SELECT result_json FROM source_goal_runs WHERE result_json->>'native_run_id'=$1",[next])).rows[0].result_json;expect(audit).not.toHaveProperty('search_submission');
+});
+
+it('preserves an honest failed-search account without inventing collected materials',async ctx=>{
+ if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));
+ const id=(await real.read(identity,goalId)).native_runs[0].id;
+ const report={angles:[{direction:'Unrestricted public search',queries:[],outcome:'failed',note:'The runtime has no working search tool'}],remaining_gaps:['All topic directions'],stop_reason:{code:'tool_unavailable',detail:'No authorized search tool could run'}};
+ const s=await submitted(id,[],{status:'failed',failure:{code:'unavailable',message:'No search tool'},coverage:{truncated:false,exhaustive:false,limitations:['No search executed'],discovery:report}});
+ const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');await submitMaterialResults(config,s.run,s.input);await finishNative(id,false);const detail=await real.read(identity,goalId);
+ expect(detail.previews[0].result_json.contributions[0]).toMatchObject({status:'failed',error:'source_material_unavailable',coverage:{discovery:report,verification:'agent_provided_unverified'}});
+ expect((await db.pool.query('SELECT count(*)::int n FROM source_items')).rows[0].n).toBe(0);
+});
+
+it('bounds discovery history by both URL characters and item count and excludes other goals',async ctx=>{
+ if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.follow(identity,goalId,{idempotency_key:'bounded-history'});
+ await db.pool.query("UPDATE source_goals SET budget_json=jsonb_set(budget_json,'{items_per_source}','40') WHERE id=$1",[goalId]);
+ const items=Array.from({length:35},(_,i)=>({url:`https://evidence.test/${i}/`,title:'Robotics public page'}));
+ await finishNative(await nativeTick(real),true,items);await real.read(identity,goalId);
+ const {collectionDiscoveryContext}=await import('../src/modules/sources/goals/collectionDiscovery.js');
+ const source=(await db.pool.query('SELECT source_connection_id FROM source_goal_bindings WHERE goal_id=$1',[goalId])).rows[0].source_connection_id;
+ const countBound=await collectionDiscoveryContext(db.pool,identity,goalId,v.id,source);
+ expect(countBound.recent_items).toHaveLength(30);expect(countBound.recent_items_truncated).toBe(true);
+ // Long canonical URLs keep their bounded native external identity.
+ await db.pool.query("UPDATE source_items SET source_uri=source_uri||repeat('a',450) WHERE connection_id=$1",[source]);
+ const history=await collectionDiscoveryContext(db.pool,identity,goalId,v.id,source);
+ expect(history.recent_items.length).toBeGreaterThan(0);expect(history.recent_items.length).toBeLessThanOrEqual(30);expect(history.recent_items.reduce((n,i)=>n+i.url.length,0)).toBeLessThanOrEqual(12000);expect(history.recent_items_truncated).toBe(true);
+ const another=await service.create(identity,{intent:'Another topic',agent_id:'goal-agent',runtime_profile_id:profile});
+ expect((await collectionDiscoveryContext(db.pool,identity,another.id,v.id,source)).recent_items).toEqual([]);
+ // A new plan can reuse known links but never inherits the old plan's gaps.
+ const different=await collectionDiscoveryContext(db.pool,identity,goalId,randomUUID(),source);
+ expect(different.recent_items).toHaveLength(history.recent_items.length);expect(different.previous_coverage).toBeNull();
+});
+
+it('an active native preview does not expire mid-search and its freshness window begins at settlement',async ctx=>{
+ if(!db.available)return ctx.skip();const {real,v}=await nativePlan();
+ await real.preview(identity,goalId,v.id,AbortSignal.timeout(10000));
+ const initial=await real.read(identity,goalId);const preview=initial.previews[0];const s=await submitted(initial.native_runs[0].id);
+ await db.pool.query("UPDATE source_goal_previews SET expires_at=now()-interval '1 hour' WHERE id=$1",[preview.id]);
+ await db.pool.query("UPDATE runs SET started_at=now()-interval '2 hours' WHERE id=$1",[s.run.id]);
+ await expect(real.preview(identity,goalId,v.id,AbortSignal.timeout(10000))).rejects.toMatchObject({responseBody:{error:'source_goal_preview_in_progress'}});
+ const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');
+ expect(await submitMaterialResults(config,s.run,s.input)).toMatchObject({recorded:true});
+ await finishNative(s.run.id,false);const ready=(await real.read(identity,goalId)).previews[0];
+ expect(ready.status).toBe('ready');expect(Date.parse(ready.expires_at)).toBeGreaterThan(Date.now()+14*60_000);
+});
+
+it.for(['cooldown','paused'] as const)('an explicit owner retry reauthorizes %s native failure and preserves history and cadence',async(status,ctx)=>{
+ if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.follow(identity,goalId,{idempotency_key:'retry-native'});
+ const failed=await nativeTick(real);await db.pool.query("UPDATE runs SET status='failed' WHERE id=$1",[failed]);await real.read(identity,goalId);
+ await db.pool.query("UPDATE source_goal_bindings SET status=$2,retry_at=now()+interval '1 hour' WHERE goal_id=$1",[goalId,status]);
+ const before=(await db.pool.query('SELECT failures,cursor_json FROM source_goal_bindings WHERE goal_id=$1',[goalId])).rows[0];
+ const schedule=(await db.pool.query("SELECT next_run_at,last_run_at FROM scheduler_tasks WHERE task_type='source_goal_tick' AND task_key=$1",[goalId])).rows[0];
+ expect((await real.read(identity,goalId)).goal.follow_state?.sources[0].retryable).toBe(true);
+ await expect(requestGoalCheck(db.pool,config,identity,goalId,{expected_version_id:v.id})).rejects.toMatchObject({statusCode:409});
+ const results=await Promise.all([1,2].map(()=>requestGoalCheck(db.pool,config,identity,goalId,{expected_version_id:v.id,retry_failed:true})));
+ expect(results.map(r=>r.status).sort()).toEqual(['in_progress','queued']);
+ expect((await db.pool.query('SELECT status,retry_at,failures,cursor_json FROM source_goal_bindings WHERE goal_id=$1',[goalId])).rows[0]).toMatchObject({...before,status:'active',retry_at:null});
+ expect((await db.pool.query("SELECT next_run_at,last_run_at FROM scheduler_tasks WHERE task_type='source_goal_tick' AND task_key=$1",[goalId])).rows[0]).toEqual(schedule);
+ await finishNative(await nativeTick(real));const recovered=await real.read(identity,goalId);expect(recovered.goal.follow_state?.health).toBe('ok');expect(recovered.goal.follow_state?.sources[0].retryable).toBe(false);
+ expect((await db.pool.query("SELECT status FROM source_goal_runs WHERE result_json->>'native_run_id'=$1",[failed])).rows[0].status).toBe('failed');
+});
+
+it.for(['source_native_budget_exhausted','source_authority_revoked','source_native_route_changed','source_quota_exhausted'] as const)('retry never clears the %s decision or provider cooldown',async(code,ctx)=>{
+ if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.follow(identity,goalId,{idempotency_key:'retry-guard'});
+ await db.pool.query("UPDATE source_goal_bindings SET status='paused',retry_at=now()+interval '1 hour',fixture_json=fixture_json||jsonb_build_object('collection_error',$2::text) WHERE goal_id=$1",[goalId,code]);
+ expect((await real.read(identity,goalId)).goal.follow_state?.sources[0].retryable).toBe(false);
+ const before=(await db.pool.query('SELECT status,retry_at,fixture_json FROM source_goal_bindings WHERE goal_id=$1',[goalId])).rows[0];
+ await expect(requestGoalCheck(db.pool,config,identity,goalId,{expected_version_id:v.id,retry_failed:true})).rejects.toMatchObject({statusCode:409});
+ expect((await db.pool.query('SELECT status,retry_at,fixture_json FROM source_goal_bindings WHERE goal_id=$1',[goalId])).rows[0]).toEqual(before);
+ expect((await db.pool.query("SELECT count(*)::int n FROM jobs WHERE job_type='source_goal_tick' AND payload_json->>'goal_id'=$1",[goalId])).rows[0].n).toBe(0);
+});
+
+it('retry refuses a changed Source fingerprint before releasing its failure backoff',async ctx=>{
+ if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await real.follow(identity,goalId,{idempotency_key:'retry-reauthorize'});
+ await db.pool.query("UPDATE source_goal_bindings SET status='cooldown',retry_at=now()+interval '1 hour',fixture_json=fixture_json||'{\"collection_error\":\"source_native_failed\",\"authority_sha256\":\"changed\"}'::jsonb WHERE goal_id=$1",[goalId]);
+ await expect(requestGoalCheck(db.pool,config,identity,goalId,{expected_version_id:v.id,retry_failed:true})).rejects.toMatchObject({statusCode:409});
+ expect((await db.pool.query('SELECT status FROM source_goal_bindings WHERE goal_id=$1',[goalId])).rows[0].status).toBe('cooldown');
 });

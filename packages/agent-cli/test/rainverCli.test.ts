@@ -137,7 +137,74 @@ describe("rainver list / describe", () => {
   });
 });
 
+describe("rainver help", () => {
+  it.each([
+    ["--help"], ["-h"], ["help"],
+    ["list", "--help"], ["list", "-h"],
+    ["describe", "--help"], ["describe", "-h"],
+    ["describe", "source.material.submit", "--help"],
+    ["call", "--help"], ["call", "-h"],
+    ["call", "source.material.submit", "--help"],
+    ["call", "source.material.submit", "-h"],
+  ].map((args) => ({ args })))("prints local usage for $args without a tool identity", async ({ args }) => {
+    const result = await runCli(args, { RAINVER_TOOL_TOKEN: "" });
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    if (["list", "describe", "call"].includes(args[0]!)) {
+      expect(result.stdout).toMatch(new RegExp(`^Usage: rainver ${args[0]}(?: |\\n)`));
+      expect(result.stdout).not.toContain("rainver — report to Rainver");
+    } else {
+      expect(result.stdout).toContain("rainver — report to Rainver");
+      expect(result.stdout).toContain("rainver call <action>");
+    }
+    expect(received).toHaveLength(0);
+  });
+
+  it("explains call's input forms, default and refusal status in its own help", async () => {
+    const result = await runCli(["call", "--help"]);
+    expect(result.stdout).toContain("Usage: rainver call <action> [input]");
+    expect(result.stdout).toContain("inline JSON");
+    expect(result.stdout).toContain("@file.json");
+    expect(result.stdout).toContain("standard input");
+    expect(result.stdout).toContain("empty object {}");
+    expect(result.stdout).toContain("1 on action refusal");
+    expect(result.stdout).toContain("rainver describe <action>");
+    expect(result.stdout).not.toContain("rainver list                    ");
+    expect(received).toHaveLength(0);
+  });
+
+  it("does not dispatch call --help through either configured transport", async () => {
+    respond = () => ({ status: 200, body: JSON.stringify({ ok: false, error_code: "system_action_not_granted" }) });
+    const direct = await runCli(["call", "--help"]);
+    expect(direct).toMatchObject({ code: 0, stderr: "" });
+    expect(received).toHaveLength(0);
+
+    const root = await mkdtemp(join(tmpdir(), "rainver-cli-help-"));
+    let calls = 0;
+    const host = await startLocalToolBridge(root, async () => {
+      calls += 1;
+      return { status: 200, text: JSON.stringify({ ok: false, error_code: "system_action_not_granted" }) };
+    });
+    try {
+      const bridged = await runCli(["call", "--help"], { RAINVER_TOOL_BRIDGE: host.directory });
+      expect(bridged).toMatchObject({ code: 0, stderr: "" });
+      expect(bridged.stdout).toContain("rainver call <action>");
+      expect(calls).toBe(0);
+    } finally {
+      await host.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("rainver call", () => {
+  it("preserves help text inside action input", async () => {
+    respond = () => ({ status: 200, body: JSON.stringify({ ok: true }) });
+    const input = { summary: "Use --help or -h to read command help" };
+    const result = await runCli(["call", "task.report", JSON.stringify(input)]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(received[0]!.body)).toEqual(input);
+  });
+
   it("uses the Host bridge with command networking disabled and no server credential", async () => {
     const root = await mkdtemp(join(tmpdir(), "rainver-cli-bridge-"));
     const denyNetwork = join(root, "deny-network.mjs");

@@ -1,9 +1,10 @@
+import {OperationalAlertService} from '../../notifications/index.js';
 import {prepareThemeOriginals} from './themePreparation.js';
 import {validBusinessTime,safeBusinessCursor} from './watermark.js';
 import {preflightGoalSource} from './preflight.js';
 import {associateGoalItems} from './goalItems.js';
 import {applyTopicJudgment} from './topicJudgment.js';
-import {BASELINE_MAX_PAGES,upstreamContinuation} from './selection.js';
+import {BASELINE_MAX_PAGES,upstreamContinuation,canEnrichGoalItem} from './selection.js';
 import {trustedSearchMetadataOrigins} from './validation.js';
 import {CustomSourceHandlerOutputSchema,SourcePolicyEnvelopeSchema} from '@rainver/protocol';
 import type {ServerConfig} from '../../../config.js';
@@ -29,7 +30,7 @@ export async function materializeGoalBatch(db:Pool,config:ServerConfig,g:GoalRow
    // A saved link can later acquire readable content; never overwrite a body
    // already saved or let repeated link-only samples rewrite reading history.
    const existing=known.rows.find(row=>row.source_external_id===i.external_id||row.source_uri===i.source_uri);
-   return b.spec_json.implementation.kind==='agent_search'&&!g.project_id&&existing?.content_state!=='content_saved'&&(!!i.reading_content||i.snapshots.length>0||!!i.excerpt&&!existing?.excerpt);
+   return b.spec_json.implementation.kind==='agent_search'&&!g.project_id&&canEnrichGoalItem(existing,i);
   })};
   const settings=await new PgCustomSourceHandlerRepository(tx,config).getEffectiveSettings(identity);
   const result=await new CustomSourceMaterializationService(tx,config,settings.runner).materialize({run:{runId,spaceId:g.space_id,sourceConnectionId:live.id,handlerVersionId:g.active_version_id!,goal:{projectId:g.project_id,...(b.spec_json.implementation.kind==='agent_search'?{resultProvenance:'agent_provided_unverified' as const}:{}),id:g.id,bindingId:b.id,bindingRevision:b.revision,implementationSha256:b.spec_json.implementation.kind==='isolated'?b.spec_json.implementation.sha256:null}},policyEnvelope:SourcePolicyEnvelopeSchema.parse(run.envelope),sandboxFilesRoot:run.filesRoot,rawOutputJson:fresh,recordHandlerRun:false,sourceKind:'source_goal',metadataOnlyOrigins:trustedSearchMetadataOrigins(live.connector_key,b.spec_json.implementation,fresh)});
@@ -45,8 +46,16 @@ export async function materializeGoalBatch(db:Pool,config:ServerConfig,g:GoalRow
   // failed batch keeps it open. Bindings without the flag predate it.
   const windowState=b.cursor_json.baseline_window;
   const baseline=history||(windowState==='open'||windowState===undefined&&!b.last_success_at);
-  await applyTopicJudgment(tx,{spaceId:g.space_id,goalId:g.id,goalRunId:runId,bindingId:b.id,versionId:goal.active_version_id!,insertedIds,memberIds,baseline,previousWatermark:typeof b.cursor_json.watermark==='string'?b.cursor_json.watermark:null,includes:g.intent_json.includes??[],rules:(goal as {follow_json?:{rules?:{excluded_origins?:string[];excluded_terms?:string[]}}|null}).follow_json?.rules,signals:run.topicSignals});
+  const deliveredChanges=await applyTopicJudgment(tx,{spaceId:g.space_id,goalId:g.id,goalRunId:runId,bindingId:b.id,versionId:goal.active_version_id!,insertedIds,memberIds,baseline,previousWatermark:typeof b.cursor_json.watermark==='string'?b.cursor_json.watermark:null,includes:g.intent_json.includes??[],rules:(goal as {follow_json?:{rules?:{excluded_origins?:string[];excluded_terms?:string[]}}|null}).follow_json?.rules,signals:run.topicSignals});
   const newItems=insertedIds.length;
+  // One private, clearable pointer per Following, never one notice per Run/item.
+  // Replays and unchanged checks do not re-surface a handled notification.
+  if(!history&&(newItems>0||deliveredChanges>0))await new OperationalAlertService(tx).emit({
+   kind:'following_updates',spaceId:g.space_id,userId:g.owner_user_id,
+   title:'Your Following has new reading',message:'Open Reading to see new material and changes.',
+   dedupeKey:`following:${g.id}:${g.owner_user_id}`,resurface:'changed',
+   payload:{pointer_type:'following_updates',goal_id:g.id,project_id:g.project_id,collection_id:runId},
+  });
   // Members recorded from already-stored rows advance the watermark by their
   // persisted publication time, never by re-reading handler output.
   const memberTimes=run.memberItemIds?.length?(await tx.query<{occurred_at:string|null}>(`SELECT occurred_at FROM source_items WHERE space_id=$1 AND id=ANY($2::varchar[])`,[g.space_id,run.memberItemIds])).rows.map(r=>r.occurred_at?new Date(r.occurred_at).toISOString():null):[];

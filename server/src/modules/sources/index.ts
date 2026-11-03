@@ -17,3 +17,8 @@ export {assertGoalAnalysisManagement} from './goals/access.js';
 export {nativeProfileFingerprint} from './goals/nativeRoute.js';
 
 export {deepReadOf,deepReadingContext,assertDeepReadingAccess} from './deepReading/contract.js';
+
+export {sourceCollectionContextOf,assertSourceCollectionContext} from './goals/collectionContext.js';
+export {goalReadingDayChecks} from './goals/readingDay.js';
+
+export { goalPresentationTitleSql } from "./goals/presentation.js";

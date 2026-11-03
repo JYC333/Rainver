@@ -4,6 +4,7 @@ import type { AgentAttentionReadState, AgentAttentionReason, AgentWorkItem } fro
 import { agentAttentionApi } from '../../api/client'
 import { Button } from '../../components/ui/button'
 import { StatusBadge } from '../../components/ui/badge'
+import { formatDateTime } from '../../i18n/format'
 import { cn } from '../../lib/utils'
 import { useSpace } from '../../contexts/SpaceContext'
 import { ConversationLink, ConversationScope, useConversationScope } from '../conversation/ConversationScope'
@@ -145,7 +146,13 @@ function DetailContent({ item, childPage, onConflict, onUnread, onChanged, onRea
       || (state.subject.kind === 'task_merge' && reasons.some(reason => reason.kind === 'task_merge' && state.subject.kind === 'task_merge' && reason.merge_id === state.subject.merge_id)))
   }, [reading.confirm, item.identity, reasons])
   const conversation = item.operations.some(operation => operation.kind === 'open_session') && item.access_level === 'full'
+  const [historyOpen, setHistoryOpen] = useState(false)
   const allRuns = [...item.runs, ...(childPage?.runs ?? [])]
+  // Keep the selected result stable while child windows/background refreshes arrive.
+  const [primaryId] = useState(() => item.runs.find(run => !run.retry_superseded && item.reasons.some(reason => 'run_id' in reason && reason.run_id === run.run_id))?.run_id
+    ?? [...item.runs].filter(run => !run.retry_superseded).sort((a, b) => (b.ended_at ?? b.started_at ?? '').localeCompare(a.ended_at ?? a.started_at ?? ''))[0]?.run_id)
+  const primary = allRuns.find(run => run.run_id === primaryId)
+  const history = allRuns.filter(run => run.run_id !== primaryId)
   const runRevision = useMemo(() => ({ item, childPage }), [item, childPage])
   const links = [
     ...item.operations.filter(operation => operation.kind === 'open_task').map(operation => ({ key: operation.task_id, to: `/tasks/${operation.task_id}`, label: t('agent_work.open_task') })),
@@ -163,24 +170,31 @@ function DetailContent({ item, childPage, onConflict, onUnread, onChanged, onRea
     </div>}
     {conversation
       ? <AttentionViewingGroup value={reading.viewingGroup}><WorkConversation item={item} onMessagesDisplayed={reading.messagesDisplayed} onReadError={onReadError} onChanged={onChanged} /></AttentionViewingGroup>
-      : <p className="text-xs text-muted-foreground">{t(item.access_level === 'full' ? 'agent_work.no_reply_session' : 'agent_work.summary_only')}</p>}
+      : item.access_level !== 'full' && <p className="text-xs text-muted-foreground">{t('agent_work.summary_only')}</p>}
     {/* A reply conversation already owns its turns and execution controls. */}
-    {!conversation && <section aria-label={t('agent_work.members', { count: formatNumber(item.visible_run_count) })}
-      className="min-h-0 flex-1 overflow-auto rounded-md border border-border">
-      <h3 className="sticky top-0 z-10 bg-card px-3 py-2 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{t('agent_work.members', { count: formatNumber(item.visible_run_count) })}</h3>
-      {allRuns.map(run => <div key={run.run_id} className="border-t border-border">
-        <button className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-accent/30" aria-expanded={expanded.has(run.run_id)} onClick={() => onToggle(run.run_id)}>
-          <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', expanded.has(run.run_id) && 'rotate-90')} />
-          <span className="truncate font-medium">{t('agent_work.run_target', { id: run.run_id })}</span>
-          <StatusBadge status={run.status} label={t(`agent_work.status.${run.status}`)} />
-          <span className="truncate text-muted-foreground">{run.agent_name ?? run.agent_id}</span>
-        </button>
-        {expanded.has(run.run_id) && (item.access_level === 'full'
-          ? <WorkRun runId={run.run_id} revision={runRevision} onDisplayed={reading.runDisplayed} onChanged={onChanged} />
-          : <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">{t('agent_work.summary_only')}</p>)}
-      </div>)}
-      {(childPage ? childPage.runs_next_cursor : item.runs_next_cursor) && <div className="border-t border-border p-2">
-        <Button size="sm" variant="outline" onClick={onMoreChildren}>{t('agent_work.more_children', { count: formatNumber(item.visible_run_count) })}</Button>
+    {!conversation && <section aria-label={t('agent_work.result')} className="min-h-0 flex-1 space-y-3 overflow-auto">
+      {primary && item.access_level === 'full' && <WorkRun key={primary.run_id} runId={primary.run_id} revision={runRevision} onDisplayed={reading.runDisplayed} onChanged={onChanged} />}
+      {(history.length > 0 || item.runs_next_cursor || childPage?.runs_next_cursor) && <div className="rounded-md border border-border">
+        <Button variant="ghost" size="sm" className="w-full justify-start gap-2" aria-expanded={historyOpen} onClick={() => setHistoryOpen(value => !value)}>
+          <ChevronRight className={cn('size-3.5 shrink-0 transition-transform', historyOpen && 'rotate-90')} />
+          {t('agent_work.execution_history', { count: formatNumber(Math.max(0, item.visible_run_count - (primary ? 1 : 0))) })}
+        </Button>
+        {historyOpen && <>
+          {history.map(run => <div key={run.run_id} className="border-t border-border">
+            <Button variant="ghost" size="sm" className="h-auto w-full justify-start gap-2 whitespace-normal text-left" aria-expanded={expanded.has(run.run_id)} onClick={() => onToggle(run.run_id)}>
+              <ChevronRight className={cn('size-3.5 shrink-0 transition-transform', expanded.has(run.run_id) && 'rotate-90')} />
+              <span className="min-w-0 flex-1">
+                <span className="block">{t('agent_work.execution_entry', { number: formatNumber(allRuns.indexOf(run) + 1) })} · {run.agent_name ?? t('agent_work.agent_fallback')}</span>
+                <span className="block text-xs text-muted-foreground">{formatDateTime(run.started_at ?? run.ended_at)}</span>
+              </span>
+              <StatusBadge status={run.status} label={t(`agent_work.status.${run.status}`)} />
+            </Button>
+            {expanded.has(run.run_id) && item.access_level === 'full' && <WorkRun runId={run.run_id} revision={runRevision} onDisplayed={reading.runDisplayed} onChanged={onChanged} />}
+          </div>)}
+          {(childPage ? childPage.runs_next_cursor : item.runs_next_cursor) && <div className="border-t border-border p-2">
+            <Button size="sm" variant="outline" onClick={onMoreChildren}>{t('agent_work.more_children', { count: formatNumber(item.visible_run_count) })}</Button>
+          </div>}
+        </>}
       </div>}
     </section>}
   </>

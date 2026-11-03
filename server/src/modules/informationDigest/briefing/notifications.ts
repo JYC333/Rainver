@@ -1,3 +1,4 @@
+import { goalOfKey } from "../topics/scope.js";
 import type { Queryable } from "../../routeUtils/common.js";
 import { OperationalAlertService } from "../../notifications/operationalAlerts.js";
 import { visibleResult } from "./authorization.js";
@@ -34,21 +35,23 @@ export function isMeaningfulChange(row: Pick<BriefingRow, "comparison">, result:
  */
 export async function notifyMeaningfulChange(db: Queryable, adapter: BriefingScopeAdapter, row: BriefingRow): Promise<number> {
   const recipients = await adapter.audience(db);
+  const goalId = goalOfKey(row.scope_key);
   const project = row.scope_type === "project";
   const alerts = new OperationalAlertService(db);
   for (const userId of recipients) {
     await alerts.emit({
-      kind: "briefing_changes",
-      title: project ? "A Project briefing has new changes" : "Your briefing has new changes",
+      kind: goalId ? "following_updates" : "briefing_changes",
+      title: goalId ? "Your Following has new reading" : project ? "A Project briefing has new changes" : "Your briefing has new changes",
       message: "Open the briefing to see what changed.",
-      dedupeKey: `briefing:${row.scope_key}:${userId}`,
+      dedupeKey: goalId ? `following:${goalId}:${userId}` : `briefing:${row.scope_key}:${userId}`,
       spaceId: row.space_id,
       userId,
       // The Project stays inside the pointer, not on the notice: an Inbox reader no longer in it sees no name.
       projectId: null,
       resurface: "changed",
       payload: {
-        pointer_type: "briefing_changes",
+        pointer_type: goalId ? "following_updates" : "briefing_changes",
+        ...(goalId ? { goal_id: goalId } : {}),
         scope_type: row.scope_type,
         project_id: row.project_id,
         briefing_id: row.id,

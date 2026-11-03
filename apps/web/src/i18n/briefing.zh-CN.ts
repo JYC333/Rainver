@@ -100,6 +100,7 @@ export const briefingZhCN = {
   unverified: '依赖未经核实的 Agent 提供材料。',
   unverified_short: '未核实',
   evidence: '证据',
+  citation: { inspect: '查看来源：{{title}}', more: '展开其余 {{count}} 个来源', less: '收起来源' },
   context: '项目上下文',
   context_personal: '你明确的关注点',
   delta: {

@@ -22,7 +22,7 @@ vi.mock('../../../core/spaceNav', async () => {
   const { Link, useNavigate } = await import('react-router-dom')
   return { SpaceLink: Link, useSpaceNavigate: useNavigate }
 })
-vi.mock('../../../api/client', () => ({ readingMethodsApi:{entry:vi.fn().mockResolvedValue({can_manage:true,project_id:null})},sourceGoalsApi:{list:vi.fn().mockResolvedValue({goals:[]})},informationDigestsApi: { reading: vi.fn(), readingState: vi.fn(), readingPreference: vi.fn(), setReadingPreference: vi.fn() }, projectsApi: { list: vi.fn().mockResolvedValue({ items: [{ id: 'project-a', name: 'Project A' }] }) }, projectMonitoringApi: { state: vi.fn().mockResolvedValue({ active: null, latest_run: null }) } }))
+vi.mock('../../../api/client', () => ({ readingMethodsApi:{entry:vi.fn().mockResolvedValue({can_manage:true,project_id:null})},sourceGoalsApi:{feedback:vi.fn().mockResolvedValue({applied:true}),list:vi.fn().mockResolvedValue({goals:[]})},informationDigestsApi: { reading: vi.fn(), readingState: vi.fn(), readingPreference: vi.fn(), setReadingPreference: vi.fn() }, projectsApi: { list: vi.fn().mockResolvedValue({ items: [{ id: 'project-a', name: 'Project A' }] }) }, projectMonitoringApi: { state: vi.fn().mockResolvedValue({ active: null, latest_run: null }) } }))
 const item: ReadingItem = { key: 'server-group', source_item_id: 'article', source_item_ids: ['article','copy'], title: 'A retained recommendation', summary: 'Frozen summary', source_uri: null, occurred_at: '2026-01-01T00:00:00Z', access_level: 'full', reader_origin: 'project', read_status: 'unread', dismissed: false, available_at: '2026-01-02T00:00:00Z', contributions: [{ delivery_id: 'first', source_item_id:'article',kind:'project_initial',project_id:'project-a',project_name:'Project A',digest_id:null,digest_date:null,timezone:null,available_at:'2026-01-02T00:00:00Z',position:0,section:null,summary:null,rationale:'Original initial reason' }, { delivery_id:'daily',source_item_id:'copy',kind:'personal_digest',project_id:null,project_name:null,digest_id:'edition',digest_date:'2026-01-03',timezone:'Asia/Shanghai',available_at:'2026-01-04T00:00:00Z',position:0,section:'interest',summary:null,rationale:'Original daily reason' }], material_links:[], topics:[] }
 const page = (items: ReadingItem[] = [item], next_cursor: string | null = null): ReadingPage => ({ items, total: items.length, next_cursor })
 function deferred<T>() { let resolve!: (v:T) => void; const promise = new Promise<T>(r => { resolve = r }); return { promise, resolve } }
@@ -239,7 +239,7 @@ it('keeps many goals in one toolbar destination with following count',async()=>{
  render(ui());await screen.findByRole('link',{name:'Following (27)'});expect(screen.getAllByRole('link',{name:'Following (27)'})).toHaveLength(1);expect(screen.queryByText(/Long objective/)).not.toBeInTheDocument();const tools=screen.getByRole('navigation',{name:'Reading views'});expect(within(tools).getByRole('link',{name:'Following (27)'})).toBeInTheDocument();expect(within(tools).getByRole('link',{name:'Source management'})).toBeInTheDocument();
 });
 
-const topicGoal=(id:string,intent:string,state:Record<string,unknown>,over:Record<string,unknown>={})=>({id,space_id:space,project_id:null,status:'running',intent_json:{intent},compatibility_json:{},follow_state:{intent:'following',phase:'scheduled',...state},...over})
+const topicGoal=(id:string,intent:string,state:Record<string,unknown>,over:Record<string,unknown>={})=>({id,display:{version_id:'v',title:intent,summary:'Research and product updates'},space_id:space,project_id:null,status:'running',intent_json:{intent},compatibility_json:{},follow_state:{intent:'following',phase:'scheduled',...state},...over})
 it('counts confirmed following, including background preparation, but never drafts, paused or manual-save topics',async()=>{
  vi.mocked(sourceGoalsApi.list).mockResolvedValue({goals:[topicGoal('a','Preparing topic',{phase:'preparing'},{status:'draft'}),topicGoal('b','Followed topic',{}),topicGoal('c','Paused topic',{intent:'paused',phase:'stopped'},{status:'paused'}),topicGoal('d','Draft topic',{intent:'unconfirmed',phase:'none'},{status:'preview_ready'}),topicGoal('e','Manual topic',{},{compatibility_json:{execution_mode:'manual'}})]} as never)
  render(ui());expect(await screen.findByRole('link',{name:'Following (2)'})).toBeInTheDocument()
@@ -464,4 +464,19 @@ it('Reading settings can open a scope-only method even with no full articles ava
  render(ui());await screen.findByText(item.title);fireEvent.click(screen.getByRole('button',{name:'Reading settings'}));
  const entry=await screen.findByRole('link',{name:'Reading method'});expect(entry.getAttribute('href')).not.toContain('item_id');
  expect(screen.queryByRole('link',{name:item.title})).not.toBeInTheDocument();
+});
+
+it('keeps relevance and site feedback on an owned topic’s material after leaving its management page',async()=>{
+ userId='owner';vi.mocked(sourceGoalsApi.list).mockResolvedValue({goals:[{id:'goal-owned',space_id:space,project_id:null,owner_user_id:userId,intent_json:{intent:'Agent workbenches'},status:'running'}]} as never);
+ const row={...item,source_uri:'https://papers.test/long/article',topics:[{goal_id:'goal-owned',project_id:null,title:'Agent workbenches',selection_status:'important' as const,selection_reason:'Matches scope',judged_by:'collection_agent' as const,delivery_kind:'unknown_freshness' as const,change_evidence_url:null}]};vi.mocked(informationDigestsApi.reading).mockResolvedValue(page([row]));
+ render(<MemoryRouter initialEntries={['/?view=all&topic=goal-owned&topic_selection=all']}><ReadingWorkspace/></MemoryRouter>);
+ fireEvent.click(await screen.findByText('Why this is here'));const exclude=await screen.findByRole('button',{name:'Not relevant'});fireEvent.click(exclude);fireEvent.click(exclude);
+ await waitFor(()=>expect(sourceGoalsApi.feedback).toHaveBeenCalledTimes(1));expect(sourceGoalsApi.feedback).toHaveBeenCalledWith('goal-owned',expect.objectContaining({kind:'not_relevant',source_item_id:'article'}),expect.objectContaining({spaceId:space}));
+ await waitFor(()=>expect(exclude).toBeEnabled());fireEvent.click(screen.getByRole('button',{name:'Hide this site'}));await waitFor(()=>expect(sourceGoalsApi.feedback).toHaveBeenCalledWith('goal-owned',expect.objectContaining({kind:'exclude_origin',origin:'https://papers.test'}),expect.objectContaining({spaceId:space})));
+ const body=vi.mocked(sourceGoalsApi.feedback).mock.calls[1][1];expect(body.idempotency_key.length).toBeLessThanOrEqual(128);
+ await waitFor(()=>expect(exclude).toBeEnabled());vi.mocked(sourceGoalsApi.feedback).mockRejectedValueOnce(new Error('failed'));fireEvent.click(exclude);expect(await screen.findByRole('alert')).toHaveTextContent('Your feedback was not saved. Nothing was changed.');
+});
+it('does not offer owner feedback when filtering someone else’s topic',async()=>{
+ userId='viewer';vi.mocked(sourceGoalsApi.list).mockResolvedValueOnce({goals:[{id:'goal-other',space_id:space,project_id:null,owner_user_id:'other',intent_json:{intent:'Other topic'},status:'running'}]} as never);
+ render(<MemoryRouter initialEntries={['/?topic=goal-other']}><ReadingWorkspace/></MemoryRouter>);fireEvent.click(await screen.findByText('Why this is here'));expect(screen.queryByRole('button',{name:'Not relevant'})).not.toBeInTheDocument();
 });

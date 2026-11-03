@@ -100,6 +100,21 @@ describe("normalizeReaderDocument", () => {
     expect(doc.content[3]!.attrs).toEqual({ level: 6 });
   });
 
+  it("keeps positive bounded image dimensions without accepting style or invalid sizes", () => {
+    const doc = normalizeReaderDocument({ type: "doc", content: [
+      { type: "image", attrs: { src: "https://e.test/chart.png", width: 1200, height: 800, style: "width:999999px" } },
+      { type: "image", attrs: { src: "https://e.test/icon.svg", width: 20, height: 20 } },
+      ...[0, -1, 1.5, 100001, "100%"].map(value => ({ type: "image", attrs: { src: "https://e.test/x.png", width: value, height: value } })),
+    ] });
+    expect(doc.content[0]!.attrs).toEqual({ src: "https://e.test/chart.png", alt: "", title: null, width: 1200, height: 800 });
+    expect(doc.content[1]!.attrs).toMatchObject({ width: 20, height: 20 });
+    for (const node of doc.content.slice(2)) {
+      expect(node.attrs).not.toHaveProperty("width");
+      expect(node.attrs).not.toHaveProperty("height");
+    }
+    expect(normalizeReaderDocument(doc)).toEqual(doc);
+  });
+
   it("keeps bounded table cell spans", () => {
     const doc = normalizeReaderDocument({ type: "doc", content: [{ type: "table", content: [{ type: "tableRow", content: [
       { type: "tableHeader", attrs: { colspan: 2 }, content: [{ type: "paragraph", content: [{ type: "text", text: "wide" }] }] },

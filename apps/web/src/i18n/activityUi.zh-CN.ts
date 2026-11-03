@@ -49,6 +49,7 @@ export const activityUiZhCN = {
       persona_revised: '已修订',
       persona_created: '已创建',
       mark_reviewed: '标记为已查看',
+      open_reading: '查看阅读更新',
       open_digest: '打开摘要',
       review_source: '查看来源',
       open_sources: '打开来源',

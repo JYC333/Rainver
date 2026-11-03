@@ -63,7 +63,7 @@ function makeServer({ versions = {}, failReadOnce = false, failCreateOnce = fals
     if (path === '/agents/research-agent/conversation-backends') return json({ options: ['opencode-api', 'antigravity-native'].map(runtime_profile_id => ({ runtime_profile_id, usable: true, session_config_options: [] })), session_config: [] })
     if (/^\/sources\/items\/[^/]+\/processing\/start$/.test(path)) { state.prepared = body(); return json({ status: 'queued', run_id: 'research-run' }) }
     if (path === '/plugins/effective') return json({ plugins: {} })
-    if (path === '/sources/goals') return json({ goals: [{ id: 'topic-a', space_id: spaceId, project_id: null, status: 'running', intent_json: { intent: 'Robot learning' }, compatibility_json: {}, follow_state: { intent: 'following', phase: 'scheduled' } }] })
+    if (path === '/sources/goals') return json({ goals: [{ id: 'topic-a', space_id: spaceId, project_id: null, status: 'running', display: { version_id: null, title: 'Robot learning', summary: 'Robot learning updates' }, intent_json: { intent: 'Robot learning' }, compatibility_json: {}, follow_state: { intent: 'following', phase: 'scheduled' } }] })
     if (path === `/spaces/${spaceId}/reading`) {
       const q = url.searchParams.get('q')?.toLowerCase(), topic = url.searchParams.get('topic')
       const all = Array.from({ length: 45 }, (_, n) => listItem(n + 1)).filter(item => url.searchParams.get('view') === 'all' || !state.read.has(item.source_item_id))
@@ -228,7 +228,9 @@ test('Journey 1 — search, topic, keyboard, read, next and back: the list keeps
     await page.locator('.reader-workspace header a').first().click()
     await page.locator('[data-reading-row]').first().waitFor()
     await page.waitForFunction(() => document.activeElement?.getAttribute('data-key') === 'key-3')
-    assert.match(await page.locator('[data-key="key-3"]').innerText(), /Read \d+%/)
+    const progress = page.locator('[data-key="key-3"]').getByRole('progressbar', { name: /Read \d+%/ })
+    await progress.waitFor()
+    assert.ok(Number(await progress.getAttribute('aria-valuenow')) > 30)
   } finally { await page.context().close() }
 })
 
@@ -1137,4 +1139,280 @@ test('Reading execution — choose Antigravity or OpenCode API before rerunning,
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
     } finally {await page.context().close()}
   }
+})
+
+// Use the real Shell and Project chat sidecar: window width is not content width.
+test('Following management stays single-column and adjustments remain in a usable scoped dialog', async () => {
+ const output=process.env.FOLLOWING_LAYOUT_OUT??'/tmp/following-management';mkdirSync(output,{recursive:true})
+ for(const projectId of ['layout-project',null])for(const width of [1280,390,1024,1920])for(const theme of ['light','dark'])for(const locale of ['en','zh-CN']){
+  const base=makeServer(),zh=locale==='zh-CN',writes=[];let readingCalls=0
+  const title='Agent 工作台与控制台 · Agent workbench architecture'
+  const link={...topicLink,project_id:projectId,title,delivery_kind:'unknown_freshness'}
+  const row={...listItem(3),title:'Agent Client Protocol — 开源工作台与上下文工程实践',topics:[link],result_provenance:'agent_provided_unverified'}
+  const follow={intent:'following',phase:'scheduled',health:'partial',collections:{queued:0,running:0},pending_adjustment:false,
+   sources:[{binding_id:'binding-layout',source_connection_id:'source-layout',health:'backoff',status:'cooldown',failures:1,error:'source_native_failed',retry_at:now,last_success_at:now}],
+   results:{items_total:20,important_total:10,changes_total:3,last_outcome:'failed',last_checked_at:now,last_success_at:now,next_check_at:now}}
+  const spec={source_connection_id:'source-layout',source_channel_id:'channel-layout',reason:title,implementation:{kind:'agent_search',query:'Find agent workbenches and architecture evidence / 查找工作台架构资料'},supports_history:false}
+  const plan={title,summary:'Synthetic collection direction',intent_snapshot:{intent:'持续收集相关产品与架构资料 / Collect relevant products and architecture material',includes:['Architecture / 架构','Product releases / 产品发布'],excludes:['Promotional posts / 推广内容']},analysis_brief:'Manual deep reading compares design decisions.',sources:[spec],limitations:[]}
+  const goal={agent_id:'research-agent',runtime_profile_id:'antigravity-native',id:'topic-a',space_id:spaceId,owner_user_id:'user-j',project_id:projectId,intent_json:{intent:title},budget_json:{interval_seconds:86400},compatibility_json:{},status:'running',revision:1,current_version_id:'version-layout',active_version_id:'version-layout',follow_state:follow}
+  const fixture={...base,route:async route=>{
+   const url=new URL(route.request().url()),path=url.pathname.replace('/api/v1','')
+   if(route.request().method()!=='GET'&&/^\/sources\/goal/.test(path))writes.push(path)
+   if(path==='/sources/goals')return route.fulfill({json:{goals:[goal]}})
+   if(path==='/sources/goals/topic-a')return route.fulfill({json:{goal,versions:[{id:'version-layout',revision:1,plan_json:plan}],previews:[],agent_runs:[],native_runs:[{id:'layout-run',status:'failed',version_id:'version-layout'}],changes:[],messages:[],repairs:[],
+    runs:[{id:'audit-layout',binding_id:'binding-layout',status:'failed',started_at:now,result_json:{native_run_id:'layout-run'}}],
+    bindings:[{id:'binding-layout',status:'cooldown',collection_error:'source_native_failed',spec_json:spec,gaps_json:[]}]}})
+   if(path.startsWith('/sources/goal-setup/agent-search/'))return route.fulfill({json:{supported:true}})
+   if(path===`/spaces/${spaceId}/reading`||path===`/spaces/${spaceId}/projects/layout-project/reading`){readingCalls++;return route.fulfill({json:{items:[row],total:1,next_cursor:null}})}
+   if(path==='/projects/layout-project')return route.fulfill({json:{id:projectId,space_id:spaceId,name:'Layout Project',status:'active'}})
+   if(path==='/projects/layout-project/overview')return route.fulfill({json:{attention:[]}})
+   if(path==='/agents/system-assistant')return route.fulfill({json:{assistant:null}})
+   if(path==='/projects/layout-project/mainline-room')return route.fulfill({json:{room:{id:'layout-room',project_id:projectId,space_id:spaceId,title:'Layout Project'}}})
+   if(path==='/rooms/layout-room/conversations')return route.fulfill({json:{items:[],total:0,limit:50,offset:0}})
+   if(path==='/reader/source-items/item-3/records')return route.fulfill({json:{items:[],original:null,next_offset:null}})
+   if(path.endsWith('/reading/items/item-3/favorite'))return route.fulfill({json:{favorite:false}})
+   return base.route(route)
+  }}
+  const page=await newPage(fixture,{width,theme,locale}),tag=`${projectId?'project':'personal'}-${width}-${theme}-${locale}`
+  const topicPath=`/spaces/${spaceId}/${projectId?`projects/${projectId}/sources`:'library/reading'}/goals/topic-a`
+  try{
+   if(!projectId){await page.goto(`${baseUrl}/spaces/${spaceId}/library/reading`);await page.locator('[data-reading-row]').getByRole('link',{name:title,exact:true}).click()}
+   else{await page.goto(`${baseUrl}/spaces/${spaceId}/projects/${projectId}/sources?tab=following`);await page.getByRole('link',{name:title,exact:true}).click()}
+   const management=page.locator('[data-topic-management]');await management.getByRole('heading',{name:zh?'当前关注方向':'Current direction',exact:true}).waitFor()
+   await page.evaluate(()=>document.fonts.ready);await settle(page)
+   const before=readingCalls
+   const source=management.locator('section[aria-labelledby="topic-sources"]');await source.getByText(zh?'来源详情':'Source details',{exact:true}).click();await source.getByText(spec.implementation.query,{exact:true}).waitFor()
+   const blocks=await management.locator(':scope > div').evaluateAll(elements=>elements.filter(el=>el.getBoundingClientRect().height).map(el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,overflow:el.scrollWidth>el.clientWidth+1}}))
+   for(let i=0;i<blocks.length;i++){assert.equal(blocks[i].overflow,false,`${tag}: management overflow`);if(i)assert.ok(blocks[i].top>=blocks[i-1].bottom-1,`${tag}: management is split into columns`)}
+   assert.equal(await management.locator('[data-reader-link]').count(),0)
+   await page.screenshot({path:join(output,`${tag}-page.png`),animations:'disabled'})
+   const adjust=management.getByRole('button',{name:zh?'调整关注':'Adjust following',exact:true});await adjust.click()
+   const dialog=page.getByRole('dialog');await dialog.waitFor()
+   const input=dialog.getByRole('textbox',{name:zh?'主题名称':'Topic title',exact:true})
+   await input.fill('Preserved draft / 保留的草稿')
+   const save=await dialog.getByRole('button',{name:zh?'保存草稿':'Save draft',exact:true}).boundingBox();assert.ok(save&&save.y>=0&&save.y+save.height<=900,`${tag}: save action not visible`)
+   await page.screenshot({path:join(output,`${tag}-edit.png`),animations:'disabled'})
+   await dialog.getByRole('tab',{name:zh?'对话调整':'Discuss changes'}).click()
+   const composer=dialog.locator('textarea:visible').last();await composer.fill('Keep broad relevance discovery / 广泛收集相关资料')
+   const geometry=await dialog.evaluate(el=>{const r=el.getBoundingClientRect(),composer=[...el.querySelectorAll('textarea')].filter(e=>e.getBoundingClientRect().width).at(-1).getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,overflow:el.scrollWidth>el.clientWidth+1,composerTop:composer.top,composerBottom:composer.bottom}})
+   assert.ok(geometry.left>=-1&&geometry.right<=width+1&&geometry.top>=-1&&geometry.bottom<=901,`${tag}: dialog outside viewport`)
+   assert.ok(geometry.composerTop>=geometry.top&&geometry.composerBottom<=geometry.bottom,`${tag}: composer is not visible`)
+   assert.equal(geometry.overflow,false,`${tag}: dialog overflow`)
+   await page.screenshot({path:join(output,`${tag}-discuss.png`),animations:'disabled'})
+   await dialog.getByRole('tab',{name:zh?'直接编辑':'Direct edit'}).click();assert.equal(await input.inputValue(),'Preserved draft / 保留的草稿')
+   await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});await settle(page);assert.ok(await adjust.evaluate(el=>el===document.activeElement),`${tag}: focus not restored`)
+   await adjust.click();await dialog.getByRole('tab',{name:zh?'对话调整':'Discuss changes'}).click();assert.equal(await dialog.locator('textarea:visible').last().inputValue(),'Keep broad relevance discovery / 广泛收集相关资料');await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'})
+   assert.equal(readingCalls,before);assert.deepEqual(writes,[])
+   const materials=management.getByRole('link',{name:zh?'查看相关文章':'View collected articles'});await materials.click();await page.waitForURL(/topic=topic-a/)
+   assert.ok(!projectId||new URL(page.url()).searchParams.get('tab')==='materials')
+   await page.getByRole('link',{name:row.title,exact:true}).waitFor()
+   await page.goto(baseUrl+topicPath);await management.waitFor();assert.equal(base.state.readCalls,0)
+  }catch(error){await page.screenshot({path:join(output,`${tag}-failure.png`),animations:'disabled'});throw error}
+  finally{await page.context().close()}
+ }
+})
+
+test('Following source status refusal keeps the management page and offers explicit channel restoration', async () => {
+ const output='/tmp/following-source-recovery';mkdirSync(output,{recursive:true})
+ for(const width of [1280,390])for(const theme of ['light','dark'])for(const locale of ['en','zh-CN']){
+  const base=makeServer(),zh=locale==='zh-CN',writes=[];let failed=false,restored=false,reads=0
+  const spec={source_connection_id:'source-recovery',source_channel_id:'channel-recovery',reason:'Robotics feed',implementation:{kind:'connector'},supports_history:false}
+  const fixture={...base,route:async route=>{
+   const path=new URL(route.request().url()).pathname.replace('/api/v1',''),method=route.request().method()
+   if(path==='/sources/goals/topic-a/check'){writes.push('check');failed=true;return route.fulfill({status:409,json:{error:'source_goal_source_inactive',message:'source_goal_source_inactive'}})}
+   if(path==='/sources/goals/topic-a/bindings/b/source-confirmation'){
+    if(method==='POST'){const body=route.request().postDataJSON();assert.deepEqual(body,{binding_revision:0,authority:'a'.repeat(64),restore_channel:true});writes.push('restore');restored=true;return route.fulfill({json:{binding_id:'b',binding_revision:1,status:'active'}})}
+    return route.fulfill({json:{binding_id:'b',binding_revision:0,resolvable_by:'you',source_name:'Robotics feed',restore_channel:true,current:{capture_policy:'reference_only',retention_policy:'metadata_only',source_status:'active',channel_status:'paused',uses_credential:false},changed:['channel_status'],related_changes:[],authority:'a'.repeat(64)}})
+   }
+   if(path==='/sources/goals/topic-a'){
+    reads++;return route.fulfill({json:{goal:{id:'topic-a',owner_user_id:'user-j',space_id:spaceId,project_id:null,agent_id:'a',runtime_profile_id:'p',status:'running',active_version_id:'v',current_version_id:'v',intent_json:{intent:'Robot learning'},budget_json:{interval_seconds:86400},
+     follow_state:{intent:'following',phase:failed&&!restored?'waiting_for_permission':'scheduled',health:failed&&!restored?'needs_permission':'ok',collections:{queued:0,running:0},pending_adjustment:false,results:{items_total:20,important_total:10,changes_total:0,last_outcome:'new_items',last_new_items:2,last_checked_at:now,last_success_at:now,next_check_at:now},sources:[{binding_id:'b',source_connection_id:'source-recovery',status:'active',health:failed&&!restored?'needs_permission':'ok',attention:failed&&!restored?'source_changed':null,resolvable_by:'you',error:failed&&!restored?'source_goal_source_inactive':null,failures:0,last_success_at:now,retry_at:null}]}},
+     versions:[{id:'v',revision:1,plan_json:{summary:'Collect robotics updates',sources:[spec],limitations:[]}}],previews:[],agent_runs:[],native_runs:[],messages:[],changes:[],repairs:[],runs:[],bindings:[{id:'b',status:'active',spec_json:spec,gaps_json:[],cursor_json:{}}]}})
+   }
+   return base.route(route)
+  }}
+  const page=await newPage(fixture,{width,theme,locale}),tag=`${width}-${theme}-${locale}`
+  try{
+   await page.goto(`${baseUrl}/spaces/${spaceId}/library/reading/goals/topic-a`)
+   const management=page.locator('[data-topic-management]');await management.getByRole('heading',{name:'Robot learning',exact:true}).waitFor()
+   await management.getByRole('button',{name:zh?'立即检查':'Check now',exact:true}).click()
+   const alert=management.getByRole('alert');await alert.getByText(zh?/连接的来源或频道已暂停/:/A connected source or its channel is paused/).waitFor()
+   assert.ok(reads>=2);assert.equal(await management.getByRole('heading',{name:'Robot learning',exact:true}).count(),1)
+   assert.equal(await alert.getByRole('link').count(),0);assert.equal(await management.getByRole('button',{name:zh?'调整关注':'Adjust following',exact:true}).count(),1)
+   await page.screenshot({path:join(output,`${tag}-status.png`),animations:'disabled'})
+   await management.getByRole('button',{name:zh?'查看变化并继续':'Review change and continue',exact:true}).click()
+   const dialog=page.getByRole('dialog');await dialog.getByRole('heading',{name:zh?'恢复这个来源频道？':'Restore this source channel?',exact:true}).waitFor()
+   await page.evaluate(()=>document.fonts.ready);await settle(page)
+   const action=dialog.getByRole('button',{name:zh?'恢复频道并继续':'Restore channel and continue',exact:true})
+   const bounds=await action.boundingBox();assert.ok(bounds&&bounds.y>=0&&bounds.y+bounds.height<=900)
+   assert.deepEqual(writes,['check']);assert.equal(await dialog.evaluate(el=>el.scrollWidth>el.clientWidth+1),false)
+   await page.screenshot({path:join(output,`${tag}-confirm.png`),animations:'disabled'})
+   await action.click();await dialog.waitFor({state:'hidden'});await management.getByRole('heading',{name:'Robot learning',exact:true}).waitFor()
+   assert.deepEqual(writes,['check','restore'])
+  }finally{await page.context().close()}
+ }
+})
+
+test('Topic analysis waits for authorized settings and refreshes finished rounds without setup flicker',async()=>{
+ const output='/tmp/reading-analysis-status';mkdirSync(output,{recursive:true})
+ for(const width of [390,1280])for(const theme of ['light','dark'])for(const locale of ['en','zh-CN']){
+  const base=makeServer(),zh=locale==='zh-CN';let release,reads=0,writes=0,retryMode=false,retried=false;const held=new Promise(resolve=>{release=resolve})
+  const goal={id:'topic-a',space_id:spaceId,project_id:'layout-project',owner_user_id:'user-j',agent_id:'a',runtime_profile_id:'p',status:'running',active_version_id:'v',current_version_id:'v',intent_json:{intent:'Robot learning'},budget_json:{interval_seconds:86400}}
+  const fixture={...base,route:async route=>{
+   const path=new URL(route.request().url()).pathname.replace('/api/v1','')
+   if(route.request().method()!=='GET')writes++
+   if(path==='/sources/goals')return route.fulfill({json:{goals:[goal]}})
+   if(path===`/spaces/${spaceId}/projects/layout-project/reading-compositions`)return route.fulfill({json:{latest:null,history:[],composition_status:'waiting_for_analysis',rounds:[{id:'r',goal_id:'topic-a',status:'blocked',error_code:'briefing_output_invalid',coverage:{complete:true}}],cross_theme_status:'not_generated'}})
+   if(path==='/sources/goals/topic-a/theme-rounds/retry'){assert.deepEqual(route.request().postDataJSON(),{round_id:'r'});retried=true;return route.fulfill({json:{}})}
+   if(path==='/sources/goals/topic-a/theme-rounds'){reads++;if(reads===1)await held;return route.fulfill({json:{analysis:{enabled:true,version_id:'v'},latest:null,rounds:[{id:'r',version_id:'v',status:retryMode?(retried?'generating':'blocked'):reads===1?'collecting':'complete',error_code:retryMode&&!retried?'briefing_output_invalid':null,coverage:{complete:true}}]}})}
+   if(path==='/sources/goals/topic-a')return route.fulfill({json:{goal,versions:[{id:'v',revision:1,plan_json:{summary:'Current purpose',sources:[],limitations:[]}}],previews:[],agent_runs:[],native_runs:[],messages:[],changes:[],repairs:[],runs:[],bindings:[]}})
+   if(path==='/projects/layout-project')return route.fulfill({json:{id:'layout-project',space_id:spaceId,name:'Layout Project',status:'active'}})
+   if(path==='/projects/layout-project/overview')return route.fulfill({json:{attention:[]}})
+   if(path==='/agents/system-assistant')return route.fulfill({json:{assistant:null}})
+   if(path==='/projects/layout-project/mainline-room')return route.fulfill({json:{room:{id:'layout-room',project_id:'layout-project',space_id:spaceId,title:'Layout Project'}}})
+   if(path==='/rooms/layout-room/conversations')return route.fulfill({json:{items:[],total:0,limit:50,offset:0}})
+   return base.route(route)
+  }}
+  const page=await newPage(fixture,{width,theme,locale}),tag=`${width}-${theme}-${locale}`
+  try{
+   await page.goto(`${baseUrl}/spaces/${spaceId}/projects/layout-project/sources/goals/topic-a`)
+   const details=page.locator('details').filter({has:page.locator('summary',{hasText:zh?'主题整理授权与最近轮次':'Topic analysis and recent rounds'})})
+   await details.locator('summary').click();await details.getByRole('status').waitFor();assert.equal(await details.getByRole('checkbox').count(),0);assert.equal(await details.getByRole('button').count(),0)
+   await page.screenshot({path:join(output,`${tag}-loading.png`),animations:'disabled'});release()
+   await details.getByRole('button',{name:zh?'仅停用分析':'Disable analysis only',exact:true}).waitFor();assert.equal(await details.getByRole('checkbox').count(),0)
+   await details.getByText(zh?'检查完成':'Check complete',{exact:true}).waitFor({timeout:12000})
+   assert.equal(reads,2);assert.equal(writes,0);assert.equal(await details.evaluate(el=>el.scrollWidth>el.clientWidth+1),false)
+   await page.screenshot({path:join(output,`${tag}-complete.png`),animations:'disabled'})
+   retryMode=true;await page.goto(`${baseUrl}/spaces/${spaceId}/projects/layout-project/sources`)
+   await page.getByRole('link',{name:zh?'前往主题处理':'Open topic to resolve',exact:true}).waitFor()
+   assert.equal(await page.getByRole('button',{name:zh?'仅重试组合':'Retry composition only',exact:true}).count(),0)
+   await page.screenshot({path:join(output,`${tag}-overview-blocked.png`),animations:'disabled'})
+   await page.getByRole('link',{name:zh?'前往主题处理':'Open topic to resolve',exact:true}).click()
+   const retry=page.getByRole('button',{name:zh?'重试分析':'Retry analysis',exact:true});await retry.waitFor();await retry.scrollIntoViewIfNeeded()
+   await page.screenshot({path:join(output,`${tag}-topic-blocked.png`),animations:'disabled'})
+   await retry.click();await page.getByText(zh?'整理中':'Generating analysis',{exact:true}).waitFor();assert.equal(writes,1)
+
+  }finally{release();await page.context().close()}
+ }
+})
+
+test('Composition retries only its own failure and reports queued and completed checks',async()=>{
+ const output='/tmp/reading-analysis-status';mkdirSync(output,{recursive:true})
+ for(const [width,theme,locale] of [[1280,'light','en'],[390,'dark','zh-CN']]){
+  const base=makeServer(),zh=locale==='zh-CN';let writes=0,afterRetry=0
+  const fixture={...base,route:async route=>{
+   const path=new URL(route.request().url()).pathname.replace('/api/v1','')
+   if(path===`/spaces/${spaceId}/projects/layout-project/reading-compositions/retry`){writes++;return route.fulfill({json:{status:'queued'}})}
+   if(path===`/spaces/${spaceId}/projects/layout-project/reading-compositions`)return route.fulfill({json:{latest:null,history:[],composition_status:!writes?'failed':++afterRetry===1?'queued':'complete',rounds:[{id:'r',goal_id:'topic-a',status:'complete',error_code:null,coverage:{complete:true}}],cross_theme_status:'not_generated'}})
+   if(path==='/projects/layout-project')return route.fulfill({json:{id:'layout-project',space_id:spaceId,name:'Layout Project',status:'active',current_user_can_write:true}})
+   if(path==='/projects/layout-project/overview')return route.fulfill({json:{attention:[]}})
+   if(path==='/sources/goals')return route.fulfill({json:{goals:[]}})
+   if(path==='/agents/system-assistant')return route.fulfill({json:{assistant:null}})
+   if(path==='/projects/layout-project/mainline-room')return route.fulfill({json:{room:{id:'layout-room',project_id:'layout-project',space_id:spaceId,title:'Layout Project'}}})
+   if(path==='/rooms/layout-room/conversations')return route.fulfill({json:{items:[],total:0,limit:50,offset:0}})
+   assert.equal(route.request().method(),'GET','composition retry must not start another operation');return base.route(route)
+  }}
+  const page=await newPage(fixture,{width,theme,locale}),tag=`${width}-${theme}-${locale}`
+  try{
+   await page.goto(`${baseUrl}/spaces/${spaceId}/projects/layout-project/sources`)
+   const retry=page.getByRole('button',{name:zh?'仅重试组合':'Retry composition only',exact:true});await retry.waitFor();await retry.scrollIntoViewIfNeeded()
+   await page.screenshot({path:join(output,`${tag}-composition-failed.png`),animations:'disabled'})
+   await retry.click();await page.getByText(zh?'组合任务已排队。':'Composition is queued.',{exact:true}).waitFor();assert.equal(await retry.count(),0)
+   await page.getByText(zh?'组合检查已完成。':'Composition check complete.',{exact:true}).waitFor({timeout:12000});assert.equal(writes,1)
+  }finally{await page.context().close()}
+ }
+})
+
+test('Analysis without a result keeps its existing retry stable across collapse and revalidation',async()=>{
+ const output='/tmp/analysis-state-stability';mkdirSync(output,{recursive:true})
+ for(const width of [390,1280])for(const theme of ['light','dark'])for(const locale of ['en','zh-CN']){
+  const base=makeServer(),zh=locale==='zh-CN';let release,reads=0,writes=0;const held=new Promise(resolve=>{release=resolve})
+  const goal={id:'topic-a',space_id:spaceId,project_id:'layout-project',owner_user_id:'user-j',agent_id:'a',runtime_profile_id:'p',status:'running',active_version_id:'v',current_version_id:'v',intent_json:{intent:'Robot learning'},budget_json:{interval_seconds:86400}}
+  const fixture={...base,route:async route=>{
+   const path=new URL(route.request().url()).pathname.replace('/api/v1','');if(route.request().method()!=='GET')writes++
+   if(path==='/sources/goals/topic-a/theme-rounds'){reads++;if(reads===2)await held;return route.fulfill({json:{analysis:{enabled:true,version_id:'v'},latest:null,rounds:[{id:'r',version_id:'v',status:'awaiting_analysis',error_code:null,coverage:{complete:true},briefing:null,topic:null}]}})}
+   if(path==='/sources/goals/topic-a')return route.fulfill({json:{goal,versions:[{id:'v',revision:1,plan_json:{summary:'Current purpose',sources:[],limitations:[]}}],previews:[],agent_runs:[],native_runs:[],messages:[],changes:[],repairs:[],runs:[],bindings:[]}})
+   if(path==='/sources/goals')return route.fulfill({json:{goals:[goal]}})
+   if(path===`/spaces/${spaceId}/projects/layout-project/reading-compositions`)return route.fulfill({json:{latest:null,history:[],composition_status:'waiting_for_analysis',rounds:[{id:'r',goal_id:'topic-a',status:'awaiting_analysis',error_code:null,coverage:{complete:true}}],cross_theme_status:'not_generated'}})
+   if(path==='/projects/layout-project')return route.fulfill({json:{id:'layout-project',space_id:spaceId,name:'Layout Project',status:'active'}})
+   if(path==='/projects/layout-project/overview')return route.fulfill({json:{attention:[]}})
+   if(path==='/agents/system-assistant')return route.fulfill({json:{assistant:null}})
+   if(path==='/projects/layout-project/mainline-room')return route.fulfill({json:{room:{id:'layout-room',project_id:'layout-project',space_id:spaceId,title:'Layout Project'}}})
+   if(path==='/rooms/layout-room/conversations')return route.fulfill({json:{items:[],total:0,limit:50,offset:0}})
+   return base.route(route)
+  }}
+  const page=await newPage(fixture,{width,theme,locale}),tag=`${width}-${theme}-${locale}`
+  try{
+   await page.goto(`${baseUrl}/spaces/${spaceId}/projects/layout-project/sources`)
+   await page.getByText(zh?'收集已完成，当前没有分析结果。':'Collection is complete. No analysis result is currently available.',{exact:true}).waitFor()
+   assert.equal(await page.getByText(zh?'受阻':'Blocked',{exact:true}).count(),0)
+   await page.screenshot({path:join(output,`${tag}-overview.png`),animations:'disabled'})
+   await page.getByRole('link',{name:zh?'前往主题处理':'Open topic to resolve',exact:true}).click()
+   const panel=page.locator('#topic-analysis'),summary=panel.locator('summary'),retry=panel.getByRole('button',{name:zh?'重试分析':'Retry analysis',exact:true})
+   await retry.waitFor();const original=await retry.elementHandle();await panel.getByText(zh?'等待分析':'Awaiting analysis',{exact:true}).waitFor()
+   await summary.click();assert.ok(await original.evaluate(el=>el.isConnected));await summary.click()
+   await panel.getByRole('status').waitFor();assert.equal(await retry.evaluate((el,prior)=>el===prior,original),true);assert.ok(await retry.isDisabled())
+   assert.equal(await panel.getByText(zh?'受阻':'Blocked',{exact:true}).count(),0)
+   await retry.evaluate(el=>el.scrollIntoView({block:'center',behavior:'instant'}));await page.screenshot({path:join(output,`${tag}-revalidating.png`),animations:'disabled'})
+   release();await page.waitForFunction(el=>!el.disabled,original);assert.equal(reads,2);assert.equal(writes,0)
+   await page.screenshot({path:join(output,`${tag}-ready.png`),animations:'disabled'})
+  }finally{release();await page.context().close()}
+ }
+})
+
+test('Overview sections stay concise and full analyses return to the same topic and scroll position',async()=>{
+ const output='/tmp/overview-sections';mkdirSync(output,{recursive:true})
+ for(const width of [390,1280])for(const theme of ['light','dark'])for(const locale of ['en','zh-CN']){
+  const base=makeServer(),zh=locale==='zh-CN';let writes=0;const exports=[]
+  const titles=['Agent 工作台 / Agent workbenches','研究工具 / Research tools','上下文工程 / Context engineering','待分析主题 / Pending topic']
+  const goals=['a','b','c','d'].map((id,i)=>({id:'topic-'+id,project_id:'layout-project',owner_user_id:'user-j',status:'running',display:{version_id:'version-'+id,title:titles[i],summary:'Confirmed purpose'},intent_json:{intent:'RAW conversation '+titles[i]}}))
+  const sections=goals.slice(0,3).map((g,n)=>({goal_id:g.id,published_at:now,purpose_text:'Frozen purpose for '+g.id,visibility:'visible',briefing:{id:'brief-'+n,status:'ready',scope_type:'project',visibility:'visible',comparison:'baseline',outcome:'briefing',context_outdated:false,hidden_units:0,topic:{quick_line:'REDUNDANT OVERVIEW TEXT',summary:'已有产品开始将任务、资料和执行记录整合到同一个工作区。The retained evidence supports a comparison of workspace design; production reliability remains unmeasured.',stop_reason:'Synthetic evidence only.'},overview:{text:'Complete retained analysis '+g.id,refs:['S1']},
+   highlights:[0,1,2,3].map(index=>({index,title:['工作区导航 / Workspace navigation','执行可见性 / Execution visibility','资料关联 / Material links','Hidden fourth finding'][index],what_changed:'这项发现来自保留的产品资料，需要结合实际使用场景判断。This finding comes from retained product material; its effect on this Project is still uncertain.',refs:['S1'],rests_on_unverified:index===0,statements:[],novelty:'baseline',importance:'high',source_domains:1,why_it_matters:'Relates to the configured purpose.',impact:{assessment:'insufficient_context',text:'No production measurements.',context_refs:[]},suggested_action:'watch'})),
+   evidence:[{key:'S1',title:'Exact retained source',source_item_id:'item-3',original_snapshot_id:'original-v1',source_domain:'example.test',delta_class:'unknown_time',lenses:[{kind:'following',label:'OLD RAW CONVERSATION — retry again'}],unverified:true}],context:[],open_questions:[],coverage:{included:3,complete:true}}}))
+  const today=now.slice(0,10),previous=new Date(Date.parse(now)-86400000).toISOString().slice(0,10)
+  const value={date:today,today,timezone:'UTC',latest:{id:'edition-1',edition_date:today,timezone:'UTC',day_revision:2,revision:2,created_at:now,sections},history:[{id:'edition-early',revision:1,day_revision:1,created_at:now,edition_date:today}],composition_status:'waiting_for_analysis',rounds:[{goal_id:'topic-b',status:'blocked',error_code:'briefing_output_invalid',coverage:{complete:true}},{goal_id:'topic-d',status:'awaiting_analysis',error_code:null,coverage:{complete:true}}]}
+  const fixture={...base,route:async route=>{
+   const path=new URL(route.request().url()).pathname.replace('/api/v1','');if(route.request().method()!=='GET')writes++
+   if(path.endsWith('/reading-compositions/history')){const cursor=new URL(route.request().url()).searchParams.get('cursor');return route.fulfill({json:{items:cursor?[{id:'previous-day',kind:'edition',date:previous,revision:1,created_at:now}]:[{id:'edition-early',kind:'edition',date:today,revision:1,created_at:now}],next_cursor:cursor?null:'older'}})}
+   if(path.startsWith(`/spaces/${spaceId}/projects/layout-project/reading-compositions`)){if(path.includes('/export'))exports.push(path);const older=path.includes('previous-day'),early=path.includes('edition-early');return route.fulfill({json:older||early?{...value,date:older?previous:today,latest:{...value.latest,id:older?'previous-day':'edition-early',edition_date:older?previous:today,day_revision:1,sections:sections.slice(0,1)},history:[{id:older?'previous-day':'edition-early',day_revision:1,created_at:now}],rounds:[]}:value})}
+   if(path==='/sources/goals')return route.fulfill({json:{goals}})
+   if(path==='/projects/layout-project')return route.fulfill({json:{id:'layout-project',space_id:spaceId,name:'Layout Project',status:'active'}})
+   if(path==='/projects/layout-project/overview')return route.fulfill({json:{attention:[]}})
+   if(path==='/agents/system-assistant')return route.fulfill({json:{assistant:null}})
+   if(path==='/projects/layout-project/mainline-room')return route.fulfill({json:{room:{id:'layout-room',project_id:'layout-project',space_id:spaceId,title:'Layout Project'}}})
+   if(path==='/rooms/layout-room/conversations')return route.fulfill({json:{items:[],total:0,limit:50,offset:0}})
+   return base.route(route)
+  }}
+  const page=await newPage(fixture,{width,theme,locale}),tag=`${width}-${theme}-${locale}`
+  try{
+   await page.goto(`${baseUrl}/spaces/${spaceId}/projects/layout-project/sources`)
+   const overview=page.locator('[data-reading-overview]'),topics=overview.locator('[data-topic-overview]'),entry=topics.nth(1).getByRole('link',{name:zh?'阅读完整分析':'Read full analysis',exact:true})
+   await entry.waitFor();await page.evaluate(()=>document.fonts.ready);await settle(page)
+   assert.equal(await topics.count(),4);assert.equal(await overview.locator('details').count(),0);assert.equal(await overview.getByText('REDUNDANT OVERVIEW TEXT').count(),0);assert.equal(await overview.getByText('Hidden fourth finding').count(),0)
+   for(const g of goals)assert.equal(await topics.getByRole('heading',{name:g.display.title,exact:true}).count(),1)
+   await page.screenshot({path:join(output,`${tag}-overview.png`),animations:'disabled',fullPage:true})
+   await entry.scrollIntoViewIfNeeded();await entry.focus()
+   const scrollers=await entry.evaluate(el=>{const r=[];for(let p=el.parentElement;p;p=p.parentElement)if(/auto|scroll/.test(getComputedStyle(p).overflowY))r.push({selector:p.hasAttribute('data-project-area-content')?'[data-project-area-content]':'.app-safe-shell > div > main',top:p.scrollTop});return r})
+   await entry.click();const report=page.locator('[data-topic-analysis-reader]');await report.getByText('Complete retained analysis topic-b').waitFor()
+   assert.equal(new URL(page.url()).searchParams.get('analysisVersion'),'edition-1');assert.ok(exports.some(path=>path.endsWith('/edition-1/export')))
+   assert.equal(await overview.isVisible(),false);assert.equal(await report.getByRole('heading',{name:goals[1].display.title,exact:true}).count(),1)
+   assert.equal(await report.getByText('Hidden fourth finding',{exact:true}).count(),1)
+   assert.equal(await report.getByText(/OLD RAW CONVERSATION/).count(),0)
+   const evidence=report.getByRole('region',{name:zh?'证据':'Evidence',exact:true})
+   assert.equal(await evidence.getByText(goals[1].display.title,{exact:false}).count(),1)
+   const evidenceLink=report.getByRole('link',{name:'Exact retained source',exact:true});await evidenceLink.scrollIntoViewIfNeeded()
+   await page.screenshot({path:join(output,`${tag}-evidence.png`),animations:'disabled'})
+   await page.screenshot({path:join(output,`${tag}-full-analysis.png`),animations:'disabled',fullPage:true})
+   await report.getByRole('link',{name:zh?'返回总整理':'Back to overview',exact:true}).click();await overview.waitFor();await settle(page)
+   assert.equal(await entry.evaluate(el=>el===document.activeElement),true)
+   for(const s of scrollers){const actual=await page.locator(s.selector).first().evaluate(el=>el.scrollTop);assert.ok(Math.abs(actual-s.top)<3,`${tag}: return scroll drift ${actual} / ${s.top}`)}
+   await entry.click();await report.waitFor();await page.goBack();await overview.waitFor();assert.equal(await entry.evaluate(el=>el===document.activeElement),true)
+   const source=topics.first().getByRole('link',{name:zh?'查看来源：Exact retained source':'View source: Exact retained source',exact:true}).first();assert.ok(new URL(await source.getAttribute('href'),baseUrl).searchParams.get('version')==='original-v1')
+   await overview.getByRole('button',{name:zh?'历史与归档':'History & archive',exact:true}).click();await page.getByRole('dialog').getByRole('link').waitFor();await page.screenshot({path:join(output,`${tag}-daily-history.png`),animations:'disabled'})
+   await page.getByRole('dialog').getByRole('link').click();await overview.getByText(zh?/历史版本 · 只读/:/Historical · read only/).waitFor();assert.equal(await topics.count(),1)
+   await overview.getByRole('button',{name:zh?'历史与归档':'History & archive',exact:true}).click();await page.getByRole('button',{name:zh?'更早记录':'Older records',exact:true}).click();const earlier=page.getByRole('dialog').getByRole('link');await earlier.waitFor();await earlier.click();await settle(page);assert.equal(new URL(page.url()).searchParams.get('date'),previous);assert.equal(await topics.count(),1);assert.equal(await overview.getByText(/did not pass format/).count(),0)
+   await page.screenshot({path:join(output,`${tag}-previous-day.png`),animations:'disabled',fullPage:true})
+   assert.equal(writes,0);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
+  }finally{await page.context().close()}
+ }
 })

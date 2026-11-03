@@ -49,6 +49,7 @@ export const activityUiEn = {
       persona_revised: 'revised',
       persona_created: 'created',
       mark_reviewed: 'Mark reviewed',
+      open_reading: 'Open reading',
       open_digest: 'Open Digest',
       review_source: 'Review Source',
       open_sources: 'Open Sources',

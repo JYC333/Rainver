@@ -29,7 +29,7 @@ export async function editSourceGoal(db:Pool,config:ServerConfig,identity:SpaceU
    sources.push(query&&spec.implementation.kind==='agent_search'&&query!==spec.implementation.query?await bindNativeSource(tx,config,identity,g,{reason:spec.reason,supports_history:false,implementation:{kind:'agent_search',query}}):spec);
   }
   const intent={intent:input.intent,includes:input.includes,excludes:input.excludes};
-  const candidate=SourceGoalPlanSchema.parse({...plan,title:input.title,summary:input.analysis_brief,analysis_brief:input.analysis_brief,intent_snapshot:intent,filters:{...plan.filters,includes:input.includes,excludes:input.excludes},sources});
+  const candidate=SourceGoalPlanSchema.parse({...plan,title:input.title,summary:input.summary,analysis_brief:input.analysis_brief,intent_snapshot:intent,filters:{...plan.filters,includes:input.includes,excludes:input.excludes},sources});
   const version=randomUUID();
   await tx.query(`INSERT INTO source_goal_versions(id,space_id,goal_id,revision,plan_json,created_by_user_id,adjustment_cycle) VALUES($1,$2,$3,$4,$5,$6,$7)`,[version,g.space_id,id,g.revision+1,candidate,identity.userId,g.adjustment_cycle??0]);
   // Freeze old legacy intent before the editable intent advances. The active

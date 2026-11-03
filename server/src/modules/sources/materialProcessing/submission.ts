@@ -48,6 +48,7 @@ export async function submitMaterialResults(config:ServerConfig,run:RunRecord,ra
   const parsed=parsedRaw;
   if(!parsed.success)return {issues:parsed.error.issues.map(i=>({field:i.path.join('.'),message:i.message}))};
   const input=canonical!;
+  if(!itemContext&&!input.coverage.discovery)return {issues:[{field:'coverage.discovery',message:'Following collection requires search angles, actual queries/outcomes, remaining_gaps and stop_reason; report tool failure honestly when search could not run'}]};
   const policy=source?agentReadingPolicy(source):{summary:true,content:true};
   if(itemContext&&input.status==='succeeded'&&(input.items.length!==1||input.items[0].url!==(await tx.query('SELECT source_uri FROM source_items WHERE id=$1 AND space_id=$2',[itemContext.item_id,current.space_id])).rows[0]?.source_uri))return {issues:[{field:'items',message:'Submit exactly the original item URL; no replacements'}]};
   const denied=input.items.flatMap((item,index)=>[...(!policy.summary&&item.summary?[{field:`items.${index}.summary`,message:'Source policy is metadata-only; use null'}]:[]),...(!policy.content&&item.content?[{field:`items.${index}.content`,message:'Source policy does not allow retained reading content; use null'}]:[])]);if(denied.length)return {issues:denied};

@@ -49,6 +49,7 @@ authorize restyling unrelated pages.
 | Dropdown | `components/ui/select.tsx` | Use `options`, `value`, `onChange`, accessible label and disabled state; no bare `<select>` |
 | Single/multiline entry | shared `Input` / `Textarea` | Retain token surfaces, border, focus and disabled behaviour |
 | Card/dialog/tabs | shared `Card`, dialog and tabs | Keep shared surface, selection, focus and keyboard conventions |
+| Interactive floating detail | `components/ui/popover.tsx` | Use the theme-token Radix surface for source/context cards; keep collision handling and dismissal with Radix. Tooltips remain for noninteractive hints |
 
 Plain underlined links remain suitable inside prose, citations and back navigation.
 They are not substitutes for a compact card action beside styled buttons. Native

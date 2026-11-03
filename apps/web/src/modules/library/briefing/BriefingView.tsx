@@ -1,24 +1,27 @@
-import { AlertTriangle, ExternalLink } from 'lucide-react'
+import { AlertTriangle } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import type { Briefing, BriefingEvidence, BriefingHighlight } from '@rainver/protocol'
 import { Card } from '../../../components/ui/card'
 import { useAppTranslation } from '../../../i18n'
+import { BriefingText } from './BriefingCitations'
 
 /**
  * One briefing as the server projected it for this reader. Scope-agnostic:
  * the caller decides where evidence opens. Every visible sentence carries its
  * citations; withheld and hidden parts are stated, never silently dropped.
  */
-export function BriefingView({ briefing, evidenceHref, highlightActions }: {
+export function BriefingView({ briefing, evidenceHref, highlightActions, evidenceScopeTitle }: {
   briefing: Briefing
   evidenceHref: (evidence: BriefingEvidence) => string
+  /** A single-topic surface supplies its authorized structured short title. */
+  evidenceScopeTitle?: string
   /** Explicit actions on one highlight (follow-up, adoption), when the surface offers them. */
   highlightActions?: (highlight: Briefing['highlights'][number]) => React.ReactNode
 }) {
   const { t } = useAppTranslation()
   const evidence = new Map(briefing.evidence.map(entry => [entry.key, entry]))
   const context = new Map(briefing.context.map(entry => [entry.key, entry]))
-  const refs = (keys: string[]) => <Refs keys={keys} evidence={evidence} context={context} evidenceHref={evidenceHref} />
+  const text = (value: string, keys: string[] = []) => <BriefingText text={value} keys={keys} evidence={evidence} context={context} evidenceHref={evidenceHref}/>
 
   return (
     <div className="space-y-4" data-testid="briefing-view">
@@ -29,20 +32,20 @@ export function BriefingView({ briefing, evidenceHref, highlightActions }: {
       {briefing.overview ? (
         <section aria-label={t('briefing.overview')} className="space-y-1">
           <h3 className="text-sm font-semibold">{t('briefing.overview')}</h3>
-          <p className="text-sm leading-relaxed break-words">{briefing.overview.text} {refs(briefing.overview.refs)}</p>
+          <p className="text-sm leading-relaxed break-words">{text(briefing.overview.text, briefing.overview.refs)}</p>
         </section>
       ) : null}
       {briefing.highlights.length > 0 ? (
         <section aria-label={t('briefing.highlights')} className="space-y-3">
           <h3 className="text-sm font-semibold">{t('briefing.highlights')}</h3>
-          {briefing.highlights.map(highlight => <HighlightCard key={`${briefing.id}:${highlight.index}`} highlight={highlight} refs={refs} personal={briefing.scope_type === 'personal'} actions={highlightActions?.(highlight)} />)}
+          {briefing.highlights.map(highlight => <HighlightCard key={`${briefing.id}:${highlight.index}`} highlight={highlight} text={text} personal={briefing.scope_type === 'personal'} actions={highlightActions?.(highlight)} />)}
         </section>
       ) : null}
       {briefing.open_questions.length > 0 ? (
         <section aria-label={t('briefing.open_questions')} className="space-y-1">
           <h3 className="text-sm font-semibold">{t('briefing.open_questions')}</h3>
           <ul className="list-disc space-y-1 pl-5 text-sm">
-            {briefing.open_questions.map((question, index) => <li key={index} className="break-words">{question.text} {refs(question.refs)}</li>)}
+            {briefing.open_questions.map((question, index) => <li key={index} className="break-words">{text(question.text, question.refs)}</li>)}
           </ul>
         </section>
       ) : null}
@@ -52,10 +55,10 @@ export function BriefingView({ briefing, evidenceHref, highlightActions }: {
           <ol className="space-y-1 text-sm">
             {briefing.evidence.map(entry => (
               <li key={entry.key} id={`briefing-ref-${entry.key}`} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                <span className="font-mono text-xs text-muted-foreground">[{entry.key}]</span>
+                <span className="text-xs text-muted-foreground">{entry.key.replace(/^S/, '')}.</span>
                 <Link className="min-w-0 break-words underline-offset-2 hover:underline" to={evidenceHref(entry)}>{entry.title}</Link>
                 <span className="text-xs text-muted-foreground">
-                  {[entry.source_domain, t(`briefing.delta.${entry.delta_class}`), ...entry.lenses.map(lens => lens.label)].filter(Boolean).join(' · ')}
+                  {[entry.source_domain, t(`briefing.delta.${entry.delta_class}`), ...(evidenceScopeTitle ? [evidenceScopeTitle] : entry.lenses.map(lens => lens.label))].filter(Boolean).join(' · ')}
                 </span>
                 {entry.unverified ? <span className="rounded border border-amber-500/50 px-1 text-xs text-amber-700 dark:text-amber-400">{t('briefing.unverified_short')}</span> : null}
               </li>
@@ -77,54 +80,36 @@ export function BriefingView({ briefing, evidenceHref, highlightActions }: {
   )
 }
 
-function HighlightCard({ highlight, refs, personal, actions }: { highlight: BriefingHighlight; refs: (keys: string[]) => React.ReactNode; personal: boolean; actions?: React.ReactNode }) {
+function HighlightCard({ highlight, text, personal, actions }: { highlight: BriefingHighlight; text: (value: string, keys?: string[]) => React.ReactNode; personal: boolean; actions?: React.ReactNode }) {
   const { t } = useAppTranslation()
   return (
     <Card className="space-y-2 p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <h4 className="min-w-0 break-words text-sm font-medium">{highlight.title}</h4>
+        <h4 className="min-w-0 break-words text-sm font-medium">{text(highlight.title)}</h4>
         <Tag>{t(`briefing.novelty.${highlight.novelty}`)}</Tag>
         <Tag>{t(`briefing.importance.${highlight.importance}`)}</Tag>
         <span className="text-xs text-muted-foreground">{t('briefing.sources', { count: highlight.source_domains })}</span>
       </div>
-      <p className="text-sm break-words">{highlight.what_changed} {refs(highlight.refs)}</p>
+      <p className="text-sm break-words">{text(highlight.what_changed, highlight.refs)}</p>
       {highlight.rests_on_unverified ? <Notice>{t('briefing.unverified')}</Notice> : null}
       <ul className="space-y-1 text-sm">
         {highlight.statements.map((statement, index) => (
           <li key={index} className="break-words">
             <span className="mr-1 text-xs font-medium uppercase text-muted-foreground">{t(`briefing.statement.${statement.kind}`)}</span>
-            {statement.text} {refs(statement.refs)}
+            {text(statement.text, statement.refs)}
           </li>
         ))}
       </ul>
-      <p className="text-sm break-words"><span className="font-medium">{t('briefing.why')}: </span>{highlight.why_it_matters}</p>
+      <p className="text-sm break-words"><span className="font-medium">{t('briefing.why')}: </span>{text(highlight.why_it_matters)}</p>
       <p className="text-sm break-words">
         <span className="font-medium">{t(personal ? 'briefing.impact_personal' : 'briefing.impact')}: </span>
         {highlight.impact.assessment === 'insufficient_context' ? <span className="text-muted-foreground">{t('briefing.impact_insufficient')} </span> : null}
-        {highlight.impact.text} {refs(highlight.impact.context_refs)}
+        {text(highlight.impact.text, highlight.impact.context_refs)}
       </p>
-      {highlight.contradictions ? <p className="text-sm break-words"><span className="font-medium">{t('briefing.contradictions')}: </span>{highlight.contradictions}</p> : null}
+      {highlight.contradictions ? <p className="text-sm break-words"><span className="font-medium">{t('briefing.contradictions')}: </span>{text(highlight.contradictions)}</p> : null}
       <p className="text-xs text-muted-foreground">{t(`briefing.action.${highlight.suggested_action}`)}</p>
       {actions}
     </Card>
-  )
-}
-
-function Refs({ keys, evidence, context, evidenceHref }: {
-  keys: string[]
-  evidence: Map<string, BriefingEvidence>
-  context: Map<string, Briefing['context'][number]>
-  evidenceHref: (evidence: BriefingEvidence) => string
-}) {
-  return (
-    <span className="whitespace-nowrap text-xs">
-      {keys.map(key => {
-        const item = evidence.get(key)
-        if (item) return <Link key={key} to={evidenceHref(item)} title={item.title} className="mr-0.5 inline-flex items-center font-mono text-primary underline-offset-2 hover:underline">[{key}]<ExternalLink className="ml-0.5 size-3" aria-hidden /></Link>
-        const entry = context.get(key)
-        return <a key={key} href={`#briefing-ref-${key}`} title={entry?.label} className="mr-0.5 font-mono text-muted-foreground">[{key}]</a>
-      })}
-    </span>
   )
 }
 

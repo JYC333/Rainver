@@ -113,6 +113,15 @@ and person, with a generic title and no Project on the row. They open the
 Project's Sources digest tab or `/library/reading`, where the briefing is
 re-authorized.
 
+Following collection commits a private `following_updates` pointer for its
+owner only when new topic memberships or newly delivered cited changes were
+committed. There is one pointer per Following/person, shared with meaningful
+published theme deltas for the current theme audience. Empty checks, collection
+replays and unchanged results do not re-surface a handled pointer. The pointer
+contains navigation/provenance only, never article or theme text; it opens the
+personal or Project Following page, which re-authorizes access. Review/archive
+clears the notification independently of article/change read state and Run history.
+
 Source recommendation rows are also pointers only: they open
 `/sources?view=pending&connection_id=...`. Reviewing or archiving the pointer
 does not change `source_connection_user_subscriptions`; Follow, Dismiss, Mute,
