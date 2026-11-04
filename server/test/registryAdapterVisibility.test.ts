@@ -5,7 +5,7 @@ import { setDynamicRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/dy
 import { acpAgentRuntimeKey, acpAgentRuntimeAdapterSpec } from "../src/modules/acpAgents/service.js";
 import { getRuntimeAdapterSpec } from "../src/modules/runtimeAdapters/specs.js";
 import { acpRuntimeProbes, ownCopyCandidates } from "../src/modules/hosts/runtimeProbes.js";
-import { MAX_REGISTRY_ID_LENGTH, parseEntry } from "../src/modules/acpAgents/registry.js";
+import { MAX_REGISTRY_ID_LENGTH, parseEntry, setResolvedRegistryEntries } from "../src/modules/acpAgents/registry.js";
 import { buildUnboundRuntimeProfile } from "../src/modules/runs/remoteProviderBinding.js";
 import { RuntimeKeySchema } from "@rainver/protocol";
 import type { EnabledAcpAgent } from "../src/modules/acpAgents/settings.js";
@@ -30,7 +30,10 @@ const CURSOR = {
 } satisfies EnabledAcpAgent;
 
 describe("a registry ACP agent is a runtime adapter everywhere", () => {
-  afterEach(() => setDynamicRuntimeAdapterSpecs([]));
+  afterEach(() => {
+    setDynamicRuntimeAdapterSpecs([]);
+    setResolvedRegistryEntries([]);
+  });
 
   it("drops a registry entry whose id would not fit the wire's runtime_key", () => {
     const entry = (id: string) => ({
@@ -84,12 +87,17 @@ describe("a registry ACP agent is a runtime adapter everywhere", () => {
     const uvx = { ...CURSOR, id: "pyagent", version: "0.9.0", distribution: { kind: "uvx", package: "pyagent", args: [], env: {} } } satisfies EnabledAcpAgent;
     const npx = { ...CURSOR, id: "cursor", version: "2026.09.02", distribution: { kind: "npx", package: "cursor@2026.09.01", args: [], env: {} } } satisfies EnabledAcpAgent;
     setDynamicRuntimeAdapterSpecs([binary, uvx, npx].map(acpAgentRuntimeAdapterSpec));
+    setResolvedRegistryEntries([binary, uvx, npx]);
     const probes = acpRuntimeProbes();
     const probe = (key: string) => probes.find((candidate) => candidate.runtime_key === key);
     expect(probe("acp_antigravity_acp")).toMatchObject({ version: "1.4.3", distribution: { kind: "binary" } });
     expect(probe("acp_pyagent")).toMatchObject({ version: "0.9.0", distribution: { kind: "uvx" } });
-    // The entry's version wins over the package string's: it is what the snapshot was taken at.
+    // The resolved entry's version wins over the package string's.
     expect(probe("acp_cursor")).toMatchObject({ version: "2026.09.02" });
+    // Release refreshes update probes without re-enabling the adapter.
+    setResolvedRegistryEntries([{ ...binary, version: "1.4.5" }, uvx, npx]);
+    expect(acpRuntimeProbes().find(candidate => candidate.runtime_key === "acp_antigravity_acp"))
+      .toMatchObject({ version: "1.4.5", distribution: { kind: "binary" } });
   });
 
   it("tells the daemon where a registry agent's own copy might be, from its distribution", () => {
@@ -114,6 +122,7 @@ describe("a registry ACP agent is a runtime adapter everywhere", () => {
 
     // A registry agent's probe carries them; a builtin names its PATH binary instead.
     setDynamicRuntimeAdapterSpecs([acpAgentRuntimeAdapterSpec(CURSOR)]);
+    setResolvedRegistryEntries([CURSOR]);
     const probes = acpRuntimeProbes();
     expect(probes.find((probe) => probe.runtime_key === "acp_cursor")).toMatchObject({
       runtime: null,

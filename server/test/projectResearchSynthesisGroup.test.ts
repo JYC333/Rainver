@@ -1,3 +1,4 @@
+import { createBoundResearchOperation } from "../src/modules/projectResearch/researchProblemCalls.js";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -393,7 +394,7 @@ describe("projectResearchSynthesisRetryDb", () => {
   const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const PROJECT = "55555555-5555-4555-8555-555555555555";
   const WORKFLOW = "66666666-6666-4666-8666-666666666666";
-  const OPERATION = "77777777-7777-4777-8777-777777777777";
+  let OPERATION = "77777777-7777-4777-8777-777777777777";
   const AGENT = "99999999-9999-4999-8999-999999999999";
   const VERSION = "84444444-4444-4444-8444-444444444444";
   const PROMPT_KEY = "project_research.synthesis";
@@ -491,6 +492,7 @@ describe("projectResearchSynthesisRetryDb", () => {
   async function seedFailedSynthesisOperation(previousRunId: string | null): Promise<void> {
     const now = new Date().toISOString();
     const progress = {
+      idempotency:{key:randomUUID(),fingerprint:"retry-bound-call"},
       schema_version: "project_research_operation.v1",
       projection_mode: "managed",
       run_kind: "baseline",
@@ -514,11 +516,7 @@ describe("projectResearchSynthesisRetryDb", () => {
       error: { code: "synthesis_output_invalid", message: "previous failure", at: now },
       watermark: { before: null, after: null, overlap_hours: 48 },
     };
-    await db.pool.query(
-      `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, created_at, updated_at)
-       VALUES ($1,$2,$3,'research','Initial literature intake','failed',$4,$5::jsonb,$6,$6)`,
-      [OPERATION, SPACE, PROJECT, OWNER, JSON.stringify(progress), now],
-    );
+    OPERATION=(await createBoundResearchOperation(db.pool,identity,PROJECT,{title:"Initial literature intake",intentText:"Retry original evidence gap",status:"failed",progress,steps:[]})).id;
   }
 
   describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real Postgres)", () => {
@@ -535,6 +533,10 @@ describe("projectResearchSynthesisRetryDb", () => {
         progress_json: { current_stage?: string; stage_state?: string; failed_stage?: string; synthesis_run_id?: string };
       }>(`SELECT status, progress_json FROM project_operations WHERE id=$1`, [OPERATION]);
       expect(operation.rows[0]!.status).toBe("active");
+      const bound=(await db.pool.query(`SELECT research_attempt,research_step_id,research_call_json FROM project_operations WHERE id=$1`,[OPERATION])).rows[0];
+      expect(bound.research_attempt).toBe(2);
+      expect(bound.research_call_json.step_id).toBe(bound.research_step_id);
+      expect((await db.pool.query(`SELECT status FROM inquiry_thread_steps WHERE id=$1`,[bound.research_step_id])).rows[0].status).toBe("in_progress");
       expect(operation.rows[0]!.progress_json.current_stage).toBe("synthesis");
       expect(operation.rows[0]!.progress_json.stage_state).toBe("running");
       expect(operation.rows[0]!.progress_json.failed_stage).toBeUndefined();
@@ -585,6 +587,7 @@ describe("projectResearchSynthesisRetryDb", () => {
 
       expect((first as { id: string }).id).toBe(OPERATION);
       expect((second as { id: string }).id).toBe(OPERATION);
+      expect((await db.pool.query(`SELECT research_attempt FROM project_operations WHERE id=$1`,[OPERATION])).rows[0].research_attempt).toBe(2);
       const runs = await db.pool.query(
         `SELECT id FROM runs
           WHERE space_id=$1

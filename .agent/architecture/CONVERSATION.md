@@ -3,6 +3,17 @@
 How a conversation is stored, how an Agent's turn is read back out of it, and
 which component owns each of those.
 
+## Managed runtime upgrades
+
+Managed CLI package updates retain the Conversation and its native session in the
+same Host/runtime managed HOME. Host capability settlement updates live Profile
+and active/reset Host-thread installation pointers atomically; it changes no
+workspace, account, provider or backend snapshot. Each new Run freezes the current
+concrete version and previous Runs retain theirs. Saved ACP model choices are
+reconciled against the updated option catalog. A native session that cannot be
+loaded follows the existing explicit session-reset recovery rather than discarding
+Conversation messages. See [Hosts](../modules/hosts.md).
+
 ## The message tree
 
 `messages` is a tree, not a list. Every message carries `parent_message_id`,

@@ -24,7 +24,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["tasks", "task_loop_states", "project_work_events", "actors", "space_objects", "projects", "space_memberships", "users", "spaces"],
+    ["tasks", "project_work_events", "actors", "space_objects", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();

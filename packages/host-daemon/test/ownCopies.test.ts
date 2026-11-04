@@ -26,7 +26,6 @@ async function install(name: string, body: string): Promise<string> {
 
 const ACP_AGENT = `
   const rl = require("node:readline").createInterface({ input: process.stdin });
-  setInterval(() => {}, 1000);
   rl.on("line", (line) => {
     if (!line.trim()) return;
     const msg = JSON.parse(line);

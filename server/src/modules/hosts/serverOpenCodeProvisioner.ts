@@ -2,7 +2,7 @@ import type { Pool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 import { managedHostEgressTransport, readInstanceOperationsPolicy } from "../settings/index.js";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
-import { SERVER_OPENCODE_RELEASE } from "../runtimeAdapters/opencodeRelease.js";
+import { acpRuntimeProbe } from "./runtimeProbes.js";
 import { normalizeHostCapabilities } from "./capabilities.js";
 import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "./connectionRegistry.js";
 import { PgHostRepository } from "./repository.js";
@@ -28,7 +28,7 @@ interface ServerOpenCodeProvisionerLogger {
 }
 
 /**
- * Reconciles one release-pinned runtime on the one built-in Server Host.
+ * Bootstraps one managed runtime on the one built-in Server Host.
  * Installation itself stays in the Host Daemon's managed install lifecycle.
  */
 export class ServerOpenCodeProvisioner {
@@ -86,33 +86,34 @@ export class ServerOpenCodeProvisioner {
     );
     if (host.rows[0]?.kind !== "server") return;
     const provisioning = new PgRuntimeProvisioningRepository(this.pool);
-    let state = await provisioning.ensureDesired(hostId, RUNTIME_KEY, SERVER_OPENCODE_RELEASE.version);
 
     const copies = normalizeHostCapabilities(host.rows[0].capabilities_json).installations[RUNTIME_KEY] ?? [];
     const currentManaged = copies.find((copy) =>
       copy.id.startsWith("managed:") && copy.health_check_protocol === "acp") ?? null;
-    const healthyTarget = copies.find((copy) =>
-      copy.id === `managed:${SERVER_OPENCODE_RELEASE.version}`
-      && copy.health_check_protocol === "acp") ?? null;
-
-    if (healthyTarget) {
-      await provisioning.complete(hostId, RUNTIME_KEY, SERVER_OPENCODE_RELEASE.version);
+    const probe = acpRuntimeProbe(RUNTIME_KEY, "server");
+    if (!probe?.version || !probe.distribution) return;
+    // Installed healthy copies are administrator-owned. Never reconcile them
+    // back to a release pin or automatically upgrade them when the registry moves.
+    const version = currentManaged?.version ?? probe.version;
+    let state = await provisioning.ensureDesired(hostId, RUNTIME_KEY, version);
+    if (currentManaged) {
+      await provisioning.complete(hostId, RUNTIME_KEY, version);
       return;
     }
-    await provisioning.rememberInstalledVersion(hostId, RUNTIME_KEY, currentManaged?.version ?? null);
+    await provisioning.rememberInstalledVersion(hostId, RUNTIME_KEY, null);
     state = (await provisioning.get(hostId, RUNTIME_KEY)) ?? state;
 
     if (state.state === "installing") {
       const attemptedAt = state.last_attempt_at ? Date.parse(state.last_attempt_at) : Number.NaN;
       if (Number.isFinite(attemptedAt) && Date.now() - attemptedAt >= INSTALL_HEARTBEAT_STALE_MS) {
-        await provisioning.failInterrupted(hostId, RUNTIME_KEY, SERVER_OPENCODE_RELEASE.version);
+        await provisioning.failInterrupted(hostId, RUNTIME_KEY, version);
         this.log?.warn("[hosts] Server OpenCode installation was interrupted; an administrator must retry it explicitly");
       }
       return;
     }
     if (state.state === "failed") return;
     if (state.state === "ready") {
-      await provisioning.queueForHealthCheck(hostId, RUNTIME_KEY, SERVER_OPENCODE_RELEASE.version);
+      await provisioning.queueForHealthCheck(hostId, RUNTIME_KEY, version);
       state = (await provisioning.get(hostId, RUNTIME_KEY)) ?? state;
     }
     if (state.state !== "queued" || !this.registry.isOnline(hostId)) return;
@@ -120,16 +121,16 @@ export class ServerOpenCodeProvisioner {
     const egressTransport = this.config
       ? managedHostEgressTransport(await readInstanceOperationsPolicy(this.config))
       : { mode: "direct" as const };
-    const claimed = await provisioning.claim(hostId, RUNTIME_KEY, SERVER_OPENCODE_RELEASE.version);
+    const claimed = await provisioning.claim(hostId, RUNTIME_KEY, version);
     if (!claimed) return;
     const spec = getRuntimeAdapterSpec(RUNTIME_KEY);
-    this.ownedInstall = { hostId, version: SERVER_OPENCODE_RELEASE.version };
+    this.ownedInstall = { hostId, version: version };
     let result;
     try {
       result = await this.registry.requestToolAction(hostId, "install_tool", {
         runtime_key: RUNTIME_KEY,
-        version: SERVER_OPENCODE_RELEASE.version,
-        distribution: SERVER_OPENCODE_RELEASE.distribution,
+        version: version,
+        distribution: probe.distribution,
         login: spec?.credentials.login ?? null,
         runtime_version_command: spec?.managed_runtime_version_command ?? null,
         health_check_protocol: "acp",
@@ -139,16 +140,16 @@ export class ServerOpenCodeProvisioner {
       this.ownedInstall = null;
     }
 
-    if (result.ok && result.installation === `managed:${SERVER_OPENCODE_RELEASE.version}`) {
-      await provisioning.complete(hostId, RUNTIME_KEY, SERVER_OPENCODE_RELEASE.version);
-      this.log?.info(`[hosts] Server OpenCode ${SERVER_OPENCODE_RELEASE.version} is healthy and active`);
+    if (result.ok && result.installation === `managed:${version}`) {
+      await provisioning.complete(hostId, RUNTIME_KEY, version);
+      this.log?.info(`[hosts] Server OpenCode ${version} is healthy and active`);
     } else if (result.error === "host_offline" || result.error === "host_disconnected") {
-      await provisioning.queueAfterOffline(hostId, RUNTIME_KEY, SERVER_OPENCODE_RELEASE.version);
+      await provisioning.queueAfterOffline(hostId, RUNTIME_KEY, version);
     } else {
       await provisioning.fail(
         hostId,
         RUNTIME_KEY,
-        SERVER_OPENCODE_RELEASE.version,
+        version,
         result.error ?? "Host Daemon did not confirm the requested OpenCode installation.",
       );
       this.log?.error(`[hosts] Server OpenCode installation failed: ${provisioningText(result.error, 300)}`);
@@ -209,7 +210,7 @@ export function serverOpenCodeProvisioningStatus(
     runtime_key: "opencode" as const,
     installation: {
       state: state?.state ?? "queued" as const,
-      desired_version: state?.desired_version ?? SERVER_OPENCODE_RELEASE.version,
+      desired_version: state?.desired_version ?? acpRuntimeProbe(RUNTIME_KEY, "server")?.version ?? "unknown",
       installed_version: state?.installed_version ?? null,
       active_version: active?.version ?? null,
       error: state?.error ?? null,

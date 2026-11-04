@@ -117,7 +117,7 @@ beforeEach(async () => {
     db.pool!,
     [
       "run_artifact_declarations", "run_tool_identities",
-      "project_work_events", "task_loop_states", "task_evaluations", "task_artifacts",
+      "project_work_events", "task_evaluations", "task_artifacts",
       "run_finalizations", "task_runs", "tasks", "artifacts", "runs", "actors",
       "agent_versions", "agents", "projects", "users", "spaces",
     ],

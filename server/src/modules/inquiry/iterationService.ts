@@ -1,3 +1,6 @@
+import { assertProblemReferences } from "./problemReferences.js";
+import { ProblemPrimaryIntentSchema } from "@rainver/protocol";
+import { checkProblemVersion, closeRoundFact, lockProblem, problemCommandKey, problemRound, refreshProblem, replayProblemCommand, saveProblemCommand, startPrimary } from "./problemFacts.js";
 import { assertLinkTypeAllowed } from "../ontology/validation.js";
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
@@ -13,10 +16,8 @@ import { getDbPool } from "../../db/pool.js";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { THREAD_COLUMNS, THREAD_FROM, TOUCH_THREAD_ROOT_SQL, threadToOut, type ThreadRow } from "./threadService.js";
-import { NEXT_FOCUS_KINDS, type NextFocusKind } from "./threadService.js";
 import {
-  applyNextFocus, assignSettledStepsToRound, closeOpenSteps, listOpenProjectSteps, listOpenSteps, listSteps, stepToOut,
-  STEP_NOTE_SET_SQL, STEP_PROJECTION_SET_SQL,
+  closeOpenSteps, listOpenProjectSteps, listOpenSteps, listSteps, stepToOut,
 } from "./stepService.js";
 import { RetrievalProjectionService } from "../retrieval/index.js";
 import { inquiryRetrievalRegistry } from "./retrievalAdapter.js";
@@ -24,7 +25,6 @@ import { assertThreadReadable, threadAccessLevelSql } from "./threadAccess.js";
 import type { WithAccessLevel } from "../access/contentAccessTypes.js";
 import { recordThreadRevision } from "./threadRevisionService.js";
 import { recordThreadWorkEvent, type ThreadEventProvenance } from "./threadWorkEvents.js";
-import { tryQueueAdviceForFocusedThread } from "./adviceJob.js";
 
 // Protected cognitive fields. Only `recordIteration` may write these — the
 // generic project PATCH route does not exist for Threads at all, and this
@@ -75,10 +75,21 @@ export class InquiryIterationService {
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const changeSummary = requiredString(body.change_summary, "change_summary");
-    const confirmedNextFocus = optionalString(body.confirmed_next_focus);
-    if (confirmedNextFocus && !NEXT_FOCUS_KINDS.includes(confirmedNextFocus as NextFocusKind)) {
-      throw new HttpError(422, `confirmed_next_focus must be one of: ${NEXT_FOCUS_KINDS.join(", ")}`);
+    if (body.method_version !== "problem_solving.v1") {
+      throw new HttpError(422, "method_version must be problem_solving.v1");
     }
+    if (body.round_intent !== "position_only" && body.round_intent !== "close_round") {
+      throw new HttpError(422, "round_intent is required");
+    }
+    const closeRound = body.round_intent === "close_round";
+    if (typeof body.idempotency_key !== "string" || !body.idempotency_key || body.idempotency_key.length > 128) {
+      throw new HttpError(422, "idempotency_key is required");
+    }
+    if (!Number.isInteger(body.expected_version) || !Number.isInteger(body.expected_revision)) {
+      throw new HttpError(422, "expected_version and expected_revision are required");
+    }
+    const nextPrimary = body.start_next_primary === undefined ? undefined : ProblemPrimaryIntentSchema.safeParse(body.start_next_primary);
+    if (nextPrimary && !nextPrimary.success) throw new HttpError(422,"Invalid start_next_primary");
     const now = new Date().toISOString();
 
     const result = await withQueryableTransaction(this.db, async (db) => {
@@ -101,6 +112,14 @@ export class InquiryIterationService {
         throw new HttpError(409, "Only an active Thread can record an Iteration");
       }
 
+      const problem = await lockProblem(db,identity,projectId,threadId);
+      const receiptKey=problemCommandKey(identity,String(body.idempotency_key),provenance);
+      await assertProblemReferences(db,identity,projectId,Array.isArray(body.input_refs)?body.input_refs:[]);
+      const replay = await replayProblemCommand(db,identity.spaceId,threadId,receiptKey,body);
+      if (replay) return replay;
+      checkProblemVersion(problem,body);
+      if(nextPrimary?.success && problem.blocked_reason) throw new HttpError(409,"Unblock the Thread before starting work");
+      const round = await problemRound(db,identity.spaceId,threadId);
       let previousPosition: Record<string, unknown>;
       let newPosition: Record<string, unknown>;
 
@@ -186,8 +205,8 @@ export class InquiryIterationService {
         `INSERT INTO inquiry_iterations (
            id, space_id, project_id, thread_id, trigger_kind, trigger_ref, input_refs_json,
            previous_position_json, new_position_json, confidence_delta, change_summary,
-           reasoning_summary, unresolved_gaps, confirmed_next_focus, created_by_user_id, created_by_run_id, created_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17)
+           reasoning_summary, unresolved_gaps, created_by_user_id, created_by_run_id, created_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14, $15, $16)
          RETURNING *`,
         [
           iterationId,
@@ -203,46 +222,33 @@ export class InquiryIterationService {
           changeSummary,
           optionalString(body.reasoning_summary),
           optionalString(body.unresolved_gaps),
-          confirmedNextFocus,
           identity.userId,
           null,
           now,
         ],
       );
 
-      // Closing the round: the primary step that was open ran its course, and
-      // stamping it with this Iteration is what lets the round's history say
-      // which steps it actually went through. A background step keeps running
-      // — a search does not finish because the user wrote up what they learned
-      // so far — and simply belongs to the next round.
-      await closeOpenSteps(db, {
-        spaceId: identity.spaceId,
-        threadId,
-        reason: "done",
-        at: now,
-        iterationId,
-      });
-      // Anything that ended earlier in this round belongs to it too, so the
-      // next round starts with a genuinely empty slate.
-      await assignSettledStepsToRound(db, { spaceId: identity.spaceId, threadId, iterationId });
-      if (confirmedNextFocus) {
-        await applyNextFocus(db, {
-          spaceId: identity.spaceId,
-          projectId,
-          threadId,
-          kind: confirmedNextFocus as NextFocusKind,
-          note: hasOwn(body, "next_focus_note") ? optionalString(body.next_focus_note) : undefined,
-          origin: "user",
-          at: now,
-        });
+      await db.query(`UPDATE inquiry_iterations SET round_number=$2 WHERE id=$1`,[iterationId,round]);
+      let closeout: Record<string,unknown> | null = null;
+      if (closeRound) {
+        closeout=await closeRoundFact(db,identity,projectId,problem,{
+          summary:changeSummary,input_refs:Array.isArray(body.input_refs)?body.input_refs:[],
+          iteration_id:iterationId,
+          method_version:"problem_solving.v1",
+          ...(nextPrimary?.success?{start_next_primary:nextPrimary.data}:{}),
+        },provenance);
+      } else {
+        if (nextPrimary?.success) {
+          await startPrimary(db,identity,projectId,threadId,nextPrimary.data,round);
+        }
+        await refreshProblem(db,identity.spaceId,threadId);
       }
       await db.query(
         `UPDATE inquiry_threads SET
            version = version + 1,
-           blocked_reason = CASE WHEN $1::text IS NOT NULL THEN NULL ELSE blocked_reason END,
-           ${STEP_PROJECTION_SET_SQL}, ${STEP_NOTE_SET_SQL}
+           blocked_reason = CASE WHEN $1::boolean THEN NULL ELSE blocked_reason END
          WHERE object_id = $2 AND space_id = $3`,
-        [confirmedNextFocus, threadId, identity.spaceId],
+        [Boolean(nextPrimary?.success), threadId, identity.spaceId],
       );
       await db.query(TOUCH_THREAD_ROOT_SQL, [now, threadId, identity.spaceId]);
       const updatedThread = await db.query<WithAccessLevel<ThreadRow>>(
@@ -280,25 +286,19 @@ export class InquiryIterationService {
         data: {
           statement: finalThread.statement,
           iteration_id: iterationId,
+          closeout_id:closeout?.id??null,
+          reference_refs:Array.isArray(body.input_refs)?body.input_refs:[],
           change_summary: changeSummary,
           previous_position: previousPosition,
           new_position: newPosition,
         },
         ...(provenance ? { provenance } : {}),
       });
-      return { ...inserted.rows[0], thread: threadToOut(finalThread) };
+      const result={ ...inserted.rows[0], created_at:now, round_number:round, closeout, method_version:"problem_solving.v1", thread: threadToOut(finalThread) };
+      await saveProblemCommand(db,identity,projectId,threadId,receiptKey,body,result);
+      return result;
     });
 
-    // Queued after commit so a rolled-back Iteration never leaves advice work
-    // behind, and never inside the transaction so the provider call cannot
-    // hold the Project lock.
-    await tryQueueAdviceForFocusedThread(this.db, {
-      spaceId: identity.spaceId,
-      userId: identity.userId,
-      projectId,
-      threadId,
-      triggerKind: "iteration_recorded",
-    });
     return result;
   }
 
@@ -352,6 +352,7 @@ export class InquiryIterationService {
       throw new HttpError(422, "revision_kind must be wording_only or semantic_change");
     }
     const newStatement = requiredString(body.new_statement, "new_statement");
+    if(Object.hasOwn(body,'new_scope_boundary') && revisionKind!=='semantic_change')throw new HttpError(422,'Boundary changes require a semantic Definition revision');
     const structureAction = optionalString(body.structure_action);
     if (revisionKind === "semantic_change") {
       if (structureAction !== "narrow" && structureAction !== "child" && structureAction !== "supersede") {
@@ -468,6 +469,7 @@ export class InquiryIterationService {
           [newThreadId, threadId],
         );
       }
+      await db.query(`UPDATE inquiry_threads SET scope_boundary=$1 WHERE object_id=$2 AND space_id=$3`,[thread.scope_boundary,newThreadId,thread.space_id]);
       await this.applyDefinitionFieldUpdates(db, { ...thread, id: newThreadId }, body);
       // A child/superseding Thread is a brand-new promotable entity — record
       // its initial (version 1) revision now rather than leaving a gap
@@ -548,14 +550,9 @@ export class InquiryIterationService {
       });
       await db.query(
         `UPDATE inquiry_threads SET lifecycle_status = 'superseded', attention_state = 'archived',
-           blocked_reason = NULL, ${STEP_PROJECTION_SET_SQL}, ${STEP_NOTE_SET_SQL}
+           blocked_reason = NULL
           WHERE object_id = $1 AND space_id = $2`,
         [threadId, identity.spaceId],
-      );
-      await db.query(
-        `UPDATE inquiry_thread_advice SET status = 'dismissed', updated_at = $3
-          WHERE space_id = $1 AND thread_id = $2 AND status = 'open'`,
-        [identity.spaceId, threadId, now],
       );
       await db.query(TOUCH_THREAD_ROOT_SQL, [now, threadId, identity.spaceId]);
       const supersededThread = await db.query<WithAccessLevel<ThreadRow>>(
@@ -586,6 +583,11 @@ export class InquiryIterationService {
   }
 
   private async applyDefinitionFieldUpdates(db: Queryable, thread: ThreadRow, body: Record<string, unknown>): Promise<void> {
+    if(Object.hasOwn(body,'new_scope_boundary')){
+      if(body.new_scope_boundary!==null&&typeof body.new_scope_boundary!=='string')throw new HttpError(422,'Boundary must be text or null');
+      const scope=optionalString(body.new_scope_boundary);if(scope && scope.length>4000)throw new HttpError(422,'Boundary is too long');
+      await db.query(`UPDATE inquiry_threads SET scope_boundary=$1 WHERE object_id=$2 AND space_id=$3`,[scope,thread.id,thread.space_id]);
+    }
     if (thread.kind === "question" && hasOwn(body, "new_resolution_criteria")) {
       await db.query(`UPDATE inquiry_question_states SET resolution_criteria = $1 WHERE thread_id = $2`, [
         optionalString(body.new_resolution_criteria),
@@ -663,22 +665,9 @@ export class InquiryIterationService {
       if (!["focused", "monitoring", "backlog", "blocked"].includes(nextAttention)) {
         throw new HttpError(422, "attention_state must be focused, monitoring, backlog, or blocked");
       }
-      const nextFocusKind = hasOwn(body, "next_focus_kind") ? optionalString(body.next_focus_kind) : thread.next_focus_kind;
       const nextBlockedReason = hasOwn(body, "blocked_reason") ? optionalString(body.blocked_reason) : thread.blocked_reason;
-
-      if (nextFocusKind && !NEXT_FOCUS_KINDS.includes(nextFocusKind as NextFocusKind)) {
-        throw new HttpError(422, `next_focus_kind must be one of: ${NEXT_FOCUS_KINDS.join(", ")}`);
-      }
-      // Whether the caller asked about the next step at all. This cannot be
-      // inferred by comparing against `next_focus_kind`: that column projects
-      // the primary slot only, so a Thread running a background search reads
-      // as null and "cancel the search" would look like a no-op.
-      const focusRequested = hasOwn(body, "next_focus_kind");
-      const openSteps = await listOpenSteps(db, { spaceId: identity.spaceId, threadId });
-      const willHaveOpenStep = focusRequested
-        ? Boolean(nextFocusKind)
-        : openSteps.length > 0;
-
+      const openSteps = await listOpenSteps(db, {spaceId:identity.spaceId,threadId});
+      const willHaveOpenStep = openSteps.length>0;
       // A step and a blocking reason contradict each other, and that includes a
       // background one: declaring a Thread blocked while its search runs states
       // two incompatible things about the same Thread. Holding neither is
@@ -697,7 +686,7 @@ export class InquiryIterationService {
           `SELECT count(*)::text AS total FROM inquiry_threads t
             WHERE t.space_id = $1 AND t.project_id = $2 AND t.attention_state = 'focused'
               AND (
-                t.next_focus_kind IS NOT NULL OR t.blocked_reason IS NOT NULL
+                EXISTS(SELECT 1 FROM inquiry_thread_steps primary_step WHERE primary_step.thread_id=t.object_id AND primary_step.space_id=t.space_id AND primary_step.slot='primary' AND primary_step.status='in_progress') OR t.blocked_reason IS NOT NULL
                 OR NOT EXISTS (
                   SELECT 1 FROM inquiry_thread_steps s
                    WHERE s.thread_id = t.object_id AND s.space_id = t.space_id
@@ -718,13 +707,6 @@ export class InquiryIterationService {
       if (nextPriority !== thread.priority) events.push(["priority", String(thread.priority), String(nextPriority)]);
       if (nextOwner !== thread.owner_user_id) events.push(["owner", thread.owner_user_id, nextOwner]);
       if (nextAttention !== thread.attention_state) events.push(["attention_state", thread.attention_state, nextAttention]);
-      // Audited against the open steps rather than the primary-only column, so
-      // re-declaring a running background search records nothing instead of a
-      // fresh "changed" row on every call.
-      const openKindBefore = openSteps.find((step) => step.kind === nextFocusKind)?.kind ?? null;
-      if (focusRequested && (nextFocusKind ?? null) !== openKindBefore) {
-        events.push(["next_focus_kind", thread.next_focus_kind, nextFocusKind]);
-      }
       if (nextBlockedReason !== thread.blocked_reason) events.push(["blocked_reason", thread.blocked_reason, nextBlockedReason]);
 
       for (const [actionKind, fromValue, toValue] of events) {
@@ -735,25 +717,9 @@ export class InquiryIterationService {
         );
       }
 
-      // The step rows move first and the Thread row follows in one statement,
-      // because the focused-Thread CHECK is evaluated per statement: writing
-      // `blocked_reason` before clearing the step projection would pass through
-      // a state holding both, and PostgreSQL rejects it there.
-      if (focusRequested) {
-        await applyNextFocus(db, {
-          spaceId: identity.spaceId,
-          projectId,
-          threadId,
-          kind: nextFocusKind as NextFocusKind | null,
-          note: hasOwn(body, "next_focus_note") ? optionalString(body.next_focus_note) : undefined,
-          origin: optionalString(body.step_origin) === "advice" ? "advice" : "user",
-          at: now,
-        });
-      }
       await db.query(
         `UPDATE inquiry_threads SET
-           priority = $1, attention_state = $2, blocked_reason = $3,
-           ${STEP_PROJECTION_SET_SQL}, ${STEP_NOTE_SET_SQL}
+           priority = $1, attention_state = $2, blocked_reason = $3, problem_revision=problem_revision+1
          WHERE object_id = $4 AND space_id = $5`,
         [nextPriority, nextAttention, nextBlockedReason, threadId, identity.spaceId],
       );
@@ -856,7 +822,7 @@ export class InquiryIterationService {
       }
       await db.query(
         `UPDATE inquiry_threads SET lifecycle_status=$1, attention_state=$2,
-           blocked_reason=NULL, ${STEP_PROJECTION_SET_SQL}, ${STEP_NOTE_SET_SQL}
+           blocked_reason=NULL
          WHERE object_id=$3 AND space_id=$4`,
         [toStatus, attention, threadId, identity.spaceId],
       );

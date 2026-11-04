@@ -92,3 +92,42 @@ artifact's production context remains unchanged.
 - Path traversal, absolute path input, missing files, and paths outside the allowed runtime output root must not create artifact records.
 - Export rejects absolute paths, NUL bytes, path traversal out of managed
   artifact storage, sandbox-root reads, missing paths, and non-regular files.
+
+## Bound Research archives
+
+Report archives/evidence/integrity artifacts are not independent publications.
+Their existing report foreign keys, producing Workflow/Run and Operation output
+IDs establish provenance; copied titles, visibility or metadata do not grant
+access. The canonical Artifact ACL additionally checks originating Thread/Run
+and direct Source dependencies for list/count/detail/export and references.
+Full content reads also validate call input references and originating research
+artifact dependencies (bounded to 200 distinct artifacts; excess requires
+reconciliation). Reader uses the same gate. Missing direct authority hides the
+archive; classified input-content withdrawal may return only a generic summary
+without body, source-derived title, storage location or producing context.
+Export still requires full access. Legacy unbound artifacts retain existing
+rules. No stored content is rewritten on withdrawal and no new publication or
+visibility state is introduced.
+
+The same transitive input gate now applies when reading the owning Research
+call/report, preventing an archive's denied leaf from being bypassed through a
+domain report. Graph enumeration is bounded and cycle-deduplicated in SQL;
+Project/Thread/Run predicates and at-most-40-reference batches reuse canonical
+ACLs. See [cross-domain evidence](PROBLEM_ENGINE_ACCEPTANCE.md#artifact-graph-evidence-and-limits)
+for the measured dense-origin/200-node envelope and its limits.
+
+For bound Research output, every **direct** origin of the requested Artifact
+must pass its Project/Thread/Run and Source gates. Unreadable direct origins
+hide the Artifact, including its list count. An otherwise readable root whose
+**transitive input** origin is unreadable instead has a generic summary:
+no original title, body, metadata, storage, owner, producing Run, proposal or
+folder context; preview/export are disabled. This summary is not a grant to
+Reader content, report/result bodies, download or model egress. An origin
+reached both directly and through an input remains direct. Binding conflicts
+and database failures propagate; they are not content-withheld fallbacks.
+
+A malformed dependency binding can therefore fail an entire list page with
+409 instead of returning partial rows. Operators must use the bounded problem
+engine audit/reconciliation procedure in
+[upgrade compatibility](PROBLEM_ENGINE_UPGRADE.md) before retrying; never
+repair this by treating corruption as an authorization summary.

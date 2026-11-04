@@ -197,23 +197,26 @@ describe("researchAcquisitionPipelineDb", () => {
     },
   };
 
-  async function makeJob(threadId: string, overrides: Partial<Record<string, unknown>> = {}): Promise<JobEnvelopeForHandler> {
+  function envelopeFor(job: { id: string; payload_json: Record<string, unknown> }): JobEnvelopeForHandler {
     return {
-      job_id: randomUUID(),
+      job_id: job.id,
       space_id: SPACE,
       user_id: OWNER,
       job_type: RESEARCH_PIPELINE_START_JOB,
       attempts: 0,
       max_attempts: 3,
       worker_id: "test-worker",
-      payload: {
-        thread_id: threadId,
-        project_id: PROJECT,
-        origin_room_id: ROOM,
-        origin_session_id: SESSION,
-        ...overrides,
-      },
+      payload: job.payload_json,
     };
+  }
+
+  /** A job as queue admission enqueues it: bound to its Operation and preparation context. */
+  async function makeJob(threadId: string, input: { originGroupId?: string } = {}): Promise<JobEnvelopeForHandler> {
+    const admission = await new ResearchAcquisitionService(db.pool).startAcquisition(identity, PROJECT, {
+      threadId, requestKey: randomUUID(), originRoomId: ROOM, originSessionId: SESSION, ...input,
+    });
+    const job = (await db.pool.query(`SELECT id,payload_json FROM jobs WHERE job_type=$1 AND payload_json->>'operation_id'=$2`, [RESEARCH_PIPELINE_START_JOB, admission.operation_id])).rows[0];
+    return envelopeFor(job);
   }
 
   describe("ResearchAcquisitionPipelineRunner (real Postgres)", () => {
@@ -225,6 +228,34 @@ describe("researchAcquisitionPipelineDb", () => {
     // prerequisite this fixture does not attempt to reproduce; `postOutcome`'s
     // try/catch swallowing that failure without disturbing the pipeline result
     // is exercised implicitly by every test below succeeding despite it.
+    it("continues the exact Operation and originating Step admitted by the queue command",async()=>{
+      if(!db.available)return;
+      const thread=await new InquiryThreadService(db.pool).createThread(identity,PROJECT,{kind:"question",statement:"What drives reliability?"});
+      const admission=await new ResearchAcquisitionService(db.pool).startAcquisition(identity,PROJECT,{threadId:String(thread.id),requestKey:"same-logical-call",originRoomId:null,originSessionId:null});
+      expect(admission.operation_id).toBeTruthy();
+      const before=(await db.pool.query(`SELECT research_step_id,research_call_json FROM project_operations WHERE id=$1`,[admission.operation_id])).rows[0];
+      const job=(await db.pool.query(`SELECT id,payload_json FROM jobs WHERE job_type=$1 AND payload_json->>'operation_id'=$2`,[RESEARCH_PIPELINE_START_JOB,admission.operation_id])).rows[0];
+      const runner=new ResearchAcquisitionPipelineRunner(db.pool,config!,{adaptiveQueryDependencies:FAKE_QUERY_DEPENDENCIES});
+      const envelope=envelopeFor(job);
+      expect(await runner.run(envelope)).toMatchObject({status:"started",operation_id:admission.operation_id});
+      expect(await runner.run(envelope)).toMatchObject({status:"started",operation_id:admission.operation_id});
+      const after=(await db.pool.query(`SELECT research_step_id,research_call_json FROM project_operations WHERE id=$1`,[admission.operation_id])).rows[0];
+      expect(after).toEqual(before);
+      expect((await db.pool.query(`SELECT count(*)::int AS n FROM project_operations WHERE project_id=$1`,[PROJECT])).rows[0].n).toBe(1);
+    });
+    it("reports an admitted acquisition as started when the worker stopped before saving its outcome",async()=>{
+      if(!db.available)return;
+      const thread=await new InquiryThreadService(db.pool).createThread(identity,PROJECT,{kind:"question",statement:"What stops imports?"});
+      const admission=await new ResearchAcquisitionService(db.pool).startAcquisition(identity,PROJECT,{threadId:String(thread.id),requestKey:"crash-window",originRoomId:null,originSessionId:null});
+      const job=(await db.pool.query(`SELECT id,payload_json FROM jobs WHERE job_type=$1 AND payload_json->>'operation_id'=$2`,[RESEARCH_PIPELINE_START_JOB,admission.operation_id])).rows[0];
+      const runner=new ResearchAcquisitionPipelineRunner(db.pool,config!,{adaptiveQueryDependencies:FAKE_QUERY_DEPENDENCIES});
+      const envelope=envelopeFor(job);
+      expect(await runner.run(envelope)).toMatchObject({status:"started",operation_id:admission.operation_id});
+      // Admission committed, but the durable outcome was never written.
+      await db.pool.query(`UPDATE jobs SET payload_json=payload_json-'pipeline_outcome' WHERE id=$1`,[job.id]);
+      expect(await runner.run(envelope)).toMatchObject({status:"started",operation_id:admission.operation_id});
+      expect((await db.pool.query(`SELECT status FROM project_operations WHERE id=$1`,[admission.operation_id])).rows[0].status).toBe("active");
+    });
     it("runs a bare accepted Thread through to a running Operation, Room-linked in progress_json", async () => {
       if (!db.available) return;
       __setQuestionRefineInvokerForTests(passingAssessmentInvoker());
@@ -234,7 +265,7 @@ describe("researchAcquisitionPipelineDb", () => {
       });
 
       const runner = new ResearchAcquisitionPipelineRunner(db.pool, config!, { adaptiveQueryDependencies: FAKE_QUERY_DEPENDENCIES });
-      const result = await runner.run(await makeJob(String(thread.id), { origin_group_id: "group-1" }));
+      const result = await runner.run(await makeJob(String(thread.id), { originGroupId: "group-1" }));
       expect(result).toMatchObject({ status: "started", thread_id: String(thread.id) });
       const operationId = (result as { operation_id: string }).operation_id;
 
@@ -280,34 +311,15 @@ describe("researchAcquisitionPipelineDb", () => {
       expect(JSON.stringify(operation.rows[0]!.progress_json)).toContain(statement);
     });
 
-    it("reports assessment_not_passed and records the attempt as a failed Operation, not an acquisition", async () => {
-      if (!db.available) return;
+    it("treats FINER as optional Frame advice rather than a hard gate on an accepted problem",async()=>{
+      if(!db.available)return;
       __setQuestionRefineInvokerForTests(failingAssessmentInvoker());
-      const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
-        kind: "question",
-        statement: "Tell me everything about everything.",
-      });
-
-      const runner = new ResearchAcquisitionPipelineRunner(db.pool, config!, { adaptiveQueryDependencies: FAKE_QUERY_DEPENDENCIES });
-      const result = await runner.run(await makeJob(String(thread.id)));
-      expect(result).toMatchObject({ status: "assessment_not_passed", thread_id: String(thread.id) });
-
-      // No acquisition was started — and the attempt is still visible where a
-      // person looks for it. A pipeline that stopped before startInitialIntake
-      // still leaves a visible attempt. Do not leave only a jobs row: every
-      // Project surface then shows an empty list, which reads as still running.
-      const operations = await db.pool.query<{ status: string; intent_text: string; progress_json: Record<string, unknown> }>(
-        `SELECT status, intent_text, progress_json FROM project_operations WHERE space_id=$1 AND project_id=$2 AND kind='research'`,
-        [SPACE, PROJECT],
-      );
-      expect(operations.rows).toHaveLength(1);
-      expect(operations.rows[0]!.status).toBe("failed");
-      expect(operations.rows[0]!.progress_json).toMatchObject({
-        run_kind: "acquisition_attempt",
-        thread_id: String(thread.id),
-        outcome_status: "assessment_not_passed",
-      });
-      expect(operations.rows[0]!.intent_text).toContain("assessment");
+      const thread=await new InquiryThreadService(db.pool).createThread(identity,PROJECT,{kind:"question",statement:"What drives reliability?"});
+      const runner=new ResearchAcquisitionPipelineRunner(db.pool,config!,{adaptiveQueryDependencies:FAKE_QUERY_DEPENDENCIES});
+      const result=await runner.run(await makeJob(String(thread.id)));
+      expect(result).toMatchObject({status:"started",thread_id:thread.id});
+      const contexts=await db.pool.query(`SELECT assessment_json FROM project_research_context_versions WHERE project_id=$1`,[PROJECT]);
+      expect(contexts.rows.some(r=>r.assessment_json.finer_evaluated===false)).toBe(true);
     });
 
     it("keeps its first outcome while a busy Room turn defers the report, instead of running the pipeline again", async () => {
@@ -318,11 +330,7 @@ describe("researchAcquisitionPipelineDb", () => {
         statement: "Tell me everything about everything.",
       });
       const job = await makeJob(String(thread.id));
-      await db.pool.query(
-        `INSERT INTO jobs (id, space_id, user_id, job_type, status, priority, payload_json, attempts, max_attempts, scheduled_at, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,'running',0,$5::jsonb,1,3,now(),now(),now())`,
-        [job.job_id, SPACE, OWNER, RESEARCH_PIPELINE_START_JOB, JSON.stringify(job.payload)],
-      );
+      await db.pool.query(`UPDATE jobs SET status='running',attempts=1 WHERE id=$1`, [job.job_id]);
       // An Agent's chat turn still holds the Room conversation.
       const turn = randomUUID();
       await db.pool.query(
@@ -361,10 +369,11 @@ describe("researchAcquisitionPipelineDb", () => {
         statement: "What drives agent reliability?",
       });
       const runner = new ResearchAcquisitionPipelineRunner(db.pool, config!, { adaptiveQueryDependencies: FAKE_QUERY_DEPENDENCIES });
-      const first = await runner.run(await makeJob(String(thread.id)));
+      const job=await makeJob(String(thread.id));
+      const first = await runner.run(job);
       expect(first).toMatchObject({ status: "started" });
 
-      const second = await runner.run(await makeJob(String(thread.id)));
+      const second = await runner.run(job);
       expect(second).toMatchObject({ status: "started", operation_id: (first as { operation_id: string }).operation_id });
 
       const operations = await db.pool.query(`SELECT id FROM project_operations WHERE space_id=$1 AND project_id=$2 AND kind='research'`, [SPACE, PROJECT]);
@@ -501,7 +510,7 @@ describe("researchAcquisitionServiceDb", () => {
       const jobs = await db.pool.query(`SELECT id FROM jobs WHERE space_id=$1 AND job_type=$2`, [SPACE, RESEARCH_PIPELINE_START_JOB]);
       expect(jobs.rows).toHaveLength(0);
       // The owner, who can read it, still starts it.
-      await expect(start(OWNER)).resolves.toEqual({ status: "queued", thread_id: String(thread.id) });
+      await expect(start(OWNER)).resolves.toMatchObject({ status: "queued", thread_id: String(thread.id) });
     });
 
     it("enqueues a research_pipeline_start job carrying the Thread and Room origin", async () => {
@@ -517,7 +526,7 @@ describe("researchAcquisitionServiceDb", () => {
         originSessionId: "session-1",
         originGroupId: "group-1",
       });
-      expect(result).toEqual({ status: "queued", thread_id: String(thread.id) });
+      expect(result).toMatchObject({ status: "queued", thread_id: String(thread.id) });
 
       const jobs = await db.pool.query<{ payload_json: Record<string, unknown>; status: string }>(
         `SELECT payload_json, status FROM jobs WHERE space_id=$1 AND job_type=$2`,
@@ -555,7 +564,7 @@ describe("researchAcquisitionServiceDb", () => {
         originRoomId: null,
         originSessionId: null,
       });
-      expect(second).toEqual({ status: "already_starting", thread_id: String(thread.id) });
+      expect(second).toMatchObject({ status: "already_starting", thread_id: String(thread.id),operation_id:first.operation_id });
 
       const jobs = await db.pool.query(`SELECT id FROM jobs WHERE space_id=$1 AND job_type=$2`, [SPACE, RESEARCH_PIPELINE_START_JOB]);
       expect(jobs.rows).toHaveLength(1);

@@ -1,4 +1,7 @@
 import { lazy, Suspense } from 'react'
+import {spacePath} from '../../core/navigation'
+import {useParams} from 'react-router-dom'
+import {researchPageDestination} from './problemWorkspace/researchLinks'
 import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
 import { Skeleton } from '../../components/ui/skeleton'
 
@@ -18,6 +21,7 @@ const InquiryAreaPage = lazy(() => import('./InquiryAreaPage'))
 const QuestionAssessmentPage = lazy(() => import('./QuestionAssessmentPage'))
 const DecisionAreaPage = lazy(() => import('./DecisionAreaPage'))
 const ResearchReportPage = lazy(() => import('./ResearchReportPage'))
+const ResearchRecordsPage=lazy(()=>import('./DeepResearchAreaPage'))
 const ResearchAreaPage = lazy(() => import('./ResearchAreaPage'))
 const ProjectAreaLayout = lazy(() => import('./ProjectAreaLayout'))
 const ProjectBoardPage = lazy(() => import('./board/ProjectBoardPage'))
@@ -52,6 +56,7 @@ export default function ProjectsModule() {
         <Route path="files" element={<Suspense fallback={<PageFallback />}><ProjectFilesPage /></Suspense>} />
         <Route path="folders/:folderId" element={<Suspense fallback={<PageFallback />}><ProjectFolderSettingsPage /></Suspense>} />
         <Route path="inquiry" element={<Suspense fallback={<PageFallback />}><InquiryAreaPage /></Suspense>} />
+        <Route path="inquiry/records" element={<Suspense fallback={<PageFallback />}><ResearchRecordsPage /></Suspense>} />
         <Route path="inquiry/:threadId/assess" element={<Suspense fallback={<PageFallback />}><QuestionAssessmentPage /></Suspense>} />
         {/* `experiments` redirects to the Inquiry experiments view. */}
         <Route path="experiments" element={<Navigate to="../inquiry?view=experiments" replace />} />
@@ -74,7 +79,7 @@ export default function ProjectsModule() {
         <Route path="imported-sessions/:sessionId" element={<Suspense fallback={<PageFallback />}><ImportedSessionView /></Suspense>} />
         {/* `/delivery` redirects to Board. */}
         <Route path="delivery" element={<Navigate to="../board" replace />} />
-        <Route path="operations" element={<Navigate to="../research?tab=runs" replace />} />
+        <Route path="operations" element={<OperationsRedirect />} />
         <Route path="rooms" element={<Suspense fallback={<PageFallback />}><ProjectRoomsPage /></Suspense>} />
         {/* Splat, like /knowledge/notes: the open note changes the URL without
             remounting the surface, so its tree and tabs stay alive. */}
@@ -91,3 +96,5 @@ function ProjectDailyRedirect(){
  const [params]=useSearchParams(),next=new URLSearchParams(params);next.set('tab','digest');
  return <Navigate to={`../sources?${next}`} replace/>;
 }
+
+function OperationsRedirect(){const {projectId='',spaceId}=useParams(),[params]=useSearchParams();return <Navigate to={spacePath(spaceId??null,researchPageDestination(projectId,params,true))} replace/>}

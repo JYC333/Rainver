@@ -42,7 +42,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["inquiry_thread_advice", "jobs", "inquiry_delta_briefs", "inquiry_signal_candidates", "inquiry_evidence_signals", "inquiry_review_packets", "inquiry_thread_work_events", "inquiry_iterations", "inquiry_thread_statement_revisions", "inquiry_thread_personal_focus", "inquiry_question_states", "inquiry_hypothesis_states", "inquiry_threads", "inquiry_project_settings", "project_corpus_items", "space_objects", "projects", "space_memberships", "users", "spaces"],
+    ["jobs", "inquiry_delta_briefs", "inquiry_signal_candidates", "inquiry_evidence_signals", "inquiry_review_packets", "inquiry_thread_work_events", "inquiry_iterations", "inquiry_thread_statement_revisions", "inquiry_thread_personal_focus", "inquiry_question_states", "inquiry_hypothesis_states", "inquiry_threads", "inquiry_project_settings", "project_corpus_items", "space_objects", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -140,6 +140,7 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
     const iterations = await new InquiryIterationService(db.pool).listIterations(identity(), PROJECT, THREAD);
     expect(iterations).toHaveLength(1);
     expect(iterations[0]!.id).toBe(accepted.resulting_iteration_id);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM inquiry_round_closeouts WHERE thread_id=$1`,[THREAD])).rows[0].n).toBe(0);
 
     const detail = await threadSvc.getThread(identity(), PROJECT, THREAD);
     expect(detail.hypothesis_state).toMatchObject({ evaluation_state: "challenged" });
@@ -251,43 +252,6 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
       semantic_key: "memory-regression",
     });
     expect(await service.listCandidates(identity(), PROJECT, "pending")).toHaveLength(2);
-  });
-
-  it("does not retire current advice when a material Signal delivery is replayed", async () => {
-    if (!db.available) return;
-    const service = new InquirySignalService(db.pool);
-    await new InquiryIterationService(db.pool).updateWork(identity(), PROJECT, THREAD, {
-      attention_state: "focused",
-      next_focus_kind: "read_evidence",
-    });
-    const body = {
-      corpus_item_id: await createCorpusItem(),
-      classification: "contradicts",
-      producer_idempotency_key: "replayed-material-signal",
-    };
-    const first = await service.createSignal(identity(), PROJECT, THREAD, body);
-    const generatedAt = new Date().toISOString();
-    await db.pool.query(
-      `INSERT INTO inquiry_thread_advice
-         (id, space_id, project_id, thread_id, recommended_focus_kind, rationale,
-          cited_refs_json, thread_version, status, trigger_kind, model_version,
-          generated_by_user_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,'read_evidence','Review the contradiction','[]'::jsonb,
-               2,'open','candidate_created',NULL,$5,$6,$6)`,
-      [randomUUID(), SPACE, PROJECT, THREAD, OWNER, generatedAt],
-    );
-
-    const retry = await service.createSignal(identity(), PROJECT, THREAD, body);
-    expect(retry.id).toBe(first.id);
-    const advice = await db.pool.query<{ status: string; updated_at: Date }>(
-      "SELECT status, updated_at FROM inquiry_thread_advice WHERE thread_id=$1",
-      [THREAD],
-    );
-    expect(advice.rows[0]?.status).toBe("open");
-    expect(advice.rows[0]?.updated_at.toISOString()).toBe(generatedAt);
-    expect((await db.pool.query(
-      "SELECT id FROM jobs WHERE job_type='inquiry_next_step_advice'",
-    )).rows).toHaveLength(1);
   });
 
   it("keeps a Candidate hidden unless every contributing Signal is readable", async () => {

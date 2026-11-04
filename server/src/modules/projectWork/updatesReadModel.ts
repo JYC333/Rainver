@@ -1,6 +1,8 @@
+import { referenceReadableSql } from "../inquiry/problemReferences.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import type { ProjectWorkUpdate, ProjectWorkUpdateUndo, ProjectWorkUpdatesResponse } from "@rainver/protocol";
 import { HttpError, dateIso, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
-import { contentReadSql, runInheritedReadSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql, runInheritedReadSql } from "../access/contentAccessSql.js";
 import { assertProjectReadable, canWriteProject } from "../projects/access.js";
 
 /**
@@ -33,7 +35,9 @@ const UPDATE_KINDS = [
   "thread.archived",
   "thread.reopened",
   "thread.concluded",
-  "thread.next_step_adopted",
+  "thread.work_recorded",
+  "thread.round_closed",
+  "thread.round_closeout_reverted",
   "memory.remembered",
   "memory.revised",
   "memory.archived",
@@ -52,6 +56,7 @@ const UNDO_ACTIONS: Record<string, ProjectWorkUpdateUndo["action"]> = {
   "thread.archived": "reopen_thread",
   "thread.reopened": "archive_thread",
   "thread.concluded": "revert_iteration",
+  "thread.round_closed": "revert_round_closeout",
   // Archiving is the undo for both: a revision already kept the previous
   // version, and un-revising it would be a second write dressed as a
   // reversal.
@@ -83,7 +88,7 @@ function threadUndoStillApplies(
   if (action === "archive_thread") return lifecycle !== "archived" && lifecycle !== "superseded";
   // A conclusion can only be reverted onto a Thread that is still taking
   // Iterations (`recordIteration` refuses otherwise).
-  if (action === "revert_iteration") return lifecycle === "active";
+  if (action === "revert_iteration" || action === "revert_round_closeout") return lifecycle === "active";
   return true;
 }
 
@@ -122,6 +127,9 @@ interface UpdateRow {
   subject_type: string;
   subject_id: string;
   occurred_at: string;
+  iteration_event_id?:string|null;
+  iteration_event_data?:Record<string,unknown>|null;
+  iteration_undone_by?:string|null;
   cursor_at: string;
   seq: string;
   data_json: Record<string, unknown>;
@@ -165,10 +173,6 @@ function summaryOf(row: UpdateRow): string {
     // No undo of its own: the entry is archived, and putting it back is done
     // from the Memory page, where the whole version chain is readable.
     case "memory.archived": return "Archived a memory";
-    case "thread.next_step_adopted": {
-      const focus = str(row.data_json?.next_focus_kind);
-      return focus ? `Next step: ${focus.replace(/_/g, " ")}` : "Next step adopted";
-    }
     default: return "";
   }
 }
@@ -243,6 +247,10 @@ function fold(rows: UpdateRow[]): ProjectWorkUpdate[] {
   let index = 0;
   while (index < rows.length) {
     const head = rows[index]!;
+    if(head.event_kind==='thread.round_closed' && head.iteration_event_id && head.iteration_event_data){
+      out.push({...toUpdate(head),undo:null,members:[toUpdate(head),toUpdate({...head,id:head.iteration_event_id,event_kind:'thread.concluded',data_json:head.iteration_event_data,undone_by_event_id:head.iteration_undone_by??null})]});
+      index+=1;continue;
+    }
     const batchKey = str(head.data_json?.batch_key);
     let end = index + 1;
     if (batchKey) {
@@ -312,7 +320,7 @@ export async function getProjectUpdates(
             th.object_id AS thread_id, th.statement AS thread_statement,
             th.lifecycle_status AS thread_lifecycle,
             me.id AS memory_id, me.title AS memory_title, me.status AS memory_status,
-            undone.id AS undone_by_event_id
+            undone.id AS undone_by_event_id,child.id AS iteration_event_id,child.data_json AS iteration_event_data,child_undo.id AS iteration_undone_by
        FROM project_work_events e
        JOIN actors a ON a.id = e.actor_id
        LEFT JOIN users au ON au.id = a.user_id
@@ -343,11 +351,16 @@ export async function getProjectUpdates(
             AND u.data_json->>'undo_of_event_id' = e.id
           LIMIT 1
        ) undone ON true
+       LEFT JOIN LATERAL(SELECT c.id,c.data_json FROM project_work_events c WHERE e.event_kind='thread.round_closed' AND c.space_id=e.space_id AND c.project_id=e.project_id AND c.subject_id=e.subject_id AND c.event_kind='thread.concluded' AND c.data_json->>'closeout_id'=e.data_json->>'closeout_id' AND ${runInheritedReadSql("c.data_json->>'run_id'","c.space_id","$2")} LIMIT 1) child ON true
+       LEFT JOIN LATERAL(SELECT u.id FROM project_work_events u WHERE u.space_id=e.space_id AND u.project_id=e.project_id AND u.data_json->>'undo_of_event_id'=child.id LIMIT 1) child_undo ON true
       WHERE e.space_id = $1 AND e.project_id = $3
+        AND NOT(e.event_kind='thread.concluded' AND e.data_json->>'closeout_id' IS NOT NULL AND EXISTS(SELECT 1 FROM project_work_events parent WHERE parent.space_id=e.space_id AND parent.project_id=e.project_id AND parent.subject_id=e.subject_id AND parent.event_kind='thread.round_closed' AND parent.data_json->>'closeout_id'=e.data_json->>'closeout_id' AND ${runInheritedReadSql("parent.data_json->>'run_id'","parent.space_id","$2")}))
+        AND (e.event_kind NOT IN ('thread.work_recorded','thread.round_closed','thread.round_closeout_reverted','thread.concluded') OR ${contentAccessLevelSql({definition:contentResourceDefinition("space_object")!,alias:"tho",userExpr:"$2"})} = 'full')
         -- The same Run term the Task work view applies. An update carries the
         -- Run's own summary text, so a Room-scoped Run's report must not reach
         -- this feed while the work view hides it.
         AND ${runInheritedReadSql("e.data_json->>'run_id'", "e.space_id", "$2")}
+        AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(e.data_json->'reference_refs','[]'::jsonb)) update_ref WHERE NOT COALESCE(${referenceReadableSql("update_ref","$2","e.space_id","e.project_id")},false))
         AND e.event_kind = ANY ($4::text[])
         AND (e.subject_type <> 'task' OR t.id IS NOT NULL)
         AND (e.subject_type <> 'inquiry_thread' OR tho.id IS NOT NULL)

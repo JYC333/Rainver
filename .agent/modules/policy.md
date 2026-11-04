@@ -443,7 +443,7 @@ return DENY with `audit_code="unknown_policy_action"`. `BUILTIN_RULES` evaluated
 11. `ruleRuntimeSkillRenderEnabled` — allow only runtime-skill render calls with an enabled binding proof
 12. `ruleRetrievalToolCall` — allow enabled retrieval-tool domains with an instructed viewer; deny disabled domains, missing viewers, source-policy denial, and egress-policy denial
 13. `ruleManagedSystemActionGrant` — on the managed-run system-action surface, allow requestable system actions only with a bounded Run grant
-14. `ruleUnattendedProjectWrite` — `require_approval` for origin-gated Project writes (`task.create`, `task.stage.advance`, `task.complete`, `proposal.decide`, `inquiry.thread.create`, `inquiry.iteration.record`, `inquiry.advice.adopt`, `research.acquisition.start`, `memory.write`) from an unattended origin
+14. `ruleUnattendedProjectWrite` — `require_approval` for origin-gated Project writes (`task.create`, `task.status.set`, `task.complete`, `proposal.decide`, `inquiry.thread.create`, `inquiry.iteration.record`, `inquiry.advice.adopt`, `research.acquisition.start`, `memory.write`) from an unattended origin
 
 Falls through to registry default only for **known** registered actions when no rule matches.
 

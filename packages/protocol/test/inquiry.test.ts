@@ -21,8 +21,6 @@ describe("Inquiry protocol", () => {
       priority: 0,
       primary_parent_id: null,
       owner_user_id: null,
-      next_focus_kind: null,
-      next_focus_note: null,
       blocked_reason: null,
       version: 1,
       created_from: "user",

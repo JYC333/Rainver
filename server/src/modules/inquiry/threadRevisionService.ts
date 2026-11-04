@@ -48,6 +48,8 @@ export async function recordThreadRevision(db: Queryable, input: {
     ).then((result) => result.rows[0] ?? null);
   if (!stateSnapshot) throw new Error(`Inquiry Thread ${input.threadId} has no ${input.kind} state`);
 
+  const definition=(await db.query<{scope_boundary:string|null}>(`SELECT scope_boundary FROM inquiry_threads WHERE object_id=$1 AND space_id=$2`,[input.threadId,input.spaceId])).rows[0];
+  Object.assign(stateSnapshot,{scope_boundary:definition?.scope_boundary??null});
   const answerState = input.kind === "question"
     ? (stateSnapshot as { answer_state: string }).answer_state
     : null;

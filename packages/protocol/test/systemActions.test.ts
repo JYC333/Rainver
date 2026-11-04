@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { POLICY_ACTION_REGISTRY, SYSTEM_ACTION_GATE_CLASSES, SYSTEM_ACTION_REGISTRY, SystemActionDefinitionSchema, systemActionInputJsonSchema } from "../src/index.js";
+import { POLICY_ACTION_REGISTRY, SYSTEM_ACTION_GATE_CLASSES, SYSTEM_ACTION_REGISTRY, SystemActionDefinitionSchema, systemActionInputJsonSchema, TaskInquiryThreadsPageSchema } from "../src/index.js";
 import type { SystemActionDefinition } from "../src/index.js";
 
 describe("SYSTEM_ACTION_REGISTRY", () => {
@@ -12,7 +12,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
       expect(definition.id).toMatch(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/);
       expect(policyById.has(definition.policy_action)).toBe(true);
       expect(SystemActionDefinitionSchema.safeParse(definition).success).toBe(true);
-      if(!["source.material.submit","source.material.investigate","source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate","authorization.request","input_resource.read","input_resource.search","conversation.search","source.channel.propose_activation","project.source.propose_bind","project.monitoring.propose","project.monitoring.propose_details","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.promote_knowledge","research.start_acquisition","research.cancel_acquisition","agent.delegate","agent.cancel_run","task.create","task.report","task.handoff","task.advance_stage","task.complete","task.request_review","proposal.decide","inquiry.adopt_next_step","memory.remember","memory.revise","artifact.submit","handoff.write"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
+      if(!["source.material.submit","source.material.investigate","source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate","authorization.request","input_resource.read","input_resource.search","conversation.search","source.channel.propose_activation","project.source.propose_bind","project.monitoring.propose","project.monitoring.propose_details","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.record_work","inquiry.link_task","inquiry.list_tasks","inquiry.reference_task_result","inquiry.close_round","inquiry.read_problem","inquiry.promote_knowledge","research.read_result","research.adopt_result","research.start_acquisition","research.cancel_acquisition","agent.delegate","agent.cancel_run","task.create","task.create_batch","task.report","task.handoff","task.set_status","task.complete","task.request_review","proposal.decide","inquiry.adopt_next_step","memory.remember","memory.revise","artifact.submit","handoff.write"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
     }
   });
 
@@ -246,9 +246,9 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
     const byId = new Map(SYSTEM_ACTION_REGISTRY.map((definition) => [definition.id, definition]));
     const conclusion = byId.get("inquiry.record_conclusion")!.input_schema;
     // confidence is an integer percentage; the method label has 32 characters.
-    expect(conclusion.safeParse({ thread_id: "t", change_summary: "c", confidence: 72 }).success).toBe(true);
-    expect(conclusion.safeParse({ thread_id: "t", change_summary: "c", confidence: 0.75 }).success).toBe(false);
-    expect(conclusion.safeParse({ thread_id: "t", change_summary: "c", confidence_method: "x".repeat(33) }).success).toBe(false);
+    expect(conclusion.safeParse({ method_version:"problem_solving.v1",round_intent:"position_only",expected_version:1,expected_revision:0,idempotency_key:"contract",thread_id: "t", change_summary: "c", confidence: 72 }).success).toBe(true);
+    expect(conclusion.safeParse({ method_version:"problem_solving.v1",round_intent:"position_only",expected_version:1,expected_revision:0,idempotency_key:"contract",thread_id: "t", change_summary: "c", confidence: 0.75 }).success).toBe(false);
+    expect(conclusion.safeParse({ method_version:"problem_solving.v1",round_intent:"position_only",expected_version:1,expected_revision:0,idempotency_key:"contract",thread_id: "t", change_summary: "c", confidence_method: "x".repeat(33) }).success).toBe(false);
     // since is a date the acquisition can act on, not free text failed in the background.
     const acquisition = byId.get("research.start_acquisition")!.input_schema;
     expect(acquisition.safeParse({ thread_id: "t", since: "2025-01-01" }).success).toBe(true);
@@ -285,4 +285,44 @@ it("requires bound goal action inputs and never accepts credential or network gr
  expect(actions.get("source.goal.inspect")!.input_schema.safeParse({goal_id:"g",source_connection_id:"s",source_channel_id:"c",credential:"secret"}).success).toBe(false);
  expect(actions.get("source.goal.read")!.policy_resource?.resource_type).toBe("source_goal");
  expect(actions.get("source.goal.inspect")!.side_effects).toBe("durable");
+});
+
+it("bounds explicit Task batches and retains single-Task validation", () => {
+  const schema = SYSTEM_ACTION_REGISTRY.find(action => action.id === "task.create_batch")!.input_schema;
+  const input = { request_summary: "Create one per supplied item", tasks: Array.from({ length: 100 }, (_, i) => ({ title: `Task ${i}` })) };
+  expect(schema.safeParse(input).success).toBe(true);
+  expect(schema.safeParse({ ...input, tasks: [...input.tasks, { title: "Extra" }] }).success).toBe(false);
+  expect(schema.safeParse({ tasks: input.tasks }).success).toBe(false);
+  expect(schema.safeParse({ ...input, tasks: [{ title: "" }] }).success).toBe(false);
+});
+
+it("exposes Board status changes instead of the retired Task Loop", () => {
+  expect(SYSTEM_ACTION_REGISTRY.some(action => String(action.id) === "task.advance_stage")).toBe(false);
+  const action = SYSTEM_ACTION_REGISTRY.find(action => action.id === "task.set_status")!;
+  expect(action.input_schema.safeParse({ task_id: "task-1", status: "in_progress", reason: "Working on it" }).success).toBe(true);
+  expect(action.input_schema.safeParse({ task_id: "task-1", status: "act", reason: "Old inner stage" }).success).toBe(false);
+});
+
+it("requires exactly one Task endpoint for problem association",()=>{
+ const schema=SYSTEM_ACTION_REGISTRY.find(x=>x.id==='inquiry.link_task')!.input_schema;
+ const base={thread_id:'thread',role:'investigates',reason:'Explain failure'};
+ expect(schema.safeParse({...base,task:{title:'Reproduce'}}).success).toBe(true);
+ expect(schema.safeParse({...base,task_id:'task'}).success).toBe(true);
+ expect(schema.safeParse(base).success).toBe(false);
+ expect(schema.safeParse({...base,task:{title:'Reproduce'},task_id:'task'}).success).toBe(false);
+});
+
+it("takes Task association receipts from the dispatcher call, not from model input",()=>{
+ const input=(id:string)=>SYSTEM_ACTION_REGISTRY.find(x=>x.id===id)!.input_schema;
+ const link={thread_id:'thread',role:'investigates',reason:'Explain failure',task_id:'task'};
+ const reference={thread_id:'thread',task_id:'task',method_version:'problem_solving.v1',expected_version:1,expected_revision:0,stage:'verify',work_kind:'reference_result',reason:'Collect the result'};
+ expect(input('inquiry.link_task').safeParse(link).success).toBe(true);
+ expect(input('inquiry.reference_task_result').safeParse(reference).success).toBe(true);
+ expect(input('inquiry.link_task').safeParse({...link,idempotency_key:'model'}).success).toBe(false);
+});
+
+it("accepts a Thread excerpt of 500 characters outside the Basic Multilingual Plane",()=>{
+ const item=(statement:string)=>({items:[{id:'thread',statement,lifecycle_status:'active',roles:['executes']}],next_cursor:null});
+ expect(TaskInquiryThreadsPageSchema.safeParse(item('\u{20000}'.repeat(500))).success).toBe(true);
+ expect(TaskInquiryThreadsPageSchema.safeParse(item('x'.repeat(501))).success).toBe(false);
 });

@@ -261,6 +261,7 @@ export class SystemActionDispatcher {
   }
 
   async dispatch(call: CanonicalToolCall): Promise<SystemActionDispatchResult> {
+
     if (!this.permittedActionIds.has(call.name)) {
       await this.recordRefusedAction(call, "system_action_not_granted", NOT_GRANTED_MESSAGE);
       return {

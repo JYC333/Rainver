@@ -15,6 +15,14 @@ Current state lives in [`architecture/PROJECTS.md`](../architecture/PROJECTS.md)
 conversation advances a Project). This document holds the decision and its
 reasoning only.
 
+[ADR 0027](0027-problem-engine-research-separation.md) supersedes only the
+universal work-progression use of Loop in the committed decision 1 (“same
+Loop”), decision 4 (“The Loop has one wording”) and the Board-stage consequence.
+ADR 0027 establishes the single Task Board status and Inquiry-owned method as
+a target contract; implementation is pending. The historical decision 4
+established uniform stage wording, not single Task status. No-type, pacing
+and other decisions remain.
+
 ## Context
 
 `projects.primary_mode` was the system's "one classification axis": how a
@@ -67,13 +75,17 @@ opposite of tracking; it is the system setting the pace.
    step, chosen from the goal: a goal that is a question opens one Inquiry
    Thread; a goal that names something to build creates the first Task. In
    ordinary turns, when the person asks for a decomposition or a plan the
-   Agent creates at most three objects per turn and names the rest; when they
-   did not ask, at most one. These bounds live in the Room's policy text and
+   Agent creates the requested Task list through `task.create_batch`, in
+   bounded calls without asking the person to repeat continue. Inquiry
+   decomposition keeps at most three Threads per turn and names the rest;
+   when the person did not request decomposition, at most one object. These bounds live in the Room's policy text and
    the continuation instruction. Execution safety bounds from ADR 0017 still
    apply independently; the prompt-level pacing is not a replacement for them.
 
-4. **The Loop has one wording.** The five stage keys — `frame`, `plan`,
-   `act`, `verify`, `conclude` — are the labels, in every Project.
+4. **A Task has one progress state: its Board status.** The former internal
+   `frame → plan → act → verify → conclude` Loop is retired from Task controls,
+   Agent actions and automatic settlement. Historical stage records remain
+   readable as history; they do not determine current Task progress.
 
 5. **When a kind of work needs structure the shared model lacks** (spaced
    review for learning, an on-call rota or SLA for operations), the answer is

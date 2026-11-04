@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+COPY patches ./patches
 COPY packages/protocol/package.json ./packages/protocol/
 COPY packages/folder-read/package.json ./packages/folder-read/
 COPY packages/outbound-guard/package.json ./packages/outbound-guard/
@@ -107,6 +108,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+COPY patches ./patches
 COPY packages/protocol/package.json ./packages/protocol/
 COPY packages/folder-read/package.json ./packages/folder-read/
 COPY packages/outbound-guard/package.json ./packages/outbound-guard/

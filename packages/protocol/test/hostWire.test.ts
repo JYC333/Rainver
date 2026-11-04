@@ -95,3 +95,9 @@ it("bounds Sources kernel tasks and rejects credential-bearing request headers",
   expect(SourceRequestSchema.safeParse({sequence:1,url:'https://a.test',method:'GET',headers:{'if-none-match':'"v1"'}}).success).toBe(true);
   expect(SourceExecutionLimitsSchema.safeParse({wall_ms:1000,memory_bytes:134217728,cpu_quota_percent:50,processes:1,output_bytes:100,requests:1}).success).toBe(false);
 });
+
+it("carries only an exact managed vendor CLI version", () => {
+  const frame = { type: "install_tool", request_id: "install-1", runtime_key: "codex_cli", version: "2.5.0", distribution: { kind: "npx", package: "@agentclientprotocol/codex-acp@2.5.0", args: [], env: {} }, login: null, vendor_cli_version: "0.166.0" };
+  expect(HostInstallToolFrameSchema.parse(frame)).toMatchObject({ vendor_cli_version: "0.166.0" });
+  expect(HostInstallToolFrameSchema.safeParse({ ...frame, vendor_cli_version: "latest" }).success).toBe(false);
+});

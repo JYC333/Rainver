@@ -52,7 +52,7 @@ class FakeDb {
         rowCount: 1,
       };
     }
-    if (/FROM source_connections/.test(norm)) {
+    if (/FROM source_connections\s+WHERE/.test(norm)) {
       return {
         rows: [
           {
@@ -217,7 +217,7 @@ describe("ContextOpsService", () => {
       surface: "knowledge_brief",
     });
     expect(JSON.stringify(summary)).not.toContain("raw private content");
-    const sourceWarningSql = db.queries.find((query) => /FROM source_connections/.test(query.sql))?.sql ?? "";
+    const sourceWarningSql = db.queries.find((query) => /FROM source_connections\s+WHERE/.test(query.sql))?.sql ?? "";
     expect(sourceWarningSql).toContain("IS DISTINCT FROM 'true'");
     expect(sourceWarningSql).toContain("consent_json ? 'schema_version'");
     expect(sourceWarningSql).toContain("consent_json->'allowed_reader_user_ids'");

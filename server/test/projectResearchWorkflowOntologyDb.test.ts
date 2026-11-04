@@ -126,7 +126,7 @@ describe("Research Workflow ontology boundary (real Postgres)", () => {
     expect(visible).toBeNull();
   });
 
-  it("filters the derived pin and graph edge when the viewer cannot read the Thread endpoint", async () => {
+  it("withholds the content-bearing Workflow and graph edge when the viewer cannot read its Thread endpoint", async () => {
     if (!db.available) return;
     await db.pool.query(
       `UPDATE space_objects SET visibility='private',owner_user_id=$2 WHERE space_id=$1 AND id=$3`,
@@ -137,8 +137,7 @@ describe("Research Workflow ontology boundary (real Postgres)", () => {
       { spaceId: SPACE, userId: PROJECT_MEMBER },
       projectId,
     );
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ id: workflowId, primary_thread_id: null });
+    expect(rows).toEqual([]);
 
     const edges = await new GraphProjectionRepository(db.pool).listEdgesForNodeIds(
       { spaceId: SPACE, userId: PROJECT_MEMBER },

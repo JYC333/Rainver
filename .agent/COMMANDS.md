@@ -479,6 +479,13 @@ request building read it. Every row carries `source` and `verifiedOn`, and
 verification date. When adding a model or touching a figure, re-read the vendor page in `source` and
 move `verifiedOn` to that day.
 
+## Problem engine upgrade verification
+
+The one-time new-model cutover and isolated backup/restore drill are documented
+in [PROBLEM_ENGINE_UPGRADE](architecture/PROBLEM_ENGINE_UPGRADE.md). There is no
+runtime problemUpgradeAudit CLI. Use the standard migrator and offline operators,
+not an application fallback or manual per-request backfill.
+
 ## Product acceptance
 
 Run the deterministic product gate from the repository root:
@@ -621,3 +628,14 @@ This checks capability absence => `refused`, zero requests. It is not successful
 execution inside the standard container. That separate deployment gate needs
 administrator cgroup/userns authorization; do not add privileges to make this
 negative test pass. Direct backend also requires `/usr/bin/prlimit`.
+
+
+Cutover preflight: stop before deployment and inventory the target database
+**offline**. The original0017 section (now within0009_problem_engine) deliberately fails if any Step has a non-modern
+method; do not guess a conversion or start an old writer against the new schema.
+Only test maintenance is authorized for this cleanup. Dev/prod require separate
+authorization, offline inventory, backup and an explicitly reviewed conversion;
+they must not inherit test's zero-legacy-Step assumption. The original0020 section preserves imported
+history's canonical top-level ACL/provenance fields. Source histories0009–0021
+require ADR0025 frozen-pair conversion before starting the composed chain;
+never rewrite checksums or use ordinary up to replace applied history.

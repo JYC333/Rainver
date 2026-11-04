@@ -5,73 +5,10 @@ import {
   type ProjectAttentionItem,
 } from "../projects/attentionRegistry.js";
 import { readableCandidateIds } from "./signalService.js";
-import { threadReadableSql } from "./threadAccess.js";
 
 // Registers Inquiry into the Project Kernel's registries (ADR 0011 decision
 // 5): `modules/projects` aggregates through these contracts and never
 // queries `inquiry_threads`/`inquiry_signal_candidates` directly.
-
-/** What each recommended next step is called where a person reads it. */
-const FOCUS_LABELS: Record<string, string> = {
-  clarify_or_decompose: "Split this question into sub-questions",
-  search_acquisition: "Search for evidence",
-  design_run_experiment: "Design an experiment",
-  read_evidence: "Read the evidence gathered",
-  synthesize: "Synthesize what the evidence says",
-  promote_knowledge: "Promote this into Knowledge",
-};
-
-/**
- * The next step the system worked out, where the person will see it.
- *
- * Advice is written to `inquiry_thread_advice` when a search finishes, with
- * its reasoning. The Project front page and the Room read it, not only the
- * Inquiry Area stage workspace of the selected Thread.
- *
- * Stale advice (the Thread changed under it) is left out rather than shown
- * with a caveat: a recommendation about a question that no longer reads that
- * way is not a next step.
- */
-async function nextStepAdviceItems(
-  db: Queryable,
-  identity: SpaceUserIdentity,
-  projectId: string,
-): Promise<ProjectAttentionItem[]> {
-  const rows = await db.query<{
-    thread_id: string; statement: string; recommended_focus_kind: string; rationale: string;
-  }>(
-    `SELECT advice.thread_id, thread.statement, advice.recommended_focus_kind, advice.rationale
-       FROM inquiry_thread_advice advice
-       JOIN inquiry_threads thread
-         ON thread.object_id = advice.thread_id AND thread.space_id = advice.space_id
-       JOIN space_objects object
-         ON object.id = thread.object_id AND object.space_id = thread.space_id
-      WHERE advice.space_id = $1 AND advice.project_id = $2
-        AND advice.status = 'open'
-        AND advice.thread_version >= thread.version
-        AND thread.lifecycle_status = 'active'
-        AND ${threadReadableSql("object", "$3", "read_content")}
-      ORDER BY advice.updated_at DESC
-      LIMIT 10`,
-    [identity.spaceId, projectId, identity.userId],
-  );
-  return rows.rows.map((row): ProjectAttentionItem => ({
-    id: `inquiry_advice:${row.thread_id}`,
-    attention_class: "next_step",
-    project_id: projectId,
-    area_kind: "inquiry",
-    source_type: "inquiry_advice",
-    source_id: row.thread_id,
-    severity: "normal",
-    title: `${FOCUS_LABELS[row.recommended_focus_kind] ?? row.recommended_focus_kind.replace(/_/g, " ")}: ${row.statement}`,
-    summary: row.rationale,
-    reason: "suggested next step",
-    due_at: null,
-    blocking_refs: [],
-    action_descriptors: [{ label: "Open", href: `/projects/${projectId}/inquiry?thread=${row.thread_id}` }],
-    href: `/projects/${projectId}/inquiry?thread=${row.thread_id}`,
-  }));
-}
 
 const inquiryAttentionAdapter: ProjectAttentionAdapter = {
   areaKind: "inquiry",
@@ -82,11 +19,8 @@ const inquiryAttentionAdapter: ProjectAttentionAdapter = {
         ORDER BY created_at ASC`,
       [identity.spaceId, projectId],
     );
-    const [readable, advice] = await Promise.all([
-      readableCandidateIds(db, identity, projectId, candidates.rows, "read_content"),
-      nextStepAdviceItems(db, identity, projectId),
-    ]);
-    return [...advice, ...candidates.rows.filter((candidate) => readable.has(candidate.id)).map((c): ProjectAttentionItem => ({
+    const readable=await readableCandidateIds(db,identity,projectId,candidates.rows,'read_content');
+    return [...candidates.rows.filter((candidate) => readable.has(candidate.id)).map((c): ProjectAttentionItem => ({
       id: `inquiry_candidate:${c.id}`,
       attention_class: "gate",
       project_id: projectId,

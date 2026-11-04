@@ -1,3 +1,7 @@
+import {threadReadableSql} from "./threadAccess.js";
+import {assertProjectReadable,canWriteProject} from "../projects/access.js";
+import { InquiryTaskAssociationService } from "./taskAssociations.js";
+import { InquiryProblemEngineService } from "./problemEngineService.js";
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
@@ -18,7 +22,6 @@ import { InquiryIterationService } from "./iterationService.js";
 import { InquirySignalService } from "./signalService.js";
 import { registerInquiryProjectIntegration } from "./projectIntegration.js";
 import { InquiryGraphService } from "./graphService.js";
-import { InquiryAdviceService } from "./adviceService.js";
 import { inquiryRetrievalRegistry } from "./retrievalAdapter.js";
 import { RetrievalSearchService } from "../retrieval/index.js";
 
@@ -28,8 +31,48 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   const iterations = () => InquiryIterationService.fromConfig(context.config);
   const signals = () => InquirySignalService.fromConfig(context.config);
   const graphs = () => InquiryGraphService.fromConfig(context.config);
-  const advice = () => InquiryAdviceService.fromConfig(context.config);
 
+  const problems = () => new InquiryProblemEngineService(dbPool(context.config));
+  app.get("/api/v1/projects/:projectId/inquiry/threads/:threadId/problem",async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try { const p=params(request);return reply.send(await problems().projection(identity,requiredString(p.projectId,"project_id"),requiredString(p.threadId,"thread_id"),{limit:intQuery(query(request).limit,50)??50,before_step:query(request).before_step?Number(query(request).before_step):undefined,before_closeout:query(request).before_closeout?Number(query(request).before_closeout):undefined})); } catch(error){return sendRouteError(reply,error);}
+  });
+  for(const [path,command] of [["work","recordWork"],["close-round","closeRound"]] as const) {
+    app.post(`/api/v1/projects/:projectId/inquiry/threads/:threadId/problem/${path}`,async(request,reply)=>{
+      const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+      try {const p=params(request);return reply.code(201).send(await problems()[command](identity,requiredString(p.projectId,"project_id"),requiredString(p.threadId,"thread_id"),jsonBody(request)));}catch(error){return sendRouteError(reply,error);}
+    });
+  }
+  app.get('/api/v1/projects/:projectId/inquiry/workspace-threads',async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try{const project=requiredString(params(request).projectId,'project_id'),db=dbPool(context.config),q=query(request);await assertProjectReadable(db,identity.spaceId,project,identity.userId);
+      const status=q.status??'active';if(!['active','history','all'].includes(String(status)))throw new HttpError(422,'Invalid problem filter');
+      const rows=await db.query(`SELECT t.object_id AS id,t.kind,left(t.statement,500) AS statement,length(t.statement)>500 AS statement_truncated,t.lifecycle_status,t.attention_state,so.updated_at,CASE WHEN ${threadReadableSql('so','$3','read_content')} THEN left(COALESCE(qs.current_answer_summary,hs.proposed_claim),300) ELSE NULL END AS judgment FROM inquiry_threads t JOIN space_objects so ON so.id=t.object_id AND so.space_id=t.space_id LEFT JOIN inquiry_question_states qs ON qs.thread_id=t.object_id LEFT JOIN inquiry_hypothesis_states hs ON hs.thread_id=t.object_id WHERE t.space_id=$1 AND t.project_id=$2 AND ${threadReadableSql('so','$3','read')} AND ($4='all' OR ($4='active' AND t.lifecycle_status='active') OR ($4='history' AND t.lifecycle_status<>'active')) AND ($5::varchar IS NULL OR t.object_id>$5) AND t.statement ILIKE $6 ORDER BY t.object_id LIMIT 51`,[identity.spaceId,project,identity.userId,status,q.after_thread_id??null,'%'+String(q.q??'').slice(0,200)+'%']);
+      return reply.send({items:rows.rows.slice(0,50),next_cursor:rows.rows.length>50?rows.rows[49]!.id:null});
+    }catch(error){return sendRouteError(reply,error);}
+  });
+  app.get('/api/v1/projects/:projectId/inquiry/workspace-access',async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try{const project=requiredString(params(request).projectId,'project_id'),db=dbPool(context.config);await assertProjectReadable(db,identity.spaceId,project,identity.userId);return reply.send({can_write:(await db.query(`SELECT id FROM projects WHERE id=$1 AND space_id=$2 AND status='active'`,[project,identity.spaceId])).rowCount===1 && await canWriteProject(db,identity.spaceId,project,identity.userId)});}catch(error){return sendRouteError(reply,error);}
+  });
+  const taskAssociations=()=>new InquiryTaskAssociationService(dbPool(context.config));
+  const taskPath="/api/v1/projects/:projectId/inquiry/threads/:threadId/tasks";
+  app.get(taskPath,async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try{const p=params(request);return reply.send(await taskAssociations().tasks(identity,requiredString(p.projectId,"project_id"),requiredString(p.threadId,"thread_id"),optionalString(query(request).after_task_id)??undefined));}catch(error){return sendRouteError(reply,error);}
+  });
+  app.post(taskPath,async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try{const p=params(request);return reply.code(201).send(await taskAssociations().link(identity,requiredString(p.projectId,"project_id"),requiredString(p.threadId,"thread_id"),jsonBody(request)));}catch(error){return sendRouteError(reply,error);}
+  });
+  app.get(`${taskPath}/:taskId/result`,async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try{const p=params(request);return reply.send(await taskAssociations().result(identity,requiredString(p.projectId,"project_id"),requiredString(p.threadId,"thread_id"),requiredString(p.taskId,"task_id")));}catch(error){return sendRouteError(reply,error);}
+  });
+  app.post(`${taskPath}/:taskId/reference-result`,async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try{const p=params(request);return reply.code(201).send(await taskAssociations().referenceResult(identity,requiredString(p.projectId,"project_id"),requiredString(p.threadId,"thread_id"),requiredString(p.taskId,"task_id"),jsonBody(request)));}catch(error){return sendRouteError(reply,error);}
+  });
   app.get("/api/v1/projects/:projectId/inquiry/threads", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -418,62 +461,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const projectId = requiredString(p.projectId, "project_id");
       const packetId = requiredString(p.packetId, "packet_id");
       return reply.send(await signals().closeReviewPacket(identity, projectId, packetId));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.get("/api/v1/projects/:projectId/inquiry/threads/:threadId/advice", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const threadId = requiredString(p.threadId, "thread_id");
-      return reply.send(await advice().getAdvice(identity, projectId, threadId));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/projects/:projectId/inquiry/threads/:threadId/advice", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const threadId = requiredString(p.threadId, "thread_id");
-      return reply.code(201).send(await advice().generateAdvice(identity, projectId, threadId, "user_request"));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  // Adoption is orchestrated here rather than inside the advice service so
-  // the work-state command stays the single Next Focus write authority (and
-  // keeps enforcing the focused-Thread invariant and its work events).
-  app.post("/api/v1/projects/:projectId/inquiry/threads/:threadId/advice/adopt", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const threadId = requiredString(p.threadId, "thread_id");
-      const result = await advice().adoptAdvice(identity, projectId, threadId);
-      return reply.send({ thread: result.thread, advice: result.advice });
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/projects/:projectId/inquiry/threads/:threadId/advice/dismiss", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const threadId = requiredString(p.threadId, "thread_id");
-      return reply.send(await advice().dismissAdvice(identity, projectId, threadId));
     } catch (error) {
       return sendRouteError(reply, error);
     }

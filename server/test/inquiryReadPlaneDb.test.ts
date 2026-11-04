@@ -4,10 +4,8 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
-import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
+import {ModernIterationService as InquiryIterationService} from "./support/modernIteration.js";
 import { InquirySignalService } from "../src/modules/inquiry/signalService.js";
-import { InquiryAdviceService } from "../src/modules/inquiry/adviceService.js";
-import type { ServerConfig } from "../src/config.js";
 import { InquiryGraphService } from "../src/modules/inquiry/graphService.js";
 import { inquiryRetrievalAdapter, inquiryRetrievalRegistry } from "../src/modules/inquiry/retrievalAdapter.js";
 import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
@@ -165,7 +163,6 @@ describe("Inquiry unified read plane (real Postgres)", () => {
       .toContain("Confidential latency measurements");
 
     await new InquiryIterationService(db.pool).updateWork(identity(), PROJECT, thread.id as string, {
-      next_focus_kind: "synthesize", next_focus_note: "Confidential next action",
     });
     const threads = new InquiryThreadService(db.pool);
     const iterations = new InquiryIterationService(db.pool);
@@ -178,10 +175,6 @@ describe("Inquiry unified read plane (real Postgres)", () => {
       await expect(iterations[read](outsiderIdentity(), PROJECT, thread.id as string)).rejects.toMatchObject({ statusCode: 404 });
     }
     expect(await iterations.listOpenProjectSteps(outsiderIdentity(), PROJECT)).toEqual([]);
-    const advice = new InquiryAdviceService(db.pool, { databaseUrl: "postgres://unused" } as ServerConfig);
-    await expect(advice.getAdvice(outsiderIdentity(), PROJECT, thread.id as string))
-      .rejects.toMatchObject({ statusCode: 404 });
-    expect(await advice.getAdvice(identity(), PROJECT, thread.id as string)).toBeNull();
     expect((await threads.getThread(identity(), PROJECT, thread.id as string)).question_state)
       .toMatchObject({ current_answer_summary: "Confidential latency measurements" });
     await threads.setPersonalFocus(outsiderIdentity(), PROJECT, thread.id as string, true);

@@ -57,11 +57,13 @@ declare a new open Task and fresh fixed bounds in the same container. Do not del
 Room delegation is bounded by the server and remains auditable.
 
 Project work is recorded, not described. Listing a decomposition in a reply
-does not create anything: call task.create once per Task and report the count
-you actually created, or the failure, in plain language. The same holds for the
+does not create anything: use task.create for a single Task or task.create_batch
+for an explicitly requested list, and report created and existing counts or the
+failure in plain language. Complete the requested list without asking the person
+to repeat continue after an arbitrary small batch. The same holds for the
 rest of the Project surface — task.report is how you say what you did and
 concluded, task.handoff is how you give a Task to someone else or release it,
-task.advance_stage is how you move a Task through its Loop, task.complete is
+task.set_status is how you move a Task between Board statuses, task.complete is
 how you say the work is finished, and task.request_review is how you stop and
 hand a decision back. Reporting is not closing: a Task you finished but did not
 complete sits on the board as unfinished work. Use

@@ -1,4 +1,4 @@
-import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, jsonb, integer, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, bigserial, index, uniqueIndex, unique, check, foreignKey, varchar, text, jsonb, integer, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { users } from "./auth.js";
 import { runs } from "./runs.js";
@@ -6,11 +6,7 @@ import { spaces } from "./spaces.js";
 import { projects } from "./projects.js";
 import { spaceObjects } from "./knowledge.js";
 
-// Inquiry Domain. InquiryThread is a
-// Project-owned root table, never a `space_objects` row — see ADR 0011
-// decision 1. Business relationships use their own narrowly-owned link
-// tables (B12A "narrowly owned domain join table" exception), never
-// `object_relations`.
+// Inquiry roots attach to space_objects; internal work and history stay domain-private.
 
 export const inquiryThreads = pgTable("inquiry_threads", {
 	// Ontology object (ADR 0012 / ADR 0011 decision 1). Identity, visibility,
@@ -22,6 +18,7 @@ export const inquiryThreads = pgTable("inquiry_threads", {
 	projectId: varchar("project_id", { length: 36 }).notNull(),
 	kind: varchar({ length: 16 }).notNull(),
 	statement: text().notNull(),
+	scopeBoundary:text("scope_boundary"),
 	lifecycleStatus: varchar("lifecycle_status", { length: 24 }).default('active').notNull(),
 	attentionState: varchar("attention_state", { length: 16 }).default('backlog').notNull(),
 	priority: integer().default(0).notNull(),
@@ -30,10 +27,9 @@ export const inquiryThreads = pgTable("inquiry_threads", {
 	// (`inquiry_thread_steps`). The column stays so the Thread read shape is
 	// unchanged and the contradiction CHECK below stays enforceable; the step
 	// row is the authority and the service writes both in one transaction.
-	nextFocusKind: varchar("next_focus_kind", { length: 32 }),
-	nextFocusNote: text("next_focus_note"),
 	blockedReason: text("blocked_reason"),
 	version: integer().default(1).notNull(),
+	problemRevision: integer("problem_revision").default(0).notNull(),
 	createdFrom: varchar("created_from", { length: 32 }).default('user').notNull(),
 	producerIdempotencyKey: varchar("producer_idempotency_key", { length: 128 }),
 }, (table): PgTableExtraConfigValue[] => [
@@ -78,7 +74,6 @@ export const inquiryThreads = pgTable("inquiry_threads", {
 	// hold both. A focused Thread does not have to hold either: a Thread
 	// between rounds, or one whose only running work is a background search,
 	// is doing neither. Do not require a next step before focus.
-	check("ck_inquiry_threads_focused_next_focus", sql`next_focus_kind IS NULL OR blocked_reason IS NULL`),
 	check("ck_inquiry_threads_lifecycle_attention", sql`
 		(lifecycle_status = 'active' AND attention_state IN ('focused', 'monitoring', 'backlog', 'blocked'))
 		OR (lifecycle_status = 'resolved' AND attention_state = 'resolved')
@@ -254,6 +249,7 @@ export const inquiryIterations = pgTable("inquiry_iterations", {
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	projectId: varchar("project_id", { length: 36 }).notNull(),
 	threadId: varchar("thread_id", { length: 36 }).notNull(),
+	roundNumber: integer("round_number"),
 	triggerKind: varchar("trigger_kind", { length: 32 }).default('user_edit').notNull(),
 	triggerRef: varchar("trigger_ref", { length: 128 }),
 	inputRefsJson: jsonb("input_refs_json").default([]).notNull(),
@@ -263,7 +259,6 @@ export const inquiryIterations = pgTable("inquiry_iterations", {
 	changeSummary: text("change_summary").notNull(),
 	reasoningSummary: text("reasoning_summary"),
 	unresolvedGaps: text("unresolved_gaps"),
-	confirmedNextFocus: varchar("confirmed_next_focus", { length: 32 }),
 	createdByUserId: varchar("created_by_user_id", { length: 36 }),
 	createdByRunId: varchar("created_by_run_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
@@ -333,6 +328,15 @@ export const inquiryThreadSteps = pgTable("inquiry_thread_steps", {
 	projectId: varchar("project_id", { length: 36 }).notNull(),
 	threadId: varchar("thread_id", { length: 36 }).notNull(),
 	kind: varchar({ length: 32 }).notNull(),
+	factOrder: bigserial("fact_order", { mode: "number" }).notNull(),
+	endedReason:varchar("ended_reason",{length:24}),
+	methodVersion: varchar("method_version", { length: 32 }).default("problem_solving.v1").notNull(),
+	methodStage: varchar("method_stage", { length: 16 }),
+	workKind: varchar("work_kind", { length: 32 }),
+	roundNumber: integer("round_number"),
+	selectionKind: varchar("selection_kind", { length: 16 }),
+	skippedStages: jsonb("skipped_stages").default([]).notNull(),
+	contextRefs: jsonb("context_refs").default([]).notNull(),
 	status: varchar({ length: 16 }).default('in_progress').notNull(),
 	slot: varchar({ length: 16 }).default('primary').notNull(),
 	// The note belongs to the step it describes rather than to the Thread, so
@@ -352,6 +356,7 @@ export const inquiryThreadSteps = pgTable("inquiry_thread_steps", {
 	completedAt: timestamp("completed_at", { withTimezone: true, mode: 'string' }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
+	unique("uq_inquiry_steps_id_project_space").on(table.id,table.projectId,table.spaceId),
 	index("ix_inquiry_thread_steps_thread_id").using("btree", table.threadId.asc().nullsLast(), table.createdAt.desc()),
 	index("ix_inquiry_thread_steps_project_id").using("btree", table.projectId.asc().nullsLast()),
 	// The single-primary-step rule, enforced by the database rather than by
@@ -388,7 +393,8 @@ export const inquiryThreadSteps = pgTable("inquiry_thread_steps", {
 			foreignColumns: [inquiryIterations.id, inquiryIterations.projectId, inquiryIterations.spaceId],
 			name: "inquiry_thread_steps_iteration_fkey"
 		}),
-	check("ck_inquiry_thread_steps_kind", sql`(kind)::text = ANY (ARRAY[('clarify_or_decompose'::character varying)::text, ('search_acquisition'::character varying)::text, ('design_run_experiment'::character varying)::text, ('read_evidence'::character varying)::text, ('synthesize'::character varying)::text, ('promote_knowledge'::character varying)::text, ('create_decision_case'::character varying)::text, ('create_delivery_task'::character varying)::text])`),
+	check("ck_inquiry_thread_steps_kind", sql`(method_version = 'problem_solving.v1' AND work_kind IS NOT NULL AND method_stage IS NOT NULL AND round_number IS NOT NULL AND kind = work_kind AND work_kind IN ('select_method','record_work','invoke_research','link_task','reference_result','assess_result','close_round') AND method_stage IN ('frame','plan','act','verify','conclude') AND round_number > 0)`),
+	check("ck_inquiry_thread_steps_selection", sql`selection_kind IS NULL OR selection_kind IN ('select','skip','return')`),
 	check("ck_inquiry_thread_steps_status", sql`(status)::text = ANY (ARRAY[('in_progress'::character varying)::text, ('done'::character varying)::text, ('abandoned'::character varying)::text])`),
 	check("ck_inquiry_thread_steps_slot", sql`(slot)::text = ANY (ARRAY[('primary'::character varying)::text, ('background'::character varying)::text])`),
 	check("ck_inquiry_thread_steps_origin", sql`(origin)::text = ANY (ARRAY[('user'::character varying)::text, ('advice'::character varying)::text, ('system'::character varying)::text])`),
@@ -449,4 +455,42 @@ export const inquiryProjectSettings = pgTable("inquiry_project_settings", {
 			name: "inquiry_project_settings_space_id_fkey"
 		}),
 	check("ck_inquiry_project_settings_wip_limit", sql`shared_focus_wip_limit >= 1`),
+]);
+
+// Immutable round close-out facts, not a second execution lifecycle.
+export const inquiryRoundCloseouts = pgTable("inquiry_round_closeouts", {
+ id: varchar({ length: 36 }).primaryKey().notNull(),
+ spaceId: varchar("space_id", { length: 36 }).notNull(),
+ projectId: varchar("project_id", { length: 36 }).notNull(),
+ threadId: varchar("thread_id", { length: 36 }).notNull(),
+ roundNumber: integer("round_number").notNull(),
+ methodVersion: varchar("method_version", { length: 32 }).notNull(),
+ summary: text().notNull(),
+ inputRefs: jsonb("input_refs").default([]).notNull(),
+ nextFocus: jsonb("next_focus"),
+ iterationId: varchar("iteration_id", { length: 36 }),
+ previousPrimary: jsonb("previous_primary"),
+ closedRevision: integer("closed_revision").notNull(),
+ createdByUserId: varchar("created_by_user_id", { length: 36 }),
+ createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (t): PgTableExtraConfigValue[] => [
+ unique("uq_inquiry_closeout_round").on(t.threadId,t.spaceId,t.roundNumber),
+ unique("uq_inquiry_closeout_iteration").on(t.iterationId,t.spaceId),
+ foreignKey({columns:[t.threadId,t.projectId,t.spaceId],foreignColumns:[inquiryThreads.objectId,inquiryThreads.projectId,inquiryThreads.spaceId],name:"inquiry_closeout_thread_fkey"}).onDelete("cascade"),
+ foreignKey({columns:[t.iterationId,t.projectId,t.spaceId],foreignColumns:[inquiryIterations.id,inquiryIterations.projectId,inquiryIterations.spaceId],name:"inquiry_closeout_iteration_fkey"}),
+ check("ck_inquiry_closeout_round",sql`round_number > 0`),
+]);
+
+// Replay receipts for Inquiry work commands; no execution state or scheduling.
+export const inquiryProblemCommands = pgTable("inquiry_problem_commands", {
+ id: varchar({ length: 36 }).primaryKey().notNull(),
+ spaceId: varchar("space_id", { length: 36 }).notNull(),
+ projectId: varchar("project_id", { length: 36 }).notNull(),
+ threadId: varchar("thread_id", { length: 36 }).notNull(),
+ idempotencyKey: varchar("idempotency_key", { length: 128 }).notNull(),
+ requestJson: jsonb("request_json").notNull(),
+ resultJson: jsonb("result_json").notNull(),
+}, (t): PgTableExtraConfigValue[] => [
+ unique("uq_inquiry_problem_command_key").on(t.spaceId,t.idempotencyKey),
+ foreignKey({columns:[t.threadId,t.projectId,t.spaceId],foreignColumns:[inquiryThreads.objectId,inquiryThreads.projectId,inquiryThreads.spaceId],name:"inquiry_problem_command_thread_fkey"}).onDelete("cascade"),
 ]);

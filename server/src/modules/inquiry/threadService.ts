@@ -1,3 +1,4 @@
+import { problemThreadPage, problemSummaries } from "./problemReadModel.js";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { assertLinkTypeAllowed } from "../ontology/validation.js";
 import { randomUUID } from "node:crypto";
@@ -21,24 +22,6 @@ import { inquiryRetrievalRegistry } from "./retrievalAdapter.js";
 import { recordThreadRevision } from "./threadRevisionService.js";
 import { recordThreadWorkEvent, type ThreadEventProvenance } from "./threadWorkEvents.js";
 
-/**
- * Actions only, in the order of the stages they belong to. `pause` and
- * `wait_for_monitoring` are states, not actions: pause is `attention_state`,
- * and waiting on monitoring is a running background step. Do not offer them
- * in this list.
- */
-export const NEXT_FOCUS_KINDS = [
-  "clarify_or_decompose",
-  "search_acquisition",
-  "design_run_experiment",
-  "read_evidence",
-  "synthesize",
-  "promote_knowledge",
-  "create_decision_case",
-  "create_delivery_task",
-] as const;
-export type NextFocusKind = (typeof NEXT_FOCUS_KINDS)[number];
-
 const THREAD_RELATION_KINDS = ["decomposes_into", "proposes", "depends_on", "supports", "contradicts", "supersedes", "related_to"] as const;
 
 interface ThreadRow {
@@ -47,13 +30,12 @@ interface ThreadRow {
   project_id: string;
   kind: string;
   statement: string;
+  scope_boundary:string|null;
   lifecycle_status: string;
   attention_state: string;
   priority: number;
   primary_parent_id: string | null;
   owner_user_id: string | null;
-  next_focus_kind: string | null;
-  next_focus_note: string | null;
   blocked_reason: string | null;
   version: number;
   created_from: string;
@@ -74,8 +56,6 @@ function threadToOut(row: WithAccessLevel<ThreadRow>): Record<string, unknown> {
     priority: row.priority,
     primary_parent_id: row.primary_parent_id,
     owner_user_id: row.owner_user_id,
-    next_focus_kind: row.next_focus_kind,
-    next_focus_note: bodyWithheld(row.effective_access_level) ? null : row.next_focus_note,
     blocked_reason: bodyWithheld(row.effective_access_level) ? null : row.blocked_reason,
     version: row.version,
     created_from: row.created_from,
@@ -90,8 +70,8 @@ function threadToOut(row: WithAccessLevel<ThreadRow>): Record<string, unknown> {
 // The external field is `id`.
 const THREAD_ROOT_COLUMNS = ["owner_user_id", "created_by_user_id", "created_at", "updated_at"];
 const THREAD_OWN_COLUMNS = [
-  "space_id", "project_id", "kind", "statement", "lifecycle_status", "attention_state", "priority",
-  "primary_parent_id", "next_focus_kind", "next_focus_note", "blocked_reason", "version", "created_from",
+  "space_id", "project_id", "kind", "statement", "scope_boundary", "lifecycle_status", "attention_state", "priority",
+  "primary_parent_id", "blocked_reason", "version", "created_from",
 ];
 
 /** Thread columns for a query that uses {@link THREAD_FROM}. */
@@ -254,6 +234,8 @@ export class InquiryThreadService {
     return rows.rows.map(threadToOut);
   }
 
+  async listProblemThreadPage(identity:SpaceUserIdentity,projectId:string,options:{kind?:string;limit?:number;after_thread_id?:string}={}){return problemThreadPage(this.db,identity,projectId,options);}
+
   async getThread(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<Record<string, unknown>> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const row = await this.getThreadRow(identity.spaceId, projectId, threadId, identity.userId);
@@ -314,6 +296,8 @@ export class InquiryThreadService {
 
     return {
       ...threadToOut(row),
+      scope_boundary:bodyWithheld(row.effective_access_level)?null:row.scope_boundary,
+      problem_summary:bodyWithheld(row.effective_access_level)?null:(await problemSummaries(this.db,identity,projectId,[threadId])).get(threadId)??null,
       question_state: questionState,
       hypothesis_state: hypothesisState,
       relations,

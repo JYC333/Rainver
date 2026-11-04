@@ -1,3 +1,5 @@
+import { contentAccessLevelSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { randomUUID } from "node:crypto";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
@@ -59,7 +61,7 @@ export function researchWorkflowProjection(options: {
       ${workflow}.started_by_user_id,${workflow}.started_run_id,
       ${object}.created_at,${object}.updated_at`,
     visibilityPredicate: options.viewerPlaceholder
-      ? contentReadSql("space_object", object, options.viewerPlaceholder)
+      ? `(${contentReadSql("space_object", object, options.viewerPlaceholder)} AND ${contentAccessLevelSql({definition:contentResourceDefinition("space_object")!,alias:object,userExpr:options.viewerPlaceholder})}='full' AND NOT EXISTS(SELECT 1 FROM object_relations guard_relation JOIN space_objects guard_thread ON guard_thread.id=guard_relation.to_object_id AND guard_thread.space_id=guard_relation.space_id WHERE guard_relation.space_id=${workflow}.space_id AND guard_relation.from_object_id=${workflow}.object_id AND guard_relation.link_type='about' AND guard_relation.status='active' AND guard_relation.metadata_json->>'relation_role'='primary_inquiry_thread' AND NOT ${threadReadableSql("guard_thread",options.viewerPlaceholder,"read_content")}))`
       : "TRUE",
   };
 }
@@ -81,12 +83,15 @@ export async function createResearchWorkflow(
   },
 ): Promise<void> {
   await withQueryableTransaction(db, async (transaction) => {
+    const source=input.primaryThreadId?(await transaction.query<{visibility:string}>(`SELECT visibility FROM space_objects WHERE id=$1 AND space_id=$2`,[input.primaryThreadId,input.spaceId])).rows[0]:null;
     const object = buildSpaceObjectInsert({
       id: input.id,
       spaceId: input.spaceId,
       objectType: "research_workflow",
       title: input.title,
       ownerUserId: input.startedByUserId,
+      visibility:source&&source.visibility!=="space_shared"?"private":"space_shared",
+      createdByRunId:input.startedRunId??null,
       primaryProjectId: input.projectId,
       createdByUserId: input.startedByUserId,
       createdAt: input.now,

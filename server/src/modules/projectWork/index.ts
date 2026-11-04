@@ -5,8 +5,7 @@ import { registerRoutes } from "./routes.js";
 /**
  * Project work: how a Project advances, and the record of it.
  *
- * Owns the append-only `project_work_events` stream, the Loop-stage fold
- * (`task_loop_states`), and the settlement that turns a finished Run into a
+ * Owns the append-only `project_work_events` stream and the settlement that turns a finished Run into a
  * Task outcome. It sits between `tasks` (the editable work commitment) and
  * `runs` (one attempt at it) and owns neither.
  */
@@ -24,12 +23,6 @@ export {
   type WorkEventInput,
   type WorkEventWriteResult,
 } from "./eventWriter.js";
-export {
-  currentLoopState,
-  recordStageChange,
-  type StageChangeInput,
-  type TaskLoopStateRow,
-} from "./loopState.js";
 export {
   settleTasksForRun,
   declaredRequiredOutputs,

@@ -1,0 +1,50 @@
+diff --git a/dist/acp-agent.js b/dist/acp-agent.js
+index f11169bcb8b04c5c41126f4cc2f47334d54feaa3..1de08789a1d763e914a22ef0b8a8eca63fdf5e92 100644
+--- a/dist/acp-agent.js
++++ b/dist/acp-agent.js
+@@ -3674,7 +3674,11 @@ export class ClaudeAcpAgent {
+         session.consumer = undefined;
+         session.settingsManager.dispose();
+         session.input.end();
+-        session.query.close();
++        // Query.close() starts cleanup but returns void. Its async iterator's
++        // return() awaits cleanup, including the native CLI's exit grace.
++        session.queryCleanup = session.query.return(undefined).catch((error) => {
++            this.logger.error("Error during query cleanup:", error);
++        });
+     }
+     /** Cleanly tear down a session: cancel in-flight work, release stream
+      *  resources, and remove it from the session map. */
+@@ -3694,6 +3698,7 @@ export class ClaudeAcpAgent {
+         disarmForceCancel(session);
+         session.cancelController?.abort();
+         this.closeQueryStream(session);
++        await session.queryCleanup;
+         // Abort the SDK abort signal only on explicit destroy. closeQueryStream
+         // leaves it alone (it may be a client-owned controller — see its doc), but
+         // here the client has asked us to close the session, so signalling abort is
+diff --git a/dist/index.js b/dist/index.js
+index caf876bbfa13cb9e773cd327ff62adf0f5cc70b8..8f9cae2fbe23b0e1da672d724a543b7937554f7a 100755
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -81,11 +81,17 @@ else {
+         : undefined;
+     logger?.log("Claude ACP started");
+     const { connection, agent } = runAcp(logger);
+-    async function shutdown() {
+-        await agent.dispose().catch((err) => {
++    let shutdownPromise;
++    function shutdown() {
++        shutdownPromise ??= agent.dispose().catch((err) => {
+             console.error("Error during cleanup:", err);
++        }).finally(() => {
++            // Let child-process handles keep Node alive through native cleanup.
++            // process.exit() would bypass the SDK's remaining exit/kill grace.
++            process.stdin.destroy();
++            process.exitCode = 0;
+         });
+-        process.exit(0);
++        return shutdownPromise;
+     }
+     // Exit cleanly when the ACP connection closes (e.g. stdin EOF, transport
+     // error). Without this, `process.stdin.resume()` keeps the event loop

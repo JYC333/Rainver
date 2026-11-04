@@ -1,3 +1,5 @@
+import {assertResearchArtifactReadable} from '../projectResearch/reportAccess.js';
+import {HttpError} from '../routeUtils/common.js';
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { contentResourceDefinition } from "./contentAccessRegistry.js";
 import {
@@ -36,6 +38,7 @@ export async function contentDecisionFromDb(
       LIMIT 1`,
     [identity.spaceId, resourceId, identity.userId],
   );
+  if(resourceType==="artifact"&&result.rows[0]){try{await assertResearchArtifactReadable(db,identity,resourceId);}catch(error){if(error instanceof HttpError&&error.statusCode===404)return "deny";throw error;}}
   const level = result.rows[0]?.effective_access_level;
   return isContentAccessLevel(level) ? level : "deny";
 }

@@ -253,7 +253,6 @@ export default function HostsPanel() {
                   adapters={runtimeAdapters}
                   isInstanceAdmin={Boolean(currentUser?.is_instance_admin)}
                   manageable={host.kind === 'remote' || Boolean(currentUser?.is_instance_admin)}
-                  provisioningFailed={provisioning[host.id]?.status?.installation.state === 'failed'}
                   onChanged={async () => {
                     await Promise.all([load(), loadAdapters()])
                   }}

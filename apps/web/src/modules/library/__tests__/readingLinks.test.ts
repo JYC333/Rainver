@@ -109,3 +109,10 @@ it('returns to a bounded pinned topic analysis only within its Project Overview'
  expect(readingReturnTo(path,'project-a')).toBe(path)
  for(const value of [path.replace('project-a','project-b'),path.replace('overview','materials'),path.replace('&analysisVersion=version-a',''),path.replace('/projects/project-a/sources','/library/reading'),path+'&analysis=other',path.replace('version-a','https%3A%2F%2Fother.test')])expect(readingReturnTo(value,'project-a')).toBeNull()
 })
+
+it('retains only bounded problem-workspace reading context and filters',()=>{
+ const back='/projects/project-a/inquiry/records?tab=reading&thread=thread-a&workflow_id=wf&q=CSV&triage=relevant&stance=supports&unread=1';
+ expect(readingReturnTo(back,'project-a')).toBe(back);expect(readingReturnTo(back,'project-b')).toBeNull();
+ expect(readingReturnTo(back+'&redirect=%2Fhome')).toBeNull();expect(readingReturnTo(back+'&thread=other')).toBeNull();
+ expect(readingReturnTo('/projects/project-a/inquiry/records?tab=runs')).toBeNull();
+});

@@ -1,3 +1,4 @@
+import { assertAcceptedThreadContext } from "../../projectResearch/acceptedThreadContext.js";
 import type {
   ResearchContextVersion,
   ResearchProviderKey,
@@ -91,7 +92,7 @@ export class AdaptiveQueryOrchestrator {
   private readonly ladder: ResearchQueryLadderBuilder;
 
   constructor(
-    db: Queryable,
+    private readonly db: Queryable,
     config: ServerConfig,
     dependencies: AdaptiveResearchQueryDependencies = {},
   ) {
@@ -105,13 +106,14 @@ export class AdaptiveQueryOrchestrator {
     this.ladder = dependencies.ladder ?? new ResearchQueryLadderBuilder();
   }
 
-  async evaluate(identity: SpaceUserIdentity, input: AdaptiveResearchQueryInput): Promise<StoredResearchQueryStrategy> {
+  async evaluate(identity: SpaceUserIdentity, input: AdaptiveResearchQueryInput,acceptedProblem?:{threadId:string}): Promise<StoredResearchQueryStrategy> {
     if (!Number.isInteger(input.candidateBudget) || input.candidateBudget < 1 || input.candidateBudget > 10_000) {
       throw new HttpError(422, "candidateBudget must be an integer between 1 and 10000");
     }
     const contextVersion = await this.contextRepository.get(identity.spaceId, input.projectId, input.researchContextVersionId);
     if (!contextVersion) throw new HttpError(404, "Research context version not found");
-    assertContextAssessmentPassed(contextVersion.assessment);
+    if(acceptedProblem)await assertAcceptedThreadContext(this.db,identity,input.projectId,acceptedProblem.threadId,input.researchContextVersionId);
+    else assertContextAssessmentPassed(contextVersion.assessment);
     const providers = [...new Set(input.providers)];
     const providerBudget = Math.max(1, Math.ceil(input.candidateBudget / Math.max(1, providers.length)));
     const strategy = await this.repository.createStrategy(identity, {

@@ -1,6 +1,41 @@
 /** UI copy: Prompts, Skills, plugins, project files, network profiles and the job queue. */
 export const managementUiZhCN = {
   management_ui: {
+    host_catalog: {
+      "more_label": "{{host}} 上 {{name}} 的更多操作",
+      "version_management": "版本管理",
+      "current_version": "当前 ACP 版本",
+      "rollback_version": "可回退版本",
+      "unknown_version": "未知",
+      "no_rollback": "没有保留的上一版本",
+      "rollback_help": "回滚仅恢复上一版程序，登录和会话数据保留在同一受管存储中；旧版程序可能无法读取新版数据。",
+      "rollback_to": "回退到 {{version}}",
+      "rolling_back": "正在回退…",
+
+      "title": "Agent 目录",
+      "refresh": "刷新版本",
+      "description": "{{host}} 上已安装的项目排在最前；仅在你选择升级时安装更新。",
+      "loading": "正在加载目录…",
+      "search": "搜索 Agent 目录",
+      "installed": "已安装",
+      "versions": "ACP {{current}} · 可用 {{latest}}",
+      "available": "可用 ACP {{version}}",
+      "bundled": "本地 CLI 使用随 Host 打包的 ACP 适配包，需通过更新 Host 升级；单独安装的受管副本使用独立登录。",
+      "own": "本地安装；受管副本为独立安装。",
+      "pinned": "由当前 Rainver 版本管理，请通过服务端运行环境更新。",
+      "upgrade": "升级 ACP",
+      "managed_copy": "安装受管副本",
+      "install": "安装",
+      "enable_install": "启用并安装",
+      "upgrade_label": "升级 {{host}} 上 {{name}} 的 ACP",
+      "managed_copy_label": "在 {{host}} 上安装 {{name}} 的受管副本",
+      "install_label": "在 {{host}} 上安装 {{name}}",
+      "enable_install_label": "在 {{host}} 上启用并安装 {{name}}",
+      "operation_in_progress": "这个 CLI 已有操作正在进行，请等待完成。",
+      "upgrading": "正在升级…",
+      "installing": "正在安装…",
+      "empty": "没有匹配项目。"
+},
     job_queue: {
       elapsed_ms: "{{value}} 毫秒",
       elapsed_seconds: "{{value}} 秒",

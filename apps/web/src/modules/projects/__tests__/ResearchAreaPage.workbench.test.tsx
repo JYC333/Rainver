@@ -1,10 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
-import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom'
-import { toast } from 'sonner'
-import ResearchAreaPage from '../ResearchAreaPage'
-import { projectsApi, projectResearchApi, inquiryApi } from '../../../api/client'
+import { MemoryRouter } from 'react-router-dom'
+import { useProjectResearch } from '../useProjectResearch'
+import { projectsApi, projectResearchApi } from '../../../api/client'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn(), dismiss: vi.fn() },
@@ -107,6 +106,7 @@ vi.mock('../../../api/client', () => ({
     checkpoints: vi.fn().mockResolvedValue([]),
     decideCheckpoint: vi.fn(),
     updateItemLimit: vi.fn(),
+    rescanBackfill: vi.fn().mockResolvedValue({}),
     updateInitialItemLimit: vi.fn(),
     screeningCriteria: vi.fn().mockResolvedValue({
       id: null,
@@ -392,37 +392,6 @@ vi.mock('../../../api/client', () => ({
   },
 }))
 
-function SetupLocationProbe() {
-  const [params, setParams] = useSearchParams()
-  return <>
-    <output data-testid="setup-location">{params.toString()}</output>
-    <button data-testid="render-after-cleanup" onClick={() => setParams(previous => {
-      const next = new URLSearchParams(previous)
-      next.set('after_cleanup', '1')
-      return next
-    })}>Render after cleanup</button>
-  </>
-}
-
-function renderArea(search = '?tab=standing', observeCleanup = false) {
-  return render(
-    <MemoryRouter
-      initialEntries={[`/spaces/space-1/projects/project-1/research${search}`]}
-      future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
-    >
-      {observeCleanup && <SetupLocationProbe />}
-      <Routes>
-        <Route path="/spaces/:spaceId/projects/:projectId/research" element={<ResearchAreaPage />} />
-      </Routes>
-    </MemoryRouter>,
-  )
-}
-
-/** Open the Thread-scoped workbench. Standing discovery is the default view. */
-async function openFocus() {
-  fireEvent.click(await screen.findByRole('tab', { name: 'Focus workbench' }))
-}
-
 // Research is available from every Project, however it was created. Do not
 // require a Template. There is no Template runtime.
 function mockResearchProject(overrides: Partial<Awaited<ReturnType<typeof projectsApi.get>>> = {}) {
@@ -443,333 +412,34 @@ function mockResearchProject(overrides: Partial<Awaited<ReturnType<typeof projec
   })
 }
 
-/**
- * Project Research is an Area, not an Overview section. These cases render
- * the Research route. Do not mount the workbench on the Project Overview.
- */
-describe('Research Area workbench', () => {
-  it('renders the workbench independently of creation-time Template provenance', async () => {
-    renderArea()
-
-    expect(await screen.findByText('Research status')).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Standing overview' })).toHaveAttribute('data-state', 'active')
-    await openFocus()
-    expect(screen.getByRole('link', { name: 'Open research Area' })).toHaveAttribute('href', '/projects/project-1/research?tab=standing')
-    expect(screen.getByText('Set the research question that screening and synthesis should answer.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /^start initial research$/i })).toBeDisabled()
-    expect(screen.getAllByRole('button', { name: /set up intake/i }).length).toBeGreaterThan(0)
-    await waitFor(() => {
-      expect(projectResearchApi.workflows).toHaveBeenCalledWith('project-1')
-      expect(projectResearchApi.evidenceMatrix).toHaveBeenCalledWith('project-1')
-    })
-  })
-
-  it('edits the saved item limit once the workflow\'s last import has finished, rather than a finished operation', async () => {
+describe('useProjectResearch authorized Operation compatibility', () => {
+  it.each([false, true])('retains Workflow, stage, partial and live limit control (partial=%s)', async (partial) => {
     mockResearchProject()
-    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
-      id: 'workflow-1', project_id: 'project-1', current_stage: 'monitoring', status: 'active',
-      state_json: { research_question: 'Does caching improve latency?', monitoring: { active: true } },
-      primary_thread_id: 'thread-1', started_by_user_id: 'user-1', started_run_id: null,
-      created_at: '2026-07-24T00:00:00.000Z', updated_at: '2026-07-24T00:00:00.000Z',
+    vi.mocked(projectResearchApi.workflows).mockResolvedValue([{
+      id: 'workflow-1', project_id: 'project-1', current_stage: 'screening', status: 'active',
+      state_json: { research_question: 'Authorized question' }, primary_thread_id: 'thread-1',
+      created_at: '', updated_at: '',
     }] as never)
-    // The baseline import completed; the server refuses to raise its budget.
-    vi.mocked(projectsApi.operations).mockResolvedValueOnce([{
-      id: 'operation-1', project_id: 'project-1', kind: 'research', title: 'Research', status: 'completed',
-      progress_json: { workflow_id: 'workflow-1', run_kind: 'baseline', current_stage: 'complete', history: { max_items: 50 } },
-      created_at: '2026-07-24T00:00:00.000Z', updated_at: '2026-07-24T01:00:00.000Z',
-    }] as never)
-    vi.mocked(projectResearchApi.updateInitialItemLimit).mockResolvedValue({
-      id: 'workflow-1', project_id: 'project-1', current_stage: 'monitoring', status: 'active',
-      state_json: { research_question: 'Does caching improve latency?', max_items: 80 },
-      primary_thread_id: 'thread-1', started_by_user_id: 'user-1', started_run_id: null,
-      created_at: '2026-07-24T00:00:00.000Z', updated_at: '2026-07-24T02:00:00.000Z',
-    } as never)
+    const operation = { id: 'bound-op', project_id: 'project-1', kind: 'research', status: 'active',
+      title: 'Authorized research', progress_json: { workflow_id: 'workflow-1', run_kind: 'baseline',
+        current_stage: 'historical_backfill', partial, history: { max_items: 50 } },
+      steps: [], links: [], created_at: '', updated_at: '' }
+    vi.mocked(projectsApi.operations).mockResolvedValue([operation] as never)
+    let controller: ReturnType<typeof useProjectResearch> | undefined
+    function Probe() { controller = useProjectResearch('project-1'); return null }
     window.localStorage.setItem('rainver:research-workflow:user-1:project-1', 'workflow-1')
     try {
-      renderArea()
-
-      await openFocus()
-      const input = await screen.findByLabelText('New item limit')
-      expect(screen.queryByText(/Intake is already running/)).not.toBeInTheDocument()
-      fireEvent.change(input, { target: { value: '80' } })
-      fireEvent.click(screen.getByRole('button', { name: 'Update' }))
-
-      await waitFor(() => expect(projectResearchApi.updateInitialItemLimit).toHaveBeenCalledWith('project-1', 80, 'workflow-1'))
-      expect(projectResearchApi.updateItemLimit).not.toHaveBeenCalled()
-    } finally {
-      window.localStorage.removeItem('rainver:research-workflow:user-1:project-1')
-      // This file does not clear call history between tests.
-      vi.mocked(projectResearchApi.checkpoints).mockClear()
-    }
-  })
-
-  it('reads the checkpoints of the workflow an Inquiry link switches to', async () => {
-    mockResearchProject()
-    const workflow = (id: string, threadId: string) => ({
-      id, project_id: 'project-1', current_stage: 'screening', status: 'active',
-      state_json: { research_question: `Question ${id}` }, primary_thread_id: threadId,
-      started_by_user_id: 'user-1', started_run_id: null,
-      created_at: '2026-07-24T00:00:00.000Z', updated_at: '2026-07-24T00:00:00.000Z',
-    })
-    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([workflow('workflow-1', 'thread-1'), workflow('workflow-2', 'thread-2')] as never)
-    vi.mocked(inquiryApi.listThreads).mockResolvedValueOnce([{
-      id: 'thread-1', space_id: 'space-1', project_id: 'project-1', kind: 'question', statement: 'Does caching improve latency?',
-      lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
-      owner_user_id: 'user-1', next_focus_kind: null, next_focus_note: null, blocked_reason: null,
-      version: 1, created_from: 'user', created_by_user_id: 'user-1',
-      created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
-    }])
-    // Remembered: workflow-2. The link names thread-1, whose workflow-1 is running.
-    window.localStorage.setItem('rainver:research-workflow:user-1:project-1', 'workflow-2')
-    try {
-      renderArea('?research=new&thread=thread-1')
-
-      await waitFor(() => expect(toast.info).toHaveBeenCalledWith(
-        'Research has already started for this Inquiry. Opening its operation instead.',
-      ))
-      // The pending checkpoints shown must be workflow-1's, not workflow-2's.
-      await waitFor(() => expect(projectResearchApi.checkpoints).toHaveBeenCalledWith('project-1', 'workflow-1'))
-    } finally {
-      window.localStorage.removeItem('rainver:research-workflow:user-1:project-1')
-      vi.mocked(projectResearchApi.checkpoints).mockClear()
-    }
-  })
-
-  it('keeps the research item limit in the Area instead of Project settings', async () => {
-    renderArea()
-
-    await openFocus()
-    expect(await screen.findByText('Saved intake configuration')).toBeInTheDocument()
-    expect(screen.getByLabelText('New item limit')).toBeInTheDocument()
-  })
-
-  it('restores the selected Research Workflow and scopes its checkpoint reads explicitly', async () => {
-    mockResearchProject()
-    const workflow = (id: string, question: string) => ({
-      id,
-      project_id: 'project-1',
-      current_stage: 'monitoring',
-      status: 'active',
-      state_json: {
-        research_question: question,
-        research_question_version: 1,
-        thread_scope: [{ thread_id: `thread-${id}`, version: 1, kind: 'question', statement: question }],
-        monitoring: { active: true },
-      },
-      started_by_user_id: 'user-1',
-      started_run_id: null,
-      created_at: '2026-07-24T00:00:00.000Z',
-      updated_at: '2026-07-24T00:00:00.000Z',
-    })
-    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([
-      workflow('workflow-1', 'Does caching improve latency?'),
-      workflow('workflow-2', 'Does batching improve throughput?'),
-    ] as never)
-    window.localStorage.setItem('rainver:research-workflow:user-1:project-1', 'workflow-2')
-
-    renderArea()
-
-    await openFocus()
-    const selector = await screen.findByLabelText('Selected research question workflow')
-    expect(selector).toHaveTextContent('Does batching improve throughput?')
-    await waitFor(() => {
-      expect(projectResearchApi.checkpoints).toHaveBeenCalledWith('project-1', 'workflow-2')
-    })
-    expect(projectResearchApi.checkpoints).not.toHaveBeenCalledWith('project-1', 'workflow-1')
-    window.localStorage.removeItem('rainver:research-workflow:user-1:project-1')
-  })
-
-  it('does not flash the initial intake setup while research data is loading', async () => {
-    let resolveWorkflows!: (value: Awaited<ReturnType<typeof projectResearchApi.workflows>>) => void
-    const workflows = new Promise<Awaited<ReturnType<typeof projectResearchApi.workflows>>>(resolve => {
-      resolveWorkflows = resolve
-    })
-    mockResearchProject()
-    vi.mocked(projectResearchApi.workflows).mockReturnValueOnce(workflows)
-
-    renderArea()
-
-    await openFocus()
-    expect(screen.getByLabelText('Loading Project Research')).toBeInTheDocument()
-    expect(screen.queryByText('Set up initial material intake')).toBeNull()
-
-    resolveWorkflows([])
-    await waitFor(() => expect(screen.getByText('Set up initial material intake')).toBeInTheDocument())
-  })
-
-  it('announces a pending research review instead of silently pausing', async () => {
-    mockResearchProject()
-    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
-      id: 'workflow-1',
-      project_id: 'project-1',
-      current_stage: 'screening',
-      status: 'active',
-      state_json: {},
-      primary_thread_id: null,
-      started_by_user_id: 'user-1',
-      started_run_id: null,
-      created_at: '2026-06-30T00:00:00.000Z',
-      updated_at: '2026-06-30T00:00:00.000Z',
-    }])
-    vi.mocked(projectResearchApi.checkpoints).mockResolvedValueOnce([{
-      id: 'checkpoint-1',
-      project_id: 'project-1',
-      workflow_id: 'workflow-1',
-      stage_key: 'screening',
-      checkpoint_type: 'screening_gate',
-      status: 'pending',
-      machine_result_json: { relevant: 4, maybe: 1 },
-      review: null,
-      user_decision: null,
-      decision_reason: null,
-      decided_by_user_id: null,
-      decided_at: null,
-      created_at: '2026-06-30T00:00:00.000Z',
-      updated_at: '2026-06-30T00:00:00.000Z',
-    }])
-
-    renderArea()
-
-    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(
-      'Research review required',
-      expect.objectContaining({
-        id: 'research-review:project-1:checkpoint-1',
-        duration: Infinity,
-      }),
-    ))
-  })
-
-  it('resolves question drift through the impact-aware decision dialog', async () => {
-    mockResearchProject({ current_focus: 'New question' })
-    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
-      id: 'workflow-1', project_id: 'project-1', current_stage: 'complete',
-      status: 'active', state_json: {
-        research_question: 'Old question', research_question_version: 3, monitoring: { active: true },
-        thread_scope: [{ thread_id: 'thread-1', version: 3, kind: 'question', statement: 'Old question' }],
-      },
-      primary_thread_id: 'thread-1',
-      started_by_user_id: 'user-1', started_run_id: null, created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
-    }])
-    vi.mocked(inquiryApi.listThreads).mockResolvedValueOnce([{
-      id: 'thread-1', space_id: 'space-1', project_id: 'project-1', kind: 'question', statement: 'New question',
-      lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
-      owner_user_id: 'user-1', next_focus_kind: null, next_focus_note: null, blocked_reason: null,
-      version: 4, created_from: 'user', created_by_user_id: 'user-1',
-      created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
-    }])
-    vi.mocked(projectResearchApi.questionChangeImpact).mockResolvedValueOnce({
-      workflow_id: 'workflow-1', previous_question: 'Old question', current_question: 'New question',
-      previous_version: 3, screened_items: 27, reports: 2,
-    })
-    vi.mocked(projectResearchApi.resolveQuestionChange).mockResolvedValueOnce({} as never)
-    renderArea()
-
-    await openFocus()
-    fireEvent.click(await screen.findByRole('button', { name: 'Resolve question change' }))
-    expect(await screen.findByText('27 materials screened against the previous question · 2 reports')).toBeInTheDocument()
-    expect(screen.getByText('Question version 3 → 4')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /re-screen against the new question/i }))
-
-    await waitFor(() => expect(projectResearchApi.questionChangeImpact).toHaveBeenCalledWith('project-1', 'workflow-1'))
-    await waitFor(() => expect(projectResearchApi.resolveQuestionChange).toHaveBeenCalledWith('project-1', 'workflow-1', 'rescreen'))
-  })
-
-  it.each([['', 'focus'], ['&tab=reading', 'reading'], ['&tab=invalid', 'focus']])('keeps Thread setup open after URL cleanup and a later render (%s)', async (tabQuery, expectedTab) => {
-    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
-      id: 'workflow-1', project_id: 'project-1', current_stage: 'screening',
-      status: 'active', state_json: { research_question: 'Does caching improve latency?' },
-      primary_thread_id: 'thread-1',
-      started_by_user_id: 'user-1', started_run_id: null,
-      created_at: '2026-07-24T00:00:00.000Z', updated_at: '2026-07-24T00:00:00.000Z',
-    }] as never)
-    vi.mocked(inquiryApi.listThreads).mockResolvedValueOnce([{
-      id: 'thread-1', space_id: 'space-1', project_id: 'project-1', kind: 'question', statement: 'Does caching improve latency?',
-      lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
-      owner_user_id: 'user-1', next_focus_kind: null, next_focus_note: null, blocked_reason: null,
-      version: 1, created_from: 'user', created_by_user_id: 'user-1',
-      created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
-    }, {
-      id: 'thread-2', space_id: 'space-1', project_id: 'project-1', kind: 'hypothesis', statement: 'Batching improves throughput',
-      lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
-      owner_user_id: 'user-1', next_focus_kind: 'search_acquisition', next_focus_note: null, blocked_reason: null,
-      version: 1, created_from: 'user', created_by_user_id: 'user-1',
-      created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
-    }])
-
-    renderArea(`?research=new&thread=thread-2&keep=original${tabQuery}`, true)
-
-    // The independent dialog opens preselecting thread-2's own wording — proof
-    // the ?research=new wiring reached the right dialog with the right thread,
-    // not the "edit the currently selected Workflow" dialog (workflow-1 /
-    // thread-1, a Question). Definition itself happens on Inquiry, so with no
-    // draft Workflow yet linked to thread-2 this dialog hands back there.
-    await waitFor(() => {
-      const cleaned = new URLSearchParams(screen.getByTestId('setup-location').textContent ?? '')
-      expect(cleaned.has('research')).toBe(false)
-      expect(cleaned.has('thread')).toBe(false)
-      expect(cleaned.get('tab')).toBe(expectedTab)
-      expect(cleaned.get('keep')).toBe('original')
-    })
-    fireEvent.click(screen.getByTestId('render-after-cleanup'))
-    await waitFor(() => expect(screen.getByTestId('setup-location')).toHaveTextContent('after_cleanup=1'))
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
-    expect(screen.getByText(/Researching: Batching improves throughput/)).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Open deep research' })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Refine in Inquiry' })).toHaveAttribute('href', '/projects/project-1/inquiry?thread=thread-2')
-  })
-
-  it('reuses the confirmed Thread draft instead of reopening setup as unrefined', async () => {
-    mockResearchProject()
-    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
-      id: 'workflow-confirmed', project_id: 'project-1', current_stage: 'initial_intake_setup',
-      status: 'not_started', primary_thread_id: 'thread-1',
-      state_json: {
-        thread_id: 'thread-1',
-        research_question: 'Does caching improve latency?',
-        research_context_version_id: '11111111-1111-4111-8111-111111111111',
-        question_refine_skipped: false,
-        initial_intake: { history_mode: 'bounded_range', max_items: 1000, monitoring_field: 'submittedDate', report_depth: 'quick' },
-        execution: {},
-      },
-      started_by_user_id: 'user-1', started_run_id: null,
-      created_at: '2026-08-03T20:09:57.000Z', updated_at: '2026-08-03T20:09:57.000Z',
-    }] as never)
-    vi.mocked(inquiryApi.listThreads).mockResolvedValueOnce([{
-      id: 'thread-1', space_id: 'space-1', project_id: 'project-1', kind: 'question', statement: 'Does caching improve latency?',
-      lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
-      owner_user_id: 'user-1', next_focus_kind: null, next_focus_note: null, blocked_reason: null,
-      version: 1, created_from: 'user', created_by_user_id: 'user-1',
-      created_at: '2026-08-03T20:00:00.000Z', updated_at: '2026-08-03T20:00:00.000Z',
-    }])
-
-    renderArea('?research=new&thread=thread-1')
-
-    expect(await screen.findByText(/Researching: Does caching improve latency/)).toBeInTheDocument()
-    expect(screen.queryByText(/question has not passed refinement/i)).not.toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Refine in Inquiry' })).not.toBeInTheDocument()
-  })
-
-  it('opens the existing operation instead of a duplicate setup after that Inquiry intake completed', async () => {
-    mockResearchProject()
-    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
-      id: 'workflow-1', project_id: 'project-1', current_stage: 'completed',
-      status: 'completed', mode: 'autonomous', state_json: { research_question: 'Does caching improve latency?' },
-      primary_thread_id: 'thread-1', started_by_user_id: 'user-1', started_run_id: null,
-      created_at: '2026-07-24T00:00:00.000Z', updated_at: '2026-07-24T00:00:00.000Z',
-    }] as never)
-    vi.mocked(inquiryApi.listThreads).mockResolvedValueOnce([{
-      id: 'thread-1', space_id: 'space-1', project_id: 'project-1', kind: 'question', statement: 'Does caching improve latency?',
-      lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
-      owner_user_id: 'user-1', next_focus_kind: null, next_focus_note: null, blocked_reason: null,
-      version: 1, created_from: 'user', created_by_user_id: 'user-1',
-      created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
-    }])
-
-    renderArea('?research=new&thread=thread-1')
-
-    await waitFor(() => expect(toast.info).toHaveBeenCalledWith(
-      'Research has already started for this Inquiry. Opening its operation instead.',
-    ))
-    expect(screen.queryByText(/Researching: Does caching improve latency/)).not.toBeInTheDocument()
+      render(<MemoryRouter><Probe /></MemoryRouter>)
+      await waitFor(() => expect(controller?.settings?.hasLiveOperation).toBe(true))
+      expect(controller!.settings!.currentItemLimit).toBe(50)
+      expect(controller!.focusProps!.selectedWorkflowId).toBe('workflow-1')
+      expect(controller!.focusProps!.researchOperations[0]!.progress_json).toEqual(operation.progress_json)
+      await act(async () => { await controller!.settings!.onUpdateItemLimit(80) })
+      expect(projectResearchApi.updateItemLimit).toHaveBeenCalledWith('project-1', 'bound-op', 80)
+      vi.mocked(projectResearchApi.rescanBackfill).mockClear()
+      await act(async () => { await controller!.focusProps!.onRescanBackfill() })
+      if (partial) expect(projectResearchApi.rescanBackfill).not.toHaveBeenCalled()
+      else expect(projectResearchApi.rescanBackfill).toHaveBeenCalledWith('project-1', 'bound-op')
+    } finally { window.localStorage.removeItem('rainver:research-workflow:user-1:project-1') }
   })
 })

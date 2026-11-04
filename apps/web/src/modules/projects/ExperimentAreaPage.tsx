@@ -23,7 +23,6 @@ import { EmptyState } from '../../components/ui/empty-state'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Textarea } from '../../components/ui/textarea'
-import { ThreadOriginBar } from './inquiryArea/ThreadOriginBar'
 
 export default function ExperimentAreaPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { projectId } = useParams<{ projectId: string }>()
@@ -272,7 +271,6 @@ export default function ExperimentAreaPage({ embedded = false }: { embedded?: bo
 
   return (
     <div className={embedded ? 'space-y-5' : 'space-y-5 p-6'}>
-      <ThreadOriginBar projectId={projectId} kinds={['design_run_experiment']} />
       <div>
         <div className="flex items-center gap-2">
           <FlaskConical className="size-5" />

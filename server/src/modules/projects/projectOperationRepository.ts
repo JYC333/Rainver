@@ -1,3 +1,5 @@
+import { researchMetadataReadableSql,researchOperationMetadata,RESEARCH_METADATA_COLUMNS } from "../projectResearch/researchOperationMetadata.js";
+import { ResearchCallContentUnavailable, assertResearchCallReadable } from "../projectResearch/researchCallAccess.js";
 import { randomUUID } from "node:crypto";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError, objectValue, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common.js";
@@ -93,16 +95,36 @@ export class ProjectOperationRepository {
     });
   }
 
-  async list(identity: SpaceUserIdentity, projectId: string) {
+  async list(identity: SpaceUserIdentity, projectId: string,options:{limit?:number;after_id?:string}={}) {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    const rows = await this.db.query<{ id: string }>(
-      `SELECT id FROM project_operations WHERE space_id=$1 AND project_id=$2 ORDER BY updated_at DESC`,
-      [identity.spaceId, projectId],
-    );
-    return Promise.all(rows.rows.map((row) => this.get(identity, projectId, row.id)));
+    const limit=options.limit??100;
+    if(!Number.isInteger(limit)||limit<1||limit>100)throw new HttpError(422,"limit must be 1 to 100");
+    const rows=await this.db.query<Record<string,unknown>&{id:string;bound:boolean}>(`SELECT ${RESEARCH_METADATA_COLUMNS},research_call_json IS NOT NULL AS bound FROM project_operations op WHERE space_id=$1 AND project_id=$2 AND ${researchMetadataReadableSql("op","$3")} AND ($4::varchar IS NULL OR id>$4) ORDER BY id LIMIT $5`,[identity.spaceId,projectId,identity.userId,options.after_id??null,limit]);
+    const result=[];
+    for(const row of rows.rows)result.push(await this.readAuthorizedProjection(identity,projectId,row));
+    return result;
   }
 
   async get(identity: SpaceUserIdentity, projectId: string, operationId: string) {
+    await assertProjectReadable(this.db,identity.spaceId,projectId,identity.userId);
+    const row=(await this.db.query<Record<string,unknown>&{bound:boolean}>(`SELECT ${RESEARCH_METADATA_COLUMNS},research_call_json IS NOT NULL AS bound FROM project_operations op WHERE id=$1 AND space_id=$2 AND project_id=$3 AND ${researchMetadataReadableSql("op","$4")}`,[operationId,identity.spaceId,projectId,identity.userId])).rows[0];
+    if(!row)throw new HttpError(404,"Project operation not found");
+    return this.readAuthorizedProjection(identity,projectId,{...row,id:operationId});
+  }
+
+  private async readAuthorizedProjection(identity:SpaceUserIdentity,projectId:string,row:Record<string,unknown>&{id:string;bound:boolean}) {
+    try{return await this.getContent(identity,projectId,row.id);}
+    catch(error){
+      if(!row.bound || !(error instanceof ResearchCallContentUnavailable))throw error;
+      // Recheck metadata authority before degrading; Thread/Run denial never falls back.
+      const safe=(await this.db.query<Record<string,unknown>>(`SELECT ${RESEARCH_METADATA_COLUMNS} FROM project_operations op WHERE id=$1 AND space_id=$2 AND project_id=$3 AND ${researchMetadataReadableSql("op","$4")}`,[row.id,identity.spaceId,projectId,identity.userId])).rows[0];
+      if(!safe)throw new HttpError(404,"Project operation not found");
+      return researchOperationMetadata(safe);
+    }
+  }
+
+  /** Content read preserves the existing progress/Workflow controls and full gates. */
+  async getContent(identity: SpaceUserIdentity, projectId: string, operationId: string) {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     await this.assertOperationInProject(operationId, identity.spaceId, projectId);
     await this.refreshProjection(identity.spaceId, operationId);
@@ -113,6 +135,7 @@ export class ProjectOperationRepository {
     );
     const row = operation.rows[0];
     if (!row) throw new HttpError(404, "Project operation not found");
+    await assertResearchCallReadable(this.db,identity,projectId,row.research_call_json,row.progress_json);
 
     const steps = await this.db.query(`SELECT * FROM project_operation_steps WHERE operation_id=$1 AND space_id=$2 ORDER BY seq`, [operationId, identity.spaceId]);
     const links = await this.db.query(`SELECT * FROM project_operation_links WHERE operation_id=$1 AND space_id=$2 ORDER BY created_at`, [operationId, identity.spaceId]);
@@ -126,6 +149,25 @@ export class ProjectOperationRepository {
   async cancel(identity: SpaceUserIdentity, projectId: string, operationId: string) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     await this.assertOperationInProject(operationId, identity.spaceId, projectId);
+    const kind = (await this.db.query<{ kind: string }>(
+      `SELECT kind FROM project_operations WHERE id=$1 AND space_id=$2 AND project_id=$3`,
+      [operationId, identity.spaceId, projectId],
+    )).rows[0]?.kind;
+    if (kind === "research") {
+      // Research owns its stop: the queued process kill, the bound call/Step
+      // reconciliation and the Thread change gate. A bare status write here
+      // would leave Runs spending and the invocation Step running. Loaded
+      // lazily because that module's import chain extends this class.
+      const { ResearchOperationCancelService } = await import("../projectResearch/researchOperationCancel.js");
+      const stopped = await new ResearchOperationCancelService(this.db).cancelOperation(identity, projectId, operationId);
+      if (stopped.already_terminal) throw new HttpError(409, "Operation is already terminal");
+      const row = (await this.db.query<ProjectOperationRecord>(
+        `SELECT * FROM project_operations WHERE id=$1 AND space_id=$2 AND project_id=$3`,
+        [operationId, identity.spaceId, projectId],
+      )).rows[0];
+      if (!row) throw new HttpError(404, "Project operation not found");
+      return row;
+    }
     const result = await this.db.query<ProjectOperationRecord>(
       `UPDATE project_operations SET status='cancelled', version=version+1, updated_at=$4
         WHERE id=$1 AND space_id=$2 AND project_id=$3 AND status NOT IN ('completed','cancelled')

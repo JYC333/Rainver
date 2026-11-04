@@ -164,6 +164,7 @@ describe("artifact routes", () => {
     const fakeDb = {
       async query(sql: string, params: readonly unknown[] = []) {
         calls.push({ sql, params });
+        if(sql.includes("FROM artifacts origin_artifact"))return {rows:[],rowCount:0};
         return { rows: [row], rowCount: 1 };
       },
     };
@@ -223,7 +224,7 @@ describe("artifact routes", () => {
     ];
     for (const storagePath of badPaths) {
       const fakeDb = {
-        query: async () => ({ rows: [{ ...baseRow, storage_path: storagePath }], rowCount: 1 }),
+        query: async (sql:string) => sql.includes("FROM artifacts origin_artifact")?{rows:[],rowCount:0}:({ rows: [{ ...baseRow, storage_path: storagePath }], rowCount: 1 }),
       };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const repo = new PgArtifactRepository(fakeDb as any, config);

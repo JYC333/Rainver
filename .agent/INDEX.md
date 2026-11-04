@@ -78,7 +78,11 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/ROADMAP_AND_FUTURE_RISKS.md](architecture/ROADMAP_AND_FUTURE_RISKS.md) | Current-state source pointers; unimplemented ideas live in plans/unimplemented-from-guides.md |
 | [architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md](architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md) | Original Skill library, Tool authority, enforced Workflows and governed package Delivery |
 | [architecture/CONTEXT_AND_RETRIEVAL_LAYER.md](architecture/CONTEXT_AND_RETRIEVAL_LAYER.md) | Current-state architecture for knowledge retrieval + the context layer: engine/adapter boundary, recall arms (exact/lexical/multi-hop graph/vector+ANN, max-pool, RRF, intent ranking), gated LLM stages (rerank/rewrite/synthesis), Context Brief + gap analysis, maintenance scans, explicit artifact-backed context attachments, Context Ops read models/page, egress governance, agent tool surface, invariants, Object Schema Registry/object schema implementation, and source-of-truth boundaries |
-| [architecture/PROJECT_WORK.md](architecture/PROJECT_WORK.md) | Current-state Project advancement: the four state axes, the five Loop stages, the append-only work event stream and its single writer, Run settlement, and who a held Task interrupts |
+| [architecture/PROJECT_RESEARCH_CALLS.md](architecture/PROJECT_RESEARCH_CALLS.md) | Current Research call binding, attempt reconciliation and explicit Inquiry result assessment |
+| [architecture/INQUIRY_PROBLEM_ENGINE.md](architecture/INQUIRY_PROBLEM_ENGINE.md) | Implemented Inquiry problem-method projection, work/round commands, cognitive separation and compensation; remaining cross-domain work stays phased |
+| [architecture/PROBLEM_ENGINE_UPGRADE.md](architecture/PROBLEM_ENGINE_UPGRADE.md) | One-time new-model cutover, static history archives and isolated backup/restore drill; no runtime legacy adapters |
+| [architecture/PROBLEM_ENGINE_ACCEPTANCE.md](architecture/PROBLEM_ENGINE_ACCEPTANCE.md) | Cross-domain twelve-scenario evidence map, API/tool usage and bounded Artifact graph/visual acceptance limits |
+| [architecture/PROJECT_WORK.md](architecture/PROJECT_WORK.md) | Current-state Project advancement: Inquiry method/round and Task Board separation, the append-only work event stream and its single writer, Run settlement, and who a held Task interrupts |
 | [architecture/ONTOLOGY.md](architecture/ONTOLOGY.md) | Current-state ontology layer: Entity registry and Interfaces, which domains join the ontology and why, `space_objects` root contract, link-type endpoints and per-edge governance, the single write path and its guards |
 | [architecture/CLAIM_FACT_ATOM_MODEL.md](architecture/CLAIM_FACT_ATOM_MODEL.md) | Current-state model for `space_objects`, global claims/facts/takes, claim evidence, claim relations, and FK-backed `object_relations` |
 | [../docs/PROJECT_READING_ACCEPTANCE.md](../docs/PROJECT_READING_ACCEPTANCE.md) | Project Reading A1–A12 evidence map, synthetic corpus and unassessed Q1 human rubric |
@@ -271,8 +275,11 @@ when shortening a decision; do not delete an ADR merely because it is old.
 | [0024](decisions/0024-access-reading-and-execution-integrity-schema-epoch.md) | This release's schema changes were folded into a new Drizzle-generated baseline with the contract steps applied directly; earlier databases are recreated, not upgraded |
 | [0025](decisions/0025-unpublished-migration-squash.md) | Unpublished plan migrations may be squashed into one formal migration, with explicit data-preserving history conversion for existing databases |
 | [0026](decisions/0026-sources-isolated-request-execution.md) | Sources-only Host execution, OS network/resource containment and shared per-request account/endpoint admission; generated-code product integration remains gated |
+| [0027](decisions/0027-problem-engine-research-separation.md) | Inquiry owns the generic problem method and round close-out; Task Board status is the only Task progress; Research is a bound capability; no runtime compatibility; one-time cutover and retirement of old-model archives |
 
 ---
+
+Historical P1 design archive: [PROBLEM_ENGINE_CONTRACT](architecture/PROBLEM_ENGINE_CONTRACT.md). Current runtime/API owners and cross-domain evidence are routed through [PROBLEM_ENGINE_ACCEPTANCE](architecture/PROBLEM_ENGINE_ACCEPTANCE.md), Inquiry, Research and Project Work; the archive is not a second current specification.
 
 ## 6. Current Work
 

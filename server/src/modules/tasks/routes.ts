@@ -1,3 +1,4 @@
+import { InquiryTaskAssociationService } from "../inquiry/taskAssociations.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
@@ -10,6 +11,7 @@ import {
   parsePage,
   params,
   query,
+  requiredString,
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
@@ -23,6 +25,10 @@ import {
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const repository = () => new PgTaskRepository(dbPool(context.config));
 
+  app.get("/api/v1/tasks/:taskId/inquiry-threads",async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try{return reply.send(await new InquiryTaskAssociationService(dbPool(context.config)).threads(identity,requiredString(params(request).taskId,"task_id"),optionalString(query(request).after_thread_id)??undefined));}catch(error){return sendRouteError(reply,error);}
+  });
   app.get("/api/v1/boards", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -100,7 +106,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const body = jsonBody(request);
+      // Run provenance is server-owned (Agent executors pass the trusted Run).
+      // A request body naming a Run would attribute this Task, its link events
+      // and that Run's creation ceiling to work the caller did not do.
+      const { source_run_id: _untrustedRun, ...body } = jsonBody(request);
       const creation = await resolveContentCreationContext(dbPool(context.config), {
         userId: identity.userId,
         requestSpaceId: identity.spaceId,

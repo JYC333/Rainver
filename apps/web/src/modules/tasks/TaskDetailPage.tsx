@@ -358,7 +358,7 @@ export default function TaskDetailPage() {
         </TabsList>
 
         <TabsContent value="work" className="space-y-4 mt-4">
-          <TaskWorkTab taskId={taskId} refreshToken={workRefresh} onChanged={() => void load()} />
+          <TaskWorkTab taskId={taskId} refreshToken={workRefresh} />
         </TabsContent>
 
         <TabsContent value="overview" className="space-y-4 mt-4">

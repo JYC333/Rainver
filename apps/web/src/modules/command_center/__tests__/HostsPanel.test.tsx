@@ -53,7 +53,7 @@ describe('HostsPanel', () => {
     render(<HostsPanel />)
     expect(await screen.findByText('Laptop')).toBeInTheDocument()
     expect(await screen.findByText('ACP health passed')).toBeInTheDocument()
-    expect(screen.getByText(/Rainver-pinned/)).toBeInTheDocument()
+    expect(screen.getByText(/Selected version/)).toBeInTheDocument()
     expect(screen.getAllByText('server').length).toBeGreaterThan(0)
     expect(screen.getByText(/Built-in execution host/)).toBeInTheDocument()
     expect(screen.getByTestId('host-agent-host-1-claude_code')).toHaveTextContent('Claude Code')
@@ -225,7 +225,7 @@ describe('HostsPanel', () => {
         })
         await Promise.resolve()
       })
-      expect(screen.getByText(/Rainver-pinned 4\.5\.6/)).toBeInTheDocument()
+      expect(screen.getByText(/Selected version 4\.5\.6/)).toBeInTheDocument()
 
       // The next tick is free to read again once that one settled.
       await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
@@ -261,7 +261,7 @@ describe('HostsPanel', () => {
       .toBeInTheDocument()
   })
 
-  it('leaves the Rainver-pinned Server OpenCode copy to the provisioner, and still manages other agents there', async () => {
+  it('lets an administrator upgrade and roll back Server OpenCode through the shared Host controls', async () => {
     authState.currentUser = { is_instance_admin: true }
     const OPENCODE_ADAPTER = {
       runtime_key: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode',
@@ -285,13 +285,13 @@ describe('HostsPanel', () => {
     render(<HostsPanel />)
 
     await screen.findByTestId('host-agent-host-server-opencode')
-    expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('Managed by Rainver')
+    expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('managed · 1.2.3')
     // Retry is shown only for a failed install. A healthy one must not
     // point at a button that is not on the page.
     expect(screen.getByTestId('host-agent-host-server-opencode')).not.toHaveTextContent('use Retry above')
     expect(screen.queryByRole('button', { name: /Remove managed:1\.2\.3 of OpenCode/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Upgrade OpenCode/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Roll OpenCode on .* back to/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /Upgrade OpenCode/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /More for OpenCode/ })).toBeInTheDocument()
     // A registry agent an admin added to the server host stays theirs to manage.
     expect(screen.getByRole('button', { name: /Remove managed:2\.0\.0 of Cursor/ })).toBeInTheDocument()
   })
@@ -319,7 +319,7 @@ describe('HostsPanel', () => {
 
     // A member sees who owns the copy but no Retry, so no hint either.
     const member = render(<HostsPanel />)
-    await waitFor(() => expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('Managed by Rainver'))
+    await waitFor(() => expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('managed · 1.2.3'))
     expect(screen.getByTestId('host-agent-host-server-opencode')).not.toHaveTextContent('use Retry above')
     expect(screen.queryByRole('button', { name: 'Retry Server Runtime provisioning' })).toBeNull()
     member.unmount()
@@ -327,7 +327,7 @@ describe('HostsPanel', () => {
     authState.currentUser = { is_instance_admin: true }
     render(<HostsPanel />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Retry Server Runtime provisioning' })).toBeInTheDocument())
-    expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('Managed by Rainver — use Retry above')
+    expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('managed · 1.2.3')
   })
 
   it('shows a member the built-in host\'s copies without the controls that would 403', async () => {
@@ -418,7 +418,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Log in to Claude Code')
   })
 
-  it('offers the rollback the host says it kept, and asks for it by adapter', async () => {
+  it('keeps rollback in version management and asks for it by adapter', async () => {
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [CLAUDE_HOST] })
     vi.mocked(hostsApi.usage).mockResolvedValue({ items: [] })
     vi.mocked(hostsApi.rollbackRuntime).mockResolvedValue({
@@ -426,7 +426,12 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     })
     render(<HostsPanel />)
 
-    fireEvent.click(await screen.findByRole('button', { name: /roll claude code on laptop back to 1\.0\.0/i }))
+    await screen.findByRole('button', { name: 'More for Claude Code on Laptop' })
+    expect(screen.queryByRole('button', { name: 'Roll back to 1.0.0' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'More for Claude Code on Laptop' }))
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Version management' }))
+    expect(await screen.findByRole('dialog', { name: 'Version management · Claude Code' })).toBeVisible()
+    await userEvent.click(screen.getByRole('button', { name: 'Roll back to 1.0.0' }))
 
     await waitFor(() => expect(hostsApi.rollbackRuntime).toHaveBeenCalledWith('host-1', 'claude_code'))
   })

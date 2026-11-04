@@ -199,9 +199,9 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
   `project.summary.brief`, `source.retrieval.search`, `source.retrieval.brief`,
   `policy.action_grant.create`, `policy.action_grant.revoke`, `source.backfill.plan`,
   `source.backfill.manage`, `task.plan.propose`, `project.brief.propose`, `task.list`,
-  `proposal.list`, `research.operation.list`, `memory.write`, `inquiry.advice.adopt`,
+  `proposal.list`, `research.operation.list`, `memory.write`,
   `inquiry.thread.list`, `inquiry.iteration.record`, `inquiry.knowledge.promote`, `task.create`,
-  `proposal.decide`, `task.report`, `task.handoff`, `task.stage.advance`, `artifact.declare`,
+  `proposal.decide`, `task.report`, `task.handoff`, `task.status.set`, `artifact.declare`,
   `task.complete`, `handoff.write`, `task.request_review`.
 - **wired_via_proposal**: `lifecycle_status=wired_via_proposal` — enforced exclusively via the `proposal.apply`
   gate (`PolicyGateway.enforceProposalApply()`).
@@ -234,8 +234,8 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
   `source.retrieval.search`, `source.retrieval.brief`, `policy.action_grant.create`,
   `source.connection.activate`, `policy.action_grant.revoke`, `source.backfill.plan`,
   `source.backfill.start`, `source.backfill.manage`, `task.plan.propose`, `project.brief.propose`,
-  `memory.write`, `inquiry.advice.adopt`, `inquiry.iteration.record`, `inquiry.knowledge.promote`,
-  `task.create`, `proposal.decide`, `task.report`, `task.handoff`, `task.stage.advance`,
+  `memory.write`, `inquiry.iteration.record`, `inquiry.knowledge.promote`,
+  `task.create`, `proposal.decide`, `task.report`, `task.handoff`, `task.status.set`,
   `artifact.declare`, `task.complete`, `handoff.write`, `task.request_review`.
   Dynamic escalation to `fail_closed` also occurs for:
   - `force_record=True` on the request.
@@ -474,3 +474,24 @@ are declarations, never proof of approval.
 Goal collection uses `source.goal.manage` for its own resource. Each bound source
 still passes `source.connection.manage` with its real Source identity at domain
 write/admission time, in addition to full content and owner/Project ACLs.
+
+
+`inquiry.work.record` / `inquiry.round.close` use the Dispatcher and the
+Project-internal-write origin gate. Their Inquiry command rechecks Project
+writer/full Thread content permissions, versions and idempotency; close-out
+also has Updates and compensating undo. See
+[INQUIRY_PROBLEM_ENGINE](INQUIRY_PROBLEM_ENGINE.md). No Research execution or
+Task-status authority is granted by these work classifications.
+
+`inquiry.problem.read` is a separately granted, read-only Inquiry Thread action.
+It requires full Thread content and returns bounded Step/close-out pages; it
+does not inherit a grant merely from `inquiry.thread.list`. Compact Thread
+listing retains summary-access roots but withholds their problem body.
+
+Research result reads/adoption use separate explicit Run grants and policies
+`research.result.read` / `research.result.adopt`; adoption retains the
+Project-internal-write origin gate. Both revalidate the bound Thread, Run,
+Source and Artifact access. Agent output additionally passes canonical Source
+egress for the granted Run destination. These grants do not authorize new acquisition,
+Source retention, spend, or Knowledge publication. See
+[Research calls](PROJECT_RESEARCH_CALLS.md).

@@ -101,7 +101,7 @@ beforeEach(async () => {
   await resetTables(
     db.pool!,
     [
-      "project_work_events", "task_loop_states", "task_evaluations", "task_artifacts", "run_finalizations", "run_evaluations",
+      "project_work_events", "task_evaluations", "task_artifacts", "run_finalizations", "run_evaluations",
       "task_runs", "tasks", "artifacts", "runs", "actors", "agent_versions", "agents",
       "projects", "users", "spaces",
     ],
@@ -170,13 +170,9 @@ describe("run settlement", () => {
     expect(await eventKindCounts(task)).toEqual({
       "task.run_settled": 1,
       "task.accepted": 1,
-      "task.stage_changed": 1,
+
     });
-    const loop = await db.pool!.query<{ current_stage_key: string }>(
-      `SELECT current_stage_key FROM task_loop_states WHERE task_id = $1`,
-      [task],
-    );
-    expect(loop.rows[0]?.current_stage_key).toBe("conclude");
+    expect((await db.pool!.query(`SELECT to_regclass('task_loop_states') AS old`)).rows[0].old).toBeNull();
   });
 
   it("does not let one old failure block a Task forever", async (ctx) => {
@@ -313,8 +309,7 @@ describe("run settlement", () => {
 
     expect((await taskRow(task)).status).toBe("waiting_for_review");
     // Nothing was produced, so the Loop stage is left where it was.
-    const loop = await db.pool!.query(`SELECT 1 FROM task_loop_states WHERE task_id = $1`, [task]);
-    expect(loop.rowCount).toBe(0);
+    expect((await db.pool!.query(`SELECT to_regclass('task_loop_states') AS old`)).rows[0].old).toBeNull();
   });
 
   it("waits while another Run of the same Task is still going", async (ctx) => {
@@ -384,7 +379,7 @@ describe("run settlement", () => {
     expect(await eventKindCounts(task)).toEqual({
       "task.run_settled": 2,
       "task.accepted": 1,
-      "task.stage_changed": 2,
+
     });
   });
 
@@ -407,7 +402,7 @@ describe("run settlement", () => {
     expect(await eventKindCounts(task)).toEqual({
       "task.run_settled": 1,
       "task.accepted": 1,
-      "task.stage_changed": 1,
+
     });
   });
 

@@ -15,7 +15,6 @@ import { getDbPool } from "../../db/pool.js";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
 import { ProjectCorpusRepository } from "../projects/corpusRepository.js";
 import { InquiryIterationService } from "./iterationService.js";
-import { tryQueueAdviceForFocusedThread } from "./adviceJob.js";
 import {
   assertThreadReadable,
   readableThreadIds,
@@ -331,13 +330,6 @@ export class InquirySignalService {
     // support auto-attaches and is not worth re-advising on. Queued after
     // commit, and never allowed to fail Signal creation.
     if (delivery.consolidatedNow) {
-      await tryQueueAdviceForFocusedThread(this.db, {
-        spaceId: identity.spaceId,
-        userId: identity.userId,
-        projectId,
-        threadId,
-        triggerKind: "candidate_created",
-      });
     }
     return delivery.signal;
   }
@@ -498,6 +490,12 @@ export class InquirySignalService {
             ...edits,
             ...body,
             change_summary: optionalString(body.change_summary) ?? candidate.summary ?? candidate.title,
+            round_intent: "position_only",
+            start_next_primary: undefined,
+            method_version: "problem_solving.v1",
+            expected_version: (await db.query(`SELECT version FROM inquiry_threads WHERE object_id=$1 AND space_id=$2`,[candidate.thread_id,identity.spaceId])).rows[0].version,
+            expected_revision: (await db.query(`SELECT problem_revision FROM inquiry_threads WHERE object_id=$1 AND space_id=$2`,[candidate.thread_id,identity.spaceId])).rows[0].problem_revision,
+            idempotency_key: `candidate:${candidate.id}`,
             trigger_kind: "candidate_accept",
             trigger_ref: candidate.id,
           };

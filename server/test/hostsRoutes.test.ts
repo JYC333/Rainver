@@ -1,3 +1,4 @@
+import {__setAcpRegistryForTests} from "../src/modules/acpAgents/registry.js";
 import { OwnCliReleases, ownCliReleases } from "../src/modules/hosts/ownCliReleases.js";
 import { isOwnCliUpdateRuntimeKey } from "@rainver/protocol";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -116,6 +117,7 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
+  __setAcpRegistryForTests(null);
   vi.restoreAllMocks();
   __setAuthIdentityForTests(null);
   __setAuthRepositoryForTests(null);
@@ -124,6 +126,8 @@ afterEach(() => {
 });
 
 beforeEach(async () => {
+  // This suite tests the pre-refresh registry contract, independently of worker order.
+  __setAcpRegistryForTests([]);
   vi.spyOn(ownCliReleases, "peek").mockImplementation((runtimeKey) => isOwnCliUpdateRuntimeKey(runtimeKey) ? "9.8.7" : null);
   if (!db.available) return;
   await resetTables(
@@ -150,7 +154,17 @@ describe("hosts routes", () => {
     const url = `/api/v1/hosts/${hostId}/installations/codex_cli/own/update`;
     __setAuthIdentityForTests({ spaceId: "host-route-space", userId: OTHER_USER });
     expect((await app.inject({ method: "POST", url, headers: { cookie: authCookie(OTHER_TOKEN) } })).statusCode).toBe(404);
+    const operationsUrl = `/api/v1/hosts/${hostId}/tool-operations`;
+    expect((await app.inject({ method: "GET", url: operationsUrl, headers: { cookie: authCookie(OTHER_TOKEN) } })).statusCode).toBe(404);
     __setAuthIdentityForTests({ spaceId: "host-route-space", userId: OWNER });
+    const operations = vi.spyOn(sharedHostConnectionRegistry, "toolOperations")
+      .mockReturnValue([{ runtime_key: "codex_cli", action: "update_own_tool" }]);
+    try {
+      const status = await app.inject({ method: "GET", url: operationsUrl, headers: { cookie: authCookie(OWNER_TOKEN) } });
+      expect(status.statusCode).toBe(200);
+      expect(status.json()).toEqual({ items: [{ runtime_key: "codex_cli", action: "update_own_tool" }] });
+      expect(operations).toHaveBeenCalledWith(hostId);
+    } finally { operations.mockRestore(); }
     await db.pool.query("UPDATE hosts SET daemon_version = $2 WHERE id = $1", [hostId, MIN_HOST_DAEMON_VERSION]);
     const action = vi.spyOn(sharedHostConnectionRegistry, "requestToolAction")
       .mockResolvedValueOnce({ ok: true, error: null, installation: "own", from_version: "1.2.0", to_version: "1.2.0" })

@@ -4,7 +4,6 @@ import { loadConfig } from "../src/config.js";
 import { PgAgentRepository } from "../src/modules/agents/repository.js";
 import { PgAutomationRepository } from "../src/modules/automations/repository.js";
 import { AutomationService } from "../src/modules/automations/service.js";
-import { InquiryAdviceService } from "../src/modules/inquiry/adviceService.js";
 import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
 import { inquiryRetrievalAdapter } from "../src/modules/inquiry/retrievalAdapter.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
@@ -130,8 +129,6 @@ describe("Thread readability (real Postgres)", () => {
     const iterations = new InquiryIterationService(db.pool);
     await expect(iterations.listIterations(other, PROJECT, id)).rejects.toMatchObject({ statusCode: 404 });
     await expect(iterations.updateWork(other, PROJECT, id, { priority: 5 })).rejects.toMatchObject({ statusCode: 404 });
-    await expect(new InquiryAdviceService(db.pool, config()).getAdvice(other, PROJECT, id))
-      .rejects.toMatchObject({ statusCode: 404 });
     expect(await inquiryRetrievalAdapter.revalidate(db.pool, SPACE, "inquiry_thread", id, OTHER)).toBeNull();
     expect(await inquiryRetrievalAdapter.revalidate(db.pool, SPACE, "inquiry_thread", id, OWNER)).not.toBeNull();
     expect(await inquiryRetrievalAdapter.loadCanonical(db.pool, SPACE, "inquiry_thread", id))

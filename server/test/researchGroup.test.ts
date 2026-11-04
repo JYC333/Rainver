@@ -1,9 +1,17 @@
+import {assertResearchResultRunEgress} from '../src/modules/projectResearch/researchResultEgress.js';
+import type {RunRecord} from '../src/modules/runs/repository.js';
+import {seedArxivSourceChain,seedRelevantCorpusItem} from './support/researchSeeds.js';
+import {assertResearchArtifactReadable,assertResearchReportCallReadable} from '../src/modules/projectResearch/reportAccess.js';
+import {tmpdir} from 'node:os';
+import {InquiryThreadService} from '../src/modules/inquiry/threadService.js';
+import {ResearchAcquisitionService} from '../src/modules/projectResearch/pipeline/researchAcquisitionService.js';
+import {artifactReadSql} from '../src/modules/access/contentAccessSql.js';
 import { randomUUID } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync,writeFileSync,mkdtempSync,mkdirSync,rmSync } from "node:fs";
 import { join } from "node:path";
 import * as protocol from "@rainver/protocol";
 import type { ResearchContext, ResearchProviderKey, ResearchSemanticQuery } from "@rainver/protocol";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll,afterAll, describe, expect, it, vi } from "vitest";
 import type { ServerConfig } from "../src/config.js";
 import { ProjectResearchDiscoveryBridge } from "../src/modules/projectResearch/pipeline/researchDiscoveryBridge.js";
 import { ResearchContextRepository } from "../src/modules/projectResearch/question/researchContextRepository.js";
@@ -18,7 +26,7 @@ import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { SourceChannelService } from "../src/modules/sources/channels/sourceChannelService.js";
 import { SearchExecutionAdapter } from "../src/modules/sources/search/searchExecutionAdapter.js";
 import { useTestDatabase } from "./support/testDatabase.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { seedMainlineRoomsForAllProjects,seedSpaceOwnerProject,seedSpaceMember,seedRun } from "./support/domainSeeds.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 describe("researchCheckpointPolicy", () => {
@@ -961,4 +969,81 @@ describe("researchQueryRepositoryDb", () => {
       duplicate_rate: 0,
     };
   }
+});
+
+const outputRoot=process.env.PROBLEM_ENGINE_EVIDENCE_DIR;if(outputRoot)mkdirSync(outputRoot,{recursive:true});
+const evidence=mkdtempSync(join(outputRoot??tmpdir(),'artifact-scale-'));
+afterAll(()=>{if(!outputRoot)rmSync(evidence,{recursive:true,force:true});});
+const scaleDb=useTestDatabase(import.meta.filename+"#artifactScale");
+it('measures canonical provenance ACLs over retained artifacts and operations without weakening authority',async()=>{
+ const space=randomUUID(),owner=randomUUID(),project=randomUUID(),run=randomUUID(),peer=randomUUID();await seedSpaceOwnerProject(scaleDb.pool,{space,owner,project});
+ await seedSpaceMember(scaleDb.pool,{space,user:peer});await scaleDb.pool.query(`INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())`,[randomUUID(),space,project,peer]);
+ const identity={spaceId:space,userId:owner};await seedRun(scaleDb.pool,{id:run,space,owner,agent:randomUUID(),version:randomUUID()});
+ const thread=String((await new InquiryThreadService(scaleDb.pool).createThread(identity,project,{kind:'question',statement:'Retained history scale'})).id);
+ const start=await new ResearchAcquisitionService(scaleDb.pool).startAcquisition(identity,project,{threadId:thread,requestKey:'scale',originRoomId:null,originSessionId:null});
+ await scaleDb.pool.query(`UPDATE project_operations SET progress_json=progress_json||jsonb_build_object('synthesis_run_id',$2::text) WHERE id=$1`,[start.operation_id,run]);
+ await scaleDb.pool.query(`INSERT INTO project_operations(id,space_id,project_id,kind,title,status,progress_json,created_by_user_id,created_at,updated_at) SELECT gen_random_uuid()::text,$1,$2,'research','Retained unbound','completed','{}',$3,now(),now() FROM generate_series(1,1000)`,[space,project,owner]);
+ await scaleDb.pool.query(`INSERT INTO artifacts(id,space_id,project_id,run_id,artifact_type,title,export_formats_json,owner_user_id,visibility,created_at,updated_at) SELECT gen_random_uuid()::text,$1,$2,$3,'text','Retained output','[]',$4,'space_shared',now(),now() FROM generate_series(1,10000)`,[space,project,run,owner]);
+ await scaleDb.pool.query('ANALYZE artifacts');await scaleDb.pool.query('ANALYZE project_operations');
+ const plan=(await scaleDb.pool.query(`EXPLAIN(ANALYZE,BUFFERS,FORMAT JSON) SELECT a.id FROM artifacts a WHERE a.space_id=$1 AND ${artifactReadSql('$2','a')} ORDER BY a.created_at DESC LIMIT 50`,[space,owner])).rows;
+ expect((await scaleDb.pool.query(`SELECT count(*)::int AS n FROM artifacts a WHERE a.space_id=$1 AND ${artifactReadSql('$2','a')}`,[space,owner])).rows[0].n).toBe(10000);
+ await scaleDb.pool.query(`UPDATE runs SET visibility='space_shared',project_id=$2 WHERE id=$1`,[run,project]);
+ await scaleDb.pool.query(`UPDATE space_objects SET visibility='space_shared',access_level='full' WHERE id=$1`,[thread]);
+ expect((await scaleDb.pool.query(`SELECT count(*)::int AS n FROM artifacts a WHERE a.space_id=$1 AND ${artifactReadSql('$2','a')}`,[space,peer])).rows[0].n).toBe(10000);
+ // Same artifact visibility remains insufficient when its originating Thread is summary-only.
+ await scaleDb.pool.query(`UPDATE space_objects SET access_level='summary' WHERE id=$1`,[thread]);
+ expect((await scaleDb.pool.query(`SELECT count(*)::int AS n FROM artifacts a WHERE a.space_id=$1 AND ${artifactReadSql('$2','a')}`,[space,peer])).rows[0].n).toBe(0);
+ const indexes=(await scaleDb.pool.query(`SELECT tablename,indexname,indexdef FROM pg_indexes WHERE schemaname='public' AND tablename IN ('artifacts','project_operations','project_research_reports','workflow_execution_node_runs') ORDER BY tablename,indexname`)).rows;
+ writeFileSync(join(evidence,'artifact-plan.json'),JSON.stringify({fixture:{artifacts:10000,operations:1001,bound_origins:1},plan,indexes},null,2));
+});
+
+const graphDb=useTestDatabase(import.meta.filename+"#artifactGraph");
+const output=process.env.PROBLEM_ENGINE_EVIDENCE_DIR;if(output)mkdirSync(output,{recursive:true});const graphEvidence=mkdtempSync(join(output??tmpdir(),'artifact-graph-'));afterAll(()=>{if(!output)rmSync(graphEvidence,{recursive:true,force:true});});
+it('measures dense bound origins and bounds deep/cyclic provenance without losing revocation',async()=>{
+ const space=randomUUID(),owner=randomUUID(),peer=randomUUID(),project=randomUUID();await seedSpaceOwnerProject(graphDb.pool,{space,owner,project,spaceType:'household'});await seedSpaceMember(graphDb.pool,{space,user:peer});await graphDb.pool.query(`INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())`,[randomUUID(),space,project,peer]);
+ const identity={spaceId:space,userId:owner},viewer={spaceId:space,userId:peer};const thread=String((await new InquiryThreadService(graphDb.pool).createThread(identity,project,{kind:'question',statement:'Bound provenance graph'})).id);await graphDb.pool.query(`UPDATE space_objects SET visibility='space_shared' WHERE id=$1`,[thread]);
+ const first=await new ResearchAcquisitionService(graphDb.pool).startAcquisition(identity,project,{threadId:thread,requestKey:'prototype',originRoomId:null,originSessionId:null});
+ // Explicit logical-call/output fixtures copied from a real canonical binding,
+ // never historical kind matching. Every clone gets distinct call and Step IDs.
+ const rows:Array<{operation:string;step:string;artifact:string}>=Array.from({length:201},()=>({operation:randomUUID(),step:randomUUID(),artifact:randomUUID()}));
+ const leafThread=String((await new InquiryThreadService(graphDb.pool).createThread(identity,project,{kind:'question',statement:'Independent leaf authority'})).id);await graphDb.pool.query(`UPDATE space_objects SET visibility='space_shared' WHERE id=$1`,[leafThread]);
+ const leaf=await new ResearchAcquisitionService(graphDb.pool).startAcquisition(identity,project,{threadId:leafThread,requestKey:'leaf',originRoomId:null,originSessionId:null});const leafStep=(await graphDb.pool.query(`SELECT research_step_id FROM project_operations WHERE id=$1`,[leaf.operation_id])).rows[0].research_step_id;
+ rows[199]={operation:leaf.operation_id!,step:leafStep,artifact:randomUUID()};const cloned=rows.filter((_,i)=>i!==199);
+ await graphDb.pool.query(`UPDATE project_operations SET status='completed',progress_json=jsonb_build_object('artifact_ids',jsonb_build_array($2::text)) WHERE id=$1`,[leaf.operation_id,rows[199]!.artifact]);
+ await graphDb.pool.query(`UPDATE inquiry_thread_steps SET status='done',completed_at=now() WHERE id=$1`,[leafStep]);
+ await graphDb.pool.query(`INSERT INTO inquiry_thread_steps(id,space_id,project_id,thread_id,kind,status,slot,method_version,method_stage,work_kind,round_number,origin,created_at,started_at,completed_at,target_ref_kind,target_ref_id) SELECT x.step,$2,$3,$4,'invoke_research','done','background','problem_solving.v1','act','invoke_research',1,'system',now(),now(),now(),'research_operation',x.operation FROM jsonb_to_recordset($1::jsonb) AS x(step text,operation text)`,[JSON.stringify(cloned),space,project,thread]);
+ await graphDb.pool.query(`INSERT INTO project_operations SELECT (jsonb_populate_record(NULL::project_operations,to_jsonb(op)||jsonb_build_object('id',x.operation,'research_step_id',x.step,'research_call_key',x.operation,'status','completed','progress_json',jsonb_build_object('artifact_ids',jsonb_build_array(x.artifact)),'research_call_json',op.research_call_json||jsonb_build_object('operation_id',x.operation,'step_id',x.step,'input_refs','[]'::jsonb)))).* FROM project_operations op CROSS JOIN jsonb_to_recordset($1::jsonb) AS x(operation text,step text,artifact text) WHERE op.id=$2`,[JSON.stringify(cloned),first.operation_id]);
+ await graphDb.pool.query(`INSERT INTO artifacts(id,space_id,project_id,artifact_type,title,content,export_formats_json,owner_user_id,visibility,created_at,updated_at) SELECT x.artifact,$2,$3,'text','Bound result','Fixture evidence','[]',$4,'space_shared',now(),now() FROM jsonb_to_recordset($1::jsonb) AS x(artifact text)`,[JSON.stringify(rows),space,project,owner]);
+ await graphDb.pool.query('ANALYZE artifacts');await graphDb.pool.query('ANALYZE project_operations');
+
+ const plan=(await graphDb.pool.query(`EXPLAIN(ANALYZE,BUFFERS,FORMAT JSON) SELECT a.id FROM artifacts a WHERE a.space_id=$1 AND ${artifactReadSql('$2','a')} ORDER BY a.created_at DESC LIMIT 50`,[space,peer])).rows;
+ expect((await graphDb.pool.query(`SELECT count(*)::int AS n FROM artifacts a WHERE a.space_id=$1 AND ${artifactReadSql('$2','a')}`,[space,peer])).rows[0].n).toBe(201);
+ // 200 vertices accepted; a cycle terminates. A 201st distinct dependency fails.
+ const edges=rows.slice(0,199).map((r,i)=>({operation:r.operation,next:rows[i+1]!.artifact}));
+ await graphDb.pool.query(`UPDATE project_operations op SET research_call_json=research_call_json||jsonb_build_object('input_refs',jsonb_build_array(jsonb_build_object('type','artifact','id',e.next))) FROM jsonb_to_recordset($1::jsonb) AS e(operation text,next text) WHERE op.id=e.operation`,[JSON.stringify(edges)]);
+ let queries=0;const measured={query:(...args:any[])=>{queries++;return (graphDb.pool.query as any)(...args);}};
+
+ const started=performance.now();await assertResearchArtifactReadable(measured,viewer,rows[0]!.artifact);const depthMs=performance.now()-started;const depthQueries=queries;expect(queries).toBeLessThanOrEqual(15);
+ await graphDb.pool.query(`UPDATE project_operations SET research_call_json=research_call_json||jsonb_build_object('input_refs',jsonb_build_array(jsonb_build_object('type','artifact','id',$2::text))) WHERE id=$1`,[rows[199]!.operation,rows[0]!.artifact]);
+ queries=0;await assertResearchArtifactReadable(measured,viewer,rows[0]!.artifact);const cycleQueries=queries;expect(queries).toBeLessThanOrEqual(15);
+ await graphDb.pool.query(`UPDATE project_operations SET research_call_json=research_call_json||jsonb_build_object('input_refs',jsonb_build_array(jsonb_build_object('type','artifact','id',$2::text))) WHERE id=$1`,[rows[199]!.operation,rows[200]!.artifact]);
+ queries=0;await expect(assertResearchArtifactReadable(measured,viewer,rows[0]!.artifact)).rejects.toMatchObject({statusCode:409});const limitQueries=queries;expect(queries).toBeLessThanOrEqual(15);
+ await graphDb.pool.query(`UPDATE project_operations SET research_call_json=research_call_json||jsonb_build_object('input_refs','[]'::jsonb) WHERE id=$1`,[rows[199]!.operation]);
+ const connection=randomUUID(),channel=randomUUID();await seedArxivSourceChain(graphDb.pool,{space,owner,connection,connector:randomUUID(),channel,now:new Date().toISOString()});
+ await graphDb.pool.query(`UPDATE source_connections SET visibility='space_shared',access_level='full',consent_json=consent_json||jsonb_build_object('allowed_reader_user_ids',jsonb_build_array($2::text)) WHERE id=$1`,[connection,peer]);
+ await graphDb.pool.query(`INSERT INTO source_channel_user_subscriptions(id,space_id,source_channel_id,user_id,status,library_enabled,digest_enabled,created_at,updated_at) VALUES($1,$2,$3,$4,'subscribed',true,false,now(),now())`,[randomUUID(),space,channel,peer]);
+ const material=await seedRelevantCorpusItem(graphDb.pool,{space,project,owner});await graphDb.pool.query(`UPDATE source_items SET connection_id=$2 WHERE id=$1`,[material.sourceItemId,connection]);
+ await graphDb.pool.query(`UPDATE project_operations SET progress_json=progress_json||jsonb_build_object('channel_ids',jsonb_build_array($2::text),'source_item_ids',jsonb_build_array($3::text)) WHERE id=$1`,[rows[199]!.operation,channel,material.sourceItemId]);
+ await assertResearchReportCallReadable(graphDb.pool,viewer,project,rows[0]!.operation);
+ await graphDb.pool.query(`UPDATE source_connections SET status='archived' WHERE id=$1`,[connection]);
+ await expect(assertResearchReportCallReadable(graphDb.pool,viewer,project,rows[0]!.operation)).rejects.toMatchObject({statusCode:404});await expect(assertResearchArtifactReadable(graphDb.pool,viewer,rows[0]!.artifact)).rejects.toMatchObject({statusCode:404});
+ await graphDb.pool.query(`UPDATE source_connections SET status='active' WHERE id=$1`,[connection]);
+ const caller={space_id:space,project_id:project,runtime_key:'codex_cli',contract_snapshot_json:{},instructed_by_user_id:owner} as RunRecord;
+ queries=0;const egressStarted=performance.now();await assertResearchResultRunEgress(measured,caller,rows[0]!.operation);const egressMs=performance.now()-egressStarted,egressQueries=queries;expect(egressQueries).toBeLessThanOrEqual(1500);
+ await graphDb.pool.query(`UPDATE source_connections SET policy_json=jsonb_build_object('schema_version',1,'source_egress_class','internal_only','source_egress_configured',true) WHERE id=$1`,[connection]);
+ await assertResearchReportCallReadable(graphDb.pool,identity,project,rows[0]!.operation);
+ queries=0;await expect(assertResearchResultRunEgress(measured,caller,rows[0]!.operation)).rejects.toMatchObject({statusCode:403});const deniedEgressQueries=queries;expect(deniedEgressQueries).toBeLessThanOrEqual(1500);
+ await graphDb.pool.query(`UPDATE space_objects SET visibility='private' WHERE id=$1`,[leafThread]);await expect(assertResearchReportCallReadable(graphDb.pool,viewer,project,rows[0]!.operation)).rejects.toMatchObject({statusCode:404});await expect(assertResearchArtifactReadable(graphDb.pool,viewer,rows[0]!.artifact)).rejects.toMatchObject({statusCode:404});// Full reads fail along the leaf binding even though unrelated direct origins remain visible.
+
+ writeFileSync(join(graphEvidence,'graph-plan.json'),JSON.stringify({fixture:{bound_operations:202,artifacts:201,maximum_accepted_depth:200},plan,depthMs,depthQueries,cycleQueries,limitQueries,egressMs,egressQueries,deniedEgressQueries},null,2));
 });

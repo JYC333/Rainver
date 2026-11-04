@@ -34,7 +34,7 @@ export interface ProjectResearchRetryPorts<TRead, TSetup> {
   operation(spaceId: string, operationId: string): Promise<RetryOperationRow | null>;
   assertQuestionAligned(spaceId: string, projectId: string, workflowId: string): Promise<void>;
   activeOperation(spaceId: string, projectId: string, workflowId: string): Promise<RetryOperationRow | null>;
-  retryMonitorSetup(identity: SpaceUserIdentity, projectId: string, state: ResearchOperationState): Promise<TSetup>;
+  retryMonitorSetup(identity: SpaceUserIdentity, projectId: string, state: ResearchOperationState,operationId:string): Promise<TSetup>;
   ensureProcessingBatchSize(identity: SpaceUserIdentity, ruleIds: string[]): Promise<void>;
   setState(operation: RetryOperationRow, state: ResearchOperationState): Promise<void>;
   enqueueReconcile(spaceId: string, userId: string, operationId: string, reason: string): Promise<void>;
@@ -67,7 +67,7 @@ export class ProjectResearchRetryService<TRead, TSetup> {
     }
     const failedStage = researchStage(state.failed_stage ?? state.current_stage);
     if (state.run_kind === "baseline" && failedStage === "monitor_setup") {
-      return this.ports.retryMonitorSetup(identity, projectId, state);
+      return this.ports.retryMonitorSetup(identity, projectId, state,operation.id);
     }
 
     const backfillPlanIds = state.source_backfill_plan_ids?.length

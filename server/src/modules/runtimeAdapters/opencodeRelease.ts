@@ -1,6 +1,6 @@
 import type { RuntimeDistribution } from "./specs.js";
 
-/** Release-owned Server Host artifact. Paired Hosts continue to use ACP Registry releases. */
+/** Verified offline bootstrap fallback. Both Host kinds prefer ACP Registry releases. */
 export const SERVER_OPENCODE_RELEASE: {
   version: string;
   distribution: RuntimeDistribution;

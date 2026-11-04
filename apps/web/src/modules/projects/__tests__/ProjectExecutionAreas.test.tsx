@@ -119,7 +119,7 @@ describe('Project execution Areas', () => {
     for (const gone of ['Explore', 'Decide & learn', 'Digest', 'Raw material', 'Experiments', 'Knowledge review', 'Learning', 'Operations']) {
       expect(screen.queryByText(gone)).not.toBeInTheDocument()
     }
-    // Six Areas, flat. Reading keeps the existing Sources route. Every previous
+    // Five Areas, flat. Reading keeps the existing Sources route. Every previous
     // route stays reachable.
     const destinations = [
       ['Pulse', ''],
@@ -127,9 +127,8 @@ describe('Project execution Areas', () => {
       ['Updates', '/updates'],
       ['Conversations', '/conversations'],
       ['Notes', '/notes'],
-      ['Inquiry', '/inquiry'],
+      ['Problems', '/inquiry'],
       ['Reading', '/sources'],
-      ['Research', '/research'],
       ['Files & Code', '/files'],
       ['Decisions', '/decisions'],
     ] as const
@@ -160,7 +159,7 @@ describe('Project execution Areas', () => {
     expect(screen.getByRole('link', { name: /Ship release/ })).toHaveAttribute('href', '/spaces/space-1/projects/project-1/tasks/task-1')
     expect(screen.getByRole('link', { name: /Health check failed/ })).toHaveAttribute('href', '/spaces/space-1/projects/project-1/operations?alert=alert-1')
 
-    fireEvent.click(screen.getByRole('link', { name: 'Inquiry' }))
+    fireEvent.click(screen.getByRole('link', { name: 'Problems' }))
     expect(screen.getByText('Inquiry content')).toBeInTheDocument()
     expect(screen.getByText('Needs attention')).toBeInTheDocument()
   })
@@ -176,10 +175,10 @@ describe('Project execution Areas', () => {
       </MemoryRouter>,
     )
 
-    expect(await screen.findByRole('link', { name: 'Inquiry' })).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Problems' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Areas/ }))
     // The three promoted destinations stay; the Areas do not.
-    expect(screen.queryByRole('link', { name: 'Inquiry' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Problems' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Board' })).toBeInTheDocument()
     expect(localStorage.getItem('project.areas.open')).toBe('false')
   })
@@ -202,9 +201,9 @@ describe('Project execution Areas', () => {
       </MemoryRouter>,
     )
 
-    expect(await screen.findByRole('link', { name: /^Pulse/ })).toHaveTextContent('2')
+    await waitFor(()=>expect(screen.getByRole('link', { name: /^Pulse/ })).toHaveTextContent('2'))
 
-    fireEvent.click(screen.getByRole('link', { name: 'Inquiry' }))
+    fireEvent.click(screen.getByRole('link', { name: 'Problems' }))
     expect(await screen.findByText('Inquiry content')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('link', { name: /^Pulse/ })).not.toHaveTextContent('2'))
   })
@@ -226,7 +225,7 @@ describe('Project execution Areas', () => {
       </MemoryRouter>,
     )
 
-    expect(await screen.findByRole('link', { name: /^Pulse/ })).toHaveTextContent('2')
+    await waitFor(()=>expect(screen.getByRole('link', { name: /^Pulse/ })).toHaveTextContent('2'))
     notifyReviewAttentionChanged()
     await waitFor(() => expect(screen.getByRole('link', { name: /^Pulse/ })).not.toHaveTextContent('2'))
   })

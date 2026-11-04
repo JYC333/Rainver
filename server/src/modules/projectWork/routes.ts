@@ -1,8 +1,9 @@
+import { readTaskHistory } from "./taskHistory.js";
 import type { FastifyInstance } from "fastify";
 import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import {
-  dbPool, HttpError, jsonBody, params, query, requiredString, resolveIdentity, sendRouteError,
+  dbPool, HttpError, jsonBody, params, query, optionalString, requiredString, resolveIdentity, sendRouteError,
   withDbTransaction, type Queryable,
 } from "../routeUtils/common.js";
 import { resolveUserActorId } from "../../db/actorResolver.js";
@@ -11,13 +12,12 @@ import { getProjectUpdates } from "./updatesReadModel.js";
 import { undoProjectUpdate } from "./updateUndo.js";
 import { appendProjectWorkEvent } from "./eventWriter.js";
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
-import { recordStageChange } from "./loopState.js";
 
 /**
- * Read models and the person-facing stage control.
+ * Project read models and recorded updates.
  *
  * The Task routes live here rather than in `tasks` because what they return is
- * Project advancement — Loop stage, work events, why a Task cannot close — and
+ * Project advancement — Board status, work events, why a Task cannot close — and
  * `tasks` owns the work item, not the advancement around it.
  */
 export function registerRoutes(app: FastifyInstance, context: { config: ServerConfig }): void {
@@ -34,6 +34,10 @@ export function registerRoutes(app: FastifyInstance, context: { config: ServerCo
     }
   });
 
+  app.get("/api/v1/tasks/:taskId/work-history",async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try{return reply.send(await readTaskHistory(pool(),identity,requiredString(params(request).taskId,"task_id"),optionalString(query(request).before_seq)??undefined));}catch(error){return sendRouteError(reply,error);}
+  });
   app.get("/api/v1/tasks/:taskId/work", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -108,42 +112,6 @@ export function registerRoutes(app: FastifyInstance, context: { config: ServerCo
         });
       });
       return reply.code(201).send({ id: event.id });
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/tasks/:taskId/stage", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const taskId = requiredString(params(request).taskId, "task_id");
-      const parsed = protocol.TaskStageChangeRequestSchema.safeParse(jsonBody(request));
-      if (!parsed.success) throw new HttpError(422, parsed.error.message);
-      const view = await withDbTransaction(pool(), async (client: Queryable) => {
-        // Readability is rechecked here rather than trusted from the read
-        // model: this is a write, and the view was fetched under a different
-        // transaction.
-        const current = await getTaskWorkView(client, identity, taskId);
-        if (!current.task.project_id) {
-          throw new HttpError(422, "A Task outside a Project has no Loop to advance");
-        }
-        // Reading the Task is not licence to move its Loop; a Project viewer
-        // can read every shared Task.
-        await assertProjectWriterForMutation(client, identity.spaceId, current.task.project_id, identity.userId);
-        const actorId = await resolveUserActorId(client, identity.spaceId, identity.userId);
-        await recordStageChange(client, {
-          spaceId: identity.spaceId,
-          projectId: current.task.project_id,
-          taskId,
-          toStage: parsed.data.to_stage,
-          actorId,
-          reason: parsed.data.reason,
-          data: { via: "user" },
-        });
-        return getTaskWorkView(client, identity, taskId);
-      });
-      return reply.send(view);
     } catch (error) {
       return sendRouteError(reply, error);
     }

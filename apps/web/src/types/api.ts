@@ -66,11 +66,9 @@ import type {
   InquiryDeltaBriefContent,
   InquiryEvidenceSignal,
   InquiryIteration,
-  InquiryNextFocusKind,
   InquiryOpenStep,
   InquiryReviewPacket,
   InquiryThread,
-  InquiryThreadAdvice,
   InquiryThreadStep,
   MemoryMaintenanceJob,
   MemoryMaintenanceJobRunResponse,
@@ -251,11 +249,9 @@ export type {
   InquiryDeltaBriefContent,
   InquiryEvidenceSignal,
   InquiryIteration,
-  InquiryNextFocusKind,
   InquiryOpenStep,
   InquiryReviewPacket,
   InquiryThread,
-  InquiryThreadAdvice,
   InquiryThreadStep,
   MemoryMaintenanceJob,
   MemoryMaintenanceJobRunResponse,
@@ -398,7 +394,7 @@ export interface ResearchArea {
   notes_collection_id: string
   notes: Array<{ id: string; title: string; version: number; content_json: Record<string, unknown> }>
   checklist: ResearchChecklistItem[]
-  reports: Array<{ id: string; research_question: string; research_question_version: number; status: string; run_kind: string; created_at: string }>
+  reports: Array<{ id: string; workflow_id?:string; operation_id?:string; research_question: string; research_question_version: number; status: string; run_kind: string; created_at: string }>
 }
 export interface ResearchReadingList { items: Array<ProjectCorpusItem & { evidence_card: ResearchEvidenceCard | null }>; total: number; limit: number; offset: number }
 export type MemberRole     = 'owner' | 'admin' | 'reviewer' | 'member' | 'guest' | 'viewer'
@@ -3290,6 +3286,7 @@ export interface InquiryThreadNoteLink {
 }
 
 export interface InquiryThreadDetail extends InquiryThread {
+  scope_boundary?:string|null;
   question_state: InquiryQuestionState | null
   hypothesis_state: InquiryHypothesisState | null
   relations: InquiryThreadRelation[]
@@ -4662,7 +4659,6 @@ export interface FocusAreaContents {
 // package is already a web dependency, and a local copy drifts from the
 // server contract.
 export type {
-  WorkLoopStageKey,
   ResponsibleActor,
   ProjectBoardCard,
   ProjectBoardColumn,

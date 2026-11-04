@@ -41,13 +41,12 @@ const areas = [
   { label: 'Notes', path: 'notes' },
   { label: 'Inquiry', path: 'inquiry' },
   { label: 'Sources', path: 'sources' },
-  { label: 'Research', path: 'research' },
   { label: 'Files & Code', path: 'files' },
   { label: 'Decisions', path: 'decisions' },
 ] as const
 
 export default function ProjectAreaLayout() {
-  const { t } = useAppTranslation()
+  const { t,locale } = useAppTranslation()
   const { projectId = '', spaceId = '' } = useParams()
   const { pathname } = useLocation()
   const {userId}=useSpace()
@@ -168,7 +167,7 @@ export default function ProjectAreaLayout() {
                       isActive ? 'bg-primary text-primary-foreground' : 'hover:bg-muted',
                     )}
                   >
-                    {item.path === 'research' ? t('monitoring.researchNav') : item.path === 'sources' ? t('nav.library') : item.label}
+                    {item.path === 'inquiry' ? (locale==='zh-CN'?'问题推进':'Problems') : item.path === 'sources' ? t('nav.library') : item.label}
                   </NavLink>
                 ))}
               </div>

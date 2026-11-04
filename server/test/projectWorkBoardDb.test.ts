@@ -4,11 +4,10 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { getProjectBoard, getTaskWorkView } from "../src/modules/projectWork/boardReadModel.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
-import { recordStageChange } from "../src/modules/projectWork/loopState.js";
 import { getProjectUpdates } from "../src/modules/projectWork/updatesReadModel.js";
 import { undoProjectUpdate } from "../src/modules/projectWork/updateUndo.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
-import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
+import {ModernIterationService as InquiryIterationService} from "./support/modernIteration.js";
 import { appendProjectWorkEvent } from "../src/modules/projectWork/eventWriter.js";
 import { resolveUserActorId } from "../src/db/actorResolver.js";
 import { HttpError, withDbTransaction } from "../src/modules/routeUtils/common.js";
@@ -107,9 +106,9 @@ beforeEach(async () => {
   await resetTables(
     db.pool!,
     [
-      "project_work_events", "inquiry_thread_advice", "inquiry_iterations",
+      "project_work_events", "inquiry_iterations",
       "inquiry_question_states", "inquiry_hypothesis_states", "inquiry_threads", "space_objects",
-      "task_loop_states", "task_evaluations", "task_artifacts",
+      "task_evaluations", "task_artifacts",
       "task_runs", "tasks", "artifacts", "run_finalizations", "runs", "actors",
       "board_columns", "boards", "agent_versions", "agents", "project_members", "projects", "users", "spaces",
     ],
@@ -172,26 +171,6 @@ beforeEach(async () => {
 });
 
 describe("project board read model", () => {
-  it("labels the Loop stage with the one wording every Project shares", async (ctx) => {
-    if (!db.available) return ctx.skip();
-    const task = randomUUID();
-    await makeTask({ id: task });
-    await db.pool!.query(
-      `INSERT INTO task_loop_states (
-         task_id, space_id, project_id, loop_instance_id, current_stage_key,
-         stage_entered_at, revision, updated_at
-       ) VALUES ($1, $2, $3, $4, 'verify', now(), 1, now())`,
-      [task, SPACE, PROJECT, randomUUID()],
-    );
-
-    const board = await getProjectBoard(db.pool!, owner, PROJECT);
-    const card = board.cards.find((item) => item.id === task);
-    // The label is presentation, so it must not come from the client; and it
-    // is the same in every Project — there is no per-Project mode (ADR 0019).
-    expect(card?.loop_stage).toBe("verify");
-    expect(card?.loop_stage_label).toBe("Verify");
-  });
-
   it("says why each Task cannot close", async (ctx) => {
     if (!db.available) return ctx.skip();
     const noEvaluation = randomUUID();
@@ -472,22 +451,14 @@ describe("manual close gate", () => {
 });
 
 describe("task work view", () => {
-  it("returns every stage with its label, and the current one", async (ctx) => {
+  it("keeps historical stage data stored without exposing a second active state", async (ctx) => {
     if (!db.available) return ctx.skip();
     const task = randomUUID();
     await makeTask({ id: task });
-    await db.pool!.query(
-      `INSERT INTO task_loop_states (
-         task_id, space_id, project_id, loop_instance_id, current_stage_key,
-         stage_entered_at, revision, updated_at
-       ) VALUES ($1, $2, $3, $4, 'act', now(), 1, now())`,
-      [task, SPACE, PROJECT, randomUUID()],
-    );
 
     const view = await getTaskWorkView(db.pool!, owner, task);
-    expect(view.stages.map((stage) => stage.label))
-      .toEqual(["Frame", "Plan", "Act", "Verify", "Conclude"]);
-    expect(view.loop?.current_stage_key).toBe("act");
+    expect(view).not.toHaveProperty('stages');
+    expect(view).not.toHaveProperty('loop');
   });
 
   it("refuses a Task the reader cannot see", async (ctx) => {
@@ -499,52 +470,6 @@ describe("task work view", () => {
   });
 });
 
-describe("stage control", () => {
-  it("records one transition and bumps the fold's revision", async (ctx) => {
-    if (!db.available) return ctx.skip();
-    const task = randomUUID();
-    await makeTask({ id: task });
-    const actorId = await resolveUserActorId(db.pool!, SPACE, OWNER);
-    const context = { spaceId: SPACE, projectId: PROJECT, taskId: task, actorId };
-
-    await recordStageChange(db.pool!, { ...context, toStage: "plan", reason: "scoped it" });
-    const first = await getTaskWorkView(db.pool!, owner, task);
-    expect(first.loop).toMatchObject({ current_stage_key: "plan", revision: 1 });
-
-    await recordStageChange(db.pool!, { ...context, toStage: "verify", reason: "results are in" });
-    const second = await getTaskWorkView(db.pool!, owner, task);
-    expect(second.loop).toMatchObject({ current_stage_key: "verify", revision: 2 });
-
-    const events = await db.pool!.query<{ data_json: Record<string, unknown> }>(
-      `SELECT data_json FROM project_work_events
-        WHERE subject_id = $1 AND event_kind = 'task.stage_changed'
-        ORDER BY created_at, seq`,
-      [task],
-    );
-    expect(events.rowCount).toBe(2);
-    // Entering the Loop is an advance whatever stage it starts at; the jump
-    // from plan past act is recorded as a skip rather than refused, because a
-    // Task that did not need that stage should not pretend it did.
-    expect(events.rows[0]?.data_json).toMatchObject({ to_stage: "plan", transition_kind: "advance" });
-    expect(events.rows[1]?.data_json).toMatchObject({ to_stage: "verify", transition_kind: "skip" });
-  });
-
-  it("does not re-record a move to the stage it is already in", async (ctx) => {
-    if (!db.available) return ctx.skip();
-    const task = randomUUID();
-    await makeTask({ id: task });
-    const actorId = await resolveUserActorId(db.pool!, SPACE, OWNER);
-    const context = { spaceId: SPACE, projectId: PROJECT, taskId: task, actorId, toStage: "act" as const };
-    await recordStageChange(db.pool!, { ...context, reason: "started" });
-    await recordStageChange(db.pool!, { ...context, reason: "started again" });
-
-    const events = await db.pool!.query(
-      `SELECT 1 FROM project_work_events WHERE subject_id = $1 AND event_kind = 'task.stage_changed'`,
-      [task],
-    );
-    expect(events.rowCount).toBe(1);
-  });
-});
 
 describe("task creation", () => {
   it("records the Task and its creation event together", async (ctx) => {
@@ -709,8 +634,7 @@ describe("who may change a Task", () => {
     const board = await getProjectBoard(db.pool!, viewer, PROJECT);
     expect(board.cards.map((card) => card.id)).toContain(task);
 
-    // A viewer must not drag a shared Task to Done, acknowledge the override,
-    // or move its Loop stage.
+    // A viewer must not drag a shared Task to Done, rename it or claim it.
     await expect(repo.updateTask(viewer, task, { status: "ready" }))
       .rejects.toMatchObject({ statusCode: 403 });
     await expect(repo.updateTask(viewer, task, { title: "Renamed by a viewer" }))
@@ -829,34 +753,6 @@ describe("closing twice on purpose", () => {
   });
 });
 
-describe("loop rail honesty", () => {
-  it("reports only the stages a Task has actually been in", async (ctx) => {
-    if (!db.available) return ctx.skip();
-    const task = randomUUID();
-    await makeTask({ id: task });
-
-    // Nothing has moved yet: no stage has been visited, so the rail must not
-    // present any as done.
-    await expect(getTaskWorkView(db.pool!, owner, task))
-      .resolves.toMatchObject({ visited_stage_keys: [] });
-
-    // A Task that settles straight to `verify` never framed, planned or acted.
-    await recordStageChange(db.pool!, {
-      spaceId: SPACE, projectId: PROJECT, taskId: task, toStage: "verify",
-      actorId: await resolveUserActorId(db.pool!, SPACE, OWNER), reason: "run settled",
-    });
-    const afterJump = await getTaskWorkView(db.pool!, owner, task);
-    expect(afterJump.visited_stage_keys).toEqual(["verify"]);
-
-    await recordStageChange(db.pool!, {
-      spaceId: SPACE, projectId: PROJECT, taskId: task, toStage: "plan",
-      actorId: await resolveUserActorId(db.pool!, SPACE, OWNER), reason: "method was wrong",
-    });
-    // Reported in stage order, not visit order — the rail draws it in order.
-    const afterRegress = await getTaskWorkView(db.pool!, owner, task);
-    expect(afterRegress.visited_stage_keys).toEqual(["plan", "verify"]);
-  });
-});
 
 describe("responsibility handback", () => {
   it("hands an Agent-held Task back to a person the moment it needs a decision", async (ctx) => {
@@ -1219,7 +1115,7 @@ describe("inquiry advancement in the Project's account", () => {
     }, run);
 
     const listed = await getProjectUpdates(db.pool!, owner, PROJECT, null);
-    const concluded = listed.items.find((item) => item.event_kind === "thread.concluded");
+    const concluded = listed.items.flatMap(item=>item.members??[item]).find((item) => item.event_kind === "thread.concluded");
     expect(concluded).toMatchObject({
       summary: "Partly answered",
       undo: { action: "revert_iteration", target_id: thread.id },

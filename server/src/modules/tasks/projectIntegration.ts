@@ -20,7 +20,6 @@ interface DeliveryTask {
   assigned_agent_id: string | null;
   created_by_user_id: string | null;
   responsible_user_id: string | null;
-  loop_stage: string | null;
 }
 
 async function deliveryTasks(
@@ -32,11 +31,9 @@ async function deliveryTasks(
     `SELECT t.id,t.title,t.status,t.due_at,t.blocked_reason,
             t.claimed_by_user_id,t.claimed_by_agent_id,
             t.assigned_user_id,t.assigned_agent_id,t.created_by_user_id,
-            ${responsibleUserSql("t", "p")} AS responsible_user_id,
-            ls.current_stage_key AS loop_stage
+            ${responsibleUserSql("t", "p")} AS responsible_user_id
        FROM tasks t
        JOIN projects p ON p.id=t.project_id AND p.space_id=t.space_id
-       LEFT JOIN task_loop_states ls ON ls.task_id=t.id AND ls.space_id=t.space_id
       WHERE t.space_id=$1 AND t.project_id=$2 AND t.deleted_at IS NULL
         AND ${contentReadSql("task", "t", "$3")}
       ORDER BY

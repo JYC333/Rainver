@@ -22,7 +22,7 @@ describe("managed ACP health handshake", () => {
     const errorScript = "process.stdin.once('data', () => process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:1,error:{code:-1,message:'no'}})+'\\n'))";
     const malformedScript = "process.stdin.once('data', () => process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:1,result:{}})+'\\n'))";
     const incompatibleProtocolScript = "process.stdin.once('data', () => process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:1,result:{protocolVersion:2}})+'\\n'))";
-    const quietScript = "process.stdin.resume(); setInterval(() => {}, 1000)";
+    const quietScript = "process.stdin.resume();";
     await expect(probeAcpHealth(process.execPath, ["-e", errorScript], {}, cwd)).resolves.toBe(false);
     await expect(probeAcpHealth(process.execPath, ["-e", malformedScript], {}, cwd)).resolves.toBe(false);
     await expect(probeAcpHealth(process.execPath, ["-e", incompatibleProtocolScript], {}, cwd)).resolves.toBe(false);

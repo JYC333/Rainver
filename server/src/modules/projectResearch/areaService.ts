@@ -1,3 +1,5 @@
+import {assertResearchReportCallReadable} from './reportAccess.js';
+import {ProjectResearchReportRepository} from "./reportRepository.js";
 import { RESEARCH_STAGES } from "./researchStages.js";
 import { randomUUID } from "node:crypto";
 import { HttpError, objectValue, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
@@ -133,7 +135,7 @@ export class ProjectResearchAreaService {
     const [notes, checklist, reports] = await Promise.all([
       this.listProjectNotes(identity, projectId),
       this.db.query(`SELECT * FROM research_checklist_items WHERE space_id=$1 AND project_id=$2 ORDER BY sort_order,id`, [identity.spaceId, projectId]),
-      this.db.query(`SELECT id,research_question,research_question_version,status,run_kind,created_at,updated_at FROM project_research_reports WHERE space_id=$1 AND project_id=$2 ORDER BY created_at DESC`, [identity.spaceId, projectId]),
+      new ProjectResearchReportRepository(this.db).list(identity,projectId).then(rows=>({rows})),
     ]);
     return { notes_collection_id: folder.rows[0].id, notes, checklist: checklist.rows, reports: reports.rows };
   }
@@ -153,15 +155,17 @@ export class ProjectResearchAreaService {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const service = new ProjectResearchAreaService(db, this.config);
       await service.ensureArea(scope, identity.spaceId, projectId);
-      // Creating the area seeds its notes from the latest completed report,
+      // Creating the area seeds its notes from the latest unbound report,
       // once. An area that already exists is left as it is.
-      const report = existing.rows[0] ? { rows: [] } : await db.query<{ synthesis_run_id: string; content_json: unknown }>(
-        `SELECT synthesis_run_id,content_json FROM project_research_reports
-          WHERE space_id=$1 AND project_id=$2 AND status <> 'rejected'
-          ORDER BY created_at DESC LIMIT 1`,
+      const report = existing.rows[0] ? { rows: [] } : await db.query<{ synthesis_run_id: string;operation_id:string; content_json: unknown }>(
+        `SELECT r.synthesis_run_id,r.operation_id,r.content_json FROM project_research_reports r
+          JOIN project_operations op ON op.id=r.operation_id AND op.space_id=r.space_id AND op.project_id=r.project_id
+          WHERE r.space_id=$1 AND r.project_id=$2 AND r.status <> 'rejected' AND op.research_call_json IS NULL
+          ORDER BY r.created_at DESC,r.id DESC LIMIT 1`,
         [identity.spaceId, projectId],
       );
       if (report.rows[0]) {
+        await assertResearchReportCallReadable(db,identity,projectId,report.rows[0].operation_id);
         await service.seedFromReport({
           spaceId: identity.spaceId,
           projectId,
@@ -542,6 +546,10 @@ export class ProjectResearchAreaService {
     return withNoteWrites(this.db, async (scope) => {
       const db = scope.db;
       const service = new ProjectResearchAreaService(db, this.config);
+      // Bound call output is not an independently published Project Note.
+      // Keep it in the gated report/Reader; explicit Note publication has its own owner path.
+      const bound=await db.query(`SELECT 1 FROM project_research_reports r JOIN project_operations op ON op.id=r.operation_id AND op.space_id=r.space_id AND op.project_id=r.project_id WHERE r.space_id=$1 AND r.project_id=$2 AND r.synthesis_run_id=$3 AND op.research_call_json IS NOT NULL`,[input.spaceId,input.projectId,input.runId]);
+      if(bound.rowCount)return;
       await service.ensureArea(scope, input.spaceId, input.projectId);
       const sections: Record<SectionKey, string> = {
         understanding: [text(input.report.summary, 20_000), ...arrayObjects(input.report.findings).map((v) => `- ${text(v.title, 1000) || text(v.claim, 1000)} ${text(v.detail, 4000)}`)].filter(Boolean).join("\n\n"),

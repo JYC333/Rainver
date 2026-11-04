@@ -1,3 +1,7 @@
+import { assertResearchResultRunEgress } from "./researchResultEgress.js";
+import { assertResearchCallReadable } from "./researchCallAccess.js";
+import { ResearchProblemResultService } from "./researchProblemResults.js";
+import { problemCommandKey } from "../inquiry/problemFacts.js";
 import type { SystemActionId } from "@rainver/protocol";
 import { HttpError } from "../routeUtils/common.js";
 import { InquiryThreadService } from "../inquiry/threadService.js";
@@ -28,11 +32,14 @@ export function registerProjectResearchSystemActionExecutors(
   const db = getDbPool(config.databaseUrl!);
   const identity = { spaceId: run.space_id, userId: run.instructed_by_user_id! };
 
-  executors.set("research.start_acquisition" as SystemActionId, async (input) => {
+  executors.set("research.start_acquisition" as SystemActionId, async (input,context) => {
     if (!run.project_id) throw new Error("research.start_acquisition requires a project-scoped run");
+    if(!context.idempotency_key)throw new HttpError(422,"research.start_acquisition requires its canonical action-call id");
     const body = input as { thread_id: string; intent_note?: string; max_items?: number; since?: string };
     const origin = run.run_group_id ? await new PgAgentGroupRepository(db).getGroup(run.space_id, run.run_group_id) : null;
     const result = await new ResearchAcquisitionService(db).startAcquisition(identity, run.project_id, {
+      requestKey:problemCommandKey(identity,context.idempotency_key,{runId:run.id}),
+      originRunId:run.id,
       threadId: body.thread_id,
       intentNote: body.intent_note ?? null,
       originRoomId: origin?.room_id ?? null,
@@ -47,7 +54,7 @@ export function registerProjectResearchSystemActionExecutors(
       const active = await listActiveThreadRefs(new InquiryThreadService(db), identity, run.project_id!, "question");
       throw new HttpError(404, active.length === 0
         ? `No active Question Thread has id '${body.thread_id}', and this Project has no active Question Thread yet — open one with inquiry.create_thread, then start the acquisition on it.`
-        : `No active Question Thread has id '${body.thread_id}'. Use one of these ids exactly: ${active.map((thread) => `${thread.thread_id} — ${thread.statement}`).join("; ")}`);
+        : `No active Question Thread has id '${body.thread_id}'. Read inquiry.list_threads for the complete paginated list. First matching ids: ${active.map((thread) => `${thread.thread_id} — ${thread.statement}`).join("; ")}`);
     });
     return {
       modelResult: { ok: true, tool: "research.start_acquisition", ...result },
@@ -55,19 +62,38 @@ export function registerProjectResearchSystemActionExecutors(
     };
   });
 
+  executors.set("research.read_result",async input=>{
+    if(!run.project_id)throw new Error("Research result requires Project context");
+    const result=await new ResearchProblemResultService(db).read(identity,run.project_id,String((input as {operation_id:string}).operation_id));
+    await assertResearchResultRunEgress(db,run,String((input as {operation_id:string}).operation_id));
+    return {modelResult:{ok:true,tool:"research.read_result",...result},summary:{tool_name:"research.read_result",ok:true}};
+  });
+  executors.set("research.adopt_result",async input=>{
+    if(!run.project_id)throw new Error("Research result requires Project context");
+    const {operation_id,...body}=input as Record<string,unknown>;
+    await new ResearchProblemResultService(db).read(identity,run.project_id,String(operation_id));
+    await assertResearchResultRunEgress(db,run,String(operation_id));
+    const result=await new ResearchProblemResultService(db).adopt(identity,run.project_id,String(operation_id),body,{runId:run.id,agentId:run.agent_id});
+    return {modelResult:{ok:true,tool:"research.adopt_result",...result},summary:{tool_name:"research.adopt_result",ok:true}};
+  });
   /** This Project's research Operations as an Agent may address them. */
   const listResearchOperations = async (includeTerminal: boolean): Promise<Array<{ operation_id: string; title: string; status: string }>> => {
     // As the instructing person would read it (`ProjectOperationService.list`):
     // a Run outlives a membership revoked mid-turn, this read does not.
     await assertProjectReadable(db, identity.spaceId, run.project_id!, identity.userId);
-    const rows = await db.query<{ id: string; title: string | null; status: string }>(
-      `SELECT id, title, status FROM project_operations
+    const rows = await db.query<{ id: string; title: string | null; status: string;research_call_json:unknown }>(
+      `SELECT id, title, status,research_call_json FROM project_operations
         WHERE space_id=$1 AND project_id=$2 AND kind='research'
           ${includeTerminal ? "" : "AND status NOT IN ('completed','cancelled','failed')"}
         ORDER BY updated_at DESC LIMIT 50`,
       [identity.spaceId, run.project_id],
     );
-    return rows.rows.map((row) => ({ operation_id: row.id, title: row.title ?? "Research operation", status: row.status }));
+    const visible=[];
+    for(const row of rows.rows){
+     try{const call=await assertResearchCallReadable(db,identity,run.project_id!,row.research_call_json,undefined,"stop");visible.push({operation_id:row.id,title:call?"Research invocation":row.title??"Research operation",status:row.status,...(call?{thread_id:call.thread_id}:{})});}
+     catch(error){if(!(error instanceof HttpError)||error.statusCode!==404)throw error;}
+    }
+    return visible;
   };
 
   executors.set("research.list_operations" as SystemActionId, async (input) => {

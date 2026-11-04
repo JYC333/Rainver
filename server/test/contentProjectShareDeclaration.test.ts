@@ -20,6 +20,13 @@ describe("additional project scope declaration", () => {
   it("leaves every other resource's predicate free of the term, not merely false", () => {
     for (const definition of contentResourceDefinitions()) {
       if (definition.projectShare) continue;
+      // Artifact provenance checks the originating Thread; that nested root may have shares,
+      // but Artifacts still declare no project-share grant of their own.
+      if (definition.resourceType === "artifact") {
+        expect(definition.projectShare).toBeUndefined();
+        expect(contentReadSql("artifact", "res", "$1")).toContain("metadata_thread");
+        continue;
+      }
       const sql = contentReadSql(definition.resourceType, "res", "$1");
       expect(sql, `${definition.resourceType} names the share table`).not.toContain("space_object_project_shares");
       expect(sql, `${definition.resourceType} carries an empty share branch`).not.toContain("content_share");

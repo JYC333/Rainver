@@ -18,7 +18,6 @@ export type CredentialSetupKind =
   | "source_post_processing"
   | "daily_report"
   | "imported_session_extraction"
-  | "inquiry_advice"
   | "conversation_title"
   | "retrieval_embedding"
   | "research_pipeline";
@@ -34,7 +33,6 @@ const PRE_AUTHORIZED_ORIGIN: Readonly<Partial<Record<ManagedExecutionKind | Cred
   information_briefing: "job",
   daily_report: "job",
   imported_session_extraction: "job",
-  inquiry_advice: "job",
   conversation_title: "job",
   retrieval_embedding: "job",
   research_pipeline: "job",

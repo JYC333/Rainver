@@ -13,7 +13,6 @@ import { __setAuthIdentityForTests, __setAuthRepositoryForTests, type AuthReposi
 import { getRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/specs.js";
 import { AcpAgentService } from "../src/modules/acpAgents/service.js";
 import { acpRuntimeProbe } from "../src/modules/hosts/runtimeProbes.js";
-import { SERVER_OPENCODE_RELEASE } from "../src/modules/runtimeAdapters/opencodeRelease.js";
 import { MIN_HOST_DAEMON_VERSION } from "../src/modules/hosts/daemonCompatibility.js";
 import { getDbPool } from "../src/db/pool.js";
 import { setDynamicRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/dynamicSpecs.js";
@@ -124,6 +123,19 @@ afterAll(async () => {
 });
 
 describe("ACP registry agents", () => {
+  it("discovers enabled ACP releases without rewriting approval snapshots or installed copies, and preserves them offline", async ctx => {
+    if (!db.available || !app) return ctx.skip();
+    const service = new AcpAgentService(db.pool);
+    await service.enable(GOOSE.id, ADMIN);
+    const next = {...GOOSE, version:"2.0.0", distribution:{kind:"npx" as const,package:"goose-acp@2.0.0",args:[],env:{}}};
+    __setAcpRegistryForTests([next]);
+    await service.refreshRuntimeAdapterSpecs();
+    expect(acpRuntimeProbe("acp_goose")).toMatchObject({version:next.version,distribution:next.distribution});
+    expect((await service.listEnabled())[0].version).toBe(GOOSE.version);
+    __setAcpRegistryForTests("unavailable");
+    await service.refreshRuntimeAdapterSpecs();
+    expect(acpRuntimeProbe("acp_goose")).toMatchObject({version:next.version,distribution:next.distribution});
+  });
   it("resolves the builtins' registry entries in the refresh loop and keeps them off the hello path, network or not", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     const OPENCODE: AcpRegistryEntry = {
@@ -145,14 +157,11 @@ describe("ACP registry agents", () => {
     await service.refreshRegistryCache();
     expect(acpRuntimeProbe("opencode")).toMatchObject({ distribution: OPENCODE.distribution, version: "1.18.23" });
 
-    // The Server Host installs what this release pins, not what the registry
-    // currently publishes — resolved once, in the probe, so the install route
-    // has a single distribution to send (ADR 0022, Phase 2 §1).
+    // Both Host kinds resolve the same registry distribution for explicit upgrades.
     expect(acpRuntimeProbe("opencode", "server")).toMatchObject({
-      distribution: SERVER_OPENCODE_RELEASE.distribution,
-      version: SERVER_OPENCODE_RELEASE.version,
+      distribution: OPENCODE.distribution,
+      version: OPENCODE.version,
     });
-    expect(SERVER_OPENCODE_RELEASE.version).not.toBe("1.18.23");
   });
 
   it("lets only the instance admin enable a registry agent, which then exists as a remote-only runtime adapter", async (ctx) => {
@@ -176,7 +185,7 @@ describe("ACP registry agents", () => {
       runtime_kind: "local_cli",
       baseline_trust_level: "low",
       executable: { command: "acp_goose" },
-      distribution: GOOSE.distribution,
+      distribution: { registry_id: GOOSE.id },
       invocation: { protocol: "acp", remote_host_only: true },
       credentials: { credential_mode: "cli_profile" },
     });
@@ -232,8 +241,11 @@ describe("ACP registry agents", () => {
     const offline = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/installations/acp_goose` });
     expect(offline.statusCode).toBe(502);
     expect(offline.json()).toMatchObject({ ok: false, error: "host_offline" });
+    const stale = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/installations/acp_goose`, payload: { expected_version: "0.0.1" } });
+    expect(stale.statusCode).toBe(409);
 
     const socket = hostSocket(token);
+    const installFrames: Array<Record<string, unknown>> = [];
     let resolveInstallFrame: (frame: Record<string, unknown>) => void = () => {};
     const installFrame = new Promise<Record<string, unknown>>((resolve) => { resolveInstallFrame = resolve; });
     const helloAck = new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -242,8 +254,9 @@ describe("ACP registry agents", () => {
         const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
         if (frame.type === "hello_ack") resolve(frame);
         if (frame.type === "install_tool") {
+          installFrames.push(frame);
           resolveInstallFrame(frame);
-          socket.send(JSON.stringify({ type: "tool_result", request_id: frame.request_id, ok: true, error: null, installation: "managed:1.2.3" }));
+          socket.send(JSON.stringify({ type: "tool_result", request_id: frame.request_id, ok: true, error: null, installation: `managed:${frame.version}` }));
         }
       });
       socket.addEventListener("error", (event) => reject(event));
@@ -262,6 +275,12 @@ describe("ACP registry agents", () => {
     expect(installed.statusCode).toBe(200);
     expect(installed.json()).toMatchObject({ ok: true, installation: "managed:1.2.3", host_id: hostId, runtime_key: "acp_goose" });
     expect(await installFrame).toMatchObject({ runtime_key: "acp_goose", version: "1.2.3", distribution: GOOSE.distribution, login: null });
+    const next = {...GOOSE,version:"2.0.0",distribution:{kind:"npx" as const,package:"goose-acp@2.0.0",args:[],env:{}}};
+    __setAcpRegistryForTests([next]);
+    const upgraded = await app.inject({method:"POST",url:`/api/v1/hosts/${hostId}/installations/acp_goose`,payload:{expected_version:next.version}});
+    expect(upgraded.json()).toMatchObject({ok:true,installation:"managed:2.0.0"});
+    expect(installFrames.at(-1)).toMatchObject({version:next.version,distribution:next.distribution});
+    expect((await new AcpAgentService(db.pool).listEnabled())[0].version).toBe(GOOSE.version);
     await db.pool.query(
       `UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`,
       [hostId, JSON.stringify({ runtimes: [], versions: {}, installations: { acp_goose: [{

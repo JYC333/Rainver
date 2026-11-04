@@ -96,7 +96,7 @@ describe("SystemActionGateway", () => {
     });
 
     const conclusion = systemActionInputJsonSchema(definitionFor("inquiry.record_conclusion"));
-    expect(conclusion.required).toEqual(["thread_id", "change_summary"]);
+    expect(conclusion.required).toEqual(["method_version","round_intent","expected_version","expected_revision","idempotency_key","thread_id","change_summary"]);
     expect(conclusion.properties).toMatchObject({
       thread_id: { type: "string" },
       change_summary: { type: "string" },

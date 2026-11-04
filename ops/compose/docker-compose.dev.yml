@@ -133,6 +133,7 @@ services:
       - ../../package.json:/repo/package.json:ro
       - ../../pnpm-workspace.yaml:/repo/pnpm-workspace.yaml:ro
       - ../../pnpm-lock.yaml:/repo/pnpm-lock.yaml:ro
+      - ../../patches:/repo/patches:ro
       - ../../packages/protocol/package.json:/repo/packages/protocol/package.json:ro
       - ../../packages/reader-document/package.json:/repo/packages/reader-document/package.json:ro
       - ../../server/package.json:/repo/server/package.json:ro

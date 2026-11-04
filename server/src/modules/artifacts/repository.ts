@@ -1,3 +1,5 @@
+import {assertResearchArtifactReadable} from '../projectResearch/reportAccess.js';
+import {ResearchCallContentUnavailable} from '../projectResearch/researchCallAccess.js';
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
@@ -133,7 +135,7 @@ export class PgArtifactRepository {
       [...built.params, filters.limit, filters.offset],
     );
     return {
-      items: rows.rows.map((row) => artifactToOut(row, false)),
+      items: await Promise.all(rows.rows.map(async row=>artifactToOut(await this.gateResearchOrigin(spaceId,userId,row),false))),
       total: numberValue(total.rows[0]?.total) ?? 0,
       limit: filters.limit,
       offset: filters.offset,
@@ -220,7 +222,10 @@ export class PgArtifactRepository {
           AND ${sourceDerivedArtifactReadableClause("a", "$3")}`,
       [artifactId, spaceId, userId],
     );
-    return result.rows[0] ?? null;
+    return result.rows[0]?this.gateResearchOrigin(spaceId,userId,result.rows[0]):null;
+  }
+  private async gateResearchOrigin(spaceId:string,userId:string,row:WithAccessLevel<ArtifactRow>):Promise<WithAccessLevel<ArtifactRow>>{
+    try{await assertResearchArtifactReadable(this.db,{spaceId,userId},row.id);return row;}catch(error){if(!(error instanceof ResearchCallContentUnavailable))throw error;return {...row,title:"Research report artifact",content:null,metadata_json:null,storage_ref:null,storage_path:null,mime_type:null,owner_user_id:null,run_id:null,proposal_id:null,project_folder_id:null,exportable:false,preview:false,access_level:"summary",effective_access_level:"summary"};}
   }
 }
 

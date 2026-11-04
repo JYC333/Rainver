@@ -6,7 +6,7 @@ export function readingHref(item: Pick<ReadingItem, 'source_item_id' | 'reader_o
   if (sourceTab === 'digest') {
     returnTo = projectId ? `/projects/${projectId}/sources?tab=digest${date ? `&date=${date}` : ''}` : `/library/digests${date ? `?date=${date}` : ''}`
   } else if (projectId) {
-    returnTo = sourceTab === 'research' ? `/projects/${projectId}/research?tab=reading` : `/projects/${projectId}/sources${sourceTab ? `?tab=${sourceTab}` : ''}`
+    returnTo = sourceTab === 'research' ? `/projects/${projectId}/inquiry/records?tab=reading` : `/projects/${projectId}/sources${sourceTab ? `?tab=${sourceTab}` : ''}`
   }
   const query = new URLSearchParams({ from: item.reader_origin, returnTo });if(item.topic_change)query.set('change',item.topic_change.id)
   // A shared SourceItem can belong to a different Project from its edition.
@@ -66,6 +66,8 @@ export function readingReturnTo(value: string | null, projectId?: string | null)
   }
   const project = /^\/projects\/([\w-]+)\//.exec(value)
   if (projectId && project?.[1] !== projectId) return null
+  const records=/^\/projects\/[\w-]+\/inquiry\/records\?([^?]+)$/.exec(value)
+  if(records)return new URLSearchParams(records[1]).get('tab')==='reading'&&boundedQuery(records[1],{tab:/^reading$/,thread:/^[\w-]{1,64}$/,workflow_id:/^[\w-]{1,64}$/,q:LIST_PARAMS.q,triage:/^(?:all|new|relevant|maybe|included|excluded)$/,stance:/^(?:all|supports|contradicts|new_direction)$/,unread:/^1$/})?value:null
   const list = /^(?:\/library\/reading|\/projects\/[\w-]+\/sources)(?:\?([^?]*))?$/.exec(value)
   if (list && !/[?]tab=(?:settings|candidates)(?:&|$)/.test(value) && (!value.startsWith('/library/') || !new URLSearchParams(list[1]).has('tab'))) {
     const query=new URLSearchParams(list[1]),hasAnalysis=query.has('analysis')||query.has('analysisVersion')

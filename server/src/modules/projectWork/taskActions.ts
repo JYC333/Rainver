@@ -1,11 +1,12 @@
+import {linkTaskToProblem} from "../inquiry/taskLinkFacts.js";
+import type { Pool } from "../../db/pool.js";
 import { randomUUID } from "node:crypto";
-import type { WorkLoopStageKey } from "@rainver/protocol";
 import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { entityDefinition, resolveContentAccessible, resolveContentResourceType } from "../ontology/entities.js";
 import { assertSqlIdentifier, contentReadSql } from "../access/contentAccessSql.js";
 import { assertProjectWriterForMutation } from "../projects/access.js";
 import { appendProjectWorkEvent } from "./eventWriter.js";
-import { recordStageChange } from "./loopState.js";
+import { PgTaskRepository } from "../tasks/repository.js";
 import { taskCompletionState } from "./completion.js";
 import { enqueueTaskMerges } from "../hosts/taskMerges.js";
 
@@ -14,7 +15,7 @@ import { enqueueTaskMerges } from "../hosts/taskMerges.js";
  *
  * Five verbs, chosen because they are what an Agent needs in order to advance
  * work at all: name a piece of it, say what happened, give it to someone else,
- * move it through its Loop, and stop to ask. Anything the Agent decides that a
+ * move it on the Board, and stop to ask. Anything the Agent decides that a
  * person should see instead goes through `task.request_review`, which is the
  * only one that cannot be undone by doing more work.
  *
@@ -53,7 +54,7 @@ interface TaskRow {
  *
  * An Agent runs on someone's behalf and inherits their reach, never more: the
  * same content predicate every other Task surface applies. Without it an Agent
- * in any Room could name a private Task's id and report on it, move its Loop,
+ * in any Room could name a private Task's id and report on it, move its Board status,
  * or reassign it — reading its title back in the process.
  */
 export async function requireProjectTask(
@@ -67,15 +68,15 @@ export async function requireProjectTask(
   // A write path reads under the row lock, as the Board's updateTask does:
   // the status it decides on must be the status it then changes, or two
   // closes both pass the gate, and a cancel made meanwhile is overwritten.
-  const result = await db.query<TaskRow>(
+  const read=async(lock:boolean)=>db.query<TaskRow>(
     `SELECT t.id, t.project_id, t.status, t.title
        FROM tasks t
       WHERE t.space_id = $1 AND t.id = $2 AND t.deleted_at IS NULL
         AND ${contentReadSql("task", "t", "$3")}
-      ${options.lock ? "FOR UPDATE OF t" : ""}`,
+      ${lock ? "FOR UPDATE OF t" : ""}`,
     [spaceId, taskId, instructedByUserId],
   );
-  const task = result.rows[0];
+  let task=(await read(false)).rows[0];
   // Another Project's Task answers as not found, the same as an invented id:
   // the executor then replies with the ids this Project actually has.
   if (!task || task.project_id !== projectId) throw new HttpError(404, "Task not found");
@@ -86,6 +87,10 @@ export async function requireProjectTask(
   // over a Project's work is bounded by their Project role: a viewer can read
   // every shared Task and change none of them, through an Agent or otherwise.
   await assertProjectWriterForMutation(db, spaceId, task.project_id, instructedByUserId);
+  if(options.lock){
+    task=(await read(true)).rows[0];
+    if(!task||task.project_id!==projectId)throw new HttpError(404,"Task not found");
+  }
   return { ...task, project_id: task.project_id };
 }
 
@@ -107,10 +112,13 @@ interface TaskLinkInput {
  */
 export async function linkTaskEntities(
   db: Queryable,
-  context: Pick<AgentActionContext, "spaceId" | "actorId" | "instructedByUserId">,
+  context: Pick<AgentActionContext, "spaceId" | "actorId" | "instructedByUserId"> & {runId?:string|null;reason?:string},
   taskId: string,
   links: readonly TaskLinkInput[],
 ): Promise<void> {
+  return withQueryableTransaction(db,tx=>linkTaskEntitiesIn(tx,context,taskId,links));
+}
+async function linkTaskEntitiesIn(db:Queryable,context:Pick<AgentActionContext,"spaceId"|"actorId"|"instructedByUserId"> & {runId?:string|null;reason?:string},taskId:string,links:readonly TaskLinkInput[]):Promise<void>{
   for (const link of links) {
     if (!entityDefinition(link.entity_type)) {
       throw new HttpError(422, `${link.entity_type} is not a registered entity`);
@@ -157,13 +165,18 @@ export async function linkTaskEntities(
     if (exists.rowCount === 0) {
       throw new HttpError(404, `That ${link.entity_type} was not found in this Space`);
     }
+    if(link.entity_type==='inquiry_thread'){
+      await linkTaskToProblem(db,context,taskId,link);
+      continue;
+    }
     await db.query(
       `INSERT INTO task_entity_links (
          id, space_id, task_id, entity_type, entity_id, role, created_by_actor_id, created_at
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, now())
-       ON CONFLICT DO NOTHING`,
+       ON CONFLICT DO NOTHING RETURNING id`,
       [randomUUID(), context.spaceId, taskId, link.entity_type, link.entity_id, link.role, context.actorId],
     );
+
   }
 }
 
@@ -286,32 +299,30 @@ async function handoffTaskIn(
   return { task_id: task.id };
 }
 
-export async function advanceTaskStage(
-  db: Queryable,
+/** Changes the same status the Board uses; completion and review keep their dedicated behavior. */
+export async function setTaskStatus(
+  db: Pool,
   context: AgentActionContext,
-  input: { task_id: string; to_stage: WorkLoopStageKey; reason: string },
-): Promise<{ task_id: string; stage: WorkLoopStageKey }> {
+  input: { task_id: string; status: string; reason: string },
+): Promise<{ task_id: string; status: string }> {
   const task = await requireProjectTask(db, context.spaceId, input.task_id, context.instructedByUserId, context.projectId);
-  await recordStageChange(db, {
-    spaceId: context.spaceId,
-    projectId: task.project_id,
-    taskId: task.id,
-    toStage: input.to_stage,
-    actorId: context.actorId,
-    reason: input.reason,
-    correlationId: context.runId,
-      runId: context.runId,
-    idempotencyKey: `task.stage_changed:${context.idempotencyKey}`,
-    data: { via: "agent" },
-  });
-  return { task_id: task.id, stage: input.to_stage };
+  if (task.status === input.status && input.status!=="blocked") return { task_id: task.id, status: task.status };
+  if (input.status === "done") return completeTask(db, context, { task_id: task.id, summary: input.reason });
+  if (input.status === "waiting_for_review") {
+    await requestTaskReview(db, context, { task_id: task.id, reason: input.reason });
+    return { task_id: task.id, status: "waiting_for_review" };
+  }
+  const updated = await new PgTaskRepository(db).updateTask(
+    { spaceId: context.spaceId, userId: context.instructedByUserId }, task.id,
+    { status: input.status,...(input.status==="blocked"?{blocked_reason:input.reason}:{}) }, { actorId: context.actorId, runId: context.runId, projectId: context.projectId, reason: input.reason },
+  );
+  return { task_id: updated.id, status: updated.status };
 }
 
 /**
  * Say the work is finished.
  *
- * `task.report` only records, `task.advance_stage` moves the Loop stage and
- * not the flow, and the review action writes `waiting_for_review`. This is
+ * `task.report` only records, `task.set_status` moves the Board status, and the review action writes `waiting_for_review`. This is
  * the action that writes a finished status. The person is involved at the
  * points that are theirs. Do not leave every close as a hand move of the card.
  *
@@ -366,7 +377,7 @@ export async function completeTask(
     const overridden = completion.missing;
     const closed = await tx.query(
       `UPDATE tasks
-          SET status = 'done', completed_at = COALESCE(completed_at, now()), updated_at = now()
+          SET status = 'done', blocked_reason=NULL, completed_at = COALESCE(completed_at, now()), updated_at = now()
         WHERE space_id = $1 AND id = $2 AND status = $3`,
       [context.spaceId, task.id, task.status],
     );
@@ -430,7 +441,7 @@ export async function requestTaskReview(
       throw new HttpError(409, "Task is already waiting for a decision");
     }
     const held = await tx.query(
-      `UPDATE tasks SET status = 'waiting_for_review', updated_at = now()
+      `UPDATE tasks SET status = 'waiting_for_review', blocked_reason=NULL, updated_at = now()
         WHERE space_id = $1 AND id = $2 AND status = $3`,
       [context.spaceId, task.id, task.status],
     );

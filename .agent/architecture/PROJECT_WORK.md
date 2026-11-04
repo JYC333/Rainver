@@ -1,61 +1,51 @@
 # Project Work
 
-Current state of how a Project advances: the work event stream, the Loop stage
-fold, and Run settlement. Owned by `server/src/modules/projectWork/`.
+[ADR 0027](../decisions/0027-problem-engine-research-separation.md) govern the
+implemented separation: Inquiry owns problem method/rounds, Research owns
+execution calls, and Tasks use only Board status. The [problem workspace](INQUIRY_PROBLEM_ENGINE.md#project-local-workspace-p5)
+uses the same canonical associations/status and preserves independent Tasks.
+
+Current state of how a Project advances: the work event stream, Board status, and Run settlement. Owned by `server/src/modules/projectWork/`.
 
 It sits between `tasks` (the editable work commitment) and `runs` (one attempt
 at it) and owns neither. See [`TASK_BOARD_MODEL.md`](TASK_BOARD_MODEL.md) for
 the Task/Board domain and [`EXECUTION_MODEL.md`](EXECUTION_MODEL.md) for Run,
 Attempt and Supervisor.
 
-## 1. Four state axes, not one status
+## 1. One Task status
 
-A Task carries more than one situation at a time, and merging them into one
-column is what made "why is this not finished" unanswerable.
+`tasks.status` is the Task's only active progress state, shared by the Board,
+Task Detail and Agent tools: `inbox · ready · in_progress · waiting_for_review ·
+blocked · done · cancelled`. `waiting_for_review` means a person must decide;
+`blocked` means an external blocker. Run execution and completion evidence
+remain separate facts rather than another user-managed Task progression.
 
-| Axis | Where it lives | Answers |
-|---|---|---|
-| **Flow state** | `tasks.status` | Where the work sits in the queue. Board columns show this. |
-| **Loop stage** | `task_loop_states.current_stage_key` | Which *kind* of problem the work is solving now. |
-| **Acceptance** | `task.accepted` event + `tasks.completed_at` | Whether the result was taken, and on what basis. |
-| **Execution** | `runs.status` per attempt | How one attempt went. |
+## 2. Retired inner Task Loop
 
-Flow vocabulary: `inbox · ready · in_progress · waiting_for_review · blocked ·
-done · cancelled`. `ck_tasks_status` and `ck_board_columns_status_key` carry
-the same list, because a status with no column to sit in is a card the Board
-cannot show.
+Tasks previously tracked `frame → plan → act → verify → conclude` independently
+of Board placement. It distinguished working method from queue position, but
+allowed an Agent to change the method while leaving the requested Board move
+undone. Tasks now have one progress state.
 
-`waiting_for_review` means **a person has to decide**. `blocked` means **held
-up by something else** and is only ever set deliberately — Run outcomes no
-longer write it.
+The old Task Loop table, fold reader, DTO fields, stage HTTP handler and
+special tool retirement response are removed under
+[ADR 0027](../decisions/0027-problem-engine-research-separation.md) decision 5. Unknown old commands
+receive the ordinary unknown-route/ungranted-tool refusal, never a status map.
+Only canonical Task Board status changes advancement. Run settlement records
+its actual status/outcome, never a method stage.
 
-## 2. The five Loop stages
-
-`frame → plan → act → verify → conclude`, declared in
-`packages/protocol/src/projectWork.ts`.
-
-A **system constant**, not per-Project configuration, and one wording:
-*Frame / Plan / Act / Verify / Conclude* in every Project. Do not keep a
-second wording per Project mode
-([ADR 0019](../decisions/0019-project-has-no-type-field.md)).
-
-Movement is classified, not restricted. `stageTransitionKind()` reads the
-ordering to label a move `advance / regress / skip / reopen`:
-
-- **skip** — a Task that does not need a plan should not have to pretend it
-  made one.
-- **regress** — verification that fails because the method was wrong belongs
-  back at `plan`; because the goal was misunderstood, back at `frame`.
-
-The stage is **stored rather than derived**. A Task that skipped
-planning and one still planning have identical surrounding facts; so do one
-sent back after a failed check and one that has already verified. Only an
-actor's decision separates them, so the decision is what gets recorded.
+The authorized final offline retirement exports old Loop snapshots and stage
+events to private operator recovery files, then removes the dedicated archive
+table and imported stage rows. No old-model schema/event/display is registered
+in the application. Paged normal Task history retains canonical Run/reference
+content gates; normal reports, compensation and responsibility events remain.
 
 ## 3. The event stream is the authority
 
-`project_work_events` is append-only and Project-scoped. `task_loop_states`
-and the Task's own columns are **folds** of it, rebuildable at any time.
+`project_work_events` is append-only and Project-scoped during normal operation.
+The canonical Task columns and their normative events change atomically.
+Explicit offline retirement of old-model records is a separate authorized
+maintenance action, with private export and verified recovery material.
 
 `run_events` is deliberately not extended for this: it is Run-scoped harness
 evidence with a Run's lifetime, and Project advancement outlives every Run that
@@ -89,11 +79,11 @@ Do not hand-roll the insert beside it.
 
 ### Kinds
 
-`task.created · task.flow_changed · task.stage_changed · task.accepted ·
+`task.created · task.flow_changed · task.accepted ·
 task.responsibility_changed · task.run_settled · task.merged ·
 task.merge_blocked · task.reported ·
 project.reported · thread.created · thread.archived · thread.reopened ·
-thread.concluded · thread.next_step_adopted · memory.remembered ·
+thread.concluded · memory.remembered ·
 memory.revised · memory.archived · agent.persona_revised ·
 agent.persona_restored`
 
@@ -175,9 +165,9 @@ The decision reads the **latest** execution Run, then:
 
 | Run | Task |
 |---|---|
-| `succeeded` / `degraded`, evaluation recommends `accept`, declared outputs present | `done` + `task.accepted`, stage → `conclude`, and the Task's merge is enqueued |
-| `succeeded` / `degraded`, anything else | `waiting_for_review`, stage → `verify` |
-| `failed` · `cancelled` · `waiting_for_review` | `waiting_for_review`, **stage unchanged** |
+| `succeeded` / `degraded`, evaluation recommends `accept`, declared outputs present | `done` + `task.accepted`, the Task's merge is enqueued |
+| `succeeded` / `degraded`, anything else | `waiting_for_review` |
+| `failed` · `cancelled` · `waiting_for_review` | `waiting_for_review` |
 | `orphaned` | not settled |
 
 Two Tasks are never touched by settlement. A `blocked` one: that is a
@@ -241,9 +231,10 @@ it steps past the Agent to the person behind it. Those two states are *defined*
 as needing a person. Do not stop at an Agent. The Task would have nobody to
 interrupt and it would wait forever: no attention item, no Board `needs me`, and a
 Pulse that listed it as "In progress". There is no separate release step,
-because `waiting_for_review` has six producers and `blocked` has no Agent
-writer at all, so a release would have to be remembered in seven places instead
-of being a property of the state.
+because review/blocked states have multiple producers, including explicit
+`task.set_status` requests. Handback is a property of status, not a release
+that each writer must remember. “Person-only” names the responsible party,
+not an additional prohibition on an authorized Agent status write.
 
 The claim is deliberately **not** cleared. Who did the work and who must now
 decide are different questions, and overwriting the first to answer the second
@@ -263,7 +254,7 @@ else has it, or two people start the same work.
 
 `settleTasksForRun` (`projectWork/settlement.ts`) is the entry point, reached
 only through the finalization reconciler. It opens its own transaction
-because settling a Task writes work events and moves its Loop stage as well
+because settling a Task writes work events and updates its Board status as well
 as its flow status, and those are one transaction rather than three modules
 agreeing afterwards. The runs and jobs repositories never call it: a
 repository writes its own rows, and what a Run's end means for its Task is
@@ -284,7 +275,7 @@ them two concurrent first writes for the same person would produce two actors.
 
 `GET /projects/:projectId/board` and `GET /tasks/:taskId/work` are the two read
 models (`boardReadModel.ts`). The client cannot answer their
-questions from domain rows alone — which stage a Task is in, who is on the
+questions from domain rows alone — which Board status a Task has, who is on the
 hook, why it cannot close. Do not reconstruct those rules in the browser.
 Both are one statement plus their bounded detail queries; the completion check
 reads attached outputs in the same query rather than per card. Run status,
@@ -307,8 +298,8 @@ Person-facing writes:
   was skipped, so the record says the Task was closed early rather than that it
   met its bar. The gate reads the **stored** declaration, never one edited in
   the same request.
-- `POST /tasks/:taskId/stage` records `task.stage_changed` through the same
-  `recordStageChange` the agent path will use.
+- The former stage-write endpoint is retired; use Task status changes instead.
+
 - `POST /tasks` records `task.created`, in the same transaction as the insert.
 
 The Board and Pulse re-read on a five-second interval while visible and when
@@ -399,7 +390,7 @@ is on a dispatched Run's only, for the reason its own paragraph below gives:
 | `task.create` | a Task (recording the Run as `tasks.source_run_id`, so its merge can be told in the conversation it came from), and its `task_entity_links` | `task.created` |
 | `task.report` | nothing | `task.reported` |
 | `task.handoff` | the claim on a Task | `task.responsibility_changed` |
-| `task.advance_stage` | the Loop fold | `task.stage_changed` |
+| `task.set_status` | Board status via canonical Task update (completion/review delegate to their existing actions) | `task.flow_changed` |
 | `task.complete` | `status = done` (refused while a declared output is missing) | `task.flow_changed` + `task.reported` |
 | `task.request_review` | `status = waiting_for_review` | `task.flow_changed` + `task.reported` |
 | `artifact.submit` | a `run_artifact_declarations` row | `task.reported` |
@@ -415,7 +406,7 @@ dropped. It is granted only for `trusted_host` (`SYSTEM_ACTIONS.md`).
 Do not grant it on a `sandboxed` Run.
 
 They are the smallest set that lets an Agent advance work at all: name a piece
-of it, say what happened, give it to someone else, move it through its Loop,
+of it, say what happened, give it to someone else, move it between Board statuses,
 close it, stop to ask, and hand over what the Task asked for. Without them an Agent could describe a decomposition in a
 reply but not create it — the gap between sounding like it advanced the work
 and having advanced it.
@@ -426,15 +417,15 @@ hand a decision back, the only signals a person gets are failures.
 
 ### The origin gate
 
-`task.create`, `task.advance_stage`, and `task.complete` are `require_approval` when the Run's
+`task.create`, `task.set_status`, and `task.complete` are `require_approval` when the Run's
 `trigger_origin` is `autonomous` or `automation`
 (`ruleUnattendedProjectWrite` in `decisionCore.ts`). The same action definition
 serves both origins, because it is the same write — what differs is who wanted
 it. A person saying "split this into three tasks" *is* the authorization for
 the Tasks that follow; the identical call from an unattended wake-up is a
-commitment made on the Project's behalf that nobody asked for, and a Loop stage
-skipped or reversed, or a Task closed, without a person seeing it is a claim
-about the work.
+commitment made on the Project's behalf that nobody asked for. An unattended
+Board move or Task close is likewise a claim about work that the person should
+see.
 
 The others are ungated at any origin. A report only records, a handoff can
 only give work away, a review request can only stop work, and a declaration
@@ -489,9 +480,9 @@ Seed changes reach existing Assistants at boot and on the daily
 [`../modules/agents.md`](../modules/agents.md).
 
 **Who may write.** Reading a Task is not licence to change it. `PATCH
-/tasks/:taskId`, `POST /tasks/:taskId/stage`, `POST /tasks/:taskId/evaluations`
+/tasks/:taskId`, `POST /tasks/:taskId/evaluations`
 (the newest evaluation decides the close gate) and the five Task-addressed
-Agent actions (`task.report`, `task.handoff`, `task.advance_stage`,
+Agent actions (`task.report`, `task.handoff`, `task.set_status`,
 `task.complete`, `task.request_review`) all require Project **writer** authority
 (`assertProjectWriterForMutation`) on the Task's Project — and, for a move, on
 the Project it is moving to. `PATCH` and a new evaluation also take the
@@ -517,10 +508,7 @@ lists, the Board card columns, the Task work view, the Project updates feed and
 the undo path. A work event names its Run inside `data_json`, so that is what
 the predicate reads. `appendProjectWorkEvent` takes a `runId` and stamps it
 there. Do not leave each writer to remember the convention. An event with only
-the correlation column stays ungated. The visited-stage rail is the one
-deliberate exemption,
-because it reads stage keys and no content, and gating it would make the rail
-claim a Task never reached a stage it reached in a Room the reader is not in.
+the correlation column stays ungated. Historical stage events remain in the timeline, but no visited-stage rail is read or rendered.
 
 The close gate (`taskCompletionState`, `missingRequiredOutputs`) is computed in
 the asking person's view, and the viewer is a required argument. The settlement
@@ -530,3 +518,86 @@ than by omitting an argument.
 
 Task dispatch refuses a `session_id` that names a Room conversation, so no
 Room-scoped Run reaches `task_runs`.
+
+## Explicitly requested Task batches
+
+`task.create_batch` creates the user's requested list in the Run's own Project.
+It is available alongside `task.create` on Project conversation surfaces and
+uses the same `task.create` policy action, Project writer check, canonical Task
+repository and work-event attribution. The executor additionally requires a
+verified manual root; unattended Runs cannot use the batch exception.
+
+Each call takes a request summary and 1–100 Tasks. Larger requested lists may
+continue through more calls in the same turn without another user confirmation.
+The ordinary five-Task turn ceiling remains on `task.create` and follow-ups;
+it does not reject explicitly requested batch writes. Those Tasks still carry
+`source_run_id` and count against any later ordinary creation or follow-up.
+
+One batch is atomic. Under the existing Project and turn locks it matches
+visible, non-deleted Tasks by trimmed, case-insensitive title and returns their
+ids instead of duplicating them, including repeated items and retried batches.
+It does not update existing Tasks or infer semantic duplicates with different
+titles. Results distinguish created and existing counts. Timing and Artifact
+requirements use the same input fields as single creation.
+
+Reuse / Dependency Check: reuse the protocol Task input schema, canonical Task
+repository, content-read predicate, Project aggregate lock, turn lock, effective
+Run trigger and policy action. No new queue, package or parallel writer.
+
+## Inquiry Task associations (P4)
+
+[Inquiry problem engine](INQUIRY_PROBLEM_ENGINE.md) owns the association commands.
+`task_entity_links` is the only relationship store, with its existing per-role
+unique key and actor. The canonical link helper checks full access on both
+endpoints and same Space/Project for Inquiry links. A new edge records
+`task.entity_linked` through the work-event writer; retries create no duplicate
+edge/event. Its reference-bearing event is hidden when the Thread is unreadable,
+even if the Task is still visible. Agent links retain trusted originating Run
+and actor. Task Work exposes an authorized Open question backlink.
+
+Creation uses the canonical Task repository in the same transaction as links,
+Inquiry event and scoped idempotency receipt. Existing Task IDs can serve many
+Threads and each Thread can link many Tasks. Task results are explicit references
+for later problem work, not an acceptance judgment or a round boundary. A Task
+can run and finish without any Thread, Research or Plan. Existing completion,
+review attention, responsibility, finalization, merge and retry rules remain the
+Task/Run authorities. No Task status writes Inquiry cognition or close-outs.
+
+### Task–problem association, visibility and status rules
+
+Every Thread association entry — `task.create`, explicit batches (including
+links added to an existing deduplicated Task), repository create/update `links`
+and `inquiry.link_task` — dispatches through `linkTaskToProblem` inside the
+canonical Task link transaction. It checks full access and matching Project,
+locks Project then Thread, requires lifecycle `active`, and rechecks Task scope.
+A newly inserted per-role edge advances `problem_revision` and records both the
+problem work fact and Task audit event once. Duplicate active edges are no-ops;
+archived/resolved/rejected/superseded Threads reject association writes, even
+when the edge already exists. Existing historical associations remain readable.
+Late failures roll back Tasks, edges, revisions and events together. No primary
+Step or method stage is inferred from an association.
+
+New Tasks created by `inquiry.link_task` with a verified initiating Run use
+`space_shared`, matching `task.create`. Human creation remains private by
+default; linking an existing Task never changes visibility. Source Run and
+Room access still gate source-bearing events; sharing the Task does not share
+its Room or Run.
+
+`task.set_status` cancellation and reopening use the same existing
+`task.status.set` Project-writer/origin policy as other Board moves: a verified
+manual request authorizes the write; unattended writes require approval. There
+is no extra cancellation/reopen approval layer. Existing completion/output and
+review operations retain their own restrictions (a cancelled Task cannot be
+completed before explicit reopening). `blocked` stores the supplied reason in
+`blocked_reason`; changing that wording records one report, not another review
+request. Leaving blocked clears it through Board, completion and review paths.
+Reopening terminal states clears their current-row terminal timestamp while
+retaining the historical events. Responsibility/claims still use the existing
+status-aware person handback rule.
+
+Execution Run admission (server and remote) now changes Task status through one
+transactional helper and emits the canonical `task.flow_changed` with the
+initiating user and admitted Run id. It emits nothing if already in progress,
+or when `set_task_in_progress=false` (e.g. merge resolution). Event failure
+rolls back Run/TaskRun/Job admission and Task status; no synthetic review or
+notification is generated.

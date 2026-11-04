@@ -2,6 +2,7 @@ import {readOnlyIpcFilter} from './readOnlyIpc.js';
 import {probeReadOnlyWorkspace,readOnlyBinary,assertReadOnlyBinds,workspacePathLeaseKeys,workspaceGitDirectory,readOnlyRootGuard,executableRoots,captureReadOnlyBasis} from './readOnlyWorkspace.js';
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostDaemonFrame, type HostEgressTransport, type HostLaunchFrame, type HostLaunchIsolation, type HostLaunchProviderBinding, type HostLaunchWorkSurface, type HostServerFrameOf } from "@rainver/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
+import { killProcessGroup } from "./processGroup.js";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -1902,21 +1903,4 @@ function terminateWithEscalation(child: ChildProcess, force: boolean, log: (line
     if (!killProcessGroup(child, "SIGKILL")) log(`could not deliver escalated SIGKILL for pid ${child.pid ?? "unknown"}`);
   }, KILL_ESCALATION_GRACE_MS);
   timer.unref?.();
-}
-
-function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): boolean {
-  if (typeof child.pid !== "number") return false;
-  try {
-    // Negative pid targets the whole process group `detached: true` created,
-    // so a shell-spawned tool's children die too, not just the shell.
-    process.kill(-child.pid, signal);
-    return true;
-  } catch {
-    try {
-      child.kill(signal);
-      return true;
-    } catch {
-      return false;
-    }
-  }
 }

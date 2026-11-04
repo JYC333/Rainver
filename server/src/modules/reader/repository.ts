@@ -1,3 +1,4 @@
+import {assertResearchArtifactReadable,assertResearchReportCallReadable} from '../projectResearch/reportAccess.js';
 import {SourceMaterialContentUnavailableReasonSchema,type SourceMaterialContentUnavailableReason,SourceMaterialReadingInfoSchema,type SourceMaterialReadingInfo} from '@rainver/protocol';
 import { readingVersionCurrentSql } from '../sources/readingIdentity.js';
 import { randomUUID } from "node:crypto";
@@ -116,6 +117,7 @@ async function loadVisibleArtifactForReader(
         AND ${sourceDerivedArtifactReadableClause("a", "$3", true)}`,
     [artifactId, spaceId, userId],
   );
+  if(result.rows[0])await assertResearchArtifactReadable(db,{spaceId,userId},artifactId);
   return result.rows[0] ?? null;
 }
 
@@ -610,19 +612,20 @@ export class PgReaderRepository {
     reportId: string,
   ): Promise<ReaderDocumentOut | null> {
     const result = await this.db.query<{
-      project_id: string;
+      project_id: string;operation_id:string;
       research_question: string;
       reader_document_json: ReaderPmDoc;
       normalized_text: string;
       content_hash: string;
     }>(
-      `SELECT project_id, research_question, reader_document_json, normalized_text, content_hash
+      `SELECT project_id,operation_id, research_question, reader_document_json, normalized_text, content_hash
          FROM project_research_reports
         WHERE space_id = $1 AND id = $2`,
       [identity.spaceId, reportId],
     );
     const report = result.rows[0];
     if (!report || !(await canAccessProject(this.db, identity.spaceId, report.project_id, identity.userId))) return null;
+    await assertResearchReportCallReadable(this.db,identity,report.project_id,report.operation_id);
     return {
       document_type: "research_report",
       document_id: reportId,
@@ -943,13 +946,14 @@ export async function assertDocumentReadable(
     };
   }
   if (documentType === "research_report") {
-    const r = await db.query<{ project_id: string }>(
-      `SELECT project_id FROM project_research_reports WHERE space_id = $1 AND id = $2`,
+    const r = await db.query<{ project_id: string;operation_id:string }>(
+      `SELECT project_id,operation_id FROM project_research_reports WHERE space_id = $1 AND id = $2`,
       [identity.spaceId, documentId],
     );
     if (!r.rows[0] || !(await canAccessProject(db, identity.spaceId, r.rows[0].project_id, identity.userId))) {
       throw new HttpError(404, "Document not found");
     }
+    await assertResearchReportCallReadable(db,identity,r.rows[0].project_id,r.rows[0].operation_id);
     return { projectId: r.rows[0].project_id, visibility: "space_shared", accessLevel: "full" };
   }
   if (documentType === "research_notebook") {

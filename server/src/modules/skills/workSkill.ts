@@ -218,10 +218,11 @@ ${options.conversation
 
 1. \`list\` first. Read the Project's state before recommending anything:
    \`call task.list '{}'\` (status, priority, due dates, blockers) and
-   \`call inquiry.list_threads '{}'\` (each Thread's recorded next step).
+   \`call inquiry.list_threads '{}'\` (current problem work and round facts).
 2. When the person states the Project's goal, \`call project.propose_definition\`;
    when they ask for a plan or next steps, create each step with
-   \`task.create\` (timing goes in \`due_at\` / \`start_after\`); when they
+   \`task.create\` for one Task or \`task.create_batch\` for their requested list
+   (timing goes in \`due_at\` / \`start_after\`); when they
    accept or reject a proposal, \`proposal.list_pending\` then \`proposal.decide\`.
 3. Answer them in your reply: what you recorded, what awaits their decision,
    and what you recommend. Never claim a write you did not make.`
@@ -252,7 +253,10 @@ ${ACTION_RESULT_REPORTING_POLICY}
 A write you are able to make is a write a person asked for: make it, do not
 ask for confirmation, and do not describe it as pending. Every one of them is
 visible to the person afterwards with a one-click undo. Keep Project object
-writes to at most five per turn. Room delegation uses its shared server budget:
+writes to at most five per turn by default. For an explicit user-requested Task
+batch, use task.create_batch instead: up to 100 requested Tasks per call, continuing
+with the remaining authorized items without another confirmation. Report created
+and existing counts; never use batches for unsolicited suggestions. Room delegation uses its shared server budget:
 five per delegatable Agent as soft limit, twice that as hard limit, depth one.
 A soft warning does not stop work; a hard refusal does. Never raise a limit
 on your own initiative.
@@ -311,8 +315,8 @@ export function workSkillPromptPointer(
       : options.conversation
       ? [
           "Use `task.list` and `inquiry.list_threads` to read the Project before recommending,",
-          "`project.propose_definition` when the person states the goal, `task.create` for each",
-          "step of a plan, and `proposal.decide` when they accept or reject a proposal.",
+          "`project.propose_definition` when the person states the goal, `task.create` for a single Task or `task.create_batch` for an explicitly requested list;",
+          "use `proposal.decide` when they accept or reject a proposal.",
           "Your reply is the message they read; only these calls change the Project's record.",
         ]
       : [

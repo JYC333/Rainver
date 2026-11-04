@@ -1,3 +1,5 @@
+import {registerProblemResearchRoutes} from "./problemWorkspaceRoutes.js";
+import { ResearchProblemResultService } from "./researchProblemResults.js";
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { HttpError, dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
@@ -42,7 +44,16 @@ function requireParam(request: Parameters<typeof params>[0], name: string): stri
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerProblemResearchRoutes(app,context);
   const base = "/api/v1/projects/:projectId/research";
+  app.get(`${base}/operations/:operationId/result`,async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try{return reply.send(await new ResearchProblemResultService(dbPool(context.config)).read(identity,requireParam(request,"projectId"),requireParam(request,"operationId")));}catch(error){return sendRouteError(reply,error);}
+  });
+  app.post(`${base}/operations/:operationId/adopt-result`,async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try{return reply.send(await new ResearchProblemResultService(dbPool(context.config)).adopt(identity,requireParam(request,"projectId"),requireParam(request,"operationId"),jsonBody(request)));}catch(error){return sendRouteError(reply,error);}
+  });
   const reports = () => new ProjectResearchReportRepository(dbPool(context.config));
   registerProjectResearchAreaRoutes(app, context, base, "/api/v1/projects/:projectId");
 

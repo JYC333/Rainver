@@ -50,6 +50,8 @@ import { resolveUserActorId } from "../../db/actorResolver.js";
 import {
   assertCompletionForClose,
   recordTaskCreated,
+  recordTaskBlockReasonChange,
+  markTaskRunStarted,
   recordTaskFlowChange,
   recordTaskResponsibilityChange,
 } from "../projectWork/taskWriteEvents.js";
@@ -491,6 +493,9 @@ export class PgTaskRepository {
       },
       { title: created.title, status: created.status },
     );
+    if(Array.isArray(body.links)&&body.links.length){
+      await linkTaskEntities(db,{spaceId:identity.spaceId,actorId:attributedActorId??await resolveUserActorId(db,identity.spaceId,identity.userId),instructedByUserId:identity.userId,runId:created.source_run_id},created.id,body.links as {entity_type:string;entity_id:string;role:string}[]);
+    }
     return taskOut(created);
   }
 
@@ -516,16 +521,19 @@ export class PgTaskRepository {
     return taskOut(row);
   }
 
-  async updateTask(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
+  async updateTask(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>, agentContext?: { actorId: string; runId: string; projectId: string; reason?: string }) {
     const now = new Date().toISOString();
     const requestedStatus = taskStatus(body.status);
     await withDbTransaction(this.pool, async (client) => {
-      // Read under the same lock the write takes. Two concurrent closes that
-      // both read `in_progress` outside the transaction both passed the close
-      // gate and both wrote `task.accepted`; under the lock the second one
-      // reads `done` and has nothing to do.
-      const currentTask = await getVisibleTaskRow(client, identity, taskId, { lock: true });
-      if (!currentTask) throw new HttpError(404, "Task not found");
+      // Discover scope first, then lock Projects before the Task, matching
+      // problem association and Task Run admission. Re-read under the Task
+      // lock before evaluating completion; a scope move requires a retry.
+      const observedTask = await getVisibleTaskRow(client, identity, taskId);
+      if (!observedTask) throw new HttpError(404, "Task not found");
+      if (agentContext && observedTask.project_id !== agentContext.projectId) {
+        throw new HttpError(422, "A Task can only be changed in this Run's Project");
+      }
+
       // Reading a Task is not licence to change it. A Project `viewer` can see
       // every shared Task. Do not treat a viewer as a writer. They could drag one to Done, move its
       // Loop stage, or reassign it. The Project the Task is *moving to* is
@@ -534,11 +542,18 @@ export class PgTaskRepository {
       // closing a Task there would queue a merge on the host.
       const targetProjectId = Object.hasOwn(body, "project_id")
         ? optionalString(body.project_id)
-        : currentTask.project_id;
-      for (const projectId of [...new Set([currentTask.project_id, targetProjectId])].sort()) {
+        : observedTask.project_id;
+      for (const projectId of [...new Set([observedTask.project_id, targetProjectId])].sort()) {
         if (!projectId) continue;
         await lockActiveProjectForMutation(client, identity.spaceId, projectId);
         await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
+      }
+      const currentTask=await getVisibleTaskRow(client,identity,taskId,{lock:true});
+      if(!currentTask)throw new HttpError(404,"Task not found");
+      if(currentTask.project_id!==observedTask.project_id)throw new HttpError(409,"Task Project changed; reload before editing");
+      if(targetProjectId!==currentTask.project_id){
+        const invalid=await client.query(`SELECT l.id FROM task_entity_links l JOIN inquiry_threads q ON q.object_id=l.entity_id AND q.space_id=l.space_id WHERE l.space_id=$1 AND l.task_id=$2 AND l.entity_type='inquiry_thread' AND q.project_id IS DISTINCT FROM $3::varchar LIMIT 1`,[identity.spaceId,taskId,targetProjectId]);
+        if(invalid.rowCount)throw new HttpError(409,"A Task linked to problems in this Project cannot move to another Project");
       }
       if (Object.hasOwn(body, "parent_task_id")) {
         const parentTaskId = optionalString(body.parent_task_id);
@@ -553,6 +568,9 @@ export class PgTaskRepository {
         if (currentTask.task_role === "source" && parentTaskId) throw new HttpError(422, "Source tasks cannot have a parent task");
       }
       const flowChanged = requestedStatus !== null && requestedStatus !== currentTask.status;
+      const nextStatus=requestedStatus??currentTask.status;
+      const writesBlockReason=Object.hasOwn(body,'blocked_reason') || requestedStatus!==null;
+      const blockReason=nextStatus==='blocked'?(Object.hasOwn(body,'blocked_reason')?optionalString(body.blocked_reason):currentTask.blocked_reason):null;
       // The Project the Task ends up in, so a move between Projects records the
       // change in that Project's stream rather than the one it left.
       const effectiveProjectId = targetProjectId;
@@ -561,6 +579,7 @@ export class PgTaskRepository {
         userId: identity.userId,
         taskId,
         projectId: effectiveProjectId,
+        ...(agentContext ? { actorId: agentContext.actorId, runId: agentContext.runId, reason: agentContext.reason } : {}),
       };
       const responsibilityFields = [
         "assigned_user_id", "assigned_agent_id", "claimed_by_user_id", "claimed_by_agent_id",
@@ -647,12 +666,12 @@ export class PgTaskRepository {
         optionalString(body.claimed_by_user_id),
         Object.hasOwn(body, "claimed_by_agent_id"),
         optionalString(body.claimed_by_agent_id),
-        Object.hasOwn(body, "completed_at"),
-        toDbDate(body.completed_at),
-        Object.hasOwn(body, "cancelled_at"),
-        toDbDate(body.cancelled_at),
-        Object.hasOwn(body, "blocked_reason"),
-        optionalString(body.blocked_reason),
+        flowChanged&&currentTask.status==="done"||Object.hasOwn(body,"completed_at"),
+        flowChanged&&currentTask.status==="done"?null:toDbDate(body.completed_at),
+        flowChanged&&(requestedStatus==="cancelled"||currentTask.status==="cancelled")||Object.hasOwn(body,"cancelled_at"),
+        flowChanged?(requestedStatus==="cancelled"?now:currentTask.status==="cancelled"?null:toDbDate(body.cancelled_at)):toDbDate(body.cancelled_at),
+        writesBlockReason,
+        blockReason,
         Object.hasOwn(body, "acceptance_criteria_json"),
         JSON.stringify(optionalObject(body.acceptance_criteria_json)),
         Object.hasOwn(body, "definition_of_done"),
@@ -696,6 +715,9 @@ export class PgTaskRepository {
           basedOn: dateIso(currentTask.updated_at) ?? String(currentTask.updated_at),
         });
       }
+      if(!flowChanged && writesBlockReason && blockReason!==currentTask.blocked_reason){
+        await recordTaskBlockReasonChange(client,eventContext,{reason:blockReason,basedOn:dateIso(currentTask.updated_at)??String(currentTask.updated_at)});
+      }
       // A Task that ends without being done leaves no branch behind on the
       // Locations its Runs worked on (ADR 0016 §11); a done one keeps its
       // branch for the merge.
@@ -720,8 +742,8 @@ export class PgTaskRepository {
           client,
           {
             spaceId: identity.spaceId,
-            actorId: await resolveUserActorId(client, identity.spaceId, identity.userId),
-            instructedByUserId: identity.userId,
+            actorId: agentContext?.actorId??await resolveUserActorId(client, identity.spaceId, identity.userId),
+            instructedByUserId: identity.userId,runId:agentContext?.runId,reason:agentContext?.reason,
           },
           taskId,
           body.links as { entity_type: string; entity_id: string; role: string }[],
@@ -769,12 +791,13 @@ export class PgTaskRepository {
       // Serialize admissions for this task. The max_runs check and the
       // task_runs insert must observe one state, otherwise two concurrent
       // requests can both pass the preflight check.
-      const lockedTask = await client.query<{ max_runs: number | null; status: string }>(
-        `SELECT max_runs, status FROM tasks WHERE space_id = $1 AND id = $2 FOR UPDATE`,
+      const lockedTask = await client.query<{ max_runs: number | null; status: string;project_id:string|null }>(
+        `SELECT max_runs, status,project_id FROM tasks WHERE space_id = $1 AND id = $2 FOR UPDATE`,
         [identity.spaceId, taskId],
       );
       const currentTask = lockedTask.rows[0];
       if (!currentTask) throw new HttpError(404, "Task not found");
+      if(currentTask.project_id!==task.project_id)throw new HttpError(409,"Task Project changed; reload before starting a Run");
       // A merge's resolution Run works on a done Task: that is the only Task
       // with a merge.
       if (TASK_DISPATCH_REFUSED_STATUSES.has(currentTask.status) && !(merge && currentTask.status === "done")) {
@@ -889,7 +912,7 @@ export class PgTaskRepository {
       );
       await this.enqueueTaskRunJob(client, identity, { runId: run.id, agentId, projectFolderId: task.project_folder_id }, merge);
       if (body.set_task_in_progress !== false) {
-        await client.query(`UPDATE tasks SET status = 'in_progress', updated_at = $3 WHERE space_id = $1 AND id = $2`, [identity.spaceId, taskId, now]);
+        await markTaskRunStarted(client,{spaceId:identity.spaceId,userId:identity.userId,taskId,runId:run.id,at:now});
       }
       return {
         kind: "server" as const,
@@ -1155,10 +1178,7 @@ export class PgTaskRepository {
     );
     await this.enqueueTaskRunJob(client, identity, { runId: run.id, agentId, projectFolderId: task.project_folder_id }, merge);
     if (body.set_task_in_progress !== false) {
-      await client.query(
-        `UPDATE tasks SET status = 'in_progress', updated_at = now() WHERE space_id = $1 AND id = $2`,
-        [identity.spaceId, task.id],
-      );
+      await markTaskRunStarted(client,{spaceId:identity.spaceId,userId:identity.userId,taskId:task.id,runId:run.id,at:now});
     }
     return {
       kind: "remote" as const,
@@ -1168,14 +1188,15 @@ export class PgTaskRepository {
 
   async requestPlanningRun(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
     return withDbTransaction(this.pool, async (client) => {
-      const task = await getVisibleTaskRow(client, identity, taskId, { lock: true });
-      if (!task) throw new HttpError(404, "Task not found");
-      if (task.project_id) {
-        // A planning Run is a Task-owned Run like any other: the same writer
-        // gate as createTaskRunAdmission.
-        await lockActiveProjectForMutation(client, identity.spaceId, task.project_id);
-        await assertProjectWriterForMutation(client, identity.spaceId, task.project_id, identity.userId);
+      const observed=await getVisibleTaskRow(client,identity,taskId);
+      if(!observed)throw new HttpError(404,"Task not found");
+      if(observed.project_id){
+        await lockActiveProjectForMutation(client,identity.spaceId,observed.project_id);
+        await assertProjectWriterForMutation(client,identity.spaceId,observed.project_id,identity.userId);
       }
+      const task=await getVisibleTaskRow(client,identity,taskId,{lock:true});
+      if(!task)throw new HttpError(404,"Task not found");
+      if(task.project_id!==observed.project_id)throw new HttpError(409,"Task Project changed; reload before planning");
       if (task.task_role !== "source") throw new HttpError(409, "Only source tasks can request Agent planning");
       const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
       if (!agentId) throw new HttpError(422, "agent_id is required when the Task has no assigned agent");

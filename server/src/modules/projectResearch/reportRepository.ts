@@ -1,3 +1,6 @@
+import {assertResearchReportCallReadable} from './reportAccess.js';
+import {ResearchCallContentUnavailable} from "./researchCallAccess.js";
+import {researchMetadataReadableSql} from "./researchOperationMetadata.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError, dateIso, objectValue } from "../routeUtils/common.js";
 import { assertProjectReadable } from "../projects/access.js";
@@ -23,17 +26,23 @@ const DETAIL_COLUMNS = `${LIST_COLUMNS},content_json,reader_document_json,normal
 export class ProjectResearchReportRepository {
   constructor(private readonly db: Queryable) {}
 
-  async list(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
-    await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    // The report body (content_json/reader_document_json/normalized_text) can
-    // be tens of KB of LLM-generated text per row — list callers only ever
-    // render metadata, so `reportOut(row, false)` never reads those fields.
-    // Leave them out of this query entirely instead of fetching and discarding.
-    const rows = await this.db.query<ReportListRow>(
-      `SELECT ${LIST_COLUMNS} FROM project_research_reports WHERE space_id=$1 AND project_id=$2 ORDER BY created_at DESC,id DESC`,
-      [identity.spaceId, projectId],
-    );
-    return rows.rows.map((row) => reportListOut(row));
+  /** Exhaustive list for Area initialization and the full-list route; the records UI pages. */
+  async list(identity:SpaceUserIdentity,projectId:string):Promise<Record<string,unknown>[]>{
+    const items:Record<string,unknown>[]=[];let cursor:string|null=null;
+    do{const page=await this.page(identity,projectId,cursor);items.push(...page.items);cursor=page.next_cursor;}while(cursor);
+    return items;
+  }
+  async page(identity:SpaceUserIdentity,projectId:string,after:string|null=null){
+    await assertProjectReadable(this.db,identity.spaceId,projectId,identity.userId);
+    if(after!==null&&(!after.trim()||after.length>128))throw new HttpError(422,"Invalid report cursor");
+    if(after){const cursor=await this.db.query(`SELECT r.id,r.operation_id FROM project_research_reports r JOIN project_operations op ON op.id=r.operation_id AND op.space_id=r.space_id AND op.project_id=r.project_id WHERE r.id=$1 AND r.space_id=$2 AND r.project_id=$3 AND ${researchMetadataReadableSql("op","$4")}`,[after,identity.spaceId,projectId,identity.userId]);if(!cursor.rows[0])throw new HttpError(422,"Invalid report cursor");try{await assertResearchReportCallReadable(this.db,identity,projectId,String(cursor.rows[0].operation_id));}catch(error){if(error instanceof ResearchCallContentUnavailable)throw new HttpError(422,"Invalid report cursor");throw error;}}
+    const rows=await this.db.query<ReportListRow>(`SELECT r.id,r.project_id,r.workflow_id,r.operation_id,r.synthesis_run_id,r.run_kind,r.research_question,r.research_question_version,r.status,r.created_at,r.updated_at FROM project_research_reports r JOIN project_operations op ON op.id=r.operation_id AND op.space_id=r.space_id AND op.project_id=r.project_id WHERE r.space_id=$1 AND r.project_id=$2 AND ${researchMetadataReadableSql("op","$3")} AND ($4::varchar IS NULL OR (r.created_at,r.id)<(SELECT created_at,id FROM project_research_reports WHERE id=$4 AND space_id=$1 AND project_id=$2)) ORDER BY r.created_at DESC,r.id DESC LIMIT 51`,[identity.spaceId,projectId,identity.userId,after]);
+    const readable=[];
+    for(const row of rows.rows.slice(0,50)){
+      try{await assertResearchReportCallReadable(this.db,identity,projectId,row.operation_id);readable.push(reportListOut(row));}
+      catch(error){if(!(error instanceof ResearchCallContentUnavailable))throw error;}
+    }
+    return {items:readable,next_cursor:rows.rows.length>50?rows.rows[49]!.id:null};
   }
 
   async get(identity: SpaceUserIdentity, projectId: string, reportId: string): Promise<Record<string, unknown>> {
@@ -44,6 +53,7 @@ export class ProjectResearchReportRepository {
     );
     if (!rows.rows[0]) throw new HttpError(404, "Research report not found or not accessible");
     const row = rows.rows[0];
+    await assertResearchReportCallReadable(this.db,identity,projectId,row.operation_id);
     // "Current" question means the live workflow's question now, not the
     // immutable value this report was generated against (row.research_question).
     const workflow = await this.db.query<{ research_question: string | null }>(

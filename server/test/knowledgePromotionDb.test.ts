@@ -13,7 +13,7 @@ import { KnowledgeExtractionService } from "../src/modules/knowledgePromotion/ex
 import { ProjectReviewSessionService } from "../src/modules/projectReview/service.js";
 import { processUnclaimedDomainChangeEvents } from "../src/modules/knowledgePromotion/revalidationService.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
-import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
+import {ModernIterationService as InquiryIterationService} from "./support/modernIteration.js";
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService.js";
 import { ExperimentRunService } from "../src/modules/experiments/runService.js";
 import { ExperimentInterpretationService } from "../src/modules/experiments/interpretationService.js";

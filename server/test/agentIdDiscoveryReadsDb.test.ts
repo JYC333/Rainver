@@ -37,7 +37,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["inquiry_thread_advice", "project_work_events", "actors", "jobs", "agent_versions", "agents", "project_operation_links", "project_operation_steps", "project_operations", "inquiry_question_states", "inquiry_threads", "space_objects", "projects", "space_memberships", "users", "spaces"],
+    ["project_work_events", "actors", "jobs", "agent_versions", "agents", "project_operation_links", "project_operation_steps", "project_operations", "inquiry_question_states", "inquiry_threads", "space_objects", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -76,56 +76,13 @@ describe("the reads an Agent gets ids from (real Postgres)", () => {
     const list = executors.get("inquiry.list_threads" as SystemActionId)!;
     const all = await list({}, { idempotency_key: "call-1" } as never) as ExecutorResult;
     expect((all.modelResult as { threads: unknown[] }).threads).toEqual(expect.arrayContaining([
-      { thread_id: question.id, kind: "question", statement: "How should agent memory be classified?", attention_state: expect.any(String), next_step: null },
-      { thread_id: hypothesis.id, kind: "hypothesis", statement: "Episodic/semantic is the useful split", attention_state: expect.any(String), next_step: null },
+      expect.objectContaining({ thread_id: question.id, kind: "question", statement: "How should agent memory be classified?", attention_state: expect.any(String) }),
+      expect.objectContaining({ thread_id: hypothesis.id, kind: "hypothesis", statement: "Episodic/semantic is the useful split", attention_state: expect.any(String) }),
     ]));
     expect(all.summary).toMatchObject({ tool_name: "inquiry.list_threads", ok: true, count: 2 });
 
     const questionsOnly = await list({ kind: "question" }, { idempotency_key: "call-2" } as never) as ExecutorResult;
     expect((questionsOnly.modelResult as { threads: Array<{ thread_id: string }> }).threads.map((t) => t.thread_id)).toEqual([question.id]);
-  });
-
-  it("adopts the recorded next step on the user's word, the same write the Area's button makes", async () => {
-    if (!db.available) return;
-    // A finished search records its next step. Do not hide that step.
-    const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Agent memory" });
-    const thread = await new InquiryThreadService(db.pool).createThread(identity(), project.id as string, {
-      kind: "question", statement: "How should agent memory be classified?",
-    });
-    await db.pool.query(
-      `INSERT INTO inquiry_thread_advice (
-         id, space_id, project_id, thread_id, recommended_focus_kind, rationale, cited_refs_json,
-         thread_version, status, trigger_kind, generated_by_user_id, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'clarify_or_decompose','It bundles four axes.','[]'::jsonb,$5,'open','search_completed',$6,now(),now())`,
-      [randomUUID(), SPACE, project.id, thread.id, thread.version, OWNER],
-    );
-
-    const executors = await executorsFor(project.id as string);
-    // The read shows the step before it is adopted: without it the Agent
-    // asked "what next?" could only guess a thread_id and be told 404.
-    const listed = await executors.get("inquiry.list_threads" as SystemActionId)!({}, { idempotency_key: "call-6" } as never) as ExecutorResult;
-    expect((listed.modelResult as { threads: Array<{ next_step: unknown }> }).threads[0]?.next_step)
-      .toEqual({ focus: "clarify_or_decompose", rationale: "It bundles four axes." });
-    const adopted = await executors.get("inquiry.adopt_next_step" as SystemActionId)!(
-      { thread_id: thread.id }, { idempotency_key: "call-7" } as never,
-    ) as ExecutorResult;
-    expect(adopted.summary).toMatchObject({ ok: true, next_focus_kind: "clarify_or_decompose" });
-
-    const row = await db.pool.query<{ next_focus_kind: string; attention_state: string; status: string }>(
-      `SELECT thread.next_focus_kind, thread.attention_state, advice.status
-         FROM inquiry_threads thread
-         JOIN inquiry_thread_advice advice ON advice.thread_id = thread.object_id
-        WHERE thread.object_id = $1`,
-      [thread.id],
-    );
-    expect(row.rows[0]).toMatchObject({
-      next_focus_kind: "clarify_or_decompose", attention_state: "focused", status: "adopted",
-    });
-
-    // Nothing to adopt is a plain answer, not a silent no-op.
-    await expect(executors.get("inquiry.adopt_next_step" as SystemActionId)!(
-      { thread_id: thread.id }, { idempotency_key: "call-8" } as never,
-    )).rejects.toMatchObject({ statusCode: 404 });
   });
 
   it("answers an invented thread_id on research.start_acquisition with the ids that exist", async () => {
@@ -135,7 +92,7 @@ describe("the reads an Agent gets ids from (real Postgres)", () => {
 
     const start = (await executorsFor(project.id as string)).get("research.start_acquisition" as SystemActionId)!;
     await expect(start({ thread_id: "memory-classification" }, { idempotency_key: "call-3" } as never))
-      .rejects.toThrow(`No active Question Thread has id 'memory-classification'. Use one of these ids exactly: ${question.id} — How should agent memory be classified?`);
+      .rejects.toThrow(`No active Question Thread has id 'memory-classification'. Read inquiry.list_threads for the complete paginated list. First matching ids: ${question.id} — How should agent memory be classified?`);
   });
 
   it("lists the Project's live research Operations, and answers an invented operation_id with them", async () => {

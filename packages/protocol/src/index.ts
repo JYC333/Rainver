@@ -175,3 +175,7 @@ export * from './readingMethod.js';
 export * from './projectReading.js';
 
 export * from "./projectDeepReading.js";
+
+export * from "./problemEngine.js";
+export * from "./researchCalls.js";
+export * from './taskAssociations.js';

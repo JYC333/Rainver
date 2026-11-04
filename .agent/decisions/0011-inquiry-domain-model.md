@@ -12,6 +12,12 @@ that ontology, what engine fixed workflows run on, and how domains contribute
 attention. Project type and conversation pacing follow
 [ADR 0019](0019-project-has-no-type-field.md).
 
+[ADR 0027](0027-problem-engine-research-separation.md) supersedes only decision
+6's universal shared-Loop implication: the generic method belongs to Inquiry,
+Task retains Board status, and Research remains an execution capability. The
+remaining ownership and workflow decisions below are unchanged. Implementation
+of that target contract is pending.
+
 ## Context
 
 Rainver added Project-owned domains — Inquiry Thread (questions and

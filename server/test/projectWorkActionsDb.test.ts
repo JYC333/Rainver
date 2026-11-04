@@ -13,7 +13,7 @@ import type { AgentRunRecord } from "../src/modules/runs/repository.js";
 import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance.js";
 import { resolveAgentActorId } from "../src/db/actorResolver.js";
 import {
-  advanceTaskStage,
+  setTaskStatus,
   handoffTask,
   linkTaskEntities,
   reportOnTask,
@@ -96,7 +96,7 @@ beforeEach(async () => {
   await resetTables(
     db.pool!,
     [
-      "project_work_events", "task_loop_states", "task_entity_links", "tasks",
+      "project_work_events", "task_entity_links", "tasks",
       "experiment_definitions", "space_objects",
       "actors", "runs", "agent_versions", "agents", "project_members", "projects", "users", "spaces",
     ],
@@ -169,11 +169,11 @@ describe("origin gate", () => {
   // the absence of a proposal gate as a wider set of actors.
   const gated = [
     "task.create",
-    "task.stage.advance",
+    "task.status.set",
     "task.complete",
     "inquiry.thread.create",
     "inquiry.iteration.record",
-    "inquiry.advice.adopt",
+
     "research.acquisition.start",
   ];
   const ungated = ["task.report", "task.handoff", "task.request_review"];
@@ -211,7 +211,7 @@ describe("origin gate", () => {
 
 describe("registry wiring", () => {
   it("registers the whole Project write surface on the Room conversation surface", () => {
-    for (const id of ["task.create", "task.report", "task.handoff", "task.advance_stage", "task.complete", "task.request_review"]) {
+    for (const id of ["task.create", "task.report", "task.handoff", "task.set_status", "task.complete", "task.request_review"]) {
       expect(ROOM_CONVERSATION_TOOL_ALLOWANCE, id).toContain(id);
     }
   });
@@ -315,23 +315,41 @@ describe("task.handoff", () => {
   });
 });
 
-describe("task.advance_stage", () => {
-  it("moves the Loop and records the move as the Agent", async (ctx) => {
+describe("task.set_status", () => {
+  it("moves the Board status and records the Agent without a Loop", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask(task, PROJECT, "ready");
+
+    await setTaskStatus(db.pool!, await agentContext(), {
+      task_id: task, status: "in_progress", reason: "the run produced a result",
+    });
+
+    expect((await db.pool!.query(`SELECT to_regclass('task_loop_states') AS old`)).rows[0].old).toBeNull();
+    expect((await db.pool!.query("SELECT status FROM tasks WHERE id = $1", [task])).rows[0].status).toBe("in_progress");
+    expect((await events(task))[0]).toMatchObject({
+      kind: "task.flow_changed",
+      data: expect.objectContaining({ via: "agent", to: "in_progress" }),
+    });
+  });
+});
+
+describe("task.set_status completion and review gates", () => {
+  it("cannot bypass required outputs by setting the Board status to done", async ctx => {
     if (!db.available) return ctx.skip();
     const task = randomUUID();
     await makeTask(task);
-
-    await advanceTaskStage(db.pool!, await agentContext(), {
-      task_id: task, to_stage: "verify", reason: "the run produced a result",
-    });
-
-    const loop = await db.pool!.query<{ current_stage_key: string }>(
-      `SELECT current_stage_key FROM task_loop_states WHERE task_id = $1`, [task]);
-    expect(loop.rows[0]?.current_stage_key).toBe("verify");
-    expect((await events(task))[0]).toMatchObject({
-      kind: "task.stage_changed",
-      data: expect.objectContaining({ via: "agent", to_stage: "verify" }),
-    });
+    await db.pool!.query("UPDATE tasks SET required_outputs_json = '[\"report\"]'::jsonb WHERE id = $1", [task]);
+    await expect(setTaskStatus(db.pool!, await agentContext(), { task_id: task, status: "done", reason: "Finished" })).rejects.toMatchObject({ statusCode: 422 });
+    expect((await db.pool!.query("SELECT status FROM tasks WHERE id = $1", [task])).rows[0].status).toBe("in_progress");
+  });
+  it("uses the existing review action when the Board status needs a person", async ctx => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask(task);
+    await setTaskStatus(db.pool!, await agentContext(), { task_id: task, status: "waiting_for_review", reason: "Choose the next mentor" });
+    expect((await db.pool!.query("SELECT status FROM tasks WHERE id = $1", [task])).rows[0].status).toBe("waiting_for_review");
+    expect((await events(task)).some(event => event.kind === "task.flow_changed")).toBe(true);
   });
 });
 
@@ -479,7 +497,7 @@ describe("an Agent's reach is the instructing person's", () => {
       .rejects.toMatchObject({ statusCode: 403 });
     await expect(handoffTask(db.pool!, context, { task_id: task, to: null }))
       .rejects.toMatchObject({ statusCode: 403 });
-    await expect(advanceTaskStage(db.pool!, context, { task_id: task, to_stage: "act", reason: "x" }))
+    await expect(setTaskStatus(db.pool!, context, { task_id: task, status: "in_progress", reason: "x" }))
       .rejects.toMatchObject({ statusCode: 403 });
     await expect(requestTaskReview(db.pool!, context, { task_id: task, reason: "x" }))
       .rejects.toMatchObject({ statusCode: 403 });
@@ -652,7 +670,7 @@ describe("the origin gate at the dispatch path", () => {
 
   it("lets through a structural write a person asked for", async (ctx) => {
     if (!db.available) return ctx.skip();
-    for (const actionId of ["task.create", "task.advance_stage"]) {
+    for (const actionId of ["task.create", "task.set_status"]) {
       const decision = await enforceFor({ trigger_origin: "manual" }, actionId);
       expect(decision.allowed, actionId).toBe(true);
     }
@@ -660,7 +678,7 @@ describe("the origin gate at the dispatch path", () => {
 
   it("refuses the same write from an unattended run, through the real path", async (ctx) => {
     if (!db.available) return ctx.skip();
-    for (const actionId of ["task.create", "task.advance_stage"]) {
+    for (const actionId of ["task.create", "task.set_status"]) {
       for (const origin of ["autonomous", "automation", "job", "system"]) {
         const decision = await enforceFor({ trigger_origin: origin }, actionId);
         expect(decision.allowed, `${actionId}/${origin}`).toBe(false);
@@ -801,6 +819,63 @@ describe("the executor band", () => {
     const row = await db.pool!.query<{ project_id: string; source_run_id: string | null }>(
       `SELECT project_id, source_run_id FROM tasks WHERE title = 'Split out by the Agent'`);
     expect(row.rows[0]).toEqual({ project_id: PROJECT, source_run_id: runId });
+  });
+
+  async function persistBatchRun(run: unknown) {
+    const runId = (run as { id: string }).id;
+    await db.pool!.query(
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type, trigger_origin, status, mode, owner_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $6, $4, 'sandboxed', 'agent', 'manual', 'running', 'live', $5, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
+      [runId, SPACE, AGENT, PROJECT, OWNER, VERSION],
+    );
+  }
+
+  it("creates a requested list beyond five, deduplicates retries, and retains the ordinary ceiling", async ctx => {
+    if (!db.available) return ctx.skip();
+    const { executors, run } = executorsFor();
+    await persistBatchRun(run);
+    const tasks = Array.from({ length: 8 }, (_, i) => ({ title: `Mentor ${i}`, due_at: "2026-12-01" }));
+    const batch = executors.get("task.create_batch" as SystemActionId)!;
+    const result = await batch({ request_summary: "Create one Task for every mentor in the list", tasks }, dispatch("batch")) as { modelResult: { created_count: number; existing_count: number } };
+    expect(result.modelResult).toMatchObject({ created_count: 8, existing_count: 0 });
+    const retry = await batch({ request_summary: "Same requested list", tasks: [...tasks, { title: " Mentor 0 " }] }, dispatch("retry")) as { modelResult: unknown };
+    expect(retry.modelResult).toMatchObject({ created_count: 0, existing_count: 9 });
+    const rows = await db.pool!.query("SELECT source_run_id, due_at, visibility FROM tasks WHERE project_id = $1", [PROJECT]);
+    expect(rows.rows).toHaveLength(8);
+    expect(rows.rows.every(row => row.source_run_id === (run as { id: string }).id && row.due_at && row.visibility === "space_shared")).toBe(true);
+    await expect(executors.get("task.create" as SystemActionId)!({ title: "Extra unsolicited task" }, dispatch("extra"))).rejects.toMatchObject({ statusCode: 429 });
+  });
+
+  it("serializes concurrent batches without duplicating the same requested Task", async ctx => {
+    if (!db.available) return ctx.skip();
+    const { executors, run } = executorsFor();
+    await persistBatchRun(run);
+    const input = { request_summary: "Create the listed Task", tasks: [{ title: "Same mentor" }] };
+    const batch = executors.get("task.create_batch" as SystemActionId)!;
+    const results = await Promise.all([batch(input, dispatch("a")), batch(input, dispatch("b"))]) as Array<{ modelResult: { created_count: number } }>;
+    expect(results.map(result => result.modelResult.created_count).sort()).toEqual([0, 1]);
+    expect((await db.pool!.query("SELECT id FROM tasks WHERE project_id = $1", [PROJECT])).rows).toHaveLength(1);
+  });
+
+  it("rejects unattended batches, foreign Projects and unauthorized writers", async ctx => {
+    if (!db.available) return ctx.skip();
+    const input = { request_summary: "Create these Tasks", tasks: [{ title: "Requested" }] };
+    const unattended = executorsFor({ trigger_origin: "automation" });
+    await expect(unattended.executors.get("task.create_batch" as SystemActionId)!(input, dispatch("auto"))).rejects.toMatchObject({ statusCode: 403 });
+    const manual = executorsFor();
+    await expect(manual.executors.get("task.create_batch" as SystemActionId)!({ ...input, tasks: [{ title: "Elsewhere", project_id: OTHER_PROJECT }] }, dispatch("foreign"))).rejects.toMatchObject({ statusCode: 422 });
+    const outsider = executorsFor({ instructed_by_user_id: OUTSIDER });
+    await expect(outsider.executors.get("task.create_batch" as SystemActionId)!(input, dispatch("outsider"))).rejects.toBeInstanceOf(HttpError);
+  });
+
+  it("rolls back the whole batch if a later Task cannot be written", async ctx => {
+    if (!db.available) return ctx.skip();
+    const { executors, run } = executorsFor();
+    await persistBatchRun(run);
+    await expect(executors.get("task.create_batch" as SystemActionId)!({
+      request_summary: "Create both requested Tasks",
+      tasks: [{ title: "First" }, { title: "Second", links: [{ entity_type: "task", entity_id: randomUUID(), role: "references" }] }],
+    }, dispatch("rollback"))).rejects.toThrow();
+    expect((await db.pool!.query("SELECT id FROM tasks WHERE project_id = $1", [PROJECT])).rows).toEqual([]);
   });
 
   it("refuses a Project the model named that is not the Run's", async (ctx) => {

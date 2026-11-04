@@ -1,37 +1,7 @@
-import { randomUUID } from "node:crypto";
 import { dateIso, type Queryable } from "../routeUtils/common.js";
 import { threadReadableSql } from "./threadAccess.js";
-import { type NextFocusKind } from "./threadService.js";
 
-/**
- * Steps: the durable record of what a Thread is actually doing.
- *
- * `inquiry_threads.next_focus_kind` is a projection of the current
- * primary step. The Thread read exposes that field, and the contradiction
- * CHECK against `blocked_reason` stays enforceable without a cross-table
- * reference. The step row is the authority; both are written in one
- * transaction, so the two can never disagree.
- *
- * This module owns no authorization and opens no transaction: callers are
- * already inside the work-state or Iteration command, which is what keeps a
- * single write authority over `next_focus_kind` (ADR 0012).
- */
-
-/**
- * Actions with a system operation behind them. Once started they keep running
- * without the user, so they move out of the single primary slot and let the
- * next action take it. "Wait for monitoring" is this state, not a step a
- * user can choose.
- */
-const BACKGROUND_STEP_KINDS: readonly NextFocusKind[] = ["search_acquisition", "design_run_experiment"];
-
-type StepSlot = "primary" | "background";
 type StepStatus = "in_progress" | "done" | "abandoned";
-type StepOrigin = "user" | "advice" | "system";
-
-function slotForKind(kind: NextFocusKind): StepSlot {
-  return BACKGROUND_STEP_KINDS.includes(kind) ? "background" : "primary";
-}
 
 interface StepRow {
   id: string;
@@ -45,6 +15,7 @@ interface StepRow {
   target_ref_kind: string | null;
   target_ref_id: string | null;
   iteration_id: string | null;
+  round_number:number|null;
   origin: string;
   started_at: unknown;
   completed_at: unknown;
@@ -63,69 +34,12 @@ export function stepToOut(row: StepRow): Record<string, unknown> {
     target_ref_kind: row.target_ref_kind,
     target_ref_id: row.target_ref_id,
     iteration_id: row.iteration_id,
+    round_number:row.round_number,
     origin: row.origin,
     started_at: dateIso(row.started_at),
     completed_at: dateIso(row.completed_at),
     created_at: dateIso(row.created_at) ?? new Date(0).toISOString(),
   };
-}
-
-/**
- * The projection, expressed as correlated scalar subqueries so it can be
- * dropped into any `UPDATE inquiry_threads` without consuming a parameter
- * slot.
- *
- * It has to be composable rather than a separate statement because the
- * contradiction CHECK runs per statement: writing `blocked_reason` in one
- * statement and clearing the step projection in the next passes through a
- * moment where the Thread holds both, and PostgreSQL rejects it there. Callers
- * that touch other Thread columns must therefore fold this in, not follow up
- * with it. The single-primary-step unique index is what keeps `max(kind)`
- * unambiguous.
- */
-const STEP_PRIMARY_KIND_SQL =
-  `(SELECT max(s.kind) FROM inquiry_thread_steps s
-      WHERE s.thread_id = inquiry_threads.object_id AND s.space_id = inquiry_threads.space_id
-        AND s.slot = 'primary' AND s.status = 'in_progress')`;
-
-/** Assignment for the projection column. */
-export const STEP_PROJECTION_SET_SQL = `next_focus_kind = ${STEP_PRIMARY_KIND_SQL}`;
-
-/**
- * The Thread's note column is a projection of the primary step's note, the same
- * way `next_focus_kind` projects its kind. A note describes the step it was
- * written for, so it appears and disappears with that step rather than
- * outliving it and attaching stale wording to whatever comes next. The note
- * itself is written on the step, never here.
- */
-const STEP_PRIMARY_NOTE_SQL =
-  `(SELECT max(s.note) FROM inquiry_thread_steps s
-      WHERE s.thread_id = inquiry_threads.object_id AND s.space_id = inquiry_threads.space_id
-        AND s.slot = 'primary' AND s.status = 'in_progress')`;
-
-/** The note assignment, projected from the primary step that owns it. */
-export const STEP_NOTE_SET_SQL = `next_focus_note = ${STEP_PRIMARY_NOTE_SQL}`;
-
-/**
- * Stamps every finished-but-unassigned step with the round that just closed.
- *
- * Do not leave a finished step unstamped. `iteration_id IS NULL` would not
- * mean "this round": a background step that ended earlier keeps a null
- * pointer forever and every later round
- * inherits it, so a round-1 search would make round 5 believe its evidence
- * gathering was already done.
- */
-export async function assignSettledStepsToRound(
-  db: Queryable,
-  input: { spaceId: string; threadId: string; iterationId: string },
-): Promise<void> {
-  await db.query(
-    `UPDATE inquiry_thread_steps
-        SET iteration_id = $1
-      WHERE thread_id = $2 AND space_id = $3
-        AND status <> 'in_progress' AND iteration_id IS NULL`,
-    [input.iterationId, input.threadId, input.spaceId],
-  );
 }
 
 /**
@@ -138,7 +52,7 @@ export async function assignSettledStepsToRound(
  * the background slot is.
  *
  * Touches step rows only. The caller owns the projection write — see
- * {@link STEP_PROJECTION_SET_SQL}.
+ * The problem command owns its transaction.
  */
 export async function closeOpenSteps(
   db: Queryable,
@@ -155,155 +69,10 @@ export async function closeOpenSteps(
     `UPDATE inquiry_thread_steps
         SET status = $1, completed_at = $2, iteration_id = COALESCE($3, iteration_id)
       WHERE thread_id = $4 AND space_id = $5 AND status = 'in_progress'
-        AND ($6::boolean OR slot = 'primary')`,
+        AND ($6::boolean OR slot = 'primary')
+        AND NOT(slot='background' AND EXISTS(SELECT 1 FROM project_operations op WHERE op.space_id=inquiry_thread_steps.space_id AND op.research_step_id=inquiry_thread_steps.id))`,
     [input.reason, input.at, input.iterationId ?? null, input.threadId, input.spaceId, input.includeBackground ?? false],
   );
-}
-
-/**
- * Starts a step. A primary step replaces whatever primary step was open —
- * choosing a different next action abandons the previous intent rather than
- * queueing beside it, which is what the single-primary unique index enforces.
- *
- * Re-declaring the kind that is already running is a no-op: repeating the
- * command must not restart the clock on work already under way, and for a
- * background kind it must not open a second search.
- *
- * Touches step rows only. The caller owns the projection write — see
- * {@link STEP_PROJECTION_SET_SQL}.
- */
-async function startStep(
-  db: Queryable,
-  input: {
-    spaceId: string;
-    projectId: string;
-    threadId: string;
-    kind: NextFocusKind;
-    /** `undefined` leaves the note alone; `null` clears it. */
-    note?: string | null;
-    origin: StepOrigin;
-    at: string;
-  },
-): Promise<StepRow | null> {
-  const slot = slotForKind(input.kind);
-  const existing = await db.query<StepRow>(
-    `SELECT * FROM inquiry_thread_steps
-      WHERE thread_id = $1 AND space_id = $2 AND status = 'in_progress' AND kind = $3
-      LIMIT 1`,
-    [input.threadId, input.spaceId, input.kind],
-  );
-  if (existing.rows[0]) {
-    // Already running: keep the step and its clock. Only an explicitly supplied
-    // note revises it — following the call to action again sends no note, and
-    // must not wipe the one the user wrote when they started the step.
-    if (input.note === undefined) return existing.rows[0];
-    const updated = await db.query<StepRow>(
-      `UPDATE inquiry_thread_steps SET note = $1 WHERE id = $2 RETURNING *`,
-      [input.note, existing.rows[0].id],
-    );
-    return updated.rows[0] ?? existing.rows[0];
-  }
-
-  if (slot === "primary") {
-    await db.query(
-      `UPDATE inquiry_thread_steps
-          SET status = 'abandoned', completed_at = $1
-        WHERE thread_id = $2 AND space_id = $3 AND slot = 'primary' AND status = 'in_progress'`,
-      [input.at, input.threadId, input.spaceId],
-    );
-  }
-
-  const inserted = await db.query<StepRow>(
-    `INSERT INTO inquiry_thread_steps (
-       id, space_id, project_id, thread_id, kind, status, slot, note, origin, started_at, created_at
-     ) VALUES ($1, $2, $3, $4, $5, 'in_progress', $6, $7, $8, $9, $9)
-     RETURNING *`,
-    [randomUUID(), input.spaceId, input.projectId, input.threadId, input.kind, slot, input.note ?? null, input.origin, input.at],
-  );
-  return inserted.rows[0] ?? null;
-}
-
-/**
- * Applies a requested Next Focus to the step record.
- *
- * A background kind leaves the primary slot empty on purpose: the search is
- * running, the user's attention is free, and the Advance surface is expected to
- * recommend what to do meanwhile rather than pretend the person is busy.
- *
- * Touches step rows only. The caller owns the projection write — see
- * {@link STEP_PROJECTION_SET_SQL}.
- */
-export async function applyNextFocus(
-  db: Queryable,
-  input: {
-    spaceId: string;
-    projectId: string;
-    threadId: string;
-    kind: NextFocusKind | null;
-    note?: string | null;
-    origin: StepOrigin;
-    at: string;
-  },
-): Promise<void> {
-  if (!input.kind) {
-    // Clearing the next step ends everything open, background included. This
-    // is the only command a user has for calling off a running search, so it
-    // cannot quietly leave one behind.
-    await closeOpenSteps(db, { ...input, reason: "abandoned", includeBackground: true });
-    return;
-  }
-  await startStep(db, { ...input, kind: input.kind });
-}
-
-/**
- * The Thread's open steps. Callers that must reason about what a Thread is
- * actually doing have to read this rather than `next_focus_kind`: the column
- * projects the primary slot only, so a Thread running a background search is
- * indistinguishable from an idle one by the column alone.
- */
-/**
- * Completes the running background step a domain event just finished.
- *
- * Manual steps are deliberately not closed this way — there is no fact that
- * says a person finished reading. Do not ask them to click "done". Those end
- * when the round does.
- *
- * The target reference records what the step produced, which is what lets the
- * destination Area say which Thread sent the user there.
- */
-export async function completeBackgroundStep(
-  db: Queryable,
-  input: {
-    spaceId: string;
-    threadId: string;
-    kind: NextFocusKind;
-    at: string;
-    targetRefKind?: string | null;
-    targetRefId?: string | null;
-  },
-): Promise<boolean> {
-  // One step per completion, oldest first. `startStep` returns the running
-  // row rather than inserting a second of the same kind, so this matches at
-  // most one step. Do not close every in-progress step of that kind: two
-  // same-kind operations would then attribute the wrong Workflow to both.
-  const updated = await db.query<{ id: string }>(
-    `UPDATE inquiry_thread_steps
-        SET status = 'done', completed_at = $1,
-            target_ref_kind = COALESCE($2, target_ref_kind),
-            target_ref_id = COALESCE($3, target_ref_id)
-      WHERE id = (
-        SELECT id FROM inquiry_thread_steps
-         WHERE thread_id = $4 AND space_id = $5 AND kind = $6
-           AND slot = 'background' AND status = 'in_progress'
-         ORDER BY created_at ASC, id ASC
-         LIMIT 1
-      )
-      RETURNING id`,
-    [input.at, input.targetRefKind ?? null, input.targetRefId ?? null, input.threadId, input.spaceId, input.kind],
-  );
-  // No projection write: the projection mirrors the primary slot, and this
-  // only ever touches a background step.
-  return Boolean(updated.rows[0]);
 }
 
 export async function listOpenSteps(
@@ -355,7 +124,7 @@ export async function listSteps(
   input: { spaceId: string; projectId: string; threadId: string },
 ): Promise<StepRow[]> {
   const rows = await db.query<StepRow>(
-    `SELECT * FROM inquiry_thread_steps
+    `SELECT s.* FROM inquiry_thread_steps s
       WHERE thread_id = $1 AND space_id = $2 AND project_id = $3
       ORDER BY created_at DESC, id DESC`,
     [input.threadId, input.spaceId, input.projectId],

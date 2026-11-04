@@ -108,12 +108,9 @@ describe('probeAcpOptions failure reporting', () => {
   it('names a session that fails for a reason other than auth_required when no auth method was advertised', async () => {
     const { probeAcpOptions } = await import('../src/acpProbe.js')
     const reasons: string[] = []
-    // A fake agent that answers over stdio and then stays alive until the
-    // probe kills it, so its asynchronous pipe writes (macOS, Windows) are
-    // flushed rather than lost to an early exit.
+    // Keep stdin open until the probe sends EOF so asynchronous replies drain.
     const script = `
       const rl = require("node:readline").createInterface({ input: process.stdin });
-      setInterval(() => {}, 1000);
       rl.on("line", (line) => {
         if (!line.trim()) return;
         const msg = JSON.parse(line);
@@ -136,7 +133,6 @@ describe('probeAcpOptions with an agent that logs itself in on session/new', () 
     // prints the URL to stderr and waits minutes for the redirect.
     const script = `
       const rl = require("node:readline").createInterface({ input: process.stdin });
-      setInterval(() => {}, 1000);
       rl.on("line", (line) => {
         if (!line.trim()) return;
         const msg = JSON.parse(line);
@@ -171,10 +167,10 @@ describe('probeAcpOptions with an agent that stops reading', () => {
     // Reads the initialize request, closes its input, then answers: the
     // probe's next request is written into a pipe nobody reads (EPIPE).
     const script = `
-      setInterval(() => {}, 1000);
       process.stdin.once("data", () => {
         process.stdin.destroy();
         require("node:fs").closeSync(0);
+        setTimeout(() => process.exit(0), 200);
         process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { authMethods: [] } }) + "\\n");
       });
     `
@@ -189,7 +185,6 @@ describe('probeAcpOptions anonymous model discovery', () => {
     const { probeAcpOptions } = await import('../src/acpProbe.js')
     const script = `
       const rl = require("node:readline").createInterface({ input: process.stdin });
-      setInterval(() => {}, 1000);
       rl.on("line", (line) => {
         if (!line.trim()) return;
         const msg = JSON.parse(line);
@@ -219,7 +214,6 @@ describe('probeAcpOptions authentication', () => {
   function fakeAgent(acceptsAuthenticate: boolean): string {
     return `
       const rl = require("node:readline").createInterface({ input: process.stdin });
-      setInterval(() => {}, 1000);
       let authenticated = false;
       rl.on("line", (line) => {
         if (!line.trim()) return;
@@ -251,7 +245,6 @@ describe('probeAcpOptions authentication', () => {
     // report as inconclusive rather than "not logged in".
     const script = `
       const rl = require("node:readline").createInterface({ input: process.stdin });
-      setInterval(() => {}, 1000);
       rl.on("line", (line) => {
         if (!line.trim()) return;
         const msg = JSON.parse(line);

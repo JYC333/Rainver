@@ -176,6 +176,7 @@ export function researchOperationPercent(operation: ProjectOperation): number {
 }
 
 export function researchOperationDetail(operation: ProjectOperation): string {
+  if(operation.progress_json.content_withheld===true)return "Research content unavailable · status only"
   if (isEmptySearchOperation(operation)) return 'Search returned 0 materials · setup required'
   const outcome = noReportOutcome(operation)
   if (outcome) {
@@ -602,11 +603,11 @@ export function FocusResearchWorkbench({
       <nav aria-label="Project Research links" className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-sm text-muted-foreground">
         <Link className="hover:text-foreground hover:underline" to={sourceHref}>Manage sources</Link>
         <span aria-hidden="true">·</span>
-        <Link className="hover:text-foreground hover:underline" to={`/projects/${project.id}/research?tab=reading`}>Open the reading list</Link>
+        <Link className="hover:text-foreground hover:underline" to={`/projects/${project.id}/inquiry/records?tab=reading`}>Open the reading list</Link>
       </nav>
       {(runningResearchCount > 0 || waitingReviewResearchCount > 0) && (
         <Link
-          to={`/projects/${project.id}/research?tab=runs`}
+          to={`/projects/${project.id}/inquiry/records?tab=runs`}
           className="block rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground hover:bg-muted/40"
         >
           {runningResearchCount > 0 && `${runningResearchCount} search${runningResearchCount === 1 ? '' : 'es'} running`}
@@ -668,7 +669,7 @@ export function FocusResearchWorkbench({
               }))}
             onChange={onSelectWorkflow}
           />}
-          <Link to={`/projects/${project.id}/research?tab=standing`}><Button size="sm"><BookOpen className="size-3.5" />Open research Area</Button></Link>
+          <Link to={`/projects/${project.id}/inquiry`}><Button size="sm"><BookOpen className="size-3.5" />Open research Area</Button></Link>
           <Button size="sm" variant={projectQuestion ? 'ghost' : 'secondary'} onClick={onEditQuestion}>
             <Edit2 className="size-3.5" />
             {projectQuestion ? 'Edit question' : 'Set research question'}

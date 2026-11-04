@@ -1,5 +1,12 @@
 # Task-first Agent Planning and Workflow Execution
 
+Implemented separation: [ADR 0027](../decisions/0027-problem-engine-research-separation.md)
+places method/round authority in [Inquiry](INQUIRY_PROBLEM_ENGINE.md) and
+execution-call authority in [Research](PROJECT_RESEARCH_CALLS.md). Tasks retain
+one Board status; Plan remains the execution graph of one source Task.
+
+
+
 ## Boundary
 
 `Task` is a product goal. `Plan` is an Agent-generated dynamic execution path

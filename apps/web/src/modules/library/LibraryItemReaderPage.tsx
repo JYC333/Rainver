@@ -156,7 +156,7 @@ function LibraryItemReader() {
   const dayScoped = Boolean(connectionId && date)
   // The Reading list this was opened from, if any (validated like the back link).
   const listReturn = readingReturnTo(searchParams.get('returnTo'), searchParams.get('projectId')); const backTo = dayScoped ? `/library/digests/${connectionId}/${date}` : (readingReturnTo(searchParams.get('returnTo'), searchParams.get('projectId')) ?? '/library/items')
-  const backLabel = dayScoped ? (briefing?.connection_name ?? t('reading.day')) : t(/\/goals\/[\w-]+(?:\?|$)/.test(backTo) ? 'topics.backToTopic' : backTo.startsWith('/library/digests') || /[?]tab=digest(?:&date=\d{4}-\d{2}-\d{2})?$/.test(backTo) ? 'reading.editions' : backTo.includes('/research?') ? 'reading.researchReturn' : /[?]tab=(candidates|settings)$/.test(backTo) ? 'reading.sources' : backTo.startsWith('/projects/') ? 'reading.project' : 'nav.library'); const itemPath = (id: string) => `/library/digests/${connectionId}/${date}/items/${id}`
+  const backLabel = dayScoped ? (briefing?.connection_name ?? t('reading.day')) : t(/\/goals\/[\w-]+(?:\?|$)/.test(backTo) ? 'topics.backToTopic' : backTo.startsWith('/library/digests') || /[?]tab=digest(?:&date=\d{4}-\d{2}-\d{2})?$/.test(backTo) ? 'reading.editions' : (backTo.includes('/research?')||backTo.includes('/inquiry/records?')) ? 'reading.researchReturn' : /[?]tab=(candidates|settings)$/.test(backTo) ? 'reading.sources' : backTo.startsWith('/projects/') ? 'reading.project' : 'nav.library'); const itemPath = (id: string) => `/library/digests/${connectionId}/${date}/items/${id}`
   const backLink = <Button variant="ghost" size="sm" className="max-w-full" asChild>
     <Link to={backTo} title={backLabel}>
       <ArrowLeft className="size-[1em] shrink-0"/>

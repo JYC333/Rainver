@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Bot, CircleAlert, CircleDot, Compass, Loader2, RefreshCw, User } from 'lucide-react'
 import { toast } from 'sonner'
-import { inquiryApi, projectsApi } from '../../api/client'
+import { projectsApi } from '../../api/client'
 import { usePeriodicRefresh } from '../../hooks/usePeriodicRefresh'
 import { errMsg } from '../../lib/utils'
 import { SpaceLink as Link } from '../../core/spaceNav'
@@ -68,7 +68,6 @@ export default function ProjectPulse({
   onDefineGoal: () => void
 }) {
   const [board, setBoard] = useState<ProjectBoard | null>(null)
-  const [adopting, setAdopting] = useState<string | null>(null)
   const [updates, setUpdates] = useState<ProjectWorkUpdate[]>([])
   const [loading, setLoading] = useState(true)
   const [failed, setFailed] = useState(false)
@@ -99,26 +98,9 @@ export default function ProjectPulse({
     }
   }, [projectId])
 
-  const adopt = useCallback(async (threadId: string) => {
-    setAdopting(threadId)
-    try {
-      await inquiryApi.adoptAdvice(projectId, threadId)
-      toast.success('Next step adopted')
-      // The attention list lives on the overview, which this surface receives
-      // as a prop: without telling the owner, the adopted suggestion stays on
-      // screen and a second click 404s against its own "already taken" guard.
-      onOverviewChanged?.()
-    } catch (error) {
-      toast.error(errMsg(error))
-    } finally {
-      setAdopting(null)
-    }
-  }, [projectId, load, onOverviewChanged])
 
-  useEffect(() => { void load() }, [load])
-  // What the Room's Agent records — a definition accepted, a question opened,
-  // a Task created — shows here without leaving the page. The overview
-  // (definition status, goal) is the parent's read, refreshed with it.
+  useEffect(()=>{void load()},[load])
+
   const refresh = useCallback(async () => {
     await load(true)
     onOverviewChanged?.()
@@ -229,19 +211,7 @@ export default function ProjectPulse({
                         {item.summary ?? item.reason?.replace(/_/g, ' ')}
                       </p>
                     </div>
-                    {/* The system worked the step out; taking it should not
-                        mean navigating to an Area to press the same button. */}
-                    {cls === 'next_step' && item.source_type === 'inquiry_advice' && item.source_id && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="shrink-0"
-                        disabled={adopting === item.source_id}
-                        onClick={() => void adopt(item.source_id!)}
-                      >
-                        Adopt
-                      </Button>
-                    )}
+
                   </Card>
                   )
                 })}
@@ -267,7 +237,7 @@ export default function ProjectPulse({
                   {/* Straight to the Operation itself. "What is running" is no
                       use if reading the detail means hunting for the row. */}
                   <Link
-                    to={`/projects/${projectId}/research?tab=runs&open=${operation.id}`}
+                    to={`/projects/${projectId}/inquiry/records?tab=runs&open=${operation.id}`}
                     className="min-w-0 text-sm font-medium hover:underline"
                   >
                     {operation.title}
@@ -289,7 +259,7 @@ export default function ProjectPulse({
                     nothing else. The stages that count items say so in the
                     line above; every stage can at least say where it is and
                     how far along, so no stage is just a turning circle. */}
-                <div className="flex items-center gap-2">
+{operation.progress_json.content_withheld!==true&&                <div className="flex items-center gap-2">
                   <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
                     <div
                       className="h-full rounded-full bg-primary transition-all"
@@ -299,7 +269,7 @@ export default function ProjectPulse({
                   <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
                     {researchOperationPercent(operation)}% · step {researchStageIndex(researchOperationStage(operation)) + 1}/5
                   </span>
-                </div>
+                </div>}
               </Card>
             ))}
             {moving.map(card => (
@@ -314,9 +284,7 @@ export default function ProjectPulse({
                     {card.active_run_count > 0 && <CircleDot className="size-3 animate-pulse" />}
                   </p>
                 </div>
-                {card.loop_stage_label && (
-                  <Badge variant="outline" className="shrink-0 text-[11px]">{card.loop_stage_label}</Badge>
-                )}
+
               </Card>
             ))}
           </div>

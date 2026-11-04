@@ -1,3 +1,7 @@
+import { assertResearchCallReadable } from "./researchCallAccess.js";
+import { reconcileResearchCall } from "./researchProblemCalls.js";
+import { lockActiveProjectForMutation } from "../projects/access.js";
+import { assertThreadReadable } from "../inquiry/threadAccess.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
 import { assertProjectWriter } from "../projects/access.js";
@@ -53,20 +57,23 @@ export class ResearchOperationCancelService {
       throw new HttpError(422, "reason must be at most 2000 characters");
     }
     return withQueryableTransaction(this.db, async (tx) => {
-      const existing = await tx.query<{ id: string }>(
-        `SELECT id FROM project_operations
+      await lockActiveProjectForMutation(tx,identity.spaceId,projectId);
+      const existing = await tx.query<{ id: string;research_call_json:unknown }>(
+        `SELECT id,research_call_json FROM project_operations
           WHERE id=$1 AND space_id=$2 AND project_id=$3 AND kind='research'`,
         [operationId, identity.spaceId, projectId],
       );
       if (!existing.rows[0]) throw new HttpError(404, "Research operation not found");
+      const call=await assertResearchCallReadable(tx,identity,projectId,existing.rows[0].research_call_json,undefined,"stop");
+      if(call)await assertThreadReadable(tx,identity,projectId,call.thread_id,"change");
 
       const updated = await tx.query<{ id: string }>(
         `UPDATE project_operations
-            SET status='cancelled', version=version+1, updated_at=$4
+            SET status='cancelled', version=version+1, updated_at=$4::timestamptz,progress_json=progress_json||jsonb_build_object('cancellation',jsonb_build_object('requested_at',$4::timestamptz,'reason',$5::text,'requested_by_user_id',$6::text))
           WHERE id=$1 AND space_id=$2 AND project_id=$3
             AND status NOT IN (${TERMINAL_SQL_LIST})
           RETURNING id`,
-        [operationId, identity.spaceId, projectId, new Date().toISOString()],
+        [operationId, identity.spaceId, projectId, new Date().toISOString(),normalizedReason,identity.userId],
       );
       // Already over — by completion, failure, an earlier cancel, or a race
       // lost against any of them. The caller asked for a stopped Operation
@@ -86,6 +93,7 @@ export class ResearchOperationCancelService {
           ...(normalizedReason ? { reason: normalizedReason } : {}),
         },
       });
+      await reconcileResearchCall(tx,identity.spaceId,operationId);
       return { operation_id: operationId, status: "cancelled" as const, already_terminal: false };
     });
   }

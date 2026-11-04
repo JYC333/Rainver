@@ -2,14 +2,13 @@ import { memo } from 'react'
 import { useDraggable } from '@dnd-kit/core'
 import { Bot, CircleDot, User, GripVertical } from 'lucide-react'
 import { SpaceLink as Link } from '../../../core/spaceNav'
-import { Badge } from '../../../components/ui/badge'
 import type { ProjectBoardCard } from '../../../types/api'
 import { projectTaskHref } from '../taskHref'
 
 /**
  * One card: what a person needs to decide whether to open it, and nothing else.
  *
- * Title, where it is in its Loop, who holds it, whether something is running,
+ * Title, who holds it, whether something is running,
  * and a red edge when it is held up. Run logs, evaluation detail and the whole
  * completion breakdown live one click away in the Work tab — a card that tries
  * to show them stops being scannable, which is the only job it has.
@@ -79,9 +78,7 @@ const BoardCard = memo(function BoardCard({ card, projectId, canMove }: {
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        {card.loop_stage_label && (
-          <Badge variant="outline" className="text-[11px]">{card.loop_stage_label}</Badge>
-        )}
+
         {card.responsible.kind === 'agent' && (
           <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
             <Bot className="size-3" />

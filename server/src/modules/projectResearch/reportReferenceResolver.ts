@@ -18,7 +18,7 @@ type SourceItemMeta = Omit<ResolvedResearchReference, "id" | "availability" | "e
  * stored without them.
  */
 export async function resolveResearchReportReferences(db: Queryable, identity: SpaceUserIdentity, content: Record<string, unknown>) {
-  const references = collect(content);
+  const references = researchReportReferences(content);
   const groups = new Map<string, ResolvedResearchReference>();
   const groupsWithArticle = new Set<string>();
   const evidenceCache = new Map<string, EvidenceRow | null>();
@@ -146,7 +146,7 @@ async function readableEvidence(
   return row;
 }
 
-function collect(content: Record<string, unknown>): Record<string, unknown>[] {
+export function researchReportReferences(content: Record<string, unknown>): Record<string, unknown>[] {
   const result: Record<string, unknown>[] = []
   for (const section of [content.findings, content.sources, content.ideas]) if (Array.isArray(section)) for (const item of section) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue

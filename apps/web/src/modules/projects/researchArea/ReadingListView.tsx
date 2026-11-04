@@ -1,4 +1,5 @@
-import { readingHref } from '../../library/readingLinks'
+import {useSearchParams} from 'react-router-dom'
+import { readingHrefReturning } from '../../library/readingLinks'
 import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { notesApi, projectResearchApi, projectsApi, providersApi } from '../../../api/client'
@@ -31,10 +32,15 @@ export function ReadingListView({
   const [selected, setSelected] = useState<string[]>([])
   const [compareProvider, setCompareProvider] = useState('')
   const [comparing, setComparing] = useState(false)
-  const [query, setQuery] = useState('')
-  const [triage, setTriage] = useState('all')
-  const [stance, setStance] = useState('all')
-  const [unreadOnly, setUnreadOnly] = useState(false)
+  const [params,setParams]=useSearchParams()
+  const [query, setQuery] = useState(params.get('q')??'')
+  const [triage, setTriage] = useState(params.get('triage')??'all')
+  const [stance, setStance] = useState(params.get('stance')??'all')
+  const [unreadOnly, setUnreadOnly] = useState(params.get('unread')==='1')
+  function filter(key:string,value:string){const next=new URLSearchParams(params);if(value)next.set(key,value);else next.delete(key);setParams(next)}
+  useEffect(()=>{setQuery(params.get('q')??'');setTriage(params.get('triage')??'all');setStance(params.get('stance')??'all');setUnreadOnly(params.get('unread')==='1')},[params])
+  const backParams=new URLSearchParams({tab:'reading'});for(const key of ['thread','workflow_id','q','triage','stance','unread']){const v=params.get(key);if(v)backParams.set(key,v)}
+  const readerBack=`/projects/${projectId}/inquiry/records?${backParams}`
   const [jotting, setJotting] = useState<string | null>(null)
   const [jotText, setJotText] = useState('')
   const [jotBusy, setJotBusy] = useState(false)
@@ -143,10 +149,10 @@ export function ReadingListView({
   return (
     <div className="space-y-3">
       <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_10rem_10rem_auto]">
-        <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter material…" />
-        <Select value={triage} onChange={setTriage} options={['all', 'new', 'relevant', 'maybe', 'included', 'excluded'].map((v) => ({ value: v, label: v }))} />
-        <Select value={stance} onChange={setStance} options={['all', 'supports', 'contradicts', 'new_direction'].map((v) => ({ value: v, label: v.replace('_', ' ') }))} />
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={unreadOnly} onChange={(event) => setUnreadOnly(event.target.checked)} />Unread</label>
+        <Input value={query} onChange={(event) => setQuery(event.target.value)} onBlur={event=>filter('q',event.target.value.trim().slice(0,500))} placeholder="Filter material…" />
+        <Select value={triage} onChange={v=>{setTriage(v);filter('triage',v)}} options={['all', 'new', 'relevant', 'maybe', 'included', 'excluded'].map((v) => ({ value: v, label: v }))} />
+        <Select value={stance} onChange={v=>{setStance(v);filter('stance',v)}} options={['all', 'supports', 'contradicts', 'new_direction'].map((v) => ({ value: v, label: v.replace('_', ' ') }))} />
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={unreadOnly} onChange={(event) => {setUnreadOnly(event.target.checked);filter('unread',event.target.checked?'1':'')}} />Unread</label>
       </div>
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">{selected.length} items selected</p>
@@ -186,7 +192,7 @@ export function ReadingListView({
             {expanded === row.id && (
               <div className="space-y-2 rounded bg-muted p-3 text-sm">
                 <p>{row.source_item?.excerpt ?? row.object?.summary ?? row.evidence?.content_excerpt ?? 'No additional evidence preview is available.'}</p>
-                {sourceId && <Link className="text-xs font-medium hover:underline" to={readingHref({ source_item_id: sourceId, reader_origin: 'project' }, projectId, 'research')}>Open in reader</Link>}
+                {sourceId && <Link className="text-xs font-medium hover:underline" to={readingHrefReturning({ source_item_id: sourceId, reader_origin: 'project' },readerBack)}>Open in reader</Link>}
               </div>
             )}
             {sourceId && (editing === row.id ? (

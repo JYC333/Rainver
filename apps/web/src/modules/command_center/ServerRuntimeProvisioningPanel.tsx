@@ -91,7 +91,7 @@ export default function ServerRuntimeProvisioningPanel({
       {installation ? (
         <>
           <p className="text-xs text-muted-foreground">
-            Rainver-pinned {installation.desired_version}; installed {installation.installed_version ?? 'none'}; active {installation.active_version ?? 'not reported'}.
+            Selected version {installation.desired_version}; installed {installation.installed_version ?? 'none'}; active {installation.active_version ?? 'not reported'}.
           </p>
           <p className="text-xs text-muted-foreground">
             Native account {nativeAccountLabel(status.native_account.logged_in)}. ACP models may still work without an account; ModelProvider Profiles use Rainver&apos;s proxy.

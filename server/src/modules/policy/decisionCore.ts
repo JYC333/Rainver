@@ -878,7 +878,7 @@ const ruleManagedSystemActionGrant: Rule = (ctx) => {
  * stop, never take ground.
  *
  * ADR 0017 §2 covers every Project-internal write that is not a proposal:
- * opening a question, recording a conclusion, adopting a recorded next step,
+ * opening a question, recording a conclusion, selecting explicit problem work,
  * starting a bounded acquisition. The gate is whether anybody asked, not who
  * authored the write.
  */
@@ -886,15 +886,17 @@ const ruleManagedSystemActionGrant: Rule = (ctx) => {
 // the only origin on which the Agent can be carrying one is the person's own
 // turn.
 const ORIGIN_GATED_PROJECT_WRITES = new Set([
+  "research.result.adopt",
   "task.create",
-  "task.stage.advance",
+  "task.status.set",
   // Closing is a claim about the work, not a report of it. Reporting stays
   // ungated so an unattended Agent can still say what it did.
   "task.complete",
   "proposal.decide",
   "inquiry.thread.create",
   "inquiry.iteration.record",
-  "inquiry.advice.adopt",
+  "inquiry.work.record",
+  "inquiry.round.close",
   "research.acquisition.start",
   // `memory.write` is origin-gated here. Scope and operation are settled
   // by the applier (ADR 0003 §1). Do not move that gate into `ruleMemoryScope`.

@@ -5,12 +5,7 @@ import {
   PERSON_ONLY_TASK_STATUSES,
   PROJECT_WORK_EVENT_KINDS,
   TASK_STATUSES,
-  WORK_LOOP_STAGE_KEYS,
-  WORK_LOOP_STAGE_LABELS,
-  stageTransitionKind,
-  workLoopStageLabel,
 } from "@rainver/protocol";
-import { baselineSql } from "./support/baselineSql.js";
 import { DEFAULT_COLUMNS } from "../src/modules/tasks/taskRepositoryRows.js";
 import { ARCHIVED_CARD_STATUSES, COLUMN_FOR_STATUS } from "../src/modules/projectWork/boardReadModel.js";
 import {
@@ -70,20 +65,6 @@ describe("project work event vocabulary", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps the loop-stage CHECK agreeing with the protocol constant", () => {
-    const match = /CONSTRAINT ck_task_loop_states_stage CHECK \(([^\n]*)/.exec(baselineSql());
-    expect(match, "stage CHECK not found in the migration chain").not.toBeNull();
-    const inCheck = [...(match?.[1] ?? "").matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
-    expect(inCheck).toEqual([...WORK_LOOP_STAGE_KEYS]);
-  });
-});
-
-describe("work loop stages", () => {
-  // The five stages are a system constant, with one wording in every Project.
-  // A missing label would silently fall back to a key. A status with no lane
-  // is a card that is counted and never drawn. Do not omit a status from the
-  // lane list. The list lives in the protocol; the two check constraints, the
-  // repository validator and the lanes derive from it.
   it("draws every Task status on exactly one lane, or archives it", () => {
     const lanes = new Set(DEFAULT_COLUMNS.map((column) => column.status_key));
     for (const status of TASK_STATUSES) {
@@ -104,35 +85,10 @@ describe("work loop stages", () => {
     for (const list of lists) expect(list).toEqual([...TASK_STATUSES].sort());
   });
 
-  it("labels every stage, with one wording for every Project", () => {
-    for (const stage of WORK_LOOP_STAGE_KEYS) {
-      expect(WORK_LOOP_STAGE_LABELS[stage], stage).toBeTruthy();
-    }
-    // The keys are the docs' vocabulary, so they are the labels too. There is
-    // no per-Project label set (ADR 0019).
-    expect(workLoopStageLabel("verify")).toBe("Verify");
-    expect(workLoopStageLabel("frame")).toBe("Frame");
-  });
-
-  it("classifies a move without restricting it", () => {
-    expect(stageTransitionKind(null, "frame")).toBe("advance");
-    expect(stageTransitionKind("frame", "plan")).toBe("advance");
-    // Skipping is allowed and recorded as a skip, because a Task that does not
-    // need a plan should not have to pretend it made one.
-    expect(stageTransitionKind("frame", "act")).toBe("skip");
-    // Verification that fails because the method was wrong belongs back at
-    // plan; the ordering classifies that rather than forbidding it.
-    expect(stageTransitionKind("verify", "plan")).toBe("regress");
-    expect(stageTransitionKind("verify", "verify")).toBe("reopen");
-  });
-});
-
-describe("run settlement decision", () => {
   it("accepts only when the evaluation accepted and the declared outputs exist", () => {
     expect(outcomeForRun("succeeded", "accept", true, [])).toMatchObject({
       flow: "done",
       reason: "accepted",
-      stage: "conclude",
     });
     expect(outcomeForRun("degraded", "accept", true, [])).toMatchObject({ flow: "done" });
   });
@@ -143,7 +99,7 @@ describe("run settlement decision", () => {
     // `retry` must not close its Task as done.
     for (const recommendation of ["review", "retry", "needs_evidence", null]) {
       expect(outcomeForRun("succeeded", recommendation, true, []), String(recommendation))
-        .toMatchObject({ flow: "waiting_for_review", stage: "verify" });
+        .toMatchObject({ flow: "waiting_for_review" });
     }
   });
 
@@ -175,15 +131,6 @@ describe("run settlement decision", () => {
       flow: "waiting_for_review",
       reason: "supervisor_review",
     });
-  });
-
-  it("leaves the loop stage alone when no result was produced", () => {
-    // Failure and cancellation produce nothing to verify. Moving the stage
-    // anyway would claim the work reached a phase it never reached; where it
-    // goes next is a decision a person or an agent makes.
-    for (const status of ["failed", "cancelled", "waiting_for_review"]) {
-      expect(outcomeForRun(status, null, false, []).stage, status).toBeNull();
-    }
   });
 });
 

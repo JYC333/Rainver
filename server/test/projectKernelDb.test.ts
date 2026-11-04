@@ -793,7 +793,7 @@ describe("Project Kernel (real Postgres)", () => {
       source_type: "project_operation",
       source_id: opId,
       severity: "normal",
-      href: `/projects/${project.id}/research?tab=runs&open=${opId}`,
+      href: `/projects/${project.id}/inquiry/records?tab=runs&open=${opId}`,
     });
 
     const future = new Date(Date.now() + 3_600_000).toISOString();

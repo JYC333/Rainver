@@ -56,7 +56,7 @@ export function ResearchScanTimeline({ projectId, summaries, monitoringActive }:
                   </div>
                 )}
               </div>
-              <Link className="inline-flex items-center gap-1 text-xs font-medium text-accent-foreground hover:underline" to={`/projects/${projectId}/research?tab=standing`}>
+              <Link className="inline-flex items-center gap-1 text-xs font-medium text-accent-foreground hover:underline" to={`/projects/${projectId}/inquiry`}>
                 View update <ArrowRight className="size-3" />
               </Link>
             </li>

@@ -20,8 +20,8 @@ function acpSpecs(): RuntimeAdapterSpec[] {
 
 /**
  * Which machine the probe is for. The built-in Server Host installs what this
- * Rainver release pins; a paired Host installs what the ACP registry publishes
- * and upgrades only when its owner says so.
+ * ACP registry publishes. Existing healthy copies are retained until an
+ * authorized administrator or owner explicitly upgrades them.
  */
 export type ProbeHostKind = "server" | "remote";
 
@@ -30,8 +30,8 @@ export type ProbeHostKind = "server" | "remote";
  * for it, as last resolved by the acpAgents refresh loop — never fetched
  * here, on a daemon's hello.
  *
- * The one exception is the Server Host's OpenCode, which the release pins
- * (ADR 0022): the release constant answers here so that the
+ * The Server Host can bootstrap OpenCode from a verified offline artifact when
+ * the registry has no entry. Once resolved, both Host kinds use the registry so the
  * install path has a single resolved distribution to send, instead of a
  * second branch deciding the same thing again at the route.
  */
@@ -39,7 +39,7 @@ function resolveDistribution(
   spec: RuntimeAdapterSpec,
   hostKind: ProbeHostKind,
 ): { distribution: RuntimeDistribution | null; version: string | null } {
-  if (hostKind === "server" && spec.runtime_key === "opencode") {
+  if (hostKind === "server" && spec.runtime_key === "opencode" && !resolvedRegistryEntry("opencode")) {
     return { distribution: SERVER_OPENCODE_RELEASE.distribution, version: SERVER_OPENCODE_RELEASE.version };
   }
   const declared = spec.distribution;

@@ -1,3 +1,5 @@
+import { ResearchResultAdoptionSchema } from "./researchCalls.js";
+import { ProblemWorkRequestSchema, ProblemCloseRoundRequestSchema, validateProblemWorkSelection } from "./problemEngine.js";
 import {SourceMaterialSubmissionSchema,SourceMaterialInvestigationSchema} from './sourceMaterials.js';
 import {SourceGoalVersionWriteSchema,SourceGoalRepairSchema} from './sourceGoals.js';
 import { ProposeProjectMonitoringSchema } from "./projectInformationMonitoring.js";
@@ -192,6 +194,38 @@ export interface SystemActionDefinition {
 const objectInput = z.record(z.string(), z.unknown());
 const objectOutput = z.record(z.string(), z.unknown());
 const proposalOutput = z.object({ modelResult: z.record(z.string(), z.unknown()), summary: z.record(z.string(), z.unknown()) }).passthrough();
+export const TASK_CREATE_BATCH_MAX_ITEMS = 100;
+export const TaskCreateInputSchema = z.object({
+  /**
+   * Optional, and only ever the Run's own Project. It is accepted so a model
+   * can state what it believes it is doing and be told when that disagrees,
+   * rather than silently writing somewhere else.
+   */
+  project_id: z.string().min(1).optional(),
+  title: z.string().trim().min(1).max(512),
+  description: z.string().trim().max(20_000).nullable().optional(),
+  acceptance_criteria_json: z.record(z.string(), z.unknown()).nullable().optional(),
+  definition_of_done: z.string().trim().max(4_000).nullable().optional(),
+  required_outputs: z.array(z.string().trim().min(1).max(64)).max(20).optional().describe("Only concrete file Artifact type labels that must be collected as deliverables. Do not use for a reply, report, check result, workspace edit, or filename; omit it for those Tasks."),
+  priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
+  risk_level: z.enum(["low", "medium", "high", "critical"]).optional(),
+  /** The scheduling fields; timing the person gave belongs here, not in the description. */
+  due_at: z.string().trim().min(1).max(64).nullable().optional().describe("When the Task is due, as an ISO 8601 date or datetime."),
+  start_after: z.string().trim().min(1).max(64).nullable().optional().describe("The earliest the Task should start, as an ISO 8601 date or datetime."),
+  links: z.array(z.object({
+    entity_type: z.string().trim().min(1).max(32),
+    entity_id: z.string().min(1),
+    role: z.enum(["executes", "investigates", "prepares", "references"]),
+  })).max(20).optional(),
+}).strict();
+
+export const ProblemTaskLinkFieldsSchema=z.object({
+ idempotency_key:z.string().min(1).max(100),reason:z.string().trim().min(1).max(4000),
+ role:z.enum(["executes","investigates","prepares","references"]),
+ task_id:z.string().min(1).optional(),task:TaskCreateInputSchema.optional(),
+}).strict();
+export const ProblemTaskLinkRequestSchema=ProblemTaskLinkFieldsSchema.refine(v=>Boolean(v.task_id)!==Boolean(v.task),"Supply exactly one existing task_id or new task");
+
 const proposalInputs:Record<string,z.ZodType>={
   /**
    * A person deciding, in words, a proposal this conversation produced.
@@ -210,28 +244,15 @@ const proposalInputs:Record<string,z.ZodType>={
     policy_decision_record_id: z.string().min(1),
     reason: z.string().trim().min(1).max(1000),
   }).passthrough(),
-  "task.create": z.object({
-    /**
-     * Optional, and only ever the Run's own Project. It is accepted so a model
-     * can state what it believes it is doing and be told when that disagrees,
-     * rather than silently writing somewhere else.
-     */
-    project_id: z.string().min(1).optional(),
-    title: z.string().trim().min(1).max(512),
-    description: z.string().trim().max(20_000).nullable().optional(),
-    acceptance_criteria_json: z.record(z.string(), z.unknown()).nullable().optional(),
-    definition_of_done: z.string().trim().max(4_000).nullable().optional(),
-    required_outputs: z.array(z.string().trim().min(1).max(64)).max(20).optional().describe("Only concrete file Artifact type labels that must be collected as deliverables. Do not use for a reply, report, check result, workspace edit, or filename; omit it for those Tasks."),
-    priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
-    risk_level: z.enum(["low", "medium", "high", "critical"]).optional(),
-    /** The scheduling fields; timing the person gave belongs here, not in the description. */
-    due_at: z.string().trim().min(1).max(64).nullable().optional().describe("When the Task is due, as an ISO 8601 date or datetime."),
-    start_after: z.string().trim().min(1).max(64).nullable().optional().describe("The earliest the Task should start, as an ISO 8601 date or datetime."),
-    links: z.array(z.object({
-      entity_type: z.string().trim().min(1).max(32),
-      entity_id: z.string().min(1),
-      role: z.enum(["executes", "investigates", "prepares", "references"]),
-    })).max(20).optional(),
+  // The dispatcher's call identity is the receipt key; a model-supplied key
+  // would be ignored, so these agent inputs do not ask for one.
+  "inquiry.link_task": ProblemTaskLinkFieldsSchema.omit({idempotency_key:true}).extend({thread_id:z.string().min(1)}).refine(v=>Boolean(v.task_id)!==Boolean(v.task),"Supply exactly one Task"),
+  "inquiry.list_tasks": z.object({thread_id:z.string().min(1),after_task_id:z.string().optional()}).strict(),
+  "inquiry.reference_task_result": ProblemWorkRequestSchema.innerType().omit({idempotency_key:true}).extend({thread_id:z.string().min(1),task_id:z.string().min(1)}).superRefine(validateProblemWorkSelection),
+  "task.create": TaskCreateInputSchema,
+  "task.create_batch": z.object({
+    request_summary: z.string().trim().min(1).max(2000).describe("The person's explicit request to create this bounded list. Never use this action for unsolicited task suggestions."),
+    tasks: z.array(TaskCreateInputSchema).min(1).max(TASK_CREATE_BATCH_MAX_ITEMS).describe("Only the requested Tasks. Split larger authorized lists into batches of at most 100 and continue without asking for another confirmation."),
   }).strict(),
   "task.list": z.object({
     status: z.enum(["inbox", "ready", "in_progress", "waiting_for_review", "blocked", "done", "cancelled"]).optional(),
@@ -265,9 +286,9 @@ const proposalInputs:Record<string,z.ZodType>={
     }).nullable(),
     note: z.string().trim().max(2_000).nullable().optional(),
   }).strict(),
-  "task.advance_stage": z.object({
+  "task.set_status": z.object({
     task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
-    to_stage: z.enum(["frame", "plan", "act", "verify", "conclude"]),
+    status: z.enum(["inbox", "ready", "in_progress", "waiting_for_review", "blocked", "done", "cancelled"]),
     reason: z.string().trim().min(1).max(500),
   }).strict(),
   "task.complete": z.object({
@@ -364,13 +385,21 @@ const proposalInputs:Record<string,z.ZodType>={
     content: z.string().trim().min(1).max(4000),
     rationale: z.string().trim().min(1).max(1000),
   }).strict(),
-  "inquiry.adopt_next_step": z.object({
-    thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
-  }).strict(),
+
   "inquiry.list_threads": z.object({
+    limit:z.number().int().min(1).max(100).optional(),
+    after_thread_id:z.string().optional(),
     kind: z.enum(["question", "hypothesis"]).optional(),
   }).strict(),
+  "inquiry.read_problem": z.object({thread_id:z.string().min(1),limit:z.number().int().min(1).max(100).optional(),before_step:z.number().int().positive().optional(),before_closeout:z.number().int().positive().optional()}).strict(),
+  "inquiry.record_work": ProblemWorkRequestSchema.innerType().extend({thread_id:z.string().min(1)}).superRefine(validateProblemWorkSelection),
+  "inquiry.close_round": ProblemCloseRoundRequestSchema.extend({thread_id:z.string().min(1)}),
   "inquiry.record_conclusion": z.object({
+    method_version: z.literal("problem_solving.v1"),
+    round_intent: z.enum(["position_only","close_round"]),
+    expected_version: z.number().int().positive(),
+    expected_revision: z.number().int().nonnegative(),
+    idempotency_key: z.string().min(1).max(128),
     thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one from the statement."),
     change_summary: z.string().min(1),
     reasoning_summary: z.string().min(1).optional(),
@@ -388,8 +417,6 @@ const proposalInputs:Record<string,z.ZodType>={
     confidence_method: z.string().max(32).optional(),
     // Shared.
     unresolved_gaps: z.string().optional(),
-    confirmed_next_focus: z.string().optional(),
-    next_focus_note: z.string().optional(),
   }).passthrough(),
   "inquiry.promote_knowledge": z.object({
     thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one from the statement."),
@@ -401,6 +428,8 @@ const proposalInputs:Record<string,z.ZodType>={
   // Scope is the caller's to set. Do not replace it with a server constant:
   // the caller then has no way to say "only the last year" or "500 is enough"
   // except cancelling and starting over.
+  "research.read_result": z.object({operation_id:z.string().min(1)}).strict(),
+  "research.adopt_result": ResearchResultAdoptionSchema.extend({operation_id:z.string().min(1)}),
   "research.start_acquisition": z.object({
     thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one from the statement."),
     intent_note: z.string().trim().min(1).max(2000).optional(),
@@ -500,7 +529,7 @@ export const SYSTEM_ACTION_REGISTRY = [
   httpAction("source.backfill.preview", "Preview Source history import", "sources", "SourceBackfillPlanningService.preview", "source.backfill.plan", "none"),
   httpAction("source.backfill.create_plan", "Create Source history import plan", "sources", "SourceBackfillPlanningService.create", "source.backfill.plan", "draft"),
   gatedProposalAction("source.backfill.propose_start", "Propose Source history import", "sources", "SourceBackfillPlanningService.proposeStart", "source.backfill.plan", "source_backfill_start", "money", { resource_type: "source_backfill_plan", resource_id_input_field: "source_backfill_plan_id", resource_id_fallback: "run" }),
-  // The Project write surface. `task.create` and `task.advance_stage` are
+  // The Project write surface. `task.create` and `task.set_status` are
   // gated by trigger origin in `decisionCore.ts`: a person asking for something
   // in the turn is the authorization for it, while the same call from an
   // autonomous wake-up is a commitment made on the Project's behalf and needs
@@ -512,12 +541,16 @@ export const SYSTEM_ACTION_REGISTRY = [
   // conversation's rendered history carries ids: a turn that must address an
   // existing object calls the matching list first.
   action("task.list", "List this Project's Tasks with their ids", "tasks", "PgTaskRepository.listTasks", "task.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, inputSchema: proposalInputs["task.list"] }),
+  agentAction("inquiry.link_task","Create or link a Task to an Inquiry Thread","inquiry","InquiryTaskAssociationService.link","inquiry.work.record","durable",{resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),
+  agentAction("inquiry.list_tasks","Read linked Tasks and their actual Board status","inquiry","InquiryTaskAssociationService.tasks","inquiry.problem.read","none",{resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),
+  agentAction("inquiry.reference_task_result","Reference a linked Task result in problem work","inquiry","InquiryTaskAssociationService.referenceResult","inquiry.work.record","durable",{resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("task.create", "Create a Project Task", "tasks", "PgTaskRepository.createTask", "task.create", "durable", { resource_type: "project", resource_id_input_field: "project_id", resource_id_fallback: "project_or_run", check_action_approval_grant: false }),
+  agentAction("task.create_batch", "Create an explicitly requested batch of Project Tasks", "tasks", "PgTaskRepository.createTask", "task.create", "durable", { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }),
   agentAction("task.report", "Report on a Task", "projectWork", "ProjectWorkTaskActions.report", "task.report", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("task.handoff", "Hand off responsibility for a Task", "projectWork", "ProjectWorkTaskActions.handoff", "task.handoff", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
-  agentAction("task.advance_stage", "Move a Task's Loop stage", "projectWork", "ProjectWorkTaskActions.advanceStage", "task.stage.advance", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  agentAction("task.set_status", "Move a Task to its board status", "projectWork", "ProjectWorkTaskActions.setStatus", "task.status.set", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   // Closing is a commitment, so it is origin-gated like `task.create` and
-  // `task.advance_stage` rather than ungated like the append-only three: a
+  // `task.set_status` rather than ungated like the append-only three: a
   // person asking in the turn authorizes it, an autonomous wake-up must be
   // seen. It cannot skip the completion contract the manual close enforces,
   // and unlike a person it cannot override one.
@@ -550,16 +583,11 @@ export const SYSTEM_ACTION_REGISTRY = [
   // `research.start_acquisition` as an opaque 404. Copy the id from this
   // tool result.
   action("inquiry.list_threads", "List this Project's active Inquiry Threads with their ids", "inquiry", "InquiryThreadService.listThreads", "inquiry.thread.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, inputSchema: proposalInputs["inquiry.list_threads"] }),
-  // Adopting the system's own recorded next step, on the user's say-so. It
-  // writes only what the Inquiry Area's Adopt button writes — the Thread's
-  // focus — so requiring a proposal here would gate a suggestion the system
-  // made behind a review of the same suggestion.
   // The Agent's own memory, bounded rather than pre-approved (ADR 0003).
   // These two actions are how an Agent writes memory from a conversation.
   // Do not leave only the retrieval actions. Nothing would write.
   agentAction("memory.remember", "Remember something across sessions", "memory", "PgMemoryApplyRepository.applyDirect", "memory.write", "durable", { resource_type: "memory_entry", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("memory.revise", "Revise a memory this Agent wrote", "memory", "PgMemoryApplyRepository.applyDirect", "memory.write", "durable", { resource_type: "memory_entry", resource_id_input_field: "memory_id", resource_id_fallback: "run", check_action_approval_grant: false }),
-  agentAction("inquiry.adopt_next_step", "Adopt the recorded next step for an Inquiry Thread", "inquiry", "InquiryAdviceService.adoptAdvice", "inquiry.advice.adopt", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   // Direct, origin-gated and bounded (ADR 0017 §2). Do not draft the split as
   // N proposals. Splitting a question is one judgement a person made when they
   // asked; approving each draft would take that judgement N times. What holds
@@ -570,6 +598,9 @@ export const SYSTEM_ACTION_REGISTRY = [
   // A conclusion is the Thread's own state and every Iteration keeps the
   // position it replaced, so it is recorded and revertible rather than
   // pre-approved.
+  agentAction("inquiry.read_problem","Read bounded problem history","inquiry","InquiryProblemEngineService.projection","inquiry.problem.read","none",{resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),
+  agentAction("inquiry.record_work", "Record problem work or select a method", "inquiry", "InquiryProblemEngineService.recordWork", "inquiry.work.record", "durable", {resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),
+  agentAction("inquiry.close_round", "Close a problem round without changing judgment", "inquiry", "InquiryProblemEngineService.closeRound", "inquiry.round.close", "durable", {resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("inquiry.record_conclusion", "Record an Inquiry Thread conclusion", "inquiry", "InquiryIterationService.recordIteration", "inquiry.iteration.record", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   // Runtime `proposal_type` is `knowledge_create` or `knowledge_update`
   // (revalidation branch) depending on `supersedes_knowledge_item_id`;
@@ -581,6 +612,8 @@ export const SYSTEM_ACTION_REGISTRY = [
   // human-accepted at creation, so starting acquisition on it is execution,
   // not an agent-drafted structure/content write. Idempotency guards in the
   // acquisition service are the confirmation.
+  agentAction("research.read_result","Read bound research result","projectResearch","ResearchProblemResultService.read","research.result.read","none",{resource_type:"project_operation",resource_id_input_field:"operation_id",resource_id_fallback:"run",check_action_approval_grant:false},"research"),
+  agentAction("research.adopt_result","Assess research result in Inquiry Verify","projectResearch","ResearchProblemResultService.adopt","research.result.adopt","durable",{resource_type:"project_operation",resource_id_input_field:"operation_id",resource_id_fallback:"run",check_action_approval_grant:false},"research"),
   agentAction("research.start_acquisition", "Start tracked research acquisition", "projectResearch", "ResearchAcquisitionService.startAcquisition", "research.acquisition.start", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }, "research"),
   // The symmetric stop for the action above. Direct execution for the same
   // reason: a stop that waits on a proposal review is not a stop.

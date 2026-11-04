@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ContentAccessLevelSchema, IdSchema, ISODateTimeSchema, RunTriggerOriginSchema } from "./common.js";
 import { RunContractSourceKindSchema, RunStatusSchema } from "./runOrchestration.js";
 import { RunResourceWaitCodeSchema, RunTurnSchema } from "./turnParts.js";
-import { ResponsibleActorSchema, TASK_STATUSES, TaskMergeBlockedOutcomeSchema, TaskWorkViewResponseSchema, WorkLoopStageKeySchema } from "./projectWork.js";
+import { ResponsibleActorSchema, TASK_STATUSES, TaskMergeBlockedOutcomeSchema, TaskWorkViewResponseSchema } from "./projectWork.js";
 import { AgentRunGroupMemberRoleSchema } from "./agentGroupRuns.js";
 import { RunDTOSchema } from "./schemas.js";
 
@@ -231,7 +231,6 @@ export const AgentWorkItemSchema = z.object({
   mine: z.boolean(),
   responsible: ResponsibleActorSchema,
   task_status: z.enum(TASK_STATUSES).nullable(),
-  loop_stage: WorkLoopStageKeySchema.nullable(),
   /** Task acceptance remains separate from Run/Turn completion. */
   task_completed_at: ISODateTimeSchema.nullable(),
   runs: z.array(AgentAttentionRunSchema).max(100),

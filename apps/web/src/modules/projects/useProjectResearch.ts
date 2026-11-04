@@ -344,7 +344,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
         description: `${researchCheckpointLabel(checkpoint)} is ready for your review. The workflow is paused until you decide.`,
         action: {
           label: 'Review now',
-          onClick: () => navigate(`/projects/${projectId}/research?tab=runs`),
+          onClick: () => navigate(`/projects/${projectId}/inquiry/records?tab=runs`),
         },
       })
     }
@@ -391,7 +391,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
       writeStoredResearchWorkflowId(userId, projectId, existingWorkflow.id)
       loadCheckpoints(existingWorkflow.id)
       toast.info('Research has already started for this Inquiry. Opening its operation instead.')
-      navigate(`/projects/${projectId}/research?tab=runs`, { replace: true })
+      navigate(`/projects/${projectId}/inquiry/records?tab=runs`, { replace: true })
       return
     }
     setNewSearchThreadId(threadId)

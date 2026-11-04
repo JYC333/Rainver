@@ -1,10 +1,9 @@
+import { referenceReadableSql } from "../inquiry/problemReferences.js";
+import { threadReadableSql } from "../inquiry/threadAccess.js";
 import {
-  workLoopStageLabel,
-  WORK_LOOP_STAGE_KEYS,
   type ProjectBoardCard,
   type ProjectBoardResponse,
   type TaskWorkViewResponse,
-  type WorkLoopStageKey,
 } from "@rainver/protocol";
 import { dateIso, HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import {
@@ -23,7 +22,7 @@ import { DEFAULT_COLUMNS } from "../tasks/taskRepositoryRows.js";
  * The Board and the Task work view.
  *
  * Both answer questions the client cannot answer from the domain rows alone —
- * which stage a Task is in, who is on the hook, why it cannot close — and both
+ * the Task status, who is on the hook, why it cannot close — and both
  * are read models over facts that already exist. Reconstructing any of it in
  * the browser would put a second copy of the rules where nothing can test it
  * against the write path.
@@ -39,7 +38,6 @@ interface BoardCardRow {
   updated_at: string;
   blocked_reason: string | null;
   required_outputs_json: unknown;
-  loop_stage: WorkLoopStageKey | null;
   responsible_user_id: string | null;
   responsible_agent_id: string | null;
   responsible_user_name: string | null;
@@ -66,7 +64,6 @@ export const COLUMN_FOR_STATUS: Record<string, string> = { blocked: "in_progress
 const CARD_SELECT = `
   SELECT t.id, t.title, t.status, t.priority, t.risk_level, t.due_at, t.updated_at,
          t.blocked_reason, t.required_outputs_json,
-         ls.current_stage_key AS loop_stage,
          ${responsibleUserSql("t", "p")} AS responsible_user_id,
          ${responsibleAgentSql("t")} AS responsible_agent_id,
          ru.display_name AS responsible_user_name,
@@ -77,7 +74,6 @@ const CARD_SELECT = `
          COALESCE(outputs.present, '{}') AS present_outputs
     FROM tasks t
     JOIN projects p ON p.id = t.project_id AND p.space_id = t.space_id
-    LEFT JOIN task_loop_states ls ON ls.task_id = t.id AND ls.space_id = t.space_id
     LEFT JOIN users ru ON ru.id = ${responsibleUserSql("t", "p")}
     LEFT JOIN agents ra ON ra.id = ${responsibleAgentSql("t")}
     LEFT JOIN LATERAL (
@@ -152,10 +148,6 @@ export async function getProjectBoard(
       risk_level: row.risk_level,
       due_at: dateIso(row.due_at),
       updated_at: dateIso(row.updated_at)!,
-      loop_stage: row.loop_stage,
-      loop_stage_label: row.loop_stage
-        ? workLoopStageLabel(row.loop_stage)
-        : null,
       responsible: responsibleActorOf(row),
       active_run_count: Number(row.active_run_count) || 0,
       latest_run_status: row.latest_run_status,
@@ -270,12 +262,7 @@ export async function getTaskWorkView(
 
   const declared = declaredRequiredOutputs(task.required_outputs_json);
 
-  const [loop, evaluation, events, runs, presentOutputs, completion, links, visited] = await Promise.all([
-    db.query<{ current_stage_key: WorkLoopStageKey; stage_entered_at: string; revision: number }>(
-      `SELECT current_stage_key, stage_entered_at, revision
-         FROM task_loop_states WHERE space_id = $1 AND task_id = $2`,
-      [identity.spaceId, taskId],
-    ),
+  const [evaluation, events, runs, presentOutputs, completion, links] = await Promise.all([
     // The evaluation of the latest **execution** Run — the same one completion
     // is judged against. Showing the Task's newest evaluation instead let a
     // planning Run's verdict render as "accept" directly above "no evaluation
@@ -312,6 +299,7 @@ export async function getTaskWorkView(
          LEFT JOIN agents ag ON ag.id = a.agent_id
         WHERE e.space_id = $1 AND e.subject_type = 'task' AND e.subject_id = $2
           AND ${runInheritedReadSql("e.data_json->>'run_id'", "e.space_id", "$3")}
+          AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(e.data_json->'reference_refs','[]'::jsonb)) work_ref WHERE NOT COALESCE(${referenceReadableSql("work_ref","$3","e.space_id","e.project_id")},false))
         -- seq, not id: two events of one advancement chain are written in the
         -- same transaction and share a millisecond, and a v4 UUID tiebreak
         -- would order them at random, so the tab could call the earlier one
@@ -344,34 +332,15 @@ export async function getTaskWorkView(
     taskCompletionState(db, identity.spaceId, taskId, task.required_outputs_json, identity.userId),
     db.query<{ entity_type: string; entity_id: string; role: string }>(
       `SELECT entity_type, entity_id, role
-         FROM task_entity_links
-        WHERE space_id = $1 AND task_id = $2
+         FROM task_entity_links l
+        WHERE l.space_id = $1 AND l.task_id = $2
+          AND (l.entity_type<>'inquiry_thread' OR EXISTS(SELECT 1 FROM space_objects linked_thread WHERE linked_thread.id=l.entity_id AND linked_thread.space_id=l.space_id AND linked_thread.primary_project_id=$4 AND ${referenceReadableSql("jsonb_build_object('type','task','id',$2::text)","$3","l.space_id","$4")} AND ${threadReadableSql("linked_thread","$3","read_content")}))
         ORDER BY created_at ASC, id ASC`,
-      [identity.spaceId, taskId],
-    ),
-    // Which stages this Task has actually been in, over the whole stream
-    // rather than the capped event list above: a Task with more history than
-    // the cap would otherwise read as never having framed or planned, and the
-    // rail would call that "not started" rather than "done".
-    // Deliberately without the Run term the event list above carries: this
-    // reads stage *keys* and no content, and gating it would make the rail
-    // claim a Task never reached a stage it reached in a Room the reader is
-    // not in — hiding the Task's own shape rather than anyone's words.
-    db.query<{ stage_key: string }>(
-      `SELECT DISTINCT e.data_json->>'to_stage' AS stage_key
-         FROM project_work_events e
-        WHERE e.space_id = $1 AND e.subject_type = 'task' AND e.subject_id = $2
-          AND e.event_kind = 'task.stage_changed'
-          AND e.data_json->>'to_stage' IS NOT NULL`,
-      [identity.spaceId, taskId],
+      [identity.spaceId, taskId,identity.userId,task.project_id],
     ),
   ]);
 
-  const visitedStages = WORK_LOOP_STAGE_KEYS.filter((key) =>
-    visited.rows.some((row) => row.stage_key === key));
-
   const evaluationRow = evaluation.rows[0];
-  const loopRow = loop.rows[0];
   return {
     task: {
       id: task.id,
@@ -382,15 +351,6 @@ export async function getTaskWorkView(
       required_outputs: declared,
       completed_at: dateIso(task.completed_at),
     },
-    loop: loopRow
-      ? {
-        current_stage_key: loopRow.current_stage_key,
-        stage_entered_at: dateIso(loopRow.stage_entered_at)!,
-        revision: Number(loopRow.revision),
-      }
-      : null,
-    visited_stage_keys: visitedStages,
-    stages: WORK_LOOP_STAGE_KEYS.map((key) => ({ key, label: workLoopStageLabel(key) })),
     responsible: responsibleActorOf(task),
     completion,
     evaluation: evaluationRow

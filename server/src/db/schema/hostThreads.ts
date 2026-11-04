@@ -38,8 +38,9 @@ export const hostThreads = pgTable("host_threads", {
 	runtimeKey: varchar("runtime_key", { length: 64 }).notNull(),
 	// Which copy of the runtime on the host this thread runs on — `own` (the
 	// machine's PATH install) or `managed:<version>`. Pinned like
-	// `runtime_key`: the vendor session lives inside that installation's
-	// login state, so a thread cannot move between copies.
+	// `runtime_key`: own and managed have separate login state. Within the same
+	// Host/runtime, healthy managed upgrades/rollback retain HOME and update
+	// live bindings; each Run still records its exact installation version.
 	runtimeInstallation: varchar("runtime_installation", { length: 64 }).default('own').notNull(),
 	vendorSessionId: varchar("vendor_session_id", { length: 256 }),
 	lastRunId: varchar("last_run_id", { length: 36 }),

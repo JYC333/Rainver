@@ -86,9 +86,14 @@ export const INPUT_RESOURCE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
 const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "project.propose_definition",
   "inquiry.list_threads",
-  "inquiry.adopt_next_step",
+  "inquiry.read_problem",
   "inquiry.create_thread",
   "inquiry.record_conclusion",
+  "inquiry.record_work",
+  "inquiry.link_task",
+  "inquiry.list_tasks",
+  "inquiry.reference_task_result",
+  "inquiry.close_round",
   "inquiry.promote_knowledge",
   // Both halves of delegation: a Manager that can hand work out but never
   // collect it can only say "I've asked" and end the turn.
@@ -101,9 +106,10 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   // sounding like it advanced the work and having advanced it.
   "task.list",
   "task.create",
+  "task.create_batch",
   "task.report",
   "task.handoff",
-  "task.advance_stage",
+  "task.set_status",
   "task.complete",
   "task.request_review",
   // A plan with structure, not only flat Tasks. Proposal-gated, so it widens
@@ -112,6 +118,8 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "task.plan.propose",
   "research.list_operations",
   "research.start_acquisition",
+  "research.read_result",
+  "research.adopt_result",
   "research.cancel_acquisition",
   // "Accept it", said to the Assistant, is the same approval as the button.
   "proposal.list_pending",
@@ -146,12 +154,14 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
 const DISPATCH_BASE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "task.list",
   "task.create",
+  "task.create_batch",
   "task.report",
   "task.handoff",
-  "task.advance_stage",
+  "task.set_status",
   "task.complete",
   "task.request_review",
   "inquiry.list_threads",
+  "inquiry.read_problem",
   "research.list_operations",
   "retrieval.brief",
   "retrieval.search",

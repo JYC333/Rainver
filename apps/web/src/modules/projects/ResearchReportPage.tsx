@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ArrowLeft, ExternalLink, ShieldCheck } from 'lucide-react'
 import { projectResearchApi, readerApi } from '../../api/client'
@@ -35,6 +35,7 @@ const statusOf = (error: unknown) => error && typeof error === 'object' && 'stat
 export default function ResearchReportPage() {
   const { t } = useAppTranslation()
   const { projectId = '', reportId = '' } = useParams<{ projectId: string; reportId: string }>()
+  const [returnParams]=useSearchParams();const backParams=new URLSearchParams(returnParams);backParams.set('tab','reports');
   const { activeSpaceId } = useSpace()
   // Everything shown belongs to exactly this Space, Project and report. A
   // reply for any other scope, or an older request for this one, is dropped,
@@ -90,7 +91,7 @@ export default function ResearchReportPage() {
   if (loading) return <div className="space-y-4 p-6"><Skeleton className="h-8 w-64"/><Skeleton className="h-[32rem] w-full"/></div>
   if (!report || !readerDocument) {
     const status = statusOf(loadError)
-    const back = <Button variant="ghost" size="sm" asChild><Link to={`/projects/${projectId}/research?tab=reports`}><ArrowLeft className="mr-1 size-4"/>{t('research_report.back')}</Link></Button>
+    const back = <Button variant="ghost" size="sm" asChild><Link to={`/projects/${projectId}/inquiry/records?${backParams}`}><ArrowLeft className="mr-1 size-4"/>{t('research_report.back')}</Link></Button>
     // Missing, not permitted and failed are different answers; only a failure invites a retry.
     if (status === 401 || status === 403) return <div className="p-6">{back}<EmptyState title={t('research_report.forbidden')} description={t('research_report.forbidden_hint')}/></div>
     if (!loadError || status === 404) return <div className="p-6">{back}<EmptyState title={t('research_report.missing')} description={t('research_report.missing_hint')}/></div>
@@ -166,7 +167,7 @@ export default function ResearchReportPage() {
     </aside>
     <ReaderWorkspace document={readerDocument} annotations={annotations} onAnnotationsChange={onAnnotationsChange} annotationsStatus={annotationsStatus} annotationAuthority={annotationAuthority} onReferenceClick={focusReference}
       header={({ panelOpen, togglePanel, unsentComments }) => <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-2">
-        <Button variant="ghost" size="sm" asChild><Link to={`/projects/${projectId}/research?tab=reports`}><ArrowLeft className="mr-1 size-4"/>{t('research_report.back')}</Link></Button>
+        <Button variant="ghost" size="sm" asChild><Link to={`/projects/${projectId}/inquiry/records?${backParams}`}><ArrowLeft className="mr-1 size-4"/>{t('research_report.back')}</Link></Button>
         {/* A short label for orientation; the research question is the page heading. */}
         <p className="min-w-0 flex-1 truncate text-sm font-medium">{t('research_report.title')}</p>
         <ReaderPanelToggle panelOpen={panelOpen} togglePanel={togglePanel} unsentComments={unsentComments}/>

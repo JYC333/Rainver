@@ -29,7 +29,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["inquiry_thread_advice", "inquiry_signal_candidates", "inquiry_evidence_signals", "inquiry_question_states", "inquiry_hypothesis_states", "inquiry_threads", "project_corpus_items", "space_objects", "projects", "space_memberships", "users", "spaces"],
+    ["inquiry_signal_candidates", "inquiry_evidence_signals", "inquiry_question_states", "inquiry_hypothesis_states", "inquiry_threads", "project_corpus_items", "space_objects", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -63,54 +63,6 @@ async function createCorpusItem(projectId: string): Promise<string> {
 }
 
 describe("Inquiry <-> Project Kernel integration (real Postgres)", () => {
-  it("the recorded next step for a Thread is Attention, and a stale one is not", async () => {
-    if (!db.available) return;
-    // Advice is written the moment a search finishes, with its reasoning. It
-    // rendered in exactly one place — the Inquiry Area's stage workspace, for
-    // the one Thread you had selected — so a finished four-hour search left
-    // the Project front page with nothing to say about what to do next.
-    const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Agent memory" });
-    const threads = new InquiryThreadService(db.pool);
-    const current = await threads.createThread(identity(), project.id as string, {
-      kind: "question", statement: "agent memory 应该按什么维度分类？",
-    });
-    const reworded = await threads.createThread(identity(), project.id as string, {
-      kind: "question", statement: "How is agent memory stored?",
-    });
-    const advise = async (threadId: string, version: number, kind: string) => {
-      await db.pool!.query(
-        `INSERT INTO inquiry_thread_advice (
-           id, space_id, project_id, thread_id, recommended_focus_kind, rationale, cited_refs_json,
-           thread_version, status, trigger_kind, generated_by_user_id, created_at, updated_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,'[]'::jsonb,$7,'open','search_completed',$8,now(),now())`,
-        [randomUUID(), SPACE, project.id, threadId, kind, "It bundles four axes into one question.", version, OWNER],
-      );
-    };
-    await advise(String(current.id), Number(current.version), "clarify_or_decompose");
-    // Written against the Thread as it read then; the Thread has since been
-    // reworded. Advice about a question that no longer reads that way is not
-    // a next step, so it is left out rather than shown with a caveat.
-    await advise(String(reworded.id), Number(reworded.version), "synthesize");
-    await db.pool!.query(
-      `UPDATE inquiry_threads SET version = version + 1, statement = 'How is agent memory stored across sessions?'
-        WHERE space_id = $1 AND object_id = $2`,
-      [SPACE, reworded.id],
-    );
-
-    const items = await new ProjectAttentionService(db.pool).listAttentionItems(identity(), project.id as string);
-    const advice = items.filter((item) => item.source_type === "inquiry_advice");
-    expect(advice).toHaveLength(1);
-    expect(advice[0]).toMatchObject({
-      source_id: current.id,
-      // A suggestion is not a gate: it offers, it does not block.
-      attention_class: "next_step",
-      reason: "suggested next step",
-      href: `/projects/${project.id}/inquiry?thread=${current.id}`,
-    });
-    expect(advice[0]!.title).toBe("Split this question into sub-questions: agent memory 应该按什么维度分类？");
-    expect(advice[0]!.summary).toContain("bundles four axes");
-  });
-
   it("a pending Inquiry Candidate surfaces as a cross-workspace Attention item", async () => {
     if (!db.available) return;
     const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Attention Project" });

@@ -272,6 +272,17 @@ export async function installTool(
     stagingStarted = true;
     await rm(stagingDir, { recursive: true, force: true });
     await mkdir(stagingDir, { recursive: true, mode: 0o700 });
+    if (frame.vendor_cli_version) {
+      if (frame.runtime_key !== "codex_cli" || frame.distribution.kind !== "npx") {
+        throw new Error("A vendor CLI version override is supported only for managed Codex");
+      }
+      // npm applies this throughout the dependency tree, so the ACP adapter
+      // cannot silently keep spawning a nested older Codex. Installation,
+      // ACP health checks and promotion use the same lifecycle on every Host.
+      await writeFile(join(stagingDir, "package.json"), JSON.stringify({
+        private: true, overrides: { "@openai/codex": frame.vendor_cli_version },
+      }));
+    }
     const launch = await materialize(frame.distribution, stagingDir, log, downloadDependencies, frame.egress_transport ?? { mode: "direct" });
     // User data is outside the version directory, so replacing or pruning
     // binaries cannot remove login, native history, settings, or Skills.
@@ -282,6 +293,9 @@ export async function installTool(
       home,
       launch.env,
     );
+    if (frame.vendor_cli_version && runtimeVersion?.match(/\b\d+\.\d+\.\d+\b/)?.[0] !== frame.vendor_cli_version) {
+      throw new Error("The managed Codex did not report the requested CLI version; the previous installation remains active.");
+    }
     if (frame.health_check_protocol === "acp") {
       const healthy = await probeAcpHealth(
         launch.command,

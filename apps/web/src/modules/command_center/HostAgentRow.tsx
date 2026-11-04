@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import HostRuntimeVersions from './HostRuntimeVersions'
+import { hasStableUpdate } from './runtimeVersions'
 import RuntimeQuotaDetails from './RuntimeQuotaDetails'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog'
 import { CircleArrowUp, Loader2 } from 'lucide-react'
@@ -27,17 +29,6 @@ function versionLabel(version: string | null): string {
   return numeric?.replace(/^v/, '') ?? version
 }
 
-/** Unknown and prerelease versions cannot establish a safe stable upgrade. */
-function hasOwnUpdate(current: string | null, latest: string | null | undefined): boolean {
-  const installed = current?.match(/\bv?(\d+)\.(\d+)\.(\d+)(?![\d.+-])/)
-  const available = latest?.match(/^(\d+)\.(\d+)\.(\d+)$/)
-  if (!installed || !available) return false
-  for (let index = 1; index <= 3; index++) {
-    const left = Number(available[index]), right = Number(installed[index])
-    if (left !== right) return left > right
-  }
-  return false
-}
 
 function installationVersionLabel(entry: RuntimeInstallation, adapter: HostRuntimeDefinitionOption): string {
   if (entry.id === 'own') return `own · ${versionLabel(entry.version)}`
@@ -69,8 +60,6 @@ export default function HostAgentRow({
   onLogin,
   onRefreshUsage,
   onRollback,
-  rainverPinned = false,
-  provisioningFailed = false,
 }: {
   host: Host
   adapter: HostRuntimeDefinitionOption
@@ -84,15 +73,6 @@ export default function HostAgentRow({
    * to know whether their Run can run at all.
    */
   manageable: boolean
-  /**
-   * Rainver owns this copy's lifecycle (the Server Runtime's pinned OpenCode):
-   * install, upgrade, rollback and remove are the provisioner's, not a
-   * person's. Login and usage stay available — that account is still a login
-   * someone has to do.
-   */
-  rainverPinned?: boolean
-  /** Whether the Rainver-managed install is in its `failed` state, i.e. whether a Retry is on screen at all. */
-  provisioningFailed?: boolean
   /** The cached subscription quota per installation id; absent for a runtime that has none to report. */
   usage: ReadonlyMap<string, HostRuntimeUsage>
   usageBusy: ReadonlySet<string>
@@ -157,22 +137,24 @@ export default function HostAgentRow({
                   busy={usageBusy.has(entry.id)} online={host.status === 'online'}
                   onRefresh={() => onRefreshUsage(entry.id)} />
               )}
-              {manageable && host.kind === 'remote' && entry.id === 'own' && isOwnCliUpdateRuntimeKey(adapter.runtime_key) && hasOwnUpdate(entry.version, adapter.latest_own_version) && (
+              {manageable && host.kind === 'remote' && entry.id === 'own' && isOwnCliUpdateRuntimeKey(adapter.runtime_key) && hasStableUpdate(entry.version, adapter.latest_own_version) && (
                 <Button size="sm" variant="ghost"
                   aria-label={`Update own ${adapter.display_name} on ${host.name}`}
-                  disabled={host.status !== 'online' || installBusy.has(`${adapter.runtime_key}:own-update`)}
+                  aria-busy={installBusy.has(`${adapter.runtime_key}:own-update`)}
+                  disabled={host.status !== 'online'}
                   onClick={onUpdateOwn}>
                   {installBusy.has(`${adapter.runtime_key}:own-update`) ? <Loader2 className="h-3 w-3 animate-spin" /> : <CircleArrowUp className="h-3 w-3" />}
                 </Button>
               )}
-              {manageable && !rainverPinned && entry.id !== 'own' && adapter.latest_managed_version && adapter.latest_managed_version !== entry.version && (
+              {manageable && entry.id !== 'own' && adapter.latest_managed_version && (adapter.latest_managed_version !== entry.version || (adapter.runtime_key === 'codex_cli' && hasStableUpdate(entry.runtime_version ?? null, adapter.latest_own_version))) && (
                 <Button
                   size="sm"
                   variant="ghost"
                   className="h-7 w-7 p-0"
                   aria-label={`Upgrade ${adapter.display_name} on ${host.name}`}
                   title={`Upgrade ${adapter.display_name}`}
-                  disabled={host.status !== 'online' || installBusy.has(adapter.runtime_key)}
+                  aria-busy={installBusy.has(adapter.runtime_key)}
+                  disabled={host.status !== 'online'}
                   onClick={onInstall}
                 >
                   {installBusy.has(adapter.runtime_key)
@@ -245,23 +227,10 @@ export default function HostAgentRow({
                   {multiAccount ? 'Remove account' : 'Log out'}
                 </Button>
               )}
-              {manageable && !rainverPinned && entry.rollback_version && (
-                // The previous binaries are still on the host and reuse the
-                // adapter's stable managed HOME after rollback.
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={`Roll ${adapter.display_name} on ${host.name} back to ${entry.rollback_version}`}
-                  title={`Roll back to ${entry.rollback_version}`}
-                  disabled={host.status !== 'online' || installBusy.has(`${adapter.runtime_key}:rollback`)}
-                  onClick={onRollback}
-                >
-                  {installBusy.has(`${adapter.runtime_key}:rollback`)
-                    ? <Loader2 className="h-3 w-3 animate-spin" />
-                    : `Roll back to ${entry.rollback_version}`}
-                </Button>
-              )}
-              {manageable && !rainverPinned && entry.id !== 'own' && (
+              {manageable && entry.id !== 'own' && <HostRuntimeVersions
+                name={adapter.display_name} host={host.name} current={entry.version} previous={entry.rollback_version}
+                busy={installBusy.has(`${adapter.runtime_key}:rollback`)} online={host.status==='online'} onRollback={onRollback}/>}
+              {manageable && entry.id !== 'own' && !(host.kind === 'server' && adapter.runtime_key === 'opencode') && (
                 <Button
                   size="sm"
                   variant="ghost"
@@ -274,15 +243,7 @@ export default function HostAgentRow({
               )}
           </span>
         })}
-        {rainverPinned && (
-          // Retry lives in the provisioning panel and is shown only to an
-          // instance admin looking at a failed install. Everyone else is
-          // told who owns this copy.
-          <span className="shrink-0 text-muted-foreground">
-            Managed by Rainver{manageable && provisioningFailed ? ' — use Retry above' : ''}
-          </span>
-        )}
-        {manageable && !rainverPinned && !copies.some(entry => entry.id !== 'own') && (
+        {manageable && !copies.some(entry => entry.id !== 'own') && (
           <Button
             size="sm"
             variant="ghost"

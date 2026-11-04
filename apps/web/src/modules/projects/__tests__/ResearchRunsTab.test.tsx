@@ -35,11 +35,11 @@ const checkpoint = {
   created_at: '', updated_at: '',
 }
 
-function renderTab(path = '/projects/project-1/research?tab=runs') {
+function renderTab(path = '/projects/project-1/inquiry/records?tab=runs') {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        <Route path="/projects/:projectId/research" element={<ResearchRunsTab projectId="project-1" />} />
+        <Route path="/projects/:projectId/inquiry/records" element={<ResearchRunsTab projectId="project-1" />} />
       </Routes>
     </MemoryRouter>,
   )
@@ -52,7 +52,7 @@ beforeEach(() => {
   vi.mocked(inquiryApi.listThreads).mockResolvedValue([{
     id: 'thread-1', space_id: 'space-1', project_id: 'project-1', kind: 'hypothesis', statement: 'Does batching improve throughput?',
     lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
-    owner_user_id: null, next_focus_kind: null, next_focus_note: null, blocked_reason: null,
+    owner_user_id: null, blocked_reason: null,
     version: 1, created_from: 'user', created_by_user_id: 'user-1', created_at: '', updated_at: '',
   }] as never)
 })
@@ -62,6 +62,20 @@ beforeEach(() => {
  * Automations, Runs, and alerts.
  */
 describe('Research Runs tab', () => {
+  it('keeps a redacted active invocation visible and stoppable without a cached Workflow title', async () => {
+    vi.mocked(projectsApi.operations).mockResolvedValue([{
+      id: 'redacted-call', kind: 'research', title: 'Research invocation', status: 'active',
+      progress_json: { content_withheld: true }, created_at: '', updated_at: '', steps: [], links: [],
+    }] as never)
+    vi.mocked(projectResearchApi.cancelOperation).mockResolvedValue({ already_terminal: false } as never)
+    renderTab()
+    fireEvent.click(await screen.findByText('Research invocation'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop' }))
+    await waitFor(() => expect(projectResearchApi.cancelOperation).toHaveBeenCalledWith('project-1', 'redacted-call'))
+    expect(screen.queryByText('Does batching improve throughput?')).not.toBeInTheDocument()
+    expect(projectResearchApi.checkpoints).not.toHaveBeenCalled()
+  })
+
   it('lists every research Workflow as its own row and lets a pending Checkpoint be decided there', async () => {
     vi.mocked(projectsApi.operations).mockResolvedValue([
       {
@@ -85,7 +99,7 @@ describe('Research Runs tab', () => {
     expect(screen.getAllByText('Review needed')).toHaveLength(1)
     // Question/Hypothesis definition lives on the Inquiry page — "New search"
     // routes there first instead of opening a dialog with no Thread to target.
-    expect(screen.getByRole('link', { name: /New search/ })).toHaveAttribute('href', '/projects/project-1/inquiry?research_intent=1')
+    expect(screen.getByRole('link', { name: /New search/ })).toHaveAttribute('href', '/projects/project-1/inquiry?section=research')
 
     fireEvent.click(screen.getByRole('button', { name: 'Approve screening' }))
     await waitFor(() => expect(projectResearchApi.decideCheckpoint).toHaveBeenCalledWith(
@@ -117,7 +131,7 @@ describe('Research Runs tab', () => {
       status: 'waiting_review', progress_json: { workflow_id: 'workflow-1', current_stage: 'screening' },
       created_at: '', updated_at: '', steps: [],
     }] as never)
-    renderTab('/projects/project-1/research?tab=runs&open=operation-1')
+    renderTab('/projects/project-1/inquiry/records?tab=runs&open=operation-1')
     await screen.findByRole('button', { name: 'Approve screening' })
     expect(document.getElementById('operation-operation-1')?.className).toContain('ring-2')
   })

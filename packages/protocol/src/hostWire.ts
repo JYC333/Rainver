@@ -687,6 +687,8 @@ export const HostInstallToolFrameSchema = z.object({
   login: RuntimeLoginSpecSchema.nullable(),
   /** Fixed argv for reading the bundled vendor CLI version after installation. */
   runtime_version_command: z.array(z.string()).nullable().optional(),
+  /** Explicit vendor CLI target for a staged managed Codex installation. */
+  vendor_cli_version: z.string().regex(/^\d+\.\d+\.\d+$/).optional(),
   /** The daemon must complete this protocol's health handshake before activation. */
   health_check_protocol: z.enum(["acp"]).nullable().optional(),
   /** Instance-admin-selected network route for built-in host artifact downloads. */

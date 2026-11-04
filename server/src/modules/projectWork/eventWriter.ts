@@ -7,8 +7,8 @@ import { workEventKindDefinition } from "./eventKinds.js";
 /**
  * The single place that writes `project_work_events`.
  *
- * The stream is the authority for how a Project advanced; `task_loop_states`
- * and the Task's own columns are folds of it. A fold that can be written
+ * The stream records Project advancement; the Task's canonical columns
+ * and their work events change atomically. A fold that can be written
  * without its event is a fold that can disagree with the record it claims to
  * summarise, and nothing afterwards can say which of the two was right — so
  * the event goes first, in the same transaction, through here.

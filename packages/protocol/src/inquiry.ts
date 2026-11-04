@@ -1,4 +1,5 @@
 import { z } from "zod";
+import {ProblemWorkKindSchema} from "./problemEngine.js";
 
 export const InquiryThreadKindSchema = z.enum(["question", "hypothesis"]);
 export type InquiryThreadKind = z.infer<typeof InquiryThreadKindSchema>;
@@ -23,91 +24,9 @@ export const InquiryAttentionStateSchema = z.enum([
 ]);
 export type InquiryAttentionState = z.infer<typeof InquiryAttentionStateSchema>;
 
-// Actions only, ordered by stage. `pause` and `wait_for_monitoring` are not
-// actions: pausing is an `attention_state` change, and waiting on monitoring
-// is what a running background step already means. Do not add them back as
-// next-focus kinds.
-export const InquiryNextFocusKindSchema = z.enum([
-  "clarify_or_decompose",
-  "search_acquisition",
-  "design_run_experiment",
-  "read_evidence",
-  "synthesize",
-  "promote_knowledge",
-  "create_decision_case",
-  "create_delivery_task",
-]);
-export type InquiryNextFocusKind = z.infer<typeof InquiryNextFocusKindSchema>;
-
-/**
- * Research is a spiral, not a line. A round runs Clarify → Acquire → Digest →
- * Conclude → Land and then begins again on what the conclusion raised, so
- * reaching Land closes a round rather than finishing the Thread and there is
- * no such thing as regression here.
- *
- * Stages are derived, never stored. The Room Project state panel and the Room
- * agent's context assembly share this classification. Do not keep a second copy.
- */
-export const InquiryStageIdSchema = z.enum(["clarify", "acquire", "digest", "conclude", "land"]);
-export type InquiryStageId = z.infer<typeof InquiryStageIdSchema>;
-
-export const INQUIRY_STAGE_ORDER: InquiryStageId[] = ["clarify", "acquire", "digest", "conclude", "land"];
-
-export const INQUIRY_STAGE_LABELS: Record<InquiryStageId, string> = {
-  clarify: "Clarify",
-  acquire: "Acquire",
-  digest: "Digest",
-  conclude: "Conclude",
-  land: "Land",
-};
-
-/** What each stage is for, and what counts as being done with it. */
-export const INQUIRY_STAGE_HELP: Record<InquiryStageId, { purpose: string; done: string }> = {
-  clarify: {
-    purpose: "Pin down what you are actually asking, and split it if it hides several questions.",
-    done: "The wording has been through the assessment workspace.",
-  },
-  acquire: {
-    purpose: "Get evidence — find it in the literature, or produce it yourself with an experiment.",
-    done: "Evidence has reached this Thread, or an acquisition step has finished.",
-  },
-  digest: {
-    purpose: "Read what arrived and decide what it does to your position.",
-    done: "Nothing is left waiting for review.",
-  },
-  conclude: {
-    purpose: "Say where the evidence leaves you, even if the answer is still partial.",
-    done: "The position has moved off its starting state.",
-  },
-  land: {
-    purpose: "Put the conclusion somewhere it does work: reusable Knowledge, a decision, or a task.",
-    done: "This round has been recorded.",
-  },
-};
-
-/**
- * Acquire holds two paths rather than two stages: find evidence externally, or
- * produce it. Questions lean to the first and Hypotheses to the second, but
- * either may take either. Land holds three exits and gets no special treatment
- * — one recommendation and two explained alternatives, like every other stage.
- */
-export const INQUIRY_STAGE_FOR_KIND: Record<InquiryNextFocusKind, InquiryStageId> = {
-  clarify_or_decompose: "clarify",
-  search_acquisition: "acquire",
-  design_run_experiment: "acquire",
-  read_evidence: "digest",
-  synthesize: "conclude",
-  promote_knowledge: "land",
-  create_decision_case: "land",
-  create_delivery_task: "land",
-};
-
-export function inquiryKindsInStage(stage: InquiryStageId): InquiryNextFocusKind[] {
-  return (Object.keys(INQUIRY_STAGE_FOR_KIND) as InquiryNextFocusKind[])
-    .filter((kind) => INQUIRY_STAGE_FOR_KIND[kind] === stage);
-}
-
+export const InquiryProblemSummarySchema=z.object({round_number:z.number().int().positive(),round_started_at:z.string().nullable(),round_start_ref:z.object({kind:z.enum(["thread","round_closeout"]),id:z.string()}),version:z.number().int(),revision:z.number().int(),current_focus:z.object({step_id:z.string(),method_version:z.string(),stage:z.string().nullable(),work_kind:z.string()}).nullable()});
 export const InquiryThreadSchema = z.object({
+  problem_summary:InquiryProblemSummarySchema.nullable().optional(),
   id: z.string(),
   space_id: z.string(),
   project_id: z.string(),
@@ -118,8 +37,6 @@ export const InquiryThreadSchema = z.object({
   priority: z.number().int(),
   primary_parent_id: z.string().nullable(),
   owner_user_id: z.string().nullable(),
-  next_focus_kind: InquiryNextFocusKindSchema.nullable(),
-  next_focus_note: z.string().nullable(),
   blocked_reason: z.string().nullable(),
   version: z.number().int(),
   created_from: z.string(),
@@ -143,7 +60,6 @@ export const InquiryIterationSchema = z.object({
   change_summary: z.string(),
   reasoning_summary: z.string().nullable(),
   unresolved_gaps: z.string().nullable(),
-  confirmed_next_focus: z.string().nullable(),
   created_by_user_id: z.string().nullable(),
   created_by_run_id: z.string().nullable(),
   created_at: z.string(),
@@ -154,10 +70,11 @@ export type InquiryIteration = z.infer<typeof InquiryIterationSchema>;
 // singular: `background` steps run without a person and leave the `primary`
 // slot free for whatever the user does meanwhile.
 export const InquiryThreadStepSchema = z.object({
+  round_number:z.number().int().nullable().optional(),
   id: z.string(),
   project_id: z.string(),
   thread_id: z.string(),
-  kind: InquiryNextFocusKindSchema,
+  kind: ProblemWorkKindSchema,
   status: z.enum(["in_progress", "done", "abandoned"]),
   slot: z.enum(["primary", "background"]),
   note: z.string().nullable(),
@@ -281,30 +198,6 @@ export const InquiryDeltaBriefContentSchema = z.object({
   })),
 });
 export type InquiryDeltaBriefContent = z.infer<typeof InquiryDeltaBriefContentSchema>;
-
-export const InquiryAdviceStatusSchema = z.enum(["open", "adopted", "dismissed"]);
-
-/**
- * A model-generated suggestion about a Thread's next step. It is never a
- * write: adopting it goes through the ordinary work-state command. `stale`
- * means the Thread has moved past the revision the advice reasoned about.
- */
-export const InquiryThreadAdviceSchema = z.object({
-  id: z.string(),
-  project_id: z.string(),
-  thread_id: z.string(),
-  recommended_focus_kind: InquiryNextFocusKindSchema,
-  rationale: z.string(),
-  cited_refs: z.array(z.string()),
-  thread_version: z.number().int(),
-  status: InquiryAdviceStatusSchema,
-  trigger_kind: z.string(),
-  model_version: z.string().nullable(),
-  stale: z.boolean(),
-  created_at: z.string(),
-  updated_at: z.string(),
-});
-export type InquiryThreadAdvice = z.infer<typeof InquiryThreadAdviceSchema>;
 
 export const InquiryCreateSignalRequestSchema = z.object({
   corpus_item_id: z.string().min(1),

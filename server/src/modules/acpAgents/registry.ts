@@ -41,7 +41,7 @@ let cache: { at: number; entries: AcpRegistryEntry[] } | null = null;
 let override: AcpRegistryEntry[] | "unavailable" | null = null;
 
 /**
- * The registry entries builtin adapters install their managed copies from,
+ * The registry entries enabled runtimes install their managed copies from,
  * by registry id — what `hello_ack` reads. Filled by the acpAgents refresh
  * loop (from the network when it can, from the persisted copy at startup),
  * never on the hello path itself: a daemon connecting must not wait on a

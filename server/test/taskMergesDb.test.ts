@@ -826,3 +826,20 @@ describe("merging a done Task", () => {
     expect(await attention()).toEqual([expect.objectContaining({ reason: "merge_failed" })]);
   });
 });
+
+it('records remote Run admission flow once and atomically rolls back a failed flow event',async()=>{
+  const repository=new PgTaskRepository(db.pool);
+  const flow=async()=> (await db.pool.query(`SELECT data_json FROM project_work_events WHERE subject_id=$1 AND event_kind='task.flow_changed' AND data_json->>'to'='in_progress'`,[TASK])).rows;
+  expect(await flow()).toHaveLength(1);expect((await flow())[0].data_json.run_id).toBe(executionRunId);
+  const next=await repository.createTaskRun(owner,TASK,{workspace_location_id:LOCATION,prompt:'Continue explicitly',thread_id:threadId,agent_id:AGENT,runtime_profile_id:PROFILE});
+  expect(await flow()).toHaveLength(1);
+  await db.pool.query(`UPDATE runs SET status='succeeded',runtime_profile_id=COALESCE(runtime_profile_id,requested_runtime_profile_id),runtime_profile_selection_source=COALESCE(runtime_profile_selection_source,'explicit'),runtime_key='claude_code',runtime_profile_snapshot_json=COALESCE(runtime_profile_snapshot_json,'{}'::jsonb) WHERE id=$1`,[next.id]);await db.pool.query(`UPDATE tasks SET status='ready' WHERE id=$1`,[TASK]);
+  const before=(await db.pool.query(`SELECT count(*)::int AS n FROM task_runs WHERE task_id=$1`,[TASK])).rows[0].n;
+  await db.pool.query(`CREATE FUNCTION reject_remote_dispatch_flow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_kind='task.flow_changed' AND NEW.data_json->>'to'='in_progress' THEN RAISE EXCEPTION 'remote_dispatch_event_failed'; END IF; RETURN NEW; END $$`);
+  await db.pool.query(`CREATE TRIGGER reject_remote_dispatch_flow BEFORE INSERT ON project_work_events FOR EACH ROW EXECUTE FUNCTION reject_remote_dispatch_flow()`);
+  try{
+    await expect(repository.createTaskRun(owner,TASK,{workspace_location_id:LOCATION,prompt:'This admission rolls back',thread_id:threadId,agent_id:AGENT,runtime_profile_id:PROFILE})).rejects.toThrow('remote_dispatch_event_failed');
+    expect((await db.pool.query(`SELECT status FROM tasks WHERE id=$1`,[TASK])).rows[0].status).toBe('ready');expect((await db.pool.query(`SELECT count(*)::int AS n FROM task_runs WHERE task_id=$1`,[TASK])).rows[0].n).toBe(before);
+    expect(await flow()).toHaveLength(1);
+  }finally{await db.pool.query(`DROP TRIGGER reject_remote_dispatch_flow ON project_work_events`);await db.pool.query(`DROP FUNCTION reject_remote_dispatch_flow()`);}
+});

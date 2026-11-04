@@ -1,5 +1,8 @@
+import { contentReadSql } from "../access/contentAccessSql.js";
+import { z } from "zod";
+import { effectiveRunTrigger } from "../systemActions/effectiveRunTrigger.js";
 import { countTasksCreatedInTurn, lockTurnFanOutForTransaction, TASK_FAN_OUT_PER_TURN } from "../tasks/turnFanOut.js";
-import type { SystemActionId, WorkLoopStageKey } from "@rainver/protocol";
+import { TASK_CREATE_BATCH_MAX_ITEMS, TaskCreateInputSchema, type SystemActionId } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
@@ -10,7 +13,7 @@ import { PgTaskRepository } from "../tasks/repository.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 import {
-  advanceTaskStage,
+  setTaskStatus,
   completeTask,
   handoffTask,
   linkTaskEntities,
@@ -67,15 +70,36 @@ export function registerProjectWorkSystemActionExecutors(
     };
   }
 
+  async function createTaskInTransaction(tx: Queryable, body: z.infer<typeof TaskCreateInputSchema>, key: string | null) {
+    const projectId = run.project_id!;
+    const context = await contextFor(tx, key);
+    const created = await new PgTaskRepository(pool).createTask(
+      identity,
+      {
+        project_id: projectId,
+        title: body.title,
+        description: body.description ?? null,
+        acceptance_criteria_json: body.acceptance_criteria_json ?? null,
+        definition_of_done: body.definition_of_done ?? null,
+        required_outputs_json: body.required_outputs ?? null,
+        priority: body.priority,
+        risk_level: body.risk_level,
+        due_at: body.due_at ?? null,
+        start_after: body.start_after ?? null,
+        visibility: "space_shared",
+        // The Run that made it, so what becomes of the Task — its merge
+        // above all — can be told in the conversation it came from.
+        source_run_id: run.id,
+        links:body.links,
+      },
+      tx,
+      context.actorId,
+    );
+    return created;
+  }
+
   executors.set("task.create" as SystemActionId, async (input, dispatch) => {
-    const body = input as {
-      project_id?: string; title: string; description?: string | null;
-      acceptance_criteria_json?: Record<string, unknown> | null;
-      definition_of_done?: string | null; required_outputs?: string[];
-      priority?: string; risk_level?: string;
-      due_at?: string | null; start_after?: string | null;
-      links?: { entity_type: string; entity_id: string; role: string }[];
-    };
+    const body = input as z.infer<typeof TaskCreateInputSchema>;
     // The Project is the Run's own, not the model's. A `project_id` taken from
     // the input lets an Agent write into a Project the person it acts for is
     // not a member of, and every other Project-scoped agent action refuses to
@@ -89,7 +113,6 @@ export function registerProjectWorkSystemActionExecutors(
     const projectId = run.project_id;
 
     const task = await withQueryableTransaction(pool, async (tx) => {
-      const context = await contextFor(tx, dispatch.idempotency_key ?? null);
       // Authority is re-checked while holding the Project aggregate lock, the
       // same pairing the durable Task+Run write uses: an archived Project or a
       // membership revoked mid-turn must lose, deterministically.
@@ -109,33 +132,58 @@ export function registerProjectWorkSystemActionExecutors(
       // because the Agent is what made it. The timeline is the record of who
       // did what, and a Task the Agent decomposed out of a request did not
       // appear because the person typed it.
-      const created = await new PgTaskRepository(pool).createTask(
-        identity,
-        {
-          project_id: projectId,
-          title: body.title,
-          description: body.description ?? null,
-          acceptance_criteria_json: body.acceptance_criteria_json ?? null,
-          definition_of_done: body.definition_of_done ?? null,
-          required_outputs_json: body.required_outputs ?? null,
-          priority: body.priority,
-          risk_level: body.risk_level,
-          due_at: body.due_at ?? null,
-          start_after: body.start_after ?? null,
-          visibility: "space_shared",
-          // The Run that made it, so what becomes of the Task — its merge
-          // above all — can be told in the conversation it came from.
-          source_run_id: run.id,
-        },
-        tx,
-        context.actorId,
-      );
-      if (body.links?.length) await linkTaskEntities(tx, context, created.id, body.links);
-      return created;
+      return createTaskInTransaction(tx, body, dispatch.idempotency_key ?? null);
     });
     return {
       modelResult: { ok: true, task_id: task.id, title: task.title, status: task.status },
       summary: { tool_name: "task.create", ok: true, task_id: task.id },
+    };
+  });
+
+  executors.set("task.create_batch" as SystemActionId, async (input, dispatch) => {
+    const body = input as { request_summary: string; tasks: z.infer<typeof TaskCreateInputSchema>[] };
+    if (!run.project_id) throw new HttpError(422, "A batch requires this Run's Project");
+    const trigger = await effectiveRunTrigger(pool, run);
+    if (trigger.origin !== "manual" || trigger.instructedByUserId !== identity.userId) {
+      throw new HttpError(403, "Batch creation requires a verified user-requested turn");
+    }
+    if (!body.request_summary?.trim() || !body.tasks?.length || body.tasks.length > TASK_CREATE_BATCH_MAX_ITEMS) {
+      throw new HttpError(422, "A requested batch must contain between 1 and 100 Tasks");
+    }
+    const tasks = body.tasks.map(item => TaskCreateInputSchema.parse(item));
+    if (tasks.some(item => item.project_id && item.project_id !== run.project_id)) {
+      throw new HttpError(422, "Every Task must belong to this Run's Project");
+    }
+    const results = await withQueryableTransaction(pool, async tx => {
+      await lockActiveProjectForMutation(tx, run.space_id, run.project_id!);
+      await assertProjectWriterForMutation(tx, run.space_id, run.project_id!, identity.userId);
+      await lockTurnFanOutForTransaction(tx, run.id);
+      const results: Array<{ task_id: string; title: string; status: string; created: boolean }> = [];
+      for (const [index, item] of tasks.entries()) {
+        // The Project lock serializes ordinary creates and other batches.
+        // Retrying a call, or repeating a title within it, returns the existing
+        // authorized Task rather than multiplying work.
+        const existing = await tx.query<{ id: string; title: string; status: string }>(
+          `SELECT t.id, t.title, t.status FROM tasks t WHERE t.space_id = $1 AND t.project_id = $2
+            AND t.deleted_at IS NULL AND ${contentReadSql("task", "t", "$4")}
+            AND lower(btrim(t.title)) = lower(btrim($3)) ORDER BY t.created_at, t.id LIMIT 1`,
+          [run.space_id, run.project_id, item.title, identity.userId],
+        );
+        const found = existing.rows[0];
+        if (found) {
+          if(item.links?.length)await linkTaskEntities(tx,await contextFor(tx,`${dispatch.idempotency_key??"batch"}:${index}`),found.id,item.links);
+          results.push({ task_id: found.id, title: found.title, status: found.status, created: false });
+          continue;
+        }
+        const created = await createTaskInTransaction(tx, item, `${dispatch.idempotency_key ?? "batch"}:${index}`);
+        results.push({ task_id: created.id, title: created.title, status: created.status, created: true });
+      }
+      return results;
+    });
+    const createdCount = results.filter(item => item.created).length;
+    return {
+      modelResult: { ok: true, created_count: createdCount, existing_count: results.length - createdCount, items: results },
+      summary: { tool_name: "task.create_batch", ok: true, created_count: createdCount, existing_count: results.length - createdCount },
     };
   });
 
@@ -253,14 +301,11 @@ export function registerProjectWorkSystemActionExecutors(
     };
   });
 
-  executors.set("task.advance_stage" as SystemActionId, async (input, dispatch) => {
-    const body = input as { task_id: string; to_stage: WorkLoopStageKey; reason: string };
-    const result = await withTaskIdHelp(body.task_id, () => withQueryableTransaction(pool, async (tx) =>
-      advanceTaskStage(tx, await contextFor(tx, dispatch.idempotency_key ?? null), body)));
-    return {
-      modelResult: { ok: true, ...result },
-      summary: { tool_name: "task.advance_stage", ok: true, task_id: result.task_id, stage: result.stage },
-    };
+  executors.set("task.set_status" as SystemActionId, async (input, dispatch) => {
+    const body = input as { task_id: string; status: string; reason: string };
+    const context = await contextFor(pool, dispatch.idempotency_key ?? null);
+    const result = await withTaskIdHelp(body.task_id, () => setTaskStatus(pool, context, body));
+    return { modelResult: { ok: true, ...result }, summary: { tool_name: "task.set_status", ok: true, task_id: result.task_id, status: result.status } };
   });
 
   executors.set("task.request_review" as SystemActionId, async (input, dispatch) => {

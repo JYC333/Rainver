@@ -9,6 +9,7 @@ import type { AmbientSessionCount, HostRunDiffUpload, HostRunGitAfter, HostRunOu
 import { PgWorkspaceLocationRepository, type WorkspaceLocationHeartbeat } from "../projectFolders/workspaceLocations.js";
 import { isStale } from "./liveness.js";
 import { wakeTaskMergesForLocations } from "./taskMerges.js";
+import { syncManagedRuntimeBindings } from "./managedRuntimeBindings.js";
 
 /**
  * ADR 0016: an execution host is the server host (exactly one row, seeded,
@@ -305,24 +306,29 @@ export class PgHostRepository {
   }
 
   async recordHeartbeat(hostId: string, info: DaemonHelloInfo): Promise<void> {
-    await this.pool.query(
-      `UPDATE hosts
-          SET status = 'online', last_heartbeat_at = now(),
-              platform = COALESCE($2, platform), arch = COALESCE($3, arch),
-              daemon_version = COALESCE($4, daemon_version),
-              capabilities_json = COALESCE($5::jsonb, capabilities_json),
-              managed_workspaces_json = COALESCE($6::jsonb, managed_workspaces_json),
-              updated_at = now()
-        WHERE id = $1 AND status <> 'revoked'`,
-      [
-        hostId,
-        info.platform ?? null,
-        info.arch ?? null,
-        info.daemon_version ?? null,
-        info.capabilities_json ? JSON.stringify(info.capabilities_json) : null,
-        info.managed_workspaces ? JSON.stringify(info.managed_workspaces) : null,
-      ],
-    );
+    await withQueryableTransaction(this.pool, async db => {
+      const updated = await db.query(
+        `UPDATE hosts
+            SET status = 'online', last_heartbeat_at = now(),
+                platform = COALESCE($2, platform), arch = COALESCE($3, arch),
+                daemon_version = COALESCE($4, daemon_version),
+                capabilities_json = COALESCE($5::jsonb, capabilities_json),
+                managed_workspaces_json = COALESCE($6::jsonb, managed_workspaces_json),
+                updated_at = now()
+          WHERE id = $1 AND status <> 'revoked'`,
+        [
+          hostId,
+          info.platform ?? null,
+          info.arch ?? null,
+          info.daemon_version ?? null,
+          info.capabilities_json ? JSON.stringify(info.capabilities_json) : null,
+          info.managed_workspaces ? JSON.stringify(info.managed_workspaces) : null,
+        ],
+      );
+      if ((updated.rowCount ?? 0) > 0 && info.capabilities_json) {
+        await syncManagedRuntimeBindings(db, hostId, info.capabilities_json);
+      }
+    });
     if (info.workspace_reports || info.ambient_sessions) {
       const locations = new PgWorkspaceLocationRepository(this.pool);
       if (info.workspace_reports) {

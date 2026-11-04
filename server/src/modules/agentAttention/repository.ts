@@ -70,7 +70,6 @@ export interface TaskFact {
   responsible_user_id: string | null;
   responsible_agent_id: string | null;
   access_level: "full" | "summary";
-  loop_stage: AgentWorkItem["loop_stage"];
 }
 export interface ExtraSubject {
   run_id: string | null;
@@ -349,9 +348,8 @@ export class AgentAttentionRepository {
       t.completed_at::text,t.updated_at::text,t.source_run_id,
       ${responsibleUserSql("t", "p")} AS responsible_user_id,
       ${responsibleAgentSql("t")} AS responsible_agent_id,
-      ${level("task", "t")} AS access_level,ls.current_stage_key AS loop_stage
+      ${level("task", "t")} AS access_level
       FROM tasks t LEFT JOIN projects p ON p.id=t.project_id AND p.space_id=t.space_id
-      LEFT JOIN task_loop_states ls ON ls.task_id=t.id AND ls.space_id=t.space_id
       WHERE t.deleted_at IS NULL AND t.id=ANY($2::varchar[]) AND ${contentReadSql("task", "t", "$1")}`, [userId, taskIds]);
     // A Session-targeted view may resolve to a Task-owned work. Include those
     // authorized messages' stored decisions so their CAS versions are not lost.

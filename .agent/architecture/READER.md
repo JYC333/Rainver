@@ -561,3 +561,19 @@ snapshot; Reader does not select a newer original on report open. Current Source
 Project/purpose, original/history and actual-egress gates remain authoritative,
 including Artifact exports. Original and report keep separate annotation/position
 identities. Opening either does not favorite or start an investigation.
+
+### Problem-bound research reports
+
+Bound reports reuse `projectResearch/reportAccess.ts` and the P3 full call
+content gate in both document resolution and annotation/document access checks.
+A withdrawn Source, unreadable Thread/initiating Run or retained input therefore
+cannot be bypassed through `/reader/documents/research_report/:id` or reading
+position/annotation APIs after the report page refuses content. No partial
+cached synthesis is reconstructed. Unbound historical reports retain their
+existing Project/reference contract. Safe Operation status and Stop are reached
+through the problem workspace records, not a relaxed Reader content gate.
+
+Bound Research report resolution and annotation reads enforce the report call
+gate, including originating Thread/Run and current Source access. Research
+archive artifacts use the same provenance checks through the canonical Artifact
+ACL and full-content gate; opening an archive ID cannot bypass a withheld report.

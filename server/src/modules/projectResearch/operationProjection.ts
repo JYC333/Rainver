@@ -1,3 +1,4 @@
+import { reconcileResearchCall } from "./researchProblemCalls.js";
 import { isDeepStrictEqual } from "node:util";
 import type { Queryable } from "../routeUtils/common.js";
 import { HttpError, objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common.js";
@@ -64,6 +65,10 @@ export interface ResearchOperationError {
 }
 
 export interface ResearchOperationState {
+  preparation_context_version_id?:string;
+  preparation_providers?:string[];
+  origin_run_id?:string|null;
+  problem_call?:unknown;
   schema_version: "project_research_operation.v1";
   run_kind: RunKind;
   workflow_id: string;
@@ -432,6 +437,7 @@ async function writeOperationState(
       replaceProgress: true,
       expectedVersion: row.version,
     });
+    await reconcileResearchCall(tx,row.space_id,row.id);
   } catch (error) {
     if (isUniqueViolation(error, ACTIVE_RESEARCH_OPERATION_INDEX)) {
       throw new HttpError(409, "Another Project Research operation is already active for this workflow");

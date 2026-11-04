@@ -1,7 +1,9 @@
 import type { Queryable } from "../routeUtils/common.js";
 
 /**
- * How many Tasks one turn may create: ADR 0017 §2's decomposition ceiling,
+ * Default ceiling for ordinary single creates and follow-ups. Explicit
+ * user-requested task.create_batch calls have a separate 100-item call bound.
+ * How many ordinary Tasks one turn may create: ADR 0017 §2's decomposition ceiling,
  * the same five `inquiry.create_thread` holds Threads to. It counts every
  * Task the turn creates — the ones its `task.create` calls write and the
  * follow-ups applied for it once it succeeds (`followUpTaskReconciler.ts`) —

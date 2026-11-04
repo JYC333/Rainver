@@ -533,3 +533,17 @@ reading-method:
     - apps/web/src/modules/library
     - apps/web/src/modules/projects/reading
     - packages/protocol/src/readingMethod.ts
+
+inquiry:
+  docs:
+    - .agent/architecture/INQUIRY_PROBLEM_ENGINE.md
+    - .agent/architecture/PROJECT_RESEARCH_CALLS.md
+    - .agent/architecture/PROJECTS.md
+    - .agent/architecture/DATABASE_AND_TRANSACTIONS.md
+    - .agent/BOUNDARIES.md
+  code_roots:
+    - server/src/modules/inquiry
+    - server/src/db/schema/inquiry.ts
+    - packages/protocol/src/inquiry.ts
+    - packages/protocol/src/problemEngine.ts
+    - server/test

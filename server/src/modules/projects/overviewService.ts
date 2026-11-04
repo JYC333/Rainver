@@ -43,7 +43,7 @@ export class ProjectOverviewService {
     // in their existing order so no two queries are queued on one Client.
     const brief = await this.kernel.getActiveBriefVersion(identity, projectId);
     const attention = await this.attention.listAttentionItems(identity, projectId);
-    const inProgress = await listRunningProjectOperations(this.db, identity.spaceId, projectId);
+    const inProgress = await listRunningProjectOperations(this.db, identity.spaceId, projectId,identity.userId);
     const folders = await this.db.query(
       `SELECT 1 FROM project_folders WHERE space_id = $1 AND project_id = $2 AND status = 'active' LIMIT 1`,
       [identity.spaceId, projectId],

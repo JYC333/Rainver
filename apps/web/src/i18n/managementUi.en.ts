@@ -1,6 +1,41 @@
 /** UI copy: Prompts, Skills, plugins, project files, network profiles and the job queue. */
 export const managementUiEn = {
   management_ui: {
+    host_catalog: {
+      "more_label": "More for {{name}} on {{host}}",
+      "version_management": "Version management",
+      "current_version": "Current ACP version",
+      "rollback_version": "Available rollback version",
+      "unknown_version": "Unknown",
+      "no_rollback": "No previous version retained",
+      "rollback_help": "Rollback restores the previous binaries. Login and session data stay in the same managed storage; older binaries may not support newer data.",
+      "rollback_to": "Roll back to {{version}}",
+      "rolling_back": "Rolling back…",
+
+      "title": "Agent catalog",
+      "refresh": "Refresh versions",
+      "description": "Installed agents on {{host}} appear first. Updates install only when you choose them.",
+      "loading": "Loading registry…",
+      "search": "Search agent registry",
+      "installed": "Installed",
+      "versions": "ACP {{current}} · Available {{latest}}",
+      "available": "Available ACP {{version}}",
+      "bundled": "The local CLI uses an ACP adapter included with the Host. Update that adapter with the Host; a managed copy has a separate login.",
+      "own": "Local installation · a managed copy is separate.",
+      "pinned": "Managed by this Rainver release. Update through the Server Runtime.",
+      "upgrade": "Upgrade ACP",
+      "managed_copy": "Install managed copy",
+      "install": "Install",
+      "enable_install": "Enable & install",
+      "upgrade_label": "Upgrade ACP for {{name}} on {{host}}",
+      "managed_copy_label": "Install managed copy of {{name}} on {{host}}",
+      "install_label": "Install {{name}} on {{host}}",
+      "enable_install_label": "Enable and install {{name}} on {{host}}",
+      "operation_in_progress": "An operation is already in progress for this CLI.",
+      "upgrading": "Upgrading…",
+      "installing": "Installing…",
+      "empty": "Nothing matches."
+},
     job_queue: {
       elapsed_ms: "{{value}} ms",
       elapsed_seconds: "{{value}} s",

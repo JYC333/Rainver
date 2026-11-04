@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { useAppTranslation } from '../../i18n'
 import { acpAgentsApi, hostsApi, type AcpAgentOut, type AcpRegistryEntry } from '../../api/client'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog'
-import { Input } from '../../components/ui/input'
-import { Badge } from '../../components/ui/badge'
+import HostAgentCatalog from './HostAgentCatalog'
+import { hasStableUpdate } from './runtimeVersions'
 import { Button } from '../../components/ui/button'
 import { errMsg } from '../../lib/utils'
 import type { Host, HostRuntimeDefinitionOption, HostRuntimeUsage, RuntimeInstallation } from '../../types/api'
 import HostAgentRow, { type HostAgentLoginTarget } from './HostAgentRow'
 import RuntimeLoginTerminal from './RuntimeLoginTerminal'
+import { useHostToolOperations } from './useHostToolOperations'
 
 /** How long a finished, successful login stays on screen before the panel closes itself. */
 const LOGIN_PANEL_AUTO_CLOSE_MS = 3_000
@@ -29,16 +30,6 @@ function usageFor(usage: ReadonlyMap<string, HostRuntimeUsage>, runtimeKey: stri
   )
 }
 
-/**
- * The Server Runtime's OpenCode copy is pinned, installed and rolled back by
- * Rainver's provisioner, so install/upgrade/remove/rollback belong to the
- * provisioning panel rather than to this card. Module-level so a `useMemo`
- * that reads it has a stable dependency instead of a suppressed lint rule.
- */
-function isRainverPinned(hostKind: Host['kind'], runtimeKey: string): boolean {
-  return hostKind === 'server' && runtimeKey === 'opencode'
-}
-
 function usageBusyFor(busy: ReadonlySet<string>, runtimeKey: string): ReadonlySet<string> {
   const prefix = `${runtimeKey}:`
   return new Set([...busy].filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length)))
@@ -56,14 +47,11 @@ export default function HostAgents({
   adapters,
   isInstanceAdmin,
   manageable,
-  provisioningFailed = false,
   onChanged,
 }: {
   host: Host
   adapters: HostRuntimeDefinitionOption[]
   isInstanceAdmin: boolean
-  /** Whether the Rainver-managed install on this host is in its `failed` state, i.e. whether the panel's Retry is on screen. */
-  provisioningFailed?: boolean
   /**
    * Whether this viewer may change what is installed on this host. A paired
    * host is its owner's, so this is true wherever the card is shown at all;
@@ -73,15 +61,10 @@ export default function HostAgents({
   manageable: boolean
   onChanged: () => Promise<void> | void
 }) {
+  const { t } = useAppTranslation()
   // One key per in-flight action, not one slot: two installs started back to
   // back must each keep their own spinner until their own request settles.
-  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set())
-  const startBusy = (key: string) => setBusy(previous => new Set(previous).add(key))
-  const endBusy = (key: string) => setBusy(previous => {
-    const next = new Set(previous)
-    next.delete(key)
-    return next
-  })
+  const { busy, startBusy, endBusy } = useHostToolOperations(host.id, onChanged, manageable)
   // A successful login shows its "Logged in." line for a moment and then
   // puts the panel away by itself; a failed one stays open so the output can
   // be read. Cleared when another login starts or the card unmounts.
@@ -104,7 +87,7 @@ export default function HostAgents({
   const [registryLoading, setRegistryLoading] = useState(false)
   const [registryError, setRegistryError] = useState<string | null>(null)
   const [registryQuery, setRegistryQuery] = useState('')
-  const [installedRegistryIds, setInstalledRegistryIds] = useState<Set<string>>(() => new Set())
+  const [installedRegistryVersions, setInstalledRegistryVersions] = useState<ReadonlyMap<string,string>>(() => new Map())
   // Subscription quota per `<runtime_key>:<installation>`, read from the
   // server's cache. Never probed on render: the numbers live on the host and
   // reading them costs a network call or a CLI launch there.
@@ -162,20 +145,42 @@ export default function HostAgents({
     () => new Map((enabledRegistryAgents ?? []).map(agent => [agent.id, agent] as const)),
     [enabledRegistryAgents],
   )
-  // One list for everything a host can gain: the registry, with the builtin
-  // CLIs and already-enabled agents offering Install and the rest offering
-  // Enable & install. A non-admin cannot enable, so they see only the
-  // installable ones — never a separate "default" list above the registry.
   const registryCandidates = useMemo(() => {
     const needle = registryQuery.trim().toLowerCase()
     return (registry ?? [])
       .filter(entry => isInstanceAdmin || enabledRegistryById.has(entry.id) || builtinAdaptersByRegistryId.has(entry.id))
-      .filter(entry => {
-        const runtimeKey = enabledRegistryById.get(entry.id)?.runtime_key ?? builtinAdaptersByRegistryId.get(entry.id)?.runtime_key
-        return !(runtimeKey && isRainverPinned(host.kind, runtimeKey))
+      .map(entry => {
+        const adapter = builtinAdaptersByRegistryId.get(entry.id)
+          ?? adapters.find(candidate => candidate.runtime_key === enabledRegistryById.get(entry.id)?.runtime_key)
+        const copies = adapter ? installationsOn(host, adapter) : []
+        const managed = installedRegistryVersions.has(entry.id)
+          ? [installedRegistryVersions.get(entry.id)!]
+          : copies.filter(copy => copy.id !== 'own').flatMap(copy => copy.version ? [copy.version] : [])
+        const installed = copies.length > 0 || installedRegistryVersions.has(entry.id)
+          || enabledRegistryById.get(entry.id)?.installed_on.some(item => item.host_id === host.id) === true
+        return {entry, installed, managed, runtimeKey: adapter?.runtime_key, own: copies.some(copy => copy.id === 'own'),
+          bundled: copies.some(copy => copy.id === 'own') && adapter?.reports_managed_cli_version === true,
+          update: (managed.length > 0 && managed.every(version => hasStableUpdate(version, entry.version)))
+            || (adapter?.runtime_key === 'codex_cli' && copies.some(copy => copy.id !== 'own' && hasStableUpdate(copy.runtime_version ?? null, adapter.latest_own_version))),
+          enabled: enabledRegistryById.has(entry.id) || Boolean(adapter),
+          pinned: false}
       })
-      .filter(entry => !needle || entry.name.toLowerCase().includes(needle) || entry.id.toLowerCase().includes(needle))
-  }, [registry, registryQuery, isInstanceAdmin, enabledRegistryById, builtinAdaptersByRegistryId, host.kind])
+      .filter(row => !needle || row.entry.name.toLowerCase().includes(needle) || row.entry.id.toLowerCase().includes(needle))
+      .sort((a,b) => Number(b.installed)-Number(a.installed) || a.entry.name.localeCompare(b.entry.name))
+  }, [registry, registryQuery, isInstanceAdmin, enabledRegistryById, builtinAdaptersByRegistryId, host, adapters, installedRegistryVersions])
+
+  // Optimism lasts only until the Host acknowledges that version. Later
+  // rollback/removal must render the Host's report rather than this old result.
+  useEffect(() => {
+    setInstalledRegistryVersions(previous => {
+      const next = new Map(previous)
+      for (const [id,version] of previous) {
+        const key = builtinAdaptersByRegistryId.get(id)?.runtime_key ?? enabledRegistryById.get(id)?.runtime_key
+        if (key && host.capabilities_json?.installations?.[key]?.some(copy => copy.id !== 'own' && copy.version === version)) next.delete(id)
+      }
+      return next.size === previous.size ? previous : next
+    })
+  }, [host, builtinAdaptersByRegistryId, enabledRegistryById])
 
   async function loadRegistry() {
     if (registryLoading) return
@@ -202,11 +207,12 @@ export default function HostAgents({
   }
 
   async function withBusy(key: string, action: () => Promise<void>) {
-    if (busy.has(key)) return
-    startBusy(key)
+    if (!startBusy(key)) {
+      toast.info(t('management_ui.host_catalog.operation_in_progress'))
+      return
+    }
     try {
       await action()
-      await onChanged()
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
@@ -227,11 +233,14 @@ export default function HostAgents({
 
   async function installFromRegistry(entry: AcpRegistryEntry) {
     const key = `registry:${entry.id}`
-    if (busy.has(key)) return
-    startBusy(key)
+    if (!startBusy(key)) {
+      toast.info(t('management_ui.host_catalog.operation_in_progress'))
+      return
+    }
     let enabledAgent = enabledRegistryById.get(entry.id) ?? null
     let enabledNow = false
     let changed = false
+    let installingRuntime: string | null = null
     try {
       const builtinAdapter = builtinAdaptersByRegistryId.get(entry.id)
       if (!enabledAgent && !builtinAdapter) {
@@ -245,10 +254,15 @@ export default function HostAgents({
       }
       const runtimeKey = enabledAgent?.runtime_key ?? builtinAdapter?.runtime_key
       if (!runtimeKey) throw new Error(`No runtime adapter is available for ${entry.name}`)
-      const result = await hostsApi.installRuntime(host.id, runtimeKey)
+      if (!startBusy(runtimeKey)) {
+        toast.info(t('management_ui.host_catalog.operation_in_progress'))
+        return
+      }
+      installingRuntime = runtimeKey
+      const result = await hostsApi.installRuntime(host.id, runtimeKey, entry.version)
       if (!result.ok) throw new Error(result.error ?? 'install failed')
       changed = true
-      setInstalledRegistryIds(previous => new Set(previous).add(entry.id))
+      setInstalledRegistryVersions(previous => new Map(previous).set(entry.id, entry.version))
       if (enabledAgent) {
         setEnabledRegistryAgents(previous => (previous ?? []).map(agent => agent.id === entry.id
           ? { ...agent, installed_on: [...agent.installed_on.filter(item => item.host_id !== host.id), { host_id: host.id, name: host.name }] }
@@ -266,6 +280,7 @@ export default function HostAgents({
         if (changed || enabledAgent) await onChanged()
       } finally {
         endBusy(key)
+        if (installingRuntime) endBusy(installingRuntime)
       }
     }
   }
@@ -306,8 +321,6 @@ export default function HostAgents({
             copies={installationsOn(host, adapter)}
             installBusy={busy}
             manageable={manageable}
-            rainverPinned={isRainverPinned(host.kind, adapter.runtime_key)}
-            provisioningFailed={provisioningFailed}
             usage={usageFor(usage, adapter.runtime_key)}
             usageBusy={usageBusyFor(usageBusy, adapter.runtime_key)}
             onInstall={() => { void install(adapter) }}
@@ -326,65 +339,10 @@ export default function HostAgents({
       {adding && (
         <div className="space-y-2 rounded-md border border-border p-2" data-testid={`host-add-agent-${host.id}`}>
           <section className="space-y-1">
-              <p className="text-xs font-medium">Install managed agent</p>
-              <p className="text-xs text-muted-foreground">
-                {isInstanceAdmin
-                  ? <>Installs a managed copy on {host.name}; an agent not yet enabled for the instance is enabled first. Registry agents run at low trust using their own host login.</>
-                  : <>Installs a managed copy on {host.name}. Only agents an instance admin has enabled are listed.</>}
-              </p>
-              {registryLoading ? (
-                <p className="text-xs text-muted-foreground"><Loader2 className="mr-1 inline size-3 animate-spin" />Loading registry…</p>
-              ) : registryError ? (
-                <div className="flex items-center justify-between gap-2 text-xs text-destructive">
-                  <span>{registryError}</span>
-                  <Button size="sm" variant="outline" onClick={() => void loadRegistry()}>Retry</Button>
-                </div>
-              ) : registry !== null ? (
-                <>
-                  <Input
-                    aria-label="Search agent registry"
-                    placeholder="Search agents"
-                    value={registryQuery}
-                    onChange={event => setRegistryQuery(event.target.value)}
-                  />
-                  <ul className="max-h-64 divide-y divide-border overflow-y-auto">
-                    {registryCandidates.map(entry => {
-                      const enabledAgent = enabledRegistryById.get(entry.id)
-                      const adapter = enabledAgent
-                        ? adapters.find(candidate => candidate.runtime_key === enabledAgent.runtime_key)
-                        : builtinAdaptersByRegistryId.get(entry.id)
-                      const installed = installedRegistryIds.has(entry.id)
-                        || enabledAgent?.installed_on.some(item => item.host_id === host.id) === true
-                        || (adapter ? installationsOn(host, adapter).length > 0 : false)
-                      const installing = busy.has(`registry:${entry.id}`)
-                      const alreadyEnabled = Boolean(enabledAgent || builtinAdaptersByRegistryId.has(entry.id))
-                      return (
-                        <li key={entry.id} className="flex items-center justify-between gap-2 py-2 text-xs">
-                          <div className="min-w-0">
-                            <span className="font-medium">{entry.name}</span>
-                            <span className="ml-2 text-muted-foreground">{entry.version} · {entry.distribution.kind}</span>
-                            {entry.description && <p className="truncate text-muted-foreground">{entry.description}</p>}
-                          </div>
-                          {installed ? (
-                            <Badge variant="secondary">Installed</Badge>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              aria-label={`${alreadyEnabled ? 'Install' : 'Enable and install'} ${entry.name} on ${host.name}`}
-                              disabled={installing}
-                              onClick={() => void installFromRegistry(entry)}
-                            >
-                              {installing ? <><Loader2 className="mr-1 size-3 animate-spin" />Installing…</> : alreadyEnabled ? 'Install' : 'Enable & install'}
-                            </Button>
-                          )}
-                        </li>
-                      )
-                    })}
-                    {registryCandidates.length === 0 && <li className="py-2 text-muted-foreground">Nothing matches.</li>}
-                  </ul>
-                </>
-              ) : null}
+              <HostAgentCatalog hostName={host.name} rows={registryCandidates} query={registryQuery} onQuery={setRegistryQuery}
+                loading={registryLoading} error={registryError} loaded={registry !== null} busy={busy} online={online}
+                onRefresh={() => void loadRegistry()} onInstall={entry => void installFromRegistry(entry)}/>
+
             </section>
         </div>
       )}

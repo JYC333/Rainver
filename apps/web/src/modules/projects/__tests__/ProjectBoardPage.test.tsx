@@ -45,8 +45,6 @@ function card(overrides: Partial<ProjectBoardCard> & Pick<ProjectBoardCard, 'id'
     risk_level: 'low',
     due_at: null,
     updated_at: '2026-08-27T00:00:00.000Z',
-    loop_stage: null,
-    loop_stage_label: null,
     responsible: { kind: null, id: null, display_name: null },
     active_run_count: 0,
     latest_run_status: null,
@@ -71,8 +69,6 @@ const board: ProjectBoard = {
       id: 'task-active',
       title: 'Run the depth repair',
       status: 'in_progress',
-      loop_stage: 'act',
-      loop_stage_label: 'Investigate',
       responsible: { kind: 'agent', id: 'agent-1', display_name: 'Research specialist' },
       active_run_count: 1,
       completion: { ok: false, missing: ['evaluation'] },
@@ -149,7 +145,7 @@ describe('Project Board', () => {
     }
     // The stage label comes from the server in the Project's own Mode; the
     // Board never maps stage keys to words itself.
-    expect(screen.getByText('Investigate')).toBeInTheDocument()
+    expect(screen.queryByText('Investigate')).toBeNull()
     expect(screen.getByText('Research specialist')).toBeInTheDocument()
     expect(screen.getByTestId('board-column-waiting_for_review')).toContainElement(
       screen.getByTestId('board-card-task-waiting'),

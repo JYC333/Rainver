@@ -325,7 +325,6 @@ export function projectWorks(input: {
       mine,
       responsible,
       task_status: task?.status ?? null,
-      loop_stage: task?.loop_stage ?? null,
       task_completed_at: task?.completed_at ? iso(task.completed_at) : null,
       runs: dtoRuns,
       reasons,

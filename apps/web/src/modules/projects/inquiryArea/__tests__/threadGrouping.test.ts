@@ -10,7 +10,7 @@ function thread(overrides: Partial<InquiryThread> & { id: string }): InquiryThre
     space_id: 'space-1', project_id: 'project-1', kind: 'question', statement: `Statement ${overrides.id}`,
     lifecycle_status: 'active', attention_state: 'backlog', priority: 1,
     primary_parent_id: null, owner_user_id: null,
-    next_focus_kind: null, next_focus_note: null, blocked_reason: null,
+    blocked_reason: null,
     version: 1, created_from: 'user', created_by_user_id: 'user-1',
     created_at: '2026-07-23T00:00:00.000Z', updated_at: '2026-07-23T00:00:00.000Z',
     ...overrides,

@@ -19,7 +19,6 @@ import { Textarea } from '../../components/ui/textarea'
 import { Badge } from '../../components/ui/badge'
 import { Select } from '../../components/ui/select'
 import { toast } from 'sonner'
-import { ThreadOriginBar } from './inquiryArea/ThreadOriginBar'
 
 function message(error: unknown) {
   return error instanceof Error ? error.message : String(error)
@@ -124,7 +123,6 @@ export default function KnowledgeReviewPage({ embedded = false }: { embedded?: b
   }
 
   return <div className={embedded ? 'space-y-5' : 'p-6 space-y-5'}>
-    <ThreadOriginBar projectId={projectId} kinds={['promote_knowledge']} />
     <div>
       {/* Inside Inquiry's Review view it is a section, not a page: the shell
           is the way back, and the heading is the tab's. */}

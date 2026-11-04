@@ -116,3 +116,18 @@ the topic text. Legacy channel deep links first resolve existing mappings
 read-only. Owned source list/detail controls route to topic management. Error
 guidance is categorized and localized; budget/credentials/stopped errors do not
 suggest blind Agent retries.
+
+## Problem workspace
+
+Project navigation labels the Inquiry route as Problems / 问题推进 and removes
+the duplicate Research sidebar entry. `problemWorkspace/ProblemAreaPage.tsx`
+composes purpose-specific definition/work/Task/Research/closeout/history modules;
+it does not add another page-wide orchestrator. Shared controls and theme tokens
+are reused. Stage/section navigation preserves browser history without writes.
+Legacy Research routes canonicalize via `researchPageDestination` before the
+old navigation is removed; records and report object context stay reachable.
+See [domain guide](../architecture/INQUIRY_PROBLEM_ENGINE.md#project-local-workspace-p5).
+
+The Problems header also opens the existing Project Standing panel at
+`section=standing`; old `research?tab=standing` links resolve there. Budget,
+source inflow, advice and retry remain reachable without creating a Thread.

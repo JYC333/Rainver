@@ -120,11 +120,9 @@ describe("registerResearchAcquisitionContinuation", () => {
       key: "op-1:completed",
       payload: { status: "completed", operation_id: "op-1", reason: "The research operation finished." },
     });
-    expect(result.instruction).toContain("clarify or decompose");
-    expect(result.instruction).toContain("bundles four classification axes");
-    expect(result.instruction).toContain("inquiry.adopt_next_step");
-    expect(result.instruction).toContain("Do not substitute a next step of your own invention");
-    expect(result.context).toMatchObject({ next_step: "clarify_or_decompose", thread_id: "thread-1" });
+    expect(result.instruction).not.toContain('inquiry.adopt_next_step');
+    expect(result.context).not.toHaveProperty('next_step');
+    expect(result.instruction).toContain('Summarize what it produced');
   });
 
   it("research_workflow_terminal: waiting_review names the user's options, including cancel", async () => {

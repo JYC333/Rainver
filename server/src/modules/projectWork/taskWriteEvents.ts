@@ -26,6 +26,7 @@ interface UserTaskEventContext {
   actorId?: string;
   /** The Run that produced it, when one did. */
   runId?: string | null;
+  reason?: string;
 }
 
 /** Space-only Tasks have no Project stream to write to. */
@@ -136,7 +137,8 @@ export async function recordTaskFlowChange(
     // duplicate unreachable; the key is what makes that a property of the
     // event rather than of the caller.
     idempotencyKey: `task.flow_changed:${context.taskId}:${input.fromStatus}:${input.toStatus}:${input.basedOn}`,
-    data: { from: input.fromStatus, to: input.toStatus, via: "user" },
+    ...(context.runId ? { runId: context.runId, correlationId: context.runId } : {}),
+    data: { from: input.fromStatus, to: input.toStatus, via: context.actorId ? "agent" : "user", ...(context.reason ? { reason: context.reason } : {}) },
   });
   if (input.toStatus === "done") {
     await appendProjectWorkEvent(db, {
@@ -172,4 +174,18 @@ export async function recordTaskResponsibilityChange(
     actorId,
     data,
   });
+}
+
+/** A blocker wording edit is a report, not a second flow/review transition. */
+export async function recordTaskBlockReasonChange(db:Queryable,context:UserTaskEventContext,input:{reason:string|null;basedOn:string}):Promise<void>{
+ const actorId=await actorFor(db,context);if(!actorId||!context.projectId)return;
+ await appendProjectWorkEvent(db,{spaceId:context.spaceId,projectId:context.projectId,eventKind:'task.reported',subjectType:'task',subjectId:context.taskId,actorId,runId:context.runId,idempotencyKey:`task.blocker:${context.taskId}:${input.basedOn}`,data:{summary:input.reason??'Cleared the blocker description',outcome:'progress',change:'blocked_reason',via:context.actorId?'agent':'user'}});
+}
+
+/** Same transaction as Run admission; no event when the Task is already running. */
+export async function markTaskRunStarted(db:Queryable,context:{spaceId:string;userId:string;taskId:string;runId:string;at:string}):Promise<void>{
+ const row=(await db.query<{status:string;project_id:string|null}>(`SELECT status,project_id FROM tasks WHERE id=$1 AND space_id=$2 FOR UPDATE`,[context.taskId,context.spaceId])).rows[0];
+ if(!row)throw new HttpError(404,'Task not found');if(row.status==='in_progress')return;
+ await db.query(`UPDATE tasks SET status='in_progress',blocked_reason=NULL,updated_at=$3 WHERE id=$1 AND space_id=$2`,[context.taskId,context.spaceId,context.at]);
+ await recordTaskFlowChange(db,{...context,projectId:row.project_id,reason:'Execution Run admitted'},{fromStatus:row.status,toStatus:'in_progress',overridden:[],basedOn:`run:${context.runId}`});
 }

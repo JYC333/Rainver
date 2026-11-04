@@ -121,13 +121,16 @@ proposal. Two mechanisms replace it:
 - **Bounds.** Every fan-out and every spend has a limit set before the work
   runs, the overflow is queued or offered rather than refused, and the limit
   is visible in the message that announces the work. A decomposition creates
-  at most **5** Threads or Tasks per turn; an acquisition reads at most
+  at most **5** Threads or ordinary single-Task writes per turn. An explicitly
+  requested Task list uses `task.create_batch`: at most 100 Tasks per call,
+  additional authorized batches in the same turn without another confirmation; an acquisition reads at most
   `SCREENING_AUTO_CONTINUE_CORPUS_LIMIT` items; an incremental update takes at
   most the same and defers the rest. A bound the caller may raise is an
   input on the action, never a server constant alone. The five-object safety
   ceiling is not a pacing target: Project conversation behavior follows
   [ADR 0019](0019-project-has-no-type-field.md), at most one object unless the
-  user requests a plan/decomposition, then at most three. That narrower pacing
+  user requests an Inquiry decomposition, then at most three Threads. Explicit
+  Task lists follow the requested scope through the batch action. That narrower pacing
   does not replace execution bounds with prompt text.
 
 A `follow_up_task` may still be drafted as a proposal envelope to carry Run

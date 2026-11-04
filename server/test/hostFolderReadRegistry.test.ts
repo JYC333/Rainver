@@ -13,6 +13,26 @@ describe("HostConnectionRegistry folder reads", () => {
     vi.useRealTimers();
   });
 
+  it("reports active CLI operations, rejects duplicates, and clears completion and disconnect", async () => {
+    const registry = new HostConnectionRegistry();
+    const frames: Record<string, unknown>[] = [];
+    const connection = sink(frames);
+    registry.registerConnection("host-1", connection);
+    const pending = registry.requestToolAction("host-1", "update_own_tool", { runtime_key: "codex_cli" });
+    expect(registry.toolOperations("host-1")).toEqual([{ runtime_key: "codex_cli", action: "update_own_tool" }]);
+    expect(registry.toolOperations("host-2")).toEqual([]);
+    await expect(registry.requestToolAction("host-1", "update_own_tool", { runtime_key: "codex_cli" }))
+      .resolves.toMatchObject({ ok: false, error: expect.stringContaining("already in progress") });
+    expect(frames).toHaveLength(1);
+    registry.receiveToolResult("host-1", String(frames[0]!.request_id), { ok: true, installation: "own", error: null });
+    await expect(pending).resolves.toMatchObject({ ok: true });
+    expect(registry.toolOperations("host-1")).toEqual([]);
+    const next = registry.requestToolAction("host-1", "update_own_tool", { runtime_key: "codex_cli" });
+    registry.unregisterConnection("host-1", connection);
+    await expect(next).resolves.toMatchObject({ ok: false, error: "host_disconnected" });
+    expect(registry.toolOperations("host-1")).toEqual([]);
+  });
+
   it("correlates concurrent single-frame requests with their daemon replies", async () => {
     const registry = new HostConnectionRegistry();
     const frames: Record<string, unknown>[] = [];

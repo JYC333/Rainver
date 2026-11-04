@@ -28,7 +28,6 @@ export * from "./graph.js";
 export * from "./importedSessions.js";
 export * from "./importedHistorySummaries.js";
 export * from "./inquiry.js";
-export * from "./inquiryAdvice.js";
 export * from "./inquirySignals.js";
 export * from "./interestProfiles.js";
 export * from "./informationDigests.js";

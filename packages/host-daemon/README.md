@@ -235,6 +235,14 @@ RAINVER_HOST_RELEASE_BASE_URL=file:///tmp/rainver-host-release \
 The helper refuses to overwrite an existing output directory. It is intended
 for a Linux Host running Node 24, matching the supported Host runtime.
 
+The pinned Claude ACP adapter includes a pnpm patch in `patches/` that waits
+for SDK cleanup and native CLI exit instead of forcing an immediate exit.
+Capability probes also close stdin and wait for exit, with bounded process-group
+termination for stuck adapters. This gives pending native credential writes
+their existing SDK grace period. The patch is included in the separate adapter
+pack by `pnpm deploy`; an update must install both the daemon and adapter pack.
+It does not restore credentials that the provider has already revoked.
+
 ## Optional read-only parallel review (personal Linux)
 
 After upgrading both server and Host, explicitly delegate with

@@ -391,9 +391,9 @@ parent) is `unverified` — never `manual`. A write from a person's own turn
 (`manual`, stamped only by the server) executes, and a write from any other
 effective origin — scheduled, automated, an unattended chain — is
 `require_approval` (`ruleUnattendedProjectWrite`,
-covering `task.create`, `task.stage.advance`, `task.complete`,
+covering `task.create`, `task.status.set`, `task.complete`,
 `proposal.decide`, `inquiry.thread.create`, `inquiry.iteration.record`,
-`inquiry.advice.adopt`, `research.acquisition.start` and `memory.write`). And **bounds set before the work runs**: at
+`research.acquisition.start` and `memory.write`). And **bounds set before the work runs**: at
 most five Threads opened per turn (`THREAD_FAN_OUT_PER_TURN`, counted from the
 Project's own event stream so a resumed Run cannot spend the budget twice), at
 most five Tasks per turn (`TASK_FAN_OUT_PER_TURN`, `tasks/turnFanOut.ts`),
@@ -648,27 +648,6 @@ the engine never creates a Thread itself. The input carries a producer
 idempotency key, persisted under the Project on `inquiry_threads`, so browser
 retries return the same Thread and a conflicting replay fails closed.
 
-## `inquiry.adopt_next_step`
-
-Takes the next step the system already recorded for a Thread, on the user's
-instruction, making the same two writes the Inquiry Area's Adopt button makes:
-the Thread takes the recommended focus (`step_origin: "advice"`, attention
-`focused`) and the advice row becomes `adopted`. It refuses anything that is
-not currently open and current, so an already-taken or stale recommendation
-cannot be adopted twice. Policy action `inquiry.advice.adopt` (low risk,
-allow, audited). Do not put a proposal gate on it. That would review a
-suggestion the system itself made.
-
-Advice is written when a search finishes (`tryQueueAdviceForWorkflowThread`,
-trigger `search_completed`). Project Attention, the Room, and the completed
-instruction read it. Do not leave it only in the Inquiry Area stage workspace
-of the selected Thread. The Project front page and the Room's Agent would
-have nothing to read. Three surfaces carry it:
-Project Attention (`inquiry_advice` items, stale ones omitted), the
-`research_workflow_terminal` completed instruction (which relays the recorded
-step and its reasoning and forbids substituting one of the Agent's own), and
-this action for taking it without leaving the conversation.
-
 ## Where an Agent gets an id (id-discovery reads)
 
 A conversation's rendered history carries no ids — `productionAcquisition.ts`
@@ -678,8 +657,8 @@ read that returned it in the same turn. Every such action is paired with one:
 
 | Read | Returns | Feeds |
 | --- | --- | --- |
-| `inquiry.list_threads` | `{thread_id, kind, statement, attention_state, next_step}` — `next_step` is the Thread's open, current advice (`{focus, rationale}`) or null | `research.start_acquisition`, `inquiry.record_conclusion`, `inquiry.promote_knowledge`, `inquiry.adopt_next_step` (only when `next_step` is set) |
-| `task.list` | `{task_id, title, status, priority, due_at, start_after, blocked_reason}` (optional `status` filter) — the state a "what next?" recommendation is grounded in, not only ids | `task.report`, `task.handoff`, `task.advance_stage`, `task.request_review`, `task.plan.propose` |
+| `inquiry.list_threads` | Paginated compact Thread summaries (default 25, max 100, `after_thread_id` / `next_cursor`); includes actual primary/round and current version tokens | `research.start_acquisition`, `inquiry.record_conclusion`, `inquiry.promote_knowledge` |
+| `task.list` | `{task_id, title, status, priority, due_at, start_after, blocked_reason}` (optional `status` filter) — the state a "what next?" recommendation is grounded in, not only ids | `task.report`, `task.handoff`, `task.set_status`, `task.request_review`, `task.plan.propose` |
 | `proposal.list_pending` | `{proposal_id, proposal_type, title}` for *this conversation* | `proposal.decide` |
 | `research.list_operations` | `{operation_id, title, status}` (`include_terminal` opt-in) | `research.cancel_acquisition` |
 
@@ -716,31 +695,23 @@ failed card in preference to the code.
 ## `research.start_acquisition`
 
 The Room's other research-execution tool alongside `agent.delegate`: given an
-accepted Inquiry Thread, it enqueues a background job
-(`research_pipeline_start`) that runs question assessment (reusing an
-existing passing assessment session when one exists) → `AdaptiveQueryOrchestrator
-.evaluate` → `ResearchMonitorMaterializer.materialize` (source-channel
-materialization plus strategy activation in one call) →
-`ProjectResearchOrchestrator.startInitialIntake`. Providers, candidate budget,
-and execution model are server-derived defaults, not caller-supplied.
-Alongside `thread_id` and optional `intent_note`, callers can provide `max_items`
-and `since` to bound acquisition; these do not select the query candidate budget
-or provider/model. Auto-selecting those defaults per invocation is not
-implemented. The Manager Agent chooses
-between `agent.delegate` (an ad hoc specialist investigation) and this action
-(a tracked, monitored acquisition Workflow) from context; the two are not
-mutually exclusive and no server code intercepts a phrasing to force one.
+accepted Inquiry Thread, it atomically binds a Workflow/Operation/originating
+Step and enqueues `research_pipeline_start`. The accepted-Thread Frame context
+feeds query evaluation and existing Source materialization/admission; FINER is
+optional rather than an automatically imposed prerequisite. Previously confirmed
+scope constraints are retained. Intake continues the same call identity.
 
-Idempotency is layered: a pending/running pipeline job for the Thread is a
-no-op, and each pipeline stage checks persisted state before redoing it (an
-assessment session already passed, a strategy already materialized) so a
-retry after a mid-pipeline failure resumes rather than restarts. A second,
-fully-identical invocation coalesces onto the same Operation through
-`startInitialIntake`'s own idempotency-key fingerprint match; a *different*
-concurrent start on an already-active workflow surfaces as a reported stage
-failure instead of a duplicate Operation. The job keeps its outcome in its
-payload before reporting it to the Room, so a report deferred by a busy Room
-turn is retried on its own rather than by running the pipeline again.
+Requests coalesce by scoped logical request identity and fingerprint, not by
+Thread/kind. Repeating a Job reuses its persisted outcome; an explicitly new
+call respects the existing active-Workflow conflict. Preparation and admitted
+execution retries retain the original Step/snapshot and expose failures. See
+[Research calls](PROJECT_RESEARCH_CALLS.md) for exact attempts and recovery.
+
+`research.read_result` reads a separately granted, permission-checked result
+package after fixed-Run Source egress admission. `research.adopt_result` explicitly assesses applicability in Inquiry
+Verify with expected versions and idempotency; it cannot accept cognition or
+complete a Task/problem. Both take their Operation id from
+`research.list_operations` and enforce their own permissions.
 
 **Bounded before it runs.** The acquisition passes
 `max_items: SCREENING_AUTO_CONTINUE_CORPUS_LIMIT` (200). Do not run
@@ -794,11 +765,10 @@ the strategy's text with the Thread's: text equality rejects the pipeline's
 own output and `research.start_acquisition` cannot start after one word
 changes. A strategy built for a different Question is still a 409.
 
-A run that stops before `startInitialIntake` records the attempt as a
-terminal `failed` research Operation (`progress_json.run_kind =
-"acquisition_attempt"`, carrying the stage, reason and pipeline job id), so a
-failure that produced no acquisition is still visible where the work is looked
-for rather than living only in `jobs.result_json`. Every domain failure
+Queue admission binds every pipeline job to its Operation before it runs. A
+run that stops before `startInitialIntake` marks that Operation `failed` with
+the stage and reason, so a failure that produced no acquisition is visible
+where the work is looked for rather than living only in `jobs.result_json`. Every domain failure
 reports its own message; there is no catch-all remap of 409s.
 
 Completion reports back through the `ConversationContinuationRegistry` event
@@ -973,3 +943,34 @@ names cannot substitute for this action. See
 
 See [Source material processing](SOURCE_MATERIAL_PROCESSING.md) for the common
 processing-ID contract, goal/item binding and Source-wide retention proposal.
+
+
+`inquiry.read_problem` is a separately granted, full-content read under
+`inquiry.problem.read`; its Step and close-out histories each have a bounded
+page and an independent cursor. `inquiry.list_threads` returns compact summary
+pages rather than full histories; callers must follow `next_cursor` when
+necessary. Current work is selected explicitly through the problem command and its
+expected version/revision; there is no legacy Advice adoption action.
+
+Inquiry problem work is registered through `inquiry.record_work` and
+`inquiry.close_round` (policy actions `inquiry.work.record` and
+`inquiry.round.close`), with explicit Run grants, the ordinary manual-origin
+gate, full Thread access and Updates/compensation. These actions share the
+[Inquiry problem engine](INQUIRY_PROBLEM_ENGINE.md) commands with HTTP; they
+never start Research or change Task status. Existing `inquiry.record_conclusion`
+requires the new method, versions/key and explicit round intent.
+
+### Problem–Task links and retired Task stages
+
+`inquiry.link_task` creates/links atomically; `inquiry.list_tasks` returns bounded
+linked Task summaries with actual Board status; `inquiry.reference_task_result`
+records explicit result-collection work with expected problem versions. All
+require their own explicit Run grants and fresh ids from the matching read.
+The two writes take no model idempotency key; the dispatcher call id and Run
+attempt form the receipt. They reuse `inquiry.work.record`, so unattended
+origins still require approval. Task/Thread full access and matching Project are checked again in
+the domain command. See [Inquiry](INQUIRY_PROBLEM_ENGINE.md).
+
+The Task stage route/special dispatcher and Loop DTOs are removed (ADR 0027 decision 5).
+Old calls use unknown-route/ungranted-tool refusal; no Board mapping occurs.
+Imported history uses canonical Task permissions and paged history.

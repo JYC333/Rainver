@@ -1,3 +1,5 @@
+import { reconcileResearchCall } from "./researchProblemCalls.js";
+import { assertResearchCallReadable } from "./researchCallAccess.js";
 import { randomUUID } from "node:crypto";
 import { sha256Json } from "../evolution/hash.js";
 import type { ServerConfig } from "../../config.js";
@@ -151,18 +153,24 @@ async function startResearchReconcilePassLocked(
     budgetSources: [],
     researchOperationId: lockedOperation.id,
     beforeSchedule: async (executionId) => {
+      if(event.kind==="retry"){
+       const binding=await db.query<{research_call_json:unknown}>(`SELECT research_call_json FROM project_operations WHERE id=$1 AND space_id=$2`,[lockedOperation.id,identity.spaceId]);
+       await assertResearchCallReadable(db,identity,lockedOperation.project_id,binding.rows[0]?.research_call_json);
+      }
       const updated = await db.query(
         `UPDATE project_operations
             SET current_execution_id=$3,
                 generation=generation+1,
+                research_attempt=research_attempt+CASE WHEN $5::boolean THEN 1 ELSE 0 END,
                 updated_at=$4
           WHERE id=$1 AND space_id=$2
             AND status NOT IN ('completed','cancelled')`,
-        [lockedOperation.id, identity.spaceId, executionId, new Date().toISOString()],
+        [lockedOperation.id, identity.spaceId, executionId, new Date().toISOString(),event.kind==="retry"],
       );
       if (updated.rowCount !== 1) {
         throw new HttpError(409, "Project Research operation is no longer active");
       }
+      await reconcileResearchCall(db,identity.spaceId,lockedOperation.id);
     },
   });
   await settleSynchronousNodes(db, identity, config, result.workflowExecutionId);
@@ -459,6 +467,7 @@ workflowExecutionOutcomeHandlerRegistry.register(
         new Date().toISOString(),
       ],
     );
+    await reconcileResearchCall(db,spaceId,researchOperationId);
   },
   "project_research",
 );

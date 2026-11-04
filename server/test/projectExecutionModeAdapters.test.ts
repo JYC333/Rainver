@@ -15,17 +15,17 @@ describe("Project execution Mode adapters", () => {
   it("interrupts a person about readable Project Tasks that need them", async () => {
     // `responsible_user_id` is computed by the shared responsibility SQL, so a
     // fixture row carries the answer the database would have produced.
-    const mine = { claimed_by_user_id: null, claimed_by_agent_id: null, assigned_user_id: identity.userId, assigned_agent_id: null, created_by_user_id: identity.userId, responsible_user_id: identity.userId, loop_stage: null };
+    const mine = { claimed_by_user_id: null, claimed_by_agent_id: null, assigned_user_id: identity.userId, assigned_agent_id: null, created_by_user_id: identity.userId, responsible_user_id: identity.userId };
     // Claimed by an Agent *and still being worked on*: the chain stops there,
     // so no person is responsible and nobody is interrupted.
-    const agents = { claimed_by_user_id: null, claimed_by_agent_id: "agent-1", assigned_user_id: identity.userId, assigned_agent_id: null, created_by_user_id: identity.userId, responsible_user_id: null, loop_stage: "act" };
+    const agents = { claimed_by_user_id: null, claimed_by_agent_id: "agent-1", assigned_user_id: identity.userId, assigned_agent_id: null, created_by_user_id: identity.userId, responsible_user_id: null };
     // Claimed by an Agent but now waiting on a decision: the chain steps past
     // the Agent, because a state that means "a person has to decide" with no
     // person responsible is a Task that waits forever.
-    const handedBack = { ...agents, responsible_user_id: identity.userId, loop_stage: "verify" };
+    const handedBack = { ...agents, responsible_user_id: identity.userId };
     // Created by an Agent and never assigned: no person anywhere in the chain
     // except the Project owner, who is therefore the one interrupted.
-    const orphan = { claimed_by_user_id: null, claimed_by_agent_id: null, assigned_user_id: null, assigned_agent_id: null, created_by_user_id: null, responsible_user_id: identity.userId, loop_stage: "verify" };
+    const orphan = { claimed_by_user_id: null, claimed_by_agent_id: null, assigned_user_id: null, assigned_agent_id: null, created_by_user_id: null, responsible_user_id: identity.userId };
     const query = vi.fn(async (sql: string) => {
       expect(sql).toContain("content_access_grants");
       // A done Task's merge that stopped on a conflict: its own item, with

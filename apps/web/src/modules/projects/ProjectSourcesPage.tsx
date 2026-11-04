@@ -464,7 +464,7 @@ export default function ProjectSourcesPage({view='all'}:{view?:'all'|'manage'|'m
       {view !== 'materials' && <>
       <div className="flex flex-wrap items-center gap-2 rounded border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
         <BookOpen className="size-3.5 shrink-0" />
-        <span>{t('monitoring.sourcesReadingHint')} <Link className="font-medium text-foreground hover:underline" to={`/projects/${projectId}/research?tab=reading`}>{t('monitoring.deepReadingList')}</Link></span>
+        <span>{t('monitoring.sourcesReadingHint')} <Link className="font-medium text-foreground hover:underline" to={`/projects/${projectId}/inquiry/records?tab=reading`}>{t('monitoring.deepReadingList')}</Link></span>
       </div>
 
       <div className="flex items-start justify-between gap-4 flex-wrap pb-4 border-b border-border">
@@ -491,7 +491,7 @@ export default function ProjectSourcesPage({view='all'}:{view?:'all'|'manage'|'m
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {projectId && <ReadingMethodEntry projectId={projectId} readerHref={`/projects/${projectId}/sources?tab=settings`}/>}
-          {projectId && <Button variant="outline" asChild><Link to={`/projects/${projectId}/research?tab=reading`}><BookOpen className="size-4" />{t('monitoring.deepReadingList')}</Link></Button>}
+          {projectId && <Button variant="outline" asChild><Link to={`/projects/${projectId}/inquiry/records?tab=reading`}><BookOpen className="size-4" />{t('monitoring.deepReadingList')}</Link></Button>}
           <Button variant="outline" className="gap-1.5 shrink-0" asChild disabled={!projectId}>
             <Link to={projectGraphHref(projectId, bindings)}>
               <Network className="size-4" />

@@ -29,11 +29,11 @@ const toneClasses: Record<ResearchResultState['kind'], string> = {
 }
 
 function actionHref(action: ResearchResultAction, state: ResearchResultState, projectId: string): string | null {
-  if (action === 'open_report' && state.latestReport) return `/projects/${projectId}/research/reports/${state.latestReport.id}`
+  if (action === 'open_report' && state.latestReport) return `/projects/${projectId}/research/reports/${state.latestReport.id}?workflow_id=${encodeURIComponent(state.latestReport.workflow_id)}`
   if (action === 'view_corpus') return `/projects/${projectId}/sources`
   // Checkpoint decisions live in Operations Area. Do not add a second
   // decide control here. The two would disagree after either one applies.
-  if (action === 'review_results') return `/projects/${projectId}/research?tab=runs`
+  if (action === 'review_results') return `/projects/${projectId}/inquiry/records?tab=runs${state.operation?'&open='+encodeURIComponent(state.operation.id):''}`
   return null
 }
 

@@ -72,6 +72,18 @@ own rootless bubblewrap namespace.
 
 ## The built-in host
 
+Host runtime install/update controls retain their in-flight request state across
+page navigation within the same browser application. Returning to the Host card
+restores the spinner; clicking an active upgrade reports that the operation is
+already in progress without submitting another request. Completion or failure
+clears the state and refreshes the currently mounted card. This is request
+tracking plus an authorized `/hosts/:hostId/tool-operations` read of the
+server connection registry, polled while the manageable Host card is mounted.
+Reloads and other browsers recover pending server requests; duplicate mutations
+for the same Host/runtime are refused before dispatch. A server restart, timeout
+or Host disconnect clears pending requests; this is not durable daemon process
+discovery across those failures.
+
 The instance's own execution host is the `rainver-host` daemon inside
 `sandbox-runner`. It is not paired: at startup the server publishes a
 registration credential into a directory both containers share
@@ -728,6 +740,26 @@ the composer controls across a server restart. While the runtime cannot
 answer, that installation reports no options; Rainver does not read vendor
 config files or synthesize a fallback catalog.
 
+Probe completion closes the adapter's stdin and waits for its `close` event
+before releasing the runtime hold or removing the throwaway directory. This
+applies to successful answers, protocol errors, and timeouts. An adapter that
+does not exit gets 10 seconds to drain, then process-group SIGTERM and, after
+another 3 seconds, SIGKILL; descendants must not outlive a wedged probe.
+
+The pinned Claude ACP 0.70.0 package has a pnpm patch in `patches/` for the
+same lifecycle boundary in ordinary sessions: await SDK Query cleanup through
+its async iterator `return()` before aborting the session, and let Node exit
+naturally after disposal instead of calling `process.exit()`. This preserves
+the native CLI's existing SDK exit grace, including pending credential writes.
+Reuse / Dependency Check: reuse the installed ACP/SDK and the Host's existing
+process-group signalling; no new dependency or protocol implementation. The
+upstream adapter's synchronous `Query.close()` does not await that cleanup.
+Remove the patch only after an upstream version provides equivalent awaited
+cleanup and shutdown, verified by `test/acpCleanup.test.ts`. Both the daemon's
+development dependency and the separately deployed adapter pack use this patch.
+This prevents an interruption window; it cannot recover an already revoked
+refresh token or establish why an earlier provider revocation occurred.
+
 *How* each runtime's ACP process is launched for the ask is not the daemon's
 knowledge: `hello_ack` carries `runtime_probes` — one `{ runtime, argv }` per
 implemented ACP adapter, rendered by the server from the adapter spec's
@@ -768,8 +800,8 @@ handled the same way — the builtin CLIs and enabled registry agents alike:
 For a managed Claude or Codex copy, `<version>` is the ACP adapter package
 version. The adapter spec also declares a fixed command for reading the vendor
 CLI bundled inside that package. Installation records that answer separately as
-`runtime_version`. The Host card displays only that vendor CLI version; the ACP
-package and its version remain internal installation details. A failed metadata
+`runtime_version`. The Host card displays that vendor CLI version; the Agent
+catalog separately shows installed ACP versions and available releases. A failed metadata
 probe does not fail the installation and is shown as an unavailable CLI version.
 
 `hello_ack.runtime_probes` is the daemon's initial whole catalog, one entry per
@@ -777,10 +809,9 @@ adapter: the PATH binary to look for (`runtime`, null for a registry agent),
 the launch `argv`, the `distribution` to install a managed copy from (a
 builtin spec names its ACP registry entry — `distribution: { registry_id }` —
 resolved by the acpAgents refresh loop, persisted in instance settings and
-read from memory, never fetched on the hello path; a registry agent carries
-a snapshot of the entry's distribution *and* its `version` as
-`distribution_version`, since only an npm package string repeats the version
-and a binary or uvx distribution does not), the state boundary (`state`:
+read from memory, never fetched on the hello path; enabled registry agents use
+the same registry-reference resolution, with their approval snapshot retained
+as an offline bootstrap), the state boundary (`state`:
 `credentials.state` in the spec — state-root variables, `home_subdir`,
 `credential_file` — by which a login is recognised and a profile isolated),
 and the CLI login command when the runtime has one (`login`:
@@ -876,10 +907,9 @@ exception selects direct; the upstream proxy owns final DNS resolution.
 Non-direct binary downloads require a pinned SHA-256. A saved mode change
 applies to the next install request, including an explicit OpenCode retry.
 
-**The Server Runtime's own copy reconciles itself.**
+**The Server Runtime bootstraps a managed copy and preserves administrator upgrades.**
 `hosts/serverOpenCodeProvisioner.ts` runs every 15s
-(`scheduler/backgroundServices.ts`) and drives one release-pinned OpenCode copy
-on the built-in host toward `runtimeAdapters/opencodeRelease.ts`, through the
+(`scheduler/backgroundServices.ts`) and initializes OpenCode from the resolved ACP registry, through the
 same `install_tool` lifecycle a paired host's owner triggers by hand — there is
 no second, Server-direct installer. Desired state lives in
 `host_runtime_provisioning` (`hosts/runtimeProvisioningRepository.ts`), and
@@ -895,7 +925,9 @@ a one-shot instance whose claim nothing would then heartbeat.
 Only a claim that has gone `INSTALL_HEARTBEAT_STALE_MS` without a heartbeat is
 declared interrupted, and the placeholder that leaves behind is the one error
 message the daemon's real answer is allowed to replace; every other failure
-stays sticky until an explicit owner retry or a new pinned release. A paired
+stays sticky until an explicit administrator retry or a new initialization target.
+An existing ACP-healthy copy is adopted as the desired version, so reconciliation
+never upgrades or downgrades an administrator-selected installation. A paired
 host is never provisioned this way: the reconciler resolves the built-in host
 by authority and refuses to write desired state for anything else.
 
@@ -925,13 +957,26 @@ records one `host_runtime_changes` row only when the version actually changed.
 The previous version directory stays on disk under the daemon's one-previous
 rule, so `POST .../installations/opencode/rollback` remains the undo.
 
-**Where the artifact comes from differs by host kind.**
-`runtimeProbes.ts`'s `resolveDistribution(spec, hostKind)` returns
-`SERVER_OPENCODE_RELEASE` — the release-pinned archive and sha256 in
-`runtimeAdapters/opencodeRelease.ts` — for the built-in host's OpenCode, and
-the ACP registry entry for every other host/runtime pair. A probe with no host
-kind named means `"remote"`, so only the Server Host's own install path sees
-the pin.
+**Both Host kinds use the same upgrade distribution.**
+`runtimeProbes.ts` resolves the ACP registry entry for managed copies on both
+built-in and paired Hosts. `runtimeAdapters/opencodeRelease.ts` is only a
+verified offline bootstrap fallback when OpenCode has no registry entry; it is
+not a version lock. Instance administrators upgrade and roll back Server
+OpenCode through the same Host controls and `install_tool` lifecycle as paired
+Host owners. The required bootstrap copy cannot be removed from that card.
+
+Managed Codex has two versions: the ACP adapter and its bundled vendor CLI.
+The upgrade control compares both against their respective release sources.
+The common install request can carry an exact `vendor_cli_version` for Codex;
+the daemon writes an npm dependency override in the staging tree, verifies the
+resulting CLI version and ACP health, then promotes it. This avoids a nested
+older Codex dependency continuing to run. Login state stays outside that tree.
+Own copies retain their native package-manager updater; both paths reuse the
+same release metadata, Host authority and operation-status tracking.
+
+Reuse / Dependency Check: retain the managed staging installer, npm dependency
+resolution, ACP health gate, runtime drain and Host controls. No additional
+package manager or independent server installer is introduced.
 
 Install, upgrade, rollback and removal are recorded in
 `host_runtime_changes` and listed on the Updates page
@@ -955,8 +1000,42 @@ registry version (`latest_managed_version`). The Host card compares it with the 
 shows its compact CLI upgrade control only while they differ; neither internal
 package version is exposed in that UI.
 
+The Host Agent catalog keeps this Host's installed agents first, including local
+copies, and offers explicit managed ACP upgrades alongside the available release.
+Local Claude/Codex CLI updates remain separate; their bundled ACP adapters follow
+Host releases, and installing a managed copy does not replace a local CLI or move
+its login. Server-pinned runtimes retain their provisioner-owned update path.
+Both builtin and dynamically enabled ACP agents discover registry releases in the
+existing background cache. Enabled snapshots record approval and bootstrap offline
+reads; they are never mistaken for the latest version. Ordinary reads install
+nothing. An explicit install refreshes metadata and, when the caller names an
+`expected_version`, refuses a changed release with409 before sending an install
+frame. Existing Host ownership, runtime draining, health checks, rollback and
+change history remain the installation path. Updating an already approved agent
+does not require enabling it again.
+
+Reuse / Dependency Check: reuse the ACP registry cache, runtime probes, managed
+installer and shared controls. No dependency, new updater or scheduler is added.
+
 The stable HOME protects files, not a vendor guarantee that older binaries can
 read newer session formats.
+
+Rollback is kept under an Agent's More → Version management, alongside the current
+and previous ACP versions. Keeping the previous binaries has no time-based expiry
+and does not add a permanent rollback action to the main row.
+
+Managed package versions follow the Host's current installation. On an admitted
+heartbeat, `managedRuntimeBindings.ts` synchronizes live Agent runtime profiles and
+active/reset Host threads in the same transaction as the Host capability update.
+Only one unambiguous current managed copy with a matching version/id and ACP
+health proof qualifies. Pending provisioning, absent/unverified copies and revoked
+Hosts do not move bindings. Scope is the same Host/runtime and stable managed HOME;
+own copies, other Hosts, closed threads and Run snapshots remain unchanged. Native
+session ids, context digests, accounts, backend/provider snapshots and workspaces
+are preserved. Newly routed Runs snapshot the new concrete version; rollback uses
+the same synchronization, and ordinary heartbeats after an upgrade reconcile live
+bindings without a historical-data rewrite or a migration. Existing saved-model
+reconciliation and native-session-invalid/reset handling continue to apply.
 
 **Subscription quota.** `usage_probe { runtime_key, installation, login,
 timeout_seconds }` asks a host what one copy has left; the daemon reads that

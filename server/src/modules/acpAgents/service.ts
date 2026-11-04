@@ -47,8 +47,7 @@ export function acpAgentRuntimeAdapterSpec(agent: EnabledAcpAgent): RuntimeAdapt
       protocol: "acp",
       remote_host_only: true,
     },
-    distribution: agent.distribution,
-    distribution_version: agent.version,
+    distribution: { registry_id: agent.id },
     credentials: {
       credential_mode: "cli_profile",
       credential_runtime_name: command,
@@ -92,6 +91,7 @@ export class AcpAgentService {
     const agents = [...current.filter((existing) => existing.id !== registryId), agent];
     await this.store.upsert(ACP_AGENTS_SETTINGS, ACP_AGENTS_SCOPE_ID, { agents }, { updatedByUserId: userId });
     publish(agents);
+    await this.refreshRegistryCache();
     return agent;
   }
 
@@ -151,7 +151,12 @@ export class AcpAgentService {
     const wanted = new Set(listRuntimeAdapterSpecs().flatMap((spec) =>
       spec.distribution && "registry_id" in spec.distribution ? [spec.distribution.registry_id] : []));
     const stored = (await this.store.get(ACP_REGISTRY_CACHE_SETTINGS, ACP_AGENTS_SCOPE_ID)).value;
-    let entries = stored.entries;
+    // Enabled snapshots are an offline bootstrap, not the latest release.
+    // Installed copies remain owned and reported by each Host.
+    let entries = [...stored.entries];
+    for (const agent of await this.listEnabled()) {
+      if (!entries.some(entry => entry.id === agent.id)) entries.push(agent);
+    }
     try {
       const fresh = (await fetchAcpRegistry()).filter((entry) => wanted.has(entry.id));
       const changed = JSON.stringify(fresh) !== JSON.stringify(stored.entries);

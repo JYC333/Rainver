@@ -21,7 +21,7 @@ const item = {
   title: "Autonomous work", access_level: "full", group: "recently_finished", mine: true,
   source_run_id: null,
   responsible: { kind: "user", id: "user", display_name: "User" },
-  task_status: null, loop_stage: null, task_completed_at: null, runs: [run], reasons: [],
+  task_status: null,  task_completed_at: null, runs: [run], reasons: [],
   read_states: [{ subject, unread: true, manual_unread: false, read_at: null, state_version: 0 }],
   unread: true, last_activity_at: "2026-10-21T12:00:00Z", visible_run_count: 1, runs_next_cursor: null, operations: [],
 };
@@ -36,7 +36,7 @@ describe("Agent attention contracts", () => {
   it("reuses the complete Run vocabulary while keeping Turn and Task axes independent", () => {
     for (const status of RUN_STATUS_VALUES) expect(AgentAttentionRunSchema.parse({ ...run, status }).status).toBe(status);
     const reason = { kind: "awaiting_answer", message_id: "question", session_id: "session", agent_id: "agent", responsible: { kind: "user", id: "user", display_name: "User" } };
-    expect(AgentWorkItemSchema.parse({ ...item, group: "needs_you", reasons: [reason], task_status: "waiting_for_review", loop_stage: "verify" }).runs[0]?.status).toBe("succeeded");
+    expect(AgentWorkItemSchema.parse({ ...item, group: "needs_you", reasons: [reason], task_status: "waiting_for_review" }).runs[0]?.status).toBe("succeeded");
   });
   it("rejects body/credential leakage and unbounded summaries", () => {
     for (const extra of [{ prompt: "private" }, { output_json: {} }, { api_key: "secret" }]) {

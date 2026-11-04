@@ -8,7 +8,6 @@ import { errMsg } from '../../../lib/utils'
 import NotesPage from '../../knowledge/NotesPage'
 import type { NotesSurfaceScope } from '../../knowledge/notesPageModel'
 import { NotebookChatPanel } from './NotebookChatPanel'
-import { ThreadOriginBar } from '../inquiryArea/ThreadOriginBar'
 
 /**
  * The Project's notes. Notes are a Project-level surface, reachable from
@@ -102,7 +101,6 @@ export default function ProjectNotesPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <ThreadOriginBar projectId={projectId} kinds={['synthesize']} className="px-6 pt-4" />
       <div className="min-h-0 flex-1">
         <NotesPage scope={scope} />
       </div>

@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectPulse from '../ProjectPulse'
-import { inquiryApi, projectsApi } from '../../../api/client'
+import { projectsApi } from '../../../api/client'
 import type { ProjectBoard, ProjectOverview } from '../../../types/api'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() } }))
@@ -21,16 +21,14 @@ const board = {
     {
       id: 'task-active', title: 'Run the depth repair', status: 'in_progress',
       column_key: 'in_progress', priority: 'normal', risk_level: 'low', due_at: null,
-      updated_at: '2026-08-27T00:00:00.000Z', loop_stage: 'act', loop_stage_label: 'Investigate',
-      responsible: { kind: 'agent', id: 'agent-1', display_name: 'Research specialist' },
+      updated_at: '2026-08-27T00:00:00.000Z', responsible: { kind: 'agent', id: 'agent-1', display_name: 'Research specialist' },
       active_run_count: 1, latest_run_status: 'running', evaluation_recommendation: null,
       blocked_reason: null, completion: { ok: true, missing: [] },
     },
     {
       id: 'task-finished', title: 'Old agent work', status: 'done',
       column_key: 'done', priority: 'normal', risk_level: 'low', due_at: null,
-      updated_at: '2026-08-26T00:00:00.000Z', loop_stage: null, loop_stage_label: null,
-      // Still carries the Agent that did it — but it is finished, not moving.
+      updated_at: '2026-08-26T00:00:00.000Z', // Still carries the Agent that did it — but it is finished, not moving.
       responsible: { kind: 'agent', id: 'agent-1', display_name: 'Research specialist' },
       active_run_count: 0, latest_run_status: 'succeeded', evaluation_recommendation: null,
       blocked_reason: null, completion: { ok: true, missing: [] },
@@ -168,17 +166,7 @@ describe('Project Pulse', () => {
     expect(screen.getByTestId('attention-remainder')).toHaveTextContent('Read the earlier 673')
     expect(screen.getByTestId('attention-next_step')).toHaveTextContent('Split this question')
     expect(screen.getByText('Waiting on your decision')).toBeInTheDocument()
-    // The system worked the step out; taking it must not mean navigating to
-    // an Area to press the same button.
-    fireEvent.click(within(screen.getByTestId('attention-next_step')).getByRole('button', { name: 'Adopt' }))
-    await waitFor(() => expect(inquiryApi.adoptAdvice).toHaveBeenCalledWith('project-1', 'thread-7'))
-    // The attention list lives on the overview this surface receives as a
-    // prop: without telling its owner, the adopted suggestion stays on screen
-    // and a second click 404s against its own "already taken" guard.
-    await waitFor(() => expect(overviewChanged).toHaveBeenCalled())
-    // A gate is not adoptable.
-    expect(within(screen.getByTestId('attention-gate')).queryByRole('button', { name: 'Adopt' })).not.toBeInTheDocument()
-    expect(screen.getByText('Suggested next step')).toBeInTheDocument()
+    expect(screen.queryByRole('button', {name:'Adopt'})).not.toBeInTheDocument()
     // A class with nothing in it is not a heading.
     expect(screen.queryByTestId('attention-uncertain')).not.toBeInTheDocument()
   })
@@ -205,7 +193,7 @@ describe('Project Pulse', () => {
     const row = await screen.findByTestId('in-progress-op-1')
     expect(within(row).getByText(/848\/873 materials classified/)).toBeInTheDocument()
     expect(within(row).getByRole('link', { name: 'Start initial material intake' }))
-      .toHaveAttribute('href', '/projects/project-1/research?tab=runs&open=op-1')
+      .toHaveAttribute('href', '/projects/project-1/inquiry/records?tab=runs&open=op-1')
     // A bar and a spinner say "something is happening" and nothing else; a
     // stage with no item counts of its own must still say where it is.
     expect(within(row).getByText(/% · step 3\/5/)).toBeInTheDocument()
@@ -254,3 +242,8 @@ describe('Project Pulse', () => {
     await waitFor(() => expect(projectsApi.updates).toHaveBeenCalledWith('project-1', { limit: 3 }))
   })
 })
+
+it('shows only authorized status for withheld research, without inventing a stage or percent',async()=>{
+ renderPulse({...overview,in_progress:[{id:'withheld',kind:'research',title:'Research invocation',status:'active',progress_json:{content_withheld:true}}]} as never);
+ const row=await screen.findByTestId('in-progress-withheld');expect(within(row).getByText('Research content unavailable · status only')).toBeInTheDocument();expect(within(row).queryByText(/step.*\/5/)).not.toBeInTheDocument();
+});

@@ -1,4 +1,7 @@
+import { revertRoundCloseout } from "../inquiry/roundUndo.js";
+import { lockProblem } from "../inquiry/problemFacts.js";
 import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import {referenceReadableSql} from "../inquiry/problemReferences.js";
 import { runInheritedReadSql } from "../access/contentAccessSql.js";
 import { assertProjectReadable } from "../projects/access.js";
 import { InquiryIterationService } from "../inquiry/iterationService.js";
@@ -43,6 +46,7 @@ async function undoLocked(
        FROM project_work_events e
       WHERE e.id = $1 AND e.space_id = $2 AND e.project_id = $3
         AND ${runInheritedReadSql("e.data_json->>'run_id'", "e.space_id", "$4")}
+        AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(e.data_json->'reference_refs','[]'::jsonb)) undo_ref WHERE NOT COALESCE(${referenceReadableSql("undo_ref","$4","e.space_id","e.project_id")},false))
       FOR UPDATE OF e`,
     [eventId, identity.spaceId, projectId, identity.userId],
   );
@@ -143,6 +147,18 @@ async function undoLocked(
     return { undone_event_id: eventId, action };
   }
 
+  if(action === "revert_round_closeout") {
+    const id=event.data_json?.closeout_id;
+    if(typeof id!=="string")throw new HttpError(409,"Close-out reference missing");
+    await revertRoundCloseout(db,identity,projectId,event.subject_id,eventId,id);
+    return {undone_event_id:eventId,action};
+  }
+  await lockProblem(db,identity,projectId,event.subject_id);
+  const expected=event.data_json?.new_position;
+  if(expected && typeof expected==="object") {
+    const state=await db.query<{position:Record<string,unknown>}>(`SELECT COALESCE(to_jsonb(q),to_jsonb(h)) AS position FROM inquiry_threads t LEFT JOIN inquiry_question_states q ON q.thread_id=t.object_id LEFT JOIN inquiry_hypothesis_states h ON h.thread_id=t.object_id WHERE t.object_id=$1 AND t.space_id=$2`,[event.subject_id,identity.spaceId]);
+    if(!state.rows[0]||Object.entries(expected).some(([key,value])=>JSON.stringify(state.rows[0]!.position[key])!==JSON.stringify(value))) throw new HttpError(409,"The position changed after this conclusion; record a new judgment instead");
+  }
   // Reverting a conclusion is recording the position it replaced, not
   // deleting the Iteration: the account keeps both, and the Thread's history
   // says it went one way and then came back.
@@ -150,10 +166,13 @@ async function undoLocked(
   if (!previous || typeof previous !== "object") {
     throw new HttpError(409, "This conclusion did not record the position it replaced");
   }
+  const current=await lockProblem(db,identity,projectId,event.subject_id);
   await iterations.recordIteration(identity, projectId, event.subject_id, {
+    method_version:"problem_solving.v1",expected_version:current.version,expected_revision:current.problem_revision,idempotency_key:`undo:${eventId}`,
     ...(previous as Record<string, unknown>),
     change_summary: "Reverted the previous conclusion",
     trigger_kind: "user_edit",
+    round_intent: "position_only",
   }, { undoOfEventId: eventId });
   return { undone_event_id: eventId, action };
 }

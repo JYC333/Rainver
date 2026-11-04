@@ -17,5 +17,5 @@ it('opens research material with Project origin and returns to the research read
   const link = new URL(screen.getByRole('link', { name: 'Open in reader' }).getAttribute('href')!, 'http://test')
   expect(link.pathname).toBe('/library/items/item-1')
   expect(link.searchParams.get('from')).toBe('project')
-  expect(link.searchParams.get('returnTo')).toBe('/projects/project-a/research?tab=reading')
+  expect(link.searchParams.get('returnTo')).toBe('/projects/project-a/inquiry/records?tab=reading')
 })

@@ -1,3 +1,5 @@
+import type {ProblemProjectionSchema,ProblemWorkRequest,ProblemCloseRoundRequest,ResearchResultSchema} from "@rainver/protocol"
+import type {ProblemTaskLinkResult,ProblemLinkedTasksPage,TaskInquiryThreadsPage,ProblemTaskResult,TaskWorkHistoryPage} from "@rainver/protocol"
 import type { ReaderDocumentNoteResponse, ReaderAnnotationRangeUpdate } from "@rainver/protocol"
 import type { Briefing, BriefingAdoptionPreview, BriefingAdoptionResult, BriefingFollowUpPreview, BriefingGenerateResponse, BriefingOverviewResponse, ReaderAppearance, ReaderPositionResult, ReaderPositionWrite, ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol'
 import type { RunFilePreview } from "@rainver/protocol"
@@ -21,7 +23,6 @@ import type {
   ProjectConversationsResponse,
   ProjectWorkUpdatesResponse,
   TaskWorkView,
-  WorkLoopStageKey,
   ActivityInboxRecord,
   ActivitySourceType,
   AgentConfigUpdateBody,
@@ -171,7 +172,6 @@ import type {
   InquiryOpenStep,
   InquiryReviewPacket,
   InquiryThread,
-  InquiryThreadAdvice,
   InquiryThreadDetail,
   InquiryThreadNoteLink,
   InquiryThreadRelation,
@@ -1329,9 +1329,9 @@ export const boardsApi = {
 
 // ── Tasks (product work items) ─────────────────────────────────────────────
 export const tasksApi = {
+  linkedThreads:(id:string,after?:string)=>get<TaskInquiryThreadsPage>(`/tasks/${encodeURIComponent(id)}/inquiry-threads${after?`?after_thread_id=${encodeURIComponent(after)}`:''}`),
+  workHistory:(id:string,before?:string)=>get<TaskWorkHistoryPage>(`/tasks/${encodeURIComponent(id)}/work-history${before?`?before_seq=${encodeURIComponent(before)}`:''}`),
   work:  (id: string) => get<TaskWorkView>(`/tasks/${id}/work`),
-  setStage: (id: string, body: { to_stage: WorkLoopStageKey; reason: string }) =>
-    post<TaskWorkView>(`/tasks/${id}/stage`, body),
   list:   (params: Record<string, string> = {}) =>
     get<Page<Task>>('/tasks?' + new URLSearchParams(params)),
   create: (data: Record<string, unknown>, options: { spaceId?: string } = {}) =>
@@ -2185,6 +2185,8 @@ export const ambientSessionsApi = {
 // ADR 0016: multi-host control center — pairing, dispatch, and the
 // work-stream read side (task threads). See .agent/modules/hosts.md.
 export const hostsApi = {
+  toolOperations: (hostId: string) =>
+    get<{ items: Array<{ runtime_key: string; action: string }> }>(`/hosts/${encodeURIComponent(hostId)}/tool-operations`),
   list: (options: RequestOptions = {}) => get<{ items: Host[] }>('/hosts', options),
   executionTargets: (projectId?: string | null) =>
     get<HostExecutionTargetsResponse>(`/hosts/execution-targets${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
@@ -2207,8 +2209,8 @@ export const hostsApi = {
     post<{ workspace_id: string | null; display_path: string | null }>(
       `/hosts/${encodeURIComponent(hostId)}/workspaces`, body),
   /** Asks the host's daemon to install a managed copy of a runtime (any ACP adapter with a distribution). */
-  installRuntime: (hostId: string, runtimeKey: string) =>
-    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}`),
+  installRuntime: (hostId: string, runtimeKey: string, expectedVersion?: string) =>
+    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}`, expectedVersion ? { expected_version: expectedVersion } : undefined),
   updateOwnRuntime: (hostId: string, runtimeKey: string) =>
     post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/own/update`),
   uninstallRuntime: (hostId: string, runtimeKey: string, installation: string) =>
@@ -3037,7 +3039,11 @@ export const projectsApi = {
     )),
   postUpdate: (id: string, body: { summary: string }) =>
     post<{ id: string }>(`/projects/${id}/updates`, body),
-  operations: (id: string) => get<ProjectOperation[]>(`/projects/${id}/operations`),
+  operations: async (id: string) => {
+    const all:ProjectOperation[]=[];let after:string|undefined;
+    for(;;){const page=await get<ProjectOperation[]>(`/projects/${id}/operations?limit=100${after?`&after_id=${encodeURIComponent(after)}`:''}`);all.push(...page);if(page.length<100)break;after=page[page.length-1]!.id;}
+    return all.sort((a,b)=>Date.parse(b.updated_at)-Date.parse(a.updated_at));
+  },
   undoUpdate: (projectId: string, eventId: string) =>
     post<{ undone_event_id: string; action: string }>(`/projects/${encodeURIComponent(projectId)}/updates/${encodeURIComponent(eventId)}/undo`, {}),
   getOperation: (id: string, operationId: string) => get<ProjectOperation>(`/projects/${id}/operations/${operationId}`),
@@ -3119,6 +3125,15 @@ export const projectsApi = {
 }
 
 export const inquiryApi = {
+  workspaceThreads:(project:string,filters:Record<string,string>={})=>get<{items:Array<{id:string;kind:string;statement:string;statement_truncated:boolean;lifecycle_status:string;attention_state:string;judgment:string|null;updated_at:string}>;next_cursor:string|null}>(`/projects/${encodeURIComponent(project)}/inquiry/workspace-threads?${new URLSearchParams(filters)}`),
+  workspaceAccess:(project:string)=>get<{can_write:boolean}>(`/projects/${encodeURIComponent(project)}/inquiry/workspace-access`),
+  problem:(project:string,thread:string,cursors:Record<string,string>={})=>get<typeof ProblemProjectionSchema._output>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/problem?${new URLSearchParams(cursors)}`),
+  recordProblemWork:(project:string,thread:string,body:ProblemWorkRequest)=>post<typeof ProblemProjectionSchema._output>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/problem/work`,body),
+  closeProblemRound:(project:string,thread:string,body:ProblemCloseRoundRequest)=>post<{id:string;thread_id:string;round_number:number;iteration_id:string|null;projection:typeof ProblemProjectionSchema._output}>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/problem/close-round`,body),
+  linkedTasks:(project:string,thread:string,after?:string)=>get<ProblemLinkedTasksPage>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/tasks${after?`?after_task_id=${encodeURIComponent(after)}`:''}`),
+  linkTask:(project:string,thread:string,body:Record<string,unknown>)=>post<ProblemTaskLinkResult>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/tasks`,body),
+  taskResult:(project:string,thread:string,task:string)=>get<ProblemTaskResult>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/tasks/${encodeURIComponent(task)}/result`),
+  referenceTaskResult:(project:string,thread:string,task:string,body:Record<string,unknown>)=>post<Record<string,unknown>>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/tasks/${encodeURIComponent(task)}/reference-result`,body),
   listThreads: (projectId: string) =>
     get<InquiryThread[]>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads`),
   getThread: (projectId: string, threadId: string) =>
@@ -3192,20 +3207,6 @@ export const inquiryApi = {
     post<InquiryCandidate>(
       `/projects/${encodeURIComponent(projectId)}/inquiry/candidates/${encodeURIComponent(candidateId)}/reopen`,
       {},
-    ),
-  getAdvice: (projectId: string, threadId: string) =>
-    get<InquiryThreadAdvice | null>(
-      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/advice`,
-    ),
-  // Adopting applies the recommended Next Focus through the ordinary
-  // work-state command server-side, so the invariant has one enforcement point.
-  adoptAdvice: (projectId: string, threadId: string) =>
-    post<{ thread: InquiryThread & { wip_limit_exceeded?: boolean }; advice: InquiryThreadAdvice | null }>(
-      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/advice/adopt`, {},
-    ),
-  dismissAdvice: (projectId: string, threadId: string) =>
-    post<InquiryThreadAdvice>(
-      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/advice/dismiss`, {},
     ),
   listSignals: (projectId: string, threadId?: string) => {
     const q = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : ''
@@ -3431,6 +3432,10 @@ export const learningApi = {
 }
 
 export const projectResearchApi = {
+  startAcquisition:(project:string,body:Record<string,unknown>)=>post<{status:string;operation_id:string}>(`/projects/${encodeURIComponent(project)}/research/acquisitions`,body),
+  problemOperations:(project:string,thread:string,after?:string)=>get<{items:ProjectOperation[];next_cursor:string|null}>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/research-operations${after?`?after_operation_id=${encodeURIComponent(after)}`:''}`),
+  result:(project:string,operation:string)=>get<typeof ResearchResultSchema._output>(`/projects/${encodeURIComponent(project)}/research/operations/${encodeURIComponent(operation)}/result`),
+  adoptResult:(project:string,operation:string,body:Record<string,unknown>)=>post<Record<string,unknown>>(`/projects/${encodeURIComponent(project)}/research/operations/${encodeURIComponent(operation)}/adopt-result`,body),
   standing: (projectId: string) =>
     get<import('../types/api').ProjectResearchStandingStatus>(`/projects/${encodeURIComponent(projectId)}/research/standing`),
   actionStandingAdvice: (projectId: string, adviceId: string) =>
@@ -3447,7 +3452,7 @@ export const projectResearchApi = {
     ),
   area: (projectId: string) => get<ResearchArea>(`/projects/${encodeURIComponent(projectId)}/research/area`),
   initializeArea: (projectId: string) => post<ResearchArea>(`/projects/${encodeURIComponent(projectId)}/research/area`, {}),
-  readingList: (projectId: string, params: { triage_status?: string; read_status?: string; q?: string } = {}) => get<ResearchReadingList>(`/projects/${encodeURIComponent(projectId)}/research/reading-list?${new URLSearchParams(params)}`),
+  readingList: (projectId: string, params: { triage_status?: string; read_status?: string; q?: string;limit?:string;offset?:string } = {}) => get<ResearchReadingList>(`/projects/${encodeURIComponent(projectId)}/research/reading-list?${new URLSearchParams(params)}`),
   // Per-note editing/revisions/rollback go through the generic notesApi —
   // a project's notebook is just Notes filed under its auto-created folder.
   updateEvidenceCard: (projectId: string, sourceItemId: string, body: { why_md: string; how_md: string; what_md: string }) => put<ResearchEvidenceCard>(`/projects/${encodeURIComponent(projectId)}/research/reading-list/${encodeURIComponent(sourceItemId)}/card`, body),
@@ -3581,6 +3586,7 @@ export const projectResearchApi = {
     get<ProjectResearchEvidenceMatrixItem[]>(`/projects/${encodeURIComponent(projectId)}/research/evidence-matrix`),
   rebuildEvidenceMatrix: (projectId: string) =>
     post<ProjectResearchEvidenceMatrixItem[]>(`/projects/${encodeURIComponent(projectId)}/research/evidence-matrix/rebuild`, {}),
+  reportPage:(project:string,after?:string)=>get<{items:ProjectResearchReport[];next_cursor:string|null}>(`/projects/${encodeURIComponent(project)}/research/report-page${after?`?after_report_id=${encodeURIComponent(after)}`:''}`),
   reports: (projectId: string) =>
     get<ProjectResearchReport[]>(`/projects/${encodeURIComponent(projectId)}/research/reports`),
   report: (projectId: string, reportId: string) =>

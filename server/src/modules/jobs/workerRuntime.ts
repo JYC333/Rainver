@@ -29,7 +29,6 @@ import { OperationalAlertService } from "../notifications/operationalAlerts.js";
 import { registerEvaluationHarnessHandler } from "../evolution/evaluationJob.js";
 import { registerProjectResearchHandler } from "../projectResearch/index.js";
 import { registerKnowledgeExtractionHandler } from "../knowledgePromotion/extractionJob.js";
-import { registerInquiryAdviceHandler } from "../inquiry/adviceJob.js";
 import { registerExperimentReconcileHandler } from "../experiments/reconcileJob.js";
 import { registerTaskBranchJobHandlers } from "../hosts/taskBranchJobs.js";
 import { registerTaskMergeHandler } from "../hosts/taskMerges.js";
@@ -117,7 +116,6 @@ export function buildJobHandlerRegistry(
   registerExperimentReconcileHandler(registry, config);
   registerTaskBranchJobHandlers(registry, config);
   registerTaskMergeHandler(registry, config, { resolver: new TaskMergeResolutionDispatcher(config) });
-  registerInquiryAdviceHandler(registry, config);
   registerRoomConversationTitleHandler(registry, config);
   registerRoomDelegationCompletionRetryHandler(registry, config);
   registerRoomDiscussionAdvanceRetryHandler(registry, config);

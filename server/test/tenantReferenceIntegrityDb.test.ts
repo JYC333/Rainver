@@ -370,8 +370,8 @@ async function seedInquiryRound(
   await db.pool.query(
     `INSERT INTO inquiry_thread_steps (
        id, space_id, project_id, thread_id, iteration_id, kind, status, slot,
-       origin, started_at, created_at
-     ) VALUES ($1, $2, $3, $4, $5, 'synthesize', 'in_progress', 'primary', 'user', $6, $6)`,
+       origin, started_at, created_at,method_version,method_stage,work_kind,round_number
+     ) VALUES ($1, $2, $3, $4, $5, 'record_work', 'in_progress', 'primary', 'user', $6, $6,'problem_solving.v1','verify','record_work',1)`,
     [`${prefix}-step`, spaceId, projectId, `${prefix}-thread`, `${prefix}-iteration`, now],
   );
 }

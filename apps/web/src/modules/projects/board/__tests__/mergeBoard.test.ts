@@ -16,8 +16,6 @@ const card = (id: string, column: string, updated = '2026-09-08T00:00:00.000Z'):
   due_at: null,
   updated_at: updated,
   column_key: column,
-  loop_stage: null,
-  loop_stage_label: null,
   responsible: { kind: 'user', id: 'u1', label: 'Someone' },
   active_run_count: 0,
   latest_run_status: null,

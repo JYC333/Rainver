@@ -1,9 +1,8 @@
-import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, bigint, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, uniqueIndex, check, foreignKey, varchar, bigint, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { actors } from "./agents.js";
 import { spaces } from "./spaces.js";
 import { projects } from "./projects.js";
-import { tasks } from "./tasks.js";
 
 /**
  * How a Project advanced: one append-only stream, and one fold of it.
@@ -89,58 +88,4 @@ export const projectWorkEvents = pgTable("project_work_events", {
 		}),
 	check("ck_project_work_events_kind_format", sql`event_kind ~ '^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$'`),
 	check("ck_project_work_events_data_object", sql`jsonb_typeof(data_json) = 'object'`),
-]);
-
-/**
- * The current Loop stage of one Task: a fold of `project_work_events`, never a
- * second authority.
- *
- * Do not derive the stage from surrounding facts. A Task that skips planning
- * looks identical to one still planning, and a Task sent back to `plan` after a
- * failed check looks identical to one that has already verified. In both cases
- * the facts are the same and only an actor's decision separates them. The
- * decision is recorded, and this row is the replayable answer to "where is it
- * now" rather than a value anyone edits directly.
- */
-export const taskLoopStates = pgTable("task_loop_states", {
-	taskId: varchar("task_id", { length: 36 }).primaryKey().notNull(),
-	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	projectId: varchar("project_id", { length: 36 }).notNull(),
-	// A Task re-opened by a follow-up starts a new instance rather than
-	// rewinding the old one, so a stage history stays readable as a sequence of
-	// attempts instead of one oscillating row.
-	loopInstanceId: varchar("loop_instance_id", { length: 36 }).notNull(),
-	currentStageKey: varchar("current_stage_key", { length: 32 }).notNull(),
-	stageEnteredAt: timestamp("stage_entered_at", { withTimezone: true, mode: 'string' }).notNull(),
-	lastEventId: varchar("last_event_id", { length: 36 }),
-	// Optimistic concurrency: a person dragging a card, an agent advancing the
-	// stage, and a Run settling can all arrive at once.
-	revision: integer().default(1).notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
-}, (table): PgTableExtraConfigValue[] => [
-	index("ix_task_loop_states_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast()),
-	index("ix_task_loop_states_stage").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.currentStageKey.asc().nullsLast()),
-	unique("uq_task_loop_states_task_space").on(table.taskId, table.spaceId),
-	foreignKey({
-			columns: [table.spaceId],
-			foreignColumns: [spaces.id],
-			name: "task_loop_states_space_id_fkey"
-		}),
-	foreignKey({
-			columns: [table.taskId, table.spaceId],
-			foreignColumns: [tasks.id, tasks.spaceId],
-			name: "task_loop_states_task_id_fkey"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.projectId, table.spaceId],
-			foreignColumns: [projects.id, projects.spaceId],
-			name: "task_loop_states_project_id_fkey"
-		}).onDelete("cascade"),
-	foreignKey({
-			columns: [table.lastEventId],
-			foreignColumns: [projectWorkEvents.id],
-			name: "task_loop_states_last_event_id_fkey"
-		}),
-	check("ck_task_loop_states_stage", sql`current_stage_key IN ('frame', 'plan', 'act', 'verify', 'conclude')`),
-	check("ck_task_loop_states_revision", sql`revision >= 1`),
 ]);

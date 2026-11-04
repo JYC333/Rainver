@@ -406,3 +406,37 @@ and treat each step as an explicit operator action.
    reviewed copy instead).
 4. Run the normal `ops/scripts/db/migrate.sh`; it applies the migrations after
    0001, including the repair, which finds nothing to change.
+
+## Problem-engine branch consolidation (2026-11-04)
+
+Unpublished0009–0021 are now the single `0009_problem_engine.sql`, prepared
+with ADR0025's canonical tool. Published0000–0008 SQL and snapshots are
+unchanged. Every source SQL statement/backfill, RESET search_path boundary and
+the strongest maintenance requirement is retained, including static archives,
+the0020 top-level Run/reference ACL repair and0021 ordering-marker removal.
+The final0021 snapshot is relinked to0008; next development migration is0010.
+
+The frozen source/target pair is registered **only in test**, content identity
+`a1290f83fe0bb2e49d09988de51c4c5a0e6ebc7aa986927f2089816269280e83`,
+under its `db/migration-archives/`. No dev/prod preparation or deployment is
+implied. Preserve/distribute this pair with backups carrying the source history.
+An existing source-prefix database requires canonical offline `convert`, not
+normal up or checksum overrides. Fresh/published0008 databases use normal up.
+Intermediate development SQL test copies have been removed. Tests upgrade
+representative0008 rows through the current formal migration directly.
+
+
+### Final retired-model removal (2026-11-04)
+
+The former formal0009 plus a Drizzle-generated retirement0010 are again
+composed by ADR0025 into the sole0009_problem_engine. The generated section
+removes only dedicated imported stage-event rows and the dedicated static
+archive table; normal event references to those rows fail closed for review.
+Existing instances require a verified private export and backup before this
+explicit offline deletion. The previous formal0009 stays intact in its frozen
+source archive, not overwritten in any applied tracking table. Current test's
+new pair is b4e42a4ccc1176877c43e85a391a979258652a8825380a34b7753f5039a7c356;
+old recovery pairs and backups are retained. No old-model schema, event registry,
+UI display or complete development-chain test fixture remains in application
+code. Historical SQL names remain only as ordered version records required by
+exact composition, not runtime compatibility. Published0000–0008 are unchanged.

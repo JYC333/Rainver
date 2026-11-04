@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { inquiryApi } from '../../../api/client'
 import { SpaceLink as Link } from '../../../core/spaceNav'
-import type { InquiryNextFocusKind, InquiryOpenStep } from '../../../types/api'
-import { NEXT_FOCUS_LABELS } from './nextFocus'
+import type { InquiryOpenStep } from '../../../types/api'
 
 /**
  * Which Thread sent you here, shown in the Area where the work happens.
@@ -15,9 +14,8 @@ import { NEXT_FOCUS_LABELS } from './nextFocus'
  * Rendered only for steps whose work belongs to this Area, so Operations does
  * not claim a Thread that is off reading evidence somewhere else.
  */
-export function ThreadOriginBar({ projectId, kinds, className }: {
+export function ThreadOriginBar({ projectId, className }: {
   projectId: string
-  kinds: InquiryNextFocusKind[]
   /** Spacing owned by the caller, applied only when there is a bar to space. */
   className?: string
 }) {
@@ -33,7 +31,7 @@ export function ThreadOriginBar({ projectId, kinds, className }: {
     return () => { cancelled = true }
   }, [projectId])
 
-  const relevant = steps.filter(step => kinds.includes(step.kind))
+  const relevant = steps.filter(step => step.kind === 'invoke_research')
   if (relevant.length === 0) return null
 
   return (
@@ -44,7 +42,7 @@ export function ThreadOriginBar({ projectId, kinds, className }: {
           className="flex flex-wrap items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs"
         >
           <span className="text-muted-foreground">
-            {NEXT_FOCUS_LABELS[step.kind]} for
+            Research for
           </span>
           <span className="min-w-0 flex-1 truncate font-medium">{step.statement}</span>
           <Link

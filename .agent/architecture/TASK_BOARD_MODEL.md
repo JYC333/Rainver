@@ -1,5 +1,12 @@
 # Task board model
 
+Implemented separation: [ADR 0027](../decisions/0027-problem-engine-research-separation.md)
+places method/round authority in [Inquiry](INQUIRY_PROBLEM_ENGINE.md) and
+execution-call authority in [Research](PROJECT_RESEARCH_CALLS.md). Tasks retain
+one Board status; Plan remains the execution graph of one source Task.
+
+
+
 This document describes the **agent-native task board** domain layer.
 The Project Board UI at `/projects/:projectId/board` reads
 `GET /projects/:id/board`. There is no separate space-level Kanban product
@@ -97,6 +104,10 @@ A Run finishing is not the Task finishing. Settlement runs when every Run of the
 
 ## Frontend
 
+Tasks expose only their Board status as progress. Task Detail retains completion
+requirements, responsibility and history; the former internal Loop stage rail
+and editor are retired. Agent `task.set_status` changes that same Board status.
+
 The Project Board at `/projects/:projectId/board` is the Task surface: a
 drag-and-drop Kanban over the ACL-filtered server read model
 (`GET /projects/:id/board`), with lanes from `board_columns` or the defaults,
@@ -110,3 +121,15 @@ inside the Project shell at `/projects/:projectId/tasks/:taskId`. See
 
 - `POST /api/v1/tasks/{id}/run` (singular **`/run`**) that returned a `Job` and enqueued worker execution.
 - Storing product tasks as `Job` rows with `job_type="product_task"` (or any **Task = Job** mapping).
+
+## Problem association boundary
+
+P4 reuses `task_entity_links` for many-to-many Inquiry associations. Creation
+and linking share the canonical Task transaction; both endpoints must be
+fully readable and in the same Space/Project. The Task remains one record
+with its original owner, visibility, status, completion bar and Plan. Linking
+neither starts a method nor copies a Task per problem. Task Work returns only
+currently readable problem backlinks. Result references remain evidence for
+explicit Inquiry judgment. See [Inquiry](INQUIRY_PROBLEM_ENGINE.md) for routes,
+Agent tools and bounded reads; [Project Work](PROJECT_WORK.md) for historical
+absence of old stage APIs/DTOs and one-time archived history.

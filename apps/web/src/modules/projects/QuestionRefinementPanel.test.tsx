@@ -13,7 +13,7 @@ function makeThread(overrides: Partial<InquiryThread> = {}): InquiryThread {
   return {
     id: 'thread-1', space_id: 'space-1', project_id: 'project-1', kind: 'question', statement: 'How should agent tools be evaluated?',
     lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
-    owner_user_id: null, next_focus_kind: null, next_focus_note: null, blocked_reason: null,
+    owner_user_id: null, blocked_reason: null,
     version: 1, created_from: 'user', created_by_user_id: 'user-1', created_at: '', updated_at: '',
     ...overrides,
   } as InquiryThread
@@ -553,7 +553,7 @@ describe('QuestionRefinementPanel', () => {
     render(
       <QuestionRefinementPanel
         projectId="project-1"
-        thread={makeThread({ next_focus_kind: 'clarify_or_decompose' })}
+        thread={makeThread({ })}
         linkedDraftWorkflow={null}
         modelProviders={providers}
         providerVendors={providerVendors}
@@ -578,10 +578,7 @@ describe('QuestionRefinementPanel', () => {
       research_context_version_id: 'confirmed-context-1',
       question_refine_skipped: false,
     }))
-    expect(inquiryApi.updateWork).toHaveBeenCalledWith('project-1', 'thread-1', {
-      next_focus_kind: null,
-      blocked_reason: null,
-    })
+    expect(inquiryApi.updateWork).not.toHaveBeenCalled()
     expect(onChanged).toHaveBeenCalled()
   })
 

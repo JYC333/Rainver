@@ -4,9 +4,8 @@ import { parseEntry, type AcpRegistryEntry } from "./registry.js";
 
 /**
  * An agent an operator enabled, as a snapshot of the registry entry at that
- * moment. A snapshot rather than a reference: the registry moves, and what
- * a host was told to install must stay what the server dispatches to until
- * someone chooses to update it.
+ * moment. The snapshot records enablement and supplies an offline bootstrap.
+ * Release discovery is separate; only an explicit Host install changes a copy.
  */
 export interface EnabledAcpAgent extends AcpRegistryEntry {
   enabled_at: string;
@@ -42,7 +41,7 @@ export const ACP_AGENTS_SETTINGS = defineScopedSetting<AcpAgentsSettingsValue>({
 /** The settings row for the whole instance. */
 export const ACP_AGENTS_SCOPE_ID = "instance";
 
-/** The registry entries builtin adapters are installed from, as last fetched. */
+/** Registry releases for builtin and enabled adapters, as last fetched. */
 interface AcpRegistryCacheValue {
   entries: AcpRegistryEntry[];
   fetched_at: string | null;

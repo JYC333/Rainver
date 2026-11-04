@@ -1,3 +1,4 @@
+import {researchMetadataReadableSql} from "../projectResearch/researchOperationMetadata.js";
 import { randomUUID } from "node:crypto";
 import { PROJECT_ATTENTION_CLASSES } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
@@ -32,11 +33,11 @@ const projectOperationsAttentionAdapter: ProjectAttentionAdapter = {
   areaKind: "project_operations",
   async listAttentionItems(db, identity, projectId) {
     const rows = await db.query<{ id: string; title: string; kind: string; intent_text: string | null; updated_at: unknown }>(
-      `SELECT id, title, kind, intent_text, updated_at
-         FROM project_operations
-        WHERE space_id = $1 AND project_id = $2 AND status = 'waiting_review'
+      `SELECT id, CASE WHEN research_call_json IS NULL THEN title ELSE 'Research invocation' END AS title, kind, CASE WHEN research_call_json IS NULL THEN intent_text ELSE NULL END AS intent_text, updated_at
+         FROM project_operations op
+        WHERE space_id = $1 AND project_id = $2 AND status = 'waiting_review' AND ${researchMetadataReadableSql('op','$3')}
         ORDER BY updated_at DESC`,
-      [identity.spaceId, projectId],
+      [identity.spaceId, projectId,identity.userId],
     );
     return rows.rows.map((row): ProjectAttentionItem => ({
       id: `project_operation:${row.id}`,
@@ -53,8 +54,8 @@ const projectOperationsAttentionAdapter: ProjectAttentionAdapter = {
       blocking_refs: [],
       // The Research Area's Runs tab renders the operation's own progress
       // row, including its Checkpoint decide controls.
-      action_descriptors: [{ label: "Review", href: `/projects/${projectId}/research?tab=runs&open=${row.id}` }],
-      href: `/projects/${projectId}/research?tab=runs&open=${row.id}`,
+      action_descriptors: [{ label: "Review", href: `/projects/${projectId}/inquiry/records?tab=runs&open=${row.id}` }],
+      href: `/projects/${projectId}/inquiry/records?tab=runs&open=${row.id}`,
     }));
   },
 };

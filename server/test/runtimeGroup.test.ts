@@ -510,7 +510,7 @@ describe("Server runtime provisioning against PostgreSQL", () => {
     __resetSharedServerOpenCodeProvisionerForTests();
   });
 
-  it("installs only on the built-in Host and leaves the verified copy active after an upgrade failure", async (ctx) => {
+  it.for(["1.0.0", "99.0.0"])("preserves administrator-selected OpenCode %s without upgrading or downgrading it", async (version, ctx) => {
     if (!provisioningDb.available || !provisioningDb.pool) return ctx.skip();
     const pool = provisioningDb.pool;
     const hostId = "97777777-7777-4777-8777-777777777777";
@@ -521,12 +521,12 @@ describe("Server runtime provisioning against PostgreSQL", () => {
     await pool.query(
       `UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`,
       [hostId, JSON.stringify({ installations: { opencode: [{
-        id: "managed:1.0.0", version: "1.0.0", logged_in: false,
+        id: `managed:${version}`, version: version, logged_in: false,
         options: null, health_check_protocol: "acp",
       }] } })],
     );
     await pool.query(
-      `UPDATE agent_runtime_profiles SET runtime_installation = 'managed:1.0.0'
+      `UPDATE agent_runtime_profiles SET runtime_installation = 'managed:${version}'
         WHERE id = $1`,
       [profileId],
     );
@@ -542,7 +542,7 @@ describe("Server runtime provisioning against PostgreSQL", () => {
        ) VALUES ($1, $2, $3, 'Paired test host', 'remote', 'linux_native', 'online', $4::jsonb, $5, $5)`,
       [remoteHostId, "92222222-2222-4222-8222-222222222222", remoteMachineId, JSON.stringify({
         installations: { opencode: [{
-          id: "managed:1.0.0", version: "1.0.0", logged_in: false,
+          id: `managed:${version}`, version: version, logged_in: false,
           options: null, health_check_protocol: "acp",
         }] },
       }), now],
@@ -562,21 +562,15 @@ describe("Server runtime provisioning against PostgreSQL", () => {
     await provisioner.reconcile();
     await provisioner.reconcile();
 
-    expect(registry.isOnline).toHaveBeenCalledExactlyOnceWith(hostId);
-    expect(requestToolAction).toHaveBeenCalledExactlyOnceWith(hostId, "install_tool", expect.objectContaining({
-      runtime_key: "opencode",
-      version: SERVER_OPENCODE_RELEASE.version,
-      health_check_protocol: "acp",
-      egress_transport: { mode: "system_tun" },
-    }));
+    expect(requestToolAction).not.toHaveBeenCalled();
     expect(await new PgRuntimeProvisioningRepository(pool).get(hostId, "opencode")).toMatchObject({
-      state: "failed",
-      desired_version: SERVER_OPENCODE_RELEASE.version,
-      installed_version: "1.0.0",
+      state: "ready",
+      desired_version: version,
+      installed_version: version,
     });
     expect((await pool.query<{ runtime_installation: string }>(
       `SELECT runtime_installation FROM agent_runtime_profiles WHERE id = $1`, [profileId],
-    )).rows).toEqual([{ runtime_installation: "managed:1.0.0" }]);
+    )).rows).toEqual([{ runtime_installation: `managed:${version}` }]);
     expect((await pool.query(
       `SELECT 1 FROM host_runtime_provisioning WHERE host_id = $1 AND runtime_key = 'opencode'`, [remoteHostId],
     )).rows).toEqual([]);

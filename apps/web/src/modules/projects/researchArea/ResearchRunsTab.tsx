@@ -106,7 +106,7 @@ export default function ResearchRunsTab({ projectId }: { projectId: string }) {
     }
   }
 
-  const researchOperations = operations.filter(operation => operation.kind === 'research')
+  const researchOperations = operations.filter(operation => operation.kind === 'research'&&(!searchParams.get('workflow_id')||operation.progress_json.workflow_id===searchParams.get('workflow_id')||operation.progress_json.content_withheld===true))
   const workflowById = new Map(researchWorkflows.map(workflow => [workflow.id, workflow]))
   const threadById = new Map(inquiryThreads.map(thread => [thread.id, thread]))
   const checkpointsByWorkflowId = new Map<string, ProjectResearchCheckpoint[]>()
@@ -116,7 +116,7 @@ export default function ResearchRunsTab({ projectId }: { projectId: string }) {
 
   return (
     <div className="space-y-4">
-      <ThreadOriginBar projectId={projectId} kinds={['search_acquisition']} />
+      <ThreadOriginBar projectId={projectId}  />
       <Card className="space-y-3 p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -127,7 +127,7 @@ export default function ResearchRunsTab({ projectId }: { projectId: string }) {
             {/* Question/Hypothesis definition lives on the Inquiry page — this
                 routes there first so the search-setup dialog only ever opens
                 for a Thread that is already picked. */}
-            <Link to={`/projects/${projectId}/inquiry?research_intent=1`}><Plus className="size-3.5" />New search</Link>
+            <Link to={`/projects/${projectId}/inquiry?section=research`}><Plus className="size-3.5" />New search</Link>
           </Button>
         </div>
         {researchOperations.length === 0 && <p className="text-sm text-muted-foreground">No evidence searches yet.</p>}

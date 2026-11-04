@@ -1,5 +1,13 @@
 # Projects
 
+Planned domain change (not implemented):
+[PROBLEM_ENGINE_CONTRACT](PROBLEM_ENGINE_CONTRACT.md) and
+[ADR 0027](../decisions/0027-problem-engine-research-separation.md) define the
+Inquiry-owned method/round contract and Research capability boundary. Task
+status and the single-Task Plan execution graph retain their own authority.
+The descriptions below remain current-state documentation.
+
+
 ## What is a Project?
 
 A **Project** is a goal-oriented knowledge and activity container.
@@ -366,18 +374,13 @@ provenance.
 
 ### Research Area
 
-`/projects/:projectId/research` defaults to a question-centered entry linking
-to the existing Inquiry questions, with explicit continue/report/run links.
-Routine reading links to the Project updates surface. A default visit does not initialize a Research Area or mount
-its data-loading hooks. `ResearchAreaPage.tsx` lazily mounts
-`DeepResearchAreaPage.tsx` for an explicit `?tab=standing|focus|reading|checklist|reports|runs`
-or the existing `?research=new&thread=…` Inquiry setup link. Setup consumes the
-one-shot research/thread query parameters while preserving a valid explicit tab
-(or setting focus when missing/invalid) and unrelated parameters, so its dialog
-and Thread context survive cleanup. Bare-route behavior is still URL-driven.
-Reading-list links target reading; research-update links target standing.
-The six deep tabs,
-report detail routes, operation links and permission checks remain intact.
+`/projects/:projectId/research` is a compatibility entry. Focus/setup links
+redirect to the selected problem's Research section, without creating a problem
+when Thread context is absent. Standing opens the existing monitoring summary
+at `inquiry?section=standing`. Reading,
+Checklist, Reports and Runs redirect to `/inquiry/records` with query context;
+report object URLs remain unchanged. See [P5 page routing](PROJECT_RESEARCH_CALLS.md#problem-workspace-and-page-routing-p5).
+The records surface reads existing documents without initializing on mount.
 New Sources bindings no longer opt into Standing comparison by default;
 existing bindings and user-selected comparison keep their behavior.
 
@@ -796,16 +799,11 @@ command locks the card and creates or returns the idempotent Inquiry Thread in
 the same transaction, then marks the card actioned. Repeated clicks cannot
 create duplicate Threads. Dismiss is a separate terminal user choice.
 
-The Research Area is the presentation entry point for both research modes;
-nothing about a Project's creation gates either mode. Its controlled **Standing
-overview** tab is selected first and
-shows the daily budget, open advice, and recent Project inflow without requiring
-a Workflow or Thread. Advice and inflow rows are filtered through the same
-SourceItem read policy as Project Sources, so Project membership alone never
-reveals a private source owner's title, excerpt, or derived advice. The sibling
-**Focus workbench** tab contains the existing
-Thread-scoped stage progression and controls. The same tab bar carries the
-Reading List, Checklist, Reports, and Runs tabs.
+The problem workspace is the unique question workbench. Its project-level
+monitoring summary retains Standing budget, advice, retry and inflow. Project
+Sources and daily reading remain directly available without a Thread. Research
+records remain Project-level and include unbound history; they do not edit a
+second question lifecycle. Existing standing capability records are retained.
 
 Every completed live scan has an append-only `research_scan_summaries` outcome:
 focused scans are scoped to a participating research Workflow, while standing
@@ -1129,7 +1127,9 @@ Historical Artifact links and synthesis Artifact list routes do not exist.
 
 ### Inquiry and Experiment capabilities
 
-Inquiry is Project-owned but not stored as `space_objects`. Its canonical
+Inquiry is Project-owned. Thread aggregate roots are `space_objects` rows
+with domain state in Inquiry extension tables (ADR 0011/0012); internal
+Iterations and Signals are not independent ontology roots. Its canonical
 Question/Hypothesis Threads, working relations, Iterations, Signals,
 Candidates, Review Packets, and Delta Briefs live in the Inquiry module.
 The Project Research module owns the narrow assessment relationship from one
@@ -1140,9 +1140,10 @@ refinement framework, and immutable Research Context Version. The server
 builds every model turn from completed durable messages rather than accepting
 browser-supplied history. Unsent wording edits and Alternative selections are
 volatile page state; model responses update only the Assessment Session, not a
-Research Workflow draft or the canonical Thread. Explicit Confirm is the sole
-action that revises the Thread and hands the confirmed wording to Research
-Setup. It writes the user turn before the provider call,
+Research Workflow draft or the canonical Thread. Explicit Confirm persists
+the selected framework and immutable context for Research Setup; revising the
+canonical problem wording remains an Inquiry definition command. FINER is an
+optional Frame method; accepted-Thread acquisition need not run it. It writes the user turn before the provider call,
 then records the assistant turn and framework in a short post-provider
 transaction; a provider failure marks the already-saved user turn failed.
 The resolved prompt asset is a stable system instruction. Dynamic Project
@@ -1350,74 +1351,39 @@ refresh clears prior body state and open body-action dialogs. Changing the
 user, Space, or Project resets the workspace so earlier reads cannot restore
 the previous scope's list or selected Thread.
 
-A Step is one attempt at advancing a Thread: its kind, that it was started,
-what it produced, and which round it belonged to. The Next Focus vocabulary is
-eight actions — clarify/decompose, search, experiment, read evidence,
-synthesize, promote Knowledge, decision case, delivery task — and holds no
-states: `pause` restated `attention_state` and `wait_for_monitoring` restated a
-running background Step. Steps occupy one of two slots. A Thread has at most
-one open `primary` Step, enforced by a partial unique index, because that slot
-represents a person's attention; actions with a system operation behind them
-(search, experiment) take the `background` slot instead and release the primary
-slot immediately, so a running search never stops the Thread being worked on.
-`inquiry_threads.next_focus_kind` remains as a projection of the current
-primary Step, written in the same statement as any other Thread column so the
-per-statement CHECK never observes an inconsistent pair.
+A Step is one attempt at advancing a Thread under `problem_solving.v1`: its
+method stage, work kind, round and slot. A Thread has at most one open
+`primary` Step, enforced by a partial unique index, because that slot
+represents a person's attention; the open primary alone defines current next
+work. A `background` Step exists only for an admitted Research Operation bound
+to it at start, so selecting a method never manufactures running work.
 
-The DB-backed invariant is `next_focus_kind IS NULL OR blocked_reason IS NULL`:
-a Step and a blocking reason contradict each other. It does not require a
-focused Thread to hold either, because a Thread between rounds, or one whose
-only running work is a background Step, legitimately holds neither. The CHECK
-sees the primary slot only, so the work-state command enforces the same rule
-against every open Step: a Thread cannot be blocked while a background search
-runs. Clearing the next Step ends background work as well, which is the only
-command that calls off a running search; a Thread leaving `active` ends its
-open Steps rather than orphaning rows no command could later close. The Shared
-Focus WIP limit counts attention rather than activity: a focused Thread whose
-only open Step is in the background does not occupy a slot, and counts again
-once that Step ends. The limit stays advisory.
+A blocking reason and an open Step contradict each other, including a
+background one: the work-state command rejects blocking a Thread while any Step
+is open. A Thread between rounds legitimately holds neither. A Thread leaving
+`active` ends its open Steps, except a bound Research Step, which keeps its
+provenance and settles through Research. The Shared Focus WIP limit counts
+attention rather than activity: a focused Thread whose only open Step is in the
+background does not occupy a slot. The limit stays advisory.
 
-A Step with a system operation behind it is completed by that operation
-finishing, not by the user saying so: a finished research Workflow closes its
-Thread's `search_acquisition` Step and records the Workflow as the Step's
-target, on the same post-commit path that queues advice. Manual Steps have no
-such fact behind them and end when the round does. Open Steps are readable
-Project-wide, which is what lets the Area a user was sent to name the Thread
-that sent them and offer the way back.
+A bound Research Step follows its exact Operation and attempt. Queue admission
+already binds the originating round/version/Step; material intake continues the
+same invocation. Its execution result does not select foreground work or accept
+an answer. Archiving a Thread leaves admitted execution to settle through
+Research; cancellation addresses that specific Operation.
+Opening setup or viewing a result alone still starts nothing. See
+[Research calls and result assessment](PROJECT_RESEARCH_CALLS.md) for admission,
+permissions, cancellation, retries, result applicability and explicit Verify.
 
-Opening initial-intake setup is not itself a search and creates no background
-Step. The setup dialog remains open until the start request succeeds, so a
-failed request preserves both the user's configuration and its error context.
-The Research start transaction creates/reuses the pinned Workflow, creates its
-first Operation, and only then starts the Thread's `search_acquisition` Step;
-all three facts commit or roll back together. Confirming the question closes
-the preceding clarification Step but does not claim that acquisition started.
-
-Rounds anchor to Iterations rather than to a separate counter. Recording an
-Iteration closes the round's open primary Step as `done` and stamps it with
-that Iteration, along with every Step that already settled in that round, so
-`iteration_id IS NULL` reliably means "this round"; background Steps still
-running keep running into the next one.
-
-That stamping is why round progress is measured against the current round and
-not against all-time state: a Thread that has ever concluded would otherwise
-read as concluded forever, and the second round would open already finished.
-It is also why the stages a person performs by hand are satisfied by that
-person having gone and done the work, rather than by the Step reaching `done` —
-a hand-done Step is marked `done` only by the close-out that stamps it out of
-the round, so waiting for it would never be observable while the round is open.
-Evidence gathering is the exception, judged on whether evidence actually
-arrived, because a search still running has produced none. The Focus UI exposes
-this derived round as one stage workspace: its stage row is the only stage
-selector, selecting a stage changes only the adjacent panel, and starting an
-action is the separate command that changes Thread work. The workspace keeps
-actual current, inspected, completed, and running states distinct. A manual
-inspection stays pinned across read refreshes; after a successful action it
-follows the newly derived current stage. One suggestion remains visible above
-the inspected stage's own actions, while pause, block, early close-out, and
-other low-frequency Thread management stay in the Thread menu. A blocked
-workspace remains readable with its actions disabled, and Unblock clears only
-the blocker rather than implicitly starting a Step.
+The P2 Inquiry core now separates cognitive Iteration from explicit round
+close-out and provides a versioned server projection and work commands; see
+[INQUIRY_PROBLEM_ENGINE](INQUIRY_PROBLEM_ENGINE.md) for its current API,
+permissions and compensation. Candidate acceptance and undo are
+position-only; an unchanged round closes without inventing cognitive change.
+The production problem workspace now consumes the generic five-stage server
+projection. Stage inspection is URL navigation only. Actual work, skip/return,
+Task association, result assessment and closeout are explicit domain commands.
+See [workspace](INQUIRY_PROBLEM_ENGINE.md#project-local-workspace-p5).
 
 Signal and Candidate reads revalidate
 their underlying Project Corpus items through the Corpus owner, and Note links
@@ -1435,36 +1401,6 @@ one transaction. The UI closes packets when completed, dismissed from view, or
 unmounted; opening a later checkpoint also closes that user's older open
 packets and releases their pending Candidates, covering interrupted clients.
 
-Inquiry Thread Advice is a model-generated recommendation of a Thread's next
-step. The UI has one suggestion surface: valid open, non-stale Advice takes its
-place there, otherwise an immediate deterministic recommendation fills it.
-Users are not asked to distinguish “AI advice” from “system advice”; they may
-ignore the current suggestion, which dismisses model Advice and reveals the
-fallback. Advice pinned to a superseded revision is withheld because it is not
-a valid recommendation for the current state. There is no manual re-analysis
-control. Advice is a suggestion surface, never a write path: the recommendation is
-stored on its own table and adopting it is routed through the ordinary
-work-state command, so `next_focus_kind` keeps exactly one write authority and
-one enforcement point for the focused-Thread invariant. A recommendation
-outside the defined Next Focus set is rejected rather than stored. Each Thread
-keeps one current recommendation, pinned to the Thread revision it reasoned
-about; a later revision marks it stale rather than silently outdated.
-Generation is queued only after meaningful state changes: an Iteration is
-recorded, a material Candidate consolidates, or a search completes, and only
-for Threads in the shared Focus set. Duplicate pending/running jobs are fenced,
-and any current Advice is retired synchronously when its reasoning context
-changes, so the read surface never waits for model latency to stop showing it.
-Invalidation changes only open Advice: adopted and explicitly dismissed records
-retain their terminal history. A newer event cancels pending analysis and marks
-claimed or running analysis superseded; the worker checks that fence before the
-provider call and again transactionally before persistence. Actorless events or
-Threads outside shared Focus leave no replacement job, preserving the bounded-
-spend rule without leaving an old recommendation visible.
-The UI may poll ordinary read state every five seconds while work is live and
-refreshes on visibility return or a local mutation, but that polling never
-invokes the model and idle Threads install no interval. Queuing happens after
-the triggering transaction commits and never fails the command that triggered
-it.
 
 A Delta Brief is a persisted, read-only, deterministic aggregation over
 Evidence Signals in one coverage window — no model call participates. Every
@@ -1560,17 +1496,17 @@ has no Incident aggregate; one must only be introduced with its own demonstrated
 lifecycle. Attention rows retain the owning domain's canonical object id only
 as transport state and expose a concrete URL: Tasks open Task Detail, Inquiry
 Candidates and Decisions open their selected Project-Area records, research
-operations open the Research Area's Runs tab with the row selected, and
+operations open the problem workspace records Runs tab with the row selected, and
 operational alerts open the Space Inbox filtered to the Project. Pulse does not copy the domain
 action workflow.
 The Board is the Project's Task surface: lanes are flow statuses, a card
-carries its Loop stage and who holds it, and a drag to Done is refused when the
+shows who holds it, and a drag to Done is refused when the
 Task has not met what it declared unless the person acknowledges what they are
 skipping (`architecture/PROJECT_WORK.md`). `/projects/:projectId/delivery`
 redirects to the Board. Task Detail remains the full workflow
-surface, and its Work tab is where the Loop, the completion requirements, and
+surface, and its Work tab is where the completion requirements and
 the responsibility timeline are read. Research operations, with their
-Checkpoint controls, are the Research Area's Runs tab; Automations and Runs
+Checkpoint controls, are the problem workspace records Runs tab; Automations and Runs
 are read at the Space, and project-scoped Automation fire failures persist
 `project_id` on their operational-alert Activity so the Project's attention
 list can surface them.

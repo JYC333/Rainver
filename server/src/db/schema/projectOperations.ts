@@ -5,6 +5,7 @@ import { projects } from "./projects.js";
 import { users } from "./auth.js";
 import { runs } from "./runs.js";
 import { artifacts } from "./artifacts.js";
+import { inquiryThreadSteps } from "./inquiry.js";
 import { workflowExecutions } from "./automations.js";
 
 export const projectOperations = pgTable("project_operations", {
@@ -19,6 +20,12 @@ export const projectOperations = pgTable("project_operations", {
 	initiatingRunId: varchar("initiating_run_id", { length: 36 }),
 	planArtifactId: varchar("plan_artifact_id", { length: 36 }),
 	progressJson: jsonb("progress_json").default({}).notNull(),
+	// Optional problem binding, never a parallel execution container.
+	researchCallJson: jsonb("research_call_json"),
+	researchStepId: varchar("research_step_id", {length:36}),
+	researchCallKey: varchar("research_call_key", {length:256}),
+	researchAttempt: integer("research_attempt").default(1).notNull(),
+	researchReconcileJson: jsonb("research_reconcile_json").default({}).notNull(),
 	version: integer().default(1).notNull(),
 	// The operation's current (or most recent) pass. A retry/resume/rescan
 	// creates a new WorkflowExecution and repoints this. Do not reopen the
@@ -33,6 +40,11 @@ export const projectOperations = pgTable("project_operations", {
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (t): PgTableExtraConfigValue[] => [
+	uniqueIndex("uq_research_problem_step").on(t.researchStepId).where(sql`research_step_id IS NOT NULL`),
+	uniqueIndex("uq_research_problem_call_key").on(t.spaceId,t.projectId,t.researchCallKey).where(sql`research_call_key IS NOT NULL`),
+	foreignKey({columns:[t.researchStepId,t.projectId,t.spaceId],foreignColumns:[inquiryThreadSteps.id,inquiryThreadSteps.projectId,inquiryThreadSteps.spaceId],name:"research_problem_step_scope_fkey"}).onDelete("no action"),
+	check("ck_research_problem_call",sql`(research_call_json IS NULL AND research_step_id IS NULL AND research_call_key IS NULL) OR (research_call_json IS NOT NULL AND research_step_id IS NOT NULL AND kind='research' AND research_call_json->>'schema_version'='research_call.v1' AND research_call_json->>'operation_id'=id AND research_call_json->>'step_id'=research_step_id AND research_call_key IS NOT NULL) IS TRUE`),
+	check("ck_research_problem_attempt",sql`research_attempt>0`),
 	uniqueIndex("uq_project_operations_monitoring_day").on(t.spaceId,t.projectId,sql`(progress_json->>'local_date')`).where(sql`kind='custom' AND progress_json->>'purpose'='information_monitoring' AND progress_json->>'run_kind'='daily'`),
 	check("ck_project_operations_monitoring_day",sql`NOT (kind='custom' AND progress_json->>'purpose'='information_monitoring' AND progress_json->>'run_kind'='daily') OR (progress_json->>'local_date' IS NOT NULL AND progress_json->>'local_date' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')`),
 	index("ix_project_operations_project_status").on(t.projectId, t.status),

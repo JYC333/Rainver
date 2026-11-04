@@ -1,3 +1,4 @@
+import {researchArtifactReadableSql} from '../projectResearch/researchArtifactAccess.js';
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
 import type { ContentProjectShareDeclaration } from "../ontology/entities.js";
 import type { ContentResourceDefinition } from "./contentAccessRegistry.js";
@@ -89,6 +90,7 @@ export function contentAccessSql(input: {
          AND content_member.status = 'active'
     )
     AND ${scopeSql}
+    ${definition.resourceType==='artifact'?`AND ${researchArtifactReadableSql(alias,userExpr,input.includeOversight)}`:''}
     AND ${alias}.visibility IN ('private', 'space_shared', 'selected_users')
     AND ${alias}.access_level IN ('full', 'summary')
     AND (
@@ -433,9 +435,9 @@ export function assertSqlIdentifier(value: string, label: string): void {
  * cross-domain coupling B33 asks them to avoid; `access` is where the shared
  * read predicates already are.
  */
-export function runReadSql(userParam: string, alias = "r"): string {
+export function runReadSql(userParam: string, alias = "r", options?: {includeOversight?:boolean}): string {
   assertSqlIdentifier(alias, "alias");
-  return `${contentReadSql("run", alias, userParam)}
+  return `${contentReadSql("run", alias, userParam,options)}
     AND ${roomRunReadAccessSql(`${alias}.id`, `${alias}.space_id`, userParam)}`;
 }
 
@@ -462,12 +464,12 @@ export function artifactReadSql(userParam: string, alias = "a"): string {
  * is named by an expression, not a column, because a work event carries it
  * inside `data_json` rather than in a column of its own.
  */
-export function runInheritedReadSql(runExpr: string, spaceExpr: string, userParam: string): string {
+export function runInheritedReadSql(runExpr: string, spaceExpr: string, userParam: string, options?: {includeOversight?:boolean}): string {
   return `(${runExpr} IS NULL OR EXISTS (
     SELECT 1
       FROM runs run_inherited
      WHERE run_inherited.id = ${runExpr}
        AND run_inherited.space_id = ${spaceExpr}
-       AND ${runReadSql(userParam, "run_inherited")}
+       AND ${runReadSql(userParam, "run_inherited",options)}
   ))`;
 }

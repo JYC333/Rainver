@@ -16,7 +16,7 @@ vi.mock('../../../../core/spaceNav', () => ({
 function openStep(overrides: Partial<InquiryOpenStep>): InquiryOpenStep {
   return {
     id: 'step-1', project_id: 'project-1', thread_id: 'thread-1',
-    kind: 'search_acquisition', status: 'in_progress', slot: 'background', note: null,
+    kind: 'invoke_research', status: 'in_progress', slot: 'background', note: null,
     target_ref_kind: null, target_ref_id: null, iteration_id: null, origin: 'user',
     started_at: '2026-08-13T00:00:00.000Z', completed_at: null,
     created_at: '2026-08-13T00:00:00.000Z',
@@ -32,7 +32,7 @@ beforeEach(() => {
 describe('ThreadOriginBar', () => {
   it('names the Thread that sent the user here, with a way back to it', async () => {
     vi.mocked(inquiryApi.listOpenSteps).mockResolvedValue([openStep({})])
-    render(<ThreadOriginBar projectId="project-1" kinds={['search_acquisition']} />)
+    render(<ThreadOriginBar projectId="project-1" />)
 
     expect(await screen.findByText('Does caching help?')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Back to the Thread/ }))
@@ -43,9 +43,9 @@ describe('ThreadOriginBar', () => {
     // Operations must not announce a Thread that
     // is off being read or written up somewhere else.
     vi.mocked(inquiryApi.listOpenSteps).mockResolvedValue([
-      openStep({ id: 'step-2', kind: 'read_evidence', slot: 'primary', statement: 'Elsewhere entirely' }),
+      openStep({ id: 'step-2', kind: 'record_work', slot: 'primary', statement: 'Elsewhere entirely' }),
     ])
-    render(<ThreadOriginBar projectId="project-1" kinds={['search_acquisition']} />)
+    render(<ThreadOriginBar projectId="project-1" />)
 
     await waitFor(() => expect(inquiryApi.listOpenSteps).toHaveBeenCalled())
     expect(screen.queryByText('Elsewhere entirely')).not.toBeInTheDocument()
@@ -56,7 +56,7 @@ describe('ThreadOriginBar', () => {
       openStep({}),
       openStep({ id: 'step-3', thread_id: 'thread-2', statement: 'Is eviction correct?' }),
     ])
-    render(<ThreadOriginBar projectId="project-1" kinds={['search_acquisition']} />)
+    render(<ThreadOriginBar projectId="project-1" />)
 
     expect(await screen.findByText('Does caching help?')).toBeInTheDocument()
     expect(screen.getByText('Is eviction correct?')).toBeInTheDocument()
@@ -64,7 +64,7 @@ describe('ThreadOriginBar', () => {
 
   it('renders nothing at all when no step points here, reserving no space', async () => {
     vi.mocked(inquiryApi.listOpenSteps).mockResolvedValue([])
-    const { container } = render(<ThreadOriginBar projectId="project-1" kinds={['synthesize']} />)
+    const { container } = render(<ThreadOriginBar projectId="project-1" />)
 
     await waitFor(() => expect(inquiryApi.listOpenSteps).toHaveBeenCalled())
     expect(container).toBeEmptyDOMElement()
@@ -74,7 +74,7 @@ describe('ThreadOriginBar', () => {
     // Context is an aid; failing to fetch it must never keep the Area the user
     // actually asked for off the screen.
     vi.mocked(inquiryApi.listOpenSteps).mockRejectedValue(new Error('offline'))
-    const { container } = render(<ThreadOriginBar projectId="project-1" kinds={['search_acquisition']} />)
+    const { container } = render(<ThreadOriginBar projectId="project-1" />)
 
     await waitFor(() => expect(inquiryApi.listOpenSteps).toHaveBeenCalled())
     expect(container).toBeEmptyDOMElement()

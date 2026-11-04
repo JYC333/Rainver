@@ -14,6 +14,8 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { sessionsModule } from "../src/modules/sessions/index.js";
 import { __setSessionIdentityForTests } from "../src/modules/sessions/routes.js";
 import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
+import { PgHostRepository } from "../src/modules/hosts/repository.js";
+import { PgConversationBackendRepository } from "../src/modules/sessions/conversationBackendRepository.js";
 
 const SPACE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OWNER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -132,6 +134,64 @@ afterEach(() => {
 });
 
 describe("Conversation execution schema", () => {
+  it.for(["unverified","ambiguous","removed","revoked","pending"])("does not move managed bindings on a %s Host report", async (state,ctx) => {
+    if (!db.available) return ctx.skip();
+    if(state==="revoked")await db.pool.query(`UPDATE hosts SET status='revoked' WHERE id=$1`,[HOST]);
+    const next={id:state==="pending"?"managed:pending":"managed:2.0.0",version:state==="pending"?"pending":"2.0.0",health_check_protocol:state==="unverified"?null:"acp",logged_in:true};
+    const copies=state==="removed"?[]:state==="ambiguous"?[next,{...next,id:"managed:3.0.0",version:"3.0.0"}]:[next];
+    await new PgHostRepository(db.pool).recordHeartbeat(HOST,{capabilities_json:{installations:{claude_code:copies}}});
+    expect((await db.pool.query(`SELECT runtime_installation FROM agent_runtime_profiles WHERE id=$1`,[RUNTIME])).rows[0].runtime_installation).toBe("managed:1.0.0");
+    if(state==="revoked")expect((await db.pool.query(`SELECT status FROM hosts WHERE id=$1`,[HOST])).rows[0].status).toBe("revoked");
+  });
+  it("continues an initialized Conversation after managed upgrade and rollback, preserving native identity and historical Runs", async ctx => {
+    if (!db.available) return ctx.skip();
+    const hosts = new PgHostRepository(db.pool);
+    const report = async (version:string) => hosts.recordHeartbeat(HOST,{capabilities_json:{installations:{claude_code:[{
+      id:`managed:${version}`,version,health_check_protocol:"acp",logged_in:true,
+      options:{session_available:true,config_options:[{id:"model",name:"Model",category:"model",type:"select",current_value:version,options:[{value:version,name:version}]}]},
+    }]}}});
+    await report("1.0.0");
+    const ownProfile=randomUUID(),otherHostProfile=randomUUID();
+    for(const [id,name,host,installation] of [[ownProfile,"Local CLI",HOST,"own"],[otherHostProfile,"Other Host CLI",OTHER_HOST,"managed:1.0.0"]]){
+      await db.pool.query(`INSERT INTO agent_runtime_profiles (id,space_id,agent_id,name,runtime_key,backend_mode,execution_host_id,workspace_mode,runtime_installation,runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at)
+        VALUES ($1,$2,$3,$4,'claude_code','runtime_native',$5,'managed',$6,'{}','{}',true,false,now(),now())`,[id,SPACE,AGENT,name,host,installation]);
+    }
+    const service = new ConversationExecutionContextService(db.pool);
+    await service.initialize({spaceId:SPACE,userId:OWNER},SESSION,{
+      selection:{execution_host_id:HOST,primary:{kind:"managed"}},
+      runtime:{agent_id:AGENT,runtime_profile_id:RUNTIME,runtime_key:"claude_code",runtime_installation:"managed:1.0.0"},
+    });
+    const thread=(await db.pool.query<{id:string}>(`SELECT id FROM host_threads WHERE session_id=$1 AND agent_id=$2`,[SESSION,AGENT])).rows[0]!;
+    await db.pool.query(`UPDATE host_threads SET vendor_session_id='retained-native-session' WHERE id=$1`,[thread.id]);
+    const closedThread=randomUUID();
+    await db.pool.query(`INSERT INTO host_threads (id,space_id,execution_host_id,workspace_mode,session_id,agent_id,container_kind,runtime_key,runtime_installation,status,created_by_user_id,created_at,updated_at)
+      VALUES ($1,$2,$3,'managed',$4,$5,'conversation','claude_code','managed:1.0.0','closed',$6,now(),now())`,[closedThread,SPACE,HOST,SESSION,AGENT,OWNER]);
+    const binding=async()=>(await db.pool.query(`SELECT * FROM session_conversation_backends WHERE session_id=$1`,[SESSION])).rows[0];
+    const originalBinding=await binding();
+    const route=async()=>new PgRouteDecisionRepository(db.pool).routeRun(await new PgRunRepository(db.pool).createQueuedRun({
+      execution_kind:"agent",space_id:SPACE,agent_id:AGENT,run_type:"agent",mode:"live",
+      trigger_origin:"manual",user_id:OWNER,session_id:SESSION,project_id:PROJECT,prompt:"Continue this Conversation.",
+      runtime_profile_id:RUNTIME,runtime_profile_selection_source:"explicit",allow_system_assistant:true,
+      model_override_json:{host_thread:{schema_version:"host_thread.v1",thread_id:thread.id}},
+    }));
+    const first=await route();
+    expect(first.runtime_profile_snapshot_json).toMatchObject({runtime_installation:"managed:1.0.0"});
+    for(const version of ["2.0.0","1.0.0"]){
+      await report(version);
+      expect((await service.preflight({spaceId:SPACE,userId:OWNER},SESSION)).summary.can_send).toBe(true);
+      const options=await new PgConversationBackendRepository(db.pool).listOptions(SPACE,OWNER,AGENT);
+      expect(options.find(option=>option.runtime_profile_id===RUNTIME)).toMatchObject({usable:true,session_config_options:[expect.objectContaining({id:"model",current_value:version})]});
+      expect((await db.pool.query(`SELECT id,runtime_installation,vendor_session_id FROM host_threads WHERE id=$1`,[thread.id])).rows[0])
+        .toMatchObject({id:thread.id,runtime_installation:`managed:${version}`,vendor_session_id:"retained-native-session"});
+      expect((await route()).runtime_profile_snapshot_json).toMatchObject({runtime_installation:`managed:${version}`,runtime_config_json:{runtime_installation:`managed:${version}`}});
+      expect(await binding()).toEqual(originalBinding);
+      expect((await db.pool.query(`SELECT runtime_installation FROM agent_runtime_profiles WHERE id=$1`,[ownProfile])).rows[0].runtime_installation).toBe("own");
+      expect((await db.pool.query(`SELECT runtime_installation FROM agent_runtime_profiles WHERE id=$1`,[otherHostProfile])).rows[0].runtime_installation).toBe("managed:1.0.0");
+      expect((await db.pool.query(`SELECT runtime_installation FROM host_threads WHERE id=$1`,[closedThread])).rows[0].runtime_installation).toBe("managed:1.0.0");
+    }
+    expect((await db.pool.query(`SELECT runtime_profile_snapshot_json FROM runs WHERE id=$1`,[first.id])).rows[0].runtime_profile_snapshot_json)
+      .toMatchObject({runtime_installation:"managed:1.0.0"});
+  });
   it("blocks setup, as preflight promises, for a participant Agent the initializer cannot access", async (ctx) => {
     if (!db.available) return ctx.skip();
     const now = new Date().toISOString();

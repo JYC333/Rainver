@@ -1,3 +1,7 @@
+import { assertResearchOperationChange } from "./researchCallAccess.js";
+import { ResearchCallOptionsSchema } from "@rainver/protocol";
+import { createBoundResearchOperation, retryResearchPreparation, resumeResearchSetup, reconcileResearchCall } from "./researchProblemCalls.js";
+import { problemCommandKey } from "../inquiry/problemFacts.js";
 import { createHash, randomUUID } from "node:crypto";
 import { getDbPool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
@@ -77,13 +81,11 @@ import {
   checkPinnedThreadDrift,
   type ResearchThreadScopeRef,
 } from "./threadScope.js";
-import { InquiryIterationService } from "../inquiry/iterationService.js";
 import { RESEARCH_OPERATION_FAILURE_NOTIFY_JOB } from "./pipeline/researchOperationFailureNotifyJob.js";
 import {
   PROJECT_RESEARCH_MONITORING_OVERLAP_HOURS,
   latestPublicationWatermarkForItems,
 } from "./monitoringWindow.js";
-import { tryCompleteSearchStepForWorkflow, tryQueueAdviceForWorkflowThread } from "../inquiry/adviceJob.js";
 import { SCREENING_AUTO_CONTINUE_CORPUS_LIMIT } from "./researchCheckpointPolicy.js";
 import { offerEarlierHistoryExtension } from "./researchHistoryExtendOffer.js";
 
@@ -92,6 +94,10 @@ const MAX_ITEMS_DEFAULT = 10_000;
 const OVERLAP_HOURS = PROJECT_RESEARCH_MONITORING_OVERLAP_HOURS;
 
 interface ResearchInput {
+  preparationJobId?:string;
+  resumeOperationId?:string;
+  originRunId?:string|null;
+  problemCall?:unknown;
   workflowId: string | null;
   researchQuestion: string;
   requestedThreadId: string | null;
@@ -225,13 +231,18 @@ export class ProjectResearchOrchestrator {
     await this.monitoringCoordinator().completeEmptyScanPass(input, operationId);
   }
 
-  async startInitialIntake(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>) {
+  async startInitialIntake(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>, origin?: {runId?:string;operationId?:string;jobId?:string}) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const project = await this.db.query<{ current_focus: string | null }>(
       `SELECT current_focus FROM projects WHERE space_id=$1 AND id=$2`,
       [identity.spaceId, projectId],
     );
     const input = normalizeInitialIntakeInput(body, project.rows[0]?.current_focus ?? null);
+    input.idempotencyKey=problemCommandKey(identity,input.idempotencyKey,origin);
+    input.originRunId=origin?.runId??null;
+    input.resumeOperationId=origin?.operationId;
+    input.preparationJobId=origin?.jobId;
+    if(body.problem_call!==undefined){const parsed=ResearchCallOptionsSchema.safeParse(body.problem_call);if(!parsed.success)throw new HttpError(422,parsed.error.message);input.problemCall=parsed.data;}
     if (!this.config) throw new HttpError(503, "Auto research requires server configuration");
     const execution = await new ProjectResearchExecutionProfileService(this.db, this.config)
       .resolve(identity, input.execution);
@@ -650,9 +661,12 @@ export class ProjectResearchOrchestrator {
     if (!Number.isInteger(maxItems) || maxItems < 1 || maxItems > MAX_ITEMS_DEFAULT) {
       throw new HttpError(422, `max_items must be an integer between 1 and ${MAX_ITEMS_DEFAULT}`);
     }
-    const idempotencyKey = optionalString(body.idempotency_key) ?? fingerprintOf({ workflowId, from, to, maxItems, source_channel_ids: channelIds });
+    let idempotencyKey = optionalString(body.idempotency_key) ?? fingerprintOf({ workflowId, from, to, maxItems, source_channel_ids: channelIds });
     const prior = await this.operationByIdempotency(identity.spaceId, projectId, idempotencyKey);
     if (prior && prior.status !== "failed" && prior.status !== "cancelled") return this.readOperation(identity, projectId, prior.id);
+    // A retry after failure/cancellation is a new logical call. Reusing the key
+    // would replay the ended call's binding and revive or orphan that Operation.
+    if (prior) idempotencyKey = `${idempotencyKey}:retry:${randomUUID()}`;
     const active = await this.activeResearchOperation(identity.spaceId, projectId, workflowId);
     if (active) throw new HttpError(409, "Another Project Research operation is already active for this workflow");
 
@@ -855,8 +869,10 @@ export class ProjectResearchOrchestrator {
   }
 
   async reconcileOperation(spaceId: string, operationId: string): Promise<void> {
+    await reconcileResearchCall(this.db,spaceId,operationId);
     const operation = await this.operation(spaceId, operationId);
     if (!operation || ["completed", "failed", "cancelled"].includes(operation.status)) return;
+    if(objectValue(operation.progress_json).acquisition_preflight===true)return;
     const userId = await this.projectWriterActor(spaceId, operation.project_id);
     if (!userId) {
       await this.failOperation(operation, "Research reconciliation requires a project writer");
@@ -1514,14 +1530,9 @@ export class ProjectResearchOrchestrator {
         await this.completeWorkflowCoverage(spaceId, projectId, workflowId, operation.id, state.partial ? "partial" : "completed");
         await this.flushPendingIncremental(spaceId, projectId, workflowId);
       }
-      // A finished search changes what the pinned Thread should do next even
-      // when it produced no material Signal of its own — and the Thread's
-      // evidence-gathering step is finished because the search is, so the user
-      // never has to come back and say so.
-      await tryCompleteSearchStepForWorkflow(this.db, { spaceId, projectId, workflowId });
-      await tryQueueAdviceForWorkflowThread(this.db, {
-        spaceId, userId, projectId, workflowId, triggerKind: "search_completed",
-      });
+      // Settle only the original execution binding. Advice remains a
+      // suggestion and never replaces the Thread's current primary.
+      await reconcileResearchCall(this.db,spaceId,operation.id);
       await this.notifyRoomOfOperationStatus(
         operation,
         "completed",
@@ -1531,10 +1542,15 @@ export class ProjectResearchOrchestrator {
   }
 
   async retryFailedOperation(identity: SpaceUserIdentity, projectId: string, operationId: string) {
+    await assertResearchOperationChange(this.db,identity,projectId,operationId);
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const operation = await this.operation(identity.spaceId, operationId);
     if (!operation || operation.project_id !== projectId) {
       throw new HttpError(404, "Research operation not found");
+    }
+    if(objectValue(operation.progress_json).acquisition_preflight===true){
+      await retryResearchPreparation(this.db,identity,projectId,operationId);
+      return this.readOperation(identity,projectId,operationId);
     }
     if (operation.status !== "failed") {
       throw new HttpError(409, "Only failed research operations can be retried");
@@ -1568,7 +1584,7 @@ export class ProjectResearchOrchestrator {
         await this.assertResearchQuestionAligned(spaceId, id, workflow?.state_json);
       },
       activeOperation: (spaceId, id, workflowId) => this.activeResearchOperation(spaceId, id, workflowId),
-      retryMonitorSetup: (user, id, state) => this.retryMonitorSetup(user, id, state),
+      retryMonitorSetup: (user, id, state, originalId) => this.retryMonitorSetup(user, id, state, originalId),
       ensureProcessingBatchSize: (user, ruleIds) => this.ensureResearchProcessingBatchSize(user, ruleIds),
       setState: (row, state) => this.setState(row, state, deriveStepStates(state)),
       enqueueReconcile: (spaceId, userId, id, reason) => this.enqueueReconcile(spaceId, userId, id, reason),
@@ -1586,6 +1602,7 @@ export class ProjectResearchOrchestrator {
    * queues or re-executes a synthesis run.
    */
   async reconcileOperationForUser(identity: SpaceUserIdentity, projectId: string, operationId: string) {
+    await assertResearchOperationChange(this.db,identity,projectId,operationId);
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const operation = await this.operation(identity.spaceId, operationId);
     if (!operation || operation.project_id !== projectId) throw new HttpError(404, "Research operation not found");
@@ -1888,7 +1905,7 @@ export class ProjectResearchOrchestrator {
         ...(input.agentId ? { provenance: { agentId: input.agentId } } : {}),
       },
     );
-    input = { ...input, researchQuestion: threadScope.statement, threadScope: [threadScope] };
+    input = { ...input,idempotencyKey:`${input.idempotencyKey}:${threadScope.thread_id}`, researchQuestion: threadScope.statement, threadScope: [threadScope] };
     // Serialize the idempotency lookup and Thread-owned Workflow resolution.
     // Without the Project row lock, two concurrent starts can both observe no
     // matching Workflow before either inserts one.
@@ -1897,7 +1914,7 @@ export class ProjectResearchOrchestrator {
       `SELECT id, progress_json FROM project_operations WHERE space_id=$1 AND project_id=$2 AND kind='research' AND progress_json->'idempotency'->>'key'=$3 ORDER BY created_at LIMIT 1`,
       [identity.spaceId, projectId, input.idempotencyKey],
     );
-    if (existing.rows[0]) {
+    if (existing.rows[0]&&!input.resumeOperationId) {
       const prior = researchState(existing.rows[0].progress_json);
       const retryableSourceSetup = prior.run_kind === "baseline"
         && prior.failed_stage === "monitor_setup"
@@ -1919,7 +1936,7 @@ export class ProjectResearchOrchestrator {
       [identity.spaceId, projectId, workflow.id],
     );
     const active = await this.activeResearchOperation(identity.spaceId, projectId, workflow.id);
-    if (active) throw new HttpError(409, "Another Project Research operation is already active for this workflow");
+    if (active&&active.id!==input.resumeOperationId) throw new HttpError(409, "Another Project Research operation is already active for this workflow");
     if (objectValue(objectValue(workflow.state_json).monitoring).active === true) {
       throw new HttpError(409, "This Project Research workflow already has an active initial material intake");
     }
@@ -1938,11 +1955,12 @@ export class ProjectResearchOrchestrator {
         research_scope: input.researchScope,
       }), workflowStartedAt, input.researchQuestion.slice(0, 512)],
     );
-    const operation = await this.createOperation(identity, projectId, {
+    const resumed=input.resumeOperationId?await resumeResearchSetup(this.db,identity,projectId,input.resumeOperationId,initialState(input,workflow.id,fingerprint) as unknown as Record<string,unknown>,input.preparationJobId):null;
+    const operation = resumed?(await this.operation(identity.spaceId,resumed.id))!:await this.createOperation(identity, projectId, {
       title: "Start initial material intake",
       intentText: `Initialize research workflow for: ${input.researchQuestion}`,
       steps: operationSteps(),
-      state: initialState(input, workflow.id, fingerprint),
+      state: {...initialState(input, workflow.id, fingerprint),origin_run_id:input.originRunId??null,problem_call:input.problemCall},
     });
     const { channels, bindings, rules, plans } = await this.initialIntakeCoordinator().provisionBackfills(
       identity,
@@ -1995,15 +2013,7 @@ export class ProjectResearchOrchestrator {
     for (let index = 0; index < plans.length; index += 1) {
       await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "source_backfill_plan", String(plans[index]!.id), "history_backfill");
     }
-    // The Inquiry step becomes a background acquisition only after both the
-    // Workflow and its first Operation exist. Merely opening setup must never
-    // claim that a search is running.
-    await new InquiryIterationService(this.db).updateWork(
-      identity,
-      projectId,
-      threadScope.thread_id,
-      { attention_state: "focused", next_focus_kind: "search_acquisition", blocked_reason: null },
-    );
+    // createBoundResearchOperation already admitted this exact call/Step atomically.
     return this.startResponse(identity, projectId, operation.id);
   }
 
@@ -2019,6 +2029,7 @@ export class ProjectResearchOrchestrator {
     identity: SpaceUserIdentity,
     projectId: string,
     state: ResearchOperationState,
+    operationId:string,
   ) {
     const workflow = await this.workflow(identity.spaceId, projectId, state.workflow_id);
     if (!workflow) throw new HttpError(404, "Research workflow not found");
@@ -2028,6 +2039,7 @@ export class ProjectResearchOrchestrator {
       throw new HttpError(409, "The failed initial material intake is missing its historical range and cannot be retried");
     }
     const input: ResearchInput = {
+      resumeOperationId:operationId,
       workflowId: workflow.id,
       researchQuestion: optionalString(workflowState.research_question) ?? "Project research",
       requestedThreadId: state.thread_scope[0]?.thread_id ?? null,
@@ -2042,7 +2054,7 @@ export class ProjectResearchOrchestrator {
       agentId: state.agent_id,
       runtimeProfileId: state.runtime_profile_id,
       execution: {},
-      idempotencyKey: `${state.idempotency.key}:retry:${randomUUID()}`,
+      idempotencyKey: state.idempotency.key,
       reportDepth: state.report_depth,
       questionRefineSkipped: state.question_refine_skipped,
       queryStrategyId: optionalString(workflowState.query_strategy_id),
@@ -2053,7 +2065,7 @@ export class ProjectResearchOrchestrator {
 
   private async createOperation(identity: SpaceUserIdentity, projectId: string, input: { title: string; intentText: string; steps: string[]; state: ResearchOperationState }) {
     const derived = deriveStepStates(input.state);
-    const created = await new ProjectOperationService(this.db).createManagedResearch(identity, projectId, {
+    const created = await createBoundResearchOperation(this.db,identity, projectId, {
       title: input.title,
       intentText: input.intentText,
       status: input.state.stage_state === "waiting_review" ? "waiting_review" : "active",
@@ -2630,6 +2642,7 @@ export class ProjectResearchOrchestrator {
     steps: ResearchStepOverride[],
   ) {
     await setResearchOperationState(this.db, operation, state, steps);
+    await reconcileResearchCall(this.db,operation.space_id,operation.id);
   }
 
   private async failOperation(
@@ -2747,7 +2760,7 @@ export class ProjectResearchOrchestrator {
   }
 
   private async readOperation(identity: SpaceUserIdentity, projectId: string, operationId: string): Promise<OperationRead> {
-    return await new ProjectOperationService(this.db).get(identity, projectId, operationId) as unknown as OperationRead;
+    return await new ProjectOperationService(this.db).getContent(identity, projectId, operationId) as unknown as OperationRead;
   }
 
   private async startResponse(identity: SpaceUserIdentity, projectId: string, operationId: string) {
@@ -3055,6 +3068,7 @@ function workflowOutput(row: WorkflowRow): Record<string, unknown> {
 
 function initialIntakeFingerprint(input: ResearchInput): string {
   return fingerprintOf({
+    problem_call:input.problemCall??null,
     researchQuestion: input.researchQuestion,
     threadScope: input.threadScope,
     sourceChannelIds: input.sourceChannelIds,

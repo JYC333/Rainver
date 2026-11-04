@@ -12,7 +12,7 @@ export function workRun(overrides: Partial<AgentAttentionRun> = {}): AgentAttent
 export function work(overrides: Partial<AgentWorkItem> = {}): AgentWorkItem {
   return { identity: { kind: 'run', source_id: 'run-b' }, work_key: 'opaque-b', space_id: 'space-b', project_id: 'project-b',
     title: 'Build the report', source_run_id: null, access_level: 'full', group: 'recently_finished', mine: true,
-    responsible: { kind: 'user', id: 'user', display_name: 'Reader' }, task_status: null, loop_stage: null, task_completed_at: null,
+    responsible: { kind: 'user', id: 'user', display_name: 'Reader' }, task_status: null, task_completed_at: null,
     runs: [workRun()], reasons: [], read_states: [{ subject: { kind: 'run_result', schema_version: 1, run_id: 'run-b', attempt_id: 'attempt-b', revision: 'rev-1' },
       unread: true, manual_unread: false, read_at: null, state_version: 0 }], unread: true,
     last_activity_at: '2026-10-20T12:00:00Z', visible_run_count: 1, runs_next_cursor: null, operations: [], ...overrides }

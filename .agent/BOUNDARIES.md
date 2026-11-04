@@ -646,6 +646,11 @@ concept is renamed or replaced, the old name is removed in the same change. Two
 names for one thing, or two documents claiming the same authority. Do not
 leave that as a migration convenience.
 
+This holds across data-model cutovers too: data in an older shape is converted
+once by maintenance migrations or refused, not decoded at runtime
+([ADR 0027](decisions/0027-problem-engine-research-separation.md) decision 6).
+Old page URLs may redirect as navigation only.
+
 **B59** — `server/migrations/` is an append-only chain. `0000_baseline.sql`
 is frozen, and every schema change after it is a new numbered file appended by
 `pnpm run schema:generate -- --name <name>` from the Drizzle schema, with data

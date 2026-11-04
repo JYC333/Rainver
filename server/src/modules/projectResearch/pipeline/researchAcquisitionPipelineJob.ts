@@ -1,3 +1,5 @@
+import { assertResearchOperationChange } from "../researchCallAccess.js";
+import { reconcileResearchCall } from "../researchProblemCalls.js";
 import { agentOriginContinuation } from "../../rooms/discussionService.js";
 import type { Pool } from "../../../db/pool.js";
 import { getDbPool } from "../../../db/pool.js";
@@ -12,13 +14,9 @@ import {
 } from "../../jobs/handlerRegistry.js";
 import { RoomService, UNATTRIBUTED_CONTINUATION } from "../../rooms/service.js";
 import { isConversationTurnInProgressError } from "../../sessions/conversationRuntimeSessionRepository.js";
-import { ProjectResearchQuestionAssessmentRepository } from "../questionAssessmentRepository.js";
-import { ProjectResearchQuestionRefineService } from "../questionRefineService.js";
-import { canWriteProject } from "../../projects/access.js";
 import { AdaptiveQueryOrchestrator } from "../../research/queryPlanning/adaptiveQueryOrchestrator.js";
 import { ResearchMonitorMaterializer } from "../../research/discovery/monitorMaterializer.js";
 import { ProjectResearchOrchestrator } from "../orchestrator.js";
-import { ProjectOperationRepository } from "../../projects/projectOperationRepository.js";
 import { SCREENING_AUTO_CONTINUE_CORPUS_LIMIT } from "../researchCheckpointPolicy.js";
 
 export const RESEARCH_PIPELINE_START_JOB = "research_pipeline_start";
@@ -35,9 +33,6 @@ const TURN_BUSY_RETRY_DELAY_MS = 2_000;
 const DEFAULT_PROVIDERS: Array<"arxiv" | "openalex" | "semantic_scholar" | "web_search"> = ["arxiv", "openalex"];
 const DEFAULT_CANDIDATE_BUDGET = 1000;
 
-const SYNTHETIC_ASSESSMENT_MESSAGE =
-  "Assess this question for acquisition readiness (FINER: feasible, interesting, novel, ethical, relevant) and prepare it for research acquisition. No additional scope narrowing beyond the question itself.";
-
 export function registerResearchAcquisitionPipelineHandler(registry: JobHandlerRegistry, config: ServerConfig): void {
   if (!config.databaseUrl) return;
   const pool = getDbPool(config.databaseUrl);
@@ -47,6 +42,11 @@ export function registerResearchAcquisitionPipelineHandler(registry: JobHandlerR
 }
 
 interface PipelinePayload {
+  operationId:string;
+  intentNote:string|null;
+  originRunId:string|null;
+  callRequestKey:string|null;
+  expectedThreadVersion:number|null;
   threadId: string;
   projectId: string;
   /** Caller-set scope; the defaults below apply when the caller said nothing. */
@@ -98,8 +98,14 @@ export class ResearchAcquisitionPipelineRunner {
     // running the pipeline again recorded another failed attempt, repeated
     // the query evaluation, and with `since` turned a started acquisition
     // into a 409 "already active" failure.
-    const recorded = payload.recordedOutcome;
-    const outcome = recorded ?? await this.runPipeline(identity, payload);
+    const durable=await this.pool.query<{outcome:unknown}>(`SELECT payload_json->'pipeline_outcome' AS outcome FROM jobs WHERE id=$1 AND space_id=$2`,[payload.jobId,identity.spaceId]);
+    const saved=durable.rows[0]?.outcome;
+    const recorded = payload.recordedOutcome??(saved&&typeof saved==='object'?saved as Record<string,unknown>:null);
+    let outcome:Record<string,unknown>;
+    try{outcome=recorded??await this.runPipeline(identity,payload);}catch(error){
+     if(job.attempts>=job.max_attempts)await this.recordFailedAttempt(identity,payload,{status:'stage_failed',stage:'preparation',reason:'Research preparation exhausted its execution retries; inspect the Job diagnostics'});
+     throw error;
+    }
     if (!recorded) {
       if (outcome.status !== "started") await this.recordFailedAttempt(identity, payload, outcome);
       await this.pool.query(
@@ -115,12 +121,19 @@ export class ResearchAcquisitionPipelineRunner {
   private parsePayload(raw: Record<string, unknown>, jobId: string): PipelinePayload {
     const threadId = optionalString(raw.thread_id);
     const projectId = optionalString(raw.project_id);
-    if (!threadId || !projectId) {
-      throw new Error(`${RESEARCH_PIPELINE_START_JOB} requires thread_id and project_id`);
+    const operationId = optionalString(raw.operation_id);
+    // Queue admission binds every job to its Operation before it is enqueued.
+    if (!threadId || !projectId || !operationId) {
+      throw new Error(`${RESEARCH_PIPELINE_START_JOB} requires thread_id, project_id and operation_id`);
     }
     return {
       threadId,
       projectId,
+      operationId,
+      intentNote:optionalString(raw.intent_note),
+      originRunId:optionalString(raw.origin_run_id),
+      callRequestKey:optionalString(raw.call_request_key),
+      expectedThreadVersion:typeof raw.expected_thread_version==="number"?raw.expected_thread_version:null,
       originRoomId: optionalString(raw.origin_room_id) ?? null,
       originSessionId: optionalString(raw.origin_session_id) ?? null,
       originGroupId: optionalString(raw.origin_group_id) ?? null,
@@ -139,8 +152,16 @@ export class ResearchAcquisitionPipelineRunner {
     identity: SpaceUserIdentity,
     payload: PipelinePayload,
   ): Promise<Record<string, unknown>> {
-    const thread = await this.pool.query<{ statement: string }>(
-      `SELECT statement FROM inquiry_threads
+    await assertResearchOperationChange(this.pool,identity,payload.projectId,payload.operationId);
+    const op=await this.pool.query<{status:string;progress_json:Record<string,unknown>}>(`SELECT status,progress_json FROM project_operations WHERE id=$1 AND space_id=$2 AND project_id=$3`,[payload.operationId,identity.spaceId,payload.projectId]);
+    if(op.rows[0]?.progress_json.acquisition_preflight===true&&op.rows[0].progress_json.acquisition_job_id!==payload.jobId)return {status:'superseded',thread_id:payload.threadId,operation_id:payload.operationId,reason:'This preparation attempt was superseded'};
+    if(!op.rows[0]||op.rows[0].status==='cancelled')return {status:'cancelled',thread_id:payload.threadId,operation_id:payload.operationId,reason:'Research invocation was cancelled before admission'};
+    // Admission replaces the preflight progress. If it committed but the worker
+    // stopped before saving `pipeline_outcome`, the rerun reports that start;
+    // running the pipeline again would announce a false setup failure.
+    if(op.rows[0].progress_json.acquisition_preflight!==true&&op.rows[0].status!=='failed')return {status:'started',thread_id:payload.threadId,operation_id:payload.operationId,screening_cap:payload.maxItems??SCREENING_AUTO_CONTINUE_CORPUS_LIMIT,matched_estimate:null};
+    const thread = await this.pool.query<{ statement: string;version:number }>(
+      `SELECT statement,version FROM inquiry_threads
         WHERE object_id=$1 AND space_id=$2 AND project_id=$3
           AND kind='question' AND lifecycle_status='active'`,
       [payload.threadId, identity.spaceId, payload.projectId],
@@ -152,7 +173,7 @@ export class ResearchAcquisitionPipelineRunner {
 
     let contextVersionId: string;
     try {
-      contextVersionId = await this.resolveContextVersion(identity, payload, statement);
+      contextVersionId = await this.resolveContextVersion(identity, payload);
     } catch (error) {
       if (isDomainError(error)) {
         return { status: "stage_failed", stage: "assessment", thread_id: payload.threadId, reason: error.message };
@@ -193,9 +214,12 @@ export class ResearchAcquisitionPipelineRunner {
       throw error;
     }
 
+    if(payload.expectedThreadVersion!==null&&thread.rows[0]?.version!==payload.expectedThreadVersion)return {status:"stage_failed",stage:"start_intake",thread_id:payload.threadId,reason:"The initiating Thread version changed; request new research explicitly"};
     let operationId: string;
     try {
       const started = await new ProjectResearchOrchestrator(this.pool, this.config).startInitialIntake(identity, payload.projectId, {
+        idempotency_key:payload.callRequestKey??`pipeline:${payload.jobId}`,
+        ...(payload.intentNote?{problem_call:{gap:payload.intentNote,input_refs:[],output_expectation:"Return evidence, counterevidence, limits and remaining gaps"}}:{}),
         thread_id: payload.threadId,
         query_strategy_id: strategyId,
         // A date floor makes this a bounded range, which is also what leaves
@@ -214,7 +238,7 @@ export class ResearchAcquisitionPipelineRunner {
         max_items: payload.maxItems ?? SCREENING_AUTO_CONTINUE_CORPUS_LIMIT,
         report_depth: "quick",
         question_refine_skipped: false,
-      });
+      },{...(payload.originRunId?{runId:payload.originRunId}:{}),operationId:payload.operationId,jobId:payload.jobId});
       operationId = (started as { operation: { id: string } }).operation.id;
     } catch (error) {
       // Every domain failure reports its own message. Do not fold every 409
@@ -249,42 +273,19 @@ export class ResearchAcquisitionPipelineRunner {
     };
   }
 
-  /** Reuses the Thread's existing assessment-session context version when one
-   * exists; otherwise runs one automated FINER assessment turn. Whether that
-   * assessment actually passes is decided by `evaluate()`'s own gate, not
-   * here — this stage only produces a context version to evaluate. */
-  private async resolveContextVersion(
-    identity: SpaceUserIdentity,
-    payload: PipelinePayload,
-    statement: string,
-  ): Promise<string> {
-    const session = await new ProjectResearchQuestionAssessmentRepository(this.pool).getConversation(
-      identity,
-      payload.projectId,
-      payload.threadId,
-    );
-    if (session?.research_context_version_id) return session.research_context_version_id;
-    const result = await new ProjectResearchQuestionRefineService(this.pool, this.config).refine(identity, payload.projectId, {
-      thread_id: payload.threadId,
-      message: SYNTHETIC_ASSESSMENT_MESSAGE,
-      research_question: statement,
-    }, {
-      // The person's request queued this pipeline, so it spends as theirs
-      // while they can still write the Project.
-      kind: "setup",
-      setup: "research_pipeline",
-      record_id: payload.jobId,
-      user_id: identity.userId,
-      still_authorized: () => canWriteProject(this.pool, identity.spaceId, payload.projectId, identity.userId),
-    });
-    return result.research_context_version_id;
+  /** Optional FINER sessions stay available in Frame; a direct acquisition
+   * prepares its own immutable accepted-Thread context without inventing scores. */
+  private async resolveContextVersion(identity:SpaceUserIdentity,payload:PipelinePayload):Promise<string>{
+    const row=await this.pool.query<{context_id:string|null}>(`SELECT progress_json->>'preparation_context_version_id' AS context_id FROM project_operations WHERE id=$1 AND space_id=$2 AND project_id=$3`,[payload.operationId,identity.spaceId,payload.projectId]);
+    if(!row.rows[0]?.context_id)throw new HttpError(409,"Research preparation has no admitted problem context");
+    return row.rows[0].context_id;
   }
 
   /** Reuses an already-materialized strategy for this context version
    * (advance-to-done: a prior run that got past `evaluate` but failed later
    * resumes here instead of re-running query planning and live provider
-   * search). Otherwise runs `evaluate`, whose own FINER gate is the sole
-   * assessment-passed check in this pipeline. */
+   * search). Otherwise evaluates the accepted-Thread context using the
+   * internal permission/version-checked planning basis. */
   private async resolveStrategy(
     identity: SpaceUserIdentity,
     payload: PipelinePayload,
@@ -303,53 +304,19 @@ export class ResearchAcquisitionPipelineRunner {
       researchContextVersionId: contextVersionId,
       providers: DEFAULT_PROVIDERS,
       candidateBudget: DEFAULT_CANDIDATE_BUDGET,
-    });
+    },{threadId:payload.threadId});
     return strategy.id;
   }
 
-  /**
-   * A pipeline that stops before `startInitialIntake` has no Operation.
-   * Do not leave the attempt only in `jobs.result_json`. Pulse, the Research
-   * Area's runs, and `research.list_operations` read Operations and would
-   * show nothing, which reads as "it is still running". A terminal, managed
-   * Operation records the attempt where the work is looked for.
-   */
+  /** A preparation failure ends its original bound Operation, so Pulse, the
+   * Research records and `research.list_operations` show where it stopped. */
   private async recordFailedAttempt(
     identity: SpaceUserIdentity,
     payload: PipelinePayload,
     outcome: Record<string, unknown>,
   ): Promise<void> {
-    const reason = typeof outcome.reason === "string" ? outcome.reason : "The research pipeline did not start an acquisition.";
-    const stage = typeof outcome.stage === "string" ? outcome.stage : String(outcome.status ?? "unknown");
-    try {
-      const thread = await this.pool.query<{ statement: string }>(
-        `SELECT statement FROM inquiry_threads WHERE object_id=$1 AND space_id=$2`,
-        [payload.threadId, identity.spaceId],
-      );
-      const statement = thread.rows[0]?.statement ?? "this Question";
-      await new ProjectOperationRepository(this.pool).createManagedResearch(identity, payload.projectId, {
-        title: `Research did not start: ${statement}`.slice(0, 256),
-        intentText: reason,
-        status: "failed",
-        progress: {
-          run_kind: "acquisition_attempt",
-          thread_id: payload.threadId,
-          failed_stage: stage,
-          failure_reason: reason,
-          outcome_status: outcome.status ?? null,
-          pipeline_job_id: payload.jobId,
-          ...(payload.originRoomId ? { origin_room_id: payload.originRoomId } : {}),
-          ...(payload.originSessionId ? { origin_session_id: payload.originSessionId } : {}),
-        },
-        steps: [],
-      });
-    } catch (error) {
-      // Recording the attempt must never turn a reported failure into an
-      // unreported one; the Room message below is the primary channel.
-      process.stderr.write(
-        `[project-research] could not record the failed acquisition attempt for thread ${payload.threadId}: ${error instanceof Error ? error.message : String(error)}\n`,
-      );
-    }
+    await this.pool.query(`UPDATE project_operations SET status='failed',version=version+1,progress_json=progress_json||jsonb_build_object('current_stage','failed','stage_state','failed','failed_stage','monitor_setup','pipeline_outcome',$3::jsonb,'error',jsonb_build_object('code','acquisition_preflight_failed','message',$4::text)),updated_at=now() WHERE id=$1 AND space_id=$2 AND status NOT IN ('cancelled','completed') AND progress_json->>'acquisition_job_id'=$5`,[payload.operationId,identity.spaceId,JSON.stringify(outcome),String(outcome.reason??'Research preparation did not complete'),payload.jobId]);
+    await reconcileResearchCall(this.pool,identity.spaceId,payload.operationId);
   }
 
   /**

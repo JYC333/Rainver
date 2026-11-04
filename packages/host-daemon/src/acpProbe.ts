@@ -1,7 +1,43 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { isAcpAuthRequiredError, type RuntimeAuthMethod, type RuntimeOptionChoice, type RuntimeOptions, type RuntimeSessionConfigOption } from "@rainver/protocol";
 import { terminalAuthAvailable } from "./terminalAuth.js";
 import { helperProcessEnv } from "./providerBinding.js";
+import { killProcessGroup } from "./processGroup.js";
+
+/** Keep the runtime held until its probe has drained and exited, not just answered. */
+function closeProbeProcess(child: ChildProcess, onFailure?: (reason: string) => void): Promise<void> {
+  if (!child.pid || ((child.exitCode !== null || child.signalCode !== null)
+    && [child.stdout, child.stderr].every(stream => !stream || stream.destroyed || stream.readableEnded))) return Promise.resolve();
+  return new Promise(resolve => {
+    let closed = false;
+    let terminating = false;
+    let escalated = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const termTimer = setTimeout(() => {
+      terminating = true;
+      onFailure?.("ACP probe did not exit after stdin closed; terminating its process group");
+      killProcessGroup(child, "SIGTERM");
+      killTimer = setTimeout(() => {
+        escalated = true;
+        killProcessGroup(child, "SIGKILL");
+        if (closed) resolve();
+      }, 3_000);
+      killTimer.unref?.();
+    }, 10_000);
+    termTimer.unref?.();
+    child.once("close", () => {
+      closed = true;
+      clearTimeout(termTimer);
+      if (!terminating || escalated) resolve();
+      // The adapter can exit on SIGTERM while a descendant ignores it. Keep
+      // the group escalation alive even after the adapter's pipes close.
+      else killTimer?.ref();
+    });
+    // EOF lets an ACP adapter dispose its SDK query and flush credentials.
+    // Sending SIGTERM as soon as session/new answers can interrupt that work.
+    try { child.stdin?.end(); } catch { /* the close event owns completion */ }
+  });
+}
 
 /**
  * What a runtime says it can be set to, asked over ACP rather than guessed.
@@ -148,8 +184,7 @@ export function probeAcpIdentity(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try { child.kill(); } catch { /* already exited */ }
-      resolve(identity);
+      void closeProbeProcess(child).then(() => resolve(identity));
     };
     const timer = setTimeout(() => finish(null), timeoutMs);
     timer.unref?.();
@@ -158,6 +193,7 @@ export function probeAcpIdentity(
         cwd,
         stdio: ["pipe", "pipe", "ignore"],
         env: { ...helperProcessEnv(process.env), ...env },
+        detached: process.platform !== "win32",
       });
     } catch {
       clearTimeout(timer);
@@ -238,7 +274,7 @@ export function parseAcpSessionProbeResult(
 }
 
 /**
- * Opens one ACP session purely to read its `configOptions`, then kills it.
+ * Opens one ACP session to read its `configOptions`, then drains it through EOF.
  *
  * Deliberately not part of the per-heartbeat capability probe: this starts an
  * agent process, which costs orders of magnitude more than `--version`. The
@@ -299,9 +335,8 @@ export function probeAcpOptions(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try { child.kill(); } catch { /* already gone */ }
       if (value === null && reason) onFailure?.(reason);
-      resolve(value);
+      void closeProbeProcess(child, onFailure).then(() => resolve(value));
     };
     /**
      * The session probe never concluded — but `initialize` did, and the auth
@@ -336,6 +371,7 @@ export function probeAcpOptions(
         cwd,
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...helperProcessEnv(process.env, runtimeKey ?? ""), ...env },
+        detached: process.platform !== "win32",
       });
     } catch (error) {
       clearTimeout(timer);

@@ -51,7 +51,7 @@ describe('ProjectResearchStandingPanel', () => {
     render(<ProjectResearchStandingPanel projectId="project-1" canAct />)
 
     expect(await screen.findByText('Project understanding is not ready')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Open Reading List' })).toHaveAttribute('href', '/projects/project-1/research?tab=reading')
+    expect(screen.getByRole('link', { name: 'Open Reading List' })).toHaveAttribute('href', '/projects/project-1/inquiry/records?tab=reading')
     expect(screen.getByText('Daily comparison budget reached')).toBeInTheDocument()
     expect(screen.getByText('Provider execution failed')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open Project notes' })).toHaveAttribute('href', '/projects/project-1/notes')
@@ -71,5 +71,5 @@ it('links a completed scan update to the explicit standing tab', () => {
     relevant_count: 1, maybe_count: 0, supports_count: 1, contradicts_count: 0,
     new_direction_count: 0, comparisons: [], integrity_alerts: [],
   } as never]} />)
-  expect(screen.getByRole('link', { name: 'View update' })).toHaveAttribute('href', '/projects/project-1/research?tab=standing')
+  expect(screen.getByRole('link', { name: 'View update' })).toHaveAttribute('href', '/projects/project-1/inquiry')
 })

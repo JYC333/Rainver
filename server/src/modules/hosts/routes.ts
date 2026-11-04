@@ -1,4 +1,5 @@
 import { ownCliReleases } from "./ownCliReleases.js";
+import { AcpAgentService } from "../acpAgents/index.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { stateChangingReadAllowed } from "../../gateway/csrfOrigin.js";
 import websocketPlugin from "@fastify/websocket";
@@ -27,7 +28,6 @@ import { assertProjectWriter, assertProjectReadable } from "../projects/access.j
 import { getDbPool } from "../../db/pool.js";
 import { hasSubscriptionQuota, listHostRuntimeChanges, readHostUsage, recordHostRuntimeChange, refreshHostUsage } from "./usageService.js";
 import { getAgentRuntimeDefinition, getRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
-import { SERVER_OPENCODE_RELEASE } from "../runtimeAdapters/opencodeRelease.js";
 import { acpRuntimeProbe, acpRuntimeProbes, type ProbeHostKind } from "./runtimeProbes.js";
 import { hostInstallationAuthMethods, hostInstallationCliLoginAvailable, hostInstallationIds, normalizeHostCapabilities } from "./capabilities.js";
 import { PgRuntimeProvisioningRepository } from "./runtimeProvisioningRepository.js";
@@ -374,8 +374,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           latest_managed_version: latestManagedVersions.get(spec.runtime_key) ?? null,
           // Never awaited: answered from memory, refreshed in the background.
           latest_own_version: ownCliReleases.peek(spec.runtime_key),
-          /** Release pin used only by the built-in Server Host lifecycle. */
-          server_supported_version: spec.runtime_key === "opencode" ? SERVER_OPENCODE_RELEASE.version : null,
+          /** Current bootstrap/upgrade target for the built-in Server Host. */
+          server_supported_version: spec.runtime_key === "opencode" ? acpRuntimeProbe("opencode", "server")?.version ?? null : null,
           /** Whether this runtime bundles a distinct CLI whose version the host reports. */
           reports_managed_cli_version: Boolean(spec.managed_runtime_version_command),
           // Which backend modes the runtime contract supports, read from the
@@ -430,6 +430,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 
 
+  app.get("/api/v1/hosts/:hostId/tool-operations", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
+    if (!resolved) return reply;
+    return { items: sharedHostConnectionRegistry.toolOperations(resolved.hostId) };
+  });
+
   app.post("/api/v1/hosts/:hostId/installations/:runtimeKey/own/update", async (request, reply) => {
     const resolved = await resolveOwnedHost(context, request, reply);
     if (!resolved) return reply;
@@ -463,6 +469,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!remoteInstallableRuntimeKeys().includes(runtimeKey)) {
       return reply.code(422).send({ detail: `Runtime adapter '${runtimeKey}' is not eligible for remote dispatch` });
     }
+    // Installation is explicit. Refresh release metadata here; ordinary
+    // capability reads and running copies never install an upstream update.
+    await new AcpAgentService(resolved.pool).refreshRegistryCache();
     const targetHost = await resolved.pool.query<{ kind: string }>(
       "SELECT kind FROM hosts WHERE id = $1 LIMIT 1",
       [resolved.hostId],
@@ -476,6 +485,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!probe || !distribution || !version) {
       return reply.code(422).send({ detail: `Runtime adapter '${runtimeKey}' has no distribution to install from` });
     }
+    const expectedVersion = body<{ expected_version: string }>(request).expected_version;
+    if (expectedVersion !== undefined && expectedVersion !== version) {
+      return reply.code(409).send({ detail: "The available ACP version changed. Refresh the agent list before installing." });
+    }
     const before = await currentManagedVersion(resolved.pool, resolved.hostId, runtimeKey);
     const egressTransport = targetHost.rows[0]?.kind === "server"
       ? managedHostEgressTransport(await readInstanceOperationsPolicy(context.config))
@@ -486,6 +499,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       distribution,
       login: probe.login,
       runtime_version_command: getRuntimeAdapterSpec(runtimeKey)?.managed_runtime_version_command ?? null,
+      ...(runtimeKey === "codex_cli" && ownCliReleases.peek("codex_cli")
+        ? { vendor_cli_version: ownCliReleases.peek("codex_cli")! } : {}),
       health_check_protocol: getRuntimeAdapterSpec(runtimeKey)?.invocation?.protocol === "acp" ? "acp" : null,
       egress_transport: egressTransport,
     });
@@ -535,8 +550,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       [resolved.hostId],
     );
     if (target.rows[0]?.kind !== "server") return reply.code(404).send({ detail: "Host not found" });
-    const state = await new PgRuntimeProvisioningRepository(resolved.pool)
-      .retry(resolved.hostId, "opencode", SERVER_OPENCODE_RELEASE.version);
+    const provisioning = new PgRuntimeProvisioningRepository(resolved.pool);
+    const existing = await provisioning.get(resolved.hostId, "opencode");
+    const state = existing ? await provisioning.retry(resolved.hostId, "opencode", existing.desired_version) : null;
     if (!state) {
       return reply.code(409).send({ detail: "Only a failed Server OpenCode installation can be retried." });
     }

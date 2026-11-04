@@ -29,6 +29,7 @@ on:
       - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
+      - patches/**
       - .nvmrc
 
 permissions:

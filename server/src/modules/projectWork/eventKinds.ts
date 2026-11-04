@@ -46,8 +46,8 @@ export function registeredWorkEventKinds(): readonly WorkEventKindDefinition[] {
 function registerCoreWorkEventKinds(): void {
   const taskKinds: readonly ProjectWorkEventKind[] = [
     "task.created",
+    "task.entity_linked",
     "task.flow_changed",
-    "task.stage_changed",
     "task.accepted",
     "task.responsibility_changed",
     "task.run_settled",
@@ -72,7 +72,9 @@ function registerCoreWorkEventKinds(): void {
     "thread.archived",
     "thread.reopened",
     "thread.concluded",
-    "thread.next_step_adopted",
+  "thread.work_recorded",
+  "thread.round_closed",
+  "thread.round_closeout_reverted",
   ];
   for (const kind of threadKinds) {
     registerWorkEventKind({ kind, subjects: ["inquiry_thread"], owner: "inquiry" });

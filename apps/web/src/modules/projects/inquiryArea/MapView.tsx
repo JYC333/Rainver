@@ -11,7 +11,6 @@ import { EmptyState } from '../../../components/ui/empty-state'
 import { Skeleton } from '../../../components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../../components/ui/tabs'
 import { flattenThreadTree } from './threadGrouping'
-import { STAGE_FOR_KIND, STAGE_LABELS } from './stages'
 
 const GraphView = lazy(async () => {
   const graph = await import('../../../components/graph')
@@ -26,8 +25,7 @@ const GraphView = lazy(async () => {
  * never both appear.
  */
 function stageLabel(thread: InquiryThread): string | null {
-  if (thread.blocked_reason || !thread.next_focus_kind) return null
-  return STAGE_LABELS[STAGE_FOR_KIND[thread.next_focus_kind]]
+ return thread.blocked_reason ? null : thread.problem_summary?.current_focus?.stage ?? null
 }
 
 function StructureTree({ threads, candidates, selectedId, onSelect }: {

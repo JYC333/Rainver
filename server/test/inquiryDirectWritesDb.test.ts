@@ -97,6 +97,8 @@ beforeEach(async () => {
       { action_id: "project.propose_definition" },
       { action_id: "inquiry.create_thread" },
       { action_id: "inquiry.record_conclusion" },
+      { action_id: "inquiry.record_work" },
+      { action_id: "inquiry.close_round" },
     ] }), SPACE],
   );
 });
@@ -150,6 +152,37 @@ describe("inquiry.create_thread, direct (real Postgres)", () => {
     expect(updates.items.find((item) => item.event_kind === "thread.created")).toMatchObject({
       undo: { action: "archive_thread", target_id: threads.rows[0]!.object_id },
     });
+  });
+
+  it("records generic work and unchanged close-out through the governed Agent dispatcher", async()=>{
+    const thread=await new InquiryThreadService(db.pool).createThread(ownerIdentity(),PROJECT,{kind:"question",statement:"Why does import fail?"});
+    const run=(await new PgRunRepository(db.pool).getAgentRun(SPACE,RUN_ID))!;
+    const dispatcher=await SystemActionDispatcher.create(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),run);
+    const {InquiryProblemEngineService}=await import("../src/modules/inquiry/problemEngineService.js");
+    const engine=new InquiryProblemEngineService(db.pool);
+    const p=await engine.projection(ownerIdentity(),PROJECT,String(thread.id));
+    const result=await dispatcher.dispatch({id:"problem-work",name:"inquiry.record_work",arguments_json:JSON.stringify({thread_id:thread.id,method_version:"problem_solving.v1",expected_version:p.version,expected_revision:p.revision,idempotency_key:"work",stage:"verify",work_kind:"record_work",reason:"Inspected the logs"})});
+    expect(result.modelResult,JSON.stringify(result.modelResult)).toMatchObject({ok:true});
+    const next=await engine.projection(ownerIdentity(),PROJECT,String(thread.id));
+    const closed=await dispatcher.dispatch({id:"problem-close",name:"inquiry.close_round",arguments_json:JSON.stringify({thread_id:thread.id,method_version:"problem_solving.v1",expected_version:next.version,expected_revision:next.revision,idempotency_key:"close",summary:"No new evidence"})});
+    expect(closed.modelResult,JSON.stringify(closed.modelResult)).toMatchObject({ok:true});
+    expect((await engine.projection(ownerIdentity(),PROJECT,String(thread.id))).round_number).toBe(2);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM inquiry_iterations WHERE thread_id=$1`,[thread.id])).rows[0].n).toBe(0);
+  });
+
+  it("namespaces identical model command keys by Run",async()=>{
+    const thread=await new InquiryThreadService(db.pool).createThread(ownerIdentity(),PROJECT,{kind:"question",statement:"Run namespace"});
+    const {InquiryProblemEngineService}=await import("../src/modules/inquiry/problemEngineService.js");
+    const engine=new InquiryProblemEngineService(db.pool);
+    for(const runId of [RUN_ID,SECOND_RUN_ID]){
+      const run=(await new PgRunRepository(db.pool).getAgentRun(SPACE,runId))!;
+      const dispatcher=await SystemActionDispatcher.create(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),run);
+      const p=await engine.projection(ownerIdentity(),PROJECT,String(thread.id));
+      const result=await dispatcher.dispatch({id:"same-tool-call",name:"inquiry.record_work",arguments_json:JSON.stringify({thread_id:thread.id,method_version:"problem_solving.v1",expected_version:p.version,expected_revision:p.revision,idempotency_key:"same-model-key",stage:"plan",work_kind:"record_work",reason:runId===RUN_ID?"First run":"Second run"})});
+      expect(result.modelResult,JSON.stringify(result.modelResult)).toMatchObject({ok:true});
+    }
+    const receipts=(await db.pool.query(`SELECT idempotency_key FROM inquiry_problem_commands WHERE thread_id=$1`,[thread.id])).rows;
+    expect(receipts).toHaveLength(2);expect(new Set(receipts.map(r=>r.idempotency_key)).size).toBe(2);
   });
 
   it("stops at the per-turn bound and tells the Agent to continue next turn", async () => {
@@ -274,6 +307,7 @@ describe("inquiry.record_conclusion, direct (real Postgres)", () => {
       name: "inquiry.record_conclusion",
       arguments_json: JSON.stringify({
         thread_id: String(thread.id),
+        method_version:"problem_solving.v1",round_intent:"close_round",expected_version:1,expected_revision:0,idempotency_key:"conclusion-1",
         change_summary: "Partly answered",
         answer_state: "partial",
         current_answer_summary: "Layering helps recall",
@@ -288,7 +322,7 @@ describe("inquiry.record_conclusion, direct (real Postgres)", () => {
     expect((await db.pool.query(`SELECT id FROM proposals WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT])).rows)
       .toHaveLength(0);
     const updates = await getProjectUpdates(db.pool, ownerIdentity(), PROJECT, null);
-    expect(updates.items.find((item) => item.event_kind === "thread.concluded")?.undo)
+    expect(updates.items.flatMap(item=>item.members??[item]).find((item) => item.event_kind === "thread.concluded")?.undo)
       .toMatchObject({ action: "revert_iteration" });
   });
 });

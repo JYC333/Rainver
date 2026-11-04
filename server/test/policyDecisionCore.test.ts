@@ -410,7 +410,6 @@ describe("engine + registry default", () => {
     const setups = [
       "daily_report",
       "imported_session_extraction",
-      "inquiry_advice",
       "conversation_title",
       "retrieval_embedding",
       "research_pipeline",

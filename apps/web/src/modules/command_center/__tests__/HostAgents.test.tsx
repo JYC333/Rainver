@@ -1,8 +1,11 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { acpAgentsApi } from '../../../api/client'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import HostAgents from '../HostAgents'
 import type { Host, HostRuntimeDefinitionOption } from '../../../types/api'
+
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 
 const { enable, disable, installRuntime, uninstallRuntime, loginInput, loginCallback, loginStream, goose, enabledGoose, flags } = vi.hoisted(() => {
   const goose = {
@@ -17,7 +20,6 @@ const { enable, disable, installRuntime, uninstallRuntime, loginInput, loginCall
   }
 })
 
-vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../LoginTerminalView', () => import('../../../test/loginTerminalStandIn'))
 
 vi.mock('../../../api/client', async importOriginal => {
@@ -32,6 +34,7 @@ vi.mock('../../../api/client', async importOriginal => {
     },
     hostsApi: {
       ...original.hostsApi,
+      toolOperations: vi.fn(async () => ({ items: [] })),
       usage: vi.fn(async () => ({ items: flags.namedQuota ? [{
         host_id: 'h1', runtime_key: 'acp_goose', installation: 'managed:1.2.3', checked_at: '2026-10-26T12:00:00Z',
         quota: { available: true, session_pct: 20, session_resets: null, week_pct: 10, week_resets: null, error: null,
@@ -118,6 +121,66 @@ describe('HostAgents', () => {
     } finally { flags.namedQuota = false }
   })
 
+  it('updates managed Codex when only its vendor CLI has a newer version', async () => {
+    const { hostsApi } = await import('../../../api/client')
+    const install = vi.spyOn(hostsApi, 'installRuntime').mockResolvedValue({ ok: true, installation: 'managed:2.5.0', error: null } as never)
+    const host = { ...HOST, kind: 'server', capabilities_json: { installations: { codex_cli: [{ id: 'managed:2.5.0', version: '2.5.0', runtime_version: 'codex-cli 0.165.0', logged_in: true }] } } } as unknown as Host
+    const adapter = { runtime_key: 'codex_cli', display_name: 'Codex CLI', latest_managed_version: '2.5.0', latest_own_version: '0.166.0', reports_managed_cli_version: true } as HostRuntimeDefinitionOption
+    const view = render(<HostAgents host={host} adapters={[adapter]} isInstanceAdmin manageable onChanged={vi.fn()} />)
+    try {
+      await userEvent.click(screen.getByRole('button', { name: 'Upgrade Codex CLI on Laptop' }))
+      await waitFor(() => expect(install).toHaveBeenCalledWith('h1', 'codex_cli'))
+    } finally { view.unmount(); install.mockRestore() }
+  })
+
+  it('recovers a server-reported upgrade without a local request', async () => {
+    const { hostsApi } = await import('../../../api/client')
+    const status = vi.mocked(hostsApi.toolOperations)
+    status.mockResolvedValue({ items: [{ runtime_key: 'claude_code', action: 'update_own_tool' }] })
+    const host = { ...HOST, capabilities_json: { installations: { claude_code: [{ id: 'own', version: '1.0.0', logged_in: true }] } } } as unknown as Host
+    const view = render(<HostAgents host={host} adapters={ADAPTERS.map(adapter => ({ ...adapter, latest_own_version: '2.0.0' }))} isInstanceAdmin={false} manageable onChanged={vi.fn()} />)
+    try {
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Update own Claude Code on Laptop' })).toHaveAttribute('aria-busy', 'true'))
+    } finally {
+      view.unmount()
+      status.mockResolvedValue({ items: [] })
+    }
+  })
+
+  it.each(['success', 'failure'] as const)('retains an upgrade across navigation, prevents duplicates and clears on %s', async outcome => {
+    const { hostsApi } = await import('../../../api/client')
+    const { toast } = await import('sonner')
+    const notice = vi.spyOn(toast, 'info')
+    let finish!: (value: never) => void
+    let fail!: (error: Error) => void
+    const update = vi.spyOn(hostsApi, 'updateOwnRuntime').mockImplementation(() => new Promise((resolve, reject) => { finish = resolve; fail = reject }) as never)
+    const host = { ...HOST, capabilities_json: { installations: { claude_code: [{ id: 'own', version: '1.0.0', logged_in: true }] } } } as unknown as Host
+    const adapters = ADAPTERS.map(adapter => ({ ...adapter, latest_own_version: '2.0.0' }))
+    const props = { host, adapters, isInstanceAdmin: false, manageable: true, onChanged: vi.fn() }
+    const first = render(<HostAgents {...props} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Update own Claude Code on Laptop' }))
+    first.unmount()
+    const refreshed = vi.fn()
+    const second = render(<HostAgents {...props} onChanged={refreshed} />)
+    try {
+      const button = screen.getByRole('button', { name: 'Update own Claude Code on Laptop' })
+      expect(button).toHaveAttribute('aria-busy', 'true')
+      await userEvent.click(button)
+      expect(update).toHaveBeenCalledTimes(1)
+      expect(notice).toHaveBeenCalled()
+      await act(async () => {
+        if (outcome === 'success') finish({ ok: true, installation: 'own' } as never)
+        else fail(new Error('Update failed'))
+      })
+      await waitFor(() => expect(button).toHaveAttribute('aria-busy', 'false'))
+      await waitFor(() => expect(refreshed).toHaveBeenCalled())
+    } finally {
+      second.unmount()
+      update.mockRestore()
+      notice.mockRestore()
+    }
+  })
+
   it('updates an own CLI through its separate endpoint and refreshes the Host', async () => {
     const update = vi.spyOn((await import('../../../api/client')).hostsApi, 'updateOwnRuntime').mockResolvedValue({ ok: true, error: null, installation: 'own' } as never)
     const changed = vi.fn()
@@ -160,7 +223,7 @@ describe('HostAgents', () => {
     // One list, the registry: the builtin CLI is installable from it like any
     // enabled agent, and nothing is listed above it as a default.
     await userEvent.click(await screen.findByRole('button', { name: 'Install Claude Code on Laptop' }))
-    await waitFor(() => expect(installRuntime).toHaveBeenCalledWith('h1', 'claude_code'))
+    await waitFor(() => expect(installRuntime).toHaveBeenCalledWith('h1', 'claude_code', '1.2.3'))
     // Not an admin: entries that would first need enabling are not offered.
     expect(screen.queryByText('Kilo')).toBeNull()
     expect(screen.queryByRole('button', { name: /Enable and install/ })).toBeNull()
@@ -335,12 +398,30 @@ describe('HostAgents', () => {
     await userEvent.clear(search)
     await userEvent.click(screen.getByRole('button', { name: 'Enable and install Kilo on Laptop' }))
     await waitFor(() => expect(enable).toHaveBeenCalledWith('kilo'))
-    await waitFor(() => expect(installRuntime).toHaveBeenCalledWith('h1', 'acp_kilo'))
+    await waitFor(() => expect(installRuntime).toHaveBeenCalledWith('h1', 'acp_kilo', '1.2.3'))
     expect(screen.getByRole('button', { name: 'Install Kilo on Laptop' })).toHaveTextContent('Installing…')
     expect(screen.getByText('Kilo')).toBeInTheDocument()
     finishInstall({ host_id: 'h1', runtime_key: 'acp_kilo', ok: true, error: null, installation: 'managed:1.2.3' })
     await waitFor(() => expect(screen.getAllByText('Installed')).toHaveLength(3))
     expect(onChanged).toHaveBeenCalled()
+  })
+
+  it('keeps installed agents first and upgrades the selected ACP release without re-enabling it', async () => {
+    vi.mocked(acpAgentsApi.registry).mockResolvedValueOnce({items:[{...goose,id:'aaa',name:'A new agent'},{...goose,version:'2.0.0'}]})
+    installRuntime.mockResolvedValueOnce({ok:true,installation:'managed:2.0.0'})
+    const changed=vi.fn()
+    render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin manageable onChanged={changed}/> )
+    await userEvent.click(screen.getByRole('button',{name:'Add agent…'}))
+    const catalog=await screen.findByRole('list',{name:'Agent catalog'})
+    expect(within(catalog).getAllByRole('listitem')[0]).toHaveTextContent('goose')
+    expect(within(catalog).getByText('ACP 1.2.3 · Available 2.0.0')).toBeVisible()
+    const before=enable.mock.calls.length
+    await userEvent.click(within(catalog).getByRole('button',{name:'Upgrade ACP for goose on Laptop'}))
+    await waitFor(()=>expect(installRuntime).toHaveBeenCalledWith('h1','acp_goose','2.0.0'))
+    await waitFor(()=>expect(within(catalog).getByText('ACP 2.0.0 · Available 2.0.0')).toBeVisible())
+    expect(within(catalog).queryByRole('button',{name:'Upgrade ACP for goose on Laptop'})).toBeNull()
+    expect(enable.mock.calls.length).toBe(before)
+    expect(changed).toHaveBeenCalled()
   })
 
   it('offers no Log out for a registry agent whose only sign-in is its advertised Agent Auth', () => {

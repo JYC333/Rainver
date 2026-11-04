@@ -128,7 +128,7 @@ class EmptyContextOpsDb {
         rowCount: 1,
       };
     }
-    if (/FROM source_connections/.test(norm)) {
+    if (/FROM source_connections WHERE/.test(norm)) {
       return {
         rows: [{
           active_source_connections: 0,

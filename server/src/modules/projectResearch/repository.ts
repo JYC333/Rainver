@@ -1,3 +1,4 @@
+import {assertResearchReportCallReadable} from './reportAccess.js';
 import { randomUUID } from "node:crypto";
 import {
   HttpError,
@@ -745,12 +746,14 @@ export class ProjectResearchRepository {
     if (checkpoint.checkpoint_type === "idea_review") {
       const reportId = optionalString(machineResult.report_id);
       const report = reportId
-        ? await this.db.query<{ content_json: unknown }>(
-            `SELECT content_json FROM project_research_reports
+        ? await this.db.query<{ content_json: unknown;operation_id:string }>(
+            `SELECT content_json,operation_id FROM project_research_reports
               WHERE space_id=$1 AND project_id=$2 AND id=$3 LIMIT 1`,
             [spaceId, projectId, reportId],
           )
-        : { rows: [] as Array<{ content_json: unknown }> };
+        : { rows: [] as Array<{ content_json: unknown;operation_id:string }> };
+      if(reportId&&!report.rows[0])throw new HttpError(404,"Research report not found");
+      if(report.rows[0]){if(report.rows[0].operation_id!==operationId)throw new HttpError(409,"Checkpoint report belongs to another operation");await assertResearchReportCallReadable(this.db,identity,projectId,report.rows[0].operation_id);}
       const content = objectValue(report.rows[0]?.content_json);
       const ideas = Array.isArray(content.ideas)
         ? content.ideas.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))

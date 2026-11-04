@@ -23,6 +23,7 @@ RUN corepack enable
 # Install the web package and its local protocol dependency from the workspace.
 WORKDIR /repo
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+COPY patches ./patches
 COPY packages/protocol/package.json ./packages/protocol/
 COPY packages/reader-document/package.json ./packages/reader-document/
 COPY server/package.json ./server/

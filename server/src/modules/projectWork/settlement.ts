@@ -1,9 +1,8 @@
-import type { RunSettlementReason, WorkLoopStageKey } from "@rainver/protocol";
+import type { RunSettlementReason } from "@rainver/protocol";
 import { artifactReadSql } from "../access/contentAccessSql.js";
 import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { resolveServiceActorId } from "../../db/actorResolver.js";
 import { appendProjectWorkEvent } from "./eventWriter.js";
-import { recordStageChange } from "./loopState.js";
 import { enqueueTaskMerges } from "../hosts/taskMerges.js";
 
 /**
@@ -63,12 +62,6 @@ interface LatestRunRow {
 export interface Outcome {
   flow: "done" | "waiting_for_review";
   reason: RunSettlementReason;
-  /**
-   * Null leaves the stage alone. A Run that produced no result has nothing to
-   * verify, so failure and cancellation do not move a Task's Loop stage — only
-   * a person or an agent deciding what to do next can.
-   */
-  stage: WorkLoopStageKey | null;
   missingOutputs: string[];
 }
 
@@ -159,13 +152,13 @@ export function outcomeForRun(
   missingOutputs: readonly string[],
 ): Outcome {
   if (runStatus === "failed") {
-    return { flow: "waiting_for_review", reason: "run_failed", stage: null, missingOutputs: [] };
+    return { flow: "waiting_for_review", reason: "run_failed", missingOutputs: [] };
   }
   if (runStatus === "cancelled") {
-    return { flow: "waiting_for_review", reason: "run_cancelled", stage: null, missingOutputs: [] };
+    return { flow: "waiting_for_review", reason: "run_cancelled", missingOutputs: [] };
   }
   if (runStatus === "waiting_for_review") {
-    return { flow: "waiting_for_review", reason: "supervisor_review", stage: null, missingOutputs: [] };
+    return { flow: "waiting_for_review", reason: "supervisor_review", missingOutputs: [] };
   }
 
   // succeeded or degraded: there is a result, so the Task is being judged.
@@ -173,7 +166,6 @@ export function outcomeForRun(
     return {
       flow: "waiting_for_review",
       reason: "evaluation_missing",
-      stage: "verify",
       missingOutputs: [],
     };
   }
@@ -181,7 +173,6 @@ export function outcomeForRun(
     return {
       flow: "waiting_for_review",
       reason: "evaluation_not_accepted",
-      stage: "verify",
       missingOutputs: [],
     };
   }
@@ -189,11 +180,10 @@ export function outcomeForRun(
     return {
       flow: "waiting_for_review",
       reason: "required_outputs_missing",
-      stage: "verify",
       missingOutputs: [...missingOutputs],
     };
   }
-  return { flow: "done", reason: "accepted", stage: "conclude", missingOutputs: [] };
+  return { flow: "done", reason: "accepted", missingOutputs: [] };
 }
 
 /**
@@ -211,7 +201,7 @@ export async function settleTasksForRun(
   spaceId: string,
   runId: string,
 ): Promise<readonly string[]> {
-  // One transaction: a Task's flow status, its Loop stage, its work events
+  // One transaction: a Task's Board status and its work events
   // and its merge move together or not at all.
   return withQueryableTransaction(db, (tx) => settleTasksForRunIn(tx, spaceId, runId));
 }
@@ -401,20 +391,7 @@ async function settleTasksForRunIn(
       });
     }
 
-    if (outcome.stage) {
-      await recordStageChange(db, {
-        spaceId,
-        projectId: row.project_id,
-        taskId: row.task_id,
-        toStage: outcome.stage,
-        actorId,
-        reason: outcome.reason,
-        correlationId: row.run_id,
-          runId: row.run_id,
-        causationId: settlementEvent?.id ?? null,
-        idempotencyKey: `task.stage_changed:${row.task_id}:${row.run_id}:${outcome.stage}`,
-      });
-    }
+
   }
 
   return settled;

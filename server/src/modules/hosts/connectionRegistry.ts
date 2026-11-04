@@ -261,7 +261,7 @@ export class HostConnectionRegistry {
   }>();
   private readonly connections = new Map<string, HostConnection>();
   private readonly pending = new Map<string, PendingRun>();
-  private readonly pendingInstalls = new Map<string, { hostId: string; resolve: (result: ToolInstallResult) => void; timer: ReturnType<typeof setTimeout> }>();
+  private readonly pendingInstalls = new Map<string, { hostId: string; runtimeKey: string; action: string; resolve: (result: ToolInstallResult) => void; timer: ReturnType<typeof setTimeout> }>();
   private readonly launchWaiters = new Map<string, Array<{ runId: string; start: () => void; cancel: () => void }>>();
   private readonly pendingCommands = new Map<string, { hostId: string; resolve: (result: HostCommandOutcome) => void; timer: ReturnType<typeof setTimeout> }>();
   private readonly pendingImports = new Map<string, {
@@ -668,9 +668,17 @@ export class HostConnectionRegistry {
    * grace: a daemon that drops mid-install starts over on the next request,
    * and the operator sees the failure now rather than after a grace period.
    */
+  toolOperations(hostId: string): Array<{ runtime_key: string; action: string }> {
+    return [...this.pendingInstalls.values()].filter(item => item.hostId === hostId)
+      .map(item => ({ runtime_key: item.runtimeKey, action: item.action }));
+  }
+
   requestToolAction<T extends "install_tool" | "uninstall_tool" | "rollback_tool" | "update_own_tool">(hostId: string, type: T, frame: HostRequestPayload<T>): Promise<ToolInstallResult> {
     const connection = this.connections.get(hostId);
     if (!connection?.sink) return Promise.resolve({ ok: false, error: "host_offline", installation: null });
+    if (this.toolOperations(hostId).some(item => item.runtime_key === frame.runtime_key)) {
+      return Promise.resolve({ ok: false, error: "A CLI operation is already in progress on this host.", installation: null });
+    }
     const requestId = randomUUID();
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -678,7 +686,7 @@ export class HostConnectionRegistry {
         resolve({ ok: false, error: "install_timed_out", installation: null });
       }, TOOL_INSTALL_TIMEOUT_MS);
       timer.unref?.();
-      this.pendingInstalls.set(requestId, { hostId, resolve, timer });
+      this.pendingInstalls.set(requestId, { hostId, runtimeKey: frame.runtime_key, action: type, resolve, timer });
       connection.sink!.send({ ...frame, type, request_id: requestId } as HostServerFrameOf<T>);
     });
   }

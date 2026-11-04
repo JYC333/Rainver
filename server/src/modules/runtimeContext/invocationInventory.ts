@@ -54,7 +54,6 @@ export const RUNTIME_INVOCATION_INVENTORY = [
   // records to produce the summary a whole-session reference carries. Not an
   // Agent task-context entrypoint either.
   providerCall("importedSessions/summary.ts", "completeProviderText", 1, "bounded_provider_task", "importedSessions", "provider_task"),
-  providerCall("inquiry/adviceService.ts", "completeProviderMessages", 1, "bounded_provider_task", "inquiry", "provider_task"),
   providerCall("projectResearch/questionRefineService.ts", "completeProviderMessages", 1, "bounded_provider_task", "projectResearch", "provider_task"),
   providerCall("projects/publicSummaryGenerator.ts", "completeProviderText", 1, "bounded_provider_task", "projects", "provider_task"),
   providerCall("research/queryPlanning/intentPlanner.ts", "completeProviderMessages", 1, "bounded_provider_task", "research", "provider_task"),

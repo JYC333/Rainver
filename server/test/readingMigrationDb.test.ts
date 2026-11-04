@@ -113,8 +113,9 @@ it('applies 0000-0008 to empty PG then upgrades existing legacy material without
   const upgrade=await convertBranch();expect(upgrade.state).toBe('converted');expect(upgrade.pending.map(f=>f.slice(0,4))).toEqual(['0009','0010','0011','0012']);
   expect((await db.pool.query('SELECT row_to_json(i) AS value FROM source_items i WHERE id=$1',[item])).rows[0].value).toEqual(before);
   expect((await db.pool.query('SELECT content FROM artifacts WHERE id=$1',[artifact])).rows[0].content).toBe(content);
+  // Complete the release schema before invoking its new application readers.
+  expect((await migrate(db.pool,migrations)).applied).toEqual(readdirSync(migrations).filter(n=>/^\d{4}_.*\.sql$/.test(n)&&Number(n.slice(0,4))>=8).sort().map(n=>n.slice(0,4)));
   const records=await projectReadingRecords(db.pool,{spaceId:space,userId:owner},item);expect(records.items[0]).toMatchObject({snapshot_id:snapshot,artifact_id:artifact,role:'legacy_analysis',format:'undeclared'});expect(records.original_availability).toBe('unknown');
-  expect((await migrate(db.pool,migrations)).applied).toEqual(['0008']);
  }finally{rmSync(prefix,{recursive:true,force:true});}
 },120000);
 
@@ -135,7 +136,7 @@ it('upgrades the exact committed R1 chain through 0009 via formal history conver
   await expect(db.pool.query(`INSERT INTO project_reading_rounds(id,space_id,project_id,goal_id,version_id,sequence,slot_key,targets_json,execution_json,deadline_at) VALUES($1,$2,$3,$4,$5,2,'stable-slot','[]','{}',now())`,[randomUUID(),space,project,goal,version])).rejects.toMatchObject({code:'23505'});
   const otherSpace=randomUUID(),otherOwner=randomUUID(),otherProject=randomUUID();await seedSpaceOwnerProject(db.pool,{space:otherSpace,owner:otherOwner,project:otherProject});
   await expect(db.pool.query(`INSERT INTO project_reading_rounds(id,space_id,project_id,goal_id,version_id,sequence,slot_key,targets_json,execution_json,deadline_at) VALUES($1,$2,$3,$4,$5,1,'cross-space','[]','{}',now())`,[randomUUID(),otherSpace,otherProject,goal,version])).rejects.toMatchObject({code:'23503'});
-  expect((await migrate(db.pool,migrations)).applied).toEqual(['0008']);
+  expect((await migrate(db.pool,migrations)).applied).toEqual(readdirSync(migrations).filter(n=>/^\d{4}_.*\.sql$/.test(n)&&Number(n.slice(0,4))>=8).sort().map(n=>n.slice(0,4)));
  }finally{rmSync(old,{recursive:true,force:true});}
 },120000);
 
@@ -152,7 +153,7 @@ it('upgrades exact committed R2 to 0011 without changing existing Project data',
   await db.pool.query("INSERT INTO project_reading_compositions(id,space_id,project_id,revision,sections_json,reason) VALUES($1,$2,$3,1,'[]','theme_terminal')",[randomUUID(),space,project]);
   await expect(db.pool.query("INSERT INTO project_reading_compositions(id,space_id,project_id,revision,sections_json,reason) VALUES($1,$2,$3,1,'[]','theme_terminal')",[randomUUID(),space,project])).rejects.toMatchObject({code:'23505'});
   await expect(db.pool.query("INSERT INTO project_reading_compositions(id,space_id,project_id,revision,sections_json,reason) VALUES($1,$2,$3,1,'[]','theme_terminal')",[randomUUID(),randomUUID(),project])).rejects.toMatchObject({code:'23503'});
-  expect((await migrate(db.pool,migrations)).applied).toEqual(['0008']);
+  expect((await migrate(db.pool,migrations)).applied).toEqual(readdirSync(migrations).filter(n=>/^\d{4}_.*\.sql$/.test(n)&&Number(n.slice(0,4))>=8).sort().map(n=>n.slice(0,4)));
  }finally{rmSync(old,{recursive:true,force:true});}
 },120000);
 
@@ -166,7 +167,7 @@ it('upgrades exact R3 with favorite default false without changing private progr
   await db.pool.query("INSERT INTO source_items(id,space_id,owner_user_id,item_type,title,content_state,retention_policy,created_at,updated_at,first_seen_at,last_seen_at) VALUES($1,$2,$3,'external_url','Retained','metadata_only','metadata_only',now(),now(),now(),now())",[item,space,owner]);
   const state=randomUUID();await db.pool.query("INSERT INTO source_item_user_states(id,space_id,source_item_id,user_id,read_status,progress_json,created_at,updated_at) VALUES($1,$2,$3,$4,'read','{\"fraction\":0.73}',now(),now())",[state,space,item,owner]);
   const before=(await db.pool.query('SELECT row_to_json(s) AS value FROM source_item_user_states s WHERE id=$1',[state])).rows[0].value;
-  expect((await convertBranch()).pending.map(f=>f.slice(0,4))).toEqual(['0012']);const after=(await db.pool.query('SELECT row_to_json(s) AS value FROM source_item_user_states s WHERE id=$1',[state])).rows[0].value;expect(after).toEqual({...before,favorite:false});expect((await migrate(db.pool,migrations)).applied).toEqual(['0008']);
+  expect((await convertBranch()).pending.map(f=>f.slice(0,4))).toEqual(['0012']);const after=(await db.pool.query('SELECT row_to_json(s) AS value FROM source_item_user_states s WHERE id=$1',[state])).rows[0].value;expect(after).toEqual({...before,favorite:false});expect((await migrate(db.pool,migrations)).applied).toEqual(readdirSync(migrations).filter(n=>/^\d{4}_.*\.sql$/.test(n)&&Number(n.slice(0,4))>=8).sort().map(n=>n.slice(0,4)));
  }finally{rmSync(old,{recursive:true,force:true});}
 },120000);
 
@@ -182,7 +183,7 @@ it('converts both the published prefix and fully applied development chain witho
    const before=(await db.pool.query('SELECT row_to_json(p) AS value FROM projects p WHERE id=$1',[project])).rows[0].value;
    const result=await convertBranch();expect(result.state).toBe('converted');expect(result.pending).toHaveLength(13-count);
    expect((await db.pool.query('SELECT row_to_json(p) AS value FROM projects p WHERE id=$1',[project])).rows[0].value).toEqual(before);
-   expect((await migrate(db.pool,migrations)).applied).toEqual(['0008']);
+   expect((await migrate(db.pool,migrations)).applied).toEqual(readdirSync(migrations).filter(n=>/^\d{4}_.*\.sql$/.test(n)&&Number(n.slice(0,4))>=8).sort().map(n=>n.slice(0,4)));
    expect((await convertBranch()).state).toBe('beyond_target');
   }finally{rmSync(old,{recursive:true,force:true});}
  }
@@ -198,7 +199,7 @@ it('adds daily identity without rewriting old overview references or collection 
  await db.pool.query("INSERT INTO source_goal_runs(id,space_id,goal_id,version_id,status,result_json) VALUES($1,$2,$3,$4,'insufficient','{}')",[audit,space,goal,randomUUID()]);
  const refs=[{goal_id:goal,briefing_id:randomUUID(),published_at:'2026-10-01T00:00:00Z'}];
  await db.pool.query("INSERT INTO project_reading_compositions(id,space_id,project_id,revision,sections_json,reason) VALUES($1,$2,$3,17,$4,'theme_terminal')",[composition,space,project,JSON.stringify(refs)]);
- expect((await migrate(db.pool,migrations)).applied).toEqual(['0008']);
+ expect((await migrate(db.pool,migrations)).applied).toEqual(readdirSync(migrations).filter(n=>/^\d{4}_.*\.sql$/.test(n)&&Number(n.slice(0,4))>=8).sort().map(n=>n.slice(0,4)));
  expect((await db.pool.query('SELECT revision,sections_json,edition_date,timezone,day_revision,rounds_json FROM project_reading_compositions WHERE id=$1',[composition])).rows[0]).toEqual({revision:17,sections_json:refs,edition_date:null,timezone:null,day_revision:null,rounds_json:[]});
  expect((await db.pool.query('SELECT status,result_json,reading_date,reading_timezone FROM source_goal_runs WHERE id=$1',[audit])).rows[0]).toEqual({status:'insufficient',result_json:{},reading_date:null,reading_timezone:null});
  await expect(db.pool.query("UPDATE project_reading_compositions SET edition_date='2026-11-02',timezone='UTC' WHERE id=$1",[composition])).rejects.toMatchObject({code:'23514'});

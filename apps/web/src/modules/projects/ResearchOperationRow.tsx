@@ -1,3 +1,4 @@
+import {useAppTranslation} from '../../i18n'
 import { useState } from 'react'
 import { Ban, ChevronDown, ChevronRight, HelpCircle, FlaskConical, RefreshCw } from 'lucide-react'
 import type { InquiryThread, ProjectOperation, ProjectResearchCheckpoint, ProjectResearchWorkflow } from '../../types/api'
@@ -11,6 +12,7 @@ import { isResearchHumanReviewCheckpoint } from './researchReviewAttention'
 import { ResearchCheckpointReview } from './ResearchCheckpointReview'
 
 interface ResearchOperationRowProps {
+  readOnly?: boolean
   operation: ProjectOperation
   workflow: ProjectResearchWorkflow | undefined
   thread: InquiryThread | undefined
@@ -28,15 +30,17 @@ interface ResearchOperationRowProps {
  * than one running or pending search.
  */
 export function ResearchOperationRow({
-  operation, workflow, thread, checkpoints, busyAction, reconciling,
+  readOnly=false, operation, workflow, thread, checkpoints, busyAction, reconciling,
   onDecideCheckpoint, onReconcileOperation, onRetryOperation, onCancelOperation,
 }: ResearchOperationRowProps) {
-  const pendingCheckpoints = checkpoints.filter(checkpoint => checkpoint.status === 'pending' && isResearchHumanReviewCheckpoint(checkpoint))
+  const {locale}=useAppTranslation();const contentWithheld=operation.progress_json.content_withheld===true;
+  const withheldNotice=locale==='zh-CN'?'研究内容不可用，仅显示已授权的状态。':'Research content unavailable; showing authorized status.';
+  const pendingCheckpoints = (contentWithheld?[]:checkpoints).filter(checkpoint => checkpoint.status === 'pending' && isResearchHumanReviewCheckpoint(checkpoint))
   const [expanded, setExpanded] = useState(operation.status === 'failed' || pendingCheckpoints.length > 0)
-  const title = (typeof workflow?.state_json.research_question === 'string' && workflow.state_json.research_question.trim())
+  const title = contentWithheld?operation.title:(typeof workflow?.state_json.research_question === 'string' && workflow.state_json.research_question.trim())
     || operation.title
-  const steps = researchOperationSteps(operation)
-  const failure = operation.status === 'failed' ? researchFailurePresentation(operation) : null
+  const steps = contentWithheld?[]:researchOperationSteps(operation)
+  const failure = !contentWithheld&&operation.status === 'failed' ? researchFailurePresentation(operation) : null
 
   return (
     <div className="rounded border border-border">
@@ -52,7 +56,7 @@ export function ResearchOperationRow({
             : <HelpCircle className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />}
           <div className="min-w-0">
             <p className="truncate text-sm font-medium">{title}</p>
-            <p className="mt-0.5 truncate text-xs text-muted-foreground">{researchOperationDetail(operation)}</p>
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">{contentWithheld?withheldNotice:researchOperationDetail(operation)}</p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -62,7 +66,7 @@ export function ResearchOperationRow({
           </Badge>
         </div>
       </button>
-      {!['completed', 'failed', 'cancelled'].includes(operation.status) && (
+      {!contentWithheld&&!['completed', 'failed', 'cancelled'].includes(operation.status) && (
         <div className="px-3">
           <div className="h-1.5 overflow-hidden rounded-full bg-muted">
             <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${researchOperationPercent(operation)}%` }} />
@@ -71,7 +75,7 @@ export function ResearchOperationRow({
       )}
       {expanded && (
         <div className="space-y-3 border-t border-border p-3">
-          <p className="text-xs text-muted-foreground">{researchOperationNextStep(operation)}</p>
+          <p className="text-xs text-muted-foreground">{contentWithheld?withheldNotice:researchOperationNextStep(operation)}</p>
           <div className="flex flex-wrap gap-1.5">
             {steps.map(step => (
               <Badge key={step.title} variant={step.status === 'done' ? 'success' : step.status === 'failed' ? 'destructive' : step.status === 'active' ? 'default' : step.status === 'blocked' ? 'warning' : 'outline'}>
@@ -89,8 +93,8 @@ export function ResearchOperationRow({
               </details>
             </div>
           )}
-          <div className="flex flex-wrap gap-2">
-            {operation.status === 'failed' && (
+          {!readOnly && <div className="flex flex-wrap gap-2">
+            {!contentWithheld&&operation.status === 'failed' && (
               <Button size="sm" variant="outline" onClick={() => onRetryOperation(operation.id)}>
                 <RefreshCw className="size-3.5" />Retry
               </Button>
@@ -106,8 +110,8 @@ export function ResearchOperationRow({
                 {busyAction === `cancel-operation-${operation.id}` ? 'Stopping…' : 'Stop'}
               </Button>
             )}
-          </div>
-          {pendingCheckpoints.map(checkpoint => (
+          </div>}
+          {!readOnly && pendingCheckpoints.map(checkpoint => (
             <ResearchCheckpointReview
               key={checkpoint.id}
               checkpoint={checkpoint}

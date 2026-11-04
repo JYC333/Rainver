@@ -671,3 +671,53 @@ test('Agent Work presents results before folded history across themes, languages
     } finally { await page.close() }
   }
 })
+
+test('Host Agent catalog keeps installed ACPs first and upgrades the selected release', async () => {
+  const {mkdir}=await import('node:fs/promises');await mkdir('/tmp/host-agent-catalog',{recursive:true})
+  for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const width of [390,1280]){
+    const context=await browser.newContext({viewport:{width,height:1000},serviceWorkers:'block'}),page=await context.newPage();let current='1.2.3',previous='1.0.0',writes=0
+    const agent={id:'goose',name:'goose',version:'2.0.0',description:'Research agent / 研究助手',distribution:{kind:'npx',package:'goose-acp@2.0.0',args:[],env:{}}}
+    try{
+      await page.addInitScript(({locale,theme})=>{localStorage.setItem('rainver:locale',locale);localStorage.setItem('rainver:theme',theme)},{locale,theme})
+      await mockApi(page)
+      await page.route('**/api/v1/**',async route=>{
+        const path=new URL(route.request().url()).pathname.replace('/api/v1','');let data
+        if(path==='/me')data={id:'user-layout',name:'Tester',email:'layout@example.test',default_space_id:room.space_id,instance_role:'admin',is_instance_admin:true}
+        else if(path==='/hosts')data={items:[{id:'host-catalog',owner_user_id:'user-layout',machine_id:'machine-catalog',name:'Laptop',kind:'remote',status:'online',platform:'linux',last_heartbeat_at:now,capabilities_json:{runtimes:[],versions:{},installations:{acp_goose:[{id:`managed:${current}`,version:current,rollback_version:previous,logged_in:false}]}}}]}
+        else if(path==='/hosts/runtime-definitions')data={items:[{runtime_key:'acp_goose',registry_id:'goose',display_name:'goose',command:'goose',remote_eligible:true,latest_managed_version:'2.0.0'}]}
+        else if(path==='/acp-agents/registry')data={items:[{...agent,id:'alpha',name:'A new research agent / 新的研究助手'},agent]}
+        else if(path==='/acp-agents')data={items:[{...agent,runtime_key:'acp_goose',version:'1.2.3',installed_on:[{host_id:'host-catalog',name:'Laptop'}]}]}
+        else if(path==='/hosts/host-catalog/usage')data={items:[]}
+        else if(path==='/hosts/host-catalog/installations/acp_goose/rollback'){writes++;current='1.2.3';previous=null;data={ok:true,installation:'managed:1.2.3',host_id:'host-catalog',runtime_key:'acp_goose',error:null}}
+        else if(path==='/hosts/host-catalog/installations/acp_goose'){assert.equal(route.request().method(),'POST');assert.equal(route.request().postDataJSON().expected_version,'2.0.0');writes++;previous=current;current='2.0.0';data={ok:true,installation:'managed:2.0.0',host_id:'host-catalog',runtime_key:'acp_goose',error:null}}
+        else return route.fallback()
+        return route.fulfill({json:data})
+      })
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/command-center`)
+      const host=page.getByTestId('host-agents-host-catalog');await host.getByRole('button',{name:'Add agent…',exact:true}).click()
+      const list=host.getByRole('list',{name:locale==='en'?'Agent catalog':'Agent 目录',exact:true});await list.getByText('goose',{exact:true}).waitFor()
+      assert.equal(await list.locator('li').first().getAttribute('data-registry-agent'),'goose')
+      assert.equal(await list.locator('li').count(),2)
+      await page.evaluate(()=>document.fonts.ready);await host.getByTestId('host-add-agent-host-catalog').scrollIntoViewIfNeeded()
+      await page.screenshot({path:`/tmp/host-agent-catalog/${width}-${theme}-${locale}-before.png`,animations:'disabled'})
+      await list.getByRole('button',{name:locale==='en'?'Upgrade ACP for goose on Laptop':'升级 Laptop 上 goose 的 ACP',exact:true}).click()
+      await list.getByText(locale==='en'?'ACP 2.0.0 · Available 2.0.0':'ACP 2.0.0 · 可用 2.0.0',{exact:true}).waitFor()
+      assert.equal(await list.getByRole('button',{name:/Upgrade ACP|升级.*ACP/}).count(),0);assert.equal(writes,1)
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
+      await page.screenshot({path:`/tmp/host-agent-catalog/${width}-${theme}-${locale}-after.png`,animations:'disabled'})
+      assert.equal(await host.getByRole('button',{name:locale==='en'?'Roll back to 1.2.3':'回退到 1.2.3',exact:true}).count(),0)
+      await host.getByRole('button',{name:locale==='en'?'More for goose on Laptop':'Laptop 上 goose 的更多操作',exact:true}).click()
+      await page.getByRole('menuitem',{name:locale==='en'?'Version management':'版本管理',exact:true}).click()
+      const dialog=page.getByRole('dialog',{name:locale==='en'?'Version management · goose':'版本管理 · goose',exact:true})
+      await dialog.waitFor();await page.screenshot({path:`/tmp/host-agent-catalog/${width}-${theme}-${locale}-versions.png`,animations:'disabled'})
+      await dialog.getByRole('button',{name:locale==='en'?'Roll back to 1.2.3':'回退到 1.2.3',exact:true}).click()
+      await list.getByText(locale==='en'?'ACP 1.2.3 · Available 2.0.0':'ACP 1.2.3 · 可用 2.0.0',{exact:true}).waitFor()
+      assert.equal(writes,2)
+      await dialog.waitFor({state:'hidden'})
+      await host.getByRole('button',{name:locale==='en'?'More for goose on Laptop':'Laptop 上 goose 的更多操作',exact:true}).click()
+      await page.getByRole('menuitem',{name:locale==='en'?'Version management':'版本管理',exact:true}).click()
+      await dialog.getByText(locale==='en'?'No previous version retained':'没有保留的上一版本',{exact:true}).waitFor()
+
+    }finally{await context.close()}
+  }
+})

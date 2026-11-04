@@ -101,6 +101,8 @@ describe("publication routes", () => {
     const query = vi.fn(async (sql: string) => {
       const normalized = sql.replace(/\s+/g, " ");
       if (normalized === "BEGIN" || normalized === "COMMIT") return { rows: [], rowCount: 0 };
+      if (normalized.includes("WITH RECURSIVE dependencies(id)")) return { rows: [{id:"artifact-1"}], rowCount: 1 };
+      if (normalized.includes("FROM artifacts origin_artifact")) return { rows: [], rowCount: 0 };
       if (normalized.includes("AS effective_access_level")) {
         return { rows: [{ effective_access_level: "full" }], rowCount: 1 };
       }
@@ -152,6 +154,8 @@ describe("publication routes", () => {
     const query = vi.fn(async (sql: string) => {
       const normalized = sql.replace(/\s+/g, " ");
       if (["BEGIN", "ROLLBACK"].includes(normalized)) return { rows: [], rowCount: 0 };
+      if (normalized.includes("WITH RECURSIVE dependencies(id)")) return { rows: [{id:"artifact-1"}], rowCount: 1 };
+      if (normalized.includes("FROM artifacts origin_artifact")) return { rows: [], rowCount: 0 };
       if (normalized.includes("AS effective_access_level")) {
         return { rows: [{ effective_access_level: "full" }], rowCount: 1 };
       }

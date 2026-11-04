@@ -61,7 +61,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       const p = params(request);
-      return reply.send(await operations().list(identity, requiredString(p.projectId, "project_id")));
+      const q=query(request),limit=q.limit===undefined?100:Number(q.limit);
+      const items=await operations().list(identity,requiredString(p.projectId,"project_id"),{limit,after_id:optionalString(q.after_id)??undefined});
+      if(items.length===limit)reply.header("X-Next-Cursor",items[items.length-1]!.id);
+      return reply.send(items);
     } catch (error) {
       return sendRouteError(reply, error);
     }
