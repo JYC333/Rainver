@@ -43,7 +43,7 @@ beforeEach(async () => {
   await resetTables(
     db.pool,
     [
-      "space_invitations",
+      "user_invitations",
       "automations",
       "inquiry_threads",
       "space_objects",

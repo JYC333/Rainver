@@ -203,7 +203,9 @@ export type RouteScope = 'home' | 'space'
 const USER_SCOPED_PREFIXES = ['/home', '/agent-work', '/settings', '/instance-settings', '/time', '/cards', '/evolution', '/login']
 
 function isUserScopedPath(path: string): boolean {
-  return USER_SCOPED_PREFIXES.some(p => path === p || path.startsWith(`${p}/`))
+  // A query or fragment (`/evolution?asset=…`) does not move a path into a Space.
+  const pathname = path.split(/[?#]/, 1)[0]
+  return USER_SCOPED_PREFIXES.some(p => pathname === p || pathname.startsWith(`${p}/`))
 }
 
 /**

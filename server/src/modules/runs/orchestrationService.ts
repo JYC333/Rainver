@@ -231,7 +231,6 @@ interface RunExecutionAdapterDeps {
     inputs: {
       runtimeInstallation: string | null;
       policyDecisionRecordIds: string[];
-      dispatchesToHostDaemon?: boolean;
     },
     effectiveBindings?: EffectiveRunContextBindings,
   ) => Promise<ExecutionControlSnapshot>;
@@ -935,10 +934,6 @@ export class RunOrchestrationService {
               ? stringConfigValue(resolved.adapter_config.runtime_installation)
               : null,
             policyDecisionRecordIds: resolved.policy_decision_record_ids,
-            // Only a run handed to a daemon resolves its provider at launch
-            // rather than here; anything else executes in-process against the
-            // provider this run already records.
-            dispatchesToHostDaemon: dispatchesToHostDaemon(effectiveRun.runtime_key),
           }, effectiveBindings)
         : null;
       // Persist the resolved level so the run read model / trace reflects what

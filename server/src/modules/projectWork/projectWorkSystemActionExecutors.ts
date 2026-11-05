@@ -1,3 +1,7 @@
+import { configureProjectBoard } from "./boardConfiguration.js";
+import { getProjectBoard } from "./boardReadModel.js";
+import { columnForTask, readProjectColumns, selectBoardColumn } from "../tasks/boardColumns.js";
+import { deleteTask } from "../tasks/deleteTask.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { z } from "zod";
 import { effectiveRunTrigger } from "../systemActions/effectiveRunTrigger.js";
@@ -91,6 +95,7 @@ export function registerProjectWorkSystemActionExecutors(
         // above all — can be told in the conversation it came from.
         source_run_id: run.id,
         links:body.links,
+        board_column:body.board_column,
       },
       tx,
       context.actorId,
@@ -193,20 +198,22 @@ export function registerProjectWorkSystemActionExecutors(
    * I do next?" answerable only by restating titles.
    */
   const listProjectTasks = async (status?: string): Promise<Array<{
-    task_id: string; title: string; status: string; priority: string | null;
+    task_id: string; title: string; status: string; column_key:string; priority: string | null;
     due_at: string | null; start_after: string | null; blocked_reason: string | null;
   }>> => {
     const page = await new PgTaskRepository(pool).listTasks(identity, {
       boardId: null, projectFolderId: null, projectId: run.project_id!, status: status ?? null,
       assignedToMe: false, q: null, limit: MAX_LISTED_TASKS, offset: 0,
     });
+    const layout=await readProjectColumns(pool,identity.spaceId,run.project_id!);
     return (page.items as Array<{
-      id: string; title: string; status: string; priority?: string | null;
+      id: string; title: string; status: string; column_id?:string|null; priority?: string | null;
       due_at?: string | null; start_after?: string | null; blocked_reason?: string | null;
     }>).map((task) => ({
       task_id: task.id,
       title: task.title,
       status: task.status,
+      column_key:columnForTask({status:task.status,column_id:task.column_id??null},layout.columns),
       priority: task.priority ?? null,
       due_at: task.due_at ?? null,
       start_after: task.start_after ?? null,
@@ -299,6 +306,38 @@ export function registerProjectWorkSystemActionExecutors(
       modelResult: { ok: true, ...result, released: body.to === null },
       summary: { tool_name: "task.handoff", ok: true, task_id: result.task_id },
     };
+  });
+
+  executors.set("board.read" as SystemActionId,async()=>{
+    if(!run.project_id)throw new HttpError(422,"This Run requires a Project");
+    const board=await getProjectBoard(pool,identity,run.project_id);
+    return {modelResult:{ok:true,project:board.project,columns:board.columns,columns_revision:board.columns_revision},summary:{tool_name:"board.read",ok:true}};
+  });
+  executors.set("board.configure" as SystemActionId,async(input,dispatch)=>{
+    const {reason,...configuration}=input as {reason:string;[key:string]:unknown};
+    const context=await contextFor(pool,dispatch.idempotency_key??null);
+    await configureProjectBoard(pool,identity,context.projectId,configuration,{actorId:context.actorId,runId:context.runId,projectId:context.projectId,reason});
+    const board=await getProjectBoard(pool,identity,context.projectId);
+    return {modelResult:{ok:true,columns:board.columns,columns_revision:board.columns_revision},summary:{tool_name:"board.configure",ok:true}};
+  });
+  executors.set("task.move_to_column" as SystemActionId,async(input,dispatch)=>{
+    const body=input as {task_id:string;column_key:string;columns_revision:string;reason:string};
+    const context=await contextFor(pool,dispatch.idempotency_key??null);
+    const task=await withQueryableTransaction(pool,async tx=>{
+      await lockActiveProjectForMutation(tx,identity.spaceId,context.projectId);
+      await assertProjectWriterForMutation(tx,identity.spaceId,context.projectId,identity.userId);
+      const column=await selectBoardColumn(tx,identity.spaceId,context.projectId,{column_key:body.column_key,columns_revision:body.columns_revision});
+      const current=await requireProjectTask(tx,context.spaceId,body.task_id,context.instructedByUserId,context.projectId,{lock:true});
+      return new PgTaskRepository(pool).updateTask(identity,body.task_id,{status:current.status==='blocked'&&column.status_key==='in_progress'?'blocked':column.status_key,board_id:column.board_id,column_id:column.board_id?column.key:null},{actorId:context.actorId,runId:context.runId,projectId:context.projectId,reason:body.reason},tx);
+    });
+    return {modelResult:{ok:true,task_id:task.id,status:task.status,column_id:task.column_id},summary:{tool_name:"task.move_to_column",ok:true,task_id:task.id}};
+  });
+
+  executors.set("task.delete" as SystemActionId, async (input, dispatch) => {
+    const body = input as { task_id: string; reason: string };
+    const context = await contextFor(pool, dispatch.idempotency_key ?? null);
+    const result = await deleteTask(pool, identity, body.task_id, { actorId: context.actorId, runId: context.runId, projectId: context.projectId, reason: body.reason });
+    return { modelResult: { ok: true, ...result }, summary: { tool_name: "task.delete", ok: true, task_id: result.task_id } };
   });
 
   executors.set("task.set_status" as SystemActionId, async (input, dispatch) => {

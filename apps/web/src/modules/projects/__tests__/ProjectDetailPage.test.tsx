@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import ProjectDetailPage from '../ProjectDetailPage'
-import { focusAreasApi, projectsApi } from '../../../api/client'
+import { focusAreasApi, projectsApi, spacesApi, ApiRequestError } from '../../../api/client'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn(), dismiss: vi.fn() },
@@ -22,7 +22,9 @@ vi.mock('../../../api/client', () => ({
     constructor(message: string, readonly status: number, readonly code?: string) { super(message) }
   },
   focusAreasApi: { list: vi.fn().mockResolvedValue([]), setForProject: vi.fn().mockResolvedValue(undefined) },
+  spacesApi: { members: vi.fn() },
   projectsApi: {
+    members: vi.fn(), addMember: vi.fn(), removeMember: vi.fn(),
     get: vi.fn(),
     publicSummaryEditor: vi.fn(),
     savePublicSummaryDraft: vi.fn(),
@@ -51,6 +53,7 @@ const project: Awaited<ReturnType<typeof projectsApi.get>> = {
   space_id: 'space-1',
   owner_user_id: 'user-1',
   name: 'Project One',
+  current_user_can_write: true,
   description: null,
   status: 'active',
   current_focus: null as string | null,
@@ -133,6 +136,73 @@ function renderPage(search = '') {
  */
 describe('ProjectDetailPage (Pulse)', () => {
   beforeEach(() => vi.clearAllMocks())
+  it('shows an access explanation for a Space member without requesting internal content', async () => {
+    setup({ project: { owner_user_id: 'other', current_user_can_read: false, current_user_grantable_member_role: null } })
+    renderPage()
+    expect(await screen.findByText('Project access required')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Project One' })).toBeInTheDocument()
+    expect(screen.queryByText('Project not found')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Members' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
+    expect(projectsApi.getOverview).not.toHaveBeenCalled()
+  })
+
+  it('keeps a read-only Project member out of member management and edit controls', async () => {
+    setup({ project: { owner_user_id: 'other', current_user_can_read: true, current_user_can_write: false, current_user_grantable_member_role: null } })
+    renderPage()
+    expect(await screen.findByRole('heading', { name: 'Project One' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Members' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit goal' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Project access required')).not.toBeInTheDocument()
+  })
+
+  it.each([403, 404])('preserves public metadata if internal access is revoked between the two reads (%i)', async status => {
+    setup({ project: { current_user_can_read: true } })
+    vi.mocked(projectsApi.getOverview).mockRejectedValueOnce(new ApiRequestError('Project not accessible', status))
+    renderPage()
+    expect(await screen.findByText('Project access required')).toBeInTheDocument()
+    expect(screen.queryByText('Project not found')).not.toBeInTheDocument()
+  })
+
+  it('lets the owner add a Space member, change their role and remove only Project access', async () => {
+    setup({ project: { current_user_can_read: true, current_user_grantable_member_role: 'owner' } })
+    const member = { id: 'membership', space_id: 'space-1', project_id: 'project-1', user_id: 'user-2', role: 'member' as const, status: 'active' as const, created_at: '', updated_at: '' }
+    vi.mocked(spacesApi.members).mockResolvedValue([{ user_id: 'user-1', display_name: 'Owner', email: 'owner@example.test' }, { user_id: 'user-2', display_name: 'Teammate', email: 'team@example.test' }] as never)
+    vi.mocked(projectsApi.members).mockResolvedValueOnce([]).mockResolvedValue([member])
+    vi.mocked(projectsApi.addMember).mockResolvedValue(member)
+    vi.mocked(projectsApi.removeMember).mockResolvedValue(undefined)
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Members' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Space member' }))
+    fireEvent.click(screen.getByRole('option', { name: 'Teammate (team@example.test)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add member' }))
+    await waitFor(() => expect(projectsApi.addMember).toHaveBeenCalledWith('project-1', { user_id: 'user-2', role: 'member' }))
+    const roleSelect = await screen.findByRole('button', { name: 'Role for Teammate (team@example.test)' })
+    fireEvent.click(roleSelect)
+    fireEvent.click(screen.getByRole('option', { name: 'Viewer' }))
+    await waitFor(() => expect(projectsApi.addMember).toHaveBeenLastCalledWith('project-1', { user_id: 'user-2', role: 'viewer' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove Teammate (team@example.test)' })).toBeEnabled())
+    vi.mocked(projectsApi.members).mockResolvedValue([])
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Teammate (team@example.test)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(projectsApi.removeMember).toHaveBeenCalledWith('project-1', 'user-2'))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove Teammate (team@example.test)' })).not.toBeInTheDocument())
+  })
+
+  it('offers management to a Space admin without making internal content readable', async () => {
+    setup({ project: { owner_user_id: 'user-2', current_user_can_read: false, current_user_grantable_member_role: 'member' } })
+    vi.mocked(spacesApi.members).mockResolvedValue([{ user_id: 'user-1', display_name: 'Admin', email: 'admin@example.test' }, { user_id: 'user-2', display_name: 'Creator', email: 'creator@example.test' }] as never)
+    vi.mocked(projectsApi.members).mockResolvedValue([])
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Members' }))
+    expect(await screen.findByText('Project access required')).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: 'Project role' }))
+    expect(screen.queryByRole('option', { name: 'Owner' })).not.toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Member' })).toBeInTheDocument()
+    expect(projectsApi.getOverview).not.toHaveBeenCalled()
+  })
+
   it('files a writable Project in a Domain from its own page', async () => {
     setup({ project: { focus_area_id: 'domain-1', current_user_can_write: true } })
     vi.mocked(focusAreasApi.list).mockResolvedValue([

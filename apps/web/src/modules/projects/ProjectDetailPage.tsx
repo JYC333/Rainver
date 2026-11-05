@@ -1,5 +1,6 @@
+import ProjectMembersDialog from './ProjectMembersDialog'
 import { useState, useEffect, useCallback, useRef, type MouseEvent } from 'react'
-import { useParams, useSearchParams } from 'react-router-dom'
+import { useParams, useSearchParams, useOutletContext } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import {
   FolderKanban, Target, Edit2, Archive, ChevronLeft,
@@ -175,16 +176,24 @@ function EditProjectDialog({ project, overview, open, onOpenChange, onSaved }: E
  * Do not add Area links, a raw-material queue, an Area list with counts, or
  * a mode selector here: each of those is already on this screen.
  */
-export default function ProjectDetailPage() {
+export default function ProjectDetailPage({ onAccessChanged }: { onAccessChanged?: () => void } = {}) {
+  const layout = useOutletContext<{ onAccessChanged?: () => void } | null>()
+  const { t } = useAppTranslation()
   const { projectId } = useParams<{ projectId: string }>()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const { activeSpaceId, spaces, userId } = useSpace()
+  const scope = `${activeSpaceId}:${userId}:${projectId}`
+  const currentScope = useRef(scope)
+  currentScope.current = scope
+  const [loadedScope, setLoadedScope] = useState('')
 
   const [project, setProject] = useState<Project | null>(null)
   const [kernelOverview, setKernelOverview] = useState<ProjectOverview | null>(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+  const [accessLimited, setAccessLimited] = useState(false)
+  const [membersOpen, setMembersOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [briefGoalOpen, setBriefGoalOpen] = useState(false)
   const [instructionOpen, setInstructionOpen] = useState(false)
@@ -212,25 +221,38 @@ export default function ProjectDetailPage() {
       setLoading(false)
       return
     }
+    const requestedScope = `${activeSpaceId}:${userId}:${projectId}`
     if (!quiet) setLoading(true)
     setNotFound(false)
     try {
-      const [proj, overview] = await Promise.all([
-        projectsApi.get(projectId),
-        projectsApi.getOverview(projectId),
-      ])
+      const proj = await projectsApi.get(projectId)
+      if (currentScope.current !== requestedScope) return
+      setLoadedScope(requestedScope)
       setProject(proj)
-      setKernelOverview(overview)
+      if (proj.current_user_can_read === false) setKernelOverview(null)
+      setAccessLimited(proj.current_user_can_read === false)
+      if (proj.current_user_can_read !== false) {
+        try {
+          const overview = await projectsApi.getOverview(projectId)
+          if (currentScope.current !== requestedScope) return
+          setKernelOverview(overview)
+        } catch (error) {
+          if (currentScope.current !== requestedScope) return
+          if (isNotFoundError(error) || (error instanceof Error && 'status' in error && [401, 403].includes(Number(error.status)))) { setKernelOverview(null); setAccessLimited(true) } else throw error
+        }
+      }
       setLoading(false)
     } catch (e) {
-      if (isNotFoundError(e)) setNotFound(true)
+      if (currentScope.current !== requestedScope) return
+      setLoadedScope(requestedScope)
+      if (isNotFoundError(e) || (e instanceof Error && 'status' in e && [401, 403].includes(Number(e.status)))) { setNotFound(true); setProject(null); setKernelOverview(null) }
       else toast.error(errMsg(e))
       setLoading(false)
     }
-  }, [projectId, activeSpaceId])
+  }, [projectId, activeSpaceId, userId])
 
   const load = useCallback(async (quiet = false) => {
-    const key = `${projectId ?? ''}:${activeSpaceId ?? ''}`
+    const key = `${projectId ?? ''}:${activeSpaceId ?? ''}:${userId}`
     if (loadInFlightRef.current?.key === key) return loadInFlightRef.current.promise
     const promise = loadImpl(quiet)
     loadInFlightRef.current = { key, promise }
@@ -239,9 +261,14 @@ export default function ProjectDetailPage() {
     } finally {
       if (loadInFlightRef.current?.promise === promise) loadInFlightRef.current = null
     }
-  }, [projectId, activeSpaceId, loadImpl])
+  }, [projectId, activeSpaceId, userId, loadImpl])
   // Stable: Pulse re-reads on an interval keyed on this callback's identity.
   const refreshOverview = useCallback(() => { void load(true) }, [load])
+  function refreshAccess() {
+    refreshOverview()
+    onAccessChanged?.()
+    layout?.onAccessChanged?.()
+  }
 
   useEffect(() => { void load() }, [load])
 
@@ -259,7 +286,7 @@ export default function ProjectDetailPage() {
     }
   }
 
-  if (loading) {
+  if (loading || loadedScope !== scope) {
     return (
       <div className="p-6 space-y-4">
         <Skeleton className="h-10 w-64" />
@@ -281,6 +308,7 @@ export default function ProjectDetailPage() {
     )
   }
 
+  const canEdit = project.current_user_can_write === true
   return (
     <div className="p-6 space-y-6">
       <Link to="/projects" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors">
@@ -309,7 +337,7 @@ export default function ProjectDetailPage() {
               <p className="text-sm text-muted-foreground max-w-2xl">{project.description}</p>
             )}
             <p className="text-xs text-muted-foreground">Updated {fmt(project.updated_at)}</p>
-            <FocusAreaField
+            {!accessLimited && <FocusAreaField
               targetKind="project"
               targetId={project.id}
               focusAreaId={project.focus_area_id}
@@ -317,10 +345,12 @@ export default function ProjectDetailPage() {
               onChanged={(focusAreaId) => setProject((current) => current?.id === project.id
                 ? { ...current, focus_area_id: focusAreaId }
                 : current)}
-            />
+            />}
           </div>
         </div>
-        <div className="flex gap-2 shrink-0">
+        <div className="flex flex-wrap gap-2">
+          {project.current_user_grantable_member_role && <Button variant="outline" size="sm" onClick={() => setMembersOpen(true)}>{t('management_ui.project_members.title')}</Button>}
+          {!accessLimited && canEdit && <>
           <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setEditOpen(true)}>
             <SettingsIcon className="size-3.5" />
             Settings
@@ -331,9 +361,17 @@ export default function ProjectDetailPage() {
               {archiving ? 'Archiving…' : 'Archive'}
             </Button>
           )}
+          </>}
         </div>
       </div>
 
+      {project.current_user_grantable_member_role && <ProjectMembersDialog key={`${activeSpaceId}:${userId}:${project.id}`} project={project} open={membersOpen} onOpenChange={setMembersOpen} onChanged={refreshAccess} />}
+      {accessLimited ? <Card className="space-y-3">
+        <h2 className="text-sm font-medium">{t('management_ui.project_members.access_title')}</h2>
+        <p className="text-sm text-muted-foreground">{t('management_ui.project_members.access_help')}</p>
+        {project.current_user_grantable_member_role && <p className="text-sm text-muted-foreground">{t('management_ui.project_members.manager_help')}</p>}
+        <Button variant="outline" size="sm" onClick={refreshAccess}>{t('management_ui.project_members.refresh_access')}</Button>
+      </Card> : <>
       {/* What this Project is for, and what it is on right now. */}
       <Card className="p-4">
         <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -353,7 +391,7 @@ export default function ProjectDetailPage() {
               </p>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          {canEdit && <div className="flex shrink-0 items-center gap-2">
             <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setBriefGoalOpen(true)}>
               <Edit2 className="size-3.5" />
               Edit goal
@@ -365,7 +403,7 @@ export default function ProjectDetailPage() {
               <Edit2 className="size-3.5" />
               Edit focus
             </Button>
-          </div>
+          </div>}
         </div>
       </Card>
 
@@ -388,10 +426,11 @@ export default function ProjectDetailPage() {
              Pulse has to reload it here — a suggestion that stays on the list
              after being taken is the failure the classes exist to prevent. */
           onOverviewChanged={refreshOverview}
-          onDefineGoal={() => setBriefGoalOpen(true)}
+          onDefineGoal={canEdit ? () => setBriefGoalOpen(true) : undefined}
         />
       )}
 
+      {canEdit && <>
       <ConfirmDialog
         open={archiveConfirmOpen}
         onOpenChange={setArchiveConfirmOpen}
@@ -420,6 +459,8 @@ export default function ProjectDetailPage() {
         }}
       />
       <EditProjectInstructionDialog projectId={project.id} open={instructionOpen} onOpenChange={setInstructionOpen} />
+      </>}
+      </>}
     </div>
   )
 }

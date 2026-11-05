@@ -27,6 +27,22 @@ export function runAssignedTask(run: Pick<RunRecord, "prompt" | "model_override_
   return run.prompt ?? null;
 }
 
+const HANDED_BACK_TASK_CHARS = 2_000;
+
+/**
+ * The assigned task as it is handed back to the Agent that delegated it, next
+ * to the result. Only enough to tell the results apart: that Agent wrote the
+ * task, and its own delegating call keeps all of it. Repeating the whole task
+ * resent everything it had attached on every resume — one Room's review
+ * tasks carried hundreds of thousands of characters each and pushed a
+ * resume past the runtime's input limit.
+ */
+export function runAssignedTaskExcerpt(run: Pick<RunRecord, "prompt" | "model_override_json">): string | null {
+  const task = runAssignedTask(run);
+  if (!task || task.length <= HANDED_BACK_TASK_CHARS) return task;
+  return `${task.slice(0, HANDED_BACK_TASK_CHARS)}… [${task.length - HANDED_BACK_TASK_CHARS} more characters of the task not repeated]`;
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)

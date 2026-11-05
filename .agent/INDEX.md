@@ -80,7 +80,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/CONTEXT_AND_RETRIEVAL_LAYER.md](architecture/CONTEXT_AND_RETRIEVAL_LAYER.md) | Current-state architecture for knowledge retrieval + the context layer: engine/adapter boundary, recall arms (exact/lexical/multi-hop graph/vector+ANN, max-pool, RRF, intent ranking), gated LLM stages (rerank/rewrite/synthesis), Context Brief + gap analysis, maintenance scans, explicit artifact-backed context attachments, Context Ops read models/page, egress governance, agent tool surface, invariants, Object Schema Registry/object schema implementation, and source-of-truth boundaries |
 | [architecture/PROJECT_RESEARCH_CALLS.md](architecture/PROJECT_RESEARCH_CALLS.md) | Current Research call binding, attempt reconciliation and explicit Inquiry result assessment |
 | [architecture/INQUIRY_PROBLEM_ENGINE.md](architecture/INQUIRY_PROBLEM_ENGINE.md) | Implemented Inquiry problem-method projection, work/round commands, cognitive separation and compensation; remaining cross-domain work stays phased |
-| [architecture/PROBLEM_ENGINE_UPGRADE.md](architecture/PROBLEM_ENGINE_UPGRADE.md) | One-time new-model cutover, static history archives and isolated backup/restore drill; no runtime legacy adapters |
+| [architecture/PROBLEM_ENGINE_UPGRADE.md](architecture/PROBLEM_ENGINE_UPGRADE.md) | One-time new-model cutover and static history archives; no runtime legacy adapters |
 | [architecture/PROBLEM_ENGINE_ACCEPTANCE.md](architecture/PROBLEM_ENGINE_ACCEPTANCE.md) | Cross-domain twelve-scenario evidence map, API/tool usage and bounded Artifact graph/visual acceptance limits |
 | [architecture/PROJECT_WORK.md](architecture/PROJECT_WORK.md) | Current-state Project advancement: Inquiry method/round and Task Board separation, the append-only work event stream and its single writer, Run settlement, and who a held Task interrupts |
 | [architecture/ONTOLOGY.md](architecture/ONTOLOGY.md) | Current-state ontology layer: Entity registry and Interfaces, which domains join the ontology and why, `space_objects` root contract, link-type endpoints and per-edge governance, the single write path and its guards |
@@ -216,7 +216,7 @@ Load only the module docs relevant to your task.
 | Proposal / approval system | [modules/proposals.md](modules/proposals.md) |
 | Skill library / review / bindings | [modules/skills.md](modules/skills.md) |
 | Runtime Context acquisition, planning, delivery, and continuity | [modules/runtime-context.md](modules/runtime-context.md) |
-| Execution hosts (control plane + host daemon), pairing, workspace registration | [modules/hosts.md](modules/hosts.md) |
+| Execution hosts (control plane + host daemon), pairing, workspace registration, ordinary CLI tools and personal tool accounts | [modules/hosts.md](modules/hosts.md) |
 | Imported CLI sessions and thread references | [modules/imported-sessions.md](modules/imported-sessions.md) |
 | Project Folder browser / file UI | [modules/project-files.md](modules/project-files.md) |
 | Runtime tools / adapter types | [modules/runtime-adapters.md](modules/runtime-adapters.md) |

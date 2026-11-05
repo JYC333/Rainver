@@ -1,3 +1,4 @@
+import type { ProjectAccess } from "@rainver/protocol"
 // API response shapes shared with the server HTTP contracts.
 import type {
   LINK_STATUS_VALUES,
@@ -2008,6 +2009,12 @@ export interface Run {
   owner_user_id?: string | null
   /** Run detail only: the Tasks this Run worked on that the viewer may read. */
   linked_tasks?: Array<{ id: string; title: string }>
+  /**
+   * Run detail only: the content hash of the Work Skill the latest attempt was
+   * given, read from its tool identity. Null when the Run was never dispatched
+   * with a work surface.
+   */
+  work_skill?: { content_hash: string } | null
   required_sandbox_level?: string | null
   contract_snapshot_json?: Record<string, unknown>
   workflow_version_id?: string | null
@@ -4521,7 +4528,7 @@ export interface MePendingProposalItem {
 
 export type ProjectStatus = 'active' | 'archived'
 
-export interface Project {
+export interface Project extends Partial<ProjectAccess> {
   id: string
   space_id: string
   owner_user_id: string | null
@@ -4650,6 +4657,9 @@ export interface FocusArea {
 export interface FocusAreaContents {
   projects: Array<{ id: string; name: string; status: string }>
   objects: Array<{ id: string; object_type: string; title: string | null }>
+  /** `null` once that list is complete; pass it back to continue only that list. */
+  projects_next_cursor: string | null
+  objects_next_cursor: string | null
 }
 
 

@@ -1,5 +1,7 @@
-import {mkdtemp,rm} from 'node:fs/promises';import {tmpdir} from 'node:os';import {join} from 'node:path';
-import {beforeEach,afterEach,it,expect} from 'vitest';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {beforeEach,afterEach,expect} from 'vitest';
 import {useTestDatabase} from './support/testDatabase.js';
 import {briefingWorld,SPACE,PROJECT,OWNER,MEMBER,NEWCOMER,AGENT,PROFILE,CONNECTION,HOST} from './support/briefingFixture.js';
 import {buildServerDist,startWorkerProcess,isPrompted,isCancelled,isFrame,settledCommands,until,type WorkerProcess} from './support/briefingWorkerHarness.js';
@@ -12,7 +14,19 @@ import {PgRunRepository,type RunRecord} from '../src/modules/runs/repository.js'
 import {PgReaderRepository} from '../src/modules/reader/repository.js';
 import {PgArtifactRepository} from '../src/modules/artifacts/repository.js';
 import {RuntimeContextPolicyRepository} from '../src/modules/policy/runtimeContextPolicyRepository.js';
-const db=useTestDatabase(import.meta.filename,{max:6}),w=briefingWorld(db),identity={spaceId:SPACE,userId:OWNER};
+import {randomUUID} from 'node:crypto';
+import {seedProjectMainlineRoom} from './support/domainSeeds.js';
+import {assertReadingRunDispatch} from '../src/modules/prompts/reading/dispatch.js';
+import {lockReadingRunAuthority} from '../src/modules/runtimeContext/index.js';
+import {buildModuleServer} from './support/moduleServer.js';
+import {sourcesModule} from '../src/modules/sources/index.js';
+import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
+
+import type {TestPartition} from './support/testPartition.js';
+
+/** Registered by the `projectDeepReadingDb.N.test.ts` entry files, one part each (see support/testPartition.ts). */
+export function defineProjectDeepReadingDbSuite(filename: string, {it}: TestPartition): void {
+const db=useTestDatabase(filename,{max:6}),w=briefingWorld(db),identity={spaceId:SPACE,userId:OWNER};
 let root='',itemId='',originalId='',worker:WorkerProcess|undefined;
 const config=()=>({...w.config(),rainverHome:root,artifactStorageRoot:join(root,'artifacts'),sandboxRoot:join(root,'sandbox')});
 const selection={agent_id:AGENT,runtime_profile_id:PROFILE};
@@ -42,16 +56,16 @@ it('Source withdrawal hides reports through operations, generic Run and Artifact
  const op=await start();await finish(op.processing_id,op.run_id!);const report=(await readDeepOperations(db.pool,identity,PROJECT)).items[0].report!;await db.pool.query("UPDATE source_connections SET capture_policy='reference_only' WHERE id=$1",[CONNECTION]);expect((await readDeepOperations(db.pool,identity,PROJECT)).items[0]).toMatchObject({withheld:true,report:null});expect(await new PgRunRepository(db.pool).getVisibleRun(SPACE,OWNER,op.run_id!)).toBeNull();expect(await new PgArtifactRepository(db.pool,config()).getVisible(SPACE,OWNER,report.artifact_id,true)).toBeNull();expect(await new PgReaderRepository(db.pool,config()).getDocument(identity,'source_snapshot',report.snapshot_id,{recordOpen:false})).toBeNull();await db.pool.query("UPDATE source_connections SET capture_policy='extract_text' WHERE id=$1",[CONNECTION]);expect((await readDeepOperations(db.pool,identity,PROJECT)).items[0].report).not.toBeNull();const active=await start({rerun_of:op.processing_id});await db.pool.query("UPDATE source_connections SET capture_policy='reference_only' WHERE id=$1",[CONNECTION]);expect((await cancelDeepReading(db.pool,config(),identity,PROJECT,active.processing_id)).status).toBe('cancelled');
 });
 it('real jobs worker and synthetic Host Delivery use bound check/submit tools before canonical terminal publication',async()=>{
- await db.pool.query("UPDATE space_memberships SET role='admin' WHERE space_id=$1 AND user_id=$2",[SPACE,OWNER]);await new RuntimeContextPolicyRepository(db.pool).write(identity,'space',SPACE,{base_version_id:null,policy:{constraints:{},preferences:{}},reason:'Synthetic deep reading worker'});const op=await start();buildServerDist();worker=await startWorkerProcess({databaseUrl:db.connectionUri,home:root,hostId:HOST});await worker.next(isPrompted(op.run_id!));const run=(await new PgRunRepository(db.pool).getRun(SPACE,op.run_id!))!;await submit(run,op.processing_id);worker.send({cmd:'answer',runId:run.id,text:'Private report submitted with checked evidence.'});const done=await until(()=>readDeepOperations(db.pool,identity,PROJECT,op.processing_id),x=>['completed','failed'].includes(x.items[0].status),'private report canonical settlement',150);expect(done.items[0],JSON.stringify(done)).toMatchObject({status:'completed',withheld:false});expect(done.items[0].report).not.toBeNull();expect((await new PgRunRepository(db.pool).getRun(SPACE,run.id))!.status).toBe('succeeded');expect(Number((await db.pool.query('SELECT count(*) AS n FROM invocation_deliveries WHERE invocation_id=$1',[run.id])).rows[0].n)).toBe(1);
+ await db.pool.query("UPDATE space_memberships SET role='admin' WHERE space_id=$1 AND user_id=$2",[SPACE,OWNER]);await new RuntimeContextPolicyRepository(db.pool).write(identity,'space',SPACE,{base_version_id:null,policy:{constraints:{},preferences:{}},reason:'Synthetic deep reading worker'});const op=await start();await buildServerDist();worker=await startWorkerProcess({databaseUrl:db.connectionUri,home:root,hostId:HOST});await worker.next(isPrompted(op.run_id!));const run=(await new PgRunRepository(db.pool).getRun(SPACE,op.run_id!))!;await submit(run,op.processing_id);worker.send({cmd:'answer',runId:run.id,text:'Private report submitted with checked evidence.'});const done=await until(()=>readDeepOperations(db.pool,identity,PROJECT,op.processing_id),x=>['completed','failed'].includes(x.items[0].status),'private report canonical settlement',150);expect(done.items[0],JSON.stringify(done)).toMatchObject({status:'completed',withheld:false});expect(done.items[0].report).not.toBeNull();expect((await new PgRunRepository(db.pool).getRun(SPACE,run.id))!.status).toBe('succeeded');expect(Number((await db.pool.query('SELECT count(*) AS n FROM invocation_deliveries WHERE invocation_id=$1',[run.id])).rows[0].n)).toBe(1);
 },60000);
 
-import {randomUUID} from 'node:crypto';
-import {seedProjectMainlineRoom} from './support/domainSeeds.js';
-import {assertReadingRunDispatch} from '../src/modules/prompts/reading/dispatch.js';
-import {lockReadingRunAuthority} from '../src/modules/runtimeContext/index.js';
-import {buildModuleServer} from './support/moduleServer.js';
-import {sourcesModule} from '../src/modules/sources/index.js';
-import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
+
+
+
+
+
+
+
 it('global material has distinct private operations per Project and requires an explicit legitimate Following selection',async()=>{
  await db.pool.query('UPDATE source_items SET project_id=NULL WHERE id=$1',[itemId]);const secondProject=randomUUID();await db.pool.query("INSERT INTO projects(id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES($1,$2,$3,'Other project','active',now(),now())",[secondProject,SPACE,OWNER]);await seedProjectMainlineRoom(db.pool,{space:SPACE,project:secondProject,owner:OWNER});
  const a=await start(),b=await startDeepReading(db.pool,config(),identity,secondProject,itemId,selection);expect(a.processing_id).not.toBe(b.processing_id);expect((await readDeepOperations(db.pool,identity,PROJECT)).items.map(r=>r.id)).toEqual([a.processing_id]);expect((await readDeepOperations(db.pool,identity,secondProject)).items.map(r=>r.id)).toEqual([b.processing_id]);await expect(readDeepOperations(db.pool,identity,PROJECT,b.processing_id)).rejects.toMatchObject({statusCode:404});await expect(startDeepReading(db.pool,config(),{spaceId:randomUUID(),userId:OWNER},PROJECT,itemId,selection)).rejects.toMatchObject({statusCode:404});await expect(start({following:{goal_id:randomUUID(),version_id:randomUUID(),connection_id:CONNECTION}})).rejects.toMatchObject({statusCode:409});
@@ -62,7 +76,7 @@ it('global material has distinct private operations per Project and requires an 
 });
 it('cancellation waits for the canonical Host ACK; retry and rerun are bounded, late old submissions cannot publish',async()=>{
  await db.pool.query("UPDATE space_memberships SET role='admin' WHERE space_id=$1 AND user_id=$2",[SPACE,OWNER]);await new RuntimeContextPolicyRepository(db.pool).write(identity,'space',SPACE,{base_version_id:null,policy:{constraints:{},preferences:{}},reason:'Synthetic cancel/retry'});
- const op=await start();buildServerDist();worker=await startWorkerProcess({databaseUrl:db.connectionUri,home:root,hostId:HOST});await worker.next(isPrompted(op.run_id!));const old=(await new PgRunRepository(db.pool).getRun(SPACE,op.run_id!))!;
+ const op=await start();await buildServerDist();worker=await startWorkerProcess({databaseUrl:db.connectionUri,home:root,hostId:HOST});await worker.next(isPrompted(op.run_id!));const old=(await new PgRunRepository(db.pool).getRun(SPACE,op.run_id!))!;
  worker.send({cmd:'cancel_deep',operationId:op.processing_id,projectId:PROJECT,spaceId:SPACE,userId:OWNER});expect(['cancelling','cancelled']).toContain(((await worker.next(isCancelled)).result as {status:string}).status);await until(()=>new PgRunRepository(db.pool).getRun(SPACE,old.id),r=>r?.status==='cancelled','canonical cancel ACK',150);await worker.stop();worker=undefined;
  const retry=await start({retry_of:op.processing_id});expect(await start({retry_of:op.processing_id})).toMatchObject({processing_id:retry.processing_id});expect(retry.run_id).not.toBe(old.id);const {submitMaterialResults}=await import('../src/modules/sources/materialProcessing/submission.js');await expect(submitMaterialResults(config(),old,{})).rejects.toMatchObject({statusCode:403});await finish(retry.processing_id,retry.run_id!);const third=await start({rerun_of:retry.processing_id});await finish(third.processing_id,third.run_id!,'D3');await expect(start({rerun_of:third.processing_id})).rejects.toMatchObject({statusCode:409});expect(await w.count('runs')).toBe(3);
 },60000);
@@ -111,7 +125,7 @@ it('favorite does not require an HTTP preparation URL and never starts investiga
  await db.pool.query('UPDATE source_items SET source_uri=NULL WHERE id=$1',[itemId]);await favoriteMaterial(db.pool,identity,PROJECT,itemId,true);expect((await favoriteList(db.pool,identity,PROJECT)).items[0].item_id).toBe(itemId);expect(await w.count('runs')).toBe(0);await expect(start()).rejects.toMatchObject({statusCode:422});
 });
 it('real worker rejects extra adapter artifacts rather than creating an unguarded report or falsely completing deep reading',async()=>{
- await db.pool.query("UPDATE space_memberships SET role='admin' WHERE space_id=$1 AND user_id=$2",[SPACE,OWNER]);await new RuntimeContextPolicyRepository(db.pool).write(identity,'space',SPACE,{base_version_id:null,policy:{constraints:{},preferences:{}},reason:'Synthetic output boundary'});const before=await w.count('artifacts'),op=await start();buildServerDist();worker=await startWorkerProcess({databaseUrl:db.connectionUri,home:root,hostId:HOST});await worker.next(isPrompted(op.run_id!));const run=(await new PgRunRepository(db.pool).getRun(SPACE,op.run_id!))!;await submit(run,op.processing_id);worker.send({cmd:'policy',adapterOutput:{artifacts:[{artifact_type:'markdown',title:'Not authorized',content:'SOURCE_PRIVATE_SENTINEL'}]}});worker.send({cmd:'answer',runId:run.id,text:'An attempted extra output.'});const done=await until(()=>readDeepOperations(db.pool,identity,PROJECT,op.processing_id),r=>r.items[0].status==='failed','extra output fails closed',150);expect(done.items[0].report).toBeNull();expect(await w.count('artifacts')).toBe(before);expect(['degraded','failed']).toContain((await new PgRunRepository(db.pool).getRun(SPACE,run.id))!.status);
+ await db.pool.query("UPDATE space_memberships SET role='admin' WHERE space_id=$1 AND user_id=$2",[SPACE,OWNER]);await new RuntimeContextPolicyRepository(db.pool).write(identity,'space',SPACE,{base_version_id:null,policy:{constraints:{},preferences:{}},reason:'Synthetic output boundary'});const before=await w.count('artifacts'),op=await start();await buildServerDist();worker=await startWorkerProcess({databaseUrl:db.connectionUri,home:root,hostId:HOST});await worker.next(isPrompted(op.run_id!));const run=(await new PgRunRepository(db.pool).getRun(SPACE,op.run_id!))!;await submit(run,op.processing_id);worker.send({cmd:'policy',adapterOutput:{artifacts:[{artifact_type:'markdown',title:'Not authorized',content:'SOURCE_PRIVATE_SENTINEL'}]}});worker.send({cmd:'answer',runId:run.id,text:'An attempted extra output.'});const done=await until(()=>readDeepOperations(db.pool,identity,PROJECT,op.processing_id),r=>r.items[0].status==='failed','extra output fails closed',150);expect(done.items[0].report).toBeNull();expect(await w.count('artifacts')).toBe(before);expect(['degraded','failed']).toContain((await new PgRunRepository(db.pool).getRun(SPACE,run.id))!.status);
 },60000);
 
 it('a failed rerun keeps the last successful report readable and needs an explicit bounded retry',async()=>{
@@ -216,7 +230,7 @@ it('private deep reading survives a killed worker via canonical recovery, explic
  await db.pool.query("UPDATE space_memberships SET role='admin' WHERE space_id=$1 AND user_id=$2",[SPACE,OWNER]);
  await new RuntimeContextPolicyRepository(db.pool).write(identity,'space',SPACE,{base_version_id:null,policy:{constraints:{},preferences:{}},reason:'Synthetic private worker recovery'});
  const beforeArtifacts=await w.count('artifacts'),beforeOriginal=(await db.pool.query('SELECT content_hash,extracted_artifact_id FROM source_items WHERE id=$1',[itemId])).rows[0];
- const op=await start();buildServerDist();
+ const op=await start();await buildServerDist();
  worker=await startWorkerProcess({databaseUrl:db.connectionUri,home:root,hostId:HOST});
  const launch=await worker.next(isPrompted(op.run_id!));
  const old=(await new PgRunRepository(db.pool).getRun(SPACE,op.run_id!))!;
@@ -258,3 +272,4 @@ it('private deep reading survives a killed worker via canonical recovery, explic
  expect((await readDeepOperations(db.pool,{spaceId:SPACE,userId:MEMBER},PROJECT)).items).toEqual([]);
  await worker.stop();worker=undefined;
 },60000);
+}

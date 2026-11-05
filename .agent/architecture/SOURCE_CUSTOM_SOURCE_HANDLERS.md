@@ -15,9 +15,9 @@ Settings) and `SourceExecutionSettingsPanel` (Instance Settings).
 Repair/rollback and credentialed source support are implemented backend-side
 (see "Repair" and "Credentialed Sources" below). Browser/Python handlers are
 not implemented. Goal repair is represented by lightweight source status, with no
-code-approval UI. `/sources/access` now submits credentials through the existing
-encrypted Source credential endpoint; creation and editing use the shared goal
-conversation, not a direct Custom Source form.
+code-approval UI. `/sources/access` submits credentials through the existing
+encrypted Source credential endpoint; creation uses the Following topic setup
+and editing uses the topic's adjustment dialog, not a direct Custom Source form.
 
 `typescript_node` remains in persisted language enums so historical records can
 be read; its generator, source-artifact writer and execution implementation have
@@ -333,7 +333,7 @@ Implemented flow:
   and web-page inputs and returns a fixed recipe shape with sample preview.
 - `createSource` creates a paused `recipe` source connection plus a draft
   recipe version.
-- `dryRunSourceRecipe` runs the recipe in bounded preview mode and records
+- `dryRunRecipeVersion` runs the recipe in bounded preview mode and records
   sample output and step traces without materializing Sources rows.
 - `activateRecipe` activates a dry-run-tested version directly when the policy
   envelope stays inside bounds; envelope broadening creates a
@@ -462,14 +462,15 @@ above. A repair keeps whatever
 changes the connection's credential, at which point the same
 `evaluateCustomSourceActivation` delta logic decides proposal-vs-auto-apply.
 
-Credential rotation/deletion and a UI for creating or selecting a Custom
-Source credential are not implemented (API/service layer only).
+`/sources/access` creates a credential (name and secret, Space admin only).
+Credential rotation/deletion and a UI for selecting a Custom Source credential
+are not implemented (API/service layer only).
 
 ## Schema in the baseline
 
 The declarative pipeline and Source Recipe schema live in
 `server/migrations/0000_baseline.sql`. Later schema changes are new numbered
-files after that baseline. There is no `0001`. Do not recreate one.
+files after that baseline.
 
 `source_connections` has these implementation columns:
 
@@ -719,7 +720,7 @@ CORE=0/FSIZE=output_bytes, without weakening namespace or cgroup controls.
 
 ## Goal UI compatibility
 
-Source list/detail authoring now opens the goal conversation. Existing handler
+Source list/detail authoring opens the Following topic setup. Existing handler
 and recipe registry/read APIs remain, and metadata-only legacy goal mapping
 does not execute or rewrite versions. Credentials use the existing encrypted
 Source endpoint through the dedicated `/sources/access` page, never messages

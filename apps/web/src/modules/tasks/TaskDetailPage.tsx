@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams } from 'react-router-dom'
-import { SpaceLink as Link } from '../../core/spaceNav'
+import { useSpaceNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import { ArrowLeft, ExternalLink, Pencil } from 'lucide-react'
 import { toast } from 'sonner'
 import { agentsApi, artifactsApi, boardsApi, tasksApi } from '../../api/client'
@@ -72,6 +72,19 @@ export default function TaskDetailPage() {
   // not what its description says.
   const [activeTab, setActiveTab] = useState<TaskDetailTab>('work')
   const [editOpen, setEditOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const navigate = useSpaceNavigate()
+
+  async function removeTask() {
+    setDeleting(true)
+    try {
+      await tasksApi.delete(taskId)
+      toast.success('Task deleted')
+      navigate(backTo, { replace: true })
+    } catch (error) { toast.error(errMsg(error)) }
+    finally { setDeleting(false) }
+  }
 
   const load = useCallback(async () => {
     if (!taskId) return
@@ -263,7 +276,7 @@ export default function TaskDetailPage() {
       <div className="border-b border-border pb-4 space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-center gap-2"><h1 className="text-xl font-semibold tracking-tight">{task.title}</h1><Button size="sm" variant="outline" onClick={() => setEditOpen(true)}><Pencil className="size-3.5" /> Edit contract</Button></div>
-          <ContentAccessControl resourceType="task" resourceId={task.id} ownerUserId={task.owner_user_id} />
+          <div className="flex items-center gap-2"><ContentAccessControl resourceType="task" resourceId={task.id} ownerUserId={task.owner_user_id} /><Button size="sm" variant="destructive" onClick={() => setDeleteOpen(true)}>Delete task</Button></div>
         </div>
         <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}</p>
         <div className="flex flex-wrap gap-1.5 items-center">
@@ -348,6 +361,12 @@ export default function TaskDetailPage() {
         )}
       </div>
 
+      <Dialog open={deleteOpen} onOpenChange={value => { if (!deleting) setDeleteOpen(value) }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Delete task?</DialogTitle><DialogDescription>This removes “{task.title}” from the Board and task lists. Run and audit records are retained. Stop unfinished Runs or an active Plan first.</DialogDescription></DialogHeader>
+          <div className="flex justify-end gap-2"><Button variant="outline" disabled={deleting} onClick={() => setDeleteOpen(false)}>Cancel</Button><Button variant="destructive" disabled={deleting} onClick={() => void removeTask()}>{deleting ? 'Deleting…' : 'Delete task'}</Button></div>
+        </DialogContent>
+      </Dialog>
       <Tabs value={activeTab} onValueChange={value => setActiveTab(value as TaskDetailTab)}>
         <TabsList>
           <TabsTrigger value="work">Work</TabsTrigger>

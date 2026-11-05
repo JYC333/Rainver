@@ -25,10 +25,11 @@ const card = (id: string, column: string, updated = '2026-09-08T00:00:00.000Z'):
 } as unknown as ProjectBoardCard)
 
 const board = (cards: ProjectBoardCard[]): ProjectBoard => ({
+  columns_revision: 'fixture',
   project: { id: 'p1', name: 'Project' },
   columns: [
-    { status_key: 'inbox', label: 'Inbox', wip_limit: null, count: cards.filter(c => c.column_key === 'inbox').length },
-    { status_key: 'done', label: 'Done', wip_limit: null, count: cards.filter(c => c.column_key === 'done').length },
+    { key: 'inbox', board_id: null, status_key: 'inbox', label: 'Inbox', wip_limit: null, count: cards.filter(c => c.column_key === 'inbox').length },
+    { key: 'done', board_id: null, status_key: 'done', label: 'Done', wip_limit: null, count: cards.filter(c => c.column_key === 'done').length },
   ],
   cards,
   viewer_user_id: 'u1',

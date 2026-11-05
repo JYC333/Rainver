@@ -44,6 +44,7 @@ import { readOnlyWorkspaceHostRefusal } from "../runs/workspaceAccessPolicy.js";
 import { contractWorkspaceAccess, type RunGitSnapshot } from "../runs/contractSnapshot.js";
 import { RUN_REQUEST_INCLUDES_INSTRUCTION } from "../runtimeContext/runRequest.js";
 import { resolveModelWindow } from "../usage/modelCatalog.js";
+import { handedOverInstruction } from "./delegationBrief.js";
 import {
   conversationToolGrantInput as conversationToolGrantInputFor,
 } from "../systemActions/scenarioToolAllowance.js";
@@ -1163,6 +1164,15 @@ export class AgentGroupRunService {
 
     const collaborationAdmission = policy.status === "allow" ? await repos.groups.collaborationLimits(group, input, true) : null;
 
+    // A task too long to inline reaches the child as its head and a link (`delegationBrief.ts`).
+    const instruction = await handedOverInstruction(repos.db, {
+      instruction: input.instruction,
+      parentRun,
+      inRoom: Boolean(group.room_id),
+      requestedByUserId: identity.userId,
+      targetAgentId: input.target_agent_id,
+    });
+
     const requestMessageId = input.request_message_id ?? (await repos.groups.createMessage({
       space_id: input.space_id,
       group_id: input.group_id,
@@ -1174,7 +1184,7 @@ export class AgentGroupRunService {
       },
       sender_agent_id: input.requesting_agent_id,
       message_type: "delegation_request",
-      content: input.instruction,
+      content: instruction,
       mentions_json: [{ agent_id: input.target_agent_id }],
       metadata_json: { reason: input.reason ?? null },
     })).id;
@@ -1187,7 +1197,7 @@ export class AgentGroupRunService {
       requesting_agent_id: input.requesting_agent_id,
       target_agent_id: input.target_agent_id,
       requested_by_user_id: identity.userId,
-      instruction: requiredTrimmed(input.instruction, "instruction"),
+      instruction: requiredTrimmed(instruction, "instruction"),
       reason: input.reason ?? null,
       budget_json: collaborationAdmission ? { ...input.budget_json, collaboration_task_id: collaborationAdmission.task_id } : input.budget_json ?? {},
       context_policy_json: input.context_policy_json ?? {},
@@ -1381,12 +1391,12 @@ export class AgentGroupRunService {
           delegatedStanding?.sent ? delegatedStanding.text : null,
           delegatedHandoff ? handoffPromptBlock(delegatedHandoff) : null,
           childAccess === "read" ? READ_ONLY_REVIEW_NOTICE : null,
-          input.instruction,
+          instruction,
         ].filter(Boolean).join("\n\n")
         : null,
       instruction: !group.room_id && childAccess === "read"
-        ? `${READ_ONLY_REVIEW_NOTICE}\n\n${input.instruction}`
-        : input.instruction,
+        ? `${READ_ONLY_REVIEW_NOTICE}\n\n${instruction}`
+        : instruction,
       model_override_json: group.room_id
         ? delegatedRoomModelOverride(
           parentRun,
@@ -1397,7 +1407,7 @@ export class AgentGroupRunService {
             agent_id: input.target_agent_id,
             user_id: group.manager_user_id,
           }))?.agent_current_version_id ?? null,
-          input.instruction,
+          instruction,
           delegatedBackend,
           delegatedHostDispatch,
           delegatedWorkspaceAccess,

@@ -21,11 +21,11 @@ was catalog metadata only; runtime adapters are modelled separately
 
 ## Decision
 
-### 1. A `capabilities` control-plane module beside `catalog`
+### 1. A `skills` control-plane module beside `catalog`
 
-`catalog` remains the raw on-disk manifest reader. `capabilities` owns
-capability definitions, capability packs, imported skill sources and
-packages, and runtime skill bindings and delivery.
+`catalog` remains the raw on-disk manifest reader. `skills` owns imported
+skill sources and original packages, their review, scoped bindings, and their
+delivery through Runtime Context (section 5).
 
 ### 2. External skills are untrusted source material
 

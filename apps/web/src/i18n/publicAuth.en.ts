@@ -15,6 +15,7 @@ export const publicAuthEn = {
       back_login: 'Back to sign in',
     },
     invitation: {
+      accept: 'Accept invitation',
       token_missing: 'This invitation link is missing its claim token.',
       existing_invalid: 'This invitation is invalid, expired, already used, or assigned to another account.',
       claim_invalid: 'This invitation is invalid, expired, revoked, or assigned to another email.',

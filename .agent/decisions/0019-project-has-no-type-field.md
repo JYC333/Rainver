@@ -18,8 +18,8 @@ reasoning only.
 [ADR 0027](0027-problem-engine-research-separation.md) supersedes only the
 universal work-progression use of Loop in the committed decision 1 (“same
 Loop”), decision 4 (“The Loop has one wording”) and the Board-stage consequence.
-ADR 0027 establishes the single Task Board status and Inquiry-owned method as
-a target contract; implementation is pending. The historical decision 4
+ADR 0027 establishes the single Task Board status and the Inquiry-owned
+method. The historical decision 4
 established uniform stage wording, not single Task status. No-type, pacing
 and other decisions remain.
 
@@ -96,8 +96,8 @@ opposite of tracking; it is the system setting the pace.
 
 - Creation presets nothing but a name and an optional Brief. The web no longer
   sends a mode; the server no longer defaults one.
-- The Board reads `Frame / Plan / Act / Verify / Conclude` whatever the
-  Project is about. `WORK_LOOP_STAGE_LABELS` is one table.
+- The Board reads the same Task Board status whatever the Project is about;
+  no Project type re-words it.
 - The accepted-definition continuation and `QUESTION_DECOMPOSITION_ACTION_POLICY`
   / `PLAN_ACTION_POLICY` carry the pacing bounds in decision 3.
 - Schema maintenance follows [BOUNDARIES B59](../BOUNDARIES.md) and

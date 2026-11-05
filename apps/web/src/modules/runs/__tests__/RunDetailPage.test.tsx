@@ -142,6 +142,24 @@ describe('RunDetailPage route decision panel', () => {
     expect(screen.queryByText(/Bounded provider task/)).toBeNull()
   })
 
+  it('names the Work Skill the Run was given, and says when it was given none', async () => {
+    const hash = 'f'.repeat(64)
+    useRunMock.mockReturnValue({
+      run: { ...(run as unknown as Record<string, unknown>), work_skill: { content_hash: hash } } as never,
+      loading: false,
+      error: null,
+    })
+    runsApiMock.routeDecision.mockResolvedValue({})
+    const { unmount } = renderPage()
+
+    expect((await screen.findByText('work_skill_content_hash')).closest('p')).toHaveTextContent(hash)
+    unmount()
+
+    useRunMock.mockReturnValue({ run: { ...(run as unknown as Record<string, unknown>), work_skill: null } as never, loading: false, error: null })
+    renderPage()
+    expect((await screen.findByText('work_skill_content_hash')).closest('p')).toHaveTextContent('—')
+  })
+
   it('renders the persisted decision when the route API returns one', async () => {
     runsApiMock.routeDecision.mockResolvedValue({ adapter_id: 'adapter-1', trust_level: 'high' })
     const user = userEvent.setup({ delay: null })
@@ -234,6 +252,50 @@ describe('RunDetailPage route decision panel', () => {
     await user.click(screen.getByRole('button', { name: 'Preview' }))
     await waitFor(() => expect(screen.queryByText(/Initial preview/)).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: 'Save workflow' })).toBeDisabled()
+  })
+
+  async function saveWorkflowFromDialog() {
+    runsApiMock.routeDecision.mockResolvedValue({ adapter_id: 'adapter-1' })
+    evolutionApiMock.previewWorkflowFromRun.mockResolvedValue({ display_name: 'Preview' })
+    const user = userEvent.setup({ delay: null })
+    renderPageWithSwitcher()
+    await user.click(screen.getByRole('button', { name: 'Save as workflow' }))
+    await user.click(screen.getByRole('button', { name: 'Preview' }))
+    await screen.findByText(/"display_name": "Preview"/)
+    await user.click(screen.getByRole('button', { name: 'Save workflow' }))
+  }
+
+  it('links a saved low-risk draft to its asset in Evolution after the dialog closes', async () => {
+    evolutionApiMock.saveWorkflowFromRun.mockResolvedValue({
+      status: 'draft_saved', asset_id: 'asset-7', version_id: 'version-7', version_status: 'draft', risk_level: 'low',
+    })
+    await saveWorkflowFromDialog()
+
+    const link = await screen.findByRole('link', { name: 'Open draft' })
+    expect(link).toHaveAttribute('href', '/evolution?asset=asset-7')
+    expect(screen.getByText('Workflow draft saved')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(evolutionApiMock.saveWorkflowFromRun).toHaveBeenCalledWith(expect.objectContaining({ run_id: 'run-1' }))
+  })
+
+  it('links a save that needs review to its Proposal, and only on the Run it came from', async () => {
+    evolutionApiMock.saveWorkflowFromRun.mockResolvedValue({
+      status: 'proposal_required', proposal_id: 'proposal-9', proposal_type: 'workflow_save', risk_level: 'high',
+    })
+    useRunMock.mockImplementation((requestedId: string | null) => ({
+      run: requestedId === 'run-2' ? run2 : run,
+      loading: false,
+      error: null,
+    }))
+    await saveWorkflowFromDialog()
+
+    const link = await screen.findByRole('link', { name: 'Review proposal' })
+    expect(link).toHaveAttribute('href', '/proposals/proposal-9')
+    expect(screen.queryByRole('link', { name: 'Open draft' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch run', hidden: true }))
+    expect(await screen.findByText('run-2')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Review proposal' })).not.toBeInTheDocument()
   })
 
   it('resets the workflow dialog when switching to another run', async () => {

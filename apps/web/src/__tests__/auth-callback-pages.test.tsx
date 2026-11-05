@@ -215,12 +215,22 @@ describe('authentication callback pages', () => {
       </MemoryRouter>,
     )
 
-    expect(await screen.findByRole('button', { name: 'Join Space' })).toBeEnabled()
+    expect(await screen.findByRole('button', { name: 'Accept invitation' })).toBeEnabled()
     expect(window.location.hash).toBe('')
-    fireEvent.click(screen.getByRole('button', { name: 'Join Space' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Accept invitation' }))
     await waitFor(() => expect(acceptInvitation).toHaveBeenCalledWith('raw-invite'))
     await waitFor(() => expect(reloadSpaces).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/spaces/team-1/today'))
+  })
+
+  it('accepts an instance-only invitation without selecting a shared Space', async () => {
+    authState.currentUser = { id: 'user-1', email: 'invitee@example.test' }
+    acceptInvitation.mockResolvedValue({ space_id: null })
+    window.history.replaceState(null, '', '/invitations/claim#token=instance-invite')
+    render(<MemoryRouter initialEntries={['/invitations/claim']} future={routerFuture}><AcceptInvitationPage /><LocationProbe /></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept invitation' }))
+    await waitFor(() => expect(acceptInvitation).toHaveBeenCalledWith('instance-invite'))
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(/^\/$/))
   })
 
   it('tells an existing signed-out account to sign in and reopen the link without storing the token', async () => {

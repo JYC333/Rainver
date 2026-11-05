@@ -45,7 +45,7 @@ export default function AcceptInvitationPage() {
       const result = await spacesApi.acceptInvitation(token)
       setToken(null)
       await reloadSpaces()
-      navigate(spacePath(result.space_id, '/today'), { replace: true })
+      navigate(result.space_id ? spacePath(result.space_id, '/today') : '/', { replace: true })
     } catch {
       setError('public_auth.invitation.existing_invalid')
     } finally {
@@ -109,11 +109,11 @@ export default function AcceptInvitationPage() {
   if (currentUser) {
     return (
       <Frame>
-        <h1 className="text-xl font-semibold text-foreground">{t('public_auth.invitation.join_space')}</h1>
+        <h1 className="text-xl font-semibold text-foreground">{t('public_auth.invitation.accept')}</h1>
         <p className="text-sm text-muted-foreground">{t('public_auth.invitation.accept_as', { email: currentUser.email })}</p>
         {error && <p className="text-sm text-destructive">{t(error)}</p>}
         <Button className="w-full h-10" disabled={!token || busy} onClick={() => void acceptExistingAccount()}>
-          {busy ? t('public_auth.invitation.joining') : t('public_auth.invitation.join_space')}
+          {busy ? t('public_auth.invitation.joining') : t('public_auth.invitation.accept')}
         </Button>
       </Frame>
     )

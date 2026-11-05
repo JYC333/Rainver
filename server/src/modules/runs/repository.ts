@@ -2586,10 +2586,15 @@ export class PgRunRepository {
         `WITH parked AS (
            UPDATE runs
               SET status = 'waiting_for_dependency',
+                  -- What earlier resumes handed this Run outlives each wait:
+                  -- its next resume names those results instead of resending them.
                   output_json = jsonb_set(
                     COALESCE(output_json, '{}'::jsonb),
                     '{waiting_for_results}',
-                    $3::jsonb,
+                    $3::jsonb || CASE
+                      WHEN jsonb_typeof(output_json->'waiting_for_results'->'delivered_run_ids') = 'array'
+                        THEN jsonb_build_object('delivered_run_ids', output_json->'waiting_for_results'->'delivered_run_ids')
+                      ELSE '{}'::jsonb END,
                     true
                   ),
                   updated_at = $4
@@ -2652,6 +2657,8 @@ export class PgRunRepository {
     resumed_at: string;
     /** Replaces the Run's override when admission rebuilt its dispatch (a session rotation). */
     model_override_json?: Record<string, unknown> | null;
+    /** Every dependency result this Run has now been handed, kept across its next waits. */
+    delivered_run_ids?: string[];
   }): Promise<RunRecord | null> {
     const resumeJson = sanitizeEvidenceJson({
       waiting_for_results_resume: {
@@ -2668,7 +2675,9 @@ export class PgRunRepository {
                 COALESCE(output_json, '{}'::jsonb),
                 '{waiting_for_results}',
                 COALESCE(output_json->'waiting_for_results', '{}'::jsonb)
-                  || jsonb_build_object('status', 'resumed'),
+                  || jsonb_build_object('status', 'resumed')
+                  || CASE WHEN $7::jsonb IS NULL THEN '{}'::jsonb
+                          ELSE jsonb_build_object('delivered_run_ids', $7::jsonb) END,
                 true
               ) || $4::jsonb,
               error_json = COALESCE(error_json, '{}'::jsonb),
@@ -2714,6 +2723,7 @@ export class PgRunRepository {
         JSON.stringify(resumeJson),
         input.resumed_at,
         input.model_override_json ? JSON.stringify(input.model_override_json) : null,
+        input.delivered_run_ids ? JSON.stringify(input.delivered_run_ids) : null,
       ],
     );
     return result.rows[0] ?? null;

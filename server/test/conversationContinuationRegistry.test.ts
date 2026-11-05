@@ -8,7 +8,7 @@ import type { Queryable } from "../src/modules/proposals/repository.js";
 
 // Unit coverage for the registry's own dispatch logic — the parts that never
 // touch the database. Domain handler behavior (sibling counting, created-Thread
-// lookup) is covered against real Postgres in roomsDb.test.ts.
+// lookup) is covered against real Postgres in roomsDb.suite.ts.
 
 const unusedDb = {
   query: async () => {

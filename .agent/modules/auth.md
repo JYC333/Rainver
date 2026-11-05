@@ -39,9 +39,18 @@ Better Auth error endpoint.
 
 The first intent is admitted only when its normalized email matches
 `INSTANCE_ADMIN_EMAIL`. After the first account becomes active, new registration
-requires an unexpired `available` invitation to a non-Personal Space; Space
-owners/admins may create one for a specific email, and it expires after seven
-days. Email normalization is trim plus lowercase only, without provider-specific
+requires an unexpired `available` email-bound invitation. Instance administrators
+create account-only invitations from **Instance Settings → Users & Security →
+Invite to register** (`POST /api/v1/auth/admin/invitations`). These create the
+account and its Personal Space without granting administrator rights or shared
+Space membership. Space owners/admins retain their existing invitation entry:
+a new user registers and joins that non-Personal Space; an existing account
+accepts it directly. Both invitation types expire after seven days and use the
+same claim page, digest-only token storage, reservation, retry and consumption
+lifecycle in `user_invitations`. A null `space_id` and null `role` identify an
+instance invitation; Space invitations require both fields. Registration intents
+record `instance_invitation` or `space_invitation` as their authority.
+Email normalization is trim plus lowercase only, without provider-specific
 alias rules. Display name is optional and defaults to the part before `@`;
 it is bounded (`REGISTRATION_DISPLAY_NAME_MAX`) so that both
 `users.display_name` and the derived `<name>'s Personal Space` fit their
@@ -51,7 +60,8 @@ registration but does not verify ownership of that email address. Intent claim
 secrets and invitation tokens are stored only as SHA-256 digests. A pending
 Better Auth identity is not admitted to product routes until
 `RegistrationService.complete` creates the Personal Space, defaults, invitation
-membership and active status in one transaction. If signup created a pending
+membership (only for a Space invitation) and active status in one transaction.
+If signup created a pending
 identity before completion failed, a newly requested authorized bootstrap or
 invitation flow rotates the existing intent claim, binds that identity, and
 signs in to resume instead of creating a second account. An intent expires
@@ -70,7 +80,9 @@ not sent in a URL or Referer. There is no other claim path or accept endpoint.
 An active account with the invited email can instead accept the same link via
 authenticated `POST /api/v1/invitations/accept`; the Space repository locks and
 consumes the available invitation while activating the membership in one
-transaction. A signed-out existing user signs in and reopens the original link;
+transaction. For an instance-only invitation it consumes the token without any
+membership change and returns `space_id: null`. A signed-out existing user signs
+in and reopens the original link;
 the raw token is not saved in browser storage for a login handoff.
 The public auth configuration reports only whether bootstrap registration is
 currently available. The login page uses that flag to show administrator setup
@@ -144,7 +156,8 @@ auth:recovery` is the sole-admin local CLI path.
 
 ## Administration
 
-Instance admins can list users, disable/enable admitted accounts (disable
+Instance admins can issue account-only registration invitations, list users,
+disable/enable admitted accounts (disable
 invalidates sessions; a `pending` identity belongs to `RegistrationService`
 and both routes answer 400 for it), issue a one-time reset link and inspect
 pending intents. No
@@ -156,3 +169,11 @@ See [SECURITY_AND_ACCESS_BOUNDARIES.md](../architecture/SECURITY_AND_ACCESS_BOUN
 [DATABASE_AND_TRANSACTIONS.md](../architecture/DATABASE_AND_TRANSACTIONS.md),
 and [ADR 0023](../decisions/0023-authentication-foundation-schema-epoch.md)
 for the current access, transaction, and schema-epoch boundaries.
+
+Reuse / Dependency Check: instance invitations extend the existing invitation
+rows and RegistrationService lifecycle, Better Auth, shared Zod contracts,
+Input/Button and OneTimeLink. No new auth engine, token issuer mechanism or
+dependency is introduced. Migration 0010 renames the existing invitation table
+and extends its constraints without dropping invitation or intent data. Because
+the old release still reads the old table name, the migration is maintenance-only
+and must be applied with stopped writers and the matching release (COMMANDS).

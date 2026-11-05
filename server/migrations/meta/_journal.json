@@ -69,6 +69,13 @@
       "version": "7",
       "when": 1793831621723,
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793845932038,
+      "tag": "0010_instance_registration_invitations",
+      "breakpoints": true
     }
   ],
   "version": "7",

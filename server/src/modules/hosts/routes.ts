@@ -118,7 +118,7 @@ async function currentManagedVersion(pool: Pool, hostId: string, runtimeKey: str
   return installed.map(managedVersionOf).find((version): version is string => version !== null) ?? null;
 }
 
-async function resolveOwnedHost(
+export async function resolveOwnedHost(
   context: ModuleContext,
   request: FastifyRequest,
   reply: FastifyReply,
@@ -1260,6 +1260,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                 error: frame.error,
               });
               return;
+            case "ordinary_account_result": {
+              const { type: _type, request_id, ...result } = frame;
+              sharedHostConnectionRegistry.receiveOrdinaryAccountResult(hostId, request_id, result);
+              return;
+            }
+            case "ordinary_account_session_event":
+              sharedHostConnectionRegistry.receiveOrdinaryAccountSessionEvent(hostId, frame.session_id, frame.event);
+              return;
+            case "ordinary_tool_result": {
+              const { type: _type, request_id, ...result } = frame;
+              sharedHostConnectionRegistry.receiveOrdinaryToolResult(hostId, request_id, result);
+              return;
+            }
             case "tool_result":
               sharedHostConnectionRegistry.receiveToolResult(hostId, frame.request_id, {
                 ok: frame.ok,

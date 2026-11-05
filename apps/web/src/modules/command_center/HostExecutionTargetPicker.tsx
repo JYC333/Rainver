@@ -11,6 +11,7 @@ import HostDirectoryBrowser from './HostDirectoryBrowser'
 import { errMsg } from '../../lib/utils'
 import { SpaceLink } from '../../core/spaceNav'
 import { useAppTranslation } from '../../i18n'
+import { commandCenterHostPath } from './hostLinks'
 
 export interface HostExecutionSelection {
   host_id: string
@@ -418,7 +419,7 @@ export default function HostExecutionTargetPicker({
               {serverProvisioning.installation.error && (
                 <p className="text-destructive">{serverProvisioning.installation.error}</p>
               )}
-              <SpaceLink to="/command-center" className="underline underline-offset-2">
+              <SpaceLink to={commandCenterHostPath(serverProvisioning.host_id, 'runtime')} className="underline underline-offset-2">
                 Open Command Center to retry provisioning
               </SpaceLink>
             </div>
@@ -430,7 +431,7 @@ export default function HostExecutionTargetPicker({
                 {/* Each runtime signs in its own way (a CLI login, or one of
                     its ACP methods); Command Center offers the ones this host
                     and installation actually support. */}
-                <SpaceLink to="/command-center" className="inline-flex items-center gap-1 underline underline-offset-2">
+                <SpaceLink to={commandCenterHostPath(value.host_id, 'runtime')} className="inline-flex items-center gap-1 underline underline-offset-2">
                   <LogIn className="size-3.5" />{t('management_ui.host_target.sign_in')}
                 </SpaceLink>
               </div>

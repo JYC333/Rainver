@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { beforeAll, beforeEach, afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { loadConfig } from "../src/config.js";
 import { runsModule } from "../src/modules/runs/index.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { workSkillContentHash } from "../src/modules/skills/workSkill.js";
 import { PgRunToolIdentityRepository } from "../src/modules/runs/runToolIdentityRepository.js";
 import { dispatchToolAllowance } from "../src/modules/systemActions/scenarioToolAllowance.js";
 import { buildRunToolGrants } from "../src/modules/systemActions/runToolGrants.js";
@@ -32,6 +34,10 @@ let app: FastifyInstance | undefined;
 beforeAll(async () => {
   if (!db.available) return;
   app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [runsModule]);
+});
+
+afterEach(() => {
+  __setAuthIdentityForTests(null);
 });
 
 afterAll(async () => {
@@ -265,5 +271,59 @@ describe("the Run tool surface", () => {
     });
 
     expect(response.statusCode).toBe(401);
+  });
+});
+
+describe("the Run detail's Work Skill provenance", () => {
+  function detail(runId: string) {
+    return app!.inject({ method: "GET", url: `/api/v1/runs/${runId}` });
+  }
+
+  it("names the Skill the latest attempt was given, after the identity is revoked", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const run = randomUUID();
+    await makeRun(run);
+    const identities = new PgRunToolIdentityRepository(db.pool!);
+    await identities.issue({ id: run, space_id: SPACE }, 60_000, "a".repeat(64));
+    // A retried attempt is given the Skill afresh; the Run names that one.
+    const token = await identities.issue({ id: run, space_id: SPACE }, 60_000, workSkillContentHash());
+    await identities.revoke(run);
+    await db.pool!.query(`UPDATE runs SET status = 'succeeded' WHERE id = $1`, [run]);
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
+
+    const response = await detail(run);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().work_skill).toEqual({ content_hash: workSkillContentHash() });
+    const digest = await db.pool!.query<{ token_digest: string }>(
+      `SELECT token_digest FROM run_tool_identities WHERE run_id = $1`, [run],
+    );
+    expect(response.body).not.toContain(digest.rows[0]!.token_digest);
+    expect(response.body).not.toContain(token);
+  });
+
+  it("names no Skill for a Run never dispatched with a work surface", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const run = randomUUID();
+    await makeRun(run, "queued");
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
+
+    const response = await detail(run);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().work_skill).toBeNull();
+  });
+
+  it("returns 404 for the Run from another Space, without its Skill", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const run = randomUUID();
+    await makeRun(run);
+    await new PgRunToolIdentityRepository(db.pool!).issue({ id: run, space_id: SPACE }, 60_000, workSkillContentHash());
+    __setAuthIdentityForTests({ spaceId: randomUUID(), userId: USER });
+
+    const response = await detail(run);
+
+    expect(response.statusCode).toBe(404);
+    expect(response.body).not.toContain(workSkillContentHash());
   });
 });

@@ -129,8 +129,10 @@ reset; tests must not depend on sequence values.
 
 **Container settings.** The container is test-only: tmpfs, `fsync=off`,
 `synchronous_commit=off`, `full_page_writes=off`, `autovacuum=off`, `jit=off`,
-`wal_level=minimal`, a one-hour checkpoint horizon, and the PostgreSQL 18 tmpfs
-mount at `/var/lib/postgresql`. Local runs reuse the container and its migrated
+`wal_level=minimal`, a one-hour checkpoint horizon, `max_locks_per_transaction=512`
+(applying the baseline in one transaction takes thousands of lock slots, and the
+default 64 runs the shared lock table out when migration-chain tests overlap),
+and the PostgreSQL 18 tmpfs mount at `/var/lib/postgresql`. Local runs reuse the container and its migrated
 template across invocations; `TESTCONTAINERS_REUSE_ENABLE=false` disables reuse
 and tears down on exit. Per-file databases are always recreated, and setup
 reclaims databases left by runs killed before teardown once they are older than
@@ -169,6 +171,17 @@ before writing setup.
 | `mockUpstream`, `piAiHttp` | Provider HTTP fakes (proxy upstream, Pi SSE wire) |
 | `sourceFiles` | `listTsFiles` for meta-tests that scan the source tree |
 | `sqlCapture` | Records executed SQL when `SQL_CAPTURE_DIR` is set (see COMMANDS.md) |
+| `agentAttentionSeeds` | `seedAttentionRun` — a real Agent Run/Attempt on the canonical Agent/Profile fixture |
+| `baselineSql` | Reads `0000_baseline.sql` with normalized identifiers for schema-decision assertions |
+| `briefingFixture`, `briefingQualityCorpus` | Project briefing world (team Space, writer/viewer, consenting Source, Agent) and a synthetic briefing-quality corpus |
+| `briefingWorkerHarness`, `briefingWorkerProcess`, `briefingWorkerProtocol` | A real jobs-worker OS process from the built server with a synthetic Host, for restart/stop tests; `await buildServerDist()` builds `dist` once per run |
+| `testPartition` | `partitionTests(part, parts, routes)` — deals one long `<name>.suite.ts` across `<name>.N.test.ts` entry files |
+| `builtinSkillFixture` | The sample built-in Skill package (test data only) |
+| `lockWait` | Waits until a backend in the file's own database is blocked on a lock, for race tests |
+| `modernIteration` | `ModernIterationService` — Inquiry iteration service sending the complete current command |
+| `monitoringFixture` | Real-Postgres Project monitoring world (`ProjectMonitoringService` over an arXiv source chain) |
+| `outboundGuard` | Outbound guard settings that admit loopback/`.test` upstreams in tests |
+| `readingMaterial` | `retainReaderBody` — a retained Sources Reader document |
 
 ## Route Tests Build Only Their Module
 
@@ -238,9 +251,23 @@ fails on a doubling:
    so the tolerance is 2x: the gate catches doublings and the ten slowest files
    it prints every run make drift visible. Raising a limit is an edit to the
    budget file, reviewed with the change that needed it.
-3. `testHygiene.test.ts` in each suite fails on the rules in the two sections
+3. `testHygiene.test.ts` in the server and web suites fails on the rules in the two sections
    above, plus real-time sleeps and bare `userEvent.setup()`, with exemptions
    listed per file.
+
+Wall clock has two floors: total work divided by workers, and the slowest
+single file, whose tests run one after another. The server config caps workers
+at 16 (CI's smaller runners keep Vitest's default): past that, every worker
+contends for one PostgreSQL container and the forked worker processes, per-file
+time more than doubles and the run gets slower, not faster. A file that becomes
+the long pole is split rather than tolerated: its body moves unchanged into
+`<name>.suite.ts` as `define…Suite(filename, partition)`, and `<name>.1.test.ts`
+… `<name>.N.test.ts` each register one part with
+`partitionTests(i, N)` (`test/support/testPartition.ts`) against their own
+database. Tests are dealt round-robin in registration order; a `describe` too
+small to appear in every part is routed to explicit parts. Run all parts by the
+shared prefix (`vitest run test/roomsDb`). A suite file must not `vi.mock`, since
+the config decides isolation from the entry files.
 
 ## Product Rules Tests Protect
 

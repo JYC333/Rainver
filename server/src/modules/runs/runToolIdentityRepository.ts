@@ -93,6 +93,28 @@ export class PgRunToolIdentityRepository implements RunToolIdentityPort {
     return result.rows[0] ?? null;
   }
 
+  /**
+   * The content hash of the Work Skill this Run's latest attempt was given,
+   * or null when it was never dispatched with a work surface.
+   *
+   * This column is the one source a provenance read uses. The Host adapter's
+   * result metadata carries a copy of the same value, but it is not a second
+   * identity to read from. The row outlives revocation, so a finished Run
+   * still names its Skill. A retry re-issues the identity, so this answers
+   * for the latest attempt. The caller has already authorized the Run read;
+   * the Space is matched as well, so a Run id cannot be read in the wrong
+   * Space. The token digest is never selected.
+   */
+  async workSkillContentHash(spaceId: string, runId: string): Promise<string | null> {
+    const result = await this.db.query<{ skill_content_hash: string | null }>(
+      `SELECT skill_content_hash
+         FROM run_tool_identities
+        WHERE run_id = $1 AND space_id = $2`,
+      [runId, spaceId],
+    );
+    return result.rows[0]?.skill_content_hash ?? null;
+  }
+
   /** Extend only this live attempt's identity; never revive a revoked token. */
   async renew(runId: string, token: string, ttlMs: number): Promise<void> {
     await this.db.query(

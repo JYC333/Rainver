@@ -272,8 +272,7 @@ evidence map and the limits of real-model, remote-Host and cost verification.
     their Project cascades.
 
   `information_briefing_inputs` holds the frozen refs, revisions, delta classes
-  and dependencies. Migration `0007_information_briefings` is unpublished and
-  regenerated.
+  and dependencies. Both tables are created by migration `0007_project_reading.sql`.
 - **Versions and reuse.** The comparison chain runs through the latest
   published version only. The request key is the substantive state: the
   published predecessor, input and context hashes, protocol and execution.
@@ -629,7 +628,9 @@ configuration only supplies selection settings. Existing snapshots never change.
 
 `ReadingService` / `ReadingRepository` own the read-only, Space-local reading
 projection. `GET /api/v1/spaces/:spaceId/reading` accepts `view=pending|read|all`,
-`limit` (1–100, default 30), optional `q`, `sort=newest|oldest` (default
+`limit` (1–100, default 30), optional `q`, optional `topic` (one visible followed
+goal) with `topic_selection=important|all` (default `all`; requires `topic`),
+optional `favorite=only`, `sort=newest|oldest` (default
 newest; part of the cursor, so a cursor of the other order is refused with 422;
 cursors issued before sorting read as newest) and an opaque `cursor`. Each item
 carries the viewer's own `reading_progress` ({current, furthest} or null) from
@@ -712,12 +713,13 @@ preference, edition and Reader routes; shell metadata is fixture-backed.
 
 `topics/` adapts the existing briefing kernel to `following:<goalId>`: one
 Project Following per scope, immutable version/manifest, existing Run/Job and
-canonical terminal projection. `project_reading_rounds` (append-only migration0010)
-records the collection barrier and links its actual version. `rounds.ts` owns
+canonical terminal projection. `project_reading_rounds` (append-only, migration
+`0007_project_reading.sql`) records the collection barrier and links its actual version. `rounds.ts` owns
 admission/wakeup/audit recovery; `service.ts` owns explicit analysis consent,
 barrier decisions/cancel/retry/read; `scope.ts` supplies only this Following's
 shared originals, approved strategy and exact purpose. Sources remains the
-original writer through its facade. R3 Project composition is not implemented.
+original writer through its facade. R3 Project composition is described in
+[Project Reading stage two](#project-reading-stage-two-immutable-compositions).
 
 Inputs are deterministic extracted Snapshot/Artifact/hash references, never an
 Agent's `source_text` assertion, private annotation, private analysis, collection

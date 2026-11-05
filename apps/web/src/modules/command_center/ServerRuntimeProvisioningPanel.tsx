@@ -63,7 +63,7 @@ export default function ServerRuntimeProvisioningPanel({
     : healthy ? 'success' : 'warning'
 
   return (
-    <section className="w-full space-y-1.5 border-t pt-2" aria-label="Server Runtime provisioning">
+    <section className="w-full space-y-1.5 border-t border-border pt-2" aria-label="Server Runtime provisioning">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="font-medium">OpenCode</span>
         {installation && <Badge variant={badgeVariant}>{healthLabel(installation)}</Badge>}

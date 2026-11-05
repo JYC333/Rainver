@@ -1,35 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { Copy } from 'lucide-react'
 import { hostsApi } from '../../api/client'
-import { errMsg } from '../../lib/utils'
-import type { Host, HostPairingCode, HostRuntimeDefinitionOption, HostRuntimeProvisioningStatus } from '../../types/api'
+import { cn, errMsg } from '../../lib/utils'
+import type { Host, HostPairingCode, HostRuntimeDefinitionOption } from '../../types/api'
 import { Card } from '../../components/ui/card'
-import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
-import HostAgents from './HostAgents'
 import { useAuth } from '../../contexts/AuthContext'
-import HostProxyAddress from './HostProxyAddress'
-import ServerRuntimeProvisioningPanel from './ServerRuntimeProvisioningPanel'
+import { useAppTranslation } from '../../i18n'
+import HostSummaryList from './HostSummaryList'
+import HostDetail from './HostDetail'
+import { fmt, type HostProvisioning } from './hostDisplay'
+import { hostSectionParam } from './hostLinks'
 
 const HOST_REFRESH_INTERVAL_MS = 3_000
 
-function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString() : 'never'
-}
-
-const HOST_STATUS_VARIANT: Record<Host['status'], 'success' | 'muted' | 'destructive' | 'warning'> = {
-  online: 'success',
-  offline: 'muted',
-  pending_pairing: 'warning',
-  revoked: 'destructive',
-}
-
+/**
+ * The Hosts a person can see, as a list and the one selected Host's detail
+ * (`?host=<id>`, optionally `&section=runtime|cli|connection`). With several
+ * Hosts, below `md` the list and the detail take turns, as in Agent Work;
+ * with one, its detail is the page. The detail is rendered once, keyed by
+ * Host, so a refresh never remounts it and switching Host ends what was open
+ * on the previous one. A named Host that is not in the list is reported, never
+ * replaced by another.
+ */
 export default function HostsPanel() {
+  const { t } = useAppTranslation()
   const { currentUser } = useAuth()
   const [hosts, setHosts] = useState<Host[]>([])
   const [loading, setLoading] = useState(true)
@@ -40,16 +41,64 @@ export default function HostsPanel() {
   // One refresh loop for the page: the host list and each server host's
   // provisioning status come from the same tick, instead of every panel
   // running a timer of its own.
-  const [provisioning, setProvisioning] = useState<Record<string, { status: HostRuntimeProvisioningStatus | null; error: string | null }>>({})
+  const [provisioning, setProvisioning] = useState<Record<string, HostProvisioning>>({})
   const [provisioningLoading, setProvisioningLoading] = useState(true)
-  const machineGroups = useMemo(() => {
-    const groups = new Map<string, Host[]>()
-    for (const host of hosts) {
-      const machineId = host.machine_id ?? host.id
-      groups.set(machineId, [...(groups.get(machineId) ?? []), host])
+  const [pairingOpen, setPairingOpen] = useState(false)
+  // Execution environments, not physical-device claims. The built-in sandbox
+  // leads; paired environments retain the server's order and their own names.
+  const orderedHosts = useMemo(() => [...hosts].sort((a, b) =>
+    Number(b.kind === 'server') - Number(a.kind === 'server')), [hosts])
+
+  const [searchParams, setSearchParams] = useSearchParams()
+  const hostParam = searchParams.get('host')
+  const sectionParam = hostSectionParam(searchParams.get('section'))
+  const defaultHost = hosts.find(host => host.kind === 'server') ?? orderedHosts[0] ?? null
+  // Only a named Host, or the default when none is named; never a stand-in for a missing one.
+  const selected = hostParam ? hosts.find(host => host.id === hostParam) ?? null : defaultHost
+  const multiple = hosts.length > 1
+  const selectHost = useCallback((hostId: string, replace = false) => {
+    setSearchParams(current => {
+      const next = new URLSearchParams(current)
+      next.set('host', hostId)
+      if (current.get('host') !== hostId) next.delete('section')
+      return next
+    }, { replace })
+  }, [setSearchParams])
+  const location = useLocation()
+  // Leaving a named Host (Back, or history) leaves its detail: the next one is
+  // a fresh mount, even when it is the same Host shown by default, so nothing
+  // it had open stays running behind the list.
+  const [leaves, setLeaves] = useState(0)
+  const namedBefore = useRef(hostParam)
+  useEffect(() => {
+    if (namedBefore.current && !hostParam) setLeaves(count => count + 1)
+    namedBefore.current = hostParam
+  }, [hostParam])
+  // Back to the list returns the keyboard to the Host it left; choosing a
+  // Host whose list button then hides moves it into that Host's detail.
+  const returnTo = useRef<string | null>(null)
+  const enterDetail = useRef(false)
+  const detailArea = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!hostParam && returnTo.current) {
+      const id = returnTo.current
+      returnTo.current = null
+      document.querySelector<HTMLElement>(`[data-host-button="${CSS.escape(id)}"]`)?.focus()
     }
-    return [...groups.entries()]
-  }, [hosts])
+    if (hostParam && enterDetail.current) {
+      enterDetail.current = false
+      const active = document.activeElement as HTMLElement | null
+      if (active && active !== document.body && active.offsetParent === null) detailArea.current?.querySelector<HTMLElement>('article')?.focus({ preventScroll: true })
+    }
+  }, [hostParam, location.key])
+  const showAllHosts = useCallback(() => {
+    setSearchParams(current => {
+      const next = new URLSearchParams(current)
+      next.delete('host')
+      next.delete('section')
+      return next
+    })
+  }, [setSearchParams])
 
   const loadAdapters = useCallback(async () => {
     try {
@@ -148,18 +197,29 @@ export default function HostsPanel() {
     }
   }
 
+  const pairingVisible = pairingOpen || Boolean(pairing) || (!loading && hosts.length === 0)
+
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold">{t('command_center.hosts')}</h2>
+        {!(!loading && hosts.length === 0) && (
+          <Button size="sm" variant="outline" aria-expanded={pairingVisible} onClick={() => { setPairingOpen(open => !open); setPairing(null) }}>
+            {pairingVisible ? t('command_center.hide_pairing') : t('command_center.pair_machine')}
+          </Button>
+        )}
+      </div>
+      {pairingVisible && (
       <Card className="p-4 space-y-3">
         <div>
-          <h2 className="text-sm font-semibold">Register a new machine</h2>
+          <h2 className="text-sm font-semibold">{t('command_center.pair_title')}</h2>
           <p className="text-xs text-muted-foreground">
             Linux: download the latest installer from GitHub, then use the generated code to install, pair, and start the background service.
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
           <div className="min-w-[200px]">
-            <Label className="text-xs">Machine name</Label>
+            <Label className="text-xs">{t('command_center.pair_name')}</Label>
             <Input value={pairingName} onChange={e => setPairingName(e.target.value)} placeholder="e.g. laptop" />
           </div>
           <Button onClick={issuePairingCode} disabled={issuing || !pairingName.trim()}>
@@ -186,6 +246,7 @@ export default function HostsPanel() {
           </div>
         )}
       </Card>
+      )}
 
       {loading ? (
         <Card className="p-6 space-y-3">
@@ -195,78 +256,40 @@ export default function HostsPanel() {
       ) : hosts.length === 0 ? (
         <Card><EmptyState title="No hosts registered yet" /></Card>
       ) : (
-        <div className="space-y-4">
-          {machineGroups.map(([machineId, machineHosts]) => (
-            <section key={machineId} className="space-y-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Machine · {machineHosts[0]?.machine_name ?? machineId}</h3>
-              {machineHosts.map(host => (
-                <Card key={host.id} className="p-3 flex flex-wrap items-center justify-between gap-3">
-              <div className="space-y-1 min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* The row is seeded as `server`; the card names it the way
-                      the product talks about it. */}
-                  <span className="text-sm font-medium">{host.kind === 'server' ? 'Server Runtime' : host.name}</span>
-                  <Badge variant={HOST_STATUS_VARIANT[host.status]}>{host.status}</Badge>
-                  <Badge variant="outline">{host.kind}</Badge>
-                  <Badge variant="outline">{host.environment_kind ?? host.platform ?? 'unknown environment'}</Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {host.kind === 'server' ? 'Built-in execution host · strictly isolated · ' : ''}
-                  {`${host.platform ?? '—'} / ${host.arch ?? '—'} · daemon ${host.daemon_version ?? 'unknown'} · last seen ${fmt(host.last_heartbeat_at)}`}
-                </p>
-              </div>
-              {host.kind === 'remote' && host.status !== 'revoked' && (
-                <Button size="sm" variant="destructive" onClick={() => revoke(host.id)}>Revoke</Button>
-              )}
-              {host.kind === 'server' && (
-                // The built-in host is not anyone's machine: it serves every
-                // Space of the instance, one isolated namespace per Run, and
-                // installing or logging in a copy on it is instance-admin work.
-                // Members still see what is installed, because that is what
-                // says whether their Run can run here at all.
-                <p className="w-full border-t pt-2 text-xs text-muted-foreground">
-                  The instance's own execution host: every Run is isolated in its own namespace, and
-                  {host.max_concurrent_runs !== null && host.max_concurrent_runs !== undefined
-                    ? ` up to ${host.max_concurrent_runs} run${host.max_concurrent_runs === 1 ? '' : 's'} execute at once.`
-                    : ' its capacity is set per machine.'}
-                  {currentUser?.is_instance_admin ? '' : ' Installing and logging in its agents is instance-admin work.'}
-                </p>
-              )}
-              {host.kind === 'server' && (
-                <ServerRuntimeProvisioningPanel
-                  hostId={host.id}
-                  canRetry={Boolean(currentUser?.is_instance_admin)}
-                  status={provisioning[host.id]?.status ?? null}
-                  error={provisioning[host.id]?.error ?? null}
-                  loading={provisioningLoading}
-                  onRefresh={() => load()}
-                />
-              )}
-              {/* Every runtime definition, not only the dispatch-eligible ones. A
-                  registry agent is installable and managed here even while
-                  `remote_eligible` is false (hosts.md, profile isolation).
-                  Do not filter it out. The copy would disappear right after
-                  install. Eligibility gates dispatch, not installation visibility. */}
-              {host.status !== 'revoked' && (
-                <HostAgents
-                  host={host}
-                  adapters={runtimeAdapters}
-                  isInstanceAdmin={Boolean(currentUser?.is_instance_admin)}
-                  manageable={host.kind === 'remote' || Boolean(currentUser?.is_instance_admin)}
-                  onChanged={async () => {
-                    await Promise.all([load(), loadAdapters()])
-                  }}
-                />
-              )}
-              {host.kind === 'remote' && host.status !== 'revoked' && (
-                <div className="w-full">
-                  <HostProxyAddress host={host} onChanged={() => { void load() }} />
-                </div>
-              )}
-                </Card>
-              ))}
-            </section>
-          ))}
+        <div className={cn('grid min-w-0 gap-4', multiple && 'md:grid-cols-[minmax(13rem,17rem)_minmax(0,1fr)]')}>
+          {multiple && (
+            <HostSummaryList hosts={orderedHosts} selectedId={selected?.id ?? null} provisioning={provisioning}
+              onSelect={hostId => { enterDetail.current = true; selectHost(hostId) }} className={cn(hostParam && 'hidden md:block')} />
+          )}
+          {/* With no Host named, the default detail sits beside the list on a
+              wide screen and stays mounted, hidden, below md. The first
+              interaction with it names it in the URL, so a narrower window
+              then shows that same detail instead of hiding it. */}
+          <div ref={detailArea} className={cn('min-w-0', multiple && !hostParam && 'hidden md:block')}
+            onFocusCapture={() => { if (!hostParam && selected) selectHost(selected.id, true) }}>
+            {selected ? (
+              <HostDetail
+                key={`${selected.id}:${leaves}`}
+                host={selected}
+                isInstanceAdmin={Boolean(currentUser?.is_instance_admin)}
+                adapters={runtimeAdapters}
+                provisioning={provisioning[selected.id]}
+                provisioningLoading={provisioningLoading}
+                sectionRequest={hostParam === selected.id && sectionParam ? { section: sectionParam, key: location.key } : null}
+                showBack={multiple}
+                onBack={() => { returnTo.current = selected.id; showAllHosts() }}
+                onRefresh={() => load()}
+                onAdaptersChanged={async () => { await Promise.all([load(), loadAdapters()]) }}
+                onRevoke={hostId => { void revoke(hostId) }}
+              />
+            ) : (
+              <Card role="alert" className="space-y-2 p-4">
+                <p className="text-sm font-medium">{t('command_center.host_unavailable_title')}</p>
+                <p className="text-xs text-muted-foreground">{t('command_center.host_unavailable_body')}</p>
+                <Button size="sm" variant="outline" onClick={showAllHosts}>{t('command_center.show_all_hosts')}</Button>
+              </Card>
+            )}
+          </div>
         </div>
       )}
     </div>

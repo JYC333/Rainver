@@ -15,8 +15,7 @@ attention. Project type and conversation pacing follow
 [ADR 0027](0027-problem-engine-research-separation.md) supersedes only decision
 6's universal shared-Loop implication: the generic method belongs to Inquiry,
 Task retains Board status, and Research remains an execution capability. The
-remaining ownership and workflow decisions below are unchanged. Implementation
-of that target contract is pending.
+remaining ownership and workflow decisions below are unchanged.
 
 ## Context
 
@@ -59,8 +58,11 @@ For Inquiry that is `inquiry_thread_statement_revisions`,
 `inquiry_thread_revisions`, `inquiry_thread_lifecycle_events`,
 `inquiry_thread_structure_events`, `inquiry_thread_work_events`,
 `inquiry_question_states`, `inquiry_hypothesis_states`,
-`inquiry_iterations`, `inquiry_thread_personal_focus`, and
-`inquiry_project_settings`; they are owned by the `inquiry` module and are
+`inquiry_iterations`, `inquiry_thread_steps`, `inquiry_round_closeouts`,
+`inquiry_problem_commands`, `inquiry_thread_personal_focus`,
+`inquiry_project_settings`, and the signal-review tables
+(`inquiry_evidence_signals`, `inquiry_signal_candidates`,
+`inquiry_review_packets`, `inquiry_delta_briefs`); they are owned by the `inquiry` module and are
 never `space_objects` rows.
 
 ### 3. Cross-aggregate relationships use `object_relations`

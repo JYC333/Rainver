@@ -30,8 +30,8 @@ collapsed technical details are diagnostic evidence only.
 
 - Start the local stack from `.agent/COMMANDS.md` and sign in as a member with
   Project write access. Use a separate acceptance space.
-- Configure one real Source, one active Managed API Agent, and one OpenCode
-  runtime profile. Keep real-provider credentials isolated through the normal
+- Configure one real Source, one ModelProvider for bounded provider tasks,
+  and one Agent with an OpenCode runtime profile. Keep real-provider credentials isolated through the normal
   credential UI.
 - Prepare a disposable Git repository inside an allowed root for the Folder
   scenario. Never connect the product source repository itself.
@@ -166,7 +166,7 @@ their audit records, then restored execution/files behavior.
 Run this only after the deterministic and manual gates. In the acceptance space,
 prepare queued Runs whose names clearly identify these cases:
 
-- a real Managed API success;
+- a real managed provider-task success;
 - a real OpenCode file/tool success or review wait;
 - a structured-output validation failure;
 - a long-enough Run to cancel;

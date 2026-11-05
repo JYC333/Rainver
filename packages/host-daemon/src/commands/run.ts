@@ -40,6 +40,8 @@ import {
 import { ReconnectableFrameSink } from "../reconnectableFrameSink.js";
 import { OWN_INSTALLATION, installTool, managedInstallationId, rollbackTool, uninstallTool } from "../tools.js";
 import { updateOwnTool } from "../ownToolUpdate.js";
+import { handleOrdinaryToolAction } from "../ordinaryTools.js";
+import { closeAllOrdinaryAccountSessions, closeOrdinaryAccountSession, handleOrdinaryAccountRequest, openOrdinaryAccountSession } from "../ordinaryToolAccounts.js";
 import { loginSession, openLoginSession } from "../login.js";
 import { refreshAmbientSessionCounts } from "../ambientCounts.js";
 import { importAmbientSessions, sanitizeFailure, type AmbientImportRequest } from "../ambientSessions.js";
@@ -780,6 +782,38 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           }, fail);
           return;
         }
+        case "ordinary_tool_request": {
+          // Ordinary CLIs are not Runtimes: no drain or Runtime hold applies,
+          // and a failure answers this request without touching any copy in use.
+          void handleOrdinaryToolAction(frame.operation, log, frame.egress_transport ?? { mode: "direct" })
+            .then((result) => {
+              if (result.ok) sendHeartbeat();
+              sink.send({ type: "ordinary_tool_result", request_id: frame.request_id, ...result });
+            }, (error) => {
+              sink.send({ type: "ordinary_tool_result", request_id: frame.request_id, ok: false, error: sanitizeFailure(error), tool: null });
+            });
+          return;
+        }
+        case "ordinary_account_request": {
+          // Personal ordinary-tool account actions: fixed official commands in
+          // this account's own directories; only the safe status returns.
+          const { type: _type, request_id, ...request } = frame;
+          void handleOrdinaryAccountRequest(request).then(
+            (result) => sink.send({ type: "ordinary_account_result", request_id, ...result }),
+            () => sink.send({ type: "ordinary_account_result", request_id, ok: false, error: "account_request_failed", status: null }),
+          );
+          return;
+        }
+        case "ordinary_account_session_open": {
+          const { type: _type, ...session } = frame;
+          void openOrdinaryAccountSession(session, (event) => {
+            sink.send({ type: "ordinary_account_session_event", session_id: frame.session_id, event });
+          }, log);
+          return;
+        }
+        case "ordinary_account_session_close":
+          closeOrdinaryAccountSession(frame.session_id);
+          return;
         case "login_open": {
           try {
             // The login process executes versioned binaries even though its
@@ -902,6 +936,8 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       sourceChannel.disconnect();
       for (const controller of folderReadControllers.values()) controller.abort();
       folderReadControllers.clear();
+      // A device-flow login nobody can see any more must not stay pending.
+      closeAllOrdinaryAccountSessions();
       sink.unbindIfCurrent(sendOnThisConnection);
       if (isRevocationClose(event.code, event.reason)) {
         resolve("revoked");

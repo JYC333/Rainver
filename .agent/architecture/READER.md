@@ -552,8 +552,9 @@ frozen actual destination on every contributing Source, even without an original
 Old item links continue showing their own legacy body and anchors. A deterministic
 retained original is a separate snapshot reference, not a silent replacement of
 that legacy body's identity. Existing `/versions` remains extracted-body history;
-new analysis summary snapshots do not enter its body-version sequence. Project
-four-view UI and original/analysis switch are later R5 work, not shipped by R1.
+new analysis summary snapshots do not enter its body-version sequence. The
+Project Reader switches between original and analysis versions through these
+records (`ProjectReaderTools`); see [Library](../modules/library.md#project-reading-four-views-r5).
 
 R4 private Project investigations are ordinary private `source_snapshot` analysis
 versions. Their operation returns the exact report snapshot and supplied-original

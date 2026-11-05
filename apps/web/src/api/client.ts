@@ -1,3 +1,5 @@
+import type { ProjectMember, ProjectMemberInput } from "@rainver/protocol"
+import type { InstanceInvitationResponse } from "@rainver/protocol"
 import type {ProblemProjectionSchema,ProblemWorkRequest,ProblemCloseRoundRequest,ResearchResultSchema} from "@rainver/protocol"
 import type {ProblemTaskLinkResult,ProblemLinkedTasksPage,TaskInquiryThreadsPage,ProblemTaskResult,TaskWorkHistoryPage} from "@rainver/protocol"
 import type { ReaderDocumentNoteResponse, ReaderAnnotationRangeUpdate } from "@rainver/protocol"
@@ -917,8 +919,15 @@ export const focusAreasApi = {
     post<FocusArea>('/focus-areas', body),
   update: (id: string, body: { name?: string; description?: string | null }) =>
     patch<FocusArea>(`/focus-areas/${encodeURIComponent(id)}`, body),
-  contents: (id: string) =>
-    get<FocusAreaContents>(`/focus-areas/${encodeURIComponent(id)}/contents`),
+  /** Each list continues from its own cursor; an omitted cursor reads that list's first page. */
+  contents: (id: string, params: { projects_cursor?: string; objects_cursor?: string; limit?: number } = {}) => {
+    const q: Record<string, string> = {}
+    if (params.projects_cursor !== undefined) q.projects_cursor = params.projects_cursor
+    if (params.objects_cursor !== undefined) q.objects_cursor = params.objects_cursor
+    if (params.limit !== undefined) q.limit = String(params.limit)
+    const search = new URLSearchParams(q).toString()
+    return get<FocusAreaContents>(`/focus-areas/${encodeURIComponent(id)}/contents${search ? `?${search}` : ''}`)
+  },
   setForObject: (objectId: string, focusAreaId: string | null) =>
     put<void>(`/space-objects/${encodeURIComponent(objectId)}/focus-area`, { focus_area_id: focusAreaId }),
   setForProject: (projectId: string, focusAreaId: string | null) =>
@@ -1329,6 +1338,7 @@ export const boardsApi = {
 
 // ── Tasks (product work items) ─────────────────────────────────────────────
 export const tasksApi = {
+  delete: (id: string) => del<{task_id:string;deleted:boolean}>(`/tasks/${encodeURIComponent(id)}`),
   linkedThreads:(id:string,after?:string)=>get<TaskInquiryThreadsPage>(`/tasks/${encodeURIComponent(id)}/inquiry-threads${after?`?after_thread_id=${encodeURIComponent(after)}`:''}`),
   workHistory:(id:string,before?:string)=>get<TaskWorkHistoryPage>(`/tasks/${encodeURIComponent(id)}/work-history${before?`?before_seq=${encodeURIComponent(before)}`:''}`),
   work:  (id: string) => get<TaskWorkView>(`/tasks/${id}/work`),
@@ -1941,8 +1951,13 @@ export const evolutionApi = {
   previewWorkflowFromRun: (body: { run_id: string; asset_key?: string | null; display_name?: string | null; description?: string | null; input_schema_json?: Record<string, unknown> | null }) =>
     post<Record<string, unknown>>('/evolution/workflows/from-run/preview', body),
   saveWorkflowFromRun: (body: { run_id: string; asset_key?: string | null; display_name?: string | null; description?: string | null; input_schema_json?: Record<string, unknown> | null }) =>
-    post<Record<string, unknown>>('/evolution/workflows/from-run/save', body),
+    post<SaveWorkflowFromRunResult>('/evolution/workflows/from-run/save', body),
 }
+
+/** What saving a Run as a Workflow created: a Proposal to review, or a draft asset version. */
+export type SaveWorkflowFromRunResult =
+  | { status: 'proposal_required'; proposal_id: string; proposal_type: string; risk_level: string }
+  | { status: 'draft_saved'; asset_id: string; version_id: string; version_status: 'draft'; risk_level: string }
 
 // ── Agents ────────────────────────────────────────────────────────────────
 export const agentsApi = {
@@ -2284,6 +2299,79 @@ export const hostsApi = {
       `/hosts/${encodeURIComponent(hostId)}/provider-proxy-url`,
       { base_url: baseUrl },
     ),
+}
+
+/** What the account session stream sends to the person who opened it. */
+export type OrdinaryAccountStreamEvent =
+  | { type: 'authorization'; url: string; user_code: string | null; expires_in: number | null }
+  | { type: 'exit'; outcome: 'completed' | 'failed' | 'cancelled' | 'timed_out'; error: string | null; status: import('@rainver/protocol').OrdinaryAccountStatus | null }
+
+/**
+ * Ordinary CLI tools on a Host and the signed-in person's own account for one
+ * of them (`.agent/modules/hosts.md`). The server decides every permission;
+ * the account is always the caller's, so nothing here names a user.
+ */
+export const ordinaryToolsApi = {
+  list: (hostId: string, options?: RequestOptions) =>
+    get<import('@rainver/protocol').HostOrdinaryToolsResponse>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools`, options),
+  install: (hostId: string, toolId: string) =>
+    post<unknown>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/install`),
+  register: (hostId: string, toolId: string, path: string | null) =>
+    post<unknown>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/register`, path ? { path } : {}),
+  remove: (hostId: string, toolId: string, source: 'managed' | 'registered') =>
+    del<unknown>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}?source=${source}`),
+  account: (hostId: string, toolId: string, options?: RequestOptions) =>
+    get<import('@rainver/protocol').HostOrdinaryAccountResponse>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/account`, options),
+  verify: (hostId: string, toolId: string) =>
+    post<import('@rainver/protocol').HostOrdinaryAccountResponse>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/account/verify`),
+  logout: (hostId: string, toolId: string) =>
+    post<import('@rainver/protocol').HostOrdinaryAccountResponse & { logout?: { local_cleared: boolean; remote_revocation: 'attempted_unconfirmed' | 'not_applicable' } }>(
+      `/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/account/logout`),
+  cancelSession: (hostId: string, toolId: string) =>
+    post<{ cancelled: boolean }>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/account/session/cancel`),
+  /**
+   * The official setup (`init`) or personal login (`login`) for the caller's
+   * own account, as server-sent events. Aborting the signal closes the
+   * stream, which cancels the session on the Host.
+   */
+  async *sessionStream(hostId: string, toolId: string, flow: 'init' | 'login', signal?: AbortSignal): AsyncGenerator<OrdinaryAccountStreamEvent> {
+    const url = `${BASE}/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/account/session/stream?flow=${flow}`
+    const headers: Record<string, string> = {}
+    if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
+    headers['X-Rainver-Space-Id'] = _spaceId
+    const response = await fetch(url, { headers, signal })
+    if (!response.ok) {
+      let detail = `${response.status} ${response.statusText}`
+      try {
+        const body = await response.json() as { detail?: unknown; reason?: unknown }
+        if (typeof body.detail === 'string') detail = body.detail
+        else if (typeof body.reason === 'string') detail = body.reason
+      } catch { /* keep the status line */ }
+      throw new ApiRequestError(detail, response.status)
+    }
+    if (!response.body) throw new Error('No response body')
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const blocks = buffer.split('\n\n')
+        buffer = blocks.pop() ?? ''
+        for (const block of blocks) {
+          const line = block.trim()
+          if (!line.startsWith('data: ')) continue
+          try { yield JSON.parse(line.slice(6)) as OrdinaryAccountStreamEvent } catch { /* ignore malformed SSE */ }
+        }
+      }
+    } catch (caught) {
+      if (!(caught instanceof DOMException && caught.name === 'AbortError')) throw caught
+    } finally {
+      void reader.cancel().catch(() => undefined)
+    }
+  },
 }
 
 export const skillsApi = {
@@ -2991,6 +3079,9 @@ export const readerApi = {
 
 // ── Projects ──────────────────────────────────────────────────────────────
 export const projectsApi = {
+  members: (id: string) => get<ProjectMember[]>(`/projects/${encodeURIComponent(id)}/members`),
+  addMember: (id: string, body: ProjectMemberInput) => post<ProjectMember>(`/projects/${encodeURIComponent(id)}/members`, body),
+  removeMember: (id: string, userId: string) => del<void>(`/projects/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`),
   list: (params: { status?: string; limit?: number; offset?: number } = {}, options?: RequestOptions) => {
     const q: Record<string, string> = {}
     if (params.status !== undefined) q.status = params.status
@@ -3020,6 +3111,7 @@ export const projectsApi = {
   hostExecutionTargets: (id: string) =>
     get<HostExecutionTargetsResponse>(`/projects/${encodeURIComponent(id)}/host-execution-targets`),
   getBoard: (id: string) => get<ProjectBoard>(`/projects/${id}/board`),
+  configureBoard: (id: string, body: unknown) => put<ProjectBoard>(`/projects/${id}/board/columns`, body),
   mainlineRoom: (id: string, options: RequestOptions = {}) => get<ProjectMainlineRoomResponse>(`/projects/${id}/mainline-room`, options),
   /**
    * Everyone who can read this Project.
@@ -3677,6 +3769,7 @@ export const authApi = {
   unlinkGoogle: (accountId: string) => post<{ ok: boolean }>('/auth/google/unlink', { account_id: accountId }),
   requestPasswordReset: (email: string) => post<{ ok: boolean }>('/auth/recovery/request', { email }),
   completePasswordReset: (token: string, newPassword: string) => post<{ ok: boolean }>('/auth/recovery/complete', { token, new_password: newPassword }),
+  adminInvite: (email: string) => post<InstanceInvitationResponse>('/auth/admin/invitations', { email }),
   adminUsers: () => get<AdminAuthUser[]>('/auth/admin/users'),
   adminDisableUser: (userId: string) => post<{ ok: boolean }>(`/auth/admin/users/${encodeURIComponent(userId)}/disable`, {}),
   adminEnableUser: (userId: string) => post<{ ok: boolean }>(`/auth/admin/users/${encodeURIComponent(userId)}/enable`, {}),
@@ -3686,7 +3779,7 @@ export const authApi = {
 
 // ── Spaces ────────────────────────────────────────────────────────────────
 export const spacesApi = {
-  acceptInvitation: (token: string) => post<{ space_id: string }>('/invitations/accept', { token }),
+  acceptInvitation: (token: string) => post<{ space_id: string | null }>('/invitations/accept', { token }),
   create:               (data: { name: string; type: Exclude<SpaceWithMembership['type'], 'personal'>; oversight_mode?: SpaceOversightMode }) => post<SpaceWithMembership>('/spaces', data),
   get:                  (spaceId: string)                              => get<SpaceWithMembership>(`/spaces/${spaceId}`),
   members:              (spaceId: string)                              => get<SpaceMember[]>(`/spaces/${spaceId}/members`),

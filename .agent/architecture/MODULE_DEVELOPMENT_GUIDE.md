@@ -18,7 +18,7 @@ There are two backend boundary shapes:
 - **Registered HTTP module:** exported from `server/src/modules/<module>/index.ts`
   and listed in `server/src/gateway/routeRegistry.ts`.
 - **Support package:** import-only package under `server/src/modules/` with no
-  direct route registration (`context`, `runtimeAdapters`, shared repositories, etc.).
+  direct route registration (`runtimeAdapters`, `retrieval`, `systemActions`, shared repositories, etc.).
 
 `server/src/gateway/routeRegistry.ts` is the source of truth for registered HTTP modules.
 Support packages are documented in `MODULES.md`.
@@ -67,8 +67,8 @@ Hosts materialize those original bytes.
 Prefer importing package facades:
 
 ```ts
-import { createProviderCommandStore } from "../providers";
-import { RunRepository } from "../runs";
+import { getProviderConfig } from "../providers";
+import { runTurnState } from "../runs";
 ```
 
 Avoid deep cross-package imports:
@@ -116,7 +116,7 @@ Keep facades narrow so tests and peer modules do not couple to internal helpers.
 | Per-space initialization | Add the default to `seedSpaceDefaults` (`server/src/modules/spaces/spaceSeeds.ts`), which `spaces/repository.ts` calls inside the Space-creation transaction; it must not commit. There is no hook registry. |
 | Post-run side effect | Register a run-finalized hook with `PostRunFinalizationService` integration. |
 | Proposal apply behavior | Put mutation logic in the target module and register it with the server proposal applier registry. |
-| Runtime adapter | Register adapter/spec in `server/src/modules/runtimeAdapters`; adapters return `RuntimeAdapterResult` and use server runtime services. |
+| Runtime adapter | Register its `RuntimeAdapterSpec` in `server/src/modules/runtimeAdapters/specs.ts`; execution goes through the shared `AcpRuntimeAdapter`, which returns the controller built by `runs/cliConversationProtocol.ts`. |
 | Agent runtime | Add an ACP-backed `AgentRuntimeDefinition`/registry entry and use the shared `AcpRuntimeAdapter`; do not add a Server-side Agent loop. Bounded provider calls belong to ProviderTask and the owning domain. |
 | Capability/workflow/open-skill control plane | Add or change `server/src/modules/skills`; do not widen `catalog` into remote import, marketplace, or execution ownership. |
 

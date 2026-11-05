@@ -1,7 +1,9 @@
-import { useRef, useState, useEffect, useId, useLayoutEffect, type CSSProperties } from 'react'
+import { useRef, useState, useEffect, useId, useLayoutEffect, type CSSProperties, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Check } from 'lucide-react'
 import { cn } from '../../lib/utils'
+
+const TABBABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]'
 
 export interface SelectOption {
   value: string
@@ -27,7 +29,10 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
   const [open, setOpen] = useState(false)
   const [insideDialog, setInsideDialog] = useState(false)
   const triggerRef = useRef<HTMLDivElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  // Focus has been placed on an option since this menu opened.
+  const focusPlaced = useRef(false)
   const listboxId = useId()
   const [menuStyle, setMenuStyle] = useState<CSSProperties | null>(null)
   const selected = options.find(o => o.value === value)
@@ -97,6 +102,76 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
 
   const h = size === 'sm' ? 'h-7' : 'h-9'
   const renderInPlace = !portal || insideDialog
+
+  // An open menu takes the focus on its selected option (or the first
+  // choosable one), so the keyboard works inside it wherever it is rendered.
+  // A portaled menu is focused once it has its position (hidden before).
+  useEffect(() => {
+    if (!open) { focusPlaced.current = false; return }
+    if (focusPlaced.current || (!renderInPlace && !menuStyle)) return
+    const items = enabledOptions()
+    const target = items.find(item => item.getAttribute('aria-selected') === 'true') ?? items[0]
+    if (target) { target.focus({ preventScroll: true }); focusPlaced.current = true }
+  })
+
+  function enabledOptions() {
+    return Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)') ?? [])
+  }
+  function close(returnFocus: boolean) {
+    setOpen(false)
+    if (returnFocus) buttonRef.current?.focus()
+  }
+  function onMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const items = enabledOptions()
+    const index = items.indexOf(document.activeElement as HTMLButtonElement)
+    const move = (next: number) => { event.preventDefault(); items[Math.max(0, Math.min(items.length - 1, next))]?.focus() }
+    if (event.key === 'ArrowDown') move(index + 1)
+    else if (event.key === 'ArrowUp') move(index < 0 ? 0 : index - 1)
+    else if (event.key === 'Home') move(0)
+    else if (event.key === 'End') move(items.length - 1)
+    else if (event.key === 'Tab') {
+      // Tab leaves the control from the trigger's place in the page: the
+      // browser's own next stop would be another option (in place) or the
+      // end of the document (portaled), both gone once the menu closes.
+      event.preventDefault()
+      close(true)
+      focusNextAfterTrigger(event.shiftKey ? -1 : 1)
+    }
+  }
+  function focusNextAfterTrigger(direction: 1 | -1) {
+    const trigger = buttonRef.current
+    if (!trigger) return
+    // Within a dialog, the dialog is the page.
+    const scope: ParentNode = trigger.closest('[role="dialog"]') ?? document
+    const candidates = Array.from(scope.querySelectorAll<HTMLElement>(TABBABLE))
+      .filter(element => element.tabIndex >= 0 && !menuRef.current?.contains(element))
+    const ordered = direction === 1 ? candidates.slice(candidates.indexOf(trigger) + 1) : candidates.slice(0, candidates.indexOf(trigger)).reverse()
+    // The first one that actually takes focus (hidden ones do not).
+    for (const element of ordered) {
+      element.focus()
+      if (document.activeElement === element) return
+    }
+  }
+  function onTriggerKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true) }
+  }
+
+  // Escape closes the menu and nothing else, as in SearchableMultiSelect: a
+  // Radix dialog dismisses from a capturing document listener, so the
+  // window's capture phase is the one that runs first. Focus inside the menu
+  // returns to the trigger.
+  useEffect(() => {
+    if (!open) return undefined
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      const within = menuRef.current?.contains(document.activeElement)
+      setOpen(false)
+      if (within) buttonRef.current?.focus()
+    }
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [open])
   // Placeholder style used for the one frame (flushed before paint, so invisible to the user)
   // between mount and the first computed position: mounts the menu off-screen so its natural
   // content width can be measured via menuRef above.
@@ -106,6 +181,8 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
       ref={menuRef}
       id={listboxId}
       role="listbox"
+      aria-label={ariaLabel}
+      onKeyDown={onMenuKeyDown}
       style={renderInPlace ? { maxHeight: 'min(18rem, 40vh)' } : menuStyle ?? measureStyle}
       className={cn(
         'z-[1000] overflow-auto rounded-lg border border-border bg-card shadow-md',
@@ -122,9 +199,14 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
           aria-selected={opt.value === value}
           aria-disabled={opt.disabled}
           disabled={opt.disabled}
-          onClick={() => { if (opt.disabled) return; onChange(opt.value); setOpen(false) }}
+          onClick={event => {
+            if (opt.disabled) return
+            onChange(opt.value)
+            // A keyboard choice (detail 0) returns to the trigger; a pointer choice leaves focus alone.
+            close(event.detail === 0)
+          }}
           className={cn(
-            'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors',
+            'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors outline-none focus-visible:bg-accent focus-visible:text-foreground',
             opt.disabled
               ? 'text-muted-foreground/50 cursor-not-allowed'
               : opt.value === value
@@ -142,9 +224,11 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
   return (
     <div className={cn('relative', className)} ref={triggerRef}>
       <button
+        ref={buttonRef}
         type="button"
         disabled={disabled}
         onClick={() => setOpen(o => !o)}
+        onKeyDown={onTriggerKeyDown}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}

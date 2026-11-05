@@ -10,9 +10,10 @@ gate. This ADR records the shipped authority split and user-visible semantics.
 
 ## Context
 
-Files & Code currently renders complete files through a hand-written
-`<pre>`/`<textarea>` surface. Its direct save path is safe and bounded, but a
-browser failure can lose edits that have not yet reached the Project Folder.
+Before this decision Files & Code rendered complete files through a
+hand-written `<pre>`/`<textarea>` surface. Its direct save path was safe and
+bounded, but a browser failure could lose edits that had not yet reached the
+Project Folder.
 The Project Folder is a Host-backed canonical file, while Notes and other
 database-owned content have different authorities and must not be made to look
 like files. The Project Agent also needs the exact current file state, including
@@ -97,7 +98,7 @@ rollout. Legacy snapshots are not silently rewritten or dropped by this ADR.
 
 The initial prompt contains only a compact resource descriptor: id,
 path/name, source state, hash, size, capture time, and selection. It contains no
-body and exposes no generic database URL. Managed and CLI Agents use the
+body and exposes no generic database URL. ACP Agents use the
 existing Run-scoped System Action Gateway/Dispatcher, bearer token, REST tool
 surface, and generic `$RAINVER_CLI` for two read-only actions:
 

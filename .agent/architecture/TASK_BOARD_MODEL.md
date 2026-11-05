@@ -14,7 +14,7 @@ outside the Project shell.
 
 ## Core separation
 
-- **Board** — A space- or Project-Folder-level work surface. Groups columns and tasks for planning and visibility.
+- **Board** — A Space-scoped work surface, normally bound to a Project (`boards.project_id`; it may also name a Project Folder). Groups columns and tasks for planning and visibility; the Project Board reads the Project's active Board.
 - **Task** — The **product-level work item**. Humans and agents share this vocabulary. Tasks carry acceptance criteria, priority, assignment, and lifecycle status **independent of the job queue**.
 - **Task role** — `source` identifies a user/Agent-owned product goal and may
   own one Agent-generated Plan; `subtask` is an ordinary product child Task.
@@ -65,7 +65,7 @@ immutable execution instances have different lifecycles.
 
 ## Agent–human collaboration
 
-Boards and tasks are scoped by **space** (and optionally **Project Folder**). Assignments may reference both users and agents. The API enforces space boundaries so cross-space references are rejected.
+Boards and tasks are scoped by **space** and optionally a **Project** (and Project Folder). Assignments may reference both users and agents. The API enforces space boundaries so cross-space references are rejected.
 
 ## Task ↔ Run linkage
 
@@ -133,3 +133,99 @@ currently readable problem backlinks. Result references remain evidence for
 explicit Inquiry judgment. See [Inquiry](INQUIRY_PROBLEM_ENGINE.md) for routes,
 Agent tools and bounded reads; [Project Work](PROJECT_WORK.md) for historical
 absence of old stage APIs/DTOs and one-time archived history.
+
+## Task deletion
+
+`DELETE /api/v1/tasks/:id` and the Agent `task.delete` action share
+`tasks/deleteTask.ts`. Deletion sets `deleted_at`, hides the Task from normal
+lists, Board and detail reads, and preserves its status, execution records,
+outputs and audit evidence. It never marks work complete or deletes linked
+problems. Full Task content access and Project writer authority are required;
+private/foreign-scope targets are not disclosed. Repeated authorized deletion
+is a no-op. Unfinished Runs (including review/cancellation waits) or an active
+Plan cause409; stop execution before deleting. Branch cleanup and merge
+withdrawal use the existing durable mechanisms, atomically with `task.deleted`.
+PATCH cannot edit `deleted_at`; use the named deletion action.
+
+Task Detail provides a destructive confirmation dialog and returns to its
+parent Board/list after success. The Agent action takes a Task ID from
+`task.list` and a reason, preserves trusted Run/actor provenance and applies the
+same unattended-origin approval gate as other structural Task writes. It is
+not a substitute for completion/cancellation and should be used only on the
+person's deletion request. No hard-delete or bulk-delete interface is exposed.
+
+## Project-local columns and card actions
+
+Project Board columns have stable identities separate from their lifecycle
+`status_key`. Several columns may share a lifecycle (for example Design and
+Build both mean `in_progress`). Names, ordering and WIP hints are local to the
+Project's selected active Board, using the existing `boards`/`board_columns`
+rows. No separate database, workflow engine or browser-local configuration is
+introduced. Before configuration, the normal five default lanes are read-only
+projections; the first explicit save materializes them without changing Task
+status or ownership.
+
+`PUT /api/v1/projects/:id/board/columns` saves a complete ordered configuration
+with the read model's `columns_revision`. The Project must be active and the
+caller a writer. A stale revision returns409. Existing columns can be renamed, reordered or assigned a different lifecycle
+meaning. A meaning change migrates the column's current Tasks through the same
+Task mutation and completion gates, in the same transaction. New columns choose
+a lifecycle meaning. At least one column remains; the editor supports up to30.
+Deletion requires an explicit destination for any Tasks the column currently
+draws. Relocations call the same Task mutation service inside the configuration
+transaction: Task content authority and the normal Done completion gate still
+apply. Any refusal rolls back the entire save. Private Tasks are never silently
+moved by another Project writer. Removing a column never deletes a Task.
+
+Task placement uses `column_id` only while compatible with its current
+lifecycle. Run settlement and Agent status changes therefore place the card in
+a matching lane instead of leaving it visually Done or stranded. Unmapped
+statuses appear in a non-droppable Unassigned lane until a matching column is
+added or the Task is explicitly moved. A blocked Task can remain an overlay on
+an in-progress column; moving between equivalent columns does not unblock it.
+
+Clicking the six-dot card grip opens the same actions as right-clicking the
+card. Right-click actions open at the pointer, with viewport collision handling;
+grip-click actions remain anchored to the grip. Left-dragging the card body,
+title or grip moves the Task while a normal title click still opens it. Enter opens actions; Space, arrow keys
+and Space perform keyboard movement. Viewers get only the Open action. Writers
+may edit title/description or request deletion with confirmation, using normal
+Task APIs. Each eligible column and the Board header offer Task creation; the
+Done lane does not create pre-completed Tasks. Destructive/permission refusals
+remain visible without hiding the card. Column names edit in place when clicked,
+keeping the label's compact width, height, font and spacing so the header controls do not move.
+Leaving the input or pressing Enter saves only a changed, nonempty name;
+unchanged names do not write, and Escape or an empty name retains the stored
+name. There are no Save/Cancel controls for renaming. A failed save keeps the
+input and error for retry. Each column header displays its system status meaning and lets writers change
+it after a focused confirmation of the effect on current Tasks. Each header offers add-to-the-right
+and deletion; an inline Add column tile also appends a column. Columns reorder
+by dragging their header grip (or Space, left/right, Space on the keyboard),
+with optimistic ordering and rollback on refusal. Only deleting a column opens
+a focused confirmation dialog for its Task destination. There is no centralized
+Manage columns editor. Configuration writes pause polling and invalidate older
+read responses so a stale poll cannot overwrite a saved layout.
+
+
+## Agent Board operations
+
+`board.read` returns the Run's own Project columns, visible counts, system status
+meanings and `columns_revision`; `task.list` additionally returns each listed
+Task's effective `column_key`. These are read-derived keys, never constructed
+from titles. `board.configure` accepts the complete ordered column definition
+and read revision, plus a reason. It covers create (`new:<unique label>` keys),
+rename, reorder, WIP limits, changing existing status meanings, and deletion
+with `moves` mapping removed keys to retained/new destination keys. Omit the
+read-only Unassigned lane. Successful configuration returns the new actual
+keys and revision; read again after409 rather than replaying stale selections.
+
+`task.move_to_column` takes a Task ID from `task.list`, a column key and revision
+from `board.read`, and a reason. `task.create` and `task.create_batch` accept an
+optional `board_column: {column_key, columns_revision}`. New Tasks cannot be
+created pre-completed in Done. All writes are scoped to the Run's Project and
+instructing person's live permissions. Column configuration and exact Task
+moves use the unattended-origin approval gate; Task flow events retain the
+trusted Run/Agent provenance even when a column change moves many Tasks.
+Normal completion requirements still apply, and column remapping/deletion is
+atomic. Internal Task/Run status semantics remain fixed; Project column labels
+and their mappings customize the workflow presentation.

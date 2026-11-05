@@ -5,8 +5,8 @@ Date: 2026-05
 ## Status
 
 Accepted. Runtime delivery follows [ADR 0014](0014-unified-runtime-context-engine.md)
-for server-host execution and [ADR 0016](0016-control-plane-execution-hosts.md)
-for remote trusted hosts.
+on every execution host; Host trust follows
+[ADR 0016](0016-control-plane-execution-hosts.md).
 
 ## Context
 
@@ -31,17 +31,18 @@ of truth and not outputs generated from repository development guides.
 
 ### 2. Vendor runtime sessions are disposable caches
 
-Resume is an optimization, never the authoritative record. Server-host
-continuity is reconstructed through ADR 0014's ledger, checkpoints, and
-accepted deliveries; remote host sessions follow ADR 0016. Vendor session
-state grants no write authority and is not harvested as canonical memory.
-Knowledge enters the product only through governed tool calls or declared
-Run Exchange outputs. Memory writes use ADR 0003's canonical applier,
+Resume is an optimization, never the authoritative record. The vendor session
+holds the conversation's working memory; ADR 0014's ledger, checkpoints, and
+accepted deliveries remain the audited record, and a missing or rotated
+session starts fresh rather than being treated as authority (ADR 0014 §11).
+Vendor session state grants no write authority and is not harvested as
+canonical memory. Knowledge enters the product only through governed tool
+calls or declared Run outputs. Memory writes use ADR 0003's canonical applier,
 provenance, and conditional approval rules.
 
 ## Consequences
 
-- Server-host context delivery uses protocol messages. A vendor requiring a
+- Context delivery uses protocol messages (ACP prompt content). A vendor requiring a
   different file-based delivery needs an explicit adapter decision; repository
   guides are not a fallback context source.
 - Remote Run tool/Skill materialization and its cleanup are scoped by ADR 0016;

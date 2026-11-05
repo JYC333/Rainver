@@ -18,7 +18,7 @@ RAINVER_HOME/
   db/dumps/    pg_dump custom-format dump files (written by ops/scripts/db/dump.sh)
   db/migration-archives/ Frozen source/target migration pairs with recovery dependencies
   storage/     Artifact storage files
-  secrets/     Encrypted provider key files (AES key, CLI credentials)
+  secrets/     Provider-key master key (`provider_keys.key`); no CLI credentials
   config/      Runtime configuration
   workspaces/  Project Folder files
   backups/     Backup archives (auto-pruned to BACKUP_RETENTION_COUNT)
@@ -51,7 +51,7 @@ instance-scoped settings store and take effect without a server restart.
 | `db/rainver.dump` — PostgreSQL snapshot (`pg_dump` custom format) | Always |
 | `storage/` — artifact files | Always |
 | `artifacts/` — top-level artifacts directory | When present |
-| `secrets/` — master key and CLI login state | **Never**; separate credential archive only |
+| `secrets/` — provider-key master key | **Never**; separate credential archive only |
 | `config/` — runtime config | Always |
 | `workspaces/` — Project Folder files | Always |
 | `cache/host-daemon/` — the built-in execution host's own state | **Not yet**, and it holds login state — see below |
@@ -135,7 +135,7 @@ conversion.
 
 **Manual trigger** (instance administrator session; not a space-member API):
 ```bash
-curl -X POST http://localhost:3000/api/v1/system/backups/manual --cookie 'session_id=<admin-session>'
+curl -X POST http://localhost:3000/api/v1/system/backups/manual --cookie 'better-auth.session_token=<admin-session>'
 ```
 
 ## Backup — Offline: ops/scripts/system/backup.sh
@@ -266,16 +266,15 @@ Dogfooding must stop immediately on any of these:
 1. Cross-user private-space data leak.
 2. Household membership access bypass.
 3. Memory write bypasses proposal or active policy boundary.
-4. Accepted active Policy row does not affect its enforcement decision.
-5. RunStep replay missing for a completed canonical-path run.
-6. Raw secret in run output, RunStep, artifact, logs, or UI.
-7. BackupService fails repeatedly (no `backup_manifest.json` after two intervals).
-8. Restore rehearsal fails or key data missing after restore.
-9. Project Folder archive or unregister deletes, moves, or rewrites the physical directory.
-10. Deployer accepts a job type not in `ALLOWED_JOB_TYPES`.
-11. Self-evolution executes behavior changes without approved proposal and deployer gate.
-12. Code patch partial apply with rollback failure.
-13. Database transaction produces partial inconsistent active state.
+4. RunStep replay missing for a completed canonical-path run.
+5. Raw secret in run output, RunStep, artifact, logs, or UI.
+6. BackupService fails repeatedly (no `backup_manifest.json` after two intervals).
+7. Restore rehearsal fails or key data missing after restore.
+8. Project Folder archive or unregister deletes, moves, or rewrites the physical directory.
+9. Deployer accepts a job type not in `ALLOWED_JOB_TYPES`.
+10. Self-evolution executes behavior changes without approved proposal and deployer gate.
+11. Code patch partial apply with rollback failure.
+12. Database transaction produces partial inconsistent active state.
 
 ## Rollback Procedure
 
@@ -291,7 +290,8 @@ Dogfooding must stop immediately on any of these:
 ## Security Notes
 
 - Normal backup archives exclude `secrets/` and `.env`; sensitive recovery archives contain
-  `secrets/provider_keys.key`, CLI login state, the mode environment, and its deployment secrets.
+  `secrets/provider_keys.key`, the mode environment, and its deployment secrets. CLI login state is not
+  in either; it lives with the execution host (see the `cache/host-daemon/` gap above).
 - Archive permissions: `600` (owner only). Output directory: `700`.
 - No raw secret values are written to stdout, logs, or manifests.
 - For offsite storage: encrypt the data and credential archives separately with

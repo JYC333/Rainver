@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Copy as CopyIcon, GitBranch, Inbox as InboxIcon, Loader2, Pencil, Play, Plus, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { evolutionApi } from '../../api/client'
@@ -52,6 +53,7 @@ import {
   riskVariant,
 } from './EvolutionPageParts'
 import AssetLifecyclePanel from './AssetLifecyclePanel'
+import { EVOLUTION_ASSET_PARAM } from './paths'
 
 function assetLabel(asset: EvolvableAsset): string {
   return asset.display_name || asset.asset_key
@@ -153,6 +155,10 @@ function AssetEvaluationList({ evaluations }: { evaluations: EvolvableAssetEvalu
 export default function EvolutionPage() {
   const { t, locale } = useAppTranslation()
   const { activeSpaceId, preferredSpaceId, spaces } = useSpace()
+  // A link from elsewhere (a Run saved as a workflow) names the asset to open.
+  const [searchParams] = useSearchParams()
+  const requestedAssetIdRef = useRef(searchParams.get(EVOLUTION_ASSET_PARAM))
+  requestedAssetIdRef.current = searchParams.get(EVOLUTION_ASSET_PARAM)
   const viewSpaceId = activeSpaceId ?? preferredSpaceId
   const viewSpaceName = useMemo(
     () => spaces.find(space => space.id === viewSpaceId)?.name ?? viewSpaceId ?? t('evolution.no_space_selected'),
@@ -303,6 +309,8 @@ export default function EvolutionPage() {
       setSelectedAssetId(current => {
         if (nextAssets.length === 0) return null
         if (current && nextAssets.some(asset => asset.id === current)) return current
+        const requested = requestedAssetIdRef.current
+        if (requested && nextAssets.some(asset => asset.id === requested)) return requested
         return nextAssets[0].id
       })
     } catch (e) {
@@ -330,6 +338,16 @@ export default function EvolutionPage() {
   }, [viewSpaceId])
 
   useEffect(() => { load() }, [load])
+
+  // The linked asset sits below the targets; bring it into view once.
+  const assetSectionRef = useRef<HTMLDivElement>(null)
+  const revealedRequestedAssetRef = useRef(false)
+  useEffect(() => {
+    const requested = requestedAssetIdRef.current
+    if (!requested || revealedRequestedAssetRef.current || selectedAssetId !== requested) return
+    revealedRequestedAssetRef.current = true
+    assetSectionRef.current?.scrollIntoView?.({ block: 'start' })
+  }, [selectedAssetId])
 
   useEffect(() => {
     if (visibleTargets.length === 0) {
@@ -724,7 +742,7 @@ export default function EvolutionPage() {
             </SectionCard>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+          <div ref={assetSectionRef} className="grid scroll-mt-4 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
             <SectionCard title={t('evolution.assets')} count={assets.length}>
               <AssetList assets={assets} selectedAssetId={selectedAssetId} onSelect={setSelectedAssetId} />
             </SectionCard>

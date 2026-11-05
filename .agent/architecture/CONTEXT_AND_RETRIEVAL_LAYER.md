@@ -623,12 +623,10 @@ proposal authoring UI.
   pointer-only audit metadata (tool/domain/mode/count-style settings, never query
   text or content). The `required_scopes` entries on tool bindings remain
   runtime-host metadata, not the only governance layer. Tool definitions are
-  forwarded through the
-  pi-ai chat path selected by the server vendor registry. OpenAI, owner-scoped
-  OpenAI Codex subscriptions, Anthropic, MiniMax, OpenRouter, DeepSeek, and
-  explicit OpenAI-compatible vendors support runtime tools. Ollama runtime-host
-  tool calling is not implemented;
-  requests fail explicitly if tools are enabled against that provider. Brief tool results are also surfaced as
+  listed to and called by the ACP Agent Run through the CLI tool transport
+  (`runs/cliToolTransport.ts` → `SystemActionDispatcher`), so the vendor CLI
+  makes the tool calls; the pi-ai Provider chat path uses tools only for
+  structured output. Brief tool results are also surfaced as
   owner-private `retrieval_brief` run artifacts through the existing materializer;
   Memory, Project, and Sources brief artifacts omit trace just like their human-facing
   brief artifact routes.

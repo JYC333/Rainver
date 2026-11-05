@@ -27,7 +27,7 @@ describe('CommandCenterModule', () => {
   it('is the host page — no dispatch composer, no work stream, no thread', async () => {
     render(<MemoryRouter initialEntries={['/']}><CommandCenterModule /></MemoryRouter>)
     expect(await screen.findByText('Command Center')).toBeInTheDocument()
-    expect(screen.getByText(/Pair machines/i)).toBeInTheDocument()
+    expect(screen.getByText(/Manage execution environments/i)).toBeInTheDocument()
     // The page is host management. Work starts from a Task or a Room, and a
     // turn is read where the conversation is. Do not put a dispatch composer
     // or a work stream here.

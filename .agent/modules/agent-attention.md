@@ -623,7 +623,7 @@ network boundaries use controlled fakes, not a replacement aggregate implementat
 pnpm exec vitest run test/agentAttention*
 pnpm exec vitest run test/frontendSupport.test.ts test/turnStream.test.ts test/turnStreamFrames.test.ts
 pnpm exec vitest run test/authorizationRequestService.test.ts test/acpVendorQuestion.test.ts
-pnpm exec vitest run test/agentGroupsLifecycleProjector.test.ts test/roomsDb.test.ts
+pnpm exec vitest run test/agentGroupsLifecycleProjector.test.ts test/roomsDb
 pnpm exec vitest run test/agentGuides.test.ts
 pnpm run typecheck
 

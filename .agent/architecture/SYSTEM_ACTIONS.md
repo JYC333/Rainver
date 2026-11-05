@@ -250,9 +250,12 @@ input, and a parked Run resumed with such a link through
 `grantRunChangeReadTools`, which adds only these two actions to its declared
 capabilities and scenario allowance and recomputes its grants through
 `buildRunToolGrants`. The executors then resolve the link only to a
-`remote_diff` Artifact of a Run in the reading Run's own conversation that the
-instructing person can read through the Artifact read gate (content ACL, Room
-Run grants, no admin oversight); the read is audited as that person's.
+`remote_diff` or `delegation_brief` Artifact of a Run in the reading Run's own
+conversation that the instructing person can read through the Artifact read
+gate (content ACL, Room Run grants, no admin oversight); the read is audited as
+that person's. A `delegation_brief` is a delegated task too long to inline
+(`agentGroups/delegationBrief.ts`); Room children already hold the two
+resource actions.
 
 ### Scenario tool allowances
 
@@ -263,10 +266,14 @@ Agent. Some capabilities are properties of a *place* instead:
 `modules/systemActions/scenarioToolAllowance.ts` declares them:
 `CONVERSATION_TOOL_ALLOWANCE`, what an Agent may do because a person is
 talking to it at all; `ROOM_CONVERSATION_TOOL_ALLOWANCE`, that plus the
-Project write surface an Agent may use because it was spoken to in a Room;
+Project write surface an Agent may use because it was spoken to in a Room or
+in a direct chat opened in a Project (`conversationToolGrantInput` selects it
+whenever the conversation has a Room or a Project);
 `INPUT_RESOURCE_TOOL_ALLOWANCE`, added only for a turn whose persisted message
 owns text resources; and `dispatchToolAllowance()`, what a Run Rainver
-dispatched to work on a Task may call (the Task write surface plus read-only
+dispatched to work on a Task may call (the Task write surface including
+`task.create_batch` and `task.delete`, the reads `inquiry.list_threads`,
+`inquiry.read_problem` and `research.list_operations`, read-only
 `retrieval.brief`/`retrieval.search`, and `artifact.submit` only on a
 `trusted_host`). `RunCreateInput.scenario_tool_allowance` supplies the
 applicable one in place of the AgentVersion's for every conversation Run (via
@@ -280,8 +287,9 @@ root origin gate above; it declares no capabilities of its own.
 
 The intersection is the allowance list: an action outside the list is denied,
 and the Run must still declare it.
-The allowance also carries the four id-discovery reads (`inquiry.list_threads`,
-`task.list`, `proposal.list_pending`, `research.list_operations`), without
+The Room allowance also carries the four id-discovery reads (`inquiry.list_threads`,
+`task.list`, `proposal.list_pending`, `research.list_operations`; the dispatch
+allowance carries all but `proposal.list_pending`), without
 which the id-taking actions below could only be called with a composed id —
 see "Where an Agent gets an id".
 
@@ -348,6 +356,7 @@ equivalent of Run materialization's derived-output clamp (B8A).
 The proposal-shaped generic write tools are
 `source.channel.propose_activation`, `project.source.propose_bind`,
 `project.propose_definition`, `source.backfill.propose_start`,
+`project.monitoring.propose`, `project.monitoring.propose_details`,
 and `inquiry.promote_knowledge` (plus
 `authorization.request`, which is not itself proposal-shaped).
 `task.plan.propose` is a *conditional* proposal (`side_effects:
@@ -391,17 +400,22 @@ parent) is `unverified` — never `manual`. A write from a person's own turn
 (`manual`, stamped only by the server) executes, and a write from any other
 effective origin — scheduled, automated, an unattended chain — is
 `require_approval` (`ruleUnattendedProjectWrite`,
-covering `task.create`, `task.status.set`, `task.complete`,
+covering `task.create`, `task.status.set`, `task.delete`, `task.complete`,
 `proposal.decide`, `inquiry.thread.create`, `inquiry.iteration.record`,
-`research.acquisition.start` and `memory.write`). And **bounds set before the work runs**: at
+`inquiry.work.record`, `inquiry.round.close`, `research.acquisition.start`,
+`research.result.adopt` and `memory.write`). And **bounds set before the work runs**: at
 most five Threads opened per turn (`THREAD_FAN_OUT_PER_TURN`, counted from the
 Project's own event stream so a resumed Run cannot spend the budget twice), at
 most five Tasks per turn (`TASK_FAN_OUT_PER_TURN`, `tasks/turnFanOut.ts`),
 counted from every Task the Run created — its `task.create` calls and the
 follow-up Tasks applied for it after it succeeds — under one per-Run lock both
 routes take, so concurrent writers cannot both see room for the last one;
-follow-ups past the ceiling stay pending cards for the person, and a
-bounded acquisition corpus. Refusing a bound costs a turn, not a
+follow-ups past the ceiling stay pending cards for the person. The one
+exception is `task.create_batch`, for a list the person explicitly asked for:
+it takes the same Project and per-Run locks, creates at most
+`TASK_CREATE_BATCH_MAX_ITEMS` (100) Tasks per call, returns an existing
+same-titled Task instead of a duplicate, and is not counted against the
+five-Task ceiling. The last bound is a bounded acquisition corpus. Refusing a bound costs a turn, not a
 decision — the sixth question is opened in the next one.
 
 The counterpart is review-after: every such write is in the Project's updates
@@ -418,12 +432,14 @@ restart"): it writes one Artifact on the Agent's own thread and nothing else.
 are direct writes. Still gated, each
 naming its class: `inquiry.promote_knowledge` (exposure — it leaves the
 Project for Space-level Knowledge), `project.propose_definition` (direction),
+`project.monitoring.propose_details` (direction),
 `source.channel.propose_activation` / `project.source.propose_bind` /
-`source.backfill.propose_start` and `research_history_extend` (money).
+`source.backfill.propose_start` / `project.monitoring.propose` (money).
 
 `task.create` takes its Project from the Run, not the input, and re-checks
-Project writer authority under the aggregate lock. The other four resolve their
-Task through the content read predicate for the instructing user *and* the
+Project writer authority under the aggregate lock. `task.report`,
+`task.handoff`, `task.set_status`, `task.complete` and `task.request_review`
+resolve their Task through the content read predicate for the instructing user *and* the
 Run's own Project: an Agent's reach is that person's and never wider, and a
 Room is one Project's conversation (ADR 0018, 0019), so a Task from a sibling
 Project the person can read answers as not found — with the ids this Project
@@ -581,10 +597,16 @@ The generic Run resume endpoint cannot resume an authorization-request pause.
 
 ## Current source and Project actions
 
-The registry covers recipe planning/creation/dry-run/activation, connection
-create/update/propose/activate, Project binding/proposal actions,
-ProjectOperation read/create/status changes, history-import preview/plan/
-proposal/pause/resume, and internal approved backfill start. Sources owns
+The registry covers recipe planning/creation/dry-run/activation, the gated
+`source.channel.propose_activation`, Project binding/proposal and monitoring
+actions, ProjectOperation read/create/cancel, history-import preview/plan/
+proposal/pause/resume, and internal approved backfill start. Agent-callable
+collection-goal actions (`source.goal.read`, `source.goal.sources`,
+`source.goal.inspect`, `source.goal.write_version`,
+`source.goal.repair_candidate`) are described in
+[Source goals](SOURCE_GOALS.md); the bound material actions
+(`source.material.submit`, `source.material.investigate`) under "Bound
+material submission" below. Sources owns
 connection and history-import execution state; Projects owns binding,
 operation, and corpus state.
 
@@ -657,10 +679,10 @@ read that returned it in the same turn. Every such action is paired with one:
 
 | Read | Returns | Feeds |
 | --- | --- | --- |
-| `inquiry.list_threads` | Paginated compact Thread summaries (default 25, max 100, `after_thread_id` / `next_cursor`); includes actual primary/round and current version tokens | `research.start_acquisition`, `inquiry.record_conclusion`, `inquiry.promote_knowledge` |
-| `task.list` | `{task_id, title, status, priority, due_at, start_after, blocked_reason}` (optional `status` filter) — the state a "what next?" recommendation is grounded in, not only ids | `task.report`, `task.handoff`, `task.set_status`, `task.request_review`, `task.plan.propose` |
+| `inquiry.list_threads` | Paginated compact Thread summaries (default 25, max 100, `after_thread_id` / `next_cursor`); includes actual primary/round and current version tokens | `research.start_acquisition`, `inquiry.read_problem`, `inquiry.record_work`, `inquiry.close_round`, `inquiry.record_conclusion`, `inquiry.link_task`, `inquiry.list_tasks`, `inquiry.reference_task_result`, `inquiry.promote_knowledge` |
+| `task.list` | `{task_id, title, status, priority, due_at, start_after, blocked_reason}` (optional `status` filter) — the state a "what next?" recommendation is grounded in, not only ids | `task.report`, `task.handoff`, `task.set_status`, `task.complete`, `task.delete`, `task.request_review`, `task.plan.propose`, `inquiry.link_task` (existing Task) |
 | `proposal.list_pending` | `{proposal_id, proposal_type, title}` for *this conversation* | `proposal.decide` |
-| `research.list_operations` | `{operation_id, title, status}` (`include_terminal` opt-in) | `research.cancel_acquisition` |
+| `research.list_operations` | `{operation_id, title, status}` (`include_terminal` opt-in) | `research.cancel_acquisition`, `research.read_result`, `research.adopt_result` |
 
 All four are `none`-side-effect reads scoped to the Run's own Project (and, for
 proposals, its own conversation filtered by `proposalReadSql` for the
@@ -927,7 +949,10 @@ visiting the new Research choice page starts neither. See the
 
 ### Bound material submission
 
-Sources collection and saved-material processing Runs grant only `source.material.submit`. The
+Sources collection and saved-material processing Runs grant only `source.material.submit`;
+a saved-material investigation Run additionally receives
+`source.material.investigate` (search/read retained Source materials and check
+the report draft before submitting). The
 strict registry schema describes Agent-provided (not independently verified)
 links, observation times and explicit failure/coverage. The Sources executor
 rechecks the canonical collection/Run/Space/owner/Profile/version/deadline and
@@ -974,3 +999,25 @@ the domain command. See [Inquiry](INQUIRY_PROBLEM_ENGINE.md).
 The Task stage route/special dispatcher and Loop DTOs are removed (ADR 0027 decision 5).
 Old calls use unknown-route/ungranted-tool refusal; no Board mapping occurs.
 Imported history uses canonical Task permissions and paged history.
+
+### task.delete
+
+`task.delete` is available through the ordinary Agent CLI/action registry for
+Project conversations and Task work. Input is the exact `task_id` from
+`task.list` plus a nonempty `reason`. It shares the HTTP Task deletion service,
+soft-deletes once, and refuses unfinished execution. Run/actor provenance and
+Task/Project permissions remain server-owned; unattended origin requires
+approval. Only an explicit request to remove work warrants this action.
+
+
+### Agent Board tools
+
+`board.read` is the bounded, content-filtered column/configuration read for the
+Run's Project. `board.configure` is the single atomic write for column creation,
+renaming, deletion, ordering, WIP limits and lifecycle remapping, with a reason
+and expected revision. `task.move_to_column` selects an exact custom column;
+Task creation optionally accepts `board_column` read selection. These tools
+reuse `configureProjectBoard`, Project→Task lock ordering and the normal Task
+mutation service; they do not call an unguarded HTTP adapter or introduce a
+second writer. `board.configure` and `task.column.move` are structural writes
+with the same origin gate as `task.status.set`. See [Task board model](TASK_BOARD_MODEL.md#agent-board-operations).

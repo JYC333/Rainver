@@ -16,8 +16,6 @@ import { availableModels } from "../providers/dbReader.js";
 interface ExecutionControlSnapshotInputs {
   runtimeInstallation?: string | null;
   policyDecisionRecordIds?: readonly string[];
-  /** A Host-daemon run resolves its backend when the execution Host dispatches it. */
-  dispatchesToHostDaemon?: boolean;
 }
 
 export interface EffectiveRunContextBindings {
@@ -49,19 +47,22 @@ export class ExecutionControlSnapshotRepository {
       : null;
     const providerRequired = run.execution_kind === "provider_task"
       || profileBackendMode === "model_provider";
-    // Agent backend authority is the immutable Runtime Profile snapshot. A
-    // remote dispatch still resolves/leases that selected Provider on the
-    // Host path, so it is not an egress destination for this Server-side
-    // snapshot; the run must nevertheless carry a valid Profile binding.
-    // Formal ProviderTask Runs use their own selected provider column.
-    const selectedProviderId = run.execution_kind === "provider_task"
+    // Agent backend authority is the immutable Runtime Profile snapshot;
+    // formal ProviderTask Runs use their own selected provider column. A
+    // Host-dispatched CLI bound to that Provider reaches it only through the
+    // server's provider proxy lease (ADR 0008 §4), whose binding resolves the
+    // same Profile Provider (`resolveRemoteRunBinding`) and classifies it with
+    // the same `runtimeProviderEgressDestination` judged here. So the model
+    // destination and credential channel are that Provider's, wherever the
+    // runtime executes. What the Host itself reaches is its trust mode and
+    // egress profile, not this record. Only an unbound CLI is `local_cli`.
+    const providerId = run.execution_kind === "provider_task"
       ? run.model_provider_id
       : profileProviderId;
-    const providerId = inputs.dispatchesToHostDaemon ? null : selectedProviderId;
     const providerDestination = providerId !== null;
     const localCliDestination = !providerDestination
       && isVendorCliAdapter(run.runtime_key);
-    if (providerRequired && !selectedProviderId) {
+    if (providerRequired && !providerId) {
       throw new Error("Execution preflight requires a provider selected by the execution authority");
     }
     const constraints = resolvedPolicy.policy.constraints;
@@ -188,9 +189,10 @@ export class ExecutionControlSnapshotRepository {
             allowed_provider_ids: [],
             },
       tool_grant_refs: refsFromRecords(permissionSnapshot.tool_grants, "tool_grant", "action_id"),
-      // A provider-backed run names the channel its key came from. A CLI run
-      // on a host names the copy whose own login it used; Rainver holds no
-      // credential for it to reference (ADR 0016 §7).
+      // A provider-backed run names the channel its key came from, in process
+      // or substituted by the proxy behind a provider-bound Host CLI's lease.
+      // An unbound CLI run on a host names the copy whose own login it used;
+      // Rainver holds no credential for it to reference (ADR 0016 §7).
       credential_channel_ref: providerId
         ? { type: "provider_credential_channel", id: providerId }
         : inputs.runtimeInstallation

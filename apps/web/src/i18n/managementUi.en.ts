@@ -1,6 +1,43 @@
 /** UI copy: Prompts, Skills, plugins, project files, network profiles and the job queue. */
 export const managementUiEn = {
   management_ui: {
+    project_members: {
+      "loading_project": "Loading Project…",
+      "title": "Members",
+      "description": "Add people who already belong to this Space. Joining the Space does not automatically grant access to this Project.",
+      "retry": "Retry",
+      "loading": "Loading members…",
+      "creator": "Project creator · always has access",
+      "role_viewer": "Viewer",
+      "role_member": "Member",
+      "role_owner": "Owner",
+      "unavailable_person": "Unavailable Space member",
+      "role_for": "Role for {{name}}",
+      "remove_person": "Remove {{name}}",
+      "remove": "Remove",
+      "add": "Add member",
+      "person": "Space member",
+      "choose_person": "Choose a Space member",
+      "role": "Project role",
+      "no_candidates": "No other Space members to add. Invite new people to the Space first.",
+      "roles_help": "Viewers can read; members can edit; owners can approve Project configuration. The Project creator and Space administrators manage membership.",
+      "remove_title": "Remove Project member?",
+      "remove_help": "This removes Project access, including its conversations and work. The person remains a member of the Space.",
+      "access_title": "Project access required",
+      "access_help": "You can see this Project’s basic information because you belong to its Space. Ask the Project creator or a Space administrator to add you as a Project member to access its work and conversations.",
+      "manager_help": "You can manage this Project’s members. To enter its workspace yourself, add your own account using Members.",
+      "refresh_access": "Check access again",
+      "limited": "Membership required"
+},
+    instance_invite: {
+      "title": "Invite to register",
+      "description": "Create an account and a Personal Space without joining a shared Space. Copy and send the link yourself; it expires in 7 days.",
+      "email": "Invited email",
+      "creating": "Generating…",
+      "generate": "Generate invitation",
+      "failed": "The invitation could not be generated. Check the email and your administrator access, then retry.",
+      "link": "Registration invitation for {{email}}"
+},
     host_catalog: {
       "more_label": "More for {{name}} on {{host}}",
       "version_management": "Version management",
@@ -415,6 +452,17 @@ export const managementUiEn = {
       attempt: 'attempt {{number}}',
       settlement_pending: 'settlement pending',
       settlement_pending_hint: 'The Agent finished; carrying its result into the Task and plan is still being retried ({{reason}}).',
+    },
+    run_workflow_save: {
+      draft_saved: 'Workflow draft saved',
+      draft_saved_hint: 'Review and promote the draft in Evolution before it can be launched.',
+      open_draft: 'Open draft',
+      proposal_created: 'Workflow proposal created for review',
+      proposal_created_hint: 'Accepting the proposal saves a draft, which you then promote in Evolution.',
+      review_proposal: 'Review proposal',
+      accepted_draft: 'Accepted — workflow draft created.',
+      accepted_asset: 'Accepted — asset version updated.',
+      open_in_evolution: 'Open in Evolution',
     },
   },
 }

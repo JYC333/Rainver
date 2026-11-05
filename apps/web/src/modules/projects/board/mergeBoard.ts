@@ -21,7 +21,8 @@ export function mergeBoard(previous: ProjectBoard | null, next: ProjectBoard): P
     same(previous.project, next.project) &&
     same(previous.filters, next.filters) &&
     previous.viewer_user_id === next.viewer_user_id &&
-    previous.viewer_can_write === next.viewer_can_write
+    previous.viewer_can_write === next.viewer_can_write &&
+    previous.columns_revision === next.columns_revision
   if (rest && cards === previous.cards && columns === previous.columns) return previous
   return {
     ...next,
@@ -53,10 +54,10 @@ function mergeById(previous: readonly ProjectBoardCard[], next: readonly Project
 }
 
 function mergeColumns(previous: readonly ProjectBoardColumn[], next: readonly ProjectBoardColumn[]): ProjectBoardColumn[] {
-  const byKey = new Map(previous.map(column => [column.status_key, column]))
+  const byKey = new Map(previous.map(column => [column.key, column]))
   let changed = previous.length !== next.length
   const merged = next.map((column, index) => {
-    const before = byKey.get(column.status_key)
+    const before = byKey.get(column.key)
     if (before && same(before, column)) {
       if (previous[index] !== before) changed = true
       return before
@@ -87,14 +88,16 @@ function same(left: unknown, right: unknown): boolean {
 export function applyCardMove(board: ProjectBoard, cardId: string, toStatus: string): ProjectBoard {
   const moving = board.cards.find(card => card.id === cardId)
   if (!moving || moving.column_key === toStatus) return board
+  const target = board.columns.find(c=>c.key===toStatus)
+  if(!target?.status_key)return board
   const from = moving.column_key
   return {
     ...board,
     cards: board.cards.map(card =>
-      card.id === cardId ? { ...card, status: toStatus, column_key: toStatus } : card),
+      card.id === cardId ? { ...card, status: card.status==='blocked'&&target.status_key==='in_progress'?'blocked':target.status_key, column_key: toStatus } : card),
     columns: board.columns.map(column => {
-      if (column.status_key === from) return { ...column, count: Math.max(0, column.count - 1) }
-      if (column.status_key === toStatus) return { ...column, count: column.count + 1 }
+      if (column.key === from) return { ...column, count: Math.max(0, column.count - 1) }
+      if (column.key === toStatus) return { ...column, count: column.count + 1 }
       return column
     }),
   }

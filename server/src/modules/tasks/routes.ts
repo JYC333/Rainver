@@ -15,6 +15,7 @@ import {
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
+import { deleteTask } from "./deleteTask.js";
 import { PgTaskRepository } from "./repository.js";
 import { PgPlanRepository } from "../plans/repository.js";
 import {
@@ -138,6 +139,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     } catch (error) {
       return sendRouteError(reply, error);
     }
+  });
+
+  app.delete("/api/v1/tasks/:taskId", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try { return reply.send(await deleteTask(dbPool(context.config), identity, params(request).taskId ?? "")); }
+    catch (error) { return sendRouteError(reply, error); }
   });
 
   app.patch("/api/v1/tasks/:taskId", async (request, reply) => {

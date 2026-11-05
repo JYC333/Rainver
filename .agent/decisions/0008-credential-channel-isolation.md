@@ -92,9 +92,11 @@ Consistent with the dual funding paths of
 execution shape alone would make a user's paid subscription unreachable for
 conversation:
 
-- filesystem execution uses a supported CLI adapter and its host boundary;
-  managed API agent loops may use explicitly granted server-side tools; tool
-  use alone does not require a CLI or permit arbitrary filesystem access;
+- filesystem execution and autonomous tool-using work run as an ACP Agent on
+  an execution host and its host boundary
+  ([ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md)); bounded
+  provider tasks stay in-process, and tool use alone never permits arbitrary
+  filesystem access;
 - no-tools text generation may use either channel — the in-process API
   channel by default, a local CLI when the user is spending subscription
   capacity rather than API budget;

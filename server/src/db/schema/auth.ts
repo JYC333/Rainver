@@ -17,7 +17,7 @@ export const users = pgTable("users", {
 	index("ix_users_status").using("btree", table.status.asc().nullsLast()),
 	check("ck_users_email_normalized", sql`email = lower(email) AND email = btrim(email)`),
 	check("ck_users_status", sql`status IN ('pending', 'active', 'disabled')`),
-	check("ck_users_registration_source", sql`registration_source IN ('bootstrap', 'space_invitation', 'admin_recovery', 'system')`),
+	check("ck_users_registration_source", sql`registration_source IN ('bootstrap', 'space_invitation', 'instance_invitation', 'admin_recovery', 'system')`),
 ]);
 
 export const authAccounts = pgTable("auth_accounts", {

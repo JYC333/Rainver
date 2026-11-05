@@ -350,7 +350,7 @@ Run's `agent_id` resolved against the roster. Failed turns can be retried with a
 the original persisted input and execution pin; the retry links new Run ids to
 the original user message rather than adding a duplicate message. The prior
 failed Agent reply remains as audit evidence but is marked `retry_superseded`
-and leaves the shared visible-transcript predicate, so Room history, summaries
+and leaves the shared visible-transcript predicate, so Room history
 and later prompt tails do not keep showing or replaying an error the person has
 already retried. The dispatching message similarly records
 `retry_superseded_run_ids`, replacing its old Run controls with the new ones. Draft

@@ -1,8 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SERVER_OPENCODE_RELEASE } from "../src/modules/runtimeAdapters/opencodeRelease.js";
 import { acpRuntimeProbe } from "../src/modules/hosts/runtimeProbes.js";
+import { __setAcpRegistryForTests } from "../src/modules/acpAgents/registry.js";
 
 describe("release-owned Server OpenCode artifact", () => {
+  // Shared workers may already have resolved a registry in an earlier file.
+  // This suite exercises the offline bootstrap, so make that state explicit.
+  beforeEach(() => __setAcpRegistryForTests([]));
+  afterEach(() => __setAcpRegistryForTests(null));
+
   it("pins verified Linux artifacts and starts the ACP entrypoint", () => {
     const { distribution } = SERVER_OPENCODE_RELEASE;
     if (distribution.kind !== "binary") throw new Error("Server OpenCode release must remain a binary distribution");

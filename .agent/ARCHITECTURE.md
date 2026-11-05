@@ -28,7 +28,7 @@
 │     server/src/modules/policy                       │
 ├─────────────────────────────────────────────────────┤
 │   7. Capability / Evolution                         │
-│     catalog + capabilities + evolution              │
+│     catalog + skills + prompts + evolution          │
 ├─────────────────────────────────────────────────────┤
 │   6. Learning HTTP (no Cards UI)                    │
 │     server/src/modules/learning                     │

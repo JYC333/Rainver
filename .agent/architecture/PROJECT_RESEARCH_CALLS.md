@@ -190,8 +190,9 @@ helpers, canonical work-event writer, content/Source gates, report reference
 resolver and `PgUsageRepository.summarizeRunUsage` supply the mechanisms. Zod and
 Drizzle are installed contract/schema tools. No scheduler, graph/state-machine
 library, new retry engine or external dependency is needed for these domain
-bindings. Schema is authored in `projectOperations.ts`; generated migrations
-0013/0014/0015 extend it without changing any applied migration or rewriting old IDs.
+bindings. Schema is authored in `projectOperations.ts`; the generated
+`0009_problem_engine.sql` migration adds the call binding columns without
+changing any earlier migration or rewriting old IDs.
 
 Real-PG identity, late-result, partial-artifact, permissions and preparation
 recovery cases are in `researchProblemCallsDb.test.ts`; original acquisition and

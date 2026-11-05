@@ -173,8 +173,8 @@ This is the **only** door: agent-scope entries are excluded from the
 person-facing retrieval index outright (`retrievalAdapter.ts`), because memory
 search runs as the instructing person from inside a turn and would otherwise
 return a note from a limited Room into any other, and they are outside Space
-oversight for the same reason — an admin who is not on the origin Room's roster
-is not the audience a note was delivered to. Rendering what this returns into a
+oversight for the same reason — an admin who may not read the origin Room's
+conversations is not the audience a note was delivered to. Rendering what this returns into a
 prompt is the dispatch path's job: `agentGroups/agentIdentityPrompt.ts` does
 it, on a Room turn, a Room delegation and a direct chat. A vendor
 CLI's own auto-memory is not part of either flow and is never read, imported or

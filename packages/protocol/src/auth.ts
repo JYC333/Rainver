@@ -21,3 +21,15 @@ export const IdentityIntrospectionResponseSchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
+
+/** Instance invitations admit an account; they grant no shared-Space or admin role. */
+export const InstanceInvitationCreateSchema = z.object({
+  email: z.string().trim().toLowerCase().email().max(256),
+}).strict();
+export const InstanceInvitationResponseSchema = z.object({
+  id: IdSchema,
+  invited_email: z.string().email(),
+  token: z.string().min(1),
+  expires_at: z.string().datetime(),
+}).strict();
+export type InstanceInvitationResponse = z.infer<typeof InstanceInvitationResponseSchema>;

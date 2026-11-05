@@ -11,7 +11,7 @@ RBAC/ABAC platform — it is a lightweight, code-owned permission layer that rou
 - A risk-routing layer that gates sensitive actions.
 - A canonical registry of every sensitive action the system can perform.
 - An approval resolver that checks whether a human actor has authority to apply a proposal.
-- A hard invariant enforcer for structural constraints (private memory placement, cross-space reads).
+- A hard invariant enforcer for structural constraints (cross-space memory reads, unknown target Spaces, raw private-memory egress, approval-proof and personal-context sentinels).
 
 ## What policy IS NOT
 
@@ -29,7 +29,7 @@ RBAC/ABAC platform — it is a lightweight, code-owned permission layer that rou
 - `PolicyDecision` — structured decision result with audit fields.
 - Proposal apply gate (`server/src/modules/policy/gateway.ts`) — `checkProposalApplyPolicy`, `effectiveProposalRisk`, `ProposalRiskLevelError`.
 - Active enforcement service (`server/src/modules/policy/service.ts`) — service-authenticated internal policy ports.
-- Domain-specific persisted-policy enforcement (`server/src/modules/policy/*`).
+- Runtime Context Policy persistence and resolution (`server/src/modules/policy/runtimeContextPolicyRepository.ts`, `runtimeContextPolicyResolver.ts`).
 - Durable policy decision tracing/audit (`server/src/modules/policy/auditWriter.ts`).
 - Bounded post-denial authorization requests
   (`authorization_requests` and
@@ -161,10 +161,38 @@ to any business code. `computeDecision` (`gateway.ts`) always denies reserved ac
 | `project.summary.brief` | retrieval_tool | low | deny (allow only by rule) | managed retrieval tools via `enforce()` |
 | `source.retrieval.search` | retrieval_tool | low | deny (allow only by rule) | managed retrieval tools via `enforce()` |
 | `source.retrieval.brief` | retrieval_tool | low | deny (allow only by rule) | managed retrieval tools via `enforce()` |
+| `conversation.history.read` | session | low | allow (audit_required) | `server/src/modules/sessions/conversationHistorySystemActionExecutors.ts` |
+| `source.goal.manage` | source_goal | medium | allow (audit_required) | `server/src/modules/sources/goals/routes.ts` |
+| `project.monitoring.configure` | project | medium | allow (audit_required) | `server/src/modules/projects/monitoring/routes.ts` |
+| `research.result.read` | project_operation | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `research.result.adopt` | project_operation | medium | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `source.backfill.plan` | source_backfill_plan | medium | allow (audit_required) | `server/src/modules/sources/sourceBackfillService.ts` |
+| `source.backfill.manage` | source_backfill_plan | medium | allow (audit_required) | `server/src/modules/sources/routes.ts` |
+| `task.plan.propose` | plan | medium | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `project.brief.propose` | project_brief_version | medium | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `task.list` | project | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `proposal.list` | project | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `research.operation.list` | project | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `memory.write` | memory_entry | medium | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `inquiry.thread.list` | project | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `inquiry.problem.read` | inquiry_thread | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `inquiry.work.record` | inquiry_thread | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `inquiry.round.close` | inquiry_thread | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `inquiry.iteration.record` | inquiry_thread | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `inquiry.knowledge.promote` | knowledge_promotion_candidate | medium | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `task.create` | project | medium | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `proposal.decide` | proposal | medium | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `task.report` | task | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `task.handoff` | task | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `task.delete` | task | medium | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `task.status.set` | task | medium | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `artifact.declare` | task | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `task.complete` | task | medium | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `handoff.write` | host_thread | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `task.request_review` | task | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
 | `memory.create` | memory | medium | require_approval | via `proposal.apply` |
 | `memory.update` | memory | medium | require_approval | via `proposal.apply` |
 | `memory.archive` | memory | medium | require_approval | via `proposal.apply` |
-| `policy.change` | policy | high | require_approval | via `proposal.apply` |
 | `knowledge.create` | knowledge | medium | require_approval | via `proposal.apply` |
 | `knowledge.update` | knowledge | medium | require_approval | via `proposal.apply` |
 | `knowledge.archive` | knowledge | medium | require_approval | via `proposal.apply` |
@@ -184,7 +212,8 @@ to any business code. `computeDecision` (`gateway.ts`) always denies reserved ac
 | `retrieval_diagnostics_packet` | proposal | medium | require_approval | via `proposal.apply` |
 | `skill.import` | skill_package | medium | require_approval | via `proposal.apply` |
 | `runtime_skill.binding_update` | skill_binding | high | require_approval | via `proposal.apply` |
-| `source.connection.activate` | source_connection | high | require_approval | via `proposal.apply` (`source_connection_create`) |
+| `source.connection.activate` | source_connection | high | require_approval | via `proposal.apply` (`source_channel_activation`) |
+| `source.backfill.start` | source_backfill_plan | high | require_approval | via `proposal.apply` (`source_backfill_start`) |
 | `automation.create` | automation | high | require_approval | `server/src/modules/automations/service.ts` via `enforce()` |
 | `automation.update` | automation | high | require_approval | `server/src/modules/automations/service.ts` via `enforce()` |
 | `automation.fire` | automation | medium | require_approval | `server/src/modules/automations/service.ts` via `enforce()` |
@@ -241,7 +270,7 @@ controls adapter execution.
 `roleMayApproveRisk(role, risk)` in `server/src/modules/policy/decisions.ts`, applied by
 `checkProposalApplyPolicy(...)` in `server/src/modules/policy/gateway.ts`.
 
-- A proposal type without a registered applier and risk-table entry is denied
+- A proposal type without a registered applier is denied
   (`unsupported_proposal_type`) before any role check.
 - A proposal's `required_approver_role` must also be met
   (`insufficient_required_approver_role`, rule `proposal_apply_required_role`).
@@ -288,8 +317,9 @@ Effective risk computation (`PROPOSAL_TYPE_RISK` in `gateway.ts` is the table):
 - Invalid proposal.risk_level string raises `ProposalRiskLevelError` before any role check
 
 `supported_apply_type` in `metadata_json`:
-- `true` for proposal types with both a registered applier and an explicit policy
-  risk-table entry (`SUPPORTED_PROPOSAL_TYPES`)
+- `true` for proposal types with a registered applier (the live registry set,
+  `PgProposalApplyService.supportedProposalTypes()`); a type without a
+  `PROPOSAL_TYPE_RISK` entry is supported at the conservative high default
 - `false` for unsupported/unknown types — proposal.apply denies before dispatch
 
 At proposal accept time:
@@ -305,7 +335,7 @@ calls `enforceProposalApply(...)` before applying accepted proposal side effects
 - Accepted proposals represent the human approval event.
 - The acting user must have approval authority for the proposal type and effective risk level.
 - A `blocked` result (denied or approval required) becomes a 403 after the blocking audit record is written best-effort; an `error` result (a fail-closed ALLOW whose audit could not be written) becomes a 500.
-- No durable write (MemoryEntry, Policy, Task, code patch) occurs on denial.
+- No durable write (MemoryEntry, Task, code patch) occurs on denial.
 - `ProposalRiskLevelError` is raised for invalid proposal.risk_level; HTTP callers return 422.
 
 ### Memory placement
@@ -402,10 +432,7 @@ Each spend names its basis:
 |---|---|
 | `daily_report` | The person's daily-report setting is on, and they are still a member |
 | `imported_session_extraction` | The Location's auto-extract switch for that runtime is on |
-| `inquiry_advice` | The person whose action queued it can still write the Project and change the Thread |
-| `room_summary` | The Room owner is still its active owner with Project write |
 | `conversation_title` | The message's author is still an active member of the active Room |
-| `context_checkpoint` | The work context's latest setup still names the person, who is a member and can read its Project |
 | `retrieval_embedding` | The person whose action queued the backfill is still a member; source ingestion queues it as the source's owner |
 | `research_pipeline` | The person who queued the pipeline can still write the Project |
 | `source_post_processing` | A helper call: the rule is still active and its creator a member. A post-processing Run carries the setup in its contract |
@@ -440,17 +467,15 @@ return DENY with `audit_code="unknown_policy_action"`. `BUILTIN_RULES` evaluated
 8. `ruleAutomation` — allow automation.create/update/fire for admin/owner; deny lower roles
 9. `ruleRuntimeExecuteRiskLevel` — reflect context risk level on `runtime.execute`
 10. `ruleRunSpawnChild` — deny `run.spawn_child` with missing context, a self target, inactive group/agents/members, or exceeded depth/fanout/concurrency limits; otherwise allow
-11. `ruleRuntimeSkillRenderEnabled` — allow only runtime-skill render calls with an enabled binding proof
-12. `ruleRetrievalToolCall` — allow enabled retrieval-tool domains with an instructed viewer; deny disabled domains, missing viewers, source-policy denial, and egress-policy denial
-13. `ruleManagedSystemActionGrant` — on the managed-run system-action surface, allow requestable system actions only with a bounded Run grant
-14. `ruleUnattendedProjectWrite` — `require_approval` for origin-gated Project writes (`task.create`, `task.status.set`, `task.complete`, `proposal.decide`, `inquiry.thread.create`, `inquiry.iteration.record`, `inquiry.advice.adopt`, `research.acquisition.start`, `memory.write`) from an unattended origin
+11. `ruleRetrievalToolCall` — allow enabled retrieval-tool domains with an instructed viewer; deny disabled domains, missing viewers, source-policy denial, and egress-policy denial
+12. `ruleManagedSystemActionGrant` — on the managed-run system-action surface, allow requestable system actions only with a bounded Run grant
+13. `ruleUnattendedProjectWrite` — `require_approval` for origin-gated Project writes (`research.result.adopt`, `task.create`, `task.status.set`, `task.delete`, `task.complete`, `proposal.decide`, `inquiry.thread.create`, `inquiry.iteration.record`, `inquiry.work.record`, `inquiry.round.close`, `research.acquisition.start`, `memory.write`) from an unattended origin
 
 Falls through to registry default only for **known** registered actions when no rule matches.
 
 ## Current wiring notes
 
 - `memory.create/update/archive` are WIRED_VIA_PROPOSAL — enforced only through `proposal.apply`.
-- Policy rows are domain-specific; there are no space-level row overrides.
 - Reserved / placeholder actions are registered and denied until a call site exists.
 
 

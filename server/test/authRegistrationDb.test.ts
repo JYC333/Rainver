@@ -22,7 +22,7 @@ beforeAll(async () => { if (db.available) await migrate(db.pool, join(process.cw
 afterAll(() => { __setHibpTransportForTests(null); });
 beforeEach(async () => {
   if (!db.available) return;
-  await resetTables(db.pool, ["registration_intents", "space_invitations", "auth_accounts", "user_sessions", "spaces", "users"], { cascade: true });
+  await resetTables(db.pool, ["registration_intents", "user_invitations", "auth_accounts", "user_sessions", "spaces", "users"], { cascade: true });
 });
 
 function authConfig(instanceAdminEmail = "owner@example.test", google = false): ServerConfig {
@@ -541,7 +541,7 @@ describe("registration and Better Auth facade primitives", () => {
     );
     const invitationToken = "resume-invitation-token";
     await db.pool.query(
-      `INSERT INTO space_invitations
+      `INSERT INTO user_invitations
          (id, space_id, invited_email, role, token_hash, status, invited_by_user_id, created_at, expires_at)
        VALUES ('resume-invite', 'team-space', 'invitee@example.test', 'member', $1, 'available', 'owner-user', now(), now() + interval '7 days')`,
       [hashOpaqueToken(invitationToken)],
@@ -555,7 +555,7 @@ describe("registration and Better Auth facade primitives", () => {
     expect(retry.claimSecret).not.toBe(first.claimSecret);
     await expect(registrations.complete({ intentId: retry.intentId, claimSecret: retry.claimSecret, userId }))
       .resolves.toMatchObject({ userId, authority: "space_invitation" });
-    await expect(db.pool.query("SELECT status FROM space_invitations WHERE id = 'resume-invite'"))
+    await expect(db.pool.query("SELECT status FROM user_invitations WHERE id = 'resume-invite'"))
       .resolves.toMatchObject({ rows: [{ status: "accepted" }] });
   });
 
@@ -573,7 +573,7 @@ describe("registration and Better Auth facade primitives", () => {
     );
     const invitationToken = "invitation-token";
     await db.pool.query(
-      `INSERT INTO space_invitations
+      `INSERT INTO user_invitations
          (id, space_id, invited_email, role, token_hash, status, invited_by_user_id, created_at, expires_at)
        VALUES ('invite-1', 'team-space', 'invitee@example.test', 'member', $1, 'available', 'owner-user', now(), now() + interval '7 days')`,
       [hashOpaqueToken(invitationToken)],
@@ -607,7 +607,7 @@ describe("registration and Better Auth facade primitives", () => {
     expect((await db.pool.query("SELECT 1 FROM user_sessions WHERE user_id = $1", [userId])).rowCount).toBe(0);
     await expect(db.pool.query("SELECT state, pending_user_id FROM registration_intents WHERE id = $1", [first.intentId]))
       .resolves.toMatchObject({ rows: [{ state: "expired", pending_user_id: null }] });
-    await expect(db.pool.query("SELECT status, reserved_by_intent_id FROM space_invitations WHERE id = 'invite-1'"))
+    await expect(db.pool.query("SELECT status, reserved_by_intent_id FROM user_invitations WHERE id = 'invite-1'"))
       .resolves.toMatchObject({ rows: [{ status: "available", reserved_by_intent_id: null }] });
 
     const retry = await registrations.issueIntent({ email: "invitee@example.test", invitationToken });
@@ -847,5 +847,95 @@ describe("recent-authentication grants and session refresh", () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe("instance invitation registration", () => {
+  async function bootstrap(google = false) {
+    const config = authConfig("owner@example.test", google);
+    const registrations = new RegistrationService(db.pool, config);
+    const intent = await registrations.issueIntent({ email: "owner@example.test" });
+    const admin = await signUp(config, "owner@example.test", "Owner");
+    await registrations.complete({ intentId: intent.intentId, claimSecret: intent.claimSecret, userId: admin.userId });
+    return { config, registrations, admin, cookie: `better-auth.session_token=${encodeURIComponent(admin.raw)}` };
+  }
+
+  it("lets only the instance administrator invite an account with only a Personal Space", async () => {
+    if (!db.available) return;
+    const { config, registrations, cookie } = await bootstrap();
+    const app = buildModuleServer(config, [authModule]);
+    __setHibpTransportForTests({ async fetchRange() { return ""; } });
+    try {
+      const invite = (payload: Record<string, string>, session = cookie) => app.inject({ method: "POST", url: "/api/v1/auth/admin/invitations", headers: { cookie: session, origin: config.frontendUrl }, payload });
+      expect((await invite({ email: "not-an-email" })).statusCode).toBe(400);
+      expect((await invite({ email: "new@example.test" }, "")).statusCode).toBe(403);
+      const issued = await invite({ email: " New@Example.Test " });
+      expect(issued.statusCode).toBe(201);
+      expect(issued.headers["cache-control"]).toContain("no-store");
+      const invitation = issued.json<{ id: string; token: string; invited_email: string }>();
+      expect(invitation.invited_email).toBe("new@example.test");
+      const stored = await db.pool.query("SELECT space_id, role, token_hash, status FROM user_invitations WHERE id = $1", [invitation.id]);
+      expect(stored.rows).toEqual([{ space_id: null, role: null, token_hash: hashOpaqueToken(invitation.token), status: "available" }]);
+      await expect(registrations.issueIntent({ email: "wrong@example.test", invitationToken: invitation.token })).rejects.toThrow("registration_invitation_invalid");
+      const claim = await app.inject({ method: "POST", url: "/api/v1/auth/registration-intents", payload: { email: "new@example.test", invitation_token: invitation.token } });
+      expect(claim.statusCode).toBe(201);
+      expect(claim.json().authority).toBe("instance_invitation");
+      const intent = claim.json<{ intentId: string; claimSecret: string }>();
+      const registered = await app.inject({ method: "POST", url: "/api/v1/auth/register", remoteAddress: "192.0.2.229", headers: { origin: config.frontendUrl }, payload: { email: "new@example.test", name: "New", password: "an invitation password with enough length", intent_id: intent.intentId, claim_secret: intent.claimSecret } });
+      expect(registered.statusCode).toBe(201);
+      const user = await db.pool.query("SELECT id, status, registration_source FROM users WHERE email = 'new@example.test'");
+      expect(user.rows[0]).toMatchObject({ status: "active", registration_source: "instance_invitation" });
+      const memberships = await db.pool.query("SELECT s.type, m.role FROM spaces s JOIN space_memberships m ON m.space_id = s.id WHERE m.user_id = $1", [user.rows[0].id]);
+      expect(memberships.rows).toEqual([{ type: "personal", role: "owner" }]);
+      await expect(registrations.issueIntent({ email: "new@example.test", invitationToken: invitation.token })).rejects.toThrow();
+      const memberCookie = String(registered.headers["set-cookie"]).split(";", 1)[0]!;
+      const me = await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie: memberCookie } });
+      expect(me.json()).toMatchObject({ is_instance_admin: false });
+      expect((await invite({ email: "another@example.test" }, memberCookie)).statusCode).toBe(403);
+      expect((await db.pool.query("SELECT status FROM user_invitations WHERE id = $1", [invitation.id])).rows[0].status).toBe("accepted");
+    } finally { __setHibpTransportForTests(null); await app.close(); }
+  });
+
+  it("releases an expired instance claim, rotates its secret, and refuses expired invitations", async () => {
+    if (!db.available) return;
+    const { config, registrations, admin } = await bootstrap();
+    const invitation = await registrations.createInstanceInvitation(admin.userId, "retry@example.test");
+    const first = await registrations.issueIntent({ email: "retry@example.test", invitationToken: invitation.token });
+    const pending = await signUp(config, "retry@example.test", "Retry");
+    const resumed = await registrations.issueIntent({ email: "retry@example.test", invitationToken: invitation.token });
+    expect(resumed.intentId).toBe(first.intentId);
+    await expect(registrations.complete({ intentId: first.intentId, claimSecret: first.claimSecret, userId: pending.userId })).rejects.toThrow();
+    await db.pool.query("UPDATE registration_intents SET expires_at = now() - interval '1 minute' WHERE id = $1", [first.intentId]);
+    await registrations.reapStale();
+    expect((await db.pool.query("SELECT id FROM users WHERE id = $1", [pending.userId])).rowCount).toBe(0);
+    expect((await db.pool.query("SELECT status, reserved_by_intent_id FROM user_invitations WHERE id = $1", [invitation.id])).rows).toEqual([{ status: "available", reserved_by_intent_id: null }]);
+    const retry = await registrations.issueIntent({ email: "retry@example.test", invitationToken: invitation.token });
+    expect(retry.authority).toBe("instance_invitation");
+    const nextPending = await signUp(config, "retry@example.test", "Retry");
+    await db.pool.query("UPDATE user_invitations SET expires_at = now() - interval '1 minute' WHERE id = $1", [invitation.id]);
+    await expect(registrations.complete({ intentId: retry.intentId, claimSecret: retry.claimSecret, userId: nextPending.userId })).rejects.toThrow("registration_invitation_invalid");
+    expect((await db.pool.query("SELECT id FROM space_memberships WHERE user_id = $1", [nextPending.userId])).rowCount).toBe(0);
+    expect((await db.pool.query("SELECT status FROM users WHERE id = $1", [nextPending.userId])).rows[0].status).toBe("pending");
+  });
+
+  it("uses the existing Google path and reserves an instance invitation only once", async () => {
+    if (!db.available) return;
+    const { config, registrations, admin } = await bootstrap(true);
+    const invitation = await registrations.createInstanceInvitation(admin.userId, "google@example.test");
+    const claims = await Promise.all([1, 2].map(() => registrations.issueIntent({ email: "google@example.test", invitationToken: invitation.token })));
+    expect(claims[0]!.intentId).toBe(claims[1]!.intentId);
+    const stored = await db.pool.query("SELECT claim_secret_hash FROM registration_intents WHERE invitation_id = $1", [invitation.id]);
+    expect(stored.rowCount).toBe(1);
+    const claim = claims.find(candidate => hashOpaqueToken(candidate.claimSecret) === stored.rows[0].claim_secret_hash)!;
+    const superseded = claims.find(candidate => candidate.claimSecret !== claim.claimSecret)!;
+    const app = buildModuleServer(config, [authModule]);
+    try {
+      const refused = await app.inject({ method: "POST", url: "/api/v1/auth/register/google", payload: { intent_id: superseded.intentId, claim_secret: superseded.claimSecret } });
+      expect(refused.statusCode).toBe(400);
+      const start = await app.inject({ method: "POST", url: "/api/v1/auth/register/google", remoteAddress: "192.0.2.230", headers: { origin: config.frontendUrl }, payload: { intent_id: claim.intentId, claim_secret: claim.claimSecret } });
+      expect(start.statusCode).toBe(200);
+      expect(start.json().url).toContain("accounts.google.com");
+      expect(String(start.headers["set-cookie"])).toContain("rainver.registration_claim=");
+    } finally { await app.close(); }
   });
 });

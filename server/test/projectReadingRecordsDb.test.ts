@@ -1,3 +1,6 @@
+import {ProjectReadingTools} from '../src/modules/sources/projectReadingTools.js';
+import type {RunRecord} from '../src/modules/runs/repository.js';
+import {conversationToolGrantInput} from '../src/modules/systemActions/scenarioToolAllowance.js';
 import {PgArtifactRepository} from '../src/modules/artifacts/repository.js';
 import {buildModuleServer} from './support/moduleServer.js';
 import {readerModule} from '../src/modules/reader/index.js';
@@ -237,4 +240,54 @@ it('deterministic fetch failures remain gaps, PDF and Markdown retain their own 
   expect((await db.pool.query('SELECT reading_role FROM source_snapshots WHERE id=$1',[d.snapshotId])).rows[0].reading_role).toBe('analysis');
   expect((await projectReadingRecords(db.pool,identity,a)).original?.snapshot_id).toBe(ra.snapshot_id);
  }finally{fetch.mockRestore();await rm(root,{recursive:true,force:true});}
+});
+
+async function readingTools(visibility='private'){
+ const runId=await run();
+ await db.pool.query('UPDATE runs SET project_id=$2,visibility=$3 WHERE id=$1',[runId,project,visibility]);
+ const live=(await db.pool.query<RunRecord>('SELECT * FROM runs WHERE id=$1',[runId])).rows[0];
+ return new ProjectReadingTools(db.pool,config(),live);
+}
+it('Project conversations can find Reading and page an existing analysis without changing read state',async()=>{
+ const id=await item();await original(id);const saved=await report(id,'OpenHands ACP retained analysis. '.repeat(30));
+ const service=await readingTools();
+ expect(conversationToolGrantInput({project_id:project}).capabilities_json).toContain('project.reading.read');
+ const before=await db.pool.query('SELECT * FROM source_item_user_states WHERE space_id=$1 AND source_item_id=$2',[space,id]);
+ expect((await service.list({q:'Article'})).items.map(i=>i.item_id)).toContain(id);
+ const records=await service.records({item_id:id});expect(records.items.some(r=>r.snapshot_id===saved.snapshotId&&r.role==='analysis')).toBe(true);
+ const first=await service.read({item_id:id,snapshot_id:saved.snapshotId,limit:20});
+ const rest=await service.read({item_id:id,snapshot_id:saved.snapshotId,offset:first.next_offset!});
+ expect(first.text+rest.text).toBe((await reader().getDocument(identity,'source_snapshot',saved.snapshotId))?.plain_text);
+ expect(first.truncated).toBe(true);expect(rest.next_offset).toBeNull();
+ expect((await db.pool.query('SELECT * FROM source_item_user_states WHERE space_id=$1 AND source_item_id=$2',[space,id])).rows).toEqual(before.rows);
+});
+it('Reading tools reject mismatched snapshots, another Project and revoked membership',async()=>{
+ const a=await item(),b=await item();await original(a);const saved=await report(b,'Other material');const service=await readingTools();
+ await expect(service.read({item_id:a,snapshot_id:saved.snapshotId})).rejects.toMatchObject({statusCode:404});
+ await db.pool.query('UPDATE source_items SET project_id=NULL WHERE id=$1',[b]);
+ await expect(service.records({item_id:b})).rejects.toMatchObject({statusCode:404});
+ await db.pool.query("UPDATE space_memberships SET status='suspended' WHERE space_id=$1 AND user_id=$2",[space,owner]);
+ await expect(service.list({})).rejects.toMatchObject({statusCode:403});
+});
+it('a shared conversation cannot read a private analysis visible only to its requester',async()=>{
+ const id=await item();await original(id);const saved=await report(id,'Private ACP analysis');
+ const privateService=await readingTools();expect((await privateService.records({item_id:id})).items.some(r=>r.snapshot_id===saved.snapshotId)).toBe(true);
+ const shared=await readingTools('space_shared');
+ expect((await shared.records({item_id:id})).items.some(r=>r.snapshot_id===saved.snapshotId)).toBe(false);
+ await expect(shared.read({item_id:id,snapshot_id:saved.snapshotId})).rejects.toMatchObject({statusCode:404});
+});
+
+it('Reading conversation checks destination egress on supporting Sources as well as the displayed material',async()=>{
+ const id=await item();await original(id);
+ const support=await item(),connection=await sourceFor(support),origin=await original(support);
+ const content={kind:'article' as const,format:'agent_summary' as const,text:'OpenHands report derived from restricted supporting material',sources:['https://example.test/article']};
+ const saved=await saveSourceReadingDocument(db.pool,{spaceId:space,itemId:id,agentProvided:true,document:agentReadingDocument(content,'https://example.test/article'),metadata:{...agentReadingMetadata(content),reading_history_refs:[{item_id:support,artifact_id:origin.artifactId,snapshot_id:origin.snapshotId,content_hash:origin.contentHash}]}});
+ const service=await readingTools();
+ expect((await service.read({item_id:id,snapshot_id:saved.snapshotId})).text).toContain('OpenHands report');
+ await db.pool.query(`UPDATE source_connections SET consent_json=consent_json||jsonb_build_object('allowed_agent_ids',jsonb_build_array($2::text)) WHERE id=$1`,[connection,randomUUID()]);
+ await expect(service.read({item_id:id,snapshot_id:saved.snapshotId})).rejects.toMatchObject({statusCode:403});
+ await db.pool.query(`UPDATE source_connections SET consent_json=consent_json||'{"allowed_agent_ids":[]}' WHERE id=$1`,[connection]);
+ await db.pool.query(`UPDATE source_connections SET policy_json=policy_json||'{"source_egress_class":"internal_only"}',consent_json=consent_json||'{"allow_external_model_egress":false,"allow_local_provider_egress":false}' WHERE id=$1`,[connection]);
+ await expect(service.read({item_id:id,snapshot_id:saved.snapshotId})).rejects.toBeInstanceOf(Error);
+ expect((await service.records({item_id:id})).items.some(r=>r.snapshot_id===saved.snapshotId)).toBe(false);
 });

@@ -11,7 +11,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { userSessions, users } from "./auth.js";
-import { spaceInvitations } from "./spaces.js";
+import { userInvitations } from "./spaces.js";
 
 /**
  * Short-lived authority held by a registration flow. The browser receives the
@@ -41,7 +41,7 @@ export const registrationIntents = pgTable("registration_intents", {
   index("ix_registration_intents_email").using("btree", table.email.asc().nullsLast()),
   foreignKey({
     columns: [table.invitationId],
-    foreignColumns: [spaceInvitations.id],
+    foreignColumns: [userInvitations.id],
     name: "registration_intents_invitation_id_fkey",
   }),
   foreignKey({
@@ -49,11 +49,11 @@ export const registrationIntents = pgTable("registration_intents", {
     foreignColumns: [users.id],
     name: "registration_intents_pending_user_id_fkey",
   }).onDelete("cascade"),
-  check("ck_registration_intents_authority", sql`authority IN ('bootstrap', 'space_invitation')`),
+  check("ck_registration_intents_authority", sql`authority IN ('bootstrap', 'space_invitation', 'instance_invitation')`),
   check("ck_registration_intents_state", sql`state IN ('issued', 'claimed', 'provisioning', 'completed', 'expired')`),
   check(
     "ck_registration_intents_invitation_authority",
-    sql`(authority = 'space_invitation' AND invitation_id IS NOT NULL) OR (authority = 'bootstrap' AND invitation_id IS NULL)`,
+    sql`(authority IN ('space_invitation', 'instance_invitation') AND invitation_id IS NOT NULL) OR (authority = 'bootstrap' AND invitation_id IS NULL)`,
   ),
 ]);
 

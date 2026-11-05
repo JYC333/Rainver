@@ -222,6 +222,11 @@ export default async function setup(project: GlobalSetupProject): Promise<() => 
       "-c", "synchronous_commit=off",
       "-c", "full_page_writes=off",
       "-c", "max_connections=300",
+      // The shared lock table holds max_locks_per_transaction x max_connections
+      // entries. Applying the baseline (~330 tables, ~1000 indexes) in one
+      // transaction takes thousands, so the default 64 runs out ("out of shared
+      // memory") as soon as a few migration-chain tests overlap.
+      "-c", "max_locks_per_transaction=512",
       "-c", "shared_buffers=512MB",
       "-c", "work_mem=16MB",
       "-c", "autovacuum=off",

@@ -136,6 +136,16 @@ page uses the pair: `runActorLabel` renders a `provider_task` Run as
 of the "Agent unavailable" it shows for an `agent` Run whose Agent name did not
 resolve. A null Agent on a `provider_task` Run is not a missing name.
 
+`GET /api/v1/runs/{runId}` (detail only, behind the same Run read gate) also
+returns `work_skill`: `{ content_hash }` naming the Rainver Work Skill text the
+Run's latest attempt was given, or `null` when it was never dispatched with a
+work surface. It is read from `run_tool_identities.skill_content_hash`, written
+when the identity is issued and kept after revocation; the token digest is
+never returned. The Host adapter's result metadata carries the same value as
+`work_skill_content_hash`, but that is a copy, not a second identity source.
+The hash names code-owned Skill text rather than Run content, so a summary
+viewer sees it too. Run detail shows it under Technical identifiers.
+
 ## Current: Run Event SSE
 
 Run event streaming is implemented as:
@@ -176,10 +186,14 @@ Assistant Chat is a two-step use of this transport:
    watching. Treating it as terminal sends the reader to fetch a reply that
    does not exist; treating it as ordinary work tells them nothing is
    expected of them. `blocked_on` says which kind of waiting it is:
-   `authorization`, `run_decision`, or `workspace` — the host queued the
+   `authorization`, `run_decision`, `workspace` — the host queued the
    Run's launch behind another Run writing the same directory, which needs
    nobody and turns back into `working` once the host starts it
-   (`modules/hosts.md`, "Location lease").
+   (`modules/hosts.md`, "Location lease") — or `quota`, a Run held in
+   `waiting_for_quota` after a subscription quota refusal until its recovery
+   admits a successor attempt
+   ([Runs and outputs](../architecture/RUNS_AND_OUTPUTS.md), "Attempts,
+   cancellation, and supervision").
 
 There is no Chat-specific streaming endpoint and no polling execution path.
 

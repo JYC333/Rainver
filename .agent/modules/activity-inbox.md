@@ -60,11 +60,12 @@ Batch / explicit ids: `POST /api/v1/memory/consolidation/run` with optional `act
 ```
 raw input → ActivityRecord (status=raw, source_trust assigned)
     → POST /activity/{id}/consolidate (or batch consolidation run)
-        → Memory retrieval create-safety pre-dedupe
-        → classifier → MemoryCandidateValidator → MemoryProposalProducer
-        → reviewable Proposals created with provenance_entries
+        → empty content → processed
+        → Memory retrieval create-safety pre-dedupe (duplicate → processed)
+        → Project record not readable by every Project reader → stays raw (awaiting share)
+        → one reviewable Memory Proposal created with provenance_entries;
+          ActivityRecord status=proposals_generated in the same transaction
     → user approves proposals → ProposalApplyService writes MemoryEntry
-    → ActivityRecord status updated
 ```
 
 Daily Sources post-processing also emits pointer rows into Activity:
@@ -124,7 +125,7 @@ clears the notification independently of article/change read state and Run histo
 
 Source recommendation rows are also pointers only: they open
 `/sources?view=pending&connection_id=...`. Reviewing or archiving the pointer
-does not change `source_connection_user_subscriptions`; Follow, Dismiss, Mute,
+does not change `source_channel_user_subscriptions`; Follow, Dismiss, Mute,
 and Unsubscribe are handled by Sources.
 
 ## What enters the Inbox row by row
@@ -175,7 +176,9 @@ mounting drops it, since every row would repeat it.
   into the provenance list. Accepted Memory provenance is `provenance_links`.
   Do not treat `source_activity_id` as the accepted provenance record.
 - Consolidation is idempotent: visible Memory duplicate checks run before proposal
-  creation, and duplicate proposals are blocked by `proposal_dedupe_key`
+  creation, and only a `raw` record is eligible, so the proposal insert and the
+  record's move to `proposals_generated` in one locked transaction prevent a
+  second proposal for the same record
 - Direct and batch consolidation lock the same Activity row and recheck its
   eligibility inside a transaction. Proposal insertion and status change commit
   together. A retrieval pre-dedupe failure is contained by the existing

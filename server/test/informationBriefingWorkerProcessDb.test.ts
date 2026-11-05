@@ -21,7 +21,7 @@ const workers: WorkerProcess[] = [];
 
 beforeAll(async () => {
   home = await mkdtemp(join(tmpdir(), "rainver-briefing-worker-"));
-  buildServerDist();
+  await buildServerDist();
 }, 600_000);
 afterAll(async () => { if (home) await rm(home, { recursive: true, force: true }); });
 beforeEach(async () => {

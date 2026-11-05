@@ -10,7 +10,7 @@ import { agentOriginContinuation } from "../rooms/discussionService.js";
 import { isRetryableRoomPostError } from "../rooms/messageQueue.js";
 import { PgAgentGroupRepository, type RunDelegationRecord } from "./repository.js";
 import { ROOM_DELEGATION_COMPLETION_RETRY_JOB } from "./delegationCompletionRetryJob.js";
-import { runAssignedTask } from "../runs/runAssignedTask.js";
+import { runAssignedTask, runAssignedTaskExcerpt } from "../runs/runAssignedTask.js";
 import { CONVERSATION_SERIALIZATION_WAIT_SCOPE } from "./waitScopes.js";
 import { handoffTurnOf } from "./sessionHandoff.js";
 import { admitAgentOriginRun, enqueueWhenTurnFree, isAgentOriginGroup } from "../rooms/quotaGate.js";
@@ -664,12 +664,14 @@ async function queueWaitingDependencyRunIfReady(input: {
     : serialized
       ? serializedRecipientPrompt(input.waitingRun, replies, changes)
       : waitingContinuationPrompt(input.waitingRun, waiting, dependencyRuns, changes);
+  const continuation = !handoffTurn && !independent && !serialized;
   const resumed = await input.runs.requeueWaitingDependencyRun({
     run_id: input.waitingRun.id,
     space_id: input.waitingRun.space_id,
     prompt,
     resumed_at: new Date().toISOString(),
     model_override_json: null,
+    ...(continuation ? { delivered_run_ids: [...new Set([...waiting.delivered_run_ids, ...waiting.depends_on_run_ids])] } : {}),
   });
   if (!resumed) return;
   // A change link is only useful if the Run can follow it: it gains the
@@ -730,6 +732,8 @@ interface WaitingForResultsState {
   reason: string | null;
   resume_instruction: string | null;
   depends_on_run_ids: string[];
+  /** Results an earlier resume of this Run already handed it. */
+  delivered_run_ids: string[];
 }
 
 function waitingForResultsFromRun(run: RunRecord): WaitingForResultsState | null {
@@ -742,6 +746,7 @@ function waitingForResultsFromRun(run: RunRecord): WaitingForResultsState | null
     reason: stringValue(waiting.reason),
     resume_instruction: stringValue(waiting.resume_instruction),
     depends_on_run_ids: dependsOnRunIds,
+    delivered_run_ids: stringArrayValue(waiting.delivered_run_ids),
   };
 }
 
@@ -751,10 +756,11 @@ function completedRunResultsBlock(
 ): string {
   return dependencyRuns.map((run, index) => {
     const agentName = stringValue(run.agent_name) ?? `Agent ${index + 1}`;
-    const task = runAssignedTask(run);
+    const task = runAssignedTaskExcerpt(run);
     const change = changes.get(run.id);
     return [
       `${index + 1}. ${agentName}`,
+      `   run_id: ${run.id}`,
       `   status: ${run.status}`,
       task ? `   task: ${task}` : null,
       `   result: ${terminalRunResultSummary(run)}`,
@@ -793,7 +799,13 @@ function waitingContinuationPrompt(
   dependencyRuns: readonly RunRecord[],
   changes: ReadonlyMap<string, RunChange>,
 ): string {
-  const results = completedRunResultsBlock(dependencyRuns, changes);
+  // A Run that waits again (`own_delegations` lists every delegation it ever
+  // made) was handed the earlier results on its earlier resumes. Name them
+  // instead of resending them: resent in full, every round grew the prompt
+  // until it passed the runtime's input limit.
+  const delivered = new Set(waiting.delivered_run_ids);
+  const fresh = dependencyRuns.filter((run) => !delivered.has(run.id));
+  const earlier = dependencyRuns.filter((run) => delivered.has(run.id));
   const waitingTask = runAssignedTask(waitingRun);
   return [
     "Continue the paused room agent run using the completed agent results below.",
@@ -803,7 +815,13 @@ function waitingContinuationPrompt(
     waiting.reason ? `Wait reason:\n${waiting.reason}` : null,
     waiting.resume_instruction ? `Resume instruction:\n${waiting.resume_instruction}` : null,
     waiting.scope ? `Wait scope: ${waiting.scope}` : null,
-    `Completed agent results:\n${results}`,
+    fresh.length > 0 ? `Completed agent results:\n${completedRunResultsBlock(fresh, changes)}` : null,
+    earlier.length > 0
+      ? [
+          "Results already given to this run on an earlier resume (not repeated here; read one again with agent.wait_for_results, scope=run_ids):",
+          ...earlier.map((run) => `- ${stringValue(run.agent_name) ?? "Agent"} — run_id: ${run.id}, status: ${run.status}`),
+        ].join("\n")
+      : null,
   ].filter((part): part is string => typeof part === "string" && part.length > 0).join("\n\n");
 }
 

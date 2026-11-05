@@ -25,8 +25,8 @@ person-facing retrieval index entirely: what an Agent knows about itself and
 about a Room reaches the Agent through its own delivery path, under an
 audience filter, and reaches nobody else but the Agent's owner on the Memory
 page — Space oversight included, which is the one place the general access
-model below does not extend to (`memoryAgentScopeReadSql`): an admin who is not
-on the origin Room's roster is not the audience the note was delivered to.
+model below does not extend to (`memoryAgentScopeReadSql`): an admin who may not
+read the origin Room's conversations is not the audience the note was delivered to.
 
 The database accepts `scope_type IN ('user', 'project', 'agent')`. User Memory
 has no `project_id`; Project Memory requires one; Agent Memory has none and

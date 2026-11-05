@@ -304,7 +304,8 @@ introduced by a read. Missing originals remain not retained/unknown, not a
 successful original capture inferred from a report. Personal material writes
 retain their existing behavior in this phase.
 
-Snapshots add nullable role/Run/original reference fields (migration 0009).
+Snapshots add nullable role/Run/original reference fields (migration
+`0007_project_reading.sql`).
 The original-reference FK stays within one Space/item; Run FK stays in Space.
 `original_snapshot_id` associates the latest deterministic original available at
 settlement; it is not proof the Run actually consumed that version. Goal
@@ -490,3 +491,23 @@ Agent statements. The native collector uses existing canonical Run events as
 separate execution evidence and the shared goal selector for filtering/deduplication
 before caps. See [Source Goals](SOURCE_GOALS.md#broad-discovery-and-bounded-continuity)
 for bounded cross-check context, authority revalidation and persistence.
+
+### Reading tools in Project conversations
+
+Project and Room conversations expose `project.reading.list` (bounded title search
+and cursor pagination), `project.reading.records` (original/analysis snapshot IDs
+and offset pagination), and `project.reading.read` (an exact snapshot, at most
+12,000 characters per page). These read existing retained documents, independently
+of Research Operations; no new research, proposal or manual permission grant is
+needed. IDs are copied from the preceding list/records result. The tools reuse
+Reading membership, Reader resolution and Project reading-record classification;
+reads never mark an item opened or update personal progress.
+
+`source.material.investigate` remains restricted to its admitted investigation.
+Conversation reads instead recheck current Project membership, the full Run/Room
+human audience without oversight, item/snapshot/artifact access, and Source
+outbound policy for the Run destination, including original and historical
+Artifact dependencies. Private analyses are readable in a private conversation
+only when its audience can read them, never widened into a shared conversation.
+Unauthorized records are omitted; page continuation does not claim whole-library
+coverage. Implementation: `sources/projectReadingTools.ts`.

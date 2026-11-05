@@ -1,6 +1,13 @@
 import { readFileSync, readdirSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import { defineConfig } from "vitest/config";
+
+// Every worker drives the one shared PostgreSQL container, and many files fork
+// jobs-worker processes of their own. Past ~16 workers the host is
+// oversubscribed: per-file time more than doubles, the full run gets slower,
+// and Postgres runs out of lock slots. Small machines (CI) keep Vitest's default.
+const maxWorkers = Math.min(16, Math.max(1, availableParallelism() - 1));
 
 // Files that `vi.mock()` a module must run in their own worker: without
 // isolation a mock stays registered for every file that follows in that
@@ -21,6 +28,7 @@ const mockingFiles = listTestFiles("test").filter((file) => readFileSync(file, "
 export default defineConfig({
   test: {
     environment: "node",
+    maxWorkers,
     projects: [
       { extends: true, test: { name: "shared", include: ["test/**/*.test.ts"], exclude: mockingFiles, isolate: false } },
       { extends: true, test: { name: "isolated", include: mockingFiles, isolate: true } },

@@ -31,25 +31,25 @@ export async function requireSpaceOwnerOrAdmin(
   return true;
 }
 
+/** Whether this user is the configured instance admin; answers nothing on the reply. */
+export async function isInstanceAdmin(config: ServerConfig, userId: string): Promise<boolean> {
+  if (!config.instanceAdminEmail || !config.databaseUrl) return false;
+  const pool = getDbPool(config.databaseUrl);
+  const res = await pool.query<{ email: string | null }>(
+    `SELECT email FROM users WHERE id = $1 AND status = 'active' LIMIT 1`,
+    [userId],
+  );
+  const email = res.rows[0]?.email ?? null;
+  return Boolean(email && email.trim().toLowerCase() === config.instanceAdminEmail.trim().toLowerCase());
+}
+
 export async function requireInstanceAdmin(
   config: ServerConfig,
   identity: { userId: string },
   reply: FastifyReply,
   message = "Requires instance admin",
 ): Promise<boolean> {
-  if (!config.instanceAdminEmail || !config.databaseUrl) {
-    reply.code(403).send({ detail: message });
-    return false;
-  }
-  const pool = getDbPool(config.databaseUrl);
-  const res = await pool.query<{ email: string | null }>(
-    `SELECT email FROM users WHERE id = $1 AND status = 'active' LIMIT 1`,
-    [identity.userId],
-  );
-  const email = res.rows[0]?.email ?? null;
-  if (!email || email.trim().toLowerCase() !== config.instanceAdminEmail.trim().toLowerCase()) {
-    reply.code(403).send({ detail: message });
-    return false;
-  }
-  return true;
+  if (await isInstanceAdmin(config, identity.userId)) return true;
+  reply.code(403).send({ detail: message });
+  return false;
 }

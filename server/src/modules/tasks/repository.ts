@@ -1,3 +1,4 @@
+import { selectBoardColumn, taskColumnPlacement } from "./boardColumns.js";
 import { TASK_STATUSES as PROTOCOL_TASK_STATUSES } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "../../db/pool.js";
@@ -413,6 +414,12 @@ export class PgTaskRepository {
     // takes no new work, and the row lock serializes this with archiving.
     const projectId = optionalString(body.project_id);
     if (projectId) await lockActiveProjectForMutation(db, identity.spaceId, projectId);
+    if(body.board_column){
+      const column=await selectBoardColumn(db,identity.spaceId,projectId,body.board_column);
+      if(column.status_key==='done')throw new HttpError(422,"Create the Task before completing it");
+      body={...body,status:column.status_key,board_id:column.board_id,column_id:column.board_id?column.key:null};
+    }
+    body = await taskColumnPlacement(db, identity.spaceId, projectId, body);
     if (taskRole === "subtask") {
       if (!parentTaskId) throw new HttpError(422, "Subtasks require a parent task");
       const parent = await db.query<{ id: string }>(
@@ -521,14 +528,14 @@ export class PgTaskRepository {
     return taskOut(row);
   }
 
-  async updateTask(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>, agentContext?: { actorId: string; runId: string; projectId: string; reason?: string }) {
+  async updateTask(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>, agentContext?: { actorId: string; runId: string; projectId: string; reason?: string }, db?: Queryable) {
     const now = new Date().toISOString();
-    const requestedStatus = taskStatus(body.status);
-    await withDbTransaction(this.pool, async (client) => {
+    if (Object.hasOwn(body, "deleted_at")) throw new HttpError(422, "Use the Task delete action instead of editing deleted_at");
+    const write = async (client: Queryable) => {
       // Discover scope first, then lock Projects before the Task, matching
       // problem association and Task Run admission. Re-read under the Task
       // lock before evaluating completion; a scope move requires a retry.
-      const observedTask = await getVisibleTaskRow(client, identity, taskId);
+      const observedTask = await getVisibleTaskRow(client, identity, taskId, { full: true });
       if (!observedTask) throw new HttpError(404, "Task not found");
       if (agentContext && observedTask.project_id !== agentContext.projectId) {
         throw new HttpError(422, "A Task can only be changed in this Run's Project");
@@ -548,7 +555,7 @@ export class PgTaskRepository {
         await lockActiveProjectForMutation(client, identity.spaceId, projectId);
         await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
       }
-      const currentTask=await getVisibleTaskRow(client,identity,taskId,{lock:true});
+      const currentTask=await getVisibleTaskRow(client,identity,taskId,{lock:true,full:true});
       if(!currentTask)throw new HttpError(404,"Task not found");
       if(currentTask.project_id!==observedTask.project_id)throw new HttpError(409,"Task Project changed; reload before editing");
       if(targetProjectId!==currentTask.project_id){
@@ -567,6 +574,8 @@ export class PgTaskRepository {
         }
         if (currentTask.task_role === "source" && parentTaskId) throw new HttpError(422, "Source tasks cannot have a parent task");
       }
+      body = await taskColumnPlacement(client, identity.spaceId, targetProjectId, body);
+      const requestedStatus = taskStatus(body.status);
       const flowChanged = requestedStatus !== null && requestedStatus !== currentTask.status;
       const nextStatus=requestedStatus??currentTask.status;
       const writesBlockReason=Object.hasOwn(body,'blocked_reason') || requestedStatus!==null;
@@ -755,7 +764,12 @@ export class PgTaskRepository {
           changes: Object.fromEntries(responsibilityChange),
         });
       }
-    });
+    };
+    if (db) {
+      await write(db);
+      return taskOut((await getVisibleTaskRow(db, identity, taskId))!);
+    }
+    await withDbTransaction(this.pool, write);
     return (await this.getTask(identity, taskId))!;
   }
 
@@ -1516,12 +1530,13 @@ async function getVisibleTaskRow(
   db: Queryable,
   identity: SpaceUserIdentity,
   taskId: string,
-  options: { lock?: boolean } = {},
+  options: { lock?: boolean; full?: boolean } = {},
 ): Promise<TaskRow | null> {
   const result = await db.query<TaskRow>(
     `SELECT ${TASK_COLUMNS} FROM tasks t
       WHERE t.space_id = $1 AND t.id = $2 AND t.deleted_at IS NULL
-        AND ${contentReadSql("task", "t", "$3")}${options.lock ? " FOR UPDATE OF t" : ""}`,
+        AND ${contentReadSql("task", "t", "$3")}
+        ${options.full ? `AND ${contentAccessLevelSql({definition:contentResourceDefinition("task")!,alias:"t",userExpr:"$3"})}='full'` : ""}${options.lock ? " FOR UPDATE OF t" : ""}`,
     [identity.spaceId, taskId, identity.userId],
   );
   return result.rows[0] ?? null;

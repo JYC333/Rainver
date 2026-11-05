@@ -8,9 +8,11 @@
 reads remain in Sources. Document and annotation reads use the shared Reader
 API under `/api/v1/reader/*`.
 
-Reader annotation creation has no visibility picker. An annotation inherits its
-document's Space, `project_id`, and visibility; annotation-derived Evidence then
-inherits the annotation's scope and access policy.
+A Reader annotation takes its document's Space and `project_id`, but its
+visibility defaults to `private` even on a shared document; its author may widen
+it only as far as the document's own visibility (see
+[Reader](../architecture/READER.md)). Annotation-derived Evidence then inherits
+the annotation's scope and access policy.
 
 ## Purpose
 
@@ -127,8 +129,12 @@ source pipeline, subscription model, data model, and API.
 - Per-source run briefings remain below the daily selection and at
   `/library/digests/:connectionId/:date`; they are diagnostics/history for one
   processing rule, not the cross-source aggregation unit.
-- Project digest (`/projects/:projectId/digest`): one shared snapshot per
-  Project/day from Source items entering the Project Corpus that day. It uses
+- Project digest snapshot (`GET /api/v1/spaces/:spaceId/projects/:projectId/information-digests`):
+  one shared snapshot per Project/day from Source items entering the Project
+  Corpus that day. The web Project surface no longer renders it:
+  `/projects/:projectId/digest` and `/projects/:projectId/sources?tab=digest`
+  redirect to the Project Reading Overview, keeping the date (see
+  [Project Reading four views](#project-reading-four-views-r5)). The snapshot uses
   Project triage/confidence rather than personal interests and has no
   serendipity quota. Each member's rendering joins their own
   `source_item_user_states`; private reading state is never copied into the
@@ -138,7 +144,7 @@ source pipeline, subscription model, data model, and API.
   Project Corpus domains with zero active-member reads as anonymous team blind
   spots. Below that cohort threshold neither counts nor blind spots are
   returned.
-- Both digest pages show the stored day as that calendar date beside its
+- The personal digest page shows the stored day as that calendar date beside its
   timezone (`Intl`, the reader's UI language only formats it), step to the
   previous or next day up to the latest complete one, and say whether the
   snapshot was scheduled or a backfill. A missing day shows the server's
@@ -198,8 +204,7 @@ explicit serendipity response
 
 project_corpus_items created today + source_item_annotations
   -> one information_digests Project snapshot
-  -> GET /api/v1/spaces/:spaceId/projects/:projectId/information-digests
-  -> /projects/:projectId/digest
+  -> GET /api/v1/spaces/:spaceId/projects/:projectId/information-digests  (no web consumer)
 
 source_channel_user_subscriptions (subscribed + digest_enabled)
   + source_post_processing_runs/artifacts/decisions
@@ -298,9 +303,10 @@ cursor scope, and topic visibility is part of the page fingerprint.
 
 ## Unified reading UI
 
-`ReadingWorkspace` consumes the typed `informationDigestsApi.reading` contract
-for both My reading and Project reading (`/projects/:projectId/sources`). Pending
-is the default; read and all-material views change the server query, never a local
+`ReadingWorkspace` (My reading, `/library/reading`) and Project Reading's
+Original materials tab (`ProjectMaterials` in `/projects/:projectId/sources`)
+consume the typed `informationDigestsApi.reading` contract through `useReading`.
+Pending is the default; read and all-material views change the server query, never a local
 filter of one fetched page. Cards render all currently authorized contributions,
 original rationales, edition date/timezone or first-result label, recommendation
 arrival time and separate article time. Material-only rows are explicitly labeled. Successfully saved goal collections enter Pending without requiring a digest or annotation; preview-only results do not. Eligibility is established by the canonical successful collection audit and binding, with existing Source/Project access gates, personal Project opt-in, deduplication, and read/dismiss states preserved. Pausing a goal does not remove its saved reading history.
@@ -350,13 +356,14 @@ windows follow fresh server cursors before publishing atomically. Errors clear
 the whole window, including partially fetched replacements. No browser
 deduplication, local membership/count inference or second state store is added. Private dismissals can be restored in All material.
 
-Project preferences are discoverable in both reading scopes. Per-project controls
+Project preferences live in personal Reading's preferences. Per-project controls
 read the authenticated user's default-off setting, wait for server confirmation,
 and show failed writes without claiming success. They never change monitoring
 scope, schedules, Source subscriptions or budgets. The personal preference picker
 lists the first 200 active Projects and links to the Projects directory for more.
 
-Daily editions remain at `/library/digests` and Project `?tab=digest`; each uses
+Daily editions are `/library/digests` (personal) and the Project Reading Overview
+(`?tab=overview`, which old `?tab=digest` links redirect to); each uses
 explicit scope/date, clears old content on failures and ignores superseded reads
 or backfills. Reading state remains dynamic without removing historical members.
 The existing interest controls, annotation recovery and per-Source historical
@@ -376,7 +383,7 @@ readingLinks helper with project origin and bounded candidates/settings returns.
    item removes it from that queue, while Read and its original Daily edition
    retain it. Restore unread returns it to the queue. Private set-aside can be
    undone from All material.
-2. Open Project reading preferences to include formal recommendations from a
+2. Open Reading preferences to include formal recommendations from a
    Project (default off). Each enabled Project contributes its original reasons;
    matching content has one card with all authorized reasons. Disabling a Project
    removes that contribution, retaining your own saves and other contributions.
@@ -385,8 +392,8 @@ readingLinks helper with project origin and bounded candidates/settings returns.
    Project All material finds that SourceItem and opens the same retained Reader
    body, without copying it into another document.
 4. Daily editions use explicit scope/date, display their original timezone, and
-   do not generate on GET. A missing complete edition offers an explicit backfill
-   only when allowed; its provenance explains retention limits. Initial results
+   do not generate on GET. A missing complete personal edition offers an explicit
+   backfill only when allowed; its provenance explains retention limits. Initial results
    have no invented edition date. DST and delayed work use the original local
    period/slot, and existing snapshots remain frozen.
 
@@ -395,12 +402,12 @@ origin. Their bounded return targets are the research reading-list tab and Sourc
 settings, respectively. Reader names those destinations accurately and preserves
 origin when re-extraction reloads the document. Refresh, extraction and Inspector
 controls follow the browser English/Chinese locale. The personal preference
-picker shows its isolation explanation once, while a standalone Project control
-keeps its own explanation.
+picker shows its isolation explanation once.
 
 Daily edition item links also use `readingHref`, preserving the snapshot's exact
 scope and `digest_date`: personal `/library/digests?date=YYYY-MM-DD`, Project
-`/projects/:projectId/sources?tab=digest&date=YYYY-MM-DD`. Project context is
+`/projects/:projectId/sources?tab=digest&date=YYYY-MM-DD`, which redirects to
+the Project Reading Overview for that date. Project context is
 explicit because the same SourceItem can be recommended by another Project.
 Reader labels either destination Daily editions / 每日版 and returns to that day;
 project/serendipity origins and old Source day prev/next are unchanged. Only exact
@@ -424,8 +431,9 @@ edition, source-management and review links. Recommendation, candidate and editi
 cards use a single-column list, compact titles, shared status badges and neutral
 rationale borders. Empty/loading lists reuse EmptyState and Skeleton.
 
-Daily edition feedback and Project filing reuse Button and Select; Project editions
-use the same reading presentation as personal editions. Reading preferences follow
+Daily edition feedback and Project filing reuse Button and Select; the Project
+daily edition is the Overview composition described under Project Reading four
+views. Reading preferences follow
 the shared card/form styling, and interest controls use the English/Chinese locale
 catalogs. Reader toolbar controls use the shared small icon size and explicit
 border tokens; long-form document typography remains specific to Reader.
@@ -628,9 +636,10 @@ latest-collection contract for provenance and failure/empty-check semantics.
 
 ## Reading method improvement
 
-Reading and digest cards and the Source Reader have a server-authorized **Improve
-this result** entry to the existing `/prompts` workspace. It verifies the material,
-Project and (for Reader) canonical shown artifact, then shows the actual effective
+The Source Reader has a server-authorized **Improve this result** entry to the
+existing `/prompts` workspace, beside the **Reading method** link in Reading
+settings; cards have neither. The Reader entry verifies the material, Project and
+canonical shown artifact, then shows the actual effective
 method and recorded result provenance; historical unknowns are not guessed. Only
 existing asset maintainers can edit/trial/request activation. The simple workspace
 retains the advanced prompt page via a disclosure, without a new top-level nav.
@@ -682,9 +691,9 @@ New Project Agent reports are independent private analysis snapshots, not articl
 body replacements. Current-item original annotations/progress are not touched by
 report generation. The Reader records API exposes authorized original/analysis
 references and legacy classification; existing deep links keep their identities.
-Personal Reading/Daily Digest and Research presentation are unchanged. The new
-Project four-view consumer, explicit deep-reading/favorite actions and two-stage
-collection orchestration remain R2–R5 work; R1 does not enable new background spend.
+Personal Reading/Daily Digest and Research presentation are unchanged, and the
+records API itself starts no background spend. The Project four-view consumer and
+explicit deep-reading/favorite actions are described below.
 
 ## Project favorites and private deep-reading API (R4, UI in R5)
 
@@ -709,7 +718,8 @@ Under `/api/v1/spaces/:spaceId/projects/:projectId/reading`:
 
 Reports open via existing Reader `source_snapshot` and Artifact export contracts,
 not a second body endpoint. Read/history do not republish private reports into
-Project themes. No R4 UI, notifications, Memory or Research work is implied.
+Project themes. Deep reads add no notifications, Memory or Research work; their UI
+is the Deep readings tab below.
 See [material processing](../architecture/SOURCE_MATERIAL_PROCESSING.md#project-private-deep-reading-r4).
 
 ## Project Reading four views (R5)

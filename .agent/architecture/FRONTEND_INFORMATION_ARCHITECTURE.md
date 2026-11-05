@@ -67,7 +67,7 @@ Settings and public authentication pages expose the switch. Translated today:
 the Shell, navigation, Space switcher, Home, quick capture, Settings, public
 authentication, account security, Evolution, conversations (preflight,
 composer, turns, discussions, run controls, session config, retrieval switch),
-the Agent chat panel, Sessions, Publications, Prompts, Capabilities, Plugins,
+the Agent chat panel, Sessions, Publications, Prompts, Skills, Plugins,
 Project Files and Folder settings, Network Profiles, the Job Queue, Activity
 (queue, detail, inbox), the Knowledge notes tree and overview, focus areas,
 digests and daily reports, Token Usage, Memories (including maintenance scans),
@@ -222,11 +222,12 @@ does not make its Space a write target; only an explicit Project context does.
 Two stable tiers plus per-scene context (`src/core/navigation.tsx`, `src/components/shell/`):
 
 - **Global Rail** (`RAIL_ITEMS`) — narrow, icon-only desktop rail of major destinations, Home
-  first and stable: Home · Command Center (the `/spaces/:spaceId` default landing page) ·
-  Inbox · Reading · Sources · Review · Knowledge · Shared · Tasks · Projects · Agents ·
-  Evolution, with footer items Instance Settings (instance admin), Space Settings (space
-  admin) and Settings. Collapsible/expandable. On mobile this becomes the five-item
-  bottom tab bar (`MOBILE_TAB_ITEMS`: Home · Agent Work · Projects · More).
+  first and stable: Home · Agent Work · Command Center (where a bare `/spaces/:spaceId`
+  URL lands; the Space switcher opens Today) · Inbox · Reading · Sources · Review ·
+  Knowledge · Shared · Tasks · Projects · Agents · Evolution, with footer items Instance
+  Settings (instance admin), Space Settings (space admin) and Settings.
+  Collapsible/expandable. On mobile this becomes the bottom tab bar of three primary
+  destinations plus More (`MOBILE_TAB_ITEMS`: Home · Agent Work · Projects, then More).
 - **Scene Sidebar** (`SCENES`) — second-level navigation for the current scene, changes by
   scene (Inbox / Reading / Review / Agents / Artifacts). Collapsible; when collapsed the expand
   handle is shown in the main header next to the scene title (e.g. "☰ Agents"). Home needs no
@@ -326,14 +327,14 @@ not be navigable.
 | Snapshot Rollback Defaults | Enabled | Space-admin-only section on Space Settings (`/space-settings`) configuring the space-wide `snapshot_retention_days_default` / `snapshot_max_count_default` that Project Folders inherit absent a per-Folder override |
 | Retrieval Settings | Enabled | Space-scoped UI for the `retrieval.space.settings` scoped setting and retrieval `provider_task_policies` (`/retrieval-settings`); members can view retrieval models, while owner/admin users can edit default search mode, retrieval embedding dimensions/models, native rerank model, rerank/rewrite availability, rewrite/cache/trace defaults, and default result budget. Query rewrite, rerank, and synthesis prompt editing links to Prompt Library rather than duplicating prompt controls here. |
 | Settings | Enabled | Functional |
-| Command Center | Enabled | `/command-center`; pairs machines, binds their providers, and manages what runs on them; the default landing page of a Space |
+| Command Center | Enabled | `/command-center`; pairs and manages execution environments, as a flat environment list beside one Host's detail (`?host=`), with the built-in sandbox first and no inferred physical-machine grouping: installing, logging in and rolling back each host's CLI copies, and its ordinary CLI tools with the person's own tool account; where a bare `/spaces/:spaceId` URL lands (the Space switcher opens Today) |
 | Ask Space | Enabled | `/ask-space`; one cited, gap-aware question across Knowledge, Memory, and Project summaries |
 | Context Health | Enabled | `/context-ops`; retrieval health, diagnostics, maintenance, feedback, and memory provenance aggregates |
 | Daily Report | Enabled | `/daily-report`; generates a structured daily report from captures; experience and memory proposals require review |
 | Optional Modules | Enabled (space admin) | `/plugins`; official optional module control plane |
 | Network | Enabled (space admin, not in navigation) | `/network-profiles`, reached from Space Settings |
 | Diary, Finance | Official plugins | `/diary`, `/finance`; static defaults `enabled: false, visible: true`, overlaid at runtime by `GET /api/v1/plugins/effective` |
-| Capabilities | Enabled | Capability/skill control-plane; developer-heavy but user-visible for review |
+| Skills | Enabled | `/skills` in the Agents scene; imported Skill package review, scoped bindings and selection |
 | Prompt Library | Enabled | Space-admin prompt control plane at `/prompts`; lists prompt assets and versions, previews/evaluates immutable prompt versions, manages staging/production deployment refs, supports proposal-backed production promotion and rollback, and shows distinct prompt sets plus read-only workflow/capability usage context for auto research assets |
 | Agent Plans | Enabled | `/plans` is a read/review surface for Agent-generated Plans. Plan creation and revision start from Task Detail's Ask Agent to plan action; Plan Detail shows Source Task, review Proposal, Execute, Reconcile, versions, Plan Nodes, node Runs, and root Run. No raw-definition or New Plan form exists. |
 | Automations | Enabled | Space-scoped manual/scheduled Automation surface at `/automations`; supports agent runs, maintenance targets, and fixed Workflow targets with pin/follow resolution, version selection, input JSON, Run now, Pause/Resume, Archive, recent Workflow Executions, node progress, checkpoints, and root Run links. Scheduled Workflow targets are pinned. |
@@ -341,7 +342,6 @@ not be navigable.
 | Evolution Inbox | Enabled | `/evolution/inbox`; consolidates signals, all visible pending proposal evidence (including ordinary memory/code/workflow proposals), evolution bundles, evaluation evidence, and standard approval actions. Bundle decisions remain server-governed and the UI never applies proposals directly. |
 | Providers | Enabled | Functional; provider cards and create/edit forms show capability labels for Chat, Embeddings, and Native rerank, and creation is split into chat-provider, embedding-provider, and rerank-provider flows so retrieval-only providers are not confused with ordinary chat providers |
 | Token Usage | Enabled | Reached from personal Settings (`/settings` → Usage card) at `/usage`, visible to every active member — not a primary rail destination, since it is a lower-frequency review surface and Space Settings is admin-gated and would hide it from ordinary members. Defaults to `Mine` and supports `Shared in space` and `All visible`; all server aggregations are permission-filtered before grouping. The dashboard shows model token usage, estimated cost, accuracy, platform attribution, sessions, dimensions, read-only budget preview, and private local CLI history imports without exposing prompt or completion content. |
-| Runtime (CLI Adapters) | Enabled | Functional |
 | Agents | Enabled | Space-scoped Agent catalog and detail/edit surfaces at `/agents`; direct creation can optionally bind an Agent to a paired Host Project Location or a per-Agent managed workspace through the shared host execution picker, so a Project is optional for managed execution. Agent catalog/detail/direct chat show Host and managed-vs-Location mode, host offline/owner-only state, owner-only Reset context, and restore of an archived managed workspace on the first direct turn. Host-bound profiles keep server/provider runtime choices separate from the host's own login. |
 | Rooms | Enabled (no navigation entry) | The full Room surface lives at `/projects/:projectId/rooms` (roster, invitations, run progress, action previews), reached from the Project's **Conversations** page and from the sidecar's "Full Room" link, which lands on the conversation being read. It is not a navigation destination and there is no cross-Project Rooms index: a Room is a visibility boundary rather than a place ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision 2), so the Conversations page groups by audience and a Project with only its mainline never shows the word "Room". A Room owns human and Agent rosters plus multiple durable Conversations; each Conversation has one explicit execution preflight that pins its Host, CLI installation, and Primary Workspace, and may carry same-Host Folder attachments with read/write access. Its roster can create a host-bound specialist through the shared Server → Host → Location → adapter → installation picker; such rows show `on <host> · owner-only`, offline state, and an owner-only Reset context action. Each human message executes under that speaker's retrieval identity and the Conversation's pinned Agent runtime bindings, opens one auditable collaboration task, supports direct `@agent` segmentation or manager coordination, and shows paged history plus each Agent's turn as the Agent speaking — one bubble in whichever of its four states it is in (working, blocked, done, failed), with the work folding above the reply once it finishes. Nothing about a Run appears under the person's message, and completed turns have no trailing Run action; only a blocked turn links to the approval or decision it needs. See [`CONVERSATION.md`](CONVERSATION.md). `/agent-groups` remains the backend task/audit authority, not a second conversation UI. There is no separate Project Chat *route*: a collapsible sidecar is mounted beside every Area of the Project shell, bound to the Project's **mainline** Room (every Project member belongs to it; opening the Project enrols a member who joined later) and rendering that Room's own conversation, not a private one, so discussing what you are looking at never means leaving it — including each turn's proposals as Accept/Reject cards that continue the conversation in place, so a decision never means leaving the Project for the Review page. Every Project is created with its mainline Room ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision 4), and a Project nobody has spoken in offers an explicit **New conversation** setup action: the draft shows Agent, Host, CLI, Primary Workspace, and attachments beside the composer; the first message is blocked until that context is initialized, so no Host or workspace switches implicitly. It is suppressed on `/projects/:projectId/rooms`, which is already the Room. The sidecar is open on first arrival where it sits beside the page (≥ `lg`; narrower viewports keep a button, since there it overlays) and its open state is then remembered per Project, its selected conversation per Room, its width per browser (a drag handle on its left edge, keyboard-adjustable, bounded 288–640px); at `lg` it is stuck to the top of the shell's scroll container at that container's measured height, so the message list scrolls inside it and never lengthens the page. The sidecar and full Room page pass Room-specific context into the same `ConversationSurface` (`modules/conversation/`); that module owns transcript, composer, execution preflight and turn rendering, while Room owns audience, roster and routing. Agent and notebook surfaces reuse the same `ConversationView`/`ConversationTurn` primitives. There is no default-Assistant chat entry. |
 | **Home** (user-scoped) | Enabled | Cross-space command center at `/home`; **not** a Space, not in the switcher |
@@ -359,7 +359,7 @@ Managed host workspaces are surfaced consistently across the Agents and Rooms ro
 | **Decisions Area** | Enabled | `/projects/:projectId/decisions`; creates standalone or explicitly Inquiry-linked Decision Cases, shows named Thread references, manages Options, Criteria, trade-off scores, Commitments, and explicit Delivery Tasks. |
 | **Learning Area** | Redirect | `/projects/:projectId/learning` redirects to Pulse. `learning` HTTP routes and tables remain; the web client does not call `learningApi`. There is no Space-level Cards UI. |
 | **Knowledge candidates** (Inquiry Review tab) | Enabled | `/projects/:projectId/inquiry?view=review&tab=candidates` (`/knowledge-review` redirects); summarizes new source information, selects eligible Notes/Threads/Interpretations and Agents by name for extraction, opens bounded Candidate checkpoints, supports view-all, edit-and-promote, defer/reopen, and dismiss. Canonical Knowledge writes remain proposal-gated. |
-| **Board** | Enabled | `/projects/:projectId/board`; the Project's Task surface, over an ACL-filtered server read model (`GET /projects/:id/board`). Lanes are flow statuses from `board_columns` or the defaults; `cancelled` is archived and `blocked` is an overlay drawn in the lane the work sits in rather than a lane of its own. A card carries its Loop stage, who holds it through the responsibility chain, active-run and blocked signals — and nothing else, so it stays scannable. Dragging to Done is refused with `completion_requirements_unmet` when the Task has not met what it declared; the refusal names the reasons and closing anyway records exactly which were skipped. Filters (all / mine / Agent working / needs me) are relative to the viewer the server names. A writer creates a Task from the Board itself (`New Task`, pre-bound to the Project); a viewer sees no such control and no drag handle. WIP limits are shown, never enforced. `/projects/:projectId/delivery` redirects here. |
+| **Board** | Enabled | `/projects/:projectId/board`; the Project's Task surface, over an ACL-filtered server read model (`GET /projects/:id/board`). Lanes are the Project's `board_columns` (a writer configures label, flow `status_key` and optional WIP limit through `PUT /projects/:id/board/columns`) or, absent any, the default flow-status lanes; `cancelled` is archived and `blocked` is an overlay drawn in an `in_progress` lane unless a column maps `blocked`. A card carries who holds it through the responsibility chain, active-run and blocked signals — and nothing else, so it stays scannable. Dragging to Done is refused with `completion_requirements_unmet` when the Task has not met what it declared; the refusal names the reasons and closing anyway records exactly which were skipped. Filters (all / mine / Agent working / needs me) are relative to the viewer the server names. A writer creates a Task from the Board itself (`New Task`, pre-bound to the Project); a viewer sees no such control and no drag handle. WIP limits are shown, never enforced. `/projects/:projectId/delivery` redirects here. |
 | **Operations Area** | Redirect | `/projects/:projectId/operations` preserves query context at `/inquiry/records?tab=runs`; no historical Operation is dropped for lacking a Thread. |
 | **Review** (Proposals + Memory) | Enabled | Governance area (rail label "Review"; routes `/proposals` and `/memory`). The scene sidebar links real surfaces; proposal-type filters live inside `/proposals`. `/memory` is also where an Agent's own writes are read after the fact ([ADR 0003](../decisions/0003-memory-proposal-flow.md)): filters for written-by-Agent / by-a-person / archived, and `?session=` / `?run=` (the link a paused session's — or a paused single turn's — attention item carries), an `Agent` marker on those rows, and Archive / Restore acting directly on the owner's own entry — one request, no proposal. The detail page's **History** lists every version with the rationale, run and session behind it, which is what makes a write nobody approved beforehand answerable afterwards. |
 | **Knowledge** | Enabled | First-level unified module (rail label "Knowledge"; route `/knowledge`). `/knowledge` redirects to the last-used section (default `/knowledge/notes`); `/knowledge/home` is an optional overview hub, never the forced landing. Sub-areas switch via an in-header breadcrumb (no scene sidebar): **Notes** (working-knowledge Area — configurable collection tree + open-note tabs), **Wiki** (canonical, KnowledgeItem-backed, `/knowledge/wiki`), **Sources** (backend source CRUD exists; current frontend is list-only evidence browsing), **Cards**. The note editor's link picker offers every object type that is both linkable and searchable — Note, Wiki, Source, Claim, Question — built from `NOTE_LINK_TARGET_TYPE_VALUES` rather than a hand-maintained array, and guarded by `server/test/noteLinkTargetsGuard.test.ts`. Candidates for the search-backed kinds come from `POST /api/v1/knowledge/search`. `note_links` stays navigational and carries no graph authority. The reverse direction is a "jot a note" action on Research Area reading-list cards: `POST /api/v1/knowledge/notes/jot` creates (or appends to) a note and records the link in one call, and `GET /api/v1/knowledge/objects/:objectId/note-links` answers what notes cite a given object. Jotting is offered only on rows with an `object_id` — a corpus row's `source_item_id` / `evidence_id` targets have no `space_objects` row and cannot be a link endpoint. |
@@ -393,7 +393,7 @@ Affected pages: Sessions detail, Task detail, Activity detail, Run detail.
 |---|---|
 | Activity Inbox (raw) | "Nothing to process. Use Quick Capture to save a thought." → link to Capture |
 | Proposal Inbox | "No pending proposals. Process activity or ask an agent to generate some." |
-| No runtime configured | "No runtime adapter configured." → link to Runtime settings |
+| No runtime configured | "No runtime adapter configured." → link to that Host's Command Center detail (`/command-center?host=…`) when the Host is known |
 | No recent sessions | "Start by asking an agent or capturing a thought." |
 | Unsupported proposal type | "This proposal type cannot be applied yet. Reject to dismiss it." |
 | Hidden task (404) | "This task is not accessible in your current space or visibility level." |
@@ -437,10 +437,10 @@ The frontend is ready for personal dogfooding. The core product loop is usable:
   recommendations, then hand off project collection work to
   `/projects/:projectId/sources`; global source-level management remains
   `/sources`. The
-  Capabilities page is the imported skill/package review surface. Library (`/library`)
+  Skills page (`/skills`) is the imported skill/package review surface. Library (`/library`)
   is the shell for per-user Sources-derived reading, with scene-sidebar routes
-  for All Items and Digests; item type filters live under All Items rather than
-  becoming top-level Library categories. Activity Inbox daily source rows point
+  To read, Read, All material, Daily editions and By type; item type filters live
+  under By type rather than becoming top-level Library categories. Activity Inbox daily source rows point
   into `/library/digests/:connectionId/:date`, source recommendation rows point
   into `/sources?view=pending`, and project source collection rows point into
   `/projects/:projectId/sources`; Inbox does not render source item or digest
@@ -516,6 +516,19 @@ The clickable dogfooding path is intentionally structured rather than canvas-bas
   `/evolution/inbox` approval.
 - `/runs/:id` → `waiting_for_review` → Resume or Abandon; abandon requires no
   database-side recovery and is terminal.
+- `/runs/:id` (succeeded/degraded, passed evaluation) → Save as workflow →
+  sanitized Preview → Save. A low-risk extraction creates a draft
+  `workflow_template` version and the Run page shows an "Open draft" link to
+  `/evolution?asset=<id>`; a higher-risk one creates a `workflow_save` Proposal
+  and the link is "Review proposal" (`/proposals/:id`), whose accept response
+  offers "Open in Evolution". Both links come from the save/accept responses
+  and last for that page visit; the asset's `metadata_json` records
+  `source: run_extraction`, the extracted `risk_level` (which floors its
+  promotion Proposal's risk) and, for the reviewed path, the `proposal_id`.
+  The draft then follows the `/evolution` promotion path
+  above, and an approved version is launched through the `/automations`
+  Workflow target. `?asset=` only preselects an asset the Space can already
+  list; the links bypass no gate.
 
 These surfaces use structured forms plus Advanced JSON for extensibility. The client
 does not apply proposals or infer approval; all mutations go through the server authority.

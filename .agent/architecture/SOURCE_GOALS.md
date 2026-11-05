@@ -5,7 +5,9 @@
 `server/src/modules/sources/goals/` owns the goal aggregate, immutable plan
 versions, bounded previews, source bindings, candidate validation and CAS
 publication/rollback. `packages/protocol/src/sourceGoals.ts` owns public input
-schemas and conversation/detail DTOs. Drizzle owns six `source_goal_*` tables;
+schemas and conversation/detail DTOs. Drizzle owns `source_goals` and eight
+`source_goal_*` tables (versions, previews, bindings, repairs, runs, items,
+item changes, change user states);
 migration `0005_project_reading_and_source_goals.sql` includes the goal Session association, compatibility identity,
 creation idempotency and the legacy extraction-job scheduling guard.
 The old Level 3 runner remains frozen and is never an execution fallback here.
@@ -15,8 +17,9 @@ running instance is migrated as part of a source change.
 The HTTP entrypoint is `/api/v1/sources/goals`: POST creates a natural-language
 goal with an existing owned Agent/Profile and optional Project, GET lists goals,
 and GET `/:goalId` recovers versions, preview status, source progress, recent runs
-and repair candidates. POST suffixes `explore`, `preview`, `follow`, `feedback`,
-`save`, `resume`, `pause`, `delete`, `rollback` operate the domain. Preview
+and repair candidates. POST suffixes `edit`, `explore`, `preview`, `save`,
+`follow`, `feedback`, `check`, `resume`, `pause`, `delete`, `rollback` operate
+the domain. Preview
 names an exact `version_id`. `follow` is the one continuous-following
 confirmation (see [Continuous following](#continuous-following-confirmation-lifecycle-and-topic-membership));
 it never requires a preview. `save` (`SourceGoalSaveSampleSchema`) is the
@@ -83,7 +86,7 @@ Project access. Each source additionally needs full content access, matching
 owner/Project, active connection/channel and canonical Source permissions.
 Metadata visibility is insufficient for source content. Source configuration,
 credential reference and approved version are fingerprinted in the preview.
-Start, each execution, physical send and result acceptance revalidate authority.
+Activation, each execution, physical send and result acceptance revalidate authority.
 Changed source scope refuses old previews and bindings rather than expanding
 network or credential reach. Pausing/deleting cancels existing goal Agent Runs;
 subsequent physical requests and business result commits refuse authorization.
@@ -92,7 +95,7 @@ A preview reserves one of three attempts on its immutable plan version, runs all
 sources through the same bounded executor, and records observation time,
 contributions and limitations. Empty/invalid/failed contributions are partial.
 Ready requires successful nonempty relevant data from each selected Source. A single Source or multiple Sources of one type are valid; the two-kind requirement belongs to the acceptance fixture only. A ready
-preview expires in 15 minutes. Start locks the goal, creates bindings and upserts
+preview expires in 15 minutes. Activation locks the goal, creates bindings and upserts
 one existing scheduler task atomically. No independent scheduler is added.
 
 Existing scheduler tasks enqueue `source_goal_tick` jobs; existing job workers
@@ -150,8 +153,7 @@ upstream history.
 ## Verification and remaining acceptance
 
 Verification distinguishes deterministic fixtures, real HTTP/PG/OS execution
-and real Agent/model generation. Implementation and review history is recorded
-in commits `5409ce02`, `a6679858`, `d9e02a3f` and `a1b6590c`. A fixture author Run or test-authored
+and real Agent/model generation. A fixture author Run or test-authored
 handler is never evidence of actual model generation. Real Agent smoke requires
 an authorized existing Profile and live runtime route; absent that capability,
 record it unverified rather than switching model or spend paths.
@@ -200,7 +202,7 @@ fixture in `server/test/fixtures/sourceGoals/observations.real-agent.json`.
 Five actual native model Runs included failed generation/repair attempts; the
 final check replayed captured real generation and performed a new real repair.
 Monetary cost was unknown. Synthetic candidates and replay are not additional
-model generation. Full attempts remain in the implementation commit history.
+model generation.
 
 ### Stage-two closeout boundaries
 
@@ -605,9 +607,9 @@ An active native preview does not expire during search; its fifteen-minute
 freshness window starts when collection settles. Duplicate preview admission
 still refuses an existing live native Run even after the initial freshness date.
 
-New Agent-search drafts request extract_text/full_text so the Agent can autonomously
-read articles or repository README/docs and submit readable, attributed material.
-The same action supports both original text supplied by the Agent and Agent synthesis;
+New Agent-search drafts request extract_text/full_text so the Agent may submit
+readily available source text or a short description with a link; collection
+does not require a body. The same action supports both original text supplied by the Agent and Agent synthesis;
 neither is independently verified. A link that cannot be read can disclose a bounded
 unavailable reason. Per-item and aggregate text/byte limits keep submissions bounded.
 Existing sources retain their actual consent/capture/retention policy: reference-only
@@ -632,8 +634,8 @@ The Agent's existing read tools choose acquisition; no new fetcher, model loop,
 CLI driver, parser dependency or scheduler is introduced.
 
 Preview and ongoing collection share the same Run queue and result validator.
-Closing Reading preserves canonical progress. Start requires a fresh qualified
-preview of the exact immutable version and reauthorizes every Source. Draft
+Closing Reading preserves canonical progress. Follow activates the exact
+immutable version without requiring a preview and reauthorizes every Source. Draft
 adjustments do not mutate the active plan. A fresh preview can be saved directly
 to Reading (`execution_mode=manual`); ownership/subscription promotion and sample
 staging share one transaction. It uses the same materialization lease/recovery and
@@ -665,11 +667,11 @@ saves an `agent_search` query without connection/channel IDs. It does not inspec
 API connectors or enumerate API prerequisites. API and repair instructions retain
 their own plan shapes; planning never performs the subsequent search preview.
 
-Agent search previews allow bounded search and reading in the same existing Run.
-The Agent chooses the resource type and what to read, preferring fewer useful,
-readable results over a long link list. Repository results may summarize README
-and documentation; article results may supply text or a clearly labeled synthesis.
-Item limits remain ceilings, not targets. Access failures keep the link with an
+Agent search previews allow bounded search and brief relevance checks in the same
+existing Run; a preview may stop at a small representative sample, while followed
+collection submits every relevant candidate found within the cap (see
+[Broad discovery](#broad-discovery-and-bounded-continuity)). Optional text may be
+source text or a clearly labeled synthesis. Item limits remain ceilings, not targets. Access failures keep the link with an
 explicit reason. Coverage remains non-exhaustive; tool failure without results is
 submitted as failure when the tool cannot run, rather than waiting indefinitely.
 
@@ -782,8 +784,7 @@ preview:
   cancelling, so a delayed older activation never cancels a newer version's
   queued or running collection.
 
-The former preview-gated continuous `start` is removed with its UI, tests and
-fixtures; no alias remains. Manual save (`POST .../save`, Agent-search plans
+There is no preview-gated `start` action. Manual save (`POST .../save`, Agent-search plans
 only) keeps requiring a fresh exact-version preview because it stores that
 sample; a stale, partial or expired preview only blocks manual save, never
 following.
@@ -810,9 +811,10 @@ persisted `occurred_at` when newer. A deleted (tombstone) row still suppresses
 re-materialization so it is never resurrected, but it is not membership work:
 it takes no batch, keeps no page pending, never joins a goal and contributes no
 watermark. Model-authored metadata never creates
-or removes membership. `selection_status` is `unjudged` from collection; the
+or removes membership. `selection_status` starts `unjudged`; the
 `important` / `not_selected` / `judgment_failed` values and `selection_reason`
-are reserved for topic judgment (not implemented in this phase). Migration 0006
+are written by topic judgment (see
+[Freshness, topic judgment and owner feedback](#freshness-topic-judgment-and-owner-feedback)). Migration 0006
 backfills only memberships provable by the previous Reading proof (a succeeded
 goal audit, its binding's connection, the same Project, or for a personal goal
 an item owned by the goal owner); forged audits, failed audits, another
@@ -1183,13 +1185,13 @@ second freshness store.
 
 ### Reading-method integration and layered readers
 
-Agent-native collection uses the versioned investigation strategy without changing
+Agent-native collection uses the code-owned discovery contract
+(`collectionPrompt.ts`), not the versioned investigation strategy, without changing
 its requester/Source consent or per-reader full/summary projection contract.
 A Project's private brief/constraints/instructions may influence saved material
 only when the connection and canonical output item belong to that Project.
-Otherwise collection continues as ordinary evidence-led reading using the
-Space/system method, with an explicit missing-Project-context note and a null
-Project in both Run and closed WorkContext. It does not request wider Source
+Otherwise collection continues as topic discovery with an explicit
+missing-Project-context note and a null Project in both Run and closed WorkContext. It does not request wider Source
 sharing or secretly inject Project instructions. Actual Source revocation still
 fails existing preflight; ordinary layered readership is not authority revocation.
 Delivery and final writer check frozen context, actual egress and output scope.
@@ -1235,8 +1237,9 @@ credentials, cadence or budgets. The owner must also be a Project writer when
 scoped. It refuses an active planning Run or pending dispatch, preserves the
 active plan/collection/material, and stores one immutable human-authored candidate.
 
-Migration `0008_source_goal_manual_versions.sql` adds nullable user provenance,
-makes run provenance nullable and requires exactly one of the two. It preserves
+Migration `0007_project_reading.sql` adds nullable user provenance
+(`created_by_user_id`), makes run provenance nullable and requires exactly one of
+the two (`ck_source_goal_version_author`). It preserves
 all earlier Agent authors. Manual save creates no model Run and does not consume
 a planning attempt. Changed Agent-search queries reuse bindNativeSource to obtain
 canonical owned metadata bindings, rather than editing an active channel in place.

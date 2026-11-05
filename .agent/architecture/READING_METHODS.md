@@ -420,8 +420,8 @@ that the system lacks a feature. No live instance was updated by source edits.
 ### Project theme strategy (R2)
 
 `reading.following_synthesis` is a separate approved PromptCatalog text asset for
-first-stage synthesis of retained originals, not `reading.project_investigation`
-and not the future single-article deep-read method. Explicit catalog sync installs
+first-stage synthesis of retained originals, not `reading.project_investigation`,
+which single-article Project deep reads freeze. Explicit catalog sync installs
 its complete baseline. Theme consent refuses missing/uninitialized or oversized
 strategy content rather than guessing a legacy version. Collection admission
 freezes strategy ID/hash/provenance and purpose/context; the immutable Run carries

@@ -249,6 +249,30 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
   `supports_model_provider`, read from the same `AgentRuntimeDefinition` that
   Profile admission enforces so the composer cannot offer a mode the server
   answers with 422. There is no `provider_binding` field on this endpoint.
+- `POST /api/v1/hosts/:hostId/browse-directories` — `{ path? }`, owner only;
+  the daemon lists that directory and the server forwards the answer
+  (`{ path, parent, dirs, truncated }`) without opening a path itself. 409 when
+  the Host is offline or does not answer.
+- `POST /api/v1/hosts/:hostId/workspaces` — `{ project_id, path, name }`, owner
+  only, requires Project write access; the daemon registers the directory as a
+  Location (201 `{ workspace_id, display_path }`, 409 when offline).
+- `GET /api/v1/hosts/:hostId/tool-operations`,
+  `POST /api/v1/hosts/:hostId/installations/:runtimeKey` (install),
+  `.../:runtimeKey/own/update`, `.../:runtimeKey/rollback` and
+  `DELETE .../:runtimeKey/:installation` (uninstall a `managed:` copy only) —
+  the owner's installation actions; see "Installations" below.
+  `GET /api/v1/hosts/runtime-changes` lists the recorded install, rollback and
+  removal changes newest first.
+- `GET /api/v1/hosts/:hostId/runtime-provisioning/opencode` and `.../retry` —
+  the built-in host's OpenCode provisioning state.
+- `GET /api/v1/hosts/:hostId/usage` (cached quota) and
+  `POST .../installations/:runtimeKey/:installation/usage` (probe one reported
+  copy now); see "Subscription quota" under "Installations" below.
+- `.../installations/:runtimeKey/:installation/login/stream`, `/login/input`
+  and `/login/callback` — the interactive login; see "Installations" below.
+- `PUT /api/v1/hosts/:hostId/provider-proxy-url` — `{ base_url }`, owner
+  only; sets or clears (`null`/empty) the Host's `provider_proxy_base_url`
+  override, which must be an absolute http(s) URL.
 - `POST /api/v1/hosts/:hostId/revoke` — terminal; a revoked host's token stops
   authenticating. Also closes the host's live WebSocket connection
   immediately if it has one (`HostConnectionRegistry.closeConnection`) — so
@@ -259,7 +283,7 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
 
 Unauthenticated (the pairing code itself is the one-time credential):
 
-- `POST /api/v1/hosts/register` — `{ pairing_code, platform?, arch?, daemon_version?, capabilities_json? }` → `{ host_id, token, name }`. Failed and successful attempts from one *source* are rate-limited (10 / 10 minutes), persisted under the instance cache so a restart does not hand a caller who has just spent their quota a fresh one. The snapshot is written when a bucket fills and otherwise at most every 30s, so a restart can lose the most recent attempts of a bucket that is not yet full — the window is a floor, not an exact replay. The source is the caller's address for IPv4 and its **/64** for IPv6 (`rateLimitKey`), because a /64 is the smallest block an ISP hands out and counting whole v6 addresses gave one caller the full quota once per address; an IPv4-mapped `::ffff:` spelling, which is how a proxy writes a v4 caller into `X-Forwarded-For`, is keyed as the v4 address it is rather than sharing one bucket with every other mapped caller. The window map is bounded (10 000 sources, least-recently-touched evicted) so an unauthenticated caller cannot grow it without limit, and the snapshot is written asynchronously — a synchronous write per attempt was itself a way to stall the event loop from this unauthenticated path.
+- `POST /api/v1/hosts/register` — `{ pairing_code }` plus the full `HostHelloInfoSchema` the daemon later sends over the socket (`platform`, `arch`, `daemon_version`, `environment_kind`, `capabilities_json`, `workspace_reports`, `managed_workspaces`, `ambient_sessions`, all required; 422 `Malformed host info` otherwise) → 201 `{ host_id, token, name }`. Failed and successful attempts from one *source* are rate-limited (10 / 10 minutes), persisted under the instance cache so a restart does not hand a caller who has just spent their quota a fresh one. The snapshot is written when a bucket fills and otherwise at most every 30s, so a restart can lose the most recent attempts of a bucket that is not yet full — the window is a floor, not an exact replay. The source is the caller's address for IPv4 and its **/64** for IPv6 (`rateLimitKey`), because a /64 is the smallest block an ISP hands out and counting whole v6 addresses gave one caller the full quota once per address; an IPv4-mapped `::ffff:` spelling, which is how a proxy writes a v4 caller into `X-Forwarded-For`, is keyed as the v4 address it is rather than sharing one bucket with every other mapped caller. The window map is bounded (10 000 sources, least-recently-touched evicted) so an unauthenticated caller cannot grow it without limit, and the snapshot is written asynchronously — a synchronous write per attempt was itself a way to stall the event loop from this unauthenticated path.
 
 Host-bearer-token authenticated (`Authorization: Bearer <token>`, never a
 user session — the daemon has no session to present):
@@ -341,9 +365,13 @@ runtime to its owner-controlled Host login without copying credential bytes.
 Switching backend mode changes the runtime profile key so a session created
 under one backend is not resumed under another.
 
-The proxy address is resolved from server configuration and the Host's
-registered control-plane context, never from a daemon-reported URL or an
-untrusted request header. `PROVIDER_PROXY_PORT` and any externally published
+The proxy address is resolved in this order (`hostProviderProxyBaseUrl` in
+`runs/hostProviderProxyAddress.ts`): the Host's owner-set
+`provider_proxy_base_url` override, then the in-network listener for the
+built-in host, then `PROVIDER_PROXY_EXTERNAL_BASE_URL` for a paired Host, then
+that Host's control-plane address (`FRONTEND_URL`) with the proxy port when it
+is `http:`. It never comes from a daemon-reported URL or an untrusted request
+header. `PROVIDER_PROXY_PORT` and any externally published
 port remain deployment settings. Host revocation removes its active leases;
 terminal Runs revoke their Run lease. See
 [`AGENT_RUNTIME_AUTHORITY.md`](../architecture/AGENT_RUNTIME_AUTHORITY.md)
@@ -445,7 +473,7 @@ rules applies, and they are deliberately different:
   own second named failure.
 
 The daemon's own short-lived **helper** spawns take the same rule through one
-builder, `helperProcessEnv(ambient, adapterType, { keepStateRoots? })`: the
+builder, `helperProcessEnv(ambient, runtimeKey, { keepStateRoots? })`: the
 machine's environment minus that runtime's vendor credentials. These are the
 version probe, the installer, the `login --help` capability check, the Codex
 usage probe and the ambient `session/list`. One builder. Do not spread
@@ -653,7 +681,7 @@ one by default: a new Task has no `max_duration_seconds` unless someone sets
 it, and AgentVersion `max_run_time_seconds` is legacy metadata, not a limit.
 At the limit orchestration aborts the attempt's deadline signal, then stops the
 runtime through the same terminate → wait 5 s → force → wait 2 s sequence an
-explicit stop uses (`stopRuntimeProcess`). If the host has still not confirmed
+explicit stop uses (`RunExecutionControl.stop`, `runs/executionControl.ts`). If the host has still not confirmed
 the stop ten seconds after the limit, `RemoteWsCliCommandExecutor` sends a
 forced `terminate`, settles its own dispatch (`run_time_limit_reached`), and so
 frees the Host slot and stops the credential renewals; the daemon's late
@@ -778,8 +806,9 @@ handled the same way — the builtin CLIs and enabled registry agents alike:
 
 - **`own`** — the machine's PATH install (bundled
   `claude-agent-acp`/`codex-acp` for Claude/Codex, the vendor binary for
-  OpenCode). Detected by `--version`; never installed, upgraded, or
-  reconfigured by the daemon. Its login state is the machine's. A registry
+  OpenCode). Detected by `--version`; never installed or reconfigured by the
+  daemon, and upgraded only by the owner's explicit `update_own_tool`
+  request (see Purpose). Its login state is the machine's. A registry
   agent has no fixed binary name — ACP has no discovery — so its probe
   carries `own_candidates` derived from the registry distribution (a binary
   target's executable name and arguments; an npm package, whose command
@@ -823,7 +852,9 @@ fresh heartbeat, so installing an agent never requires a daemon reconnect.
 
 A runtime on a host has **one identity: runtime key × copy**, and
 everything about a copy lives on the copy. The capability report is
-`{ runtimes, versions, installations }`: `installations[runtime_key]` holds
+`{ runtimes, versions, installations }` plus the optional
+`workspace_read_only` (`{ supported, mechanism: "bwrap-v1", reason }`) and
+`tool_bridge_protocols` reports: `installations[runtime_key]` holds
 one `{ id, version, logged_in, options }` per copy. `logged_in` describes
 native account state: the configured credential file for built-ins, or the
 ACP authentication result for an Agent without a login spec. Separately,
@@ -848,8 +879,10 @@ for display only.
 The shape is the protocol's (`packages/protocol/src/hosts.ts`:
 `HostCapabilitiesSchema`), so server and web share one definition and the
 server validates what it stores and serves. `hosts/capabilities.ts` reads
-`runtimes`, `versions`, and `installations` only. An installation entry that
-does not parse is dropped. Do not translate another layout into this shape.
+`runtimes`, `versions`, `installations`, `workspace_read_only` and
+`tool_bridge_protocols` only. An installation entry that does not parse is
+dropped. The daemon's `sources_execution` offer (`isolated-v1`) is read from the
+raw hello frame when the connection registers; normalization does not keep it. Do not translate another layout into this shape.
 
 Install (`POST /api/v1/hosts/:hostId/installations/:runtimeKey`, host owner)
 sends `install_tool { request_id, runtime_key, version, distribution, login,
@@ -1044,7 +1077,7 @@ reset text, and a reason when it could not read one. Never the credential, and
 never a path on the host: the reason passes `sanitizeFailure`, so vendor stderr
 or a spawn error names neither the copy nor its login file.
 Claude's is an OAuth call against `api.anthropic.com/api/oauth/usage`; Codex's
-runs `codex -s read-only -a untrusted app-server` and asks
+runs `codex -s read-only -a never app-server` and asks
 `account/rateLimits/read`, recovering the numbers from the refusal an
 over-limit account gets. Antigravity ACP refreshes only its copy's stored
 authorized-user credential against Google's fixed token endpoint, then reads
@@ -1073,7 +1106,8 @@ the cache: an Agent-triggered Room turn waits while its login is past the
 Space's `subscription_quota.reserve_pct` (`rooms/quotaGate.ts`, `modules/rooms.md`
 "Subscription quota gate"), probing first when the reading is older than a
 minute; that probe keeps a readable cached number rather than overwriting it
-with "offline" or "did not answer in time" (`keepReadingWhenUnreadable`). The
+with "offline" or "did not answer in time" (`keepReadingWhenUnreadable`; the
+one-minute freshness and that probe live in `rooms/subscriptionLogins.ts`). The
 host's own usage endpoint is its owner's; a Room shows more widely only what
 its conversations run on: any member of the Room reads, for the logins its
 Agents run on in that conversation, the window's percentage and reset time
@@ -1229,10 +1263,58 @@ reloads the enabled set at startup and every 60s. Disabling is refused (409)
 while any host still reports a copy (`GET /api/v1/acp-agents` lists
 `installed_on`), so nothing is orphaned on a machine and no pinned thread
 stalls silently. ADR 0016 is amended in place for managed copies; the
-machine's own installs are still never touched.
+machine's own installs are never installed or reconfigured, and are upgraded
+only by the owner's explicit `update_own_tool` request.
 
-In the UI (command center → Hosts) this is host-major: each remote host card
-has an **Agents** section listing only the agents that host has a copy of,
+**Command Center layout** (`command_center/HostsPanel.tsx`, `HostSummaryList.tsx`,
+`HostDetail.tsx`). The page is a list of the Hosts the person can see and the
+detail of one of them. In this guide, "Host card" means that Host's detail.
+- **List.** A flat execution-environment list, with the instance's own Host
+  labelled "Built-in sandbox" first. Paired environments retain their names;
+  their detail explains native execution with that environment's directories
+  and permissions. Machine headings are not shown: machine records are not
+  automatic same-device detection, and two Hosts need not mean two physical
+  machines. No machine association or detection is added by this presentation.
+  Each entry shows only what is already loaded: status, built-in or paired, environment,
+  and problems known from the Host list, the Server provisioning read and
+  reported Runtime logins. It never shows a person's tool account or sandbox
+  state.
+- **URL.** The Host is named in the URL as `?host=<id>`, optionally with
+  `&section=runtime|cli|connection` (`hostLinks.ts` `commandCenterHostPath`).
+  Selecting a Host pushes history.
+  - With no Host named, the detail shows the built-in Host, or the first.
+  - A named Host that is not in the list shows "This Host is not available"
+    and nothing in its place; an offline Host is still shown.
+- **One Host.** Its detail is the page, with no list.
+- **Below `md`.** As in Agent Work, the list and an opened detail take turns,
+  and Back returns focus to the Host it left. Choosing a Host whose list
+  button then hides, including the default one already mounted, moves focus
+  into its detail.
+- **Detail lifecycle.** The detail is rendered once, keyed by Host and by how
+  many times a named Host was left.
+  - The 3 s list refresh only re-renders it.
+  - Choosing another Host unmounts it, ending a login open there.
+  - Leaving a named Host for the list (Back, or history) remounts it, even
+    when the same Host stays the default, so nothing it had open runs on
+    behind the list.
+  - With no Host named, the default detail stays mounted but hidden; the first
+    focus inside it names it in the URL, so resizing does not hide or end what
+    is open.
+- **Sections.** Every navigation that names `section=cli`, including history
+  on the Host already shown, opens the CLI tools. A refresh never reopens them
+  after the person closed them.
+- **Detail groups.**
+  - Agent Runtimes: the Server provisioning status, then "Installed copies".
+  - CLI tools: closed unless the link names `cli`.
+  - Connection and management: the built-in Host's isolation and capacity, or
+    a paired Host's proxy address. Revoke sits in the detail header.
+- **Links from elsewhere.** Links that know their Host open its detail: the
+  conversation preflight's Host recovery and offline links, and the execution
+  picker's provisioning-retry and sign-in links. Links that do not know a Host
+  still open the overview.
+
+In the UI this is host-major: each remote Host's detail
+has an **Agent Runtimes** group ("Installed copies") listing only the agents that host has a copy of,
 with source (`own`/`managed`), a cleaned version number that does not repeat
 the Agent name, log-in / remove, and an "Add agent…"
 picker that is one list, the ACP registry — nothing is shown above it as a
@@ -1302,6 +1384,455 @@ store) and `NODE_OPTIONS` (which injects code into the runtime process) through.
 A run on the machine's own login is governed by the other rule instead: it
 keeps the machine's environment apart from `clearStateRootEnv`'s two sets, and
 carries a runtime profile of its own — see "The runtime profile" above.
+
+### Ordinary CLI tools (`hosts/ordinaryToolRoutes.ts`, daemon `src/ordinaryTools.ts`)
+
+Ordinary CLIs are commands a person or Run uses directly (`git`, `curl`, `jq`,
+`rg`, and the official Feishu/Lark `lark-cli`). They are not Agent Runtimes:
+no RuntimeKey, no entry in `installations`, no runtime probe, no ACP health
+check and no Runtime drain. The one catalog is
+`packages/protocol/src/ordinaryTools.ts`. It fixes each tool's executable
+basename and version argv, and holds the only managed recipe:
+`lark-cli` 1.0.99 from the GitHub release `larksuite/cli` v1.0.99. Each
+Linux/macOS x86_64/aarch64 archive is pinned by SHA-256. These hashes match the
+release `checksums.txt` and the copy inside `@larksuite/cli@1.0.99`. Windows
+and riscv64 are not offered. Basic commands are detect/register only; a
+missing one shows as missing, and nothing is installed with sudo or a system
+package manager.
+
+**Scope and limits.**
+- Installation is shared per Host; a login is per person (next section).
+- Installing a tool logs nobody in, and a green Host status is not sandbox
+  availability. Each is shown separately.
+- "On by default" grants no Host, Project, network or external-write authority
+  beyond the Run's own (B8A, B62–B64).
+- Not part of this feature:
+  - a bot identity, or any other account-holding service;
+  - several accounts per person;
+  - a tool market, or user-supplied install scripts or commands;
+  - Sources use of these tools;
+  - an enterprise credential platform.
+
+The daemon reports `capabilities_json.ordinary_tools` (`protocol:
+"ordinary-tools-v1"`, one entry per catalog tool: `available | missing |
+broken`, source `managed | registered | path`, parsed and raw version,
+managed copy and catalog version). A copy is chosen in that precedence. Paths
+are not reported. Versions are cached by file identity, so heartbeats do not
+spawn a command until a binary changes. State lives under
+`<config dir>/ordinary-tools/` (`managed/<tool>/<version>/`,
+`registrations.json`), separate from the ACP `tools/` tree. Later personal tool
+state is outside `managed/`; removing a managed copy or a registration never
+deletes it.
+
+`ordinary_tool_request { operation }` carries only `install { tool_id,
+version }`, `register { tool_id, path|null }` or `remove { tool_id, source }`
+(strict schemas, plus the built-in Host's egress transport for install). The
+daemon resolves the archive from its *own* compiled catalog. A version it does
+not carry is refused with "update the Host first". Install downloads through
+`downloadRuntimeArtifact` into `<version>.installing`, extracts with the shared
+`extract`, and requires the executable to report exactly the pinned version
+before promotion. A same-version reinstall sets the old tree aside as
+`<version>.replaced` and restores it on failure. If restoring fails, the
+returned error says so and the aside tree is kept. A daemon that stopped
+between setting the tree aside and promoting the new one leaves the aside tree
+with no `<version>`. The next report (a restart's first heartbeat) or the next
+install restores that tree before anything is downloaded. A copy counts as
+verified only when its manifest reads, its executable is executable, and the
+fixed version command reports exactly the manifest's version. That probe runs
+only in this recovery branch. A recovery tree is restored only when it
+verifies. A `.replaced` is removed only when the `<version>` beside it verifies,
+because that means it is the leftover of a completed promotion. In any other
+case both trees are kept for inspection, whatever the installed manifest
+claims. The tool reports `broken`, and an install fails before it downloads
+anything. Recovery runs only while no
+operation holds the tool, and an operation waits for a recovery already in
+flight. Any failure leaves the current copy in use. A version command that
+exits 0 and prints nothing, or only whitespace, counts as no version: it shows
+`broken` and cannot be registered. Registration accepts
+only an absolute path whose basename is the catalog executable, or a PATH
+lookup by that name. The file must be executable and answer the fixed version
+argv. All tools share `registrations.json`, so every read-modify-write of it is
+serialized in the daemon process (the `config.ts` `updateConfig` discipline)
+and staged under a unique temporary name that is removed if the write fails.
+Nothing runs through a shell, and one operation per tool runs at a time
+on the daemon and in the connection registry (`ordinary_tool_result`, 20-minute
+ceiling, failed on disconnect).
+
+REST (user session):
+
+- `GET /api/v1/hosts/:hostId/ordinary-tools`: the built-in Host for any
+  member, a paired Host for its owner only (404 otherwise).
+  It returns `HostOrdinaryToolsResponse`:
+  - `host_state` is `online | offline | update_required`.
+  - `can_manage` is true for the instance admin on the built-in Host and for
+    the owner on a paired Host.
+  - `operations` lists the operations in flight.
+  - One entry per catalog tool, with `host_status` (`unknown` before any
+    report), `reported_live` (false for an offline Host's last report),
+    `managed.{catalog_version, installed_version, installable,
+    update_available}`, and `sandbox_status: "not_verified"`.
+  - `account_status` is `not_verified` for an account tool and
+    `not_applicable` otherwise. The list never states an account: each person's
+    own state comes from the account endpoint below. `sandbox_status` stays
+    `not_verified` until the external acceptance in the deferred register
+    ("Ordinary CLI tools — external acceptance") has been performed.
+- `POST …/ordinary-tools/:toolId/install` (install or update to the control
+  plane's pinned version), `POST …/:toolId/register` `{ path? }`, and
+  `DELETE …/:toolId?source=managed|registered`. These use `resolveOwnedHost`:
+  instance admin for the built-in Host, owner-only for a paired Host. Only
+  Linux and macOS Hosts are supported, by the Host's reported `platform`.
+  Other platforms get 422, because the catalog names bare POSIX executables
+  and POSIX archives. A `register` path must be POSIX-absolute, contain no NUL
+  and be at most 4096 characters; otherwise the route answers 422 and sends no
+  frame. This is a syntax check only; the daemon resolves and verifies the
+  file (B64). A daemon
+  without the report gets 409 `host_update_required`, and no frame is sent.
+  An offline Host gets 409 `host_offline`, and a daemon refusal gets 502 with
+  `detail`.
+
+Old daemons are negotiated by this report, not by `MIN_HOST_DAEMON_VERSION`.
+Their Runtimes keep working, and only ordinary-tool management shows that an
+update is needed. Daemon 0.4.5 is the first to report it. Ordinary-tool
+operations are not recorded in `host_runtime_changes`, because that history
+is keyed by RuntimeKey.
+
+### Personal ordinary-tool accounts (`hosts/ordinaryToolAccountRoutes.ts`, daemon `src/ordinaryToolAccounts.ts`)
+
+**Scope.** A personal account belongs to one Rainver user on one Host. That
+person manages it; it is not Host management. On the built-in Host every
+member manages only their own account and needs no instance-admin authority,
+although installing the shared binary still does. On a paired Host only its
+owner can reach it; anyone else, including the instance admin, gets 404.
+Agent Runtime logins are unchanged: they remain per Host × installation with
+their own HOME. The contract is `packages/protocol/src/ordinaryToolAccounts.ts`.
+Its only account tool is the official `lark-cli` 1.0.99.
+
+**Isolation.**
+- The control plane derives an opaque `account_key` from the session user
+  (`sha256("rainver-ordinary-tool-account\0" + userId)`, 40 hex characters).
+  It never accepts a user, path, environment variable or argv from a client,
+  and the daemon is never told the user id.
+- The daemon maps the key to `<config dir>/ordinary-tool-state/<tool>/<key>/`
+  with `home/`, `config/` and `data/` (mode 0700). The child runs with
+  `HOME`, `LARKSUITE_CLI_CONFIG_DIR` and `LARKSUITE_CLI_DATA_DIR` pointing at
+  those directories. On Linux the CLI keeps its master key and encrypted
+  tokens in the data directory; HOME is set so nothing else lands in the
+  daemon user's HOME.
+- The child environment is an allowlist: PATH, locale, TZ, CA bundle and
+  proxy variables. Provider API keys, inherited `LARKSUITE_CLI_*` credentials
+  and the CLI's `OPENCLAW_*`/`HERMES_*`/`LARK_CHANNEL` workspace selectors never
+  reach it (ADR 0008).
+- The binary is shared. It is the P1 copy in use (managed > registered >
+  PATH), taken through `leaseOrdinaryToolCommand`. While a lease is held,
+  install, registration and removal of that tool are refused; while one of
+  those runs, account commands are refused.
+- **Linux only.** On macOS this lark-cli version keeps its master key in the
+  system Keychain, outside the data directory, so users cannot be kept apart.
+  The daemon reports `ordinary_tool_accounts.supported: false` with that
+  reason, and nothing is attempted. Windows is likewise unsupported.
+
+**Fixed commands, verified at tag v1.0.99.**
+- `config init --new` is the official app setup. It prints a verification
+  link on stderr, then `{"appId","appSecret":"****","brand"}`.
+- `auth login --recommend --json` is the device flow. It emits a
+  `device_authorization` event (link, user code, expiry), then
+  `authorization_complete` or `authorization_failed`.
+- `auth status [--verify]`. Only `identities.user` is read, so a ready bot
+  identity never stands in for the person.
+- `auth logout --json`. The CLI calls the token revocation endpoint and ignores
+  its outcome, then removes the local token. Rainver reports `local_cleared`
+  and `remote_revocation: "attempted_unconfirmed"`, never "revoked". The
+  configuration and the account directories are kept.
+
+**What leaves the Host.** Nothing is read from credential files, and no
+command output is logged, stored, audited or forwarded beyond the protocol
+fields:
+- An `authorization` event, carrying an https link on `feishu.cn`,
+  `larksuite.com` or `larkoffice.com`, a short alphanumeric user code and the
+  expiry.
+- An `exit` event with a fixed-text error.
+- A status: state, user name, app id, brand, expiry times, `refresh_pending`
+  and `verified`.
+
+The states are `not_configured`, `not_logged_in`, `signed_in`, `expired`,
+`verify_failed` and `error`. Other stdout/stderr content, including anything
+token-like the CLI might print, is discarded rather than redacted. Neither
+flow reads stdin, so there is no input channel.
+
+**Sessions.**
+- One action or session per `<tool>:<key>` at a time; a busy account answers
+  `account_busy`.
+- A new session for the same account supersedes the old one once it has
+  stopped. The new session is registered before it starts waiting, so a close
+  or a disconnect reaches it during the wait. If it is cancelled while
+  waiting, it never takes the account, leases the tool or starts the CLI. When
+  several requests wait on the same holder, only the newest stays in line and
+  earlier waiters are cancelled. Cleanup removes only the claim, registration
+  and place in line that the session itself holds.
+- A session ends on cancel or superseding (`ordinary_account_session_close`),
+  after 15 minutes (`timed_out`), on a daemon disconnect (all sessions are
+  cancelled), or on CLI failure. SIGTERM is followed by SIGKILL after 3
+  seconds.
+- When a setup or login process ends, the daemon first reads the status again.
+  Only after that status process has exited does it release the claim and the
+  tool lease. A cancel that arrives during that read (close, superseding or a
+  disconnect) ends the session as `cancelled` but still carries the status it
+  read. A cancel does not undo an authorization the person has already
+  completed, so the status may say `signed_in`. A successor starts only after
+  that read finishes.
+- On the control plane, sessions are registry entries bound to Host × user ×
+  tool. A Host disconnect ends them with `host_disconnected`.
+
+**REST** (user session; `:toolId` must be an account tool, otherwise 422):
+- `GET /api/v1/hosts/:hostId/ordinary-tools/:toolId/account` returns
+  `HostOrdinaryAccountResponse`: `availability` is
+  `live | offline | update_required | unsupported | tool_unavailable | busy |
+  error`, plus `status`, `session_active` and `sandbox_status: "not_verified"`.
+  An older daemon is `update_required` and is sent nothing; its Runtimes and P1
+  tools are unaffected.
+- `POST …/account/verify` and `POST …/account/logout`.
+- `GET …/account/session/stream?flow=init|login` is a server-sent event stream
+  for the person who opened it, with the Runtime login stream's cross-site
+  check. Its events are `{type:"authorization", url, user_code, expires_in}`
+  and `{type:"exit", outcome, error, status}`. Closing the stream cancels the
+  session.
+- `POST …/account/session/cancel` cancels the caller's own session; there is
+  no session id to name.
+
+**Not performed (external acceptance).**
+- A real login through the official flow is the person's own step. It
+  requires the tenant or app prerequisites that `config init --new` and
+  Feishu impose. Where those prerequisites are missing, the CLI's own refusal
+  is what the person sees. Rainver has not performed such a login, nor
+  observed real expiry, refresh or revocation.
+- The engineering tests drive a stand-in CLI with the official argv and output
+  shapes. They are not evidence of the real flow. What remains to be shown is
+  recorded in the deferred register ("Ordinary CLI tools — external
+  acceptance").
+
+**Web presentation** (`apps/web/src/modules/command_center/cliTools/`). Each
+Command Center Host detail (`HostDetail`) has a **CLI tools** group,
+`HostCliToolsSection`. It is not offered for a Host that is still pairing or
+has been revoked. It sits below the Host's Agent Runtimes and does not replace
+them.
+
+The section is closed by default, unless a link names `section=cli`, so the
+Host list's 3 s refresh reads nothing for it. Its toggle carries
+`aria-expanded` and names the Host. Opening it mounts `CliToolsPanel` for that
+Host. The refresh does not remount the detail, so an open login session
+survives it. The session ends, because the panel unmounts and aborts the
+stream, when any of these happens:
+- the section is closed;
+- another Host is chosen;
+- the Host is revoked.
+
+The view does not decide permissions. It shows the actions the server's
+`can_manage`, `availability` and `status` allow, and every refusal comes
+from the server.
+
+- **Tools** (`CliToolsPanel.tsx`, `GET /hosts/:id/ordinary-tools`):
+  - Each tool is one row in the shape of the card's Agent rows (`HostAgentRow`):
+    name, then state and actions on one line. Operation notes, the register
+    form, messages and the account card go below that line.
+  - Each catalog tool shows its status, source, version, and "Run sandbox: not
+    verified".
+  - Install, update and remove of the managed copy, and register and unregister of an
+    existing command (optional absolute path only), appear only when the response's
+    `can_manage` is true and the Host is online. The server re-checks every action.
+  - Refusals are shown inline.
+  - An action's own tool report (success or refusal `tool`) is shown on its row
+    at once, as unconfirmed, ahead of the heartbeat-fed list (the same server
+    record the account endpoint checks). The list is re-read every 3 s, at most
+    10 times, until it shows the same state; that confirmation also makes the
+    account card read again. If it never does, the row keeps the report and
+    says the server has not recorded it, with Check again. It never reverts silently.
+  - While the server reports an operation running (from any page), the list is
+    re-read every 3 s until it ends. After it ends, the list is re-read every 3 s, at
+    most 10 times, until the tool's state differs from what it was while running.
+    Each step makes the account card read again. An unchanged state is not reported
+    as a failure (a same-version reinstall changes nothing). At the bound, the row
+    says the result has not shown up yet, with Check again.
+  - Offline (last report), update-required and empty states are explicit. A failed
+    tools list shows an error with Retry.
+- **Account card** (`OrdinaryAccountCard.tsx`, `GET …/account`) shows the
+  caller's own account for an account tool. It offers:
+    - set up and log in (the SSE session stream, which shows the official link and code
+      to this person only);
+    - cancel (closing the stream cancels the session);
+    - verify, and log out ("remote revocation attempted, not confirmed").
+    - When the row's installed state changes (install, update, remove, register), or
+      the list confirms it, the card quietly re-reads its account without remounting,
+      so an open session stream is not closed.
+    - An account that disagrees with the row (`tool_unavailable` for an installed
+      tool, or still reachable for a removed one) is not shown. It is re-read every
+      3 s, at most 10 times, then the card says it has not caught up and offers Retry.
+    - Reads, verify/logout and a session's end share one generation counter: an
+      action or session start invalidates reads already in flight, so a late read
+      never overwrites a newer result. One action at a time; a re-read asked for
+      during an action runs after it.
+    - A `busy` account (or `session_active` from elsewhere) is re-read every 3 s, for
+      example while a cancelled session finishes on the Host. A failed read, offline,
+      error, or a live answer whose status is `error` (the Host could not read the
+      account) is retried only by its Retry button.
+    - Focus moves to Cancel when a session opens, and to the result message when the
+      control that had focus disappears.
+- **Host isolation.** Rows and account cards are keyed by Host and tool, and
+  only the newest response for the Host is drawn. No user id is sent or shown.
+- **API and copy.** `api/client.ts` `ordinaryToolsApi`;
+  `i18n/cliToolsUi.{en,zh-CN}.ts`.
+
+### Ordinary tools in Runs (`runs/ordinaryToolLaunch.ts`, daemon `src/ordinaryToolRunAccess.ts`)
+
+A daemon that reports `capabilities_json.ordinary_tools_runs`
+(`ordinary-tools-runs-v1`, daemon 0.4.7) receives an optional launch field,
+`ordinary_tools: { accounts: [{ tool_id, account_key }] }`. Older daemons are
+sent nothing, and their Runtimes are unaffected. "Older" is known only from a
+Host read that succeeded. If that read fails, the adapter
+(`remoteHostCliAdapter.ts`) fails the Run with `ordinary_tools_unavailable`
+before any launch frame. A launch without the field would give a daemon that
+supports it the machine's own `LARKSUITE_CLI_*` selection instead of a fresh
+empty state. The message is fixed text with no database detail. Provider leases
+already taken are revoked by the adapter's `finally`. The code is not in the
+Supervisor's automatic-retry set, as with `host_trust_unavailable`; a retry of
+the Run reads again. Ordinary tools are on by
+default on every Host. There is no Project switch, and they grant nothing
+beyond the Run's existing authority.
+
+**Whose account.** The control plane alone decides, in `ordinaryToolsForLaunch`:
+- The account key is derived from the Run's `instructed_by_user_id`: the sender
+  of the message that created the Run (B8A). It is never the Room's creator,
+  the Agent's owner or a client value.
+- A Run with no instructing person gets `accounts: []`. Nothing is chosen in
+  its place.
+- A paired Host is sent a key only for its owner (B63).
+- A Host that reports `ordinary_tool_accounts.supported: false` (macOS) gets
+  no account.
+- The key is the P2 derivation, and the frame never carries the user id.
+
+**What the Agent is told.** One supplemental instruction in the existing ACP
+context names the tools the Host reported and their versions, and points to
+`printenv RAINVER_ORDINARY_TOOLS`. When lark-cli is available, it also says:
+- lark-cli acts as the person who asked for the work (`--as user`);
+- never fall back to the bot identity;
+- if lark-cli reports not configured or not logged in, ask that person to log
+  in from the Host's CLI tools (its Command Center Host detail) rather than
+  attempting the login.
+
+The Agent uses its normal terminal. No new command tool is added.
+
+**What a Run gets** (`prepareRunOrdinaryTools`, applied at the very end of
+`launchRun`):
+- **Strict namespace.**
+  - Tools in the system roots (`/usr`, `/bin`, …) are already bound read-only.
+    A copy counts as being there only when every **path component**
+    resolves inside those roots (`resolvesWithin`). That covers directories as
+    well as the file, every link target along the way, and the real path; the
+    directories leading to a root are traversable. A `/usr/local/bin` link to
+    `/opt/…` is `not_in_sandbox`, and so is a `/usr/local/bin` that links to
+    `/opt/bridge` and from there back to `/usr/bin`, because `/opt/bridge` does
+    not exist in the namespace. Rainver binds neither. A link between bound
+    places (`/usr/sbin` → `bin`) stays visible. More than 40 links fails closed.
+  - A Rainver-managed copy's version directory is bound read-only and put first
+    on PATH.
+  - A registered copy outside the system roots is **not** bound, because its
+    dependency closure is unknown. It is reported as `not_in_sandbox`, and no
+    account is offered without a usable lark-cli.
+  - The account's `config/` and `data/` directories are bound read-write at
+    their own paths, so the CLI's own refresh and its cross-process refresh
+    lock (`<config>/locks`) persist in place. They are not copied.
+  - Not bound: other users' state, the account's `home/`, the daemon's
+    configuration, `ordinary-tool-state/` as a whole, and the Host user's HOME.
+    The Run keeps `runs/<id>/home` and its runtime profile.
+- **No personal account** (`none`, `busy`, `unsupported`, `tool_unavailable`).
+  The Run still receives an explicit `LARKSUITE_CLI_CONFIG_DIR` and
+  `LARKSUITE_CLI_DATA_DIR`. They point at empty directories created fresh for
+  this launch attempt: `mkdtemp` makes `runs/<id>/ordinary-tools-XXXXXX/` inside
+  the Run directory, which must be a plain directory and not a link. The
+  directories are bound read-write in a strict namespace. Nothing an earlier
+  attempt of the same Run left there — files or links — is reused. lark-cli
+  then reports itself not configured instead of falling back to the Host
+  user's default `~/.lark-cli` login or anyone else's state. The Runtime HOME
+  and profile are unchanged, and the directories go with the Run directory.
+- **Trusted Host.** The Run uses the copy where it is. A managed or registered
+  directory is put first on PATH. There is no namespace and no isolation
+  claim; the owner's machine is the owner's.
+- **Environment.** Inherited `LARKSUITE_CLI_*`, `OPENCLAW_*`, `HERMES_*` and
+  `LARK_CHANNEL` are removed from the final environment in both modes. The
+  account's `LARKSUITE_CLI_CONFIG_DIR` and `LARKSUITE_CLI_DATA_DIR` are applied
+  last, plus `LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1`. Provider keys still follow
+  the strict allowlist or provider binding as before.
+- **`RAINVER_ORDINARY_TOOLS`.** The tool states are `available`, `missing` or
+  `not_in_sandbox`. The account state is `personal`, `none`, `busy`,
+  `unsupported` or `tool_unavailable`. It contains no path and no credential.
+
+**Lifetime and conflicts.**
+- The lark-cli lease (P1) and an account use are held on the launch hold.
+  When the launch never spawned, `handleLaunch` releases them. Otherwise, for
+  a Run with ordinary tools, the child `close` handler first **awaits**
+  `settleProcessGroup` (`processGroup.ts`) until the rest of the Run's detached
+  process group is confirmed gone. Only after that do the following happen, in
+  their usual order: the tool and account are released, the workspace diff is
+  taken, the Location leases go to the next writer, the uploads are made, the
+  run directory is removed, and `complete` is sent. A background command's last
+  write is therefore in the Run's diff.
+
+  If the group **cannot be confirmed gone** (`settleProcessGroup` fails), the
+  attempt takes a separate failure exit and does none of the above:
+  - no diff or output upload;
+  - no Location handover, no tool or account release and no egress revoke;
+  - its run directory is kept.
+  It sends `complete` with `exit_code: 1` and an explicit error, logs the
+  process group and run directory locally, and is recorded in `unsettledRuns`.
+  That record:
+  - excludes its directory from the reconnect sweep, from a later attempt's
+    directory removal and from the revoked-registration removal;
+  - keeps the Run's egress grant. Grants are keyed by Run id, so every
+    Run-id revoke — a later attempt's normal close, its bookkeeping `catch`, a
+    failed namespace preparation, a stop before start — goes through
+    `revokeRunEgress`, which leaves a kept Run's grant in place;
+  - makes `withRuntimeKeyDrained` refuse to replace or remove that Run's
+    runtime, and every runtime when the kept attempt's runtime is unknown.
+    The check runs on entry, after every wait and immediately before
+    `replace`, because an attempt can become kept — and stop counting as busy
+    — while a drain is already waiting;
+  - holds back an update restart (`hasInFlightRuns`).
+
+  Recovery is local: stop those processes, then restart `rainver-host`. A
+  retry of the same Run waits on the still-held Location.
+
+  The group is settled as follows:
+  - A runtime's exit does not end a background command it started with
+    redirected stdio.
+  - The remaining members get SIGTERM, then SIGKILL after 5 s.
+  - On Linux, liveness is read from `/proc` and ignores zombies.
+  - Stop, failure and reconnect go through the same two paths.
+  - In a strict namespace, bwrap's PID namespace already ends everything
+    inside it.
+  - On a trusted Host, a process that leaves the group on purpose (`setsid`,
+    double fork into a new session) is outside what the daemon can see or end.
+    This is not containment against a hostile process.
+- While held:
+  - install, registration and removal of lark-cli are refused;
+  - the account's setup, login and logout are refused with
+    `account_in_use_by_run`;
+  - status and verify are still allowed.
+- Several Runs of the same person share the account, because the official CLI
+  serializes refresh with a lock file. Different people are independent.
+- A Run does not take an account whose setup, login or logout is in progress;
+  it reports `busy` and launches without the account.
+- A logout only affects later invocations. Requests a running command already
+  sent cannot be recalled.
+
+**Not yet verified externally.**
+- A real logged-in Feishu read-only call from a strict Run.
+- Real expiry, refresh and revocation.
+- The built-in Host's egress profile for Feishu domains. This is policy that
+  belongs to the Run's `egress_profile`, not to this feature.
+- Real Host heartbeat timing against the web view's bounded re-reads.
+
+Sandbox use therefore stays `not_verified`. The triggers and the evidence
+required are in the deferred register ("Ordinary CLI tools — external
+acceptance").
 
 ## WebSocket (`GET /internal/hosts/ws`, `@fastify/websocket`)
 
@@ -1378,8 +1909,8 @@ computed at read time wherever a host's status is read, not swept by a
 background job — a host that dies without closing its socket reports offline
 the next time anyone lists hosts.
 
-The dev Vite entrypoint proxies `/internal` with WebSocket upgrade forwarding
-to the server service, so a daemon registered against the browser's dev origin
+The dev Vite entrypoint proxies only `/internal/hosts/ws`, with WebSocket
+upgrade forwarding, to the server service, so a daemon registered against the browser's dev origin
 (`http://localhost:3000` in dev) can use the same origin for its outbound WS.
 The production nginx image (`apps/web/nginx.conf`) exposes exactly
 `/internal/hosts/ws` the same way and nothing else under `/internal/` — the
@@ -1620,8 +2151,10 @@ the daemon on heartbeat.
 `tool_activity_finished` (ACP ToolCall/ToolCallUpdate fields, upserted by
 `tool_call_id` when projected), `status` (`run_started`/`run_succeeded`/`run_failed`/
 `run_timeout`, plus the informational `run_quiet` silence notice), `diagnostic`
-(one stderr line each), and `assistant_thought`
-(reasoning, coalesced the same way as `assistant_text`).
+(one stderr line each), `assistant_thought`
+(reasoning, coalesced the same way as `assistant_text`), and `plan_updated`
+(an ACP `plan` update's entries as a snapshot; readers take the thread's
+latest one).
 
 ACP `tool_call_id` values are opaque correlation keys and are stored as text,
 not truncated. Tool titles can be whole commands; both semantic and thread
@@ -1721,7 +2254,10 @@ The Run's identity is a `run_tool_identities` row, issued with the surface and
 revoked on every exit path from the adapter. It is durable rather than
 in-process because a remote CLI keeps running across a server restart, and it
 carries the content hash of the Skill that Run was given, so explaining the
-Run later can name the exact text it saw. The token is not a provider
+Run later can name the exact text it saw. Run detail reads it from that row
+as `work_skill.content_hash` (see
+[client-server-protocol.md](client-server-protocol.md)); the adapter result's
+`work_skill_content_hash` metadata is a copy of the same value. The token is not a provider
 credential and selects no model backend, so ADR 0008 and B67 — both about
 upstream credentials — are untouched by it.
 
@@ -1864,8 +2400,9 @@ else keeps the runtime baseline and is refused `execution_host_not_permitted`
 first. The built-in host's `medium` is its per-Run namespace, a different
 control for the same level. Neither reaches `high`, so `high`/`critical`-risk
 Agents have no candidate on either host. Owner trust says who bears the risk —
-it is not a containment claim, and a paired host still spawns natively with no
-namespace (B62, ADR 0016 §3; the
+it is not a containment claim, and a paired host still spawns writable Runs
+natively with no namespace; only an explicit read-only Run on a personal Linux
+Host runs in a bubblewrap read-only namespace (B62, ADR 0016 §3; the
 table is in `architecture/ROUTING.md`, "Effective trust").
 
 **Capacity.** `HostConnectionRegistry.dispatchLaunch` takes the built-in host's
@@ -2687,12 +3224,14 @@ recipes described above. Managed copies use `install_tool`.
 - Conversation dispatch uses its pinned active Location. Remaining Task
   host selection is an explicit control-center choice. There is no scored
   multi-location router; the only scheduling across Runs is the daemon's
-  per-Location execution lease (below) and the built-in host's run cap.
+  per-Location execution lease (above) and the built-in host's run cap.
 - `<location>/.rainver/worktrees/` and `<config>/worktrees/*.json` are not
   the Task worktree store (`<config>/task-worktrees/`). Do not read them as
   live worktrees, and do not delete them while cleaning that store.
-- There is no automated daemon-process-to-live-server integration test.
-  The wire contract is verified from the server side
+- The only daemon-process-to-live-server test is the opt-in
+  `server/test/sourceGoalAgentSmoke.test.ts` (`SOURCE_GOAL_AGENT_SMOKE=1`,
+  spawning `packages/host-daemon/dist/daemon.js` against a live app and an
+  isolated test database); it does not run in the ordinary suite. The wire contract is verified from the server side
   (`server/test/hostsRoutes.test.ts`); the daemon's `fetch`/`WebSocket`
   client is covered by unit tests.
 - `workspace list`'s `local_path` merge trusts this machine's config
@@ -2701,7 +3240,7 @@ recipes described above. Managed copies use `install_tool`.
 - **Host name occupancy:** `uq_hosts_owner_name` has no status filter, so
   an expired `pending_pairing` or `revoked` host keeps its name. A later
   pairing needs a different display name. There is no automatic cleanup.
-- Content sync, divergence detection, quota probing, and
+- Content sync, divergence detection, and
   Windows-native/WSL hardware verification are not implemented (ADR 0016).
   How a host Run's change lands is settled and built (ADR 0016 §11). Location `execution_ready` is persisted and
   heartbeat-driven; it is not inferred from Host liveness.
@@ -2733,8 +3272,8 @@ is opaque. Negotiated additionalDirectories includes the Skill root for
 Claude Code/Codex access. These files grant no extra execution permissions,
 install no hooks/dependencies, and leave with the temporary Run surface.
 Project Folder import can request original bytes over folder-read without
-changing the ordinary text-preview API. Host daemon 0.4.3 is the minimum for
-these contracts.
+changing the ordinary text-preview API. These contracts need no daemon newer
+than the admission floor (`MIN_HOST_DAEMON_VERSION`, 0.4.4).
 
 ## Global CLI Skill acquisition
 
@@ -2855,11 +3394,13 @@ refusal, and report/cache/tmp writes. This is process/OS acceptance, not a real
 vendor login or model invocation; portable unit tests still validate launch
 planning independently.
 
-Room 只读委派在创建子 Run 前检查会话固定的目标 backend/Host：
-本地 CLI 若不在 server Host，委派直接返回 409 与处理说明，不创建失败子任务，
-不占线程或扣委派额度。不会自动将工作目录移到另一台机器，亦不降级为可写。
-需使用 intended workspace 在 server Host 可用的会话重新审查。
-执行期仍保留同一能力校验，防止接纳后配置变化绕过强制只读限制。
+Room 只读委派在创建子 Run 前检查会话固定的目标 backend/Host
+（`readOnlyWorkspaceHostRefusal`）：server Host 与报告
+`workspace_read_only { supported: true, mechanism: "bwrap-v1" }` 的个人 Host
+可接纳；其他 Host 直接返回 409 `workspace_read_only_unenforceable` 与处理说明，
+不创建失败子任务，不占线程或扣委派额度。不会自动将工作目录移到另一台机器，
+亦不降级为可写。需更新并重连该 Host 使其报告可强制的只读支持，或在可强制只读的
+Host 上的会话重新审查。执行期仍保留同一能力校验，防止接纳后配置变化绕过强制只读限制。
 
 ## Explicit read-only review on a personal Linux Host
 
@@ -2907,7 +3448,14 @@ managed tool roots and configured CA roots in personal read plans. A whole-HOME
 CA directory is refused, not silently mounted or ignored. Ordinary strict Host
 install-root selection retains its existing layout. The daemon's concrete package
 and declared dependencies use the same bounded package resolver when the install
-root must be narrowed. A binary directly in HOME is bound as a file.
+root must be narrowed. A binary directly in HOME is bound as a file. A
+read-only bind that is itself a symlink whose real path another bind already
+exposes becomes `--symlink <real path> <alias>` (`strictNamespace.ts`), and
+nothing when the alias already lies inside a bound directory. A bind of the
+link would mount the target at the alias, where the runtime sees itself
+(`/proc/self/exe`) and looks for helpers it ships beside its real executable
+— Codex's `codex-code-mode-host`, without which a code-mode-only model has no
+tools. A link whose target is not otherwise visible keeps the file bind.
 Node packages use their concrete package roots and installed declared dependency
 closure via Node lookup (bounded to 1024 packages), never the prefix before
 `node_modules`. An unsafe dependency alias fails closed; undeclared dynamic

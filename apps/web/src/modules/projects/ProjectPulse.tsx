@@ -65,7 +65,7 @@ export default function ProjectPulse({
    * header's "Edit goal"), so the prompt to define one opens the same dialog
    * rather than sending the person to another Area to do it.
    */
-  onDefineGoal: () => void
+  onDefineGoal?: () => void
 }) {
   const [board, setBoard] = useState<ProjectBoard | null>(null)
   const [updates, setUpdates] = useState<ProjectWorkUpdate[]>([])
@@ -156,7 +156,7 @@ export default function ProjectPulse({
               A sentence about the outcome is what the Assistant and the Loop orient on.
             </p>
           </div>
-          <Button size="sm" variant="outline" onClick={onDefineGoal}>Define the goal</Button>
+          {onDefineGoal && <Button size="sm" variant="outline" onClick={onDefineGoal}>Define the goal</Button>}
         </Card>
       )}
       {/* A Folder is optional, so this is a quiet line, not a warning: an

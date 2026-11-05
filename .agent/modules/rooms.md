@@ -28,6 +28,10 @@ task/audit authority, not a second conversation UI.
 - Room-only specialist grants, invitation/approval snapshots, and preset idempotency records
   (`room_agent_access_grants`, `room_user_invitations`,
   `room_invitation_agent_approvals`, `room_agent_preset_idempotencies`)
+- Room creation idempotency records (`room_creation_idempotencies`,
+  `server/src/db/schema/roomCreationIdempotency.ts`)
+- Discussions and the per-conversation message queue (`room_discussions`,
+  `room_queued_messages`, `server/src/db/schema/roomDiscussions.ts`)
 - `RoomService` — room/conversation creation, membership, message dispatch (`server/src/modules/rooms/service.ts`)
 - Thread references — content picked from another thread or an imported
   session, copied once with provenance and a disclosure gate
@@ -45,7 +49,7 @@ task/audit authority, not a second conversation UI.
   (`apps/web/src/modules/conversation/ConversationSurface.tsx`):
   messages, paging, sending, turn streaming, polling, scroll-follow and
   inline Proposal cards with continuation. The full Room page renders it as
-  `variant="full"` (adds run settings, per-agent backends, the summary) and the
+  `variant="full"` (adds run settings and per-agent backends) and the
   Project chat sidecar (`projects/sidecar/ProjectChatSidecar.tsx`) as
   `variant="panel"` with focus refs. There is no second conversation
   implementation; a behaviour a conversation needs is added there once.
@@ -239,9 +243,6 @@ Room conversation summaries:
   cancelled, retry reuses the same hidden instruction but creates fresh Runs.
   The generic message endpoint
   cannot create hidden messages; the next visible message is the Agent's result.
-- Summary generation uses the active Room owner's eligible API provider and
-  attributes usage to that owner. A Room without an API keeps working; its
-  summary remains queued/waiting until the owner configures one.
 ```
 
 A Room requires Project writer authority to create, and every human roster
@@ -298,7 +299,7 @@ original image/file parts against current recipient capabilities, reuses the
 original user Message, records new retry Run ids in that message, and marks the
 replaced recipient ids as `retry_superseded_run_ids`. Failed Agent replies for
 those Runs are retained in storage with `retry_superseded = true` for audit but
-excluded by the canonical Room transcript predicate; pagination, summaries,
+excluded by the canonical Room transcript predicate; pagination,
 runtime-context tails and both conversation surfaces therefore agree that the
 replaced error is not history the person must read. Drafts are kept in
 destination-scoped sessionStorage as validated logical references;
@@ -322,7 +323,8 @@ diff (path, `+added -removed`, at most 20 files and a summary line, an honest
 Run gains `input_resource.read/search` to read it on demand
 (`agentGroups/runChangeBlock.ts`; the read authority is in
 `architecture/SYSTEM_ACTIONS.md`). The `agent.wait_for_results` continuation
-lists the same block under each completed result. That is deliberately not the `agent.wait_for_results`
+lists the same block under each newly completed result; results an earlier
+resume already handed over are only named (`modules/agents.md`). That is deliberately not the `agent.wait_for_results`
 resume shape, which replaces the prompt with a continue instruction: a Run
 that never ran has nothing to continue. The parked Runs hold the turn, so
 the next message waits in the queue until the chain completes (or gets `409`
@@ -669,7 +671,8 @@ talks to an Agent: a Room message, a delegation the Room's Agent makes
 (`createDelegatedChildRun` carries it), and a direct chat opened in a Project.
 The Room allowance carries both halves of delegation (`agent.delegate` and
 `agent.wait_for_results`), the Project write surface, `task.plan.propose`
-(proposal-gated), and the two Source proposals.
+(proposal-gated), the two Source proposals and the Project monitoring
+read/proposals.
 
 Room Agent tools also expose `agent.list_runs` and `agent.cancel_run`. The read
 returns at most 100 active Runs (identifiers, Agent, status, ancestry and creation
@@ -703,10 +706,10 @@ person says: a stated goal → `project.propose_definition`
 (`PROJECT_DEFINITION_ACTION_POLICY`); a request for a plan or next steps →
 `task.list` then `task.create` per step, with timing in `due_at` /
 `start_after`, and a recommendation grounded in `task.list` (status, priority,
-dates, blockers) and `inquiry.list_threads` (each Thread's recorded
-`next_step`) (`PLAN_ACTION_POLICY`). The Project-state block lists pending
+dates, blockers) and `inquiry.list_threads` (current problem work and round
+facts) (`PLAN_ACTION_POLICY`). The Project-state block lists pending
 decisions (attention class `gate`) before anything else and carries each
-item’s summary, so an Inquiry next step arrives with its rationale and a
+item’s summary, so a pending Inquiry candidate arrives with its rationale and a
 pending proposal is never crowded out by a busy board.
 
 The same policy tells the Agent that `task.create.required_outputs` is only for
@@ -851,15 +854,20 @@ marker. There is no product surface for `tool_permissions_json`, so Room
 scenario permissions remain a Room execution concern rather than silently
 depending on a specialist's private Agent configuration.
 
-The allowance (`ROOM_PROJECT_TOOL_ALLOWANCE` plus the memory actions, in
+The allowance (`ROOM_PROJECT_TOOL_ALLOWANCE` plus `CONVERSATION_TOOL_ALLOWANCE`'s
+memory and conversation actions, in
 `systemActions/scenarioToolAllowance.ts`) holds the proposal-gated
 `project.propose_definition`, `inquiry.promote_knowledge`,
-`task.plan.propose`, `project.source.propose_bind`, and
+`task.plan.propose`, `project.monitoring.propose`,
+`project.monitoring.propose_details`, `project.source.propose_bind`, and
 `source.backfill.propose_start`; the direct Project writes
-`inquiry.create_thread`, `inquiry.record_conclusion`,
-`inquiry.adopt_next_step`, and the `task.*` actions; the reads
-`inquiry.list_threads`, `task.list`, `research.list_operations`, and
-`proposal.list_pending`; `proposal.decide`; and the directly-executed,
+`inquiry.create_thread`, `inquiry.record_conclusion`, `inquiry.record_work`,
+`inquiry.close_round`, `inquiry.link_task`, `inquiry.reference_task_result`,
+`research.adopt_result`, and the `task.*` actions; the reads
+`inquiry.list_threads`, `inquiry.read_problem`, `inquiry.list_tasks`,
+`task.list`, `research.list_operations`, `research.read_result`,
+`project.monitoring.read`, `agent.list_runs` and `proposal.list_pending`;
+`proposal.decide` and `agent.cancel_run`; and the directly-executed,
 idempotency-guarded `agent.delegate` / `agent.wait_for_results` and
 `research.start_acquisition` / `research.cancel_acquisition`. Delegation
 is bounded to one level. Temporary Room delegation shares a container soft
@@ -902,8 +910,10 @@ Reuse / Dependency Check: this extends the existing group budget JSON,
 container counter, PostgreSQL row locks and spawn-policy audit. Validation uses
 the installed Zod dependency. No new scheduler, agent loop, transport or
 dependency is introduced; the behavior is Rainver-owned authorization semantics.
-There is no concurrency budget on a Room group: delegated children execute
-one at a time because the Conversation shares one directory, and a parent
+There is no concurrency budget on a Room group: because the Conversation
+shares one directory, a delegated writer (`workspace_access = write`) runs
+alone while read-only reviews (`read`) at the front of the FIFO run together
+(`agentGroups/lifecycleProjector.ts`), and a parent
 that delegates and then waits in the same turn admits its children when it
 parks — before that, the two waited on each other. Neither
 directly-executed action is a general Agent permission.
@@ -961,13 +971,6 @@ fetch failure degrades to
 awareness, not a second command surface — the panel has no actions of its
 own, only links out.
 
-The Inquiry kind→stage vocabulary lives in `packages/protocol/src/inquiry.ts`
-(`InquiryStageId`, `INQUIRY_STAGE_ORDER`, `INQUIRY_STAGE_LABELS`,
-`INQUIRY_STAGE_HELP`, `INQUIRY_STAGE_FOR_KIND`, `inquiryKindsInStage`).
-`apps/web/src/modules/projects/inquiryArea/stages.ts` re-exports those as
-`StageId`, `STAGE_ORDER`, `STAGE_LABELS`, `STAGE_HELP`, `STAGE_FOR_KIND`.
-Do not keep a second copy of that vocabulary.
-
 ## Thread References
 
 A **reference** is content a person picks from one conversation — or from an
@@ -1004,9 +1007,8 @@ the transcript is replayed. References are attached through
 `POST /rooms/:roomId/conversations/:sessionId/references` after an explicit
 Conversation draft exists; sending is always addressed to that Conversation.
 
-An imported session is summarized into `imported_history_summaries`. Do not
-run it through the Room conversation summary service. That service compacts a
-growing thread behind a lease, and a session's records are fixed.
+An imported session is summarized into `imported_history_summaries`, one row
+per session, because a session's records are fixed.
 
 ### Disclosure is confirmed, and names who gains
 
@@ -1453,6 +1455,14 @@ is slow to answer is decided on the cached reading.
   a failed or degraded turn using its persisted user input and pinned context
 - `POST /api/v1/rooms/:roomId/conversations/:sessionId/references` — copy
   picked content into a thread that already exists
+- `POST /api/v1/rooms/:roomId/conversations/:sessionId/proposal-continuations`
+  — continue the conversation after a Proposal it produced was decided; the
+  body names the Proposal id, never instruction text
+- `GET /api/v1/projects/:projectId/conversations` — the Project's list of
+  conversations across the viewer's Rooms, with `empty_rooms`; enrols the
+  viewer in the mainline
+- `GET /api/v1/projects/:projectId/mainline-room` — the Project's mainline
+  Room, enrolling the viewer on first open
 - `GET /api/v1/projects/:projectId/readers` — who may be invited into a Room
   here. The gate is the answer: a caller absent from the result gets the 404 a
   missing Project gives

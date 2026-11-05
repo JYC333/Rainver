@@ -3,24 +3,25 @@
 ## Status
 
 Implemented for built-in RSS, Atom, watched web page, arXiv, OpenAlex,
-Semantic Scholar, and credentialed Brave Web Search providers
+Semantic Scholar, credentialed Brave Web Search and Agent-assisted search
+(`agent_native_search`) providers
 (with HTML-first extraction), manual URL, candidate evidence,
 reader, structured reader document extraction, and project_folder/project
 routing flows.
 Source Recipe plan/create/dry-run/activate routes, proposal activation,
-scan-worker materialization, the `/sources` Create Source card, Source Detail
-normal/Advanced split, `source_runs` read model, and declarative-pipeline
-bridge into `source_recipe_versions` are wired. Custom Source proposal
-payloads/appliers, Sources frontend create/detail surfaces, and Space/Instance
-Settings surfaces are wired. Custom Source repair/rollback and credentialed
-source support are backend-only (no dedicated frontend). Rate limiting,
+scan-worker materialization, `source_runs` read model, and declarative-pipeline
+bridge into `source_recipe_versions` are wired backend-side. Custom Source
+proposal payloads/appliers and the Space/Instance Settings surfaces are wired.
+Sources list/detail pages do not author Sources; they open the Following setup.
+Custom Source repair/rollback are backend-only; credentialed sources have only
+the `/sources/access` credential-creation page. Rate limiting,
 artifact retention, and an observability read model exist. There is no
 browser or Python handler evaluation.
 
 
-Goal orchestration is implemented in `sources/goals/`, with conversational setup
-in `SourceGoalPage.tsx`, goal management and explicit legacy-source compatibility
-mapping. See [Source Goals](../architecture/SOURCE_GOALS.md) for authority,
+Goal orchestration is implemented in `sources/goals/`, with topic setup in
+`SourceGoalPage.tsx` (`topics/TopicCreate.tsx`), goal management, the
+adjustment conversation and explicit legacy-source compatibility mapping. See [Source Goals](../architecture/SOURCE_GOALS.md) for authority,
 API, runtime, repair, coverage and remaining deployment acceptance boundaries.
 
 See [Source material processing](../architecture/SOURCE_MATERIAL_PROCESSING.md) for
@@ -254,14 +255,6 @@ initial-intake or historical-extension request records the user's scope and
 starts its linked plans directly through the Project Research orchestrator.
 Agents and generic Source routes cannot use that path.
 
-The Source Detail `History import` tab consumes these read models: it previews
-date windows and quota without writing, creates an idempotent draft, shows
-segment/item rollups and `next_eligible_at`, and offers propose-start and
-owner/admin pause/resume controls. Raw extraction-job and segment diagnostics
-remain an Advanced concern. The generic Source Detail start action remains
-proposal-gated; Project Research uses the explicit intake action described
-above and does not expose that path to agents.
-
 Built-in source connections are seeded for RSS, Atom, web page, and arXiv
 connectors. The extraction worker scans feeds and pages, creates candidate
 items, queues follow-up extraction or snapshot jobs, writes artifacts for
@@ -276,8 +269,7 @@ remains an implementation detail.
 The provider catalog is exposed through `GET /api/v1/sources/providers`.
 Academic search providers are `arxiv`, `openalex`, and `semantic_scholar`;
 `web_search` is a credentialed, untrusted web tier. The arXiv entry includes
-the provider-owned setup schema and category taxonomy used
-by the shared Add Source dialog. Users can create a manual monitor through
+the provider-owned setup schema and category taxonomy. API clients can create a manual monitor through
 `/api/v1/sources/channels`; the server resolves the active provider mapping,
 compiles the request through the research provider compiler, and creates a
 one-to-one `source_search_specs` snapshot. Adaptive Project Research creates
@@ -357,10 +349,7 @@ actually used. Created snapshots/reader artifacts record
 `fallback_from`/`fallback_reason` when PDF fallback occurred. Non-arXiv URLs
 fetch once.
 
-The main `/sources` Create Source dialog is provider-neutral. It loads the
-provider catalog, renders provider-owned setup fields (including the arXiv
-category picker), and creates a reusable Source with one or more independent
-Monitors. Project binding happens through the Project Sources surface and
+Project binding happens through the Project Sources surface and
 `project_source_bindings`; creating a monitor outside a project does not bind it
 implicitly. Templates reuse the same provider and monitor models. Graph
 presentation is derived from active binding profile descriptors: for example,
@@ -385,17 +374,15 @@ can be retried, rather than becoming a generic runtime supervisor review.
 
 Scheduled source connections use frequency-specific rules rather than a raw
 "next run" picker. Hourly schedules choose a minute, daily schedules choose
-hour/minute, and weekly schedules choose weekday/hour/minute. The web form
-takes local times and converts every frequency, the hourly minute included,
-into the UTC rule it submits, and reads a rule back as local time. The API
+hour/minute, and weekly schedules choose weekday/hour/minute. The API
 stores the normalized UTC rule in `source_channels.schedule_rule_json` and
 returns it as `schedule_rule_json` alongside the computed `next_check_at`.
 After each scheduled scan, the next run is recomputed from the rule so schedules
 do not drift based on job completion time. The scheduler task owns only runtime
 cursor/state (`next_run_at`, `last_run_at`, status, and operational metadata),
-not the user-facing recurring rule. Source Detail can edit both
-`fetch_frequency` and the schedule rule; manual sources have no recurring rule
-and run only through explicit `Run now`/Scan actions.
+not the user-facing recurring rule. Source Detail displays `fetch_frequency`
+read-only; manual sources have no recurring rule and run only through explicit
+Scan actions.
 
 Capture policy behavior:
 
@@ -431,7 +418,8 @@ deltas create a `source_recipe_activation` proposal; accepting the proposal
 activates the recipe version through the proposal applier, and rejecting it
 releases the version back to draft. Manual and scheduled recipe scans enqueue
 Sources extraction jobs and materialize validated recipe output through the
-shared Sources materializer. Source Detail manages origin and monitor settings;
+shared Sources materializer. Source Detail shows origin and monitor status and
+offers monitor pause/resume and scan, with editing routed to Following setup;
 handler/recipe authoring APIs remain backend-only. User-facing item reading and
 brief review happen in Library.
 
@@ -506,10 +494,13 @@ selection toolbar annotation creation, annotation notebook/inspector, comment
 threads, and proposal-gated downstream actions from existing annotations. It is
 not an editable document surface.
 
-Already extracted items may be re-extracted from the Library item stream or
-Reader header. Re-extraction uses the existing `queue_content` item action and
-`extract_text` job path; it creates a new extracted source snapshot/artifact and
-updates `source_items.extracted_artifact_id`.
+The Reader's Read again uses the material-processing operation
+(`MaterialProcessingPanel`, see
+[Source material processing](../architecture/SOURCE_MATERIAL_PROCESSING.md)); it
+saves a new version and keeps the current one. The `queue_content` item action
+and `extract_text` job path remain the deterministic re-extraction route for API
+callers; it creates a new extracted source snapshot/artifact and updates
+`source_items.extracted_artifact_id`.
 
 Projects consume Sources through Project-owned `project_source_bindings`,
 `project_source_item_links`, project filters, evidence links, and the
@@ -1125,7 +1116,7 @@ an unknown member cannot bridge conflicting versions. Missing canonical URI or
 capture/body evidence stays independent; no title similarity or client URL
 normalization invents identity. Ownership and historical deliveries are unchanged.
 
-Sources' database guards (`0011`–`0014`) derive `reading_body_hash` only from
+Sources' database guards (migration `0005_project_reading_and_source_goals.sql`) derive `reading_body_hash` only from
 retained Reader text: a canonical Reader artifact pointer, or the latest extracted
 snapshot when Reader has no pointer. Text is NFC/whitespace normalized before
 hashing. First retention establishes revision zero; replacing a known body with
@@ -1136,8 +1127,8 @@ guards cover older application writers during rolling upgrades, as well as the
 current normal, custom and monitoring Sources materialization paths.
 
 Private completion binds `source_item_user_states.read_body_revision` to that
-revision, the sole read-version binding. Migration 0015 removes the unused,
-unpublished `read_content_hash` column introduced in 0009. Existing data is baselined without rewriting
+revision, the sole read-version binding; there is no `read_content_hash`
+column. Existing data is baselined without rewriting
 snapshots. Legacy state writes without the new column are bound by a Sources
 state guard; non-reading updates cannot renew an obsolete completion. For a
 NULL binding from an upgrade interval, the last actual body change time and the
@@ -1188,11 +1179,9 @@ Corpus references, saved Library triage, private state or daily snapshot rows.
 
 ### Reading quick start
 
-ReadingStart, Sources list/detail and Project MonitoringPanel now route creation
-and editing to the shared goal conversation rather than a provider/query form.
-The unused SourceMonitorDialog, SourceQuickStartFields, ArxivCategoryPicker,
-ScheduleRuleFields and MonitoringScheduleFields frontend authoring components
-are removed. Backend taxonomy, compilers/search, legacy APIs, Source display,
+ReadingStart, Sources list/detail and Project MonitoringPanel route creation to
+the Following topic setup (`topics/TopicCreate.tsx`) and editing to the topic's
+adjustment dialog, rather than a provider/query form. Backend taxonomy, compilers/search, legacy APIs, Source display,
 subscriptions, history and necessary operational settings remain available.
 See [SOURCE_GOALS](../architecture/SOURCE_GOALS.md) for canonical Session/Run
 association, one follow confirmation (with optional preview and manual save),

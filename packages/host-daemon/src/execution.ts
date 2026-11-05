@@ -2,7 +2,7 @@ import {readOnlyIpcFilter} from './readOnlyIpc.js';
 import {probeReadOnlyWorkspace,readOnlyBinary,assertReadOnlyBinds,workspacePathLeaseKeys,workspaceGitDirectory,readOnlyRootGuard,executableRoots,captureReadOnlyBasis} from './readOnlyWorkspace.js';
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostDaemonFrame, type HostEgressTransport, type HostLaunchFrame, type HostLaunchIsolation, type HostLaunchProviderBinding, type HostLaunchWorkSurface, type HostServerFrameOf } from "@rainver/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
-import { killProcessGroup } from "./processGroup.js";
+import { killProcessGroup, settleProcessGroup } from "./processGroup.js";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -19,6 +19,7 @@ import { checkLocationRepository, hasTaskWorktreeMaintenance, isTaskWorktreeInUs
 import { mergeResolutionWorktree } from "./taskMerge.js";
 import { collectOutputFiles } from "./outputFiles.js";
 import { clearStateRootEnv, clearVendorCredentialEnv, filterAmbientEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "./providerBinding.js";
+import { applyRunOrdinaryToolsEnv, prepareRunOrdinaryTools, type RunOrdinaryTools } from "./ordinaryToolRunAccess.js";
 import { managedToolTree, OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { ensureManagedWorkspace, runtimeProfileContainerPath, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
 import { isPackagedAdapter, resolvePackagedAdapter } from "./adapterInstallation.js";
@@ -427,11 +428,34 @@ function isLaunching(runId: string): boolean {
  * not delivered".
  */
 const finishingRuns = new Map<string, string>();
+/**
+ * Attempts whose leftover processes could not be confirmed stopped
+ * (`settleProcessGroup` failed), by launch id. Their run directory, Location
+ * leases, tool lease and account use are kept for this daemon's lifetime:
+ * nothing sweeps or removes the directory, and no update restart happens
+ * behind them. Recovery is local — stop the processes, then restart the
+ * daemon.
+ */
+const unsettledRuns = new Map<string, { runId: string; runtimeKey: string | null; pgid: number | null }>();
+
+/** Whether an attempt of this Run is kept for recovery (`unsettledRuns`). */
+function runKeptForRecovery(runId: string): boolean {
+  return [...unsettledRuns.values()].some((kept) => kept.runId === runId);
+}
+
+/**
+ * Revokes a Run's egress grant — unless an attempt of the same Run is kept for
+ * recovery. Grants are keyed by Run id, so a later attempt finishing or failing
+ * to prepare would otherwise cut off processes the kept attempt still has.
+ */
+function revokeRunEgress(runId: string): void {
+  if (!runKeptForRecovery(runId)) egressProxy?.revoke(runId);
+}
 let registrationRevoked = false;
 
 /** A release updater may restart the daemon only after all Run work is settled. */
 export function hasInFlightRuns(): boolean {
-  return activeLaunches.size > 0 || launchingRuns.size > 0 || finishingRuns.size > 0 || hasLeaseWaiters() || hasTaskWorktreeMaintenance();
+  return activeLaunches.size > 0 || launchingRuns.size > 0 || finishingRuns.size > 0 || unsettledRuns.size > 0 || hasLeaseWaiters() || hasTaskWorktreeMaintenance();
 }
 
 /**
@@ -517,6 +541,18 @@ export async function withRuntimeKeyDrained<T>(
   replacingRuntimeKeys.add(runtimeKey);
   try {
     const deadline = Date.now() + timeoutMs;
+    // Processes of a Run on this runtime that could not be confirmed stopped
+    // may still be executing its copy: no replacement until the operator has
+    // recovered them (a daemon restart clears the record). A kept attempt
+    // whose runtime is not known blocks every replacement. Checked again after
+    // every wait and immediately before `replace`: an attempt can become kept
+    // while this drain waits, and stop counting as busy in the same step.
+    const refuseIfKept = () => {
+      if ([...unsettledRuns.values()].some((kept) => kept.runtimeKey === runtimeKey || kept.runtimeKey === null)) {
+        throw new Error(`Processes of an earlier ${runtimeKey} Run could not be confirmed stopped; stop them and restart rainver-host before changing ${runtimeKey}`);
+      }
+    };
+    refuseIfKept();
     const busy = () => launchingRuns.size > 0
       || (runtimeKeyHolders.get(runtimeKey) ?? 0) > 0
       || [...activeLaunches.values()].some(({ active }) => active.runtimeKey === runtimeKey);
@@ -528,7 +564,9 @@ export async function withRuntimeKeyDrained<T>(
         const timer = setTimeout(resolve, 500);
         timer.unref?.();
       });
+      refuseIfKept();
     }
+    refuseIfKept();
     return await replace();
   } finally {
     replacingRuntimeKeys.delete(runtimeKey);
@@ -566,7 +604,8 @@ export async function sweepStaleRunProfiles(): Promise<number> {
   // run's directory mid-launch.
   return sweepOrphanedRunDirectories(
     join(configDir(), "runs"),
-    new Set([...[...activeLaunches.values()].map(({ runId }) => runId), ...launchingRuns.values(), ...finishingRuns.values()]),
+    new Set([...[...activeLaunches.values()].map(({ runId }) => runId), ...launchingRuns.values(), ...finishingRuns.values(),
+      ...[...unsettledRuns.values()].map(({ runId }) => runId)]),
   );
 }
 
@@ -924,6 +963,8 @@ export function planStrictLaunch(input: {
   readOnlyExecutables?: string[];
   personalAmbient?: Record<string,string>;
   loginFiles?:string[];
+  /** Ordinary tools and the instructing person's account directories (`ordinaryToolRunAccess.ts`). */
+  ordinaryToolBinds?: StrictBind[];
 }): StrictLaunch {
   // **The container contributes nothing.** A trusted host keeps the machine's
   // environment because it is the owner's machine; a strict host is not
@@ -971,7 +1012,7 @@ export function planStrictLaunch(input: {
     args: input.args,
     cwd: input.cwd,
     home,
-    binds: [...[...(input.readOnlyExecutables??[]),...(input.loginFiles??[])].map(path=>({path,access:"read_only" as const})),...strictBindsForRun({
+    binds: [...[...(input.readOnlyExecutables??[]),...(input.loginFiles??[])].map(path=>({path,access:"read_only" as const})),...(input.ordinaryToolBinds ?? []),...strictBindsForRun({
       runDir: input.runDir,
       profileDir: input.profileDir,
       loginHome: input.loginFiles?null:input.loginHome,
@@ -1016,7 +1057,7 @@ export async function handleLaunch(
     return;
   }
   launchingRuns.set(frame.launch_id, frame.run_id);
-  const hold: LaunchHold = { leases: [], worktree: null, resolution: null, spawned: false, toolBridge: null };
+  const hold: LaunchHold = { leases: [], worktree: null, resolution: null, spawned: false, toolBridge: null, ordinaryTools: null };
   try {
     await launchRun(frame, send, log, hold);
   } catch(error){
@@ -1031,7 +1072,10 @@ export async function handleLaunch(
     // stays either way: it is the Task's, and settle removes it.
     if (!hold.spawned) {
       try { await hold.toolBridge?.close(); }
-      finally { releaseHeldLeases(frame, hold); }
+      finally {
+        releaseHeldLeases(frame, hold);
+        hold.ordinaryTools?.release();
+      }
     }
   }
 }
@@ -1050,6 +1094,8 @@ interface LaunchHold {
   resolution: { root: string; gitCommonDir: string } | null;
   spawned: boolean;
   toolBridge: LocalToolBridge | null;
+  /** Ordinary tool lease and account use, held until the Run's process exits. */
+  ordinaryTools: RunOrdinaryTools | null;
 }
 
 function releaseHeldLeases(frame: Pick<LaunchFrame, "launch_id">, hold: LaunchHold): void {
@@ -1477,7 +1523,8 @@ async function launchRun(
   }
 
   if (registrationRevoked) {
-    await rm(runDir(frame.run_id), { recursive: true, force: true });
+    // Not a directory an earlier attempt of this Run is kept for recovery in.
+    if (!runKeptForRecovery(frame.run_id)) await rm(runDir(frame.run_id), { recursive: true, force: true });
     send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false, error: "This host registration was revoked." });
     return;
   }
@@ -1526,6 +1573,15 @@ async function launchRun(
   let spawnCommandArgs = spawnArgs;
   let spawnEnv: Record<string, string> = { ...baseEnv, ...derivedEnv };
   const strict = config.trust === "strict"||personalRead;
+  // Ordinary tools and the instructing person's own account, only when the
+  // control plane sent the field. Held on `hold` until the process exits.
+  try {
+    hold.ordinaryTools = await prepareRunOrdinaryTools(frame.ordinary_tools, strict, { scratchParent: runDir(frame.run_id) });
+  } catch (error) {
+    send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false,
+      error: `Could not prepare this Run's ordinary CLI tools: ${error instanceof Error ? error.message : String(error)}` });
+    return;
+  }
   if (config.trust === "strict" && frame.runtime_key === "codex_cli") {
     // This Run's own profile — the Agent × container one (`profileDir`), never
     // the login home. Writing the login home would rewrite the config the
@@ -1580,6 +1636,7 @@ async function launchRun(
         runtimeRoot: daemonRuntimeRoot(undefined, personalRead ? baseEnv : null),
         // A worktree's history lives in the repository's own git directory,
         // outside the worktree; without it git inside the namespace fails.
+        ordinaryToolBinds: hold.ordinaryTools?.binds,
         workspaceBinds: hold.worktree ?? hold.resolution
           ? [...attachedWorkspaceBinds, { path: (hold.worktree ?? hold.resolution)!.gitCommonDir, access_mode: "write" as const }]
           : [...attachedWorkspaceBinds,...(personalRead?[...(commonGit?[commonGit]:[]),...attachedGit].map(path=>({path,access_mode:"read" as const})):[])],
@@ -1599,7 +1656,7 @@ async function launchRun(
       // The grant was registered while building the plan; a Run that never
       // starts still has to give it back, or the daemon accumulates one entry
       // per failed launch for its whole lifetime.
-      egressProxy?.revoke(frame.run_id);
+      revokeRunEgress(frame.run_id);
       send({
         type: "complete",
         run_id: frame.run_id,
@@ -1612,6 +1669,7 @@ async function launchRun(
     }
   }
 
+  if (hold.ordinaryTools) spawnEnv = applyRunOrdinaryToolsEnv(spawnEnv, hold.ordinaryTools);
   const taskWorktree = hold.worktree;
   const inTaskWorktree = Boolean(hold.worktree ?? hold.resolution);
   // Where HEAD stands with this Run's leases held and before it runs: what
@@ -1634,7 +1692,7 @@ async function launchRun(
   // The last point a stop can arrive without a process to signal; past this
   // line one exists and the stop reaches it through `activeRuns`.
   if (stoppedLaunches.has(frame.launch_id)) {
-    if (strict) egressProxy?.revoke(frame.run_id);
+    if (strict) revokeRunEgress(frame.run_id);
     sendStoppedBeforeStart(frame, send);
     return;
   }
@@ -1719,7 +1777,40 @@ async function launchRun(
   });
 
   child.on("close", (code) => {
+    // A Run given ordinary tools may have left a background command with
+    // redirected stdio running after its runtime exited. Nothing below — the
+    // diff, handing the Location to the next writer, the uploads, removing the
+    // run directory, `complete`, and freeing the tool and the account — may
+    // happen until the rest of its process group is confirmed gone. Unconfirmed
+    // is not gone: the Locations, the tool and the account stay held.
+    let groupSettled = !hold.ordinaryTools;
     void (async () => {
+      if (hold.ordinaryTools) {
+        groupSettled = await settleProcessGroup(child.pid, log).then(() => true, (error: unknown) => {
+          log(`run ${frame.run_id}: could not confirm its remaining processes stopped; keeping its Locations, tool and account held: ${error instanceof Error ? error.message : String(error)}`);
+          return false;
+        });
+        if (groupSettled) hold.ordinaryTools.release();
+      }
+      if (!groupSettled) {
+        // Not a completion: processes of this Run may still be writing the
+        // workspace and using the tool and the account. Take no snapshot,
+        // upload nothing, hand nothing to the next writer, remove nothing —
+        // and say so with a failure the control plane cannot read as success.
+        unsettledRuns.set(frame.launch_id, { runId: frame.run_id, runtimeKey: active.runtimeKey, pgid: child.pid ?? null });
+        if (activeRuns.get(frame.run_id) === active) activeRuns.delete(frame.run_id);
+        if (activeLaunches.get(active.launchId)?.active === active) activeLaunches.delete(active.launchId);
+        log(`run ${frame.run_id}: kept for recovery — process group ${child.pid ?? "unknown"}, run directory ${runDir(frame.run_id)}; stop those processes, then restart rainver-host`);
+        send({
+          type: "complete",
+          run_id: frame.run_id,
+          launch_id: frame.launch_id,
+          exit_code: 1,
+          timed_out: active.timedOut,
+          error: "Processes this Run started could not be confirmed stopped. Its workspace changes were not captured; its run directory, Locations and tools stay held on the Host. Inspect the local Host log.",
+        });
+        return;
+      }
       await hold.toolBridge?.close().catch((error: unknown) => {
         log(`run ${frame.run_id}: tool bridge cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
       });
@@ -1782,8 +1873,11 @@ async function launchRun(
       // failure here must not swallow the `complete` frame or pin the run id
       // in `finishingRuns` for this daemon's lifetime.
       const superseded = activeRuns.has(frame.run_id) || isLaunching(frame.run_id);
+      const keptForRecovery = runKeptForRecovery(frame.run_id);
       if (superseded) {
         log(`run ${frame.run_id}: a newer attempt owns the run directory; leaving it in place`);
+      } else if (keptForRecovery) {
+        log(`run ${frame.run_id}: an earlier attempt's directory is kept for recovery; leaving it in place`);
       } else {
         await rm(runDir(frame.run_id), { recursive: true, force: true }).catch((error: unknown) => {
           log(`run ${frame.run_id}: run directory cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1801,7 +1895,7 @@ async function launchRun(
       // A superseded attempt keeps the grant (the live one holds it now) but
       // still gives up its entries, or the retry would report them again.
       if (superseded) egressProxy?.clearLog(frame.run_id);
-      else egressProxy?.revoke(frame.run_id);
+      else revokeRunEgress(frame.run_id);
       // A Task worktree stays: verification runs in it next, and
       // `task_run_settle` commits and removes it.
       send({
@@ -1822,10 +1916,13 @@ async function launchRun(
       });
     })().catch(error=>{
       log(`Run exit bookkeeping failed: ${String(error)}`);
-      releaseHeldLeases(frame,hold);finishingRuns.delete(frame.launch_id);
+      // Unconfirmed processes keep everything they hold, here as above.
+      if (groupSettled) releaseHeldLeases(frame,hold);
+      else unsettledRuns.set(frame.launch_id, { runId: frame.run_id, runtimeKey: active.runtimeKey, pgid: child.pid ?? null });
+      finishingRuns.delete(frame.launch_id);
       if(activeRuns.get(frame.run_id)===active)activeRuns.delete(frame.run_id);
       if(activeLaunches.get(frame.launch_id)?.active===active)activeLaunches.delete(frame.launch_id);
-      if(!activeRuns.has(frame.run_id)&&!isLaunching(frame.run_id))egressProxy?.revoke(frame.run_id);
+      if(groupSettled&&!activeRuns.has(frame.run_id)&&!isLaunching(frame.run_id))revokeRunEgress(frame.run_id);
       try{send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:active.timedOut,error:'Host exit bookkeeping failed; inspect local Host log.'});}catch(sendError){log(`Completion transport unavailable: ${String(sendError)}`);}
     });
   });

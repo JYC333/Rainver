@@ -343,14 +343,15 @@ describe('ConversationExecutionPreflight', () => {
     renderPanel()
     expect(await screen.findByText(/reports no usable CLI installation/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Confirm execution context' })).toBeDisabled()
-    expect(screen.getByRole('link', { name: 'Configure or reconnect Host' })).toHaveAttribute('href', '/command-center')
+    // To the Host chosen in the draft, at its Runtimes.
+    expect(screen.getByRole('link', { name: 'Configure or reconnect Host' })).toHaveAttribute('href', '/command-center?host=host-1&section=runtime')
   })
 
   it('explains an offline Host as a daemon issue, not a browser issue', async () => {
     vi.mocked(sessionsApi.executionContext).mockResolvedValue(initializedResponse(false) as never)
     renderPanel()
     expect(await screen.findByText(/browser is still online/i)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Reconnect Host' })).toHaveAttribute('href', '/command-center')
+    expect(screen.getByRole('link', { name: 'Reconnect Host' })).toHaveAttribute('href', '/command-center?host=host-1&section=connection')
     expect(screen.getByText(/Execution Host is offline/)).toBeInTheDocument()
   })
 

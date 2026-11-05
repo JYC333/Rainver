@@ -6,7 +6,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomUUID,createHash} from 'node:crypto';
-import {beforeEach,afterEach,expect,it,vi} from 'vitest';
+import {beforeEach,afterEach,expect,vi} from 'vitest';
 import {useTestDatabase} from './support/testDatabase.js';
 import {briefingWorld,SPACE,PROJECT,OWNER,MEMBER,AGENT,PROFILE,CONNECTION,CHANNEL,HOST,outputValue} from './support/briefingFixture.js';
 import {syncBuiltinPrompts} from '../src/modules/prompts/builtins.js';
@@ -26,7 +26,13 @@ import {informationDigestModule} from '../src/modules/informationDigest/index.js
 import {PgRunRepository} from '../src/modules/runs/repository.js';
 import {PostRunFinalizationService} from '../src/modules/runs/finalizationService.js';
 import {runSettlement} from '../src/modules/runs/runSettlement.js';
-const db=useTestDatabase(import.meta.filename,{max:6}),w=briefingWorld(db),identity={spaceId:SPACE,userId:OWNER};
+import {composeProjectReading,readProjectComposition} from '../src/modules/informationDigest/composition/service.js';
+
+import type {TestPartition} from './support/testPartition.js';
+
+/** Registered by the `projectReadingThemesDb.N.test.ts` entry files, one part each (see support/testPartition.ts). */
+export function defineProjectReadingThemesDbSuite(filename: string, {it}: TestPartition): void {
+const db=useTestDatabase(filename,{max:6}),w=briefingWorld(db),identity={spaceId:SPACE,userId:OWNER};
 let goalId:string,versionId:string,bindingId:string,itemId:string;
 let empty=false,fail=false,root='';let worker:WorkerProcess|undefined;
 const config=()=>({...w.config(),rainverHome:root,artifactStorageRoot:join(root,'artifacts'),sandboxRoot:join(root,'sandbox')});
@@ -107,7 +113,7 @@ it('real worker/orchestrator/Host wire Delivery settles a theme, without fixture
  await new RuntimeContextPolicyRepository(db.pool).write(identity,'space',SPACE,{base_version_id:null,policy:{constraints:{},preferences:{}},reason:'Synthetic worker fixture'});
  await enable();const id=await collect();await settleThemeRound(db.pool,config(),id);const r=await round(id);const version=await w.rowOf(r.briefing_id);
  const refs=(await db.pool.query("SELECT ref_key FROM information_briefing_inputs WHERE briefing_id=$1 AND status='included' ORDER BY ref_key",[r.briefing_id])).rows.map(x=>x.ref_key);
- buildServerDist();worker=await startWorkerProcess({databaseUrl:db.connectionUri,home:root,hostId:HOST});
+ await buildServerDist();worker=await startWorkerProcess({databaseUrl:db.connectionUri,home:root,hostId:HOST});
  worker.send({cmd:'policy',prompt:{answer:JSON.stringify(outputValue({overview:{text:'Evidence-based theme synthesis.',refs},topic:{quick_line:'The mechanism has a bounded use.',summary:'The original describes a mechanism. Its limitations matter.',stop_reason:'Authorized fixture only.'}}))}});
  const terminal=await until(()=>w.rowOf(r.briefing_id),row=>row.status!=='queued','theme canonical settlement',150);
  expect(terminal.status,JSON.stringify(terminal)).toBe('ready');expect((await w.runs().getRun(SPACE,version.run_id))?.status).toBe('succeeded');
@@ -169,7 +175,7 @@ it('worker SIGKILL recovery settles the failed attempt, explicit retry publishes
  await new RuntimeContextPolicyRepository(db.pool).write(identity,'space',SPACE,{base_version_id:null,policy:{constraints:{},preferences:{}},reason:'Synthetic worker recovery fixture'});
  await enable();const id=await collect();await settleThemeRound(db.pool,config(),id);const r=await round(id),old=await w.runOf(r.briefing_id);
  const refs=(await db.pool.query("SELECT ref_key FROM information_briefing_inputs WHERE briefing_id=$1 AND status='included' ORDER BY ref_key",[r.briefing_id])).rows.map(x=>x.ref_key);
- buildServerDist();worker=await startWorkerProcess({databaseUrl:db.connectionUri,home:root,hostId:HOST});const launch=await worker.next(isPrompted(old.id));await worker.kill();worker=undefined;
+ await buildServerDist();worker=await startWorkerProcess({databaseUrl:db.connectionUri,home:root,hostId:HOST});const launch=await worker.next(isPrompted(old.id));await worker.kill();worker=undefined;
  // Only persisted lease time is accelerated; the worker itself really died.
  await db.pool.query("UPDATE jobs SET heartbeat_at=now()-interval '11 minutes',updated_at=now()-interval '11 minutes' WHERE payload_json->>'run_id'=$1",[old.id]);
  worker=await startWorkerProcess({databaseUrl:db.connectionUri,home:root,hostId:HOST});
@@ -309,7 +315,7 @@ it('F1 an unexpected PostgreSQL cohort failure is reported after independent gro
 
 // Stage-two tests use the same real collection, original writer and canonical
 // theme settlement fixtures as stage one; no synthetic successful briefing rows.
-import {composeProjectReading,readProjectComposition} from '../src/modules/informationDigest/composition/service.js';
+
 async function anotherTheme(){
  const prior={goalId,versionId,bindingId};goalId=randomUUID();versionId=randomUUID();bindingId=randomUUID();
  await db.pool.query(`INSERT INTO source_goals(id,space_id,project_id,owner_user_id,agent_id,runtime_profile_id,intent_json,budget_json,status,active_version_id,compatibility_json) SELECT $2,space_id,project_id,owner_user_id,agent_id,runtime_profile_id,intent_json,budget_json,status,$3,'{}' FROM source_goals WHERE id=$1`,[prior.goalId,goalId,versionId]);
@@ -609,3 +615,4 @@ it('daily history pages beyond twenty revisions and lists unattached analyses',a
  await expect(readReadingHistory(db.pool,identity,PROJECT,{date:'2026-02-30'})).rejects.toMatchObject({statusCode:422});
  await db.pool.query('DELETE FROM project_members WHERE project_id=$1 AND user_id=$2',[PROJECT,MEMBER]);await expect(readReadingHistory(db.pool,{spaceId:SPACE,userId:MEMBER},PROJECT,{})).rejects.toMatchObject({statusCode:404});
 });
+}

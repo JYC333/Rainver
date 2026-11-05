@@ -7,7 +7,8 @@ import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { ArrowLeft, ExternalLink, FileCode2, FlaskConical, Loader2, Save, ShieldCheck, UserRoundCheck, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
-import { artifactsApi, evolutionApi, runsApi } from '../../api/client'
+import { artifactsApi, evolutionApi, runsApi, type SaveWorkflowFromRunResult } from '../../api/client'
+import { SavedWorkflowNotice } from './SavedWorkflowNotice'
 import { errMsg } from '../../lib/utils'
 import type { ActivityInboxRecord, Artifact, AuthorizationRequest, Proposal, Run, RunAttempt, RunEvaluation, RunFinalization, RunLogicalIO, RunSupervisorDecision, RunVerificationResult } from '../../types/api'
 import { Card } from '../../components/ui/card'
@@ -125,6 +126,9 @@ function RunDetailPageContent() {
   const [workflowPreview, setWorkflowPreview] = useState<Record<string, unknown> | null>(null)
   const [workflowPreviewScopeKey, setWorkflowPreviewScopeKey] = useState<string | null>(null)
   const [workflowBusy, setWorkflowBusy] = useState(false)
+  // What the last save created for this Run, kept so its review/promotion
+  // destination stays reachable after the dialog closes.
+  const [savedWorkflow, setSavedWorkflow] = useState<{ scopeKey: string; result: SaveWorkflowFromRunResult } | null>(null)
   const loadGeneration = useRef(0)
   const workflowPreviewGeneration = useRef(0)
   const workflowPreviewStateRef = useRef({
@@ -374,6 +378,7 @@ function RunDetailPageContent() {
 
   async function saveWorkflow() {
     if (!runId || !activeSpaceId || !workflowPreview || workflowPreviewScopeKey !== `${activeSpaceId}:${runId}`) return
+    const scopeKey = `${activeSpaceId}:${runId}`
     setWorkflowBusy(true)
     try {
       const result = await evolutionApi.saveWorkflowFromRun({
@@ -381,7 +386,10 @@ function RunDetailPageContent() {
         display_name: workflowName.trim() || undefined,
         description: workflowDescription.trim() || undefined,
       })
-      toast.success(result.status === 'proposal_required' ? 'Workflow proposal created for review' : 'Workflow draft saved')
+      setSavedWorkflow({ scopeKey, result })
+      toast.success(t(result.status === 'proposal_required'
+        ? 'management_ui.run_workflow_save.proposal_created'
+        : 'management_ui.run_workflow_save.draft_saved'))
       setWorkflowOpen(false)
       clearWorkflowPreview()
     } catch (e) { toast.error(errMsg(e)) } finally { setWorkflowBusy(false) }
@@ -462,6 +470,7 @@ function RunDetailPageContent() {
           <h1 className="text-xl font-semibold tracking-tight">{r.instruction ?? r.prompt ?? `${r.run_type} Run`}</h1>
           <div className="flex flex-wrap items-center gap-2">{actions.error && <span role="alert" className="text-sm text-destructive">{actions.error}</span>}{actions.refreshError && <span role="status" className="text-sm text-muted-foreground">{t('conversation_ui.run.refresh_failed', { message: actions.refreshError })}</span>}<ContentAccessControl resourceType="run" resourceId={r.id} ownerUserId={r.owner_user_id ?? null} />{r.status === 'waiting_for_review' && !hasAuthorizationPause && <><Button size="sm" onClick={() => void resumeWaitingRun()} disabled={recoveryBusy}><UserRoundCheck className="size-3.5" /> Resume</Button><Button size="sm" variant="destructive" onClick={() => setAbandonOpen(true)} disabled={recoveryBusy}><XCircle className="size-3.5" /> Abandon</Button></>}{(r.status === 'succeeded' || r.status === 'degraded') && <Button size="sm" variant="outline" onClick={() => setWorkflowOpen(true)}><Save className="size-3.5" /> Save as workflow</Button>}</div>
         </div>
+        {savedWorkflow && savedWorkflow.scopeKey === `${activeSpaceId}:${runId}` && <SavedWorkflowNotice result={savedWorkflow.result} />}
         <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}</p>
         <div className="flex flex-wrap gap-1.5 items-center">
           <StatusBadge status={r.status} />
@@ -499,6 +508,7 @@ function RunDetailPageContent() {
               <p className="break-all"><span className="text-muted-foreground">agent_version_id</span><br /><span className="font-mono select-all">{r.agent_version_id ?? '—'}</span></p>
               <p className="break-all"><span className="text-muted-foreground">project_folder_id</span><br /><span className="font-mono select-all">{r.project_folder_id ?? '—'}</span></p>
               <p className="break-all"><span className="text-muted-foreground">space_id</span><br /><span className="font-mono select-all">{r.space_id}</span></p>
+              <p className="break-all"><span className="text-muted-foreground">work_skill_content_hash</span><br /><span className="font-mono select-all">{r.work_skill?.content_hash ?? '—'}</span></p>
             </div>
           </details>
           <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground space-y-1">

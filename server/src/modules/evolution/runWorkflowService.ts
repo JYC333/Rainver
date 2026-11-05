@@ -92,6 +92,7 @@ export class RunWorkflowService {
       displayName,
       description,
       definition: preview.definition,
+      riskLevel: preview.risk_level,
     });
     return {
       status: "draft_saved",
@@ -263,7 +264,7 @@ export class RunWorkflowService {
 
   private async createDraft(
     identity: SpaceUserIdentity,
-    input: { assetKey: string; displayName: string; description: string; definition: WorkflowDefinition },
+    input: { assetKey: string; displayName: string; description: string; definition: WorkflowDefinition; riskLevel: string },
   ): Promise<{ asset_id: string; version_id: string; version_status: "draft" }> {
     const owner = await normalizeAssetOwnerScopeForCreate(this.db, identity, "space", null);
     return withQueryableTransaction(this.db, async (client) => {
@@ -280,7 +281,9 @@ export class RunWorkflowService {
            id, space_id, asset_type, asset_key, display_name, description,
            owner_scope_type, status, metadata_json, created_at, updated_at
          ) VALUES ($1, $2, 'workflow_template', $3, $4, $5, $6, 'active', $7::jsonb, $8, $8)`,
-        [assetId, identity.spaceId, input.assetKey, input.displayName, input.description, owner.ownerScopeType, JSON.stringify({ source: "run_extraction" }), now],
+        // The extracted risk stays on the asset so its promotion Proposal is
+        // judged at least as strictly as the source Run (assetEvaluationRepository).
+        [assetId, identity.spaceId, input.assetKey, input.displayName, input.description, owner.ownerScopeType, JSON.stringify({ source: "run_extraction", risk_level: input.riskLevel }), now],
       );
       await client.query(
         `INSERT INTO evolvable_asset_versions (

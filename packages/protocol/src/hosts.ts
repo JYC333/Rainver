@@ -10,6 +10,8 @@
 
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema } from "./common.js";
+import { OrdinaryToolsHostReportSchema } from "./ordinaryTools.js";
+import { OrdinaryToolAccountsCapabilitySchema, OrdinaryToolsRunCapabilitySchema } from "./ordinaryToolAccounts.js";
 import { RuntimePromptCapabilitiesSchema, type RuntimePromptCapabilities } from "./conversationInput.js";
 
 export const RuntimeOptionChoiceSchema = z.object({
@@ -184,6 +186,16 @@ export const HostCapabilitiesSchema = z.object({
    * only on Linux, the one platform those daemons implemented it on.
    */
   tool_bridge_protocols: z.array(z.string()).optional(),
+  /**
+   * Ordinary CLI tools (`ordinaryTools.ts`). Absent from daemons that predate
+   * the report: the control plane shows those Hosts as needing an update and
+   * sends them no ordinary-tool request, without refusing their Runtimes.
+   */
+  ordinary_tools: OrdinaryToolsHostReportSchema.optional(),
+  /** Personal ordinary-tool accounts (`ordinaryToolAccounts.ts`); absent from older daemons. */
+  ordinary_tool_accounts: OrdinaryToolAccountsCapabilitySchema.optional(),
+  /** Ordinary tools and personal accounts inside Runs; absent from older daemons. */
+  ordinary_tools_runs: OrdinaryToolsRunCapabilitySchema.optional(),
 });
 export type HostCapabilities = z.infer<typeof HostCapabilitiesSchema>;
 

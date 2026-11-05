@@ -1,3 +1,4 @@
+import { useAppTranslation } from '../../i18n'
 import { useState, useEffect, useCallback } from 'react'
 import { useSpaceNavigate as useNavigate } from '../../core/spaceNav'
 import { FolderKanban, Plus, Target } from 'lucide-react'
@@ -37,6 +38,7 @@ const FILTER_OPTIONS = [
  * picks. Sources and workflows are configured later in their owning Areas. */
 
 export default function ProjectsPage() {
+  const { t } = useAppTranslation()
   const navigate = useNavigate()
   const { activeSpaceId, activeSpaceName } = useSpace()
   const [projects, setProjects] = useState<Project[]>([])
@@ -176,6 +178,7 @@ export default function ProjectsPage() {
               <div className="flex items-start justify-between gap-2 mb-2">
                 <span className="font-medium text-sm leading-snug">{project.name}</span>
                 <StatusBadge status={project.status} />
+                {project.current_user_can_read === false && <Badge variant="outline">{t('management_ui.project_members.limited')}</Badge>}
               </div>
               {project.description && (
                 <p className="text-xs text-muted-foreground mb-2 line-clamp-2">{project.description}</p>

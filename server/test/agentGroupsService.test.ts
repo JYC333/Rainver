@@ -95,7 +95,7 @@ class AgentGroupServiceDb {
     if (sql.includes("room_read_run")) {
       // `roomRunReadAccessSql`, the Room-boundary probe `getVisibleRun` runs.
       // This fake models neither `rooms` nor `room_user_members`, so it
-      // answers "allowed" and leaves that rule to `roomsDb.test.ts`, which
+      // answers "allowed" and leaves that rule to `roomsDb.suite.ts`, which
       // runs against real PostgreSQL. Two things about this arm:
       // it must precede the `"FROM runs r"` arm, because the probe's subquery
       // says `FROM runs room_run` and would otherwise be answered with a run

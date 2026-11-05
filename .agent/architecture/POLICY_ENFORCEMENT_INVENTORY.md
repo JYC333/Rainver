@@ -16,10 +16,6 @@ operate on the `.agent` context tree.
 
 ## Canonical policy query
 
-**Helper:** active policy row loading is owned by `server/src/modules/policy/service.ts` and related repositories — single query shape for active rows (`enabled`, `status=active`, priority desc, created_at desc, id desc).
-
-**Domain decisions:** domain-specific matching is handled in the server policy services using the bounded policy row shape.
-
 **`engineCheck`** (`server/src/modules/policy/decisionCore.ts`) evaluates stateless built-in rules in priority order. When no rule matches, it uses the action registry's `default_decision` — not a permissive ALLOW. Unknown actions always fail closed with DENY (`audit_code="unknown_policy_action"`). It does not load `policies` rows.
 
 There is no `PolicyEffectCatalog` and no generic persisted-policy proposal.
@@ -46,7 +42,7 @@ put it in the permission snapshot.
 
 Managed retrieval actions continue through their retrieval policy adapter;
 delegation uses `run.spawn_child` / `runtime.execute`. Generic managed source
-actions (`source.connection.propose_create`, `project.source.propose_bind`,
+actions (`source.channel.propose_activation`, `project.source.propose_bind`,
 `source.backfill.propose_start`) force a PolicyDecisionRecord and can create
 only proposals. Project and plan associations are revalidated inside their
 application services. Best-effort action RunEvents record the decision id and
@@ -62,11 +58,11 @@ authorization transactionally. Payload/action/type/Project/resource mismatch
 leaves the proposal pending. Grant-management and proposal-apply actions are
 not agent-visible.
 
-**Non-mutating simulation exceptions (no PolicyDecisionRecord):** preflight simulation may call pure decision helpers only — it must not persist `PolicyDecisionRecord` and must not perform the action. Current simulation call sites live in runs and automations services.
+**Non-mutating simulation exceptions (no PolicyDecisionRecord):** preflight simulation may call pure decision helpers only — it must not persist `PolicyDecisionRecord` and must not perform the action. The only current simulation call site is the automation policy preflight, which calls `computeDecision` (`server/src/modules/automations/service.ts`).
 
 **Hard invariant guard** (`checkHardInvariants` in `server/src/modules/policy/decisionCore.ts`) runs before `engineCheck` and enforces non-overridable security/privacy invariants.
 
-**PolicyDecisionRecord** is an append-only durable audit table for sensitive policy decisions. Created for: audit_required actions, DENY, REQUIRE_APPROVAL, and forced records.
+**PolicyDecisionRecord** is an append-only durable audit table for sensitive policy decisions. Created for: audit_required and `fail_closed` actions, DENY, REQUIRE_APPROVAL, CRITICAL risk, `automation`/`autonomous` trigger origins, and forced records (`isDurableAuditRequired` in `policy/gateway.ts`).
 
 `authorization_requests` references one same-Space PolicyDecisionRecord and
 Run. Only the built-in `managed_system_action_grant_required` deny for an exact
@@ -140,15 +136,6 @@ Policy traces are log lines and `PolicyDecisionRecord` rows. Context packages do
 
 ---
 
-## Policy Effect Contract
-
-No domain on an active `policies` row is consulted at decision time.
-`applyPolicyChangeProposal` requires `name` and `domain`, then inserts
-`status='active'` for that domain. It does not keep a supported-domain catalog,
-and a reserved name is inserted the same way as any other domain.
-
----
-
 ## Targeted Content Publications
 
 **Status:** Active immutable snapshot publication/import; **no source read grant**
@@ -187,21 +174,23 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
   `context.inject_memory`, `context.render_for_runtime`, `project_folder.write_patch`,
   `artifact.persist`, `proposal.create`, `proposal.apply`, `agent.config_update`,
   `project_folder.read`, `input_resource.read`, `input_resource.search`,
-  `project_folder.apply_patch`, `automation.create`, `automation.fire`,
+  `conversation.history.read`, `project_folder.apply_patch`, `automation.create`, `automation.fire`,
   `automation.update`, `source.goal.manage`, `source.connection.manage`, `source.item_create`, `source.item_update`,
   `evidence.create`, `evidence.update`, `evidence.link`, `source.custom.create`,
   `source.custom.generate`, `source.custom.test`, `source.custom.activate`, `source.custom.repair`,
   `source.custom.rollback`, `source.custom.credential_create`, `source.recipe.create`,
   `source.recipe.activate`, `source.recipe.dry_run`, `source.custom.settings_update`,
-  `project.source.bind`, `inquiry.thread.create`, `project.operation.manage`,
+  `project.source.bind`, `inquiry.thread.create`, `project.monitoring.configure`,
+  `project.operation.manage`, `research.result.read`, `research.result.adopt`,
   `research.acquisition.start`, `research.acquisition.cancel`, `retrieval.search`,
   `retrieval.brief`, `memory.retrieval.search`, `memory.retrieval.brief`, `project.summary.search`,
   `project.summary.brief`, `source.retrieval.search`, `source.retrieval.brief`,
   `policy.action_grant.create`, `policy.action_grant.revoke`, `source.backfill.plan`,
   `source.backfill.manage`, `task.plan.propose`, `project.brief.propose`, `task.list`,
   `proposal.list`, `research.operation.list`, `memory.write`,
-  `inquiry.thread.list`, `inquiry.iteration.record`, `inquiry.knowledge.promote`, `task.create`,
-  `proposal.decide`, `task.report`, `task.handoff`, `task.status.set`, `artifact.declare`,
+  `inquiry.thread.list`, `inquiry.problem.read`, `inquiry.work.record`, `inquiry.round.close`,
+  `inquiry.iteration.record`, `inquiry.knowledge.promote`, `task.create`,
+  `proposal.decide`, `task.report`, `task.handoff`, `task.status.set`, `task.delete`, `artifact.declare`,
   `task.complete`, `handoff.write`, `task.request_review`.
 - **wired_via_proposal**: `lifecycle_status=wired_via_proposal` — enforced exclusively via the `proposal.apply`
   gate (`PolicyGateway.enforceProposalApply()`).
@@ -227,15 +216,17 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
   `runtime_context_policy.change`, `work_context_setup.change`, `project_folder.write_patch`,
   `artifact.persist`, `proposal.apply`, `skill.import`,
   `runtime_skill.binding_update`,
-  `input_resource.read`, `input_resource.search`, `project_folder.apply_patch`, `automation.create`,
-  `automation.fire`, `automation.update`, `inquiry.thread.create`, `research.acquisition.start`,
+  `input_resource.read`, `input_resource.search`, `conversation.history.read`,
+  `project_folder.apply_patch`, `automation.create`, `automation.fire`, `automation.update`,
+  `source.goal.manage`, `inquiry.thread.create`, `project.monitoring.configure`,
+  `research.result.adopt`, `research.acquisition.start`,
   `research.acquisition.cancel`, `retrieval.search`, `retrieval.brief`, `memory.retrieval.search`,
   `memory.retrieval.brief`, `project.summary.search`, `project.summary.brief`,
   `source.retrieval.search`, `source.retrieval.brief`, `policy.action_grant.create`,
   `source.connection.activate`, `policy.action_grant.revoke`, `source.backfill.plan`,
   `source.backfill.start`, `source.backfill.manage`, `task.plan.propose`, `project.brief.propose`,
-  `memory.write`, `inquiry.iteration.record`, `inquiry.knowledge.promote`,
-  `task.create`, `proposal.decide`, `task.report`, `task.handoff`, `task.status.set`,
+  `memory.write`, `inquiry.work.record`, `inquiry.round.close`, `inquiry.iteration.record`,
+  `inquiry.knowledge.promote`, `task.create`, `proposal.decide`, `task.report`, `task.handoff`, `task.status.set`, `task.delete`,
   `artifact.declare`, `task.complete`, `handoff.write`, `task.request_review`.
   Dynamic escalation to `fail_closed` also occurs for:
   - `force_record=True` on the request.
@@ -271,7 +262,7 @@ fail closed via `unknown_policy_action` DENY if ever passed to `engineCheck` or
 | `proposal.create` | `server/src/modules/proposals/` and target modules | Uses `enforce()` for user-created proposals. |
 | `proposal.create` | `server/src/modules/projectFolders/codePatch.ts` | Uses `enforce()` with `force_record=True` for system-created code_patch proposals. |
 | `proposal.apply` | `server/src/modules/proposals/applyService.ts` | Uses `enforceProposalApply()` on accept and `code_patch` rollback; unsupported types deny first. **fail_closed**. |
-| `agent.config_update` | registered in `packages/protocol/src/policy.ts`; not called from `server/src/modules/agents/` | Owner `PATCH /api/v1/agents/:agentId` and `POST /api/v1/agents/:agentId/config` append an `AgentVersion` directly. There is no `agents/service.ts` and no `agent_config_update` proposal. |
+| `agent.config_update` | registered in `packages/protocol/src/policy.ts`; not called from `server/src/modules/agents/` | Owner `PATCH /api/v1/agents/:agentId` and `POST /api/v1/agents/:agentId/config` append an `AgentVersion` directly. There is no `agents/service.ts`. `agent_config_update` has a `PROPOSAL_TYPE_RISK` entry and is an evolution review-artifact-only type (`evolution/prompt.ts`), but no applier is registered, so accepting one is denied as an unsupported type. |
 | `automation.create` | `server/src/modules/automations/service.ts` | **Uses server `enforce()`**. Runtime preflight and policy preflight simulation must pass before the Automation row is written. `membership_role`, `agent_id`, `trigger_type` in `context`. **fail_closed** — persistence failure blocks creation. |
 | `automation.update` | `server/src/modules/automations/service.ts` | **Uses server `enforce()`**. `membership_role`, `agent_id` in `context`. **fail_closed**. |
 | `automation.fire` | `server/src/modules/automations/service.ts` | **Uses server `enforce()`**. Runtime preflight and policy preflight simulation rerun. `membership_role`, `agent_id`, `trigger_origin="automation"` in `context`. Creates a queued Run, an `agent_run` job, and an AutomationRun record; scheduled fire advances the schedule in the same transaction as the Run/Job/AutomationRun writes. **fail_closed**. |
@@ -304,7 +295,7 @@ reviewer finds every enforcement point: by finding the function's callers.
 | `contentReadSql` + `runReadSql` / `proposalReadSql` / `artifactReadSql` / `runInheritedReadSql` (`access/contentAccessSql.ts`) | the cross-domain readers: tasks, projectWork, agentGroups, sources, plans, frontendSupport | The read predicate for its data class. Lives in `access/` rather than a product module so those domains can import it without coupling (B33). Not every reader: the canonical `runs`, `proposals`, `artifacts` and `projects` repositories still compose the same pair by hand beside their own predicates, which `contentAccessSql.ts` records at its own definition. A term added here does not reach them. |
 | `assertWritableSpaceObject` (`knowledge/knowledgeWriteAccess.ts`) | every note and Knowledge-source mutation | Who may change a shared object: anything but `space_shared` belongs to its owner, and a Project-bound object also needs Project write. |
 | `helperProcessEnv` (`packages/host-daemon/src/providerBinding.ts`) | every daemon helper that runs a vendor runtime | What a spawned helper inherits: the machine's environment minus that runtime's vendor credentials. |
-| `csrfOriginAllowed` / `stateChangingReadAllowed` (`gateway/csrfOrigin.ts`) | every cookie-authenticated write, and the six GETs whose effects reach past their response | Whether another site caused this request. The two are deliberately not the same rule: the write check refuses an explicit cross-site `Sec-Fetch-Site` or a foreign `Origin` and otherwise allows, leaving the rest to `SameSite=Lax`; the read check **fails closed**, because a top-level cross-site navigation carries no `Origin` at all. |
+| `csrfOriginAllowed` / `stateChangingReadAllowed` (`gateway/csrfOrigin.ts`) | every cookie-authenticated write, and the seven GETs whose effects reach past their response | Whether another site caused this request. The two are deliberately not the same rule: the write check refuses an explicit cross-site `Sec-Fetch-Site` or a foreign `Origin` and otherwise allows, leaving the rest to `SameSite=Lax`; the read check **fails closed**, because a top-level cross-site navigation carries no `Origin` at all. |
 
 ### WIRED_VIA_PROPOSAL action inventory
 
@@ -352,11 +343,12 @@ boundary protects Claim/ObjectRelation writes through `claim.create`,
 `claim.update`, `claim.archive`, `object_relation.create`, and
 `object_relation.delete`.
 
-`SUPPORTED_PROPOSAL_TYPES` includes `knowledge_create`, `knowledge_update`,
-`knowledge_archive`, plus `claim_create`, `claim_update`, `claim_archive`,
-`object_relation_create`, and `object_relation_delete`. Unsupported proposal
-types still deny at the `proposal.apply` gate with
-`unsupported_proposal_type`.
+The `proposal.apply` gate's supported set is the live applier registry
+(`PgProposalApplyService.supportedProposalTypes()`), which registers
+`knowledge_create`, `knowledge_update`, `knowledge_archive`, plus `claim_create`,
+`claim_update`, `claim_archive`, `object_relation_create`, and
+`object_relation_delete`. Unsupported proposal types still deny at the
+`proposal.apply` gate with `unsupported_proposal_type`.
 
 Knowledge read endpoints use canonical content access: `space_shared` is
 member-readable after scope checks, `private` has owner base access, and
@@ -376,10 +368,9 @@ evaluator for external or untrusted Activity/Artifact-derived Knowledge.
 Knowledge must not automatically enter Memory or Runtime Context. A Knowledge
 write does not create Memory.
 
-Run creation, agent run preflight, standalone preflight, and automation policy
-preflight use `engineCheck` directly (non-mutating
-simulation only — no `PolicyDecisionRecord`). They are absent from the wired
-action inventories because they are not enforcement and must not emit
+The automation policy preflight calls `computeDecision` directly (non-mutating
+simulation only — no `PolicyDecisionRecord`). It is absent from the wired
+action inventories because it is not enforcement and must not emit
 `PolicyDecisionRecord`.
 **Real enforcement runs exclusively in `RunOrchestrationService`.**
 

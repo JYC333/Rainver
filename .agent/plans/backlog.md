@@ -42,30 +42,6 @@ The standing Workflow enablement condition is recorded in the
 Evidence: `runs/verification/engine.ts`, `runs/finalizationService.ts`, and
 [Verification Engine](../architecture/VERIFICATION_ENGINE.md).
 
-## 2. Workflow / Automation Lifecycle
-
-### B4.1 — Complete Save Run as Workflow lifecycle
-
-Current code provides the Run-detail UI, sanitized preview/extraction, low-risk
-draft creation, and a high-risk `workflow_save` Proposal whose acceptance creates
-a draft `workflow_template` asset version. Real-PostgreSQL coverage
-(`server/test/runWorkflowServiceDb.test.ts`) stops at that draft boundary.
-`RunDetailPage.saveWorkflow()` discards the returned proposal/asset/version IDs
-after its toast, although the existing Evolution surfaces already own review
-and promotion. Independent promotion tests do not close the full journey.
-
-- [ ] Connect the created draft visibly into the existing proposal/promotion
-  lifecycle so the user can review and promote it without reconstructing which
-  asset came from the source Run.
-- [ ] Add end-to-end coverage from source Run through save Proposal (when
-  required), draft, promotion/approval, approved version, and subsequent
-  Workflow launch.
-
-Constraints: extraction stays sanitized; credentials, host paths, transient Run
-IDs, and unreviewed mutable runtime state must not become Workflow definition
-content. Always-draft behavior and standard proposal/promotion gates remain in
-force.
-
 ## 3. Evolution and Artifact Provenance
 
 ### D1.2 — Artifact user-edit tracking
@@ -87,22 +63,6 @@ Interim: Proposal rejection supplies correction evidence. There is no
 `request_changes` Proposal lifecycle status or authoritative Artifact revision
 event; an emitter branch is not an implemented user flow. See
 [../architecture/EVOLUTION_SIGNAL_SYSTEM.md](../architecture/EVOLUTION_SIGNAL_SYSTEM.md).
-
-## 4. Project Surfaces
-
-### Domain contents and classification pagination
-
-Domain contents stop at 200 objects; classification pickers load only 200
-Projects and 100 Notes/Knowledge Items. Detail-page classification already
-exists and is not remaining work.
-
-- [ ] Add continuation to `focusAreas/service.ts:contents` and the Domain UI.
-- [ ] Page the classification pickers in `FocusAreasPage.tsx` without changing
-  visibility or classification authority (ADR 0015).
-
-The note-only and concurrent same-kind Inquiry Step extensions have explicit
-usage triggers and are tracked in the
-[Project/Inquiry register](../tasks/deferred-register.md#project-and-inquiry--usage-triggered).
 
 ## 5. Runtime Routing and Provider Setup
 
@@ -207,21 +167,6 @@ to the singleton config.
 Constraint: one server's revoke, outage, or configuration cleanup must never
 stop another profile or expose its token or workspace mappings.
 
-### A provider-bound Host Run's egress snapshot records `local_cli`
-
-`policy/executionControlSnapshots.ts:createForRun` can read the immutable
-Runtime Profile's selected provider, but explicitly sets the snapshot's provider
-to null for Host dispatch. It records `local_cli` even when
-`remoteProviderBinding.resolveRemoteRunBinding` uses that Profile's named
-ModelProvider. This is not merely late provider resolution, nor evidence that
-dispatch/proxy credential and provider checks are absent.
-
-- [ ] Align the snapshot with the selected backend and actual egress
-  classification, preserving credential authorization, provider classification
-  and the distinction between Host and server-side network activity.
-- [ ] Update policy/read-model tests together; `runtimeContextPolicyDb.test.ts`
-  currently asserts the `local_cli` snapshot for this path.
-
 ### A strict-Host Task Run cannot declare its output
 
 All Agent CLI Runs now use the Host daemon; the old server-loop versus
@@ -238,18 +183,6 @@ not. `runWorkSurfaceDb.test.ts` asserts this restriction.
   than restoring a retired server execution path.
 
 Current behavior: [Hosts](../modules/hosts.md).
-
-### Work Skill provenance is not exposed through its identity read model
-
-`runToolIdentityRepository.ts` stores `skill_content_hash`, and Host dispatch
-also mirrors the hash into Run metadata. The identity-column value has no
-product reader. The unified Host wire contract already exists in
-`packages/protocol/src/hostWire.ts` and is not remaining work.
-
-- [ ] Expose the dispatched Work Skill identity through a supported provenance
-  read model, making the delivered version traceable without inventing a second
-  identity source. Do not describe all strict-Host evidence as SQL-only: Host
-  dispatch already carries the metadata copy.
 
 ### Interactive permission gate for headless dispatch
 

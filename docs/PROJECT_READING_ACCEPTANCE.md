@@ -31,7 +31,7 @@ R1–R6提交依次为 `62f5e964`、`faff6beb`、`3280b213`、`e582dd05`、
 - `projectReadingQualityFixture.test.ts`只验版本、身份/引用闭包和保留的反例条件。
   不注册产品evaluation case，不造新评测store，不绕现有Sample/Source读取与存储许可。
 - 真实持久行为使用`useTestDatabase(import.meta.filename)`：shared Testcontainers中
-  每文件独立`rainver_test*`数据库，不连接实例。`readingMigrationDb`的DROP仅此销毁型fixture。
+  每文件独立`rainver_test*`数据库，不连接实例。
 - 模型边界使用synthetic ACP Host，真实canonical Run/Job/Delivery/settlement；
   browser的主题完成使用受控terminal fixture，不能冒称该浏览器自己跑过真实模型/worker。
   worker完整链由独立PG测试证明。
@@ -57,7 +57,7 @@ R1–R6提交依次为 `62f5e964`、`faff6beb`、`3280b213`、`e582dd05`、
 | A9 | 同文件 publication canonical fence、history/export、restore authority；deep physical Delivery/source withdrawal/private Source jobs/postprocessing | 实际目的地/受众/Source闭包与双向锁、export/generic入口、私作业投影；不是已送vendor context可撤回承诺 |
 | A10 | deep “private investigation preserves explicit opencode…”、“API-bound OpenCode…”、“HTTP favorites/list…”；themes advertised mode | 合成Profile/API-bound/CLI同规范选择、禁用不fallback；不冒实际厂商账号或真实CLI质量 |
 | A11 | `projectReading.browser.ts`原八矩阵及`READING_LONG_REVIEW=1`；web `ProjectReadingPage`/`LibraryItemReaderPage` | 四视图、多主题分节摘要/完整分析阅读/定位/时间/历史/exact原文/无收藏解读入口；Sidecar关闭，未验开启后的任意布局或全a11y |
-| A12 | `readingMigrationDb`全部现chain升级；`readerSourceVersionsDb`；`informationBriefingPersonalDb`；`researchAreaDb` | 空库/旧开发结构经规范历史转换到正式0007（原0012终态）、旧正文/状态/身份、个人与Research受影响consumer；不是实例迁移/完整Research重验 |
+| A12 | `baselineSchema`空库完整迁移链；`readerSourceVersionsDb`；`informationBriefingPersonalDb`；`researchAreaDb` | 正式迁移链在空库上可重复应用、旧正文/状态/身份、个人与Research受影响consumer；所有实例已在当前链上，不再保留旧链升级演练 |
 
 ## 每日版与历史链路（2026-11-02重构）
 

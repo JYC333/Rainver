@@ -177,25 +177,25 @@ Task 页与问题页分别通过所属读边界读取另一端可见摘要和回
 | 读/写/链接 | 当前落点（相对仓库根） | 后续处理 |
 | --- | --- | --- |
 | 旧阶段词汇/帮助/分类 | `packages/protocol/src/inquiry.ts` | P2 版本化合同，不机械改字符串 |
-| 前端阶段/轮次/推荐计算 | `apps/web/src/modules/projects/inquiryArea/stages.ts`；`InquiryAreaPage.tsx`、`StageWorkspace.tsx`、`ThreadTabs.tsx`、`inquiryArea/nextFocus.ts` 消费或构造入口 | P2 服务端投影；P5 UI/推荐使用统一读结果 |
+| 前端阶段/轮次/推荐计算 | `apps/web/src/modules/projects/problemWorkspace/`（`ProblemAreaPage.tsx`、`ProblemWork.tsx`、`useProblem.ts`）；`InquiryAreaPage.tsx`、`inquiryArea/roundFacts.ts` 消费或构造入口 | P2 服务端投影；P5 UI/推荐使用统一读结果 |
 | Step 写入/轮次赋值/焦点投影 | `server/src/modules/inquiry/stepService.ts` | P2 分离方法、工作类型与执行/注意力，保留单 primary 约束 |
 | 认知、工作、定义、生命周期 | `inquiry/iterationService.ts`、`threadService.ts`、`threadRevisionService.ts`、`routes.ts` | P2 收尾和认知路径分离；保留受保护字段与完整内容权限 |
 | 认知撤销 | `server/src/modules/projectWork/updateUndo.ts`、`updatesReadModel.ts`、`domainWorkEvents.ts`；`inquiry/threadWorkEvents.ts` | P2 认知撤销不收尾，新增收尾事件/Updates/补偿按 §4.2 同步落地 |
-| Advice/Candidate 推进 | `inquiry/adviceJob.ts`、`adviceService.ts`、`signalService.ts` | P2/P3 核对建议采纳、完成搜索及 Candidate→Iteration，不旁路新收尾 |
-| Research 开始/结束回写工作 | `projectResearch/orchestrator.ts`（`updateWork`、`tryCompleteSearchStepForWorkflow`）、`inquiry/adviceJob.ts` | P3 保留调用事实，去掉执行层替问题选择下一步的权力 |
+| Candidate 推进 | `inquiry/signalService.ts` | P2/P3 核对建议采纳、完成搜索及 Candidate→Iteration，不旁路新收尾 |
+| Research 开始/结束回写工作 | `projectResearch/researchProblemCalls.ts`、`projectResearch/pipeline/researchAcquisitionService.ts` | P3 保留调用事实，去掉执行层替问题选择下一步的权力 |
 | Research 内阶段/重试/进度 | `projectResearch/orchestrator.ts`、`operationProjection.ts`、`researchStages.ts`、`routes.ts`、`repository.ts`、`pipeline/` | P3 保留 pipeline 与取消/重试治理；不把内部阶段当问题阶段 |
-| Task 阶段历史 writer/模型 | `projectWork/loopState.ts`、`eventWriter.ts`、`eventKinds.ts`；`server/src/db/schema/projectWork.ts` | P4 停用活动 writer，但保留历史读取与事件约束 |
+| Task 阶段历史 writer/模型 | `projectWork/eventWriter.ts`、`eventKinds.ts`；`server/src/db/schema/projectWork.ts` | P4 停用活动 writer，但保留历史读取与事件约束 |
 | Task 活动入口/结算 | `projectWork/routes.ts`、`taskActions.ts`、`projectWorkSystemActionExecutors.ts`、`settlement.ts`；`tasks/projectIntegration.ts` | 基线已停用部分入口；P4 核验全部消费者/权限及兼容错误 |
 | Task 读投影/展示 | `projectWork/boardReadModel.ts`、`agentAttention/repository.ts`、`readModel.ts`；协议 `projectWork.ts`/`agentAttention.ts`；`BoardCard.tsx`、`ProjectPulse.tsx`、`TaskWorkTab.tsx`、`TaskDetailPage.tsx`、`apps/web/src/api/client.ts` | P4 迁移读合同/历史；P5 回链；不恢复活动 Loop |
 | Agent 工具及策略 | `packages/protocol/src/systemActions.ts`、`policy.ts`；服务端 `systemActions/`、`projectWork/index.ts`、`skills/workSkill.ts`、`agents/spaceAssistantService.ts`、`policy/decisionCore.ts` | P4 注册/提示/许可同步退役，不只藏 UI |
 | 旧路由注册与重定向 | `apps/web/src/modules/projects/ProjectsModule.tsx` | P5 先解析目标再收导航，保留 report ID 与 operations 兼容 |
 | Research tab 分流/编辑入口 | `ResearchAreaPage.tsx`、`DeepResearchAreaPage.tsx`、`FocusResearchWorkbench.tsx`、`ResearchSetupDialog.tsx`、`QuestionRefinementPanel.tsx` | P5 移除重复焦点编辑，保留记录入口 |
-| 链接生产与返回 | `inquiryArea/nextFocus.ts`、`ProjectPulse.tsx`、`ResearchReportPage.tsx`、`ResearchResultCard.tsx`、`ResearchOperationRow.tsx`、`ProjectResearchStandingPanel.tsx`、`researchArea/ResearchRunsTab.tsx` | P5 保留上下文与筛选；覆盖母导航、目的页和后退 |
+| 链接生产与返回 | `problemWorkspace/researchLinks.ts`、`ProjectPulse.tsx`、`ResearchReportPage.tsx`、`ResearchResultCard.tsx`、`ResearchOperationRow.tsx`、`ProjectResearchStandingPanel.tsx`、`researchArea/ResearchRunsTab.tsx` | P5 保留上下文与筛选；覆盖母导航、目的页和后退 |
 | schema/关系 | `server/src/db/schema/inquiry.ts`、`projectResearch.ts`、`tasks.ts`；`packages/protocol/src/projectResearch.ts` | P2/P3/P4 分属作者，不在 P1 预做迁移 |
 
-补充跨入口链接清单：`server/src/modules/projects/attentionService.ts` 生成提醒链接；`apps/web/src/modules/library/readingLinks.ts`、`LibraryItemReaderPage.tsx` 生成阅读/返回链接；项目目录内 `ResearchScanTimeline.tsx`、`useProjectResearch.ts`、`ProjectSourcesPage.tsx` 以及 `inquiryArea/ThreadTabs.tsx` 也消费或产生研究路径。P5 必须逐项核对，Library/Sources 的直接阅读路径保持原意。`apps/web/src/api/client.ts` 的 `/research` 是 API 调用，不能当页面重定向处理。
+补充跨入口链接清单：`server/src/modules/projects/attentionService.ts` 生成提醒链接；`apps/web/src/modules/library/readingLinks.ts`、`LibraryItemReaderPage.tsx` 生成阅读/返回链接；项目目录内 `ResearchScanTimeline.tsx`、`useProjectResearch.ts`、`ProjectSourcesPage.tsx` 也消费或产生研究路径。P5 必须逐项核对，Library/Sources 的直接阅读路径保持原意。`apps/web/src/api/client.ts` 的 `/research` 是 API 调用，不能当页面重定向处理。
 
-表中未带目录的 Inquiry/Research 文件归前列最近的领域目录；前端组件归 `apps/web/src/modules/projects/`。以实际路径为准，P1 链接/文件检查会验证该清单。
+表中未带目录的 Inquiry/Research 文件归前列最近的领域目录；前端组件归 `apps/web/src/modules/projects/`。以实际路径为准。
 
 ## 9. 设计验收样例与交接
 

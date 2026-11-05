@@ -8,6 +8,7 @@ vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({ activeSpaceId: 'space-1', activeSpaceName: 'Space One', userId: 'user-1' }),
 }))
 vi.mock('../../../core/spaceNav', () => ({
+  useSpaceNavigate: () => mocked.navigate,
   SpaceLink: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={typeof to === 'string' ? to : '#'}>{children}</a>,
 }))
 vi.mock('../TaskWorkTab', () => ({
@@ -20,6 +21,8 @@ vi.mock('react-router-dom', async orig => ({
 }))
 
 const mocked = vi.hoisted(() => ({
+  navigate: vi.fn(),
+  delete: vi.fn(),
   get: vi.fn(),
   runs: vi.fn(),
   artifacts: vi.fn(),
@@ -33,6 +36,7 @@ const mocked = vi.hoisted(() => ({
 vi.mock('../../../api/client', () => ({
   tasksApi: {
     get: mocked.get,
+    delete: mocked.delete,
     runs: mocked.runs,
     artifacts: mocked.artifacts,
     proposals: mocked.proposals,
@@ -149,3 +153,27 @@ describe('TaskDetailPage — runtime profile on the default path', () => {
     await waitFor(() => expect(screen.getByTestId('task-work-tab').textContent).not.toBe(before))
   })
 })
+
+ it('deletes only after confirmation and navigates back, while cancellation does nothing',async()=>{
+  mocked.delete.mockResolvedValue({task_id:'task-1',deleted:true});
+  renderPage();
+  fireEvent.click(await screen.findByRole('button',{name:'Delete task'}));
+  expect(mocked.delete).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button',{name:'Cancel'}));
+  expect(mocked.delete).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button',{name:'Delete task'}));
+  const buttons=screen.getAllByRole('button',{name:'Delete task'});
+  fireEvent.click(buttons[buttons.length-1]!);
+  await waitFor(()=>expect(mocked.delete).toHaveBeenCalledWith('task-1'));
+  expect(mocked.navigate).toHaveBeenCalledWith('/tasks',{replace:true});
+ });
+
+it('keeps the Task and confirmation open when deletion is refused',async()=>{
+ mocked.delete.mockRejectedValue(new Error('Stop unfinished Runs first'));
+ renderPage();
+ fireEvent.click(await screen.findByRole('button',{name:'Delete task'}));
+ const buttons=screen.getAllByRole('button',{name:'Delete task'});fireEvent.click(buttons[buttons.length-1]!);
+ await waitFor(()=>expect(mocked.delete).toHaveBeenCalledWith('task-1'));
+ expect(mocked.navigate).not.toHaveBeenCalled();
+ expect(screen.getByRole('dialog')).toBeInTheDocument();
+});

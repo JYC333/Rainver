@@ -28,20 +28,6 @@ Unknown old Step facts on another database abort the cutover transaction and
 require an independently reviewed offline conversion. No kind-based Research
 binding is manufactured. Independent Research/monitoring remains supported.
 
-## Reproduce on isolated PostgreSQL
-
-```bash
-cd server
-REQUIRE_TEST_POSTGRES=true pnpm exec vitest run test/problemUpgradeDrillDb.test.ts --maxWorkers=4
-pnpm run schema:check
-```
-
-The backup/restore drill requires the local Docker CLI and the matching shared
-PostgreSQL Testcontainer. An arbitrary external PG URL cannot run its container
-restore path; inability is a failure/unverified check, never an implicit pass.
-Evidence uses a unique temporary directory, removed by default. Set
-PROBLEM_ENGINE_EVIDENCE_DIR to retain an explicit unique child directory.
-
 ## Instance maintenance
 
 Use [COMMANDS](../COMMANDS.md), [operations](OPERATIONS_AND_SAFETY.md) and

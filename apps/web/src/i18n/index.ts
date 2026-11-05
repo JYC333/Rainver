@@ -1,3 +1,9 @@
+import { boardUiEn } from './boardUi.en'
+import { cliToolsUiEn } from './cliToolsUi.en'
+import { cliToolsUiZhCN } from './cliToolsUi.zh-CN'
+import { commandCenterUiEn } from './commandCenterUi.en'
+import { commandCenterUiZhCN } from './commandCenterUi.zh-CN'
+import { boardUiZhCN } from './boardUi.zh-CN'
 import {projectReadingEn} from './projectReading.en'
 import {projectReadingZhCN} from './projectReading.zh-CN'
 import {readingMethodEn} from './readingMethod.en'
@@ -70,8 +76,8 @@ void i18n.use(initReactI18next).init({
   fallbackLng: 'en',
   supportedLngs: ['en', 'zh-CN'],
   resources: {
-    en: { translation: { ...en, ...projectReadingEn, ...sourceGoalsEn, ...sourceTopicsEn, ...readingEn, ...readingMethodEn, ...researchReportEn, ...monitoringEn, home: homeEn, evolution: evolutionEn, digest_reports: digestReportsEn, briefing: briefingEn, ...mixedSurfacesEn, ...publicAuthEn, ...conversationRetrievalEn, ...skillPackagesEn, ...conversationUiEn, ...sessionsUiEn, ...managementUiEn, ...activityUiEn, ...knowledgeUiEn, ...coreUiEn, ...sourcesUiEn, ...workspaceUiEn } },
-    'zh-CN': { translation: { ...zhCN, ...projectReadingZhCN, ...sourceGoalsZhCN, ...sourceTopicsZhCN, ...readingZhCN, ...readingMethodZhCN, ...researchReportZhCN, ...monitoringZhCN, home: homeZhCN, evolution: evolutionZhCN, digest_reports: digestReportsZhCN, briefing: briefingZhCN, ...mixedSurfacesZhCN, ...publicAuthZhCN, ...conversationRetrievalZhCN, ...skillPackagesZhCN, ...conversationUiZhCN, ...sessionsUiZhCN, ...managementUiZhCN, ...activityUiZhCN, ...knowledgeUiZhCN, ...coreUiZhCN, ...sourcesUiZhCN, ...workspaceUiZhCN } },
+    en: { translation: { ...en, ...projectReadingEn, ...sourceGoalsEn, ...sourceTopicsEn, ...readingEn, ...readingMethodEn, ...researchReportEn, ...monitoringEn, home: homeEn, evolution: evolutionEn, digest_reports: digestReportsEn, briefing: briefingEn, ...mixedSurfacesEn, ...publicAuthEn, ...conversationRetrievalEn, ...skillPackagesEn, ...conversationUiEn, ...sessionsUiEn, ...managementUiEn, ...activityUiEn, ...knowledgeUiEn, ...coreUiEn, ...sourcesUiEn, ...workspaceUiEn, ...boardUiEn, ...cliToolsUiEn, ...commandCenterUiEn } },
+    'zh-CN': { translation: { ...zhCN, ...projectReadingZhCN, ...sourceGoalsZhCN, ...sourceTopicsZhCN, ...readingZhCN, ...readingMethodZhCN, ...researchReportZhCN, ...monitoringZhCN, home: homeZhCN, evolution: evolutionZhCN, digest_reports: digestReportsZhCN, briefing: briefingZhCN, ...mixedSurfacesZhCN, ...publicAuthZhCN, ...conversationRetrievalZhCN, ...skillPackagesZhCN, ...conversationUiZhCN, ...sessionsUiZhCN, ...managementUiZhCN, ...activityUiZhCN, ...knowledgeUiZhCN, ...coreUiZhCN, ...sourcesUiZhCN, ...workspaceUiZhCN, ...boardUiZhCN, ...cliToolsUiZhCN, ...commandCenterUiZhCN } },
   },
   interpolation: { escapeValue: false }, // React escapes text when it renders.
   initAsync: false,

@@ -10,8 +10,9 @@ bindings. There are no capability definitions, packs, conversion APIs or product
 
 ## Paths and invariants
 
-- `skillImporter.ts`, `skillSourceFetch.ts`, `skillPackageFiles.ts`: bounded
-  GitHub, upload/ZIP and owned-Host CLI imports. Preview/import hashes must match;
+- `skillImporter.ts`, `skillSourceFetch.ts`, `skillArchive.ts`,
+  `skillPackagePaths.ts`, `skillHostImport.ts`: bounded GitHub, upload/ZIP and
+  owned-Host CLI imports. Preview/import hashes must match;
   scripts, dependencies, tools, hooks and MCP declarations grant no execution.
 - `NormalizedSkill`: parser and risk-scan result, never a replacement content authority.
 - `builtinPackages.ts`: code-owned immutable releases, synced per Space at

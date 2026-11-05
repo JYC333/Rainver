@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectBoardPage from '../board/ProjectBoardPage'
@@ -14,8 +14,8 @@ vi.mock('../../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../../api/client')>('../../../api/client')
   return {
     ApiRequestError: actual.ApiRequestError,
-    projectsApi: { getBoard: vi.fn() },
-    tasksApi: { update: vi.fn(), create: vi.fn() },
+    projectsApi: { getBoard: vi.fn(), configureBoard: vi.fn() },
+    tasksApi: { update: vi.fn(), create: vi.fn(), get: vi.fn(), delete: vi.fn() },
     agentsApi: { list: vi.fn().mockResolvedValue([]) },
   }
 })
@@ -56,12 +56,13 @@ function card(overrides: Partial<ProjectBoardCard> & Pick<ProjectBoardCard, 'id'
 }
 
 const board: ProjectBoard = {
+  columns_revision: 'fixture',
   project: { id: 'project-1', name: 'Thin branch mapping' },
   columns: [
-    { status_key: 'ready', label: 'Ready', wip_limit: null, count: 1 },
-    { status_key: 'in_progress', label: 'In Progress', wip_limit: 2, count: 1 },
-    { status_key: 'waiting_for_review', label: 'Waiting', wip_limit: null, count: 1 },
-    { status_key: 'done', label: 'Done', wip_limit: null, count: 0 },
+    { key: 'ready', board_id: null, status_key: 'ready', label: 'Ready', wip_limit: null, count: 1 },
+    { key: 'in_progress', board_id: null, status_key: 'in_progress', label: 'In Progress', wip_limit: 2, count: 1 },
+    { key: 'waiting_for_review', board_id: null, status_key: 'waiting_for_review', label: 'Waiting', wip_limit: null, count: 1 },
+    { key: 'done', board_id: null, status_key: 'done', label: 'Done', wip_limit: null, count: 0 },
   ],
   cards: [
     card({ id: 'task-ready', title: 'Draft the protocol', status: 'ready' }),
@@ -136,12 +137,12 @@ describe('Project Board', () => {
     }
   })
 
-  it('renders one lane per column with its cards and Loop labels', async () => {
+  it('renders one lane per column with its cards and status meanings', async () => {
     renderBoard()
 
     expect(await screen.findByText('Draft the protocol')).toBeInTheDocument()
     for (const label of ['Ready', 'In Progress', 'Waiting', 'Done']) {
-      expect(screen.getByText(label)).toBeInTheDocument()
+      expect(screen.getByRole('button',{name:`Rename column ${label}`})).toBeInTheDocument()
     }
     // The stage label comes from the server in the Project's own Mode; the
     // Board never maps stage keys to words itself.
@@ -291,7 +292,7 @@ describe('Project Board', () => {
     // The handle is a real button, so a keyboard has something to focus: Space
     // picks the card up, arrows change lane, Space drops it. It is separate
     // from the title link, so the card is not a "button" with a link inside.
-    const handle = await screen.findByRole('button', { name: 'Move Draft the protocol' })
+    const handle = await screen.findByRole('button', { name: 'Actions for Draft the protocol' })
     expect(handle).toHaveAttribute('aria-roledescription', 'draggable')
     expect(screen.getByRole('link', { name: 'Draft the protocol' })).toBeInTheDocument()
   })
@@ -303,6 +304,125 @@ describe('Project Board', () => {
     // A viewer is offered no drag. Do not let them drag a card to Done and
     // answer 403 after the drop.
     expect(screen.queryByRole('button', { name: /^Move / })).not.toBeInTheDocument()
+  })
+
+  it('opens the same actions from the grip and the card context menu', async () => {
+    renderBoard()
+    const handle=await screen.findByRole('button',{name:'Actions for Draft the protocol'})
+    fireEvent.click(handle)
+    expect(await screen.findByRole('menuitem',{name:'Edit task'})).toBeInTheDocument()
+    fireEvent.keyDown(screen.getByRole('menu'),{key:'Escape'})
+    fireEvent.contextMenu(screen.getByTestId('board-card-task-ready'))
+    fireEvent.click(await screen.findByRole('menuitem',{name:'Delete task'}))
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Execution and audit records are retained')
+    fireEvent.click(screen.getByRole('button',{name:'Delete task'}))
+    await waitFor(()=>expect(tasksApi.delete).toHaveBeenCalledWith('task-ready'))
+  })
+
+  it('edits a Task in place and preserves it when the API refuses deletion', async () => {
+    vi.mocked(tasksApi.get).mockResolvedValue({title:'Draft the protocol',description:'Original'} as Awaited<ReturnType<typeof tasksApi.get>>)
+    renderBoard()
+    fireEvent.contextMenu(await screen.findByTestId('board-card-task-ready'))
+    fireEvent.click(await screen.findByRole('menuitem',{name:'Edit task'}))
+    await waitFor(()=>expect(screen.getByLabelText('Title')).toBeEnabled())
+    fireEvent.change(screen.getByLabelText('Title'),{target:{value:'Revised title'}})
+    fireEvent.click(screen.getByRole('button',{name:'Save'}))
+    await waitFor(()=>expect(tasksApi.update).toHaveBeenCalledWith('task-ready',{title:'Revised title',description:'Original'}))
+    await waitFor(()=>expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    vi.mocked(tasksApi.delete).mockRejectedValueOnce(new Error('Stop unfinished Runs first'))
+    fireEvent.contextMenu(screen.getByTestId('board-card-task-ready'))
+    fireEvent.click(await screen.findByRole('menuitem',{name:'Delete task'}))
+    fireEvent.click(screen.getByRole('button',{name:'Delete task'}))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Stop unfinished Runs first')
+    expect(screen.getByTestId('board-card-task-ready')).toBeInTheDocument()
+  })
+
+  it('automatically saves a changed column name on blur without Save or Cancel controls', async () => {
+    const renamed={...board,columns:board.columns.map(c=>c.key==='ready'?{...c,label:'Backlog'}:c)}
+    vi.mocked(projectsApi.configureBoard).mockResolvedValue(renamed)
+    renderBoard()
+    fireEvent.click(await screen.findByRole('button',{name:'Rename column Ready'}))
+    expect(screen.queryByRole('button',{name:'Save'})).not.toBeInTheDocument()
+    expect(screen.queryByRole('button',{name:'Cancel'})).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Column name'),{target:{value:'Backlog'}})
+    fireEvent.blur(screen.getByLabelText('Column name'))
+    expect(await screen.findByRole('button',{name:'Rename column Backlog'})).toBeInTheDocument()
+    expect(projectsApi.configureBoard).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(projectsApi.configureBoard).mock.calls[0]![1]).toMatchObject({revision:'fixture',columns:[{key:'ready',label:'Backlog'},{key:'in_progress'},{key:'waiting_for_review'},{key:'done'}]})
+  })
+
+  it('does not save unchanged or empty column names, or a cancelled edit', async () => {
+    renderBoard()
+    const button=await screen.findByRole('button',{name:'Rename column Ready'})
+    fireEvent.click(button)
+    fireEvent.blur(screen.getByLabelText('Column name'))
+    fireEvent.click(screen.getByRole('button',{name:'Rename column Ready'}))
+    fireEvent.change(screen.getByLabelText('Column name'),{target:{value:'   '}})
+    fireEvent.blur(screen.getByLabelText('Column name'))
+    fireEvent.click(screen.getByRole('button',{name:'Rename column Ready'}))
+    fireEvent.change(screen.getByLabelText('Column name'),{target:{value:'Unsaved'}})
+    fireEvent.keyDown(screen.getByLabelText('Column name'),{key:'Escape'})
+    expect(screen.getByRole('button',{name:'Rename column Ready'})).toBeInTheDocument()
+    expect(projectsApi.configureBoard).not.toHaveBeenCalled()
+  })
+
+  it('keeps a refused automatic rename for retry instead of losing the edit', async () => {
+    vi.mocked(projectsApi.configureBoard).mockRejectedValueOnce(new Error('Board changed'))
+    renderBoard()
+    fireEvent.click(await screen.findByRole('button',{name:'Rename column Ready'}))
+    fireEvent.change(screen.getByLabelText('Column name'),{target:{value:'Backlog'}})
+    fireEvent.blur(screen.getByLabelText('Column name'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Board changed')
+    expect(screen.getByLabelText('Column name')).toHaveValue('Backlog')
+    fireEvent.focus(screen.getByLabelText('Column name'))
+    fireEvent.blur(screen.getByLabelText('Column name'))
+    await waitFor(()=>expect(projectsApi.configureBoard).toHaveBeenCalledTimes(2))
+  })
+
+  it('shows each column meaning and confirms edits to existing state mappings', async () => {
+    vi.mocked(projectsApi.configureBoard).mockRejectedValueOnce(new Error('Completion requirements unmet'))
+    renderBoard()
+    fireEvent.click(await screen.findByRole('button',{name:'Status meaning for Ready'}))
+    fireEvent.click(screen.getByRole('option',{name:'Done'}))
+    const dialog=screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('Current Tasks in this column will move')
+    fireEvent.click(within(dialog).getByRole('button',{name:'Save'}))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Completion requirements unmet')
+    expect(projectsApi.configureBoard).toHaveBeenCalledWith('project-1',expect.objectContaining({columns:expect.arrayContaining([expect.objectContaining({key:'ready',status_key:'done'})])}))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('adds from the column header and deletes with an explicit task destination', async () => {
+    vi.mocked(projectsApi.configureBoard).mockResolvedValue(board)
+    renderBoard()
+    fireEvent.keyDown(await screen.findByRole('button',{name:'Column actions for Ready'}),{key:'Enter'})
+    fireEvent.click(await screen.findByRole('menuitem',{name:'Add column to the right'}))
+    const form=screen.getByRole('form',{name:'Add column'})
+    fireEvent.change(within(form).getByLabelText('Column name'),{target:{value:'Design'}})
+    fireEvent.click(within(form).getByRole('button',{name:'Add column'}))
+    await waitFor(()=>expect(projectsApi.configureBoard).toHaveBeenCalledTimes(1))
+    const creation=vi.mocked(projectsApi.configureBoard).mock.calls[0]![1] as {columns:{label:string}[]}
+    expect(creation.columns.map(c=>c.label)).toEqual(['Ready','Design','In Progress','Waiting','Done'])
+    await waitFor(()=>expect(screen.queryByRole('form',{name:'Add column'})).not.toBeInTheDocument())
+    fireEvent.keyDown(screen.getByRole('button',{name:'Column actions for In Progress'}),{key:'Enter'})
+    fireEvent.click(await screen.findByRole('menuitem',{name:'Delete column'}))
+    const dialog=screen.getByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button',{name:'Move tasks to'}))
+    fireEvent.click(screen.getByRole('option',{name:'Ready'}))
+    fireEvent.click(within(dialog).getByRole('button',{name:'Delete column'}))
+    await waitFor(()=>expect(projectsApi.configureBoard).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(projectsApi.configureBoard).mock.calls[1]![1]).toMatchObject({moves:{in_progress:'ready'}})
+  })
+
+  it('reorders columns by dragging and restores their order after a refused save', async () => {
+    vi.mocked(projectsApi.configureBoard).mockRejectedValueOnce(new Error('Board changed'))
+    renderBoard()
+    await screen.findByText('Draft the protocol')
+    act(()=>dnd.onDragEnd?.({active:{id:'column:ready',data:{current:{type:'column',key:'ready'}}},over:{id:'done'}}))
+    await waitFor(()=>expect(projectsApi.configureBoard).toHaveBeenCalledTimes(1))
+    const body=vi.mocked(projectsApi.configureBoard).mock.calls[0]![1] as {columns:{key:string}[]}
+    expect(body.columns.map(c=>c.key)).toEqual(['in_progress','waiting_for_review','done','ready'])
+    await waitFor(()=>expect(screen.getAllByTestId(/^board-column-/).map(node=>node.dataset.testid)).toEqual(['board-column-ready','board-column-in_progress','board-column-waiting_for_review','board-column-done']))
   })
 
   it('opens a card inside the Project, so the Board and the chat panel survive the click', async () => {

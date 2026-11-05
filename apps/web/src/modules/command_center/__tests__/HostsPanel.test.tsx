@@ -1,6 +1,7 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import HostsPanel from '../HostsPanel'
 import { hostsApi } from '../../../api/client'
 
@@ -48,19 +49,36 @@ beforeEach(() => {
   })
 })
 
+function Location() {
+  const location = useLocation()
+  return <span hidden data-testid="location">{location.search}</span>
+}
+/** The panel as Command Center mounts it, at a given URL. */
+function renderPanel(search = '') {
+  return render(<MemoryRouter initialEntries={[`/command-center${search}`]}><HostsPanel /><Location /></MemoryRouter>)
+}
+const params = () => new URLSearchParams(screen.getByTestId('location').textContent ?? '')
+
 describe('HostsPanel', () => {
   it('lists hosts without duplicating the Agent inventory above it, and only offers Revoke for a remote host', async () => {
-    render(<HostsPanel />)
-    expect(await screen.findByText('Laptop')).toBeInTheDocument()
+    renderPanel()
+    // The list names both; the detail opens on the instance's own Host.
+    const list = await screen.findByRole('navigation', { name: 'Execution environments' })
+    expect(within(list).getByRole('button', { name: /Laptop/ })).toBeInTheDocument()
+    expect(within(list).getByRole('button', { name: /Built-in sandbox/ })).toHaveAttribute('aria-current', 'true')
     expect(await screen.findByText('ACP health passed')).toBeInTheDocument()
     expect(screen.getByText(/Selected version/)).toBeInTheDocument()
-    expect(screen.getAllByText('server').length).toBeGreaterThan(0)
-    expect(screen.getByText(/Built-in execution host/)).toBeInTheDocument()
-    expect(screen.getByTestId('host-agent-host-1-claude_code')).toHaveTextContent('Claude Code')
+    expect(screen.getByText(/every Run is isolated in its own namespace/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Revoke' })).toBeNull()
+
+    fireEvent.click(within(list).getByRole('button', { name: /Laptop/ }))
+    expect(await screen.findByTestId('host-agent-host-1-claude_code')).toHaveTextContent('Claude Code')
+    expect(screen.queryByText('ACP health passed')).toBeNull()
     expect(screen.queryByLabelText(/^Model source for/)).toBeNull()
     expect(screen.queryByText('Model backend')).toBeNull()
     expect(screen.queryByText('git')).toBeNull()
     expect(screen.getAllByRole('button', { name: 'Revoke' })).toHaveLength(1)
+    expect(params().get('host')).toBe('host-1')
   })
 
   it('shows Server provisioning failure and lets an instance admin retry it', async () => {
@@ -81,7 +99,7 @@ describe('HostsPanel', () => {
     vi.mocked(hostsApi.retryServerRuntimeProvisioning).mockResolvedValue({
       host_id: SERVER_HOST.id, runtime_key: 'opencode', state: 'queued', desired_version: '1.2.3',
     })
-    render(<HostsPanel />)
+    renderPanel()
 
     expect(await screen.findByText('Provisioning failed')).toBeInTheDocument()
     expect(screen.getByText('ACP health check failed')).toBeInTheDocument()
@@ -96,7 +114,7 @@ describe('HostsPanel', () => {
     // would claim to be current. The indicator is what says otherwise.
     vi.useFakeTimers()
     try {
-      render(<HostsPanel />)
+      renderPanel()
       await act(async () => { await Promise.resolve() })
       expect(screen.getByText('ACP health passed')).toBeInTheDocument()
       expect(screen.queryByText(/Status stale/)).toBeNull()
@@ -120,7 +138,7 @@ describe('HostsPanel', () => {
     vi.mocked(hostsApi.list).mockResolvedValue({
       items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: ['claude', 'gemini'], versions: { claude: '1.2.3' }, installations: { claude_code: [{ id: 'own', version: '1.2.3 (Claude Code)', logged_in: null, options: null }] } } }],
     })
-    render(<HostsPanel />)
+    renderPanel()
     expect(await screen.findByTestId('host-agent-host-1-claude_code')).toHaveTextContent('own · 1.2.3')
     expect(screen.getByTestId('host-agent-host-1-claude_code')).not.toHaveTextContent('(Claude Code)')
     expect(screen.queryByText(/gemini.*next phase/i)).toBeNull()
@@ -135,7 +153,7 @@ describe('HostsPanel', () => {
     vi.mocked(hostsApi.list).mockResolvedValue({
       items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: [], versions: {}, installations: { acp_cursor: [{ id: 'managed:2.0.0', version: '2.0.0', logged_in: false, options: null }] } } }],
     })
-    render(<HostsPanel />)
+    renderPanel()
     expect(await screen.findByTestId('host-agent-host-1-acp_cursor')).toHaveTextContent('managed · 2.0.0')
     // Runtime copies are visible here even when dispatch is disabled for them.
     expect(screen.queryByRole('option', { name: 'Cursor' })).toBeNull()
@@ -145,8 +163,11 @@ describe('HostsPanel', () => {
     vi.mocked(hostsApi.pairingCode).mockResolvedValue({
       host_id: 'host-2', pairing_code: 'abc-123', expires_at: '2026-08-21T01:00:00.000Z',
     })
-    render(<HostsPanel />)
+    renderPanel()
     await screen.findByText('Laptop')
+    // Pairing is a header action; its form opens on request.
+    expect(screen.queryByPlaceholderText('e.g. laptop')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Pair an environment' }))
     await userEvent.type(screen.getByPlaceholderText('e.g. laptop'), 'desktop')
     await userEvent.click(screen.getByRole('button', { name: 'Generate pairing code' }))
     await waitFor(() => expect(hostsApi.pairingCode).toHaveBeenCalledWith('desktop'))
@@ -159,8 +180,8 @@ describe('HostsPanel', () => {
 
   it('revokes a host and refreshes the list', async () => {
     vi.mocked(hostsApi.revoke).mockResolvedValue(null)
-    render(<HostsPanel />)
-    await screen.findByText('Laptop')
+    renderPanel('?host=host-1')
+    await screen.findByTestId('host-agent-host-1-claude_code')
     const callsBeforeRevoke = vi.mocked(hostsApi.list).mock.calls.length
     await userEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
     await waitFor(() => expect(hostsApi.revoke).toHaveBeenCalledWith('host-1'))
@@ -176,7 +197,7 @@ describe('HostsPanel', () => {
         .mockResolvedValueOnce({ items: [SERVER_HOST, REMOTE_HOST] })
         .mockImplementationOnce(() => new Promise(resolve => { releaseSlow = resolve }) as never)
         .mockResolvedValue({ items: [SERVER_HOST, renamed] })
-      render(<HostsPanel />)
+      renderPanel()
       await act(async () => { await Promise.resolve() })
       expect(screen.getAllByText('Laptop').length).toBeGreaterThan(0)
 
@@ -209,7 +230,7 @@ describe('HostsPanel', () => {
       vi.mocked(hostsApi.serverRuntimeProvisioning).mockImplementationOnce(
         () => new Promise(resolve => { release = resolve }) as ReturnType<typeof hostsApi.serverRuntimeProvisioning>,
       )
-      render(<HostsPanel />)
+      renderPanel()
       await act(async () => { await Promise.resolve() })
       expect(provisioningCalls()).toBe(before + 1)
 
@@ -237,7 +258,7 @@ describe('HostsPanel', () => {
 
   it('uses the unified Agents empty state when no runtime has been reported', async () => {
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [{ ...REMOTE_HOST, capabilities_json: null }] })
-    render(<HostsPanel />)
+    renderPanel()
     expect(await screen.findByText('No runtime copies are reported on this host yet.')).toBeInTheDocument()
     expect(screen.queryByText('Model backend')).toBeNull()
   })
@@ -247,7 +268,7 @@ describe('HostsPanel', () => {
   // its own namespace, which is what makes it safe for a Space to share.
   // Do not describe it as having no controls of its own.
   it('describes the built-in host as isolated, and names the capacity it runs at', async () => {
-    render(<HostsPanel />)
+    renderPanel()
     expect(await screen.findByText(/every Run is isolated in its own namespace/)).toBeInTheDocument()
     expect(screen.getByText(/up to 3 runs execute at once/)).toBeInTheDocument()
   })
@@ -255,7 +276,7 @@ describe('HostsPanel', () => {
   it('explains that native login is optional for ACP models but a signed-in Server account is shared', async () => {
     // A native account is not a prerequisite for every ACP model, but a signed-in
     // Server copy is usable by everyone authorized to run Agents there.
-    render(<HostsPanel />)
+    renderPanel()
     expect(await screen.findByText(/ACP models may still work without an account/)).toBeInTheDocument()
     expect(screen.getByText(/If signed in, this account is instance-wide: every person authorized to run Agents on the Server Runtime can use it\./))
       .toBeInTheDocument()
@@ -282,7 +303,7 @@ describe('HostsPanel', () => {
         },
       },
     }] })
-    render(<HostsPanel />)
+    renderPanel()
 
     await screen.findByTestId('host-agent-host-server-opencode')
     expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('managed · 1.2.3')
@@ -318,14 +339,14 @@ describe('HostsPanel', () => {
     })
 
     // A member sees who owns the copy but no Retry, so no hint either.
-    const member = render(<HostsPanel />)
+    const member = renderPanel()
     await waitFor(() => expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('managed · 1.2.3'))
     expect(screen.getByTestId('host-agent-host-server-opencode')).not.toHaveTextContent('use Retry above')
     expect(screen.queryByRole('button', { name: 'Retry Server Runtime provisioning' })).toBeNull()
     member.unmount()
 
     authState.currentUser = { is_instance_admin: true }
-    render(<HostsPanel />)
+    renderPanel()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Retry Server Runtime provisioning' })).toBeInTheDocument())
     expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('managed · 1.2.3')
   })
@@ -337,7 +358,7 @@ describe('HostsPanel', () => {
         capabilities_json: { runtimes: [], versions: {}, installations: { claude_code: [{ id: 'own', version: '1.2.3', logged_in: true, options: null }] } },
       }],
     })
-    render(<HostsPanel />)
+    renderPanel()
     // What is installed and whether it is logged in: that is what says whether
     // a member's Run can run here at all.
     expect(await screen.findByTestId('host-agent-host-server-claude_code')).toHaveTextContent('logged in')
@@ -381,7 +402,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
       quota: { available: true, session_pct: 61, session_resets: null, week_pct: 18, week_resets: null, error: null },
       checked_at: '2026-09-08T00:00:00.000Z',
     })
-    render(<HostsPanel />)
+    renderPanel()
 
     // The button must exist before the first probe — that is exactly the
     // moment someone wants it, and the scheduled sweep is up to three hours
@@ -412,7 +433,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
       quota: { available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: 'Log in to Claude Code on this host before reading usage.' },
       checked_at: '2026-09-08T00:00:00.000Z',
     }] })
-    render(<HostsPanel />)
+    renderPanel()
 
     await userEvent.click(await screen.findByText('Usage unavailable'))
     expect(screen.getByRole('status')).toHaveTextContent('Log in to Claude Code')
@@ -424,7 +445,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     vi.mocked(hostsApi.rollbackRuntime).mockResolvedValue({
       host_id: 'host-1', runtime_key: 'claude_code', ok: true, error: null, installation: 'managed:1.0.0',
     })
-    render(<HostsPanel />)
+    renderPanel()
 
     await screen.findByRole('button', { name: 'More for Claude Code on Laptop' })
     expect(screen.queryByRole('button', { name: 'Roll back to 1.0.0' })).toBeNull()
@@ -453,7 +474,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     vi.mocked(hostsApi.installRuntime).mockResolvedValue({
       host_id: 'host-1', runtime_key: 'claude_code', ok: true, error: null, installation: 'managed:3.0.0',
     })
-    render(<HostsPanel />)
+    renderPanel()
 
     expect(await screen.findByText('managed · 2.1.4 · logged in')).toBeInTheDocument()
     expect(screen.queryByText(/ACP/i)).toBeNull()
@@ -466,7 +487,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
       items: [{ ...CLAUDE_ADAPTER, latest_managed_version: '2.0.0', reports_managed_cli_version: true }],
     })
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [CLAUDE_HOST] })
-    render(<HostsPanel />)
+    renderPanel()
 
     await screen.findByText('managed · CLI version unavailable · logged in')
     expect(screen.queryByRole('button', { name: /upgrade claude code/i })).toBeNull()
@@ -481,7 +502,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
       },
     }] })
     vi.mocked(hostsApi.usage).mockResolvedValue({ items: [] })
-    render(<HostsPanel />)
+    renderPanel()
 
     await screen.findByText('managed · CLI version unavailable · logged in')
     expect(screen.queryByRole('button', { name: /roll .* back to/i })).toBeNull()

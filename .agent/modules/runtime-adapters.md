@@ -163,6 +163,15 @@ Reuse / Dependency Check:
    protocol. Rainver retains Run finalization, cancellation/recovery,
    artifacts, usage, tool authorization and audit ownership.
 
+A spec may declare `invocation.max_prompt_chars`, the most text one ACP
+prompt may carry when the runtime refuses anything longer (Codex: 1,048,576,
+its app-server's limit; codex-acp reports a refusal only as "Internal
+error"). Before launch `runs/promptInputLimit.ts` counts each prompt's text
+and embedded text resources; an oversized turn is not dispatched and fails as
+`runtime_input_too_large` with both sizes in its message and a diagnostic
+thread event, whatever put the text there. The code is not retryable: the
+same prompt fails again. Specs without a stated limit are not checked.
+
 The shared controller counts the ACP prompts it actually sends and reports
 the runtime's last valid context
 occupancy/capacity. Neither is an internal model-call count. It also counts

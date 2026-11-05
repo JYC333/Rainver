@@ -1,4 +1,4 @@
-import type { SourceExecution, SourceExecutionResult, SourceRequest, SourceResponse } from "@rainver/protocol";
+import type { OrdinaryAccountResult, OrdinaryAccountSessionEvent, OrdinaryToolAction, OrdinaryToolId, OrdinaryToolResult, SourceExecution, SourceExecutionResult, SourceRequest, SourceResponse } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
 import type { FileContent, FileNode, GitDiff, GitStatus } from "@rainver/folder-read";
 import type { FolderWriteDaemonError, HostDaemonFrameOf, HostLaunchFrame, HostLaunchPayload, HostServerFrame, HostServerFrameOf, HostUsageQuota } from "@rainver/protocol";
@@ -226,6 +226,8 @@ interface PendingLogin {
 
 /** Includes the artifact's 15-minute download budget and its health check. */
 const TOOL_INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
+/** A status read, a server-verified status, or the official logout plus a fresh read. */
+const ORDINARY_ACCOUNT_TIMEOUT_MS = 60 * 1000;
 /** How much longer than the command's own budget the server waits, for the round trip and the daemon's own kill. */
 const HOST_COMMAND_GRACE_MS = 30 * 1000;
 /**
@@ -262,6 +264,9 @@ export class HostConnectionRegistry {
   private readonly connections = new Map<string, HostConnection>();
   private readonly pending = new Map<string, PendingRun>();
   private readonly pendingInstalls = new Map<string, { hostId: string; runtimeKey: string; action: string; resolve: (result: ToolInstallResult) => void; timer: ReturnType<typeof setTimeout> }>();
+  private readonly pendingOrdinaryAccounts = new Map<string, { hostId: string; resolve: (result: OrdinaryAccountResult) => void; timer: ReturnType<typeof setTimeout> }>();
+  private readonly ordinaryAccountSessions = new Map<string, { hostId: string; onEvent: (event: OrdinaryAccountSessionEvent) => void }>();
+  private readonly pendingOrdinaryTools = new Map<string, { hostId: string; toolId: OrdinaryToolId; action: OrdinaryToolAction["action"]; resolve: (result: OrdinaryToolResult) => void; timer: ReturnType<typeof setTimeout> }>();
   private readonly launchWaiters = new Map<string, Array<{ runId: string; start: () => void; cancel: () => void }>>();
   private readonly pendingCommands = new Map<string, { hostId: string; resolve: (result: HostCommandOutcome) => void; timer: ReturnType<typeof setTimeout> }>();
   private readonly pendingImports = new Map<string, {
@@ -334,6 +339,23 @@ export class HostConnectionRegistry {
       this.pendingInstalls.delete(requestId);
       clearTimeout(pending.timer);
       pending.resolve({ ok: false, error: "host_disconnected", installation: null });
+    }
+    for (const [requestId, pending] of this.pendingOrdinaryAccounts) {
+      if (pending.hostId !== hostId) continue;
+      this.pendingOrdinaryAccounts.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.resolve({ ok: false, error: "host_disconnected", status: null });
+    }
+    for (const [sessionId, session] of this.ordinaryAccountSessions) {
+      if (session.hostId !== hostId) continue;
+      this.ordinaryAccountSessions.delete(sessionId);
+      session.onEvent({ kind: "exit", outcome: "failed", error: "host_disconnected", status: null });
+    }
+    for (const [requestId, pending] of this.pendingOrdinaryTools) {
+      if (pending.hostId !== hostId) continue;
+      this.pendingOrdinaryTools.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.resolve({ ok: false, error: "host_disconnected", tool: null });
     }
     for (const [requestId, pending] of this.pendingImports) {
       if (pending.hostId !== hostId) continue;
@@ -689,6 +711,105 @@ export class HostConnectionRegistry {
       this.pendingInstalls.set(requestId, { hostId, runtimeKey: frame.runtime_key, action: type, resolve, timer });
       connection.sink!.send({ ...frame, type, request_id: requestId } as HostServerFrameOf<T>);
     });
+  }
+
+  /** Ordinary CLI tool operations in flight on this host, one per tool at most. */
+  ordinaryToolOperations(hostId: string): Array<{ tool_id: OrdinaryToolId; action: OrdinaryToolAction["action"] }> {
+    return [...this.pendingOrdinaryTools.values()].filter(item => item.hostId === hostId)
+      .map(item => ({ tool_id: item.toolId, action: item.action }));
+  }
+
+  /**
+   * One ordinary CLI tool operation (`ordinaryTools.ts`). Callers check that
+   * the daemon reports the ordinary-tools protocol first; this never retries
+   * and never falls back to another path when the host is offline.
+   */
+  requestOrdinaryTool(hostId: string, frame: HostRequestPayload<"ordinary_tool_request">): Promise<OrdinaryToolResult> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return Promise.resolve({ ok: false, error: "host_offline", tool: null });
+    if (this.ordinaryToolOperations(hostId).some(item => item.tool_id === frame.operation.tool_id)) {
+      return Promise.resolve({ ok: false, error: "An operation on this tool is already in progress on this host.", tool: null });
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingOrdinaryTools.delete(requestId);
+        resolve({ ok: false, error: "tool_operation_timed_out", tool: null });
+      }, TOOL_INSTALL_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingOrdinaryTools.set(requestId, { hostId, toolId: frame.operation.tool_id, action: frame.operation.action, resolve, timer });
+      connection.sink!.send({ ...frame, type: "ordinary_tool_request", request_id: requestId });
+    });
+  }
+
+  /** One personal account action; the account key is the caller's, derived by the route. */
+  requestOrdinaryAccount(hostId: string, frame: HostRequestPayload<"ordinary_account_request">): Promise<OrdinaryAccountResult> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return Promise.resolve({ ok: false, error: "host_offline", status: null });
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingOrdinaryAccounts.delete(requestId);
+        resolve({ ok: false, error: "account_request_timed_out", status: null });
+      }, ORDINARY_ACCOUNT_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingOrdinaryAccounts.set(requestId, { hostId, resolve, timer });
+      connection.sink!.send({ ...frame, type: "ordinary_account_request", request_id: requestId });
+    });
+  }
+
+  receiveOrdinaryAccountResult(hostId: string, requestId: string, result: OrdinaryAccountResult): void {
+    const pending = this.pendingOrdinaryAccounts.get(requestId);
+    if (!pending || pending.hostId !== hostId) return;
+    clearTimeout(pending.timer);
+    this.pendingOrdinaryAccounts.delete(requestId);
+    pending.resolve(result);
+  }
+
+  /**
+   * Starts a personal setup/login session. The id is the registry's, never a
+   * client's; events reach only `onEvent`, which the route binds to the
+   * person who opened it. A disconnect ends it with `host_disconnected`.
+   */
+  openOrdinaryAccountSession(
+    hostId: string,
+    frame: Omit<HostServerFrameOf<"ordinary_account_session_open">, "type" | "session_id">,
+    onEvent: (event: OrdinaryAccountSessionEvent) => void,
+  ): string | null {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return null;
+    const sessionId = randomUUID();
+    this.ordinaryAccountSessions.set(sessionId, { hostId, onEvent });
+    connection.sink.send({ ...frame, type: "ordinary_account_session_open", session_id: sessionId });
+    return sessionId;
+  }
+
+  closeOrdinaryAccountSession(hostId: string, sessionId: string): void {
+    const session = this.ordinaryAccountSessions.get(sessionId);
+    if (!session || session.hostId !== hostId) return;
+    this.ordinaryAccountSessions.delete(sessionId);
+    this.connections.get(hostId)?.sink?.send({ type: "ordinary_account_session_close", session_id: sessionId });
+  }
+
+  /** Asks the daemon to stop a session but keeps listening, so its `exit` still reaches the stream. */
+  cancelOrdinaryAccountSession(hostId: string, sessionId: string): void {
+    if (this.ordinaryAccountSessions.get(sessionId)?.hostId !== hostId) return;
+    this.connections.get(hostId)?.sink?.send({ type: "ordinary_account_session_close", session_id: sessionId });
+  }
+
+  receiveOrdinaryAccountSessionEvent(hostId: string, sessionId: string, event: OrdinaryAccountSessionEvent): void {
+    const session = this.ordinaryAccountSessions.get(sessionId);
+    if (!session || session.hostId !== hostId) return;
+    if (event.kind === "exit") this.ordinaryAccountSessions.delete(sessionId);
+    session.onEvent(event);
+  }
+
+  receiveOrdinaryToolResult(hostId: string, requestId: string, result: OrdinaryToolResult): void {
+    const pending = this.pendingOrdinaryTools.get(requestId);
+    if (!pending || pending.hostId !== hostId) return;
+    clearTimeout(pending.timer);
+    this.pendingOrdinaryTools.delete(requestId);
+    pending.resolve(result);
   }
 
   /**

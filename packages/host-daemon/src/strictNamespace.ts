@@ -1,4 +1,4 @@
-import { lstatSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { HostLaunchIsolation } from "@rainver/protocol";
 
@@ -124,6 +124,34 @@ function mergeBinds(binds: StrictBind[]): StrictBind[] {
     .map(([path, access]) => ({ path, access }));
 }
 
+/** Whether `path` is one of `roots` or inside one, other than itself. */
+function coveredBy(path: string, roots: readonly string[]): boolean {
+  return roots.some((root) => root !== path && (path.startsWith(`${root}/`) || root === "/"));
+}
+
+/**
+ * The real path behind a read-only bind that is itself a symlink, when that
+ * real path is already visible through another bind; null otherwise.
+ *
+ * `--ro-bind` of a link mounts its target *at the link's path*, and a binary
+ * started through it then sees that path as its own location
+ * (`/proc/self/exe`). A runtime that finds its helpers next to itself — Codex's
+ * `codex-code-mode-host` beside `~/.local/bin/codex`'s real target — looks in
+ * the link's directory and finds nothing. Such an alias becomes a link to the
+ * real path instead. One whose target is not otherwise visible stays a bind.
+ */
+function visibleAliasTarget(path: string, visible: readonly string[]): string | null {
+  try {
+    if (!lstatSync(path).isSymbolicLink()) return null;
+    const target = realpathSync(path);
+    return target !== path && visible.some((root) => target === root || target.startsWith(`${root}/`) || root === "/")
+      ? target
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Builds the full `bwrap` argv for one Run.
  *
@@ -159,12 +187,23 @@ export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { 
   if (request.isolation.egress_profile === "none") args.push("--unshare-net");
 
   const workspaceAccess = request.isolation.sandbox_mode === "read_only" ? "read_only" : "read_write";
-  for (const bind of mergeBinds([{ path: cwd, access: workspaceAccess }, { path: home, access: "read_write" }, ...request.binds])) {
+  const merged = mergeBinds([{ path: cwd, access: workspaceAccess }, { path: home, access: "read_write" }, ...request.binds]);
+  const visible = [...SYSTEM_ROOTS.filter(exists), ...merged.map((bind) => bind.path)];
+  const links: Array<{ path: string; target: string }> = [];
+  for (const bind of merged) {
+    const target = bind.access === "read_only" ? visibleAliasTarget(bind.path, visible) : null;
+    if (target) {
+      // Inside an already visible directory the host's own link is there.
+      if (!coveredBy(bind.path, visible)) links.push({ path: bind.path, target });
+      continue;
+    }
     // No `--dir` first: bwrap creates a missing destination for a bind, and an
     // explicit `--dir` on a path whose parent is also bound would replace that
     // parent's content with an empty directory.
     args.push(bind.access === "read_only" ? "--ro-bind" : "--bind", bind.path, bind.path);
   }
+  // After every bind, so none can shadow a link or the directory it is made in.
+  for (const link of links) args.push("--symlink", link.target, link.path);
 
   args.push(
     "--chdir",

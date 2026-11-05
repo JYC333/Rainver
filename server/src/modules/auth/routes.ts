@@ -1,3 +1,4 @@
+import { InstanceInvitationCreateSchema } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
@@ -566,6 +567,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const result = await authResponse(runtime, request, "/request-password-reset", { email: target.rows[0].email, redirectTo: `${context.config.frontendUrl.replace(/\/$/, "")}/reset-password` });
     if (result.status >= 400) return genericAuthFailure(reply, 400);
     const link = consumeManualResetLink(target.rows[0].email); return link ? reply.send({ reset_link: link }) : genericAuthFailure(reply, 503);
+  });
+
+  app.post("/api/v1/auth/admin/invitations", async (request, reply) => {
+    if (!runtime || !registration) return runtimeOrError(context, reply);
+    const actor = await currentUser(context, request, reply);
+    if (!actor || isFailure(actor) || !actor.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
+    const parsed = InstanceInvitationCreateSchema.safeParse(body(request));
+    if (!parsed.success) return reply.code(400).send({ code: "invalid_invitation", message: "A valid email is required" });
+    reply.header("cache-control", "no-store");
+    return reply.code(201).send(await registration.createInstanceInvitation(actor.id, parsed.data.email));
   });
 
   app.get("/api/v1/auth/admin/registration-intents", async (request, reply) => {

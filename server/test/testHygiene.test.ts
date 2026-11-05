@@ -14,7 +14,9 @@ import { describe, expect, it } from "vitest";
  */
 
 const testDir = import.meta.dirname;
-const files = readdirSync(testDir).filter((name) => name.endsWith(".test.ts") && name !== "testHygiene.test.ts");
+// `*.suite.ts` holds the body of a suite split across entry files
+// (support/testPartition.ts); its tests are held to the same rules.
+const files = readdirSync(testDir).filter((name) => (name.endsWith(".test.ts") || name.endsWith(".suite.ts")) && name !== "testHygiene.test.ts");
 const source = new Map(files.map((name) => [name, readFileSync(join(testDir, name), "utf8")]));
 
 function offenders(matches: (name: string, text: string) => boolean, exempt: readonly string[] = []): string[] {
@@ -22,6 +24,10 @@ function offenders(matches: (name: string, text: string) => boolean, exempt: rea
 }
 
 describe("test hygiene", () => {
+  it("keeps vi.mock out of split suites, whose entry files vitest.config cannot see it in", () => {
+    expect(offenders((name, text) => name.endsWith(".suite.ts") && text.includes("vi.mock("))).toEqual([]);
+  });
+
   it("clears rows with resetTables, never TRUNCATE", () => {
     expect(offenders((_, text) => /\bTRUNCATE\b(?![^\n]*\/\/)/.test(text.replace(/\/\/[^\n]*/g, "")))).toEqual([]);
   });

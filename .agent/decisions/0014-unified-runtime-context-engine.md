@@ -39,9 +39,9 @@ authorities.
 
 ### 1. The Runtime Context Gateway is the only product context port
 
-For server-host execution, every Chat, Run, Room recipient, Automation,
-managed Agent invocation, and local CLI delivery that executes a user task
-uses `RuntimeContextGateway`:
+On every execution host, every Chat, Run, Room recipient, Automation, and
+local CLI delivery that executes a user task uses the Runtime Context Gateway
+(`RuntimeContextGatewayPort`, implemented by `RuntimeContextInvocationGateway`):
 `preview`, `prepareInvocation`, `acknowledgeDelivery`, `ingestRuntimeEvent`,
 `finalizeInvocation`. No caller assembles model-visible context, invokes a
 compiler, or applies an adapter-owned budget outside it.
@@ -158,8 +158,8 @@ context.
 ### 9. Snapshots represent actual deliveries
 
 Each provider invocation or CLI delivery receives an immutable Invocation
-Snapshot after payload validation; managed tool loops snapshot each provider
-call; CLI snapshots record the Delivery actually sent.
+Snapshot after payload validation; CLI snapshots record the Delivery actually
+sent.
 Long-term snapshot data is safe metadata, references, hashes, budget
 decisions, control references, and outcome. Raw rendered payloads, where
 policy permits, live only in a short-retention encrypted Sealed Payload with
@@ -219,15 +219,16 @@ occupancy either; a person may ask the Agent for a summary of the conversation
 and later restart it from that summary, and the Agent reads the record on
 demand through `conversation.search` / `conversation.read`.
 
-### 12. On the server host, every work scope gets an isolated runtime
+### 12. On the built-in host, every Run gets an isolated runtime
 
-Local coding CLIs executed on the server host run in a per-`work_context_scope`
-sandbox runtime — a rootless bubblewrap namespace owned by the dedicated
-sandbox-runner, never a Docker socket handed to the application server. The
-runtime sees only the selected Project/worktree, generated delivery,
-allowlisted runtime tool, current credential channel, and Run Exchange; not
-the whole `RAINVER_HOME`, other Projects, the source repository, the server
-HOME, or instance state. The former unisolated worktree subprocess path was
+Local coding CLIs executed on the instance's built-in host run under the host
+daemon inside the dedicated sandbox-runner container, each Run in a fresh
+rootless bubblewrap namespace ([ADR 0016](0016-control-plane-execution-hosts.md)
+§2), never a Docker socket handed to the application server. The namespace
+sees only the Run's workspace (a Project Location, a Task worktree, or the
+Conversation's managed workspace), its runtime copy and Agent profile, and the
+egress its profile allows; not the whole `RAINVER_HOME`, other Projects, the
+source repository, the server HOME, or instance state. The former unisolated worktree subprocess path was
 deleted: Folder mutation isolation alone is not process isolation.
 
 Runtime context is delivered as protocol messages. The vendor context-file

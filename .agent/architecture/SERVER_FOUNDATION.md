@@ -43,7 +43,8 @@ route registry.
 - Server migrations own schema migration through explicit ops commands.
 - In bundled compose modes, server uses the Postgres owner/app role from
   `POSTGRES_*`; there is no separate per-table app-role provisioning path.
-- Credential release stays inside provider/CLI broker channels.
+- Credential release stays inside provider channels; no CLI credential is
+  brokered (a CLI's login lives with its copy on an execution host, ADR 0016).
 - Deferred feature surfaces fail closed explicitly, generally with 501.
 
 ## Database Foundation

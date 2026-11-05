@@ -718,7 +718,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       return reply.code(201).send(
-        await repository().addMember(identity, params(request).projectId ?? "", jsonBody(request)),
+        await repository().addMember(identity, params(request).projectId ?? "", parseBodyWith(protocol.ProjectMemberInputSchema, jsonBody(request))),
       );
     } catch (error) {
       return sendRouteError(reply, error);

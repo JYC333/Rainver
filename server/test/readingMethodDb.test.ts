@@ -22,7 +22,7 @@ import {EvolvableAssetEvaluationRepository} from '../src/modules/evolution/asset
 const db=useTestDatabase(import.meta.filename,{max:10});const w=briefingWorld(db);const identity={spaceId:SPACE,userId:OWNER};let item:string,home:string;let worker:WorkerProcess|undefined;
 const key='reading.project_investigation';
 const sample=READING_METHOD_FIXTURE;
-beforeAll(async()=>{home=await mkdtemp(join(tmpdir(),'reading-method-test-'));buildServerDist();},600000);
+beforeAll(async()=>{home=await mkdtemp(join(tmpdir(),'reading-method-test-'));await buildServerDist();},600000);
 afterEach(async()=>{await worker?.kill();worker=undefined;});
 afterAll(async()=>{await rm(home,{recursive:true,force:true});});
 beforeEach(async()=>{if(!db.available)return;await w.seed();await db.pool.query(`UPDATE space_memberships SET role='admin' WHERE space_id=$1 AND user_id=$2`,[SPACE,OWNER]);await db.pool.query(`DELETE FROM evolvable_assets WHERE asset_key=$1`,[key]);item=await w.material('Synthetic original result');await new RuntimeContextPolicyRepository(db.pool).write(identity,'space',SPACE,{base_version_id:null,policy:{constraints:{},preferences:{}},reason:'Synthetic test policy'});registerReadingTrialSettlement();});

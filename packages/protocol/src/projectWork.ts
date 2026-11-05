@@ -73,6 +73,7 @@ export const PERSON_ONLY_TASK_STATUSES = ["waiting_for_review", "blocked"] as co
 export const PROJECT_WORK_EVENT_KINDS = [
   // Task lifecycle
   "task.created",
+  "task.deleted",
   "task.entity_linked",
   "task.flow_changed",
   "task.accepted",
@@ -197,8 +198,23 @@ export const ProjectBoardCardSchema = z
   .strict();
 export type ProjectBoardCard = z.infer<typeof ProjectBoardCardSchema>;
 
+export const BoardColumnSelectionSchema=z.object({
+  column_key:z.string().min(1).describe("Copy the column key from board.read; never derive it from a name."),
+  columns_revision:z.string().min(1).describe("Copy the current columns_revision from board.read."),
+}).strict();
+
+export const BoardConfigurationInputSchema=z.object({
+  revision:z.string().min(1),
+  columns:z.array(z.object({key:z.string().min(1).max(100).describe("Copy existing keys from board.read; use new:<unique label> for new columns. Omit Unassigned."),label:z.string().trim().min(1).max(256),
+    status_key:z.enum(TASK_STATUSES).refine(s=>s!=="cancelled"),wip_limit:z.number().int().min(1).max(10000).nullable(),
+  }).strict()).min(1).max(30),
+  moves:z.record(z.string(),z.string()).default({}).describe("Deleted column key to destination key. Current Tasks are moved under their permission and completion gates."),
+}).strict();
+
 export const ProjectBoardColumnSchema = z
   .object({
+    key: z.string(),
+    board_id: IdSchema.nullable(),
     status_key: z.string(),
     label: z.string(),
     wip_limit: z.number().int().nullable(),
@@ -214,6 +230,7 @@ export const ProjectBoardResponseSchema = z
       name: z.string(),
     }).strict(),
     columns: z.array(ProjectBoardColumnSchema),
+    columns_revision: z.string(),
     cards: z.array(ProjectBoardCardSchema),
     /** Who asked. The filters below are relative to this person. */
     viewer_user_id: IdSchema,

@@ -85,8 +85,8 @@ capture / trigger
 
 ### Proposal-first for durable change
 
-- Consequential durable changes (memory writes, knowledge writes, code patches, policy changes) go through Proposal → human review → apply.
-- Agents do not directly write active memory.
+- Consequential durable changes (knowledge writes, code patches, and memory writes that widen reach, concern another person, replace someone else's content, or come from a non-conversation origin) go through Proposal → human review → apply.
+- Agents write memory directly only within ADR 0003's bounds: a new version through the canonical applier (`applyDirect`), with mandatory provenance and owner-visible undo. Everything else is a proposal.
 - Agents do not directly write active KnowledgeItem rows. Knowledge writes use `knowledge_*` proposals and accepted proposal apply handlers.
 - The public memory write API returns a `ProposalOut` with HTTP 202, not a direct memory mutation.
 
@@ -122,9 +122,9 @@ capture / trigger
 
 ### External tools are adapters, not product foundations
 
-- Claude Code, Codex CLI, OpenCode, Gemini CLI, and ACP-registry agents (`acp_<id>`) are runtime adapters.
+- Claude Code, Codex CLI, OpenCode, and ACP-registry agents (`acp_<id>`) are runtime adapters; Gemini CLI is declared as planned.
 - Memory, context, policy, proposals, audit, and Project Folder governance live in Rainver's database, not in vendor CLIs.
-- OpenCode is an optional CLI runtime alongside Claude Code, Codex CLI, and Gemini CLI, not a
+- OpenCode is an optional CLI runtime alongside Claude Code and Codex CLI, not a
   universal or preferred execution layer. User-initiated/supervised heavy work may use CLI
   subscription allowance; managed API work keeps its existing direct adapters. Claude
   Pro/Max stays on native Claude Code while OpenCode's provider documentation records that
@@ -134,13 +134,12 @@ capture / trigger
 
 | Enforcement point | Current mechanism | Status |
 |---|---|---|
-| HTTP auth/session identity | Session/API-key identity; no dev-identity fallback | Active |
+| HTTP auth/session identity | Session-cookie identity; Bearer API keys return 501; no dev-identity fallback | Active |
 | Space membership / selected space access | server auth middleware + policy role helpers | Active |
 | Memory write (public API) | Returns Proposal (HTTP 202), not direct write | Active |
 | Memory proposal apply | Proposal gate + SourceMonitoring gate | Active |
-| Memory write boundary | server proposal apply service; no public direct active-memory mutation | Active |
+| Memory write boundary | canonical memory applier for proposals and ADR 0003 bounded Agent writes; no public direct active-memory mutation | Active |
 | Knowledge write boundary | `knowledge.*` actions wired via `proposal.apply`; `knowledge_*` handlers in ProposalApplyService | Active |
-| Policy proposal apply | Proposal gate creates active Policy row | Active |
 | Agent runtime execution | Selected Profile snapshot, execution-Host ACP adapter, Run policy and Host trust boundary | Active |
 | Runtime credential use | Credential resolver + secret redaction | Active |
 | Project Folder file read | `project_folder.read` route check + `PathPolicy` | Active |
@@ -168,13 +167,12 @@ Run these before structural changes:
 **Flow checks:**
 - Are durable changes still proposal-first?
 - Are raw inputs still Activity-first (not session-first for non-chat)?
-- Are memory writes reviewed before apply?
+- Are memory writes either reviewed before apply or inside ADR 0003's bounded, undoable direct-write rules?
 - Can Run explain what happened (via RunStep)?
 - Are Jobs separate from Runs?
 
 **Safety checks:**
 - Are secrets absent from run output, steps, artifacts, and logs?
-- Does an accepted active Policy row change a real enforcement decision?
 - Is deployment still manual or allowlisted-deployer-only?
 - Does every Evolution run use an explicitly selected ordinary Agent?
 - Does Project Folder archive/unregister leave the physical directory untouched rather than hard-delete?

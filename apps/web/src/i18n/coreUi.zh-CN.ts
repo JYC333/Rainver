@@ -32,6 +32,12 @@ export const coreUiZhCN = {
       notes_knowledge: '笔记与知识',
       none: '无。',
       add: '添加',
+      load_more: '加载更多',
+      load_more_projects: '加载此领域中的更多项目',
+      load_more_objects: '加载此领域中的更多笔记与知识',
+      more_choices: '更多选项',
+      more_project_choices: '加载更多可添加的项目',
+      more_object_choices: '加载更多可添加的笔记与知识条目',
     },
     dialog: {
       close: '关闭',

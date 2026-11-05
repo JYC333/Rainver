@@ -53,10 +53,10 @@ Provenance uses `ActivityRecord` and `ProvenanceLink`.
 | `source_id` | ID of the producing object. |
 | `source_trust` | Trust level of this provenance link. |
 | `evidence_json` | Structured evidence at this link in the chain. |
-| `target_type` / `target_id` | What this link is attached to (memory, policy, etc.). |
+| `target_type` / `target_id` | What this link is attached to (`memory` or `knowledge`). |
 
 `ProvenanceLink` is for the durable accepted-object audit chain. It records the
-source of truth behind an accepted memory, policy, or other durable object,
+source of truth behind an accepted Memory entry or Knowledge item,
 especially after a proposal is applied.
 
 `EvidenceLink` is separate: it links candidate `ExtractedEvidence` to a space,
@@ -128,10 +128,10 @@ when useful; they are not silently reused as evidence trust.
 
 ## SourceMonitoring Trust Gate
 
-`evaluateMemoryProposal` (`server/src/modules/memory/sourceMonitoring.ts`) is the deterministic trust gate before any durable memory or policy apply.
+`evaluateMemoryProposal` (`server/src/modules/memory/sourceMonitoring.ts`) is the deterministic trust gate before an accepted Memory proposal applies.
 
 Hard rules:
-- `agent_inferred` alone → **reject** (cannot back active semantic memory or policy).
+- `agent_inferred` alone → **reject** (cannot back active semantic memory).
 - `untrusted_external` alone → **require_review** (proceeds only under `explicit_user_accept` with result recorded).
 - No provenance entries → **reject**.
 - `user_confirmed`, `internal_system`, or `trusted_external` → **allow**.
@@ -143,13 +143,16 @@ Activity-first capture with `source_type=user_capture` resolves to `user_confirm
 ## Memory Write Boundary
 
 Active `MemoryEntry` rows are written only by `PgMemoryApplyRepository`
-(`server/src/modules/memory/memoryApplyRepository.ts`), by the three routes
+(`server/src/modules/memory/memoryApplyRepository.ts`), by the routes
 [B10](../BOUNDARIES.md) and [`modules/memory.md`](../modules/memory.md) name: the
 proposal-approval path (`PgProposalApplyService` → `applyOnly` →
-`applyCreate`/`applyUpdate`), an Agent's own bounded write (`applyDirect`), and a
+`applyCreate`/`applyUpdate`), an Agent's own bounded write (`applyDirect`), a
 person importing a published user-memory snapshot (`applyPublicationImport`:
 private, normal-sensitivity, attributed to the importer, carrying the
-publisher's trust). No adapter, job or route inserts around it.
+publisher's trust), and the owner changing who may read their own entry
+(`applyOwnerAccessChange`, reached from the content-access API: a new version
+with the same content and provenance under the new reach). No adapter, job or
+route inserts around it.
 
 Approved proposal apply uses proposal-validated writer methods. Ordinary callers cannot pass a generic bypass reason string.
 
@@ -198,7 +201,7 @@ Current enforcement:
   create-safety (`assessActivityMemoryDuplicate`) before `insertMemoryProposal`;
   duplicate visible Memory marks the Activity `processed` and does not create
   another proposal.
-- `PgActivityConsolidationRepository` is the only pipeline that creates Proposal rows from Activity. Proposals remain `pending` until explicitly accepted.
+- Proposal rows are created from Activity only by `PgActivityConsolidationRepository` (the consolidation pipeline) and by the owner consolidating one record (`POST /api/v1/activity/:activityId/consolidate`, `PgActivityRepository.consolidate`, which runs the same create-safety pre-dedupe). Proposals remain `pending` until explicitly accepted.
 - `PgMemoryApplyRepository.applyOnly` is the only path that creates active `MemoryEntry` from a proposal.
 - No code path creates active Memory from source/evidence payload without proposal.
 

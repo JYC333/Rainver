@@ -6,6 +6,12 @@
  *
  * 0.4.3 adds owner-authorized global CLI Skill scan/read frames.
  * 0.4.4 confirms exact-attempt absence when recovering a lost server worker.
+ * 0.4.5 reports ordinary CLI tools (`capabilities_json.ordinary_tools`). That is
+ * negotiated by the report itself, not by this floor: an older daemon keeps its
+ * Runtimes and is shown as needing an update for ordinary tools only.
+ * 0.4.6 adds personal ordinary-tool accounts (`ordinary_tool_accounts`), negotiated
+ * the same way.
+ * 0.4.7 adds ordinary tools in Runs (`ordinary_tools_runs`), negotiated the same way.
  *
  * 0.4.0 was the oldest daemon that merges a done Task's branch (ADR 0016 §11): `task_merge_prepare`,
  * `_continue`, `_abort` and `_finish`, and a conflict-resolution Run launched

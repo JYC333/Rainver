@@ -33,6 +33,8 @@ interface InsertArtifactRowInput {
   exportable?: boolean;
   preview?: boolean;
   createdAt?: string;
+  /** `user_output` unless the row is an operational intermediate or a system archive. */
+  surfaceRole?: "user_output" | "operational" | "system_archive";
 }
 
 const DEFAULT_MIME = "application/json; charset=utf-8";
@@ -48,13 +50,13 @@ export async function insertArtifactRow(db: Queryable, input: InsertArtifactRowI
        storage_ref, storage_path, mime_type, exportable, export_formats_json,
        canonical_format, preview, relevant_period_start, relevant_period_end,
        created_at, updated_at, metadata_json, visibility, owner_user_id,
-       trust_level, project_id
+       trust_level, project_id, surface_role
      ) VALUES (
        $1, $2, $3, $4, $5, $6, $7,
        NULL, NULL, $8, $9, $10::jsonb,
        $11, $12, NULL, NULL,
        $13, $13, $14::jsonb, $15, $16,
-       $17, $18
+       $17, $18, $19
      )`,
     [
       id,
@@ -75,6 +77,7 @@ export async function insertArtifactRow(db: Queryable, input: InsertArtifactRowI
       input.ownerUserId,
       input.trustLevel ?? "medium",
       input.projectId ?? null,
+      input.surfaceRole ?? "user_output",
     ],
   );
   return id;

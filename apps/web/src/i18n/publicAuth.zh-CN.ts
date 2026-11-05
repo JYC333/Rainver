@@ -19,6 +19,7 @@ export const publicAuthZhCN = {
       back_login: '返回登录',
     },
     invitation: {
+      accept: '接受邀请',
       token_missing: '邀请链接缺少领取令牌。',
       existing_invalid: '邀请无效、已过期、已使用，或属于其他账户。',
       claim_invalid: '邀请无效、已过期、已撤销，或属于其他邮箱。',

@@ -138,7 +138,8 @@ describe('HostExecutionTargetPicker', () => {
     expect(screen.getByText(/Models reported by ACP may still work without an account/)).toBeInTheDocument()
     // Signing in happens where this host's real login methods are offered;
     // the picker starts no login of its own.
-    expect(screen.getByRole('link', { name: /Sign in from Command Center/ })).toHaveAttribute('href', expect.stringContaining('/command-center'))
+    // To the selected Host, at its Runtimes, where its sign-in lives.
+    expect(screen.getByRole('link', { name: /Sign in from Command Center/ })).toHaveAttribute('href', expect.stringMatching(/^\/command-center\?host=[^&]+&section=runtime$/))
     expect(screen.queryByRole('button', { name: 'Login' })).not.toBeInTheDocument()
     expect(mockedApi.loginStream).not.toHaveBeenCalled()
   })
@@ -244,7 +245,7 @@ describe('HostExecutionTargetPicker', () => {
     const note = await screen.findByTestId('server-runtime-provisioning')
     expect(note).toHaveTextContent('failed')
     expect(note).toHaveTextContent('npm registry unreachable')
-    expect(within(note).getByRole('link', { name: /retry provisioning/i })).toHaveAttribute('href', '/command-center')
+    expect(within(note).getByRole('link', { name: /retry provisioning/i })).toHaveAttribute('href', '/command-center?host=server-host&section=runtime')
   })
 
   it('stays quiet when the pinned Server Runtime copy is healthy', async () => {

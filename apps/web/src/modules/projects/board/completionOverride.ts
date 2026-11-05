@@ -13,12 +13,13 @@ export async function moveCardStatus(
   taskId: string,
   toStatus: string,
   acknowledged?: readonly string[],
+  placement?: {column_id:string;board_id:string},
 ): Promise<void> {
   // An empty acknowledgement is not an override — the server reads it as none
   // at all and refuses again, which would make "Close anyway" a loop.
   await tasksApi.update(taskId, acknowledged && acknowledged.length > 0
-    ? { status: toStatus, override_completion: { acknowledged: [...acknowledged] } }
-    : { status: toStatus })
+    ? { ...placement, status: toStatus, override_completion: { acknowledged: [...acknowledged] } }
+    : { ...placement, status: toStatus })
 }
 
 /** The reasons a close was refused, or null when the failure was something else. */

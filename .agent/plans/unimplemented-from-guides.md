@@ -216,13 +216,15 @@ on content hash / provenance; trust copied into provenance only.
 
 Extracted from `SOURCE_CUSTOM_SOURCE_HANDLERS.md`.
 
-**Current fact:** custom handlers run in a child-process runner that is
-not OS-sandboxed.
+**Current fact:** legacy arbitrary handler code is refused before artifact
+access; custom sources run reviewed declarative pipelines through the
+interpreter. Generated Source Goal code runs only in the isolated Host
+executor (ADR 0026, `isolated-v1`) and never falls back to the handler path.
 
 **Extracted design**
 - Credential rotation/deletion UI; UI for creating or editing handlers.
-- Broader generated-code execution only with a real isolated
-  runner/container, instance-admin enablement, proposal review for
+- Generated code for custom-source handlers only through the ADR 0026
+  isolated executor, with instance-admin enablement, proposal review for
   permission deltas, strict resource limits, Sources-only materialization,
   and durable audit.
 - Proposal-gated enablement of browser / shell / dependency-install flags
@@ -500,7 +502,7 @@ settled by ADR 0016 §11.
 - Scored multi-location routing / lease scheduler.
 - Cleanup policy for expired pending and retained revoked host names.
 - Remote proposal/apply governance, content sync, divergence detection,
-  quota probing, Windows-native/WSL hardware verification.
+  Windows-native/WSL hardware verification.
 
 ---
 
@@ -509,10 +511,11 @@ settled by ADR 0016 §11.
 Extracted from `FRONTEND_INFORMATION_ARCHITECTURE.md` §9.
 
 **Current fact:** Graph at `/graph` is implemented. Cards and Time are
-stubs (see §2–§3). There is no Editor or Calendar module.
+stubs (see §2–§3). Files & Code edits complete text files in CodeMirror with
+draft-backed Save to Folder (ADR 0021). There is no Calendar module.
 
 **Extracted design**
-- File editor + save API; calendar/scheduling model.
+- Calendar/scheduling model.
 - Home per-Space aggregates: captures waiting, review packets ready, cards due
   (must be real backend endpoints, not a frontend fan-out).
 - Activity / Run / Artifact cross-links (post-consolidate navigation to

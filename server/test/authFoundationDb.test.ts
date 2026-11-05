@@ -1,3 +1,5 @@
+import { copyFile, mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { migrate } from "../src/db/migrator.js";
@@ -9,7 +11,24 @@ const migrationsDir = join(process.cwd(), "migrations");
 
 beforeAll(async () => {
   if (!db.available) return;
-  await migrate(db.pool, migrationsDir);
+  // Upgrade an existing reserved Space invitation, not just an empty schema.
+  const previous = await mkdtemp(join(tmpdir(), "rainver-invitation-prefix-"));
+  try {
+    for (const name of await readdir(migrationsDir)) {
+      if (/^\d{4}_.*\.sql$/.test(name) && !name.startsWith("0010_")) await copyFile(join(migrationsDir, name), join(previous, name));
+    }
+    await migrate(db.pool, previous);
+    await db.pool.query("INSERT INTO users (id, email, display_name, status, registration_source, created_at, updated_at) VALUES ('upgrade-owner', 'upgrade@example.test', 'Owner', 'active', 'bootstrap', now(), now())");
+    await db.pool.query("INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at) VALUES ('upgrade-space', 'Team', 'team', 'upgrade-owner', now(), now())");
+    await db.pool.query("INSERT INTO space_invitations (id, space_id, invited_email, role, token_hash, status, reserved_by_intent_id, reserved_at, invited_by_user_id, created_at, expires_at) VALUES ('upgrade-invite', 'upgrade-space', 'invited@example.test', 'member', repeat('a',64), 'reserved', 'upgrade-intent', now(), 'upgrade-owner', now(), now() + interval '7 days')");
+    await db.pool.query("INSERT INTO registration_intents (id, claim_secret_hash, email, authority, invitation_id, state, created_at, last_activity_at, expires_at) VALUES ('upgrade-intent', repeat('b',64), 'invited@example.test', 'space_invitation', 'upgrade-invite', 'issued', now(), now(), now() + interval '30 minutes')");
+    const before = await db.pool.query("SELECT to_jsonb(i) AS row FROM space_invitations i WHERE id = 'upgrade-invite'");
+    const intent = await db.pool.query("SELECT to_jsonb(i) AS row FROM registration_intents i WHERE id = 'upgrade-intent'");
+    expect((await migrate(db.pool, migrationsDir)).applied).toEqual(["0010"]);
+    expect((await db.pool.query("SELECT to_jsonb(i) AS row FROM user_invitations i WHERE id = 'upgrade-invite'")).rows).toEqual(before.rows);
+    expect((await db.pool.query("SELECT to_jsonb(i) AS row FROM registration_intents i WHERE id = 'upgrade-intent'")).rows).toEqual(intent.rows);
+    expect((await migrate(db.pool, migrationsDir)).applied).toEqual([]);
+  } finally { await rm(previous, { recursive: true, force: true }); }
 });
 
 describe("auth foundation constraints", () => {
@@ -71,7 +90,7 @@ describe("auth foundation constraints", () => {
        VALUES ('space-1', 'Space', 'team', 'active-user', now(), now())`,
     );
     await db.pool.query(
-      `INSERT INTO space_invitations
+      `INSERT INTO user_invitations
          (id, space_id, invited_email, role, token_hash, status,
           invited_by_user_id, created_at, expires_at)
        VALUES ('invitation-1', 'space-1', 'pending@example.test', 'member',
@@ -84,7 +103,7 @@ describe("auth foundation constraints", () => {
        VALUES ('invitation-intent', repeat('c', 64), 'pending@example.test',
                'space_invitation', 'invitation-1', 'issued', now(), now(), now() + interval '1 hour')`,
     );
-    await expect(db.pool.query("DELETE FROM space_invitations WHERE id = 'invitation-1'"))
+    await expect(db.pool.query("DELETE FROM user_invitations WHERE id = 'invitation-1'"))
       .rejects.toMatchObject({ code: "23503" });
   });
 });

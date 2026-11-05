@@ -9,7 +9,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {afterAll,beforeAll,beforeEach,expect} from "vitest";
 import { loadConfig } from "../src/config.js";
 import { RoomService } from "../src/modules/rooms/service.js";
 import { PgFrontendSupportService } from "../src/modules/frontendSupport/service.js";
@@ -21,7 +21,6 @@ import { POLICY_ACTION_REGISTRY } from "@rainver/protocol";
 import { engineCheck } from "../src/modules/policy/decisionCore.js";
 import type { SystemActionExecutor } from "../src/modules/systemActions/gateway.js";
 import { seedConversationMessages } from "./support/domainSeeds.js";
-
 import { registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService.js";
 import { SpaceAssistantService } from "../src/modules/agents/spaceAssistantService.js";
 import { PgRunRepository, type RunRecord } from "../src/modules/runs/repository.js";
@@ -66,7 +65,6 @@ import {
   requestRoomConversationTitle,
   RoomConversationTitleService,
 } from "../src/modules/rooms/conversationTitleService.js";
-
 import { loadRoomContinuityForRunRequest } from "../src/modules/runtimeContext/conversationContinuity.js";
 import { loadAuthorizedCurrentContextMessage } from "../src/modules/runtimeContext/productionAcquisition.js";
 import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
@@ -77,6 +75,13 @@ import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/s
 import { effectiveRunTrigger } from "../src/modules/systemActions/effectiveRunTrigger.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 
+import type {TestPartition} from './support/testPartition.js';
+
+/** Parts of the split this suite's routed describes run in (see testPartition.ts). */
+export const ROOMSDB_ROUTES = {"conversation summary and restart from it":[0],"bounded discussions among a conversation's Agents":[1,2]} as const;
+
+/** Registered by the `roomsDb.N.test.ts` entry files, one part each (see support/testPartition.ts). */
+export function defineRoomsDbSuite(filename: string, {it,describe}: TestPartition): void {
 let service: RoomService | undefined;
 let groupService: AgentGroupRunService | undefined;
 let testRoot: string | undefined;
@@ -102,7 +107,7 @@ async function removeManagedAssistant(): Promise<void> {
   await db.pool.query("DELETE FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant'");
 }
 
-const db = useTestDatabase(import.meta.filename, { max: 10 });
+const db = useTestDatabase(filename, { max: 10 });
 
 beforeAll(async () => {
   if (!db.available) return;
@@ -4345,6 +4350,71 @@ describe("Room workflow (real Postgres)", () => {
       expect(await hasRunJob(specialistRun)).toBe(true);
     });
 
+    it("hands a delegated task too long to inline as its beginning and a link the child can read", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const owner = { spaceId: "space-1", userId: "user-1" };
+      const now = new Date().toISOString();
+      await seedSpecialist(now, "agent-2", "version-2", "Research Specialist");
+      await seedSpecialist(now, "agent-3", "version-3", "Reviewer");
+      const created = await service.createRoom(owner, { project_id: "project-1", title: "Long hand-over" });
+      for (const agentId of ["agent-2", "agent-3"]) {
+        await db.pool.query(
+          `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
+           VALUES ($1, 'space-1', $2, $3, 'member', 'active', $4, $4)`,
+          [randomUUID(), created.room.id, agentId, now],
+        );
+      }
+      const conversation = await seedConversation(owner, created.room.id, "Long hand-over");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Get both reviewed." });
+      const managerRun = sent.run_ids[0]!;
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
+      await dispatchQueuedRoomRuns([managerRun]);
+      const delegate = (target: string, instruction: string) => groupService!.spawnChildRun(owner, {
+        workspace_access: "write" as const, space_id: "space-1", group_id: group.id, parent_run_id: managerRun,
+        root_run_id: group.root_run_id!, requesting_agent_id: "agent-1", target_agent_id: target,
+        manager_user_id: "user-1", instruction,
+      });
+
+      // Under the threshold a task is handed over as written.
+      const short = await delegate("agent-2", "Check the numbers in section 2.");
+      expect(short.delegation.instruction).toBe("Check the numbers in section 2.");
+
+      const longTask = `Review the pasted notes below for contradictions.\n${"notes line\n".repeat(2_000)}LAST_LINE_OF_THE_NOTES`;
+      expect(longTask.length).toBeGreaterThan(16_000);
+      const long = await delegate("agent-3", longTask);
+      const handed = long.delegation.instruction;
+      expect(handed.startsWith("Review the pasted notes below for contradictions.")).toBe(true);
+      expect(handed).not.toContain("LAST_LINE_OF_THE_NOTES");
+      expect(handed.length).toBeLessThan(5_000);
+      const link = /rainver:\/\/artifacts\/[A-Za-z0-9-]+/u.exec(handed)?.[0];
+      expect(link).toBeTruthy();
+      // The same text everywhere the task travels: the Room timeline and the child's own request.
+      const request = await db.pool.query<{ content: string }>(`SELECT content FROM agent_run_messages WHERE id = $1`, [long.delegation.request_message_id]);
+      expect(request.rows[0]?.content).toBe(handed);
+      const child = await new PgRunRepository(db.pool).getRun("space-1", long.child_run_id!);
+      expect(child?.prompt).toContain(link);
+      expect(child?.prompt).not.toContain("LAST_LINE_OF_THE_NOTES");
+
+      // Stored whole on the delegating Run, as an operational record visible where that Run is.
+      const stored = await db.pool.query<{ run_id: string; content: string; surface_role: string; visibility: string }>(
+        `SELECT run_id, content, surface_role, visibility FROM artifacts WHERE id = $1`, [link!.slice("rainver://artifacts/".length)],
+      );
+      expect(stored.rows[0]).toMatchObject({ run_id: managerRun, content: longTask, surface_role: "operational" });
+
+      // The child reads the rest through the resource tools it already has in a Room.
+      const resources = new ConversationInputResourceService(db.pool);
+      const found = await resources.search({
+        spaceId: "space-1", runId: long.child_run_id!, messageId: randomUUID(),
+        request: { resource_id: link!, query: "LAST_LINE_OF_THE_NOTES", case_sensitive: true, max_results: 1 },
+      });
+      expect(found.matches).toEqual([{ line: 2_002, excerpt: "LAST_LINE_OF_THE_NOTES" }]);
+      const first = await resources.read({
+        spaceId: "space-1", runId: long.child_run_id!, messageId: randomUUID(),
+        request: { resource_id: link!, start_line: 1, start_byte_offset: 0, line_count: 1 },
+      });
+      expect(first.content).toBe("Review the pasted notes below for contradictions.");
+    });
+
     it("lets a person address an Agent whose own turn waits for the window, and gives the Agent back to it afterwards", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Held Agent addressed");
@@ -6092,6 +6162,58 @@ describe("Room workflow (real Postgres)", () => {
       [conversation.id],
     );
     expect(posted.rows[0]?.total).toBe("0");
+    expect(resumedManager?.output_json).toMatchObject({
+      waiting_for_results: { delivered_run_ids: [spawned.child_run_id] },
+    });
+
+    // A second round: `own_delegations` now lists both children. The first
+    // result was handed over already and is only named; a long task is not
+    // repeated whole. Resent in full, rounds like this once pushed a resume
+    // prompt past the runtime's input limit.
+    await dispatchQueuedRoomRuns([managerRunId]);
+    // The first child's finalization would release its thread; it was settled by hand above.
+    await db.pool.query("UPDATE host_threads SET dispatch_lock_id=NULL WHERE dispatch_lock_id=$1", [spawned.child_run_id]);
+    const longTask = `Review the attached text.\n${"x".repeat(5_000)}\nTAIL_OF_ATTACHED_TEXT`;
+    const second = await groupService.spawnChildRun(owner, { workspace_access: "write" as const,
+      space_id: "space-1",
+      group_id: group.id,
+      parent_run_id: managerRunId,
+      root_run_id: group.root_run_id,
+      requesting_agent_id: "agent-1",
+      target_agent_id: "agent-2",
+      manager_user_id: "user-1",
+      instruction: longTask,
+    });
+    const runningManager = await runs.getAgentRun("space-1", managerRunId);
+    if (!runningManager) throw new Error("manager run not found");
+    expect((await runAgentRoomToolCall({
+      id: "wait-call-2",
+      name: "agent.wait_for_results",
+      arguments_json: JSON.stringify({ scope: "own_delegations", reason: "Waiting on the second review." }),
+    }, binding, runningManager)).modelResult).toMatchObject({ status: "waiting" });
+    expect((await runs.getRun("space-1", managerRunId))?.output_json).toMatchObject({
+      waiting_for_results: { status: "waiting", delivered_run_ids: [spawned.child_run_id] },
+    });
+    await dispatchQueuedRoomRuns([second.child_run_id!]);
+    await db.pool.query(
+      "UPDATE runs SET status='succeeded', output_json=$2, ended_at=now(), updated_at=now() WHERE id=$1",
+      [second.child_run_id, JSON.stringify({ summary: "The second review found nothing to fix." })],
+    );
+    await projector.markDelegatedRunTerminal((await runs.getRun("space-1", second.child_run_id!))!);
+    await projector.reconcileWaitingRun((await runs.getRun("space-1", managerRunId))!);
+
+    const secondResume = await runs.getRun("space-1", managerRunId);
+    expect(secondResume?.status).toBe("queued");
+    const prompt = secondResume?.prompt ?? "";
+    expect(prompt).toContain("The second review found nothing to fix.");
+    expect(prompt).toContain(`run_id: ${second.child_run_id}`);
+    expect(prompt).not.toContain("Layered memory improves recall by 12%");
+    expect(prompt).toContain(`run_id: ${spawned.child_run_id}, status: succeeded`);
+    expect(prompt).not.toContain("TAIL_OF_ATTACHED_TEXT");
+    expect(prompt).toContain("more characters of the task not repeated");
+    expect(secondResume?.output_json).toMatchObject({
+      waiting_for_results: { delivered_run_ids: [spawned.child_run_id, second.child_run_id] },
+    });
   });
 
   it("retries the delegation-completion notification when the conversation turn is busy, and the retry succeeds once it frees up (integration-gate fix)", async (ctx) => {
@@ -7429,3 +7551,4 @@ describe("Room workflow (real Postgres)", () => {
       .rejects.toMatchObject({ statusCode: 409 });
   });
 });
+}

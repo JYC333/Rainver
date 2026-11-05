@@ -63,6 +63,13 @@ describe('ProjectsPage', () => {
    * Template on this form. Mode starts as Research and is changed from
    * inside the Project.
    */
+  it('marks Projects available for membership administration without implying internal access', async () => {
+    vi.mocked(projectsApi.list).mockResolvedValue({ items: [{ id: 'project-1', name: 'Restricted Project', status: 'active', description: 'Public description', current_user_can_read: false, current_user_grantable_member_role: 'member', updated_at: '2026-11-05T00:00:00Z' }], total: 1, limit: 100, offset: 0 } as never)
+    render(<MemoryRouter><ProjectsPage /></MemoryRouter>)
+    expect(await screen.findByText('Restricted Project')).toBeInTheDocument()
+    expect(screen.getByText('Membership required')).toBeInTheDocument()
+  })
+
   it('creates with a name and presets nothing else', async () => {
     render(<MemoryRouter><ProjectsPage /></MemoryRouter>)
 

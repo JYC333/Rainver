@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, realpath, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -113,6 +113,50 @@ describe("the strict-mode namespace", () => {
     expect(mounted.get("/tools/opencode/home")).toBe("read_write");
     const order = [...mounted.keys()];
     expect(order.indexOf("/tools/opencode")).toBeLessThan(order.indexOf("/tools/opencode/home"));
+  });
+
+  it("keeps a bound executable alias a link to its visible real path, so siblings resolve beside it", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "strict-alias-")));
+    try {
+      // `~/.local/bin/codex` → `…/current/bin/codex`, where `current` → `releases/1`.
+      const realBin = join(root, "packages/releases/1/bin");
+      await mkdir(realBin, { recursive: true });
+      await writeFile(join(realBin, "codex"), "");
+      await symlink(join(root, "packages/releases/1"), join(root, "packages/current"));
+      await mkdir(join(root, "local/bin"), { recursive: true });
+      const alias = join(root, "local/bin/codex"), hop = join(root, "packages/current/bin/codex");
+      await symlink(hop, alias);
+      // A link whose target nothing else exposes keeps today's file bind.
+      await mkdir(join(root, "elsewhere"));
+      await writeFile(join(root, "elsewhere/tool"), "");
+      const unexposed = join(root, "local/bin/tool");
+      await symlink(join(root, "elsewhere/tool"), unexposed);
+      // A link inside a directory that is already visible needs nothing.
+      await symlink(join(realBin, "codex"), join(realBin, "codex-alias"));
+
+      const { args } = buildStrictNamespaceCommand({
+        ...base,
+        binds: [alias, hop, realBin, unexposed, join(realBin, "codex-alias")].map((path) => ({ path, access: "read_only" as const })),
+      });
+      const links = new Map<string, string>();
+      for (let i = 0; i < args.length; i += 1) if (args[i] === "--symlink") links.set(args[i + 2]!, args[i + 1]!);
+      // Straight to the real file: a link to the hop would put the binary in
+      // `current/bin`, which is not bound, and its helpers would still be missing.
+      expect(links.get(alias)).toBe(join(realBin, "codex"));
+      expect(binds(args).has(alias)).toBe(false);
+      // The hop is a file under a linked directory, not a link; it stays a bind.
+      expect(binds(args).get(hop)).toBe("read_only");
+      expect(binds(args).get(realBin)).toBe("read_only");
+      expect(binds(args).get(unexposed)).toBe("read_only");
+      expect(links.has(unexposed)).toBe(false);
+      expect(links.has(join(realBin, "codex-alias"))).toBe(false);
+      expect(binds(args).has(join(realBin, "codex-alias"))).toBe(false);
+      // Links come after every bind, so no later bind can shadow one.
+      const lastBind = Math.max(...args.flatMap((arg, i) => (arg === "--ro-bind" || arg === "--bind" ? [i] : [])));
+      expect(args.indexOf("--symlink")).toBeGreaterThan(lastBind);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("sets HOME to the namespace's own home and marks the Run as already isolated", () => {

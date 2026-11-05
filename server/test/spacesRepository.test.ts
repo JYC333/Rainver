@@ -1,3 +1,4 @@
+import { hashOpaqueToken } from "../src/modules/auth/securityPolicy.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -45,8 +46,26 @@ describe("PgSpaceRepository.acceptInvitation", () => {
       [space.id, invitee],
     );
     expect(membership.rows).toEqual([{ role: "member", status: "active" }]);
-    const state = await db.pool.query<{ status: string }>("SELECT status FROM space_invitations WHERE id = $1", [invitation.id]);
+    const state = await db.pool.query<{ status: string }>("SELECT status FROM user_invitations WHERE id = $1", [invitation.id]);
     expect(state.rows[0]?.status).toBe("accepted");
+  });
+
+  it("consumes an instance-only invitation once without changing any memberships", async () => {
+    if (!db.available || !repo) return;
+    const owner = await seedUser();
+    const email = `invitee-${randomUUID()}@test.invalid`;
+    const invitee = await seedUser(email);
+    const other = await seedUser();
+    const id = randomUUID();
+    const token = randomUUID();
+    await db.pool.query(`INSERT INTO user_invitations (id, invited_email, token_hash, status, invited_by_user_id, created_at, expires_at)
+      VALUES ($1, $2, $3, 'available', $4, now(), now() + interval '7 days')`, [id, email, hashOpaqueToken(token), owner]);
+    expect(await repo.acceptInvitation(other, token)).toMatchObject({ statusCode: 400 });
+    const before = await db.pool.query("SELECT * FROM space_memberships WHERE user_id = $1", [invitee]);
+    const results = await Promise.all([repo.acceptInvitation(invitee, token), repo.acceptInvitation(invitee, token)]);
+    expect(results.filter(result => "space_id" in result)).toEqual([{ space_id: null }]);
+    expect((await db.pool.query("SELECT * FROM space_memberships WHERE user_id = $1", [invitee])).rows).toEqual(before.rows);
+    expect((await db.pool.query("SELECT status FROM user_invitations WHERE id = $1", [id])).rows[0].status).toBe("accepted");
   });
 
   it("rejects another account and an expired invitation without granting membership", async () => {
@@ -60,7 +79,7 @@ describe("PgSpaceRepository.acceptInvitation", () => {
     if (!("token" in invitation)) throw new Error("Invitation was not created");
 
     expect(await repo.acceptInvitation(other, invitation.token)).toMatchObject({ statusCode: 400 });
-    await db.pool.query("UPDATE space_invitations SET expires_at = now() - interval '1 second' WHERE id = $1", [invitation.id]);
+    await db.pool.query("UPDATE user_invitations SET expires_at = now() - interval '1 second' WHERE id = $1", [invitation.id]);
     expect(await repo.acceptInvitation(invitee, invitation.token)).toMatchObject({ statusCode: 400 });
     const memberships = await db.pool.query(
       "SELECT id FROM space_memberships WHERE space_id = $1 AND user_id IN ($2, $3)",

@@ -3,7 +3,7 @@ import {READING_METHOD_FIXTURE} from '@rainver/protocol';
 import {saveReadingSample} from '../src/modules/prompts/reading/workspace.js';
 import {startReadingTrial,readReadingTrial,assertReadingTrialRun,judgeReadingTrial,registerReadingTrialSettlement} from '../src/modules/prompts/reading/trials.js';
 import {resolvePrompt} from '../src/modules/prompts/resolver.js';
-import {beforeAll,beforeEach,afterAll,afterEach,it,expect} from 'vitest';
+import {beforeAll,beforeEach,afterAll,afterEach,expect} from 'vitest';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -19,11 +19,16 @@ import {PromptRepository} from '../src/modules/prompts/repository.js';
 import {EvolvableAssetRepository} from '../src/modules/evolution/assetRepository.js';
 import {canonicalRunOutput} from '../src/modules/runs/orchestrationResults.js';
 import {withDbTransaction} from '../src/modules/routeUtils/common.js';
-const db=useTestDatabase(import.meta.filename,{max:10}),w=briefingWorld(db),identity={spaceId:SPACE,userId:OWNER};
+
+import type {TestPartition} from './support/testPartition.js';
+
+/** Registered by the `readingMethodGenerationDb.N.test.ts` entry files, one part each (see support/testPartition.ts). */
+export function defineReadingMethodGenerationDbSuite(filename: string, {it}: TestPartition): void {
+const db=useTestDatabase(filename,{max:10}),w=briefingWorld(db),identity={spaceId:SPACE,userId:OWNER};
 let item:string,home:string,worker:WorkerProcess|undefined;
 const key='reading.project_investigation';
 const result={schema:'reading_method_revision.v1',method:'Investigate specific capabilities using primary documentation and actual API examples. Explain mechanisms, evidence, project fit, adaptation costs and unknowns. Never invent a fetched page.',summary:'Ask for primary documentation rather than a homepage paraphrase.',changes:['Follow relevant primary documentation and concrete examples.','Distinguish evidence and unknowns.']};
-beforeAll(async()=>{home=await mkdtemp(join(tmpdir(),'reading-generation-'));buildServerDist();},600000);
+beforeAll(async()=>{home=await mkdtemp(join(tmpdir(),'reading-generation-'));await buildServerDist();},600000);
 afterEach(async()=>{await worker?.kill();worker=undefined;});
 afterAll(async()=>{await rm(home,{recursive:true,force:true});});
 beforeEach(async()=>{if(!db.available)return;await w.seed();await db.pool.query(`UPDATE space_memberships SET role='admin' WHERE space_id=$1 AND user_id=$2`,[SPACE,OWNER]);await db.pool.query(`DELETE FROM evolvable_assets WHERE asset_key=$1`,[key]);item=await w.material('PRIVATE_ARTICLE_MUST_NOT_ENTER_GENERATION');await initializeReading(db.pool,w.config(),identity);await new RuntimeContextPolicyRepository(db.pool).write(identity,'space',SPACE,{base_version_id:null,policy:{constraints:{},preferences:{}},reason:'Synthetic generation policy'});registerReadingGenerationSettlement();registerReadingTrialSettlement();});
@@ -403,3 +408,4 @@ it('scope-only CLI revision uses canonical Delivery and settlement without requi
  await db.pool.query(`UPDATE space_memberships SET role='member' WHERE space_id=$1 AND user_id=$2`,[SPACE,OWNER]);
  expect((await readReadingGeneration(db.pool,identity,generation.id)).visibility).toBe('withheld');
 });
+}

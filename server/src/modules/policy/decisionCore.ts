@@ -889,6 +889,9 @@ const ORIGIN_GATED_PROJECT_WRITES = new Set([
   "research.result.adopt",
   "task.create",
   "task.status.set",
+  "task.delete",
+  "board.configure",
+  "task.column.move",
   // Closing is a claim about the work, not a report of it. Reporting stays
   // ungated so an unattended Agent can still say what it did.
   "task.complete",

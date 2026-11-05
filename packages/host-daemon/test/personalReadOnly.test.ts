@@ -309,6 +309,28 @@ it.runIf(process.env.PERSONAL_READONLY_OS === '1')('executes narrowed package/fi
   } finally {if(oldHome===undefined)delete process.env.HOME;else process.env.HOME=oldHome;}
 });
 
+// Codex finds `codex-code-mode-host` beside its own real executable; without it
+// a code-mode-only model has no tools at all inside a read-only review.
+it.runIf(process.env.PERSONAL_READONLY_OS === '1')('starts an executable alias at its real path, so helpers beside it are found',async()=>{
+  root=await mkdtemp(join(tmpdir(),'readonly-alias-helper-'));
+  const owner=join(root,'owner'),work=join(root,'work'),privateHome=join(root,'run-home');
+  const release=join(owner,'.vendor/packages/releases/1/bin');
+  for(const dir of [release,join(owner,'.local/bin'),work,privateHome])await mkdir(dir,{recursive:true});
+  await writeFile(join(release,'tool'),'#!/bin/sh\nexec "$(dirname "$(readlink -f "$0")")/tool-helper"\n',{mode:0o755});
+  await writeFile(join(release,'tool-helper'),'#!/bin/sh\necho HELPER_OK\n',{mode:0o755});
+  await symlink(join(owner,'.vendor/packages/releases/1'),join(owner,'.vendor/packages/current'));
+  await symlink(join(owner,'.vendor/packages/current/bin/tool'),join(owner,'.local/bin/tool'));
+  const oldHome=process.env.HOME;
+  try {
+    process.env.HOME=owner;
+    const env={PATH:`${join(owner,'.local/bin')}:${process.env.PATH!}`,HOME:owner};
+    const roots=executableRoots('tool',env);
+    const plan=buildStrictNamespaceCommand({command:'tool',args:[],cwd:work,home:privateHome,env:{PATH:env.PATH},isolation:{sandbox_mode:'read_only',egress_profile:'none'},binds:roots.map(path=>({path,access:'read_only'}))});
+    const output=execFileSync(process.env.RAINVER_HOST_BWRAP!,plan.args,{env:plan.env,encoding:'utf8',stdio:['ignore','pipe','pipe','pipe']});
+    expect(output).toContain('HELPER_OK');
+  } finally {if(oldHome===undefined)delete process.env.HOME;else process.env.HOME=oldHome;}
+});
+
 it('narrows executable aliases and refuses dependency directories aliasing either login HOME',async()=>{
   root=await mkdtemp(join(tmpdir(),'readonly-roots-unit-'));
   const home=join(root,'home'),other=join(root,'other');

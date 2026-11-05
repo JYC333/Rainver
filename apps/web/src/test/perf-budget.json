@@ -5,9 +5,9 @@
   "maxTestMs": 20000,
   "tolerance": 2.0,
   "baseline": {
-    "files": 124,
-    "importMs": 170000,
-    "testMs": 220000
+    "files": 248,
+    "importMs": 235000,
+    "testMs": 425000
   },
   "$comment_baseline": "Page tests that render conversation markdown load streamdown. testMs is a per-file sum, so it grows when workers contend. Mermaid, LaTeX, and streamdown's code plugin are not part of this suite."
 }

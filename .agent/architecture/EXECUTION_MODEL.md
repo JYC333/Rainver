@@ -222,7 +222,7 @@ AgentGroup service/FIFO, Run/Room wait projection and Host reader/writer leases.
 No dependency or migration is added; an external scheduler would duplicate
 Rainver's existing admission and authorization authority.
 
-**Artifact** — durable output produced by a run. Stored under `artifact_storage_root`. Exportable within the owning space. `storage_path` is always relative to `artifact_storage_root`.
+**Artifact** — durable output produced by a run. Stored under the artifact storage root (`ARTIFACT_STORAGE_ROOT`, default `$RAINVER_HOME/storage/artifacts`). Exportable within the owning space. `storage_path` is always relative to that root.
 
 **Proposal** — requested durable change. Created by runs; reviewed by humans; applied by `ProposalApplyService`.
 
@@ -242,8 +242,6 @@ output paths fail closed during assembly.
 
 The ACP execution path receives the typed envelope at the Host boundary;
 runtime-specific file projection is owned by the Run Exchange lifecycle.
-
-## RunStep Taxonomy
 
 ## Run contract snapshot
 
@@ -502,7 +500,7 @@ RunStep error/metadata is filtered by `server/src/modules/runs/evidenceRedaction
 
 ## Actor Identity on Execution Evidence
 
-New audit, event, and RunStep surfaces carry actor identity via `actor_ref` (structured reference). Actor kinds: `user`, `agent`, `system`, `automation`, `connector`, `service_account`.
+New audit, event, and RunStep surfaces carry actor identity via `actor_ref` (structured reference). Actor kinds (the `actors.actor_type` CHECK): `user`, `agent`, `system`, `automation`, `connector`, `integration`, `service`, `job`.
 
 Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id` fields. New surfaces use `actor_ref`. These fields are not migrated in bulk; new records use actor_ref.
 
@@ -537,7 +535,8 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
   expiring proxy lease; its API key never enters the runtime process.
 - **Isolation:** the built-in host's daemon runs inside `sandbox-runner` and
   builds a bubblewrap namespace for each Run. A paired trusted host executes
-  natively. The daemon resolves all physical workspace/profile paths. There
+  natively, except that an explicit read-only Run on a personal Linux Host
+  runs in a bubblewrap read-only namespace (`bwrap-v1`). The daemon resolves all physical workspace/profile paths. There
   is no application-server CLI subprocess fallback or server-prepared CLI
   worktree/Run Exchange. Diffs and output files are uploaded as artifacts;
   execution can modify the selected workspace before review.
@@ -552,7 +551,8 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
 - **Verification:** `command_run` executes the server's recipe on the host
   holding that workspace; file-existence and Git checks use the same channel.
   Strict commands have no network and a minimal namespace; trusted commands
-  execute natively with a minimal environment. Failure or incomplete output
+  execute natively with a minimal environment, and a read-only command on a
+  personal Host runs in the same bubblewrap read-only namespace. Failure or incomplete output
   yields unavailable/error evidence. Terminal Task projection is shared.
 Do not add a second Agent execution loop to the agents module — Agent definition
 and Profile management remain separate from ACP dispatch.
@@ -574,9 +574,10 @@ static declaration the Host path does not apply.
 In a Room conversation, turns Agents set going are bounded by the person turn
 that started them, so spend never grows without a person's say (ADR 0017's
 fan-out ceiling and bounded defaults). The implementation is
-`rooms/discussionService.ts` (`delegationBudget`, `agentOriginContinuation`,
-`chargeContainer`, `containerTurns`) and `agentGroups/service.ts`
-(`chargeDelegatedChild`).
+`rooms/delegationBudget.ts` (`defaultRoomDelegationBudget`, the soft-limit
+notice), `rooms/discussionService.ts` (`delegationBudget`,
+`agentOriginContinuation`, `chargeContainer`, `containerTurns`) and
+`agentGroups/service.ts` (`chargeDelegatedChild`).
 
 - **One container per person-originated turn.** The person's message opens a
   group, which is the shared container for its delegation and continuation
@@ -658,7 +659,7 @@ only enforcement entry point for all policy gates. The decision function
 `computeDecision` (`policy/gateway.ts`) is internal to the policy package;
 business services must not call it directly to authorize or perform a
 sensitive action. The Automation
-execution preflight (`AutomationsService.runPreflight` in
+execution preflight (`AutomationService.runPreflight` in
 `server/src/modules/automations/service.ts`) may call it only for non-mutating
 dry-run simulation, which does not persist a `PolicyDecisionRecord`. Actual runtime execution uses `enforce()`.
 
@@ -743,11 +744,11 @@ RunSteps are retained indefinitely (no auto-purge).
 - Artifacts carry `run_id` (FK to producing run).
 - Proposals carry `run_id` (FK to producing run) when created from run output.
 - `Proposal.payload_json["provenance_entries"]` links back to the ActivityRecord or run that produced the proposal.
-- `ArtifactReadService.resolve_stored_file` rejects paths escaping `artifact_storage_root` or inside `sandbox_root`.
+- `PgArtifactRepository.resolveStoredFile` rejects paths escaping the artifact storage root or inside the sandbox root (`SANDBOX_ROOT`).
 
 ## Artifact Path Safety
 
-`Artifact.storage_path` is always relative to `artifact_storage_root`. Export never serves files outside artifact storage root. Missing file returns 404, does not leak host path.
+`Artifact.storage_path` is always relative to the artifact storage root. Export never serves files outside artifact storage root. Missing file returns 404, does not leak host path.
 
 ## Run Lifecycle
 
@@ -757,7 +758,7 @@ queued → running → terminal → finalized
 queued → running → waiting_for_dependency → queued → running → terminal
 ```
 
-**Terminal** means runtime execution has ended (status: `succeeded`, `failed`, `degraded`, or `cancelled`).
+**Terminal** means runtime execution has ended (status: `succeeded`, `failed`, `degraded`, `cancelled`, or `orphaned`).
 
 `waiting_for_dependency` is a non-terminal parked state for AgentRunGroup runs
 that called `agent.wait_for_results`. The worker releases the execution lock and
@@ -774,7 +775,9 @@ runtime-output delegation, `PostRunFinalizationService` has performed
 deterministic evaluation and Supervisor handling, and the Run is **settled**:
 every settlement reconciler — hard-terminal Host-thread release, Plan graph,
 Workflow graph, then each one in
-`runFinalizationReconcilerRegistry` (project work, autonomy, follow-up Tasks)
+`runFinalizationReconcilerRegistry` (project work, autonomy, follow-up Tasks,
+Reading method generation and method-pair trials, Source material processing,
+information briefings)
 — has completed and `settled_at` is set. A reconciler that fails does not
 stop the others; it leaves the finalization unsettled with its key and error
 code, finalization answers `settlement_pending`, and the worker sweep
@@ -855,7 +858,7 @@ The finalize endpoint is the single write surface.
 
 1. Replays durable runtime-output delegation with stable idempotency keys.
 2. Creates one `RunEvaluation`.
-3. Dispatches the run-finalized hooks through the server finalization service. The tasks-owned `task_evaluation_bridge` hook creates one `TaskEvaluation` bridge row when a `TaskRun` link exists (`runs` never imports `tasks`; `tasks` registers the hook through the module registry).
+3. Bridges the evaluation to the Task: `PgRunRepository.bridgeTaskEvaluationForRunEvaluation` creates one `TaskEvaluation` bridge row when a `TaskRun` link exists, and otherwise records `no_task_run_link` as a skipped reason.
 4. Creates one `RunFinalization` row with `status=completed`.
 5. Awaits Supervisor handling, then settles: every settlement reconciler must complete before `settled_at` (the completion gate) is set; a failure leaves settlement owed for the sweep, and finalization answers `settlement_pending`.
 6. Appends one `run_finalized` `RunEvent`.
@@ -903,7 +906,7 @@ neither approves the hold nor starts another execution attempt.
 
 - **Append-only.** Each run finalization evaluation creates a new row. Existing evaluations are never deleted or overwritten. `GET /runs/{id}/evaluation` returns the most recent row.
 - **Classifier-version auditable.** `evaluator_version` (e.g. `harness_eval.v1`) is stored per row, so classification history is preserved across version upgrades.
-- **Harness-boundary evidence only.** Uses Run.status/error_json/output_json/exit_code, ordered RunSteps, RunEvents, safe Invocation Snapshot metadata, Artifacts, Proposals, ValidationRecipe, and linked Task/TaskRun. No LLM-as-judge. No parsing of vendor CLI internal tool calls.
+- **Harness-boundary evidence only.** Uses Run.status, the error codes in `error_json`/`output_json`, the evaluated attempt's RunSteps and RunEvents (plus unstamped rows), and the Run's verification results. No LLM-as-judge. No parsing of vendor CLI internal tool calls.
 - **RunEvent as primary classification source.** RunEvent structured `error_code` fields are the canonical classification input for patch, artifact, adapter, and materialization event evidence. `output_json.materialization_errors` is never parsed as classifier evidence — it is a debug/summary field only.
 - **Materialization outcomes are RunEvent-covered.** `RunMaterializationService` returns materialization items and failures. `RunOrchestrationService` emits `artifact_ingested` / `proposal_created` RunEvents for each output JSON artifact and proposal success and failure. Runtime output text persistence emits `artifact_ingested` on success and failure. All materialization error codes map to the `tool` failure_layer via `EXACT_ERROR_CODE_MAP`. Activity materialization failures are represented as artifact_ingested warning events with metadata_json.kind="activity" to avoid expanding the RunEvent enum.
 - **Evidence-only for CLI runtimes.** Local CLI runtimes are black-box at the harness. No internal tool-call trajectory is reconstructed from stdout/stderr.
@@ -915,46 +918,37 @@ neither approves the hold nor starts another execution attempt.
 
 ### RunStep adapter_started semantics
 
-`RunOrchestrationService` creates an `adapter_started` step and later marks it succeeded/failed via `updateRunStepStatus`. There is no required separate `adapter_completed` step.
-
-**Evaluation treats `adapter_started` with status in {`succeeded`, `failed`, `cancelled`} as adapter completion from the harness perspective.**
-
-`missing_adapter_completed` is only flagged when `adapter_started` exists AND is still in a non-terminal state (queued/running/pending) AND no `adapter_completed` step was recorded.
+`RunOrchestrationService` creates an `adapter_started` step and later marks it succeeded/failed via `updateRunStepStatus`. There is no required separate `adapter_completed` step, and evaluation does not read adapter step state.
 
 ### Classification pipeline
 
-**A. outcome_status** (ordered rules):
-1. Non-terminal status → `unknown`
-2. `status == failed` → `failed`
-3. `status == cancelled` → `failed` (`run_cancelled` synthesized into error codes so B2 exact map → `orchestration / run_cancelled`)
-4. `exit_code != 0` → `failed`
-5. `error_json` present → `failed`
-6. `status == degraded` → `partial`
-7. Succeeded + failed/error verification result → `failed`
-8. Succeeded + skipped/missing declared verification → `unknown`
-9. Succeeded + validation-failed proposal → `partial`
-10. Succeeded + incomplete patch or materialization warning → `partial`
-11. `status == succeeded` → `passed`
-12. Otherwise → `unknown`
+Only terminal Runs are evaluated; finalization rejects a non-terminal Run first.
+The classifier (`ts_post_run_finalization.v1` in `rule_trace_json`) collects
+error codes, deduplicated, from RunEvent `error_code`s, the `error_code` or
+`code` of `error_json` and `output_json`, and failed RunSteps' `error_type`.
 
-**B. failure_layer** (ordered rules, exact error-code mapping first):
-1. outcome passed/unknown → null
-2. Exact error-code mapping (canonical list in `server/src/modules/runs/finalizationService.ts::EXACT_ERROR_CODE_MAP`) — overrides all heuristics
-3. Missing required Runtime Context Delivery/Invocation Snapshot evidence → `context`
-4. Validation failure signals → `validation`
-5. `sandbox` keyword in failed step error_type → `sandbox`
-6. Missing adapter completion → `orchestration`
-7. Adapter step failed or non-zero exit → `runtime`
-8. `tool` keyword in step error_type → `tool`
-9. Otherwise → `unknown`
+**A. failure_layer / failure_reason_code** (first match wins):
+1. The first collected code in the exact error-code map
+   (`server/src/modules/runs/finalizationService.ts::EXACT_ERROR_CODE_MAP`)
+   gives its layer and reason.
+2. A Run with declared verification checks maps to `validation` with
+   `verification_missing` (no results), `verification_failed` (a failed or
+   error result) or `verification_incomplete` (a skipped result).
+3. Any other collected code → `unknown`, with the first code as the reason.
+4. Otherwise both are null.
 
-**C. trajectory_status**:
-- `insufficient_evidence` — no steps, no snapshot, no artifacts, no proposals
-- `unsafe` — high-risk proposal (`risk_level=high/critical`) or low-trust artifact
-- `incomplete` — incomplete patch signals, adapter not yet terminal, or no terminal step
-- `acceptable`
+**B. outcome_status / trajectory_status**:
+- `succeeded`:
+  - reason `verification_missing` or `verification_incomplete` → `unknown` / `insufficient_evidence`
+  - verification summary `failed` → `failed` / `incomplete`
+  - verification summary `incomplete` → `unknown` / `insufficient_evidence`
+  - any other failure reason → `partial` / `incomplete`
+  - no failure reason → `passed` / `acceptable`
+- `degraded` → `partial` / `incomplete`
+- `failed`, `cancelled`, `orphaned` → `failed` / `incomplete`
 
-Note: `trajectory_status` does not imply `failure_layer`. A run can be `outcome_status=passed` and `trajectory_status=unsafe`.
+No rule assigns `trajectory_status = unsafe`. A cancelled Run that carries the
+`run_cancelled` error code maps to `orchestration / run_cancelled`.
 
 ### Canonical error-code mappings
 
@@ -1120,7 +1114,7 @@ Accepted proposals are applied through `ProposalApplyService`.
   decided after the output is read.
 
 **Unsupported apply types (remain pending-only):**
-- `project_folder_execution_config_update`, `validation_recipe_update`, `policy_update` — no applier is registered, so acceptance fails closed with `UnknownProposalApplierError` (422) and the proposal stays `pending`. Legacy capability install/update/enable/disable appliers are removed; migration `0004_remove_capability_layer` supersedes their pending proposals with a reason. Skill review and original-package binding retain their registered appliers.
+- A proposal type with no registered applier fails closed on acceptance with `UnknownProposalApplierError` (422) and the proposal stays `pending`. Legacy capability install/update/enable/disable appliers are removed; migration `0004_remove_capability_layer` supersedes their pending proposals with a reason. Skill review and original-package binding retain their registered appliers.
 
 Automation manual and schedule-triggered fire queue runs through the existing
 runtime gates. The `/automations` UI supports agent-run, maintenance, and
@@ -1145,7 +1139,7 @@ implemented. No proposal type auto-applies without user acceptance.
 - Full tool-call ontology (individual tool invocation records per step).
 - Token-level traces.
 - Sub-agent orchestration schema.
-- Cost accounting per run or step.
+- Cost accounting per step (cost is recorded per provider call on the token ledger).
 - Vendor-specific trace schema.
 
 

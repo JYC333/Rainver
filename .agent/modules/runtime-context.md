@@ -119,7 +119,7 @@ and Setup belong to that Conversation alone; another
 Conversation's transcript never enters its history (ADR 0014 §11 amendment).
 
 Room Runs from before per-Conversation scopes have control snapshots naming
-the whole-Room recipient scope. The upgrade split (`0003_repair_upgrade_backfills`)
+the whole-Room recipient scope. The upgrade split (in `0002_skill_library_and_upgrade_repairs`)
 moved their events and capture gaps to the Conversation scopes but
 left the snapshots alone, because they are audit records. Continuity therefore
 counts a Run as in scope when its snapshot names the scope, or when the scope

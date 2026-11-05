@@ -31,7 +31,8 @@ turning off an imported Skill.
 
 Judgment rules reuse `systemActions/conversationPolicy.ts`; command mechanics
 and the bounded direct-write rules remain in the Work Skill. A Run records its
-content hash. Actual authority is always the Run's snapshotted tool grants,
+content hash on its tool identity, and Run detail returns it as
+`work_skill.content_hash`. Actual authority is always the Run's snapshotted tool grants,
 checked on every call. Builtin library packages are separately optional content,
 described below; the Work Skill is never registered as one.
 
@@ -219,7 +220,7 @@ continuation turns. Host launches materialize verified base64 bytes beneath
 `RAINVER_SKILL_ROOT`; structured ACP resource links identify each `SKILL.md`.
 Claude Code and Codex read the same original bytes. User prompt text is never
 rewritten to substitute paths. Additional Skill directories are admitted only
-in negotiated ACP directory fields. Host daemon **0.4.3+** is required; older
+in negotiated ACP directory fields. Host daemon **0.4.4+** (`MIN_HOST_DAEMON_VERSION`) is required; older
 Hosts fail the existing compatibility gate before accepting work.
 
 Scripts, hooks, dependency declarations and vendor tool hints are retained as

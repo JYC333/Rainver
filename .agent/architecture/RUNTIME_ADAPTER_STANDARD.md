@@ -71,6 +71,15 @@ the `PathPolicy` used for Rainver-mediated file operations.
 Subscription CLIs are explicit `local_cli` external-egress destinations in the
 immutable execution-control snapshot. Preflight and live Delivery authorization
 both require the Space external-egress switch and the exact adapter id.
+A CLI whose frozen Runtime Profile is `model_provider` is not `local_cli`,
+although it runs on a Host: it reaches that Provider only through the
+server's provider proxy lease (ADR 0008 §4), so its snapshot records the
+Provider as a `model_provider` destination, its `provider_credential_channel`
+and the same local/external judgement the lease is issued on
+(`policy/executionControlSnapshots.ts`, `runtimeProviderEgressDestination`).
+Delivery then checks it against the Run's routed `model_provider_id`. The
+record covers the model traffic only. What the Host process itself can reach
+is still its trust mode and egress profile.
 
 CLI dispatch carries workspace identity, installation, runtime profile and an
 explicit isolation policy over the daemon WebSocket. Strict namespaces enforce
@@ -80,9 +89,11 @@ with no network. Only `none` confines a Run's network;
 proxy.
 
 Usage providers are runtime-generic. Adapters without a real probe return
-unknown accuracy plus fallback run statistics. Live Claude Code quota uses the
-server-owned OAuth API. Codex quota comes from an RPC only its own CLI speaks,
-so it is read on the execution host that holds the copy and the login. No
+unknown accuracy plus fallback run statistics. A CLI copy's quota is read on
+the execution host that holds the copy and the login: Claude Code's through
+the vendor OAuth usage API with that copy's credential, Codex's through an RPC
+only its own CLI speaks. The server-owned OAuth path reads quota only for
+managed subscription Providers. No
 quota refresh spawns a vendor CLI in the application-server namespace.
 
 All implemented builtin runtimes speak ACP over stdio. The Server controller

@@ -124,16 +124,19 @@ Rules:
   launch's exit, and finalization contention defers completion without another
   model attempt. See [RUNS_AND_OUTPUTS](../architecture/RUNS_AND_OUTPUTS.md).
   A `system_assistant`-kind Agent (system/space-owned, `owner_user_id` NULL,
-  minted lazily from the internal `personal_assistant` seed on a Room's **first
-  message**) is the immutable manager execution identity for Room turns. There
-  is **one instance per Project**, plus one for the Space itself: two partial
+  minted lazily from the internal `personal_assistant` seed when someone first
+  opens a Conversation draft in one of the Project's Rooms) is the immutable
+  manager execution identity for Room turns. There
+  is **one instance per Project**, plus a Space-level slot: two partial
   unique indexes, `uq_agents_system_assistant_per_space` (`project_id IS NULL`)
   and `uq_agents_system_assistant_per_project` — one composite index over
   `(space_id, project_id)` would not do, because a NULL `project_id` does not
   collide and the Space-level row would be unconstrained. A Project's instance
-  is named `<Project name> Assistant`; the Space's keeps *Personal Assistant*
-  in personal spaces and *Space Assistant* in shared ones, and is the one the
-  `agent.default_assistant` settings pointer names — provisioning a Project's
+  is named `<Project name> Assistant`. Room provisioning always passes the
+  Room's Project, so nothing creates a new Space-level instance; an existing
+  one is still reconciled, keeps *Personal Assistant* in personal spaces and
+  *Space Assistant* in shared ones, and is the one the
+  `agent.default_assistant.settings` pointer names — provisioning a Project's
   instance must never repoint it.
 
   Every instance is materialized from the same seed, so they start identical
@@ -289,7 +292,8 @@ Do not keep a second list of those names on a route.
 admission refuses a key written to the bag that does not author it.
 
 An invalid Space provisioning template fails Agent creation — including the
-managed Space/Project Assistant a Room mints on its first message — with
+managed Project Assistant a Room mints when its first Conversation draft is
+opened — with
 `space_runtime_default_needs_repair` (409) naming the selection and the repair.
 `GET /api/v1/agents/runtime-default` reports `state` and `state_reason` for the
 same condition; `PUT` with `backend_mode: "runtime_native"` is the repair and
@@ -326,7 +330,8 @@ a verified model identity. See `modules/rooms.md`, "Saved member session options
 ### Agent work projections
 
 [Agent Attention](agent-attention.md) owns the user-level aggregation reader and
-personal reading state, exposed through three `/api/v1/me/agent-attention` endpoints.
+personal reading state, exposed through the `/api/v1/me/agent-attention` list,
+`/item`, `/read-state`, `/views`, `/snapshot` and `/stream` endpoints.
 Its `semantics.ts` pure functions and protocol DTOs preserve Task/Plan, Session,
 non-Room group and explicit Run lineage identities. The repository supplies current
 access decisions; Task responsibility, Session answering and Turn state stay in
@@ -410,7 +415,7 @@ Agent:
   id, space_id, name, description, visibility
   role_instruction          — public identity/role description
   current_version_id        — convenience pointer to latest AgentVersion
-  status (active|inactive|archived)
+  status (active|inactive|archived|disabled)
 
 AgentVersion:
   id, agent_id, space_id
@@ -485,7 +490,7 @@ Run:
 `parent_run_id` supports user-created lineage: follow-up runs, retries, manual continuations, and
 external run imports. `trigger_origin="parent_run"` is not a valid trigger origin — parent lineage
 is a structural link, not a trigger type. Valid trigger origins: `manual`, `automation`,
-`autonomous`, `job`, `system`, `delegation`. `user`, `api`, and `workflow` are
+`autonomous`, `job`, `system`, `delegation`, `continuation`. `user`, `api`, and `workflow` are
 accepted on read so existing rows parse. Do not write them as a new trigger origin.
 
 Agent-to-agent child-run creation is represented by `run.spawn_child` inside
@@ -514,6 +519,36 @@ Room agents can explicitly wait for other room results through
 the worker is released, and the lifecycle projector requeues the same run with
 dependency summaries once all declared dependency runs are terminal. Delegation
 completion alone does not create an inferred follow-up run.
+
+Each result in that continuation carries its `run_id`, the result summary
+(2,000 characters at most) and the task the waiter assigned it, clipped to
+2,000 characters by `runAssignedTaskExcerpt` (the delegating call keeps the
+whole task). The same clip applies to the task in a `ready` tool result. A run
+that waits again — `own_delegations` lists every delegation it ever made —
+records the results it was handed in `waiting_for_results.delivered_run_ids`,
+kept across later parks. Its next continuation names those by agent, `run_id`
+and status only and says `agent.wait_for_results` with `scope: run_ids` reads
+one again. Resending every earlier task and result on each resume once pushed
+a long review loop's prompt past Codex's 1,048,576-character input limit.
+
+**Hand-over of long material.** The `agent.delegate` instruction's own
+description tells the delegating Agent to refer to what the target can
+already read (workspace files, earlier results by run id) instead of copying
+it, and not to write hand-over files into the workspace or `/tmp` (a
+read-only target's namespace has a fresh `/tmp`; the workspace is the
+person's). In a Room, a task longer than 16,000 characters
+(`DELEGATION_INLINE_INSTRUCTION_CHARS`, `agentGroups/delegationBrief.ts`) is
+never refused: `spawnChildRun` stores it whole as a `delegation_brief`
+Artifact of the delegating Run (`surface_role: operational`, inheriting that
+Run's grants, B8A), and the delegation row, the `delegation_request` message
+and the child's prompt carry its first 4,000 characters and its
+`rainver://artifacts/<id>` link. Every Room child already holds
+`input_resource.read/search`, which resolve that link on any Host and under
+any isolation (`architecture/SYSTEM_ACTIONS.md`). Outside a Room the task
+stays inline and the runtime's input limit is the bound
+(`modules/runtime-adapters.md`). The threshold was set from this
+deployment's delegations to 2026-11-05: median 1,240 characters, the longest
+written instruction about 10,400, everything over 16,000 pasted material.
 
 Every new live or structured delegation must declare `workspace_access` as
 `read` or `write`; omission/null fails validation instead of silently choosing
@@ -599,8 +634,8 @@ The React `agents` module (`apps/web/src/modules/agents/`) renders the product-l
 the backend template → AgentVersion model. No mock/hardcoded template or agent data
 remains; every card is backed by an API call.
 
-- **Template Library** (`TemplateLibraryPage.tsx`, `/agents/templates`) — lists real
-  system/user/space templates from `GET /agent-templates`. Each card shows name, description,
+- **Template Library** (`TemplateLibraryPage.tsx`, `/agents/templates`) — lists the
+  system catalog templates from `GET /agent-templates`. Each card shows name, description,
   category, scope, visibility, status, current version, and input/output/safety summaries
   (derived from the current template version config). Actions: **Use template**, **View details**.
   Templates are presented by their own identity (e.g. *Activity Reflector* = the reflection
@@ -615,8 +650,9 @@ remains; every card is backed by an API call.
   Agent-definition overrides (including prompt and schedule settings), then calls
   `POST /agent-templates/{id}/agents` and navigates to the new Agent detail page.
 - **Agent Detail** (`AgentDetailPage.tsx`, `/agents/:id`) — tabbed view: **Overview**
-  (identity/role edit, provenance, current version, last run, pending proposals), **Inputs**,
-  **Outputs**, **Schedule** (editable), **Runtime** (runtime profiles), **Review & Safety**, **Versions**
+  (identity/role edit, provenance, current version, last run, pending proposals), **Preferences**
+  (the managed Assistant only), **Inputs**, **Outputs**, **Schedule** (editable), **Runtime**
+  (runtime profiles), **Tools**, **Review & Safety**, **Versions**
   (history + restore), **Runs** (real run history with useful empty state).
 - **Policy → product mapping** (`policyMap.ts`, rendered by `ConfigCards.tsx`) is the single
   source of truth that translates `context_policy_json` → input cards (capture inbox / approved
@@ -640,7 +676,7 @@ not author custom templates.
 
 There are no eagerly seeded per-space concrete Agents. Built-in product behavior comes from system
 templates (factories), while a Project's hidden managed Assistant is provisioned lazily
-and only when someone first speaks in one of its Rooms. Keeping it off Room
+and only when someone first opens a Conversation draft in one of its Rooms. Keeping it off Room
 creation is what lets a Project be created with its mainline Room without a
 Space's backend configuration being able to fail the Project
 ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision 4).
@@ -657,8 +693,8 @@ than a space-wide default:
 - `personal_assistant` (`assistant`, `system_internal`) — provenance seed spec for the
   per-Project `system_assistant`-kind Agent; dynamic per-invocation selection via Runtime
   Context; `chat_message` + proposal-only task/idea/memory/knowledge. Not a reusable
-  template. A Project's concrete Assistant is created transactionally on the first
-  message sent in one of that Project's Rooms; a boot-time reconcile brings every
+  template. A Project's concrete Assistant is created transactionally when the first
+  Conversation draft is opened in one of that Project's Rooms; a boot-time reconcile brings every
   seed-following instance up to a changed seed afterwards.
 - `activity_reflector` (`reflection`) — model-only; processes captures/activity into typed
   proposals + reflection summary; `classification_mode: model_selects`; proposal-only durables
@@ -686,7 +722,7 @@ explicit `Agent`, and execution config resolves from the Run's snapshotted runti
 `Agent.current_version_id` → `AgentVersion`.
 A `system_assistant`-kind Agent is system-owned, hidden from ordinary Agent list/detail/create
 surfaces, and limited to one active instance per Project (plus a Space-level slot the schema
-allows and nothing fills). Room creation lazily provisions the Project's instance from the
+allows and nothing newly fills). Opening a Room's first Conversation draft lazily provisions the Project's instance from the
 internal `personal_assistant` prompt seed and uses it as the immutable Room manager. Its
 runtime profiles remain shared definitions; the speaking user's API eligibility or CLI credential
 is resolved per conversation binding. It also anchors soft Assistant **preferences**

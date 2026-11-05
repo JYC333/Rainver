@@ -105,6 +105,21 @@ have finished it restarts into the installed build, even while offline. The
 server's Docker rebuild updates the built-in Host; a paired machine's systemd
 service needs its own Host installation update.
 
+Version 0.4.7 provides ordinary tools to Runs: a managed `lark-cli` is bound
+read-only into a strict namespace and the instructing person's own account
+directories read-write; nothing else of `ordinary-tool-state/` is visible
+(see `.agent/modules/hosts.md`, "Ordinary tools in Runs").
+
+Version 0.4.6 adds personal `lark-cli` accounts on Linux Hosts: each Rainver
+user's configuration and credentials live under
+`<config dir>/ordinary-tool-state/`, and the daemon runs only the official
+setup, login, status and logout commands (see `.agent/modules/hosts.md`).
+
+Version 0.4.5 reports ordinary CLI tools (`git`, `curl`, `jq`, `rg`, `lark-cli`)
+and accepts their catalog-pinned install/register/remove requests under
+`<config dir>/ordinary-tools/`. An older daemon stays connected; only
+ordinary-tool management asks for an update (see `.agent/modules/hosts.md`).
+
 Version 0.4.4 confirms when an exact stopped Run attempt is already absent,
 allowing a restarted control plane to recover interrupted work without leaving
 an old process or directory lease behind. Recovery waits for exit confirmation;

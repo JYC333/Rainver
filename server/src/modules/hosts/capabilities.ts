@@ -29,7 +29,9 @@ export function hasSubscriptionQuota(runtimeKey: string): boolean {
  * state, options) is resolved from that installation and its stable HOME.
  *
  * Normalized once when a daemon's hello/heartbeat is recorded. Readers see
- * `runtimes`, `versions`, and `installations` only. An installation entry
+ * `runtimes`, `versions`, `installations`, `workspace_read_only`,
+ * `tool_bridge_protocols`, `ordinary_tools`, `ordinary_tool_accounts` and
+ * `ordinary_tools_runs` only. An installation entry
  * that does not parse is dropped. Do not add a second parser for another
  * layout.
  */
@@ -183,6 +185,14 @@ export function normalizeHostCapabilities(raw: unknown): HostCapabilities {
     runtimes, versions, installations,
     ...(HostCapabilitiesSchema.shape.workspace_read_only.safeParse(source.workspace_read_only).success?{workspace_read_only:source.workspace_read_only}:{}),
     ...(toolBridges ? { tool_bridge_protocols: toolBridges } : {}),
+    // Kept whole or not at all: a report that does not parse reads as a daemon
+    // without ordinary-tool support, never as tools that are missing.
+    ...(HostCapabilitiesSchema.shape.ordinary_tools.safeParse(source.ordinary_tools).success && source.ordinary_tools
+      ? { ordinary_tools: source.ordinary_tools } : {}),
+    ...(HostCapabilitiesSchema.shape.ordinary_tool_accounts.safeParse(source.ordinary_tool_accounts).success && source.ordinary_tool_accounts
+      ? { ordinary_tool_accounts: source.ordinary_tool_accounts } : {}),
+    ...(HostCapabilitiesSchema.shape.ordinary_tools_runs.safeParse(source.ordinary_tools_runs).success && source.ordinary_tools_runs
+      ? { ordinary_tools_runs: source.ordinary_tools_runs } : {}),
   });
 }
 

@@ -3,7 +3,6 @@ import {ReadingService} from '../src/modules/informationDigest/readingService.js
 import {requestGoalCheck} from '../src/modules/sources/goals/collectionQueue.js';
 import {safeBusinessCursor,validBusinessTime} from '../src/modules/sources/goals/watermark.js';
 import {OpenAlexConnectorHandler} from '../src/modules/sources/connectors/academicJson.js';
-// Deterministic external Agent submissions against canonical Run/PG state; no model invocation.
 import {registerSourceGoalActions} from '../src/modules/sources/goals/actions.js';
 import {PgRunRepository} from '../src/modules/runs/repository.js';
 import type {SystemActionExecutor} from '../src/modules/systemActions/gateway.js';
@@ -19,7 +18,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {beforeEach,afterEach,expect,it,vi} from 'vitest';
+import {beforeEach,afterEach,expect,vi} from 'vitest';
 import {waitForLockWaiter} from './support/lockWait.js';
 import type {SourceGoalBindingSpec,SourceGoalPlan} from '@rainver/protocol';
 import {useTestDatabase} from './support/testDatabase.js';
@@ -34,7 +33,43 @@ import {SourceRecipeDryRunService} from '../src/modules/sources/sourceRecipes/re
 import {SourceGoalService,type GoalExecutionPort} from '../src/modules/sources/goals/service.js';
 import {SourceGoalRepairService} from '../src/modules/sources/goals/repair.js';
 import {runSourceGoalTick,enqueueDueSourceGoals} from '../src/modules/sources/goals/worker.js';
-const db=useTestDatabase(import.meta.filename);const identity={spaceId:'goal-space',userId:'goal-owner'};
+
+import type {TestPartition} from './support/testPartition.js';
+
+/** Registered by the `sourceGoalsDb.N.test.ts` entry files, one part each (see support/testPartition.ts). */
+export function defineSourceGoalsDbSuite(filename: string, {it}: TestPartition): void {
+// Deterministic external Agent submissions against canonical Run/PG state; no model invocation.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+const db=useTestDatabase(filename);const identity={spaceId:'goal-space',userId:'goal-owner'};
 let config:ServerConfig,root:string,runId:string,service:SourceGoalService,goalId:string,profile:string;
 let upstream:Server|undefined;
 let specs:SourceGoalBindingSpec[];let data:Record<string,unknown[]>;let fail:string|null;let samplesAllowed=false;
@@ -2122,3 +2157,4 @@ it('retry refuses a changed Source fingerprint before releasing its failure back
  await expect(requestGoalCheck(db.pool,config,identity,goalId,{expected_version_id:v.id,retry_failed:true})).rejects.toMatchObject({statusCode:409});
  expect((await db.pool.query('SELECT status FROM source_goal_bindings WHERE goal_id=$1',[goalId])).rows[0].status).toBe('cooldown');
 });
+}

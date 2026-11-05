@@ -354,6 +354,8 @@ project_work:
   code_roots:
     - server/src/modules/projectWork
     - server/src/modules/tasks
+    - server/src/modules/tasks/boardColumns.ts
+    - server/src/modules/projectWork/boardConfiguration.ts
     - server/src/db/schema/projectWork.ts
     - packages/protocol/src/projectWork.ts
     - server/test/projectWorkContracts.test.ts
@@ -378,7 +380,7 @@ cards:
     - .agent/modules/proposals.md
     - .agent/decisions/0006-plugin-module-architecture.md
   code_roots:
-    - server/migrations     # card tables when this surface is implemented
+    - server/src/db/schema/cards.ts   # card tables; no server module or review API yet
     - apps/web/src/modules/cards/CardReviewPage.tsx   # stub exists
 
 assistant:

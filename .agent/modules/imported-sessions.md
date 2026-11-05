@@ -124,9 +124,7 @@ have swept it is shown at all.
 
 `imported_history_summaries` holds one short account per session — what a
 whole-session reference carries, since a thousand-record transcript has no
-other bounded form. Deliberately not the Room's summary machinery: that
-service compacts a *growing* message thread, carrying a covered-through
-message and a supersession chain, and an imported session has neither. Its
+other bounded form. Its
 records are fixed until the folder is re-synced, so one row is enough,
 rewritten when `last_record_at` moves past `covered_through_record_at`. The
 upsert is monotonic, because two runs may overlap and the slower one read the

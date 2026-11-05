@@ -19,7 +19,7 @@ import type { RunRecord } from "../src/modules/runs/repository.js";
 // being composed from a title: `inquiry.list_threads` and
 // `research.list_operations` are those reads, and the actions they feed answer
 // an invented id with the real ones. (`task.list` is covered in
-// projectWorkActionsDb.test.ts, `proposal.list_pending` in roomsDb.test.ts,
+// projectWorkActionsDb.test.ts, `proposal.list_pending` in roomsDb.suite.ts,
 // each beside the actions they feed.)
 
 const SPACE = "55555555-5555-4555-8555-555555555555";

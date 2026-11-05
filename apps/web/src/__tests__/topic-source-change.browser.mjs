@@ -10,7 +10,7 @@ import {preview} from 'vite'
  * it; a change meanwhile is refused and shown again. A Source the topic cannot
  * use any more says who must act and offers neither confirmation nor a Source
  * page link. The API is a stateful fixture of the server contract (the server's
- * own gates are covered against PostgreSQL in sourceGoalsDb.test.ts).
+ * own gates are covered against PostgreSQL in sourceGoalsDb.suite.ts).
  */
 let server,browser,baseUrl
 const shots=process.env.TOPIC_SHOTS

@@ -246,8 +246,12 @@ contribute to findings.
 
 Implemented gates:
 
-- `canReadMemory(row, { userId, spaceId })`
-- `summaryOnlyRedactContent(row, userId)`
+- in the candidate SQL: the canonical content read predicate
+  (`contentReadSql`) and the Memory sensitivity predicate
+  (`memorySensitivityReadSql`)
+- `canReadMemory(row, { userId, spaceId, oversightLevel })`, with the Space
+  oversight level resolved once per scan
+- `shouldRedactMemoryContent(row, userId)` for summary-only access
 - `accessibleProjectIds` for rows with `project_id`
 - explicit maintenance exclusion of:
   - `sensitivity_level = highly_restricted`
@@ -263,9 +267,10 @@ For `summary_only` rows:
 - Reports record `access_safety.summary_access_full_content_used` when owner-only
   summary content was used internally.
 
-The bounded SQL query can load same-space rows into server memory before
-application-level filtering, matching the existing Memory read model. Filtered
-rows are not returned, logged, counted, named, or persisted.
+The bounded SQL query already applies the read and sensitivity predicates, so
+rows the caller cannot read are never loaded; the application-level gates
+above then apply the maintenance exclusions and Project access. Filtered rows
+are not returned, logged, counted, named, or persisted.
 
 ## Finding Kinds
 
@@ -358,7 +363,8 @@ Proposal type: `memory_maintenance_packet`
 Created by `createMemoryMaintenanceProposalPacket` with:
 
 - `status = pending`
-- `risk_level = medium`
+- stored `risk_level = low` (the insert default); policy assesses the type at
+  `medium`, the higher of the two
 - `urgency = normal`
 - `visibility = private` by default, or `space_shared` for explicit
   `review_scope = space_ops`

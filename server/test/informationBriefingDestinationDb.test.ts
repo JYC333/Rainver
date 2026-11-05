@@ -57,8 +57,9 @@ const profileToLocal = (provider: string) =>
 /**
  * Requests a Project briefing over the secret material and binds its Run as
  * orchestration does — onto the native external CLI on the Host, or onto the
- * local provider the Delivery calls itself — then writes the production
- * execution control. `deliver()` prepares the Run's request Delivery.
+ * Host CLI bound to the local provider through its proxy lease — then writes
+ * the production execution control. `deliver()` prepares the Run's request
+ * Delivery.
  */
 async function boundBriefingRun(binding: { local: string } | "native") {
   await w.material(SECRET);
@@ -71,7 +72,7 @@ async function boundBriefingRun(binding: { local: string } | "native") {
   );
   const routed = (await w.runs().getRun(SPACE, run.id))!;
   const orchestration = buildRunOrchestration(w.config()).orchestration as unknown as { executionControlSnapshotWriter: (run: unknown, inputs: unknown) => Promise<{ id: string; work_context_setup_ref: { id: string } }> };
-  const control = await orchestration.executionControlSnapshotWriter(routed, { dispatchesToHostDaemon: !local });
+  const control = await orchestration.executionControlSnapshotWriter(routed, {});
   const setup = (await db.pool.query(`SELECT * FROM work_context_setups WHERE id=$1`, [control.work_context_setup_ref.id])).rows[0];
   return {
     routed,

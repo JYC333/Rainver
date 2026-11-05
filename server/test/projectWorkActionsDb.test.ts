@@ -170,6 +170,9 @@ describe("origin gate", () => {
   const gated = [
     "task.create",
     "task.status.set",
+    "task.delete",
+    "board.configure",
+    "task.column.move",
     "task.complete",
     "inquiry.thread.create",
     "inquiry.iteration.record",

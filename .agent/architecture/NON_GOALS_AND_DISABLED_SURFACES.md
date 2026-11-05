@@ -11,9 +11,9 @@ Current absences and product-scope refusals. Unimplemented designs are in
 | Connector marketplace / integration lifecycle | No marketplace; Sources connections and recipes exist |
 | Capability marketplace or remote install UX | Catalog YAML is diagnostic; the Skill library imports GitHub, uploads and owned-Host CLI packages without executing them; no marketplace or remote code install |
 | Automatic system self-evolution | No privileged Evolver Agent |
-| App-container self-deployment | Blocked by deployer allowlist |
+| App-container self-deployment | Blocked: the server holds no Docker authority; an instance-admin update is a job the deployer sidecar pulls and runs (ADR 0020) |
 | Deployment from an Agent, automation, or Proposal | Blocked; instance admin creates the job |
-| Arbitrary deployer commands | Only `rebuild_rainver`, `restart_rainver`, `health_check` |
+| Arbitrary deployer commands | Socket allowlist is only `rebuild_rainver`, `restart_rainver`, `health_check`; the ADR 0020 pull loop adds only `update` and `check_update`, neither taking caller arguments |
 | Automatic restore | Restore is always manual |
 | Cloud / offsite backup sync | Not present |
 | Multi-device conflict resolution | Not present |

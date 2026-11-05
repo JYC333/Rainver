@@ -1,3 +1,4 @@
+import { ProjectOverviewService } from "../src/modules/projects/overviewService.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
@@ -65,6 +66,50 @@ function repo(): PgProjectRepository {
 }
 
 describe("Project membership management (real Postgres)", () => {
+  it("reports membership requirements consistently and opens internal content only after a grant", async () => {
+    if (!db.available) return;
+    const identity = { spaceId: SPACE, userId: MEMBER };
+    const overview = new ProjectOverviewService(db.pool);
+    expect(await repo().get(identity, PROJECT)).toMatchObject({ name: "P", current_user_can_read: false, current_user_grantable_member_role: null });
+    expect(await repo().list(identity, { limit: 20, offset: 0 })).toMatchObject({ items: [], total: 0 });
+    await expect(overview.getOverview(identity, PROJECT)).rejects.toMatchObject({ statusCode: 404 });
+    expect(await repo().get({ spaceId: SPACE, userId: ADMIN }, PROJECT)).toMatchObject({ current_user_can_read: false, current_user_can_write: true, current_user_grantable_member_role: "member" });
+    expect(await repo().get({ spaceId: SPACE, userId: OWNER }, PROJECT)).toMatchObject({ current_user_can_read: true, current_user_grantable_member_role: "owner" });
+    await repo().addMember({ spaceId: SPACE, userId: OWNER }, PROJECT, { user_id: MEMBER, role: "viewer" });
+    expect(await repo().get(identity, PROJECT)).toMatchObject({ current_user_can_read: true, current_user_can_write: false, current_user_grantable_member_role: null });
+    expect((await repo().list(identity, { limit: 20, offset: 0 })).items).toEqual([expect.objectContaining({ current_user_can_read: true })]);
+    await expect(overview.getOverview(identity, PROJECT)).resolves.toMatchObject({ project: { id: PROJECT } });
+    await repo().removeMember({ spaceId: SPACE, userId: OWNER }, PROJECT, MEMBER);
+    expect(await repo().get(identity, PROJECT)).toMatchObject({ current_user_can_read: false });
+    expect(await repo().list(identity, { limit: 20, offset: 0 })).toMatchObject({ items: [], total: 0 });
+    await expect(overview.getOverview(identity, PROJECT)).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("filters unreadable Projects before pagination, counts, and status selection while retaining admin management", async () => {
+    if (!db.available) return;
+    const identity = { spaceId: SPACE, userId: MEMBER };
+    const hidden = await repo().create({ spaceId: SPACE, userId: OWNER }, { name: "Unrelated private work" });
+    const mine = await repo().create(identity, { name: "My work" });
+    await db.pool.query("UPDATE projects SET updated_at = now() + interval '1 day' WHERE id = $1", [hidden.id]);
+    await repo().addMember({ spaceId: SPACE, userId: OWNER }, PROJECT, { user_id: MEMBER, role: "viewer" });
+    const first = await repo().list(identity, { limit: 1, offset: 0 });
+    expect(first).toMatchObject({ total: 2, items: [expect.objectContaining({ id: mine.id })] });
+    const second = await repo().list(identity, { limit: 1, offset: 1 });
+    expect(second).toMatchObject({ total: 2, items: [expect.objectContaining({ id: PROJECT })] });
+    await db.pool.query("UPDATE projects SET status = 'archived' WHERE id = $1", [hidden.id]);
+    expect(await repo().list(identity, { status: "archived", limit: 10, offset: 0 })).toMatchObject({ items: [], total: 0 });
+    const adminList = await repo().list({ spaceId: SPACE, userId: ADMIN }, { status: "archived", limit: 10, offset: 0 });
+    expect(adminList).toMatchObject({ total: 1, items: [expect.objectContaining({ id: hidden.id, current_user_can_read: false, current_user_grantable_member_role: "member" })] });
+  });
+
+  it("does not let a Space admin grant ownership or demote an existing Project owner", async () => {
+    if (!db.available) return;
+    await expect(repo().addMember({ spaceId: SPACE, userId: ADMIN }, PROJECT, { user_id: MEMBER, role: "owner" })).rejects.toMatchObject({ statusCode: 403 });
+    await repo().addMember({ spaceId: SPACE, userId: OWNER }, PROJECT, { user_id: MEMBER, role: "owner" });
+    await expect(repo().removeMember({ spaceId: SPACE, userId: ADMIN }, PROJECT, MEMBER)).rejects.toMatchObject({ statusCode: 403 });
+    await expect(repo().addMember({ spaceId: SPACE, userId: ADMIN }, PROJECT, { user_id: MEMBER, role: "viewer" })).rejects.toMatchObject({ statusCode: 403 });
+  });
+
   it("project owner adds a member; listMembers reflects it; upsert updates role", async () => {
     if (!db.available) return;
     await repo().addMember({ spaceId: SPACE, userId: OWNER }, PROJECT, { user_id: MEMBER, role: "member" });

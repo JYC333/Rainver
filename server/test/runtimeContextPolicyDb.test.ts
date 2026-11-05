@@ -596,7 +596,7 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
     expect(snapshot).toMatchObject({ project_brief_ref: null, project_instruction_ref: null });
   });
 
-  it("records a model-provider destination for a provider-bound local CLI", async () => {
+  it("records the bound ModelProvider, not local_cli, for a provider-bound Host CLI Run", async () => {
     if (!db.available) return;
     const resolved = await repository().write({ spaceId: SPACE, userId: OWNER }, "space", SPACE, {
       base_version_id: null,
@@ -665,7 +665,13 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       started_at: null,
       ended_at: null,
     } as RunRecord;
-    const snapshot = await new ExecutionControlSnapshotRepository(db.pool).createForRun(run, resolved);
+    // opencode is dispatched to a Host daemon. Its traffic reaches the
+    // Profile's Provider through the proxy lease, judged as that Provider:
+    // local here, so the Space's external-egress switch does not refuse it.
+    // The Host copy it runs is not the credential it spends.
+    const snapshot = await new ExecutionControlSnapshotRepository(db.pool).createForRun(run, resolved, {
+      runtimeInstallation: "own",
+    });
     expect(snapshot.egress).toMatchObject({
       destination_type: "model_provider",
       destination_id: "provider-1",

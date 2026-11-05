@@ -1,3 +1,5 @@
+import { PROJECT_READING_RECORD_LIMITS } from './reader.js';
+import { BoardConfigurationInputSchema, BoardColumnSelectionSchema } from "./projectWork.js";
 import { ResearchResultAdoptionSchema } from "./researchCalls.js";
 import { ProblemWorkRequestSchema, ProblemCloseRoundRequestSchema, validateProblemWorkSelection } from "./problemEngine.js";
 import {SourceMaterialSubmissionSchema,SourceMaterialInvestigationSchema} from './sourceMaterials.js';
@@ -202,6 +204,7 @@ export const TaskCreateInputSchema = z.object({
    * rather than silently writing somewhere else.
    */
   project_id: z.string().min(1).optional(),
+  board_column: BoardColumnSelectionSchema.optional(),
   title: z.string().trim().min(1).max(512),
   description: z.string().trim().max(20_000).nullable().optional(),
   acceptance_criteria_json: z.record(z.string(), z.unknown()).nullable().optional(),
@@ -285,6 +288,13 @@ const proposalInputs:Record<string,z.ZodType>={
       id: z.string().min(1),
     }).nullable(),
     note: z.string().trim().max(2_000).nullable().optional(),
+  }).strict(),
+  "board.read": z.object({}).strict(),
+  "board.configure": BoardConfigurationInputSchema.extend({reason:z.string().trim().min(1).max(2000)}),
+  "task.move_to_column": BoardColumnSelectionSchema.extend({task_id:z.string().min(1),reason:z.string().trim().min(1).max(2000)}),
+  "task.delete": z.object({
+    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Read the list first; never invent an id."),
+    reason: z.string().trim().min(1).max(2000),
   }).strict(),
   "task.set_status": z.object({
     task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
@@ -425,11 +435,14 @@ const proposalInputs:Record<string,z.ZodType>={
     proposed_content: z.string().min(1),
     supersedes_knowledge_item_id: z.string().min(1).optional(),
   }).passthrough(),
+  "project.reading.list": z.object({q:z.string().max(500).optional(),cursor:z.string().max(4096).optional(),limit:z.number().int().min(1).max(10).optional()}).strict(),
+  "project.reading.records": z.object({item_id:z.string().min(1).max(64),offset:z.number().int().min(0).max(PROJECT_READING_RECORD_LIMITS.maxOffset).optional()}).strict(),
+  "project.reading.read": z.object({item_id:z.string().min(1).max(64),snapshot_id:z.string().min(1).max(64),offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(12000).optional()}).strict(),
+  "research.read_result": z.object({operation_id:z.string().min(1)}).strict(),
+  "research.adopt_result": ResearchResultAdoptionSchema.extend({operation_id:z.string().min(1)}),
   // Scope is the caller's to set. Do not replace it with a server constant:
   // the caller then has no way to say "only the last year" or "500 is enough"
   // except cancelling and starting over.
-  "research.read_result": z.object({operation_id:z.string().min(1)}).strict(),
-  "research.adopt_result": ResearchResultAdoptionSchema.extend({operation_id:z.string().min(1)}),
   "research.start_acquisition": z.object({
     thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one from the statement."),
     intent_note: z.string().trim().min(1).max(2000).optional(),
@@ -548,6 +561,10 @@ export const SYSTEM_ACTION_REGISTRY = [
   agentAction("task.create_batch", "Create an explicitly requested batch of Project Tasks", "tasks", "PgTaskRepository.createTask", "task.create", "durable", { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }),
   agentAction("task.report", "Report on a Task", "projectWork", "ProjectWorkTaskActions.report", "task.report", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("task.handoff", "Hand off responsibility for a Task", "projectWork", "ProjectWorkTaskActions.handoff", "task.handoff", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  agentAction("board.read", "Read this Project's columns, status meanings and revision", "projectWork", "getProjectBoard", "board.read", "none", {resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),
+  agentAction("board.configure", "Create, rename, delete, reorder, remap or set WIP limits for Board columns; read board.read first", "projectWork", "configureProjectBoard", "board.configure", "durable", {resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),
+  agentAction("task.move_to_column", "Move a Task to an exact column from board.read", "projectWork", "moveTaskToColumn", "task.column.move", "durable", {resource_type:"task",resource_id_input_field:"task_id",resource_id_fallback:"run",check_action_approval_grant:false}),
+  agentAction("task.delete", "Delete a Task", "projectWork", "deleteTask", "task.delete", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("task.set_status", "Move a Task to its board status", "projectWork", "ProjectWorkTaskActions.setStatus", "task.status.set", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   // Closing is a commitment, so it is origin-gated like `task.create` and
   // `task.set_status` rather than ungated like the append-only three: a
@@ -608,12 +625,13 @@ export const SYSTEM_ACTION_REGISTRY = [
   // compares it for equality (see `acceptAgentProposalIfGranted`). This
   // action is not on that auto-apply path.
   gatedProposalAction("inquiry.promote_knowledge", "Propose promoting a concluded Inquiry round to Knowledge", "inquiry", "KnowledgePromotionCandidateService.proposeFromThreadForAgent", "inquiry.knowledge.promote", "knowledge_create", "exposure"),
+  ...(["list", "records", "read"] as const).map(operation => agentAction(`project.reading.${operation}`, {list:"Find this Project's Reading materials by title",records:"List retained originals and existing analyses for a Reading material",read:"Read a retained Reading original or analysis; copy IDs from project.reading.records"}[operation], "sources", "ProjectReadingTools", "project.reading.read", "none", {resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false})),
+  agentAction("research.read_result","Read bound research result","projectResearch","ResearchProblemResultService.read","research.result.read","none",{resource_type:"project_operation",resource_id_input_field:"operation_id",resource_id_fallback:"run",check_action_approval_grant:false},"research"),
+  agentAction("research.adopt_result","Assess research result in Inquiry Verify","projectResearch","ResearchProblemResultService.adopt","research.result.adopt","durable",{resource_type:"project_operation",resource_id_input_field:"operation_id",resource_id_fallback:"run",check_action_approval_grant:false},"research"),
   // Direct execution, no proposal gate. The Thread was already
   // human-accepted at creation, so starting acquisition on it is execution,
   // not an agent-drafted structure/content write. Idempotency guards in the
   // acquisition service are the confirmation.
-  agentAction("research.read_result","Read bound research result","projectResearch","ResearchProblemResultService.read","research.result.read","none",{resource_type:"project_operation",resource_id_input_field:"operation_id",resource_id_fallback:"run",check_action_approval_grant:false},"research"),
-  agentAction("research.adopt_result","Assess research result in Inquiry Verify","projectResearch","ResearchProblemResultService.adopt","research.result.adopt","durable",{resource_type:"project_operation",resource_id_input_field:"operation_id",resource_id_fallback:"run",check_action_approval_grant:false},"research"),
   agentAction("research.start_acquisition", "Start tracked research acquisition", "projectResearch", "ResearchAcquisitionService.startAcquisition", "research.acquisition.start", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }, "research"),
   // The symmetric stop for the action above. Direct execution for the same
   // reason: a stop that waits on a proposal review is not a stop.

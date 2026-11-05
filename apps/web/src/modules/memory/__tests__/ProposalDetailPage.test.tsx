@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Proposal } from '../../../types/api'
 
-const mocked = vi.hoisted(() => ({ get: vi.fn(), memoryGet: vi.fn(), reviseProposal: vi.fn() }))
+const mocked = vi.hoisted(() => ({ get: vi.fn(), accept: vi.fn(), memoryGet: vi.fn(), reviseProposal: vi.fn() }))
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../../../contexts/SpaceContext', () => ({
@@ -15,7 +15,7 @@ vi.mock('../../../core/spaceNav', () => ({
 }))
 vi.mock('../../../components/ContentAccessControl', () => ({ ContentAccessControl: () => null }))
 vi.mock('../../../api/client', () => ({
-  proposalsApi: { get: mocked.get, accept: vi.fn(), reject: vi.fn(), approveEgressGrantingUserProposal: vi.fn() },
+  proposalsApi: { get: mocked.get, accept: mocked.accept, reject: vi.fn(), approveEgressGrantingUserProposal: vi.fn() },
   memoryApi: { get: mocked.memoryGet, reviseProposal: mocked.reviseProposal },
 }))
 
@@ -75,6 +75,23 @@ describe('ProposalDetailPage', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Accept' })).toBeEnabled())
     expect(mocked.reviseProposal).toHaveBeenCalledWith('proposal-1', { content: 'The office opens at 8.' })
+  })
+
+  it('links an accepted workflow save to the draft it created in Evolution', async () => {
+    const pending = proposal({ proposal_type: 'workflow_save', risk_level: 'high', created_by_run_id: 'run-1' })
+    mocked.get.mockResolvedValueOnce(pending).mockResolvedValueOnce({ ...pending, status: 'accepted' })
+    mocked.accept.mockResolvedValue({
+      proposal: { ...pending, status: 'accepted' },
+      result_type: 'evolvable_asset_version',
+      result: { asset_id: 'asset-7', version_id: 'version-7', status: 'draft', asset_key: 'workflow.saved.x' },
+    })
+    renderPage()
+    expect(screen.queryByRole('link', { name: 'Open in Evolution' })).toBeNull()
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept' }))
+
+    const link = await screen.findByRole('link', { name: 'Open in Evolution' })
+    expect(link).toHaveAttribute('href', '/evolution?asset=asset-7')
+    expect(mocked.accept).toHaveBeenCalledWith('proposal-1', expect.anything())
   })
 
   it('lets a required content owner approve an egress review', async () => {

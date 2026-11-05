@@ -304,8 +304,8 @@ authority-envelope, and `run.spawn_child` policy checks before queueing any
 child run.
 
 ACP Agent Runs inside an AgentRunGroup expose authorized room tools through the
-same `SystemActionGateway`: `agent.delegate` and `agent.wait_for_results`. The
-corresponding
+same `SystemActionGateway`: `agent.delegate`, `agent.wait_for_results`,
+`agent.list_runs` and `agent.cancel_run`, each through the corresponding
 snapshotted Run tool grant. They are available to every active room agent, not
 only the manager. Natural-language requests such as
 "ask two reviewers" should be handled by the current recipient agent calling
@@ -406,8 +406,8 @@ proposal-envelope fields.
 ## Validation status
 
 The A2 Verification Engine runs before a worktree sandbox is cleaned up and
-persists one `verification_results` row per `(run, verifier_type,
-verifier_version)`. It consumes the immutable Run contract, the Project Folder's
+persists one `verification_results` row per `(run, attempt_number,
+verifier_type, verifier_version)`. It consumes the immutable Run contract, the Project Folder's
 enabled `ValidationRecipe`/profile checks, adapter output, materialization
 summaries, and the live sandbox. Supported deterministic checks are
 `command`, `test`, `lint`, `typecheck`, `file_exists`, `file_changed`,

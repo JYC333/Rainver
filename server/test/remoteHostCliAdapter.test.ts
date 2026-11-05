@@ -735,6 +735,34 @@ describe("executeRemoteHostCliAdapter", () => {
     expect(result).toMatchObject({ success: false, exit_code: 1, error_code: "runtime_nonzero_exit" });
   });
 
+  it("refuses a prompt over the runtime's input limit before launch, saying how large it was", async () => {
+    // Codex's app-server refuses such a turn, and codex-acp reports only "Internal error".
+    for (const [prompt, launched] of [["x".repeat(1_048_577), false], ["x".repeat(1_048_576), true]] as const) {
+      const registry = new HostConnectionRegistry();
+      const sink = new FakeSink();
+      registry.registerConnection("host-1", sink);
+      const threadEventSink = vi.fn().mockResolvedValue(undefined);
+      const executePromise = executeRemoteHostCliAdapter(
+        { run: run({ runtime_key: "codex_cli" }), prompt, model: null, resume_session_id: null, thread_event_sink: threadEventSink },
+        "host-1",
+        "folder-1",
+        { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS },
+      );
+      if (launched) {
+        await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
+        registry.receiveComplete("host-1", "run-1", { exit_code: 1, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
+        expect((await executePromise).error_code).not.toBe("runtime_input_too_large");
+        continue;
+      }
+      const result = await executePromise;
+      expect(result).toMatchObject({ success: false, error_code: "runtime_input_too_large" });
+      expect(result.error_message).toContain("1,048,577 characters");
+      expect(result.error_message).toContain("at most 1,048,576");
+      expect(sink.sent).toEqual([]);
+      expect(threadEventSink).toHaveBeenCalledWith([{ event_type: "status", status: "run_failed" }]);
+    }
+  });
+
   it("clears a stale remote ACP session when resume is rejected", async () => {
     const registry = new HostConnectionRegistry();
     const sink = new FakeSink();

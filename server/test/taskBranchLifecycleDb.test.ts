@@ -1,3 +1,4 @@
+import { deleteTask } from "../src/modules/tasks/deleteTask.js";
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { HostServerFrame } from "@rainver/protocol";
@@ -328,12 +329,12 @@ describe("a Task that ends without being done loses its branch", () => {
   it("enqueues on delete too, and nothing for a Task whose Runs never touched a Location", async (ctx) => {
     if (!db.available) return ctx.skip();
     const tasks = new PgTaskRepository(db.pool);
-    await tasks.updateTask(owner, TASK, { deleted_at: new Date().toISOString() });
+    await deleteTask(db.pool!, owner, TASK);
     expect(await deleteJobs()).toEqual([]);
 
     const other = await tasks.createTask(owner, { project_id: PROJECT, title: "Other", visibility: "space_shared" });
     await insertRun({ status: "succeeded", taskId: other.id as string });
-    await tasks.updateTask(owner, other.id as string, { deleted_at: new Date().toISOString() });
+    await deleteTask(db.pool!, owner, other.id as string);
     expect((await deleteJobs()).map((job) => job.payload_json.task_id)).toEqual([other.id]);
   });
 

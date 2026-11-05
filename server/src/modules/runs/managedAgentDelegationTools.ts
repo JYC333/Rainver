@@ -13,7 +13,8 @@ import {
 } from "../agentGroups/service.js";
 import { PgAgentGroupRepository } from "../agentGroups/repository.js";
 import { PgRunRepository, type AgentRunRecord } from "./repository.js";
-import { runAssignedTask } from "./runAssignedTask.js";
+import { runAssignedTaskExcerpt } from "./runAssignedTask.js";
+import { DELEGATION_INLINE_INSTRUCTION_CHARS } from "../agentGroups/delegationBrief.js";
 import { isHardTerminalRunStatus } from "./orchestrationResults.js";
 import { CollaborationBudgetSchema } from "../agentGroups/collaborationBudgetRepository.js";
 import type { SystemActionDispatchResult } from "../systemActions/toolResult.js";
@@ -97,7 +98,12 @@ function agentDelegateToolDefinition(targets: readonly AgentDelegationTarget[]):
           instruction: {
             type: "string",
             minLength: 1,
-            description: "The concrete task for the target agent.",
+            description: [
+              "The concrete task for the target agent.",
+              "Refer to material the target can already read — files in the shared workspace, earlier results by run id — by path or reference instead of copying it in.",
+              "Do not write hand-over files into the workspace or /tmp for this: a read-only target cannot see /tmp, and the workspace is the person's own.",
+              `Text that exists only in your own work may be written here; past ${DELEGATION_INLINE_INSTRUCTION_CHARS.toLocaleString("en-US")} characters Rainver stores the whole task and hands the target its beginning and a link to read the rest.`,
+            ].join(" "),
           },
           reason: {
             type: "string",
@@ -592,7 +598,7 @@ function waitResultForRun(run: AgentRunRecord): Record<string, unknown> {
     // The task, not the prompt: a Room turn's prompt carries that Agent's own
     // persona and the notes it learned there, which the Agent reading this
     // result is not the audience for (ADR 0003 §4).
-    prompt: runAssignedTask(run),
+    prompt: runAssignedTaskExcerpt(run),
     result: terminalRunResultSummary(run),
   };
 }

@@ -1,11 +1,9 @@
 # Projects
 
-Planned domain change (not implemented):
-[PROBLEM_ENGINE_CONTRACT](PROBLEM_ENGINE_CONTRACT.md) and
-[ADR 0027](../decisions/0027-problem-engine-research-separation.md) define the
-Inquiry-owned method/round contract and Research capability boundary. Task
+Implemented separation: [ADR 0027](../decisions/0027-problem-engine-research-separation.md)
+places method/round authority in [Inquiry](INQUIRY_PROBLEM_ENGINE.md) and
+execution-call authority in [Research](PROJECT_RESEARCH_CALLS.md). Task
 status and the single-Task Plan execution graph retain their own authority.
-The descriptions below remain current-state documentation.
 
 
 ## What is a Project?
@@ -114,7 +112,7 @@ single-owner FK.
 | `kind` | string | `code` \| `data` \| `docs` |
 | `is_primary` | boolean | At most one primary Folder per Project |
 | `protected` | boolean | Safety flag gating destructive path operations; not an ACL |
-| `repo_url`, `default_branch` | string \| null | Logical repository metadata; a Folder created from `repo_url` clones only a remote `https`/`http`/`ssh`/`git` source, never a server path or `file://` |
+| `repo_url`, `default_branch` | string \| null | Logical repository metadata; a Folder created from `repo_url` clones only an `https://` source, never `http`/`ssh`/`git`, a server path or `file://` |
 | `snapshot_retention_days`, `snapshot_max_count` | int \| null | Code-patch rollback snapshot policy; falls back to the Space default |
 | `status` | string | `active` \| `archived` \| `stale` |
 | `created_at` / `updated_at` | datetime | |
@@ -171,6 +169,38 @@ Project roles are `viewer` < `member` < `owner`. Adding a member or changing a
 role goes through `assertCanGrantRole` (`access/roles.ts`): the Project's owner
 and the Space's owner may hand out any role, a Space admin up to `member`, and
 changing someone's role needs standing to grant the role they hold now.
+
+### Project member management in the web app
+
+Project Pulse has a **Members** action for the Project creator and Space
+owners/admins. It lists the existing Project roster alongside the creator,
+selects candidates from active Space members, and uses the existing Project
+membership add/update/remove APIs. It does not send account invitations or
+add a person to the Space; use Space invitations first. Project creators and
+Space owners may grant `owner`; a Space admin may grant up to `member` and
+cannot replace or remove an existing `owner` membership. The creator's access
+is intrinsic and cannot be removed through a membership row.
+
+Project metadata responses and list rows include `current_user_can_read` and
+`current_user_grantable_member_role` (`owner`, `member`, or null). The latter
+is about managing the roster, not permission to read internal Project work.
+Space administrators who are not Project readers can open Members and add
+themselves if they need internal access; the UI never treats their management
+capability as a read grant. The Project list filters ordinary Space members
+through the canonical Project read predicate before counting, ordering and
+pagination; being in the same Space does not expose another Project's list
+entry. Space owners/admins retain metadata entries for membership management,
+with a membership-required marker when they cannot read the internal work. A
+non-reader's directly addressed Project page displays public metadata and an access explanation,
+without requesting the internal overview or mounting Area/Room content. If
+access disappears between metadata and overview reads, retain only public
+metadata and switch to the same access explanation. Truly missing or
+cross-Space metadata still answers 404.
+
+Reuse / Dependency Check: this surface reuses `project_members`, existing
+membership APIs and role-grant checks, `accessibleProjectIds`/`canReadProject`,
+the Space member directory, shared Dialog/Select/Button and i18n. No schema,
+authentication mechanism, invitation flow or dependency is added.
 
 ### ProjectPublicSummary
 
@@ -1028,6 +1058,19 @@ state is not stored on source items and does not mutate Library state.
 All routes are under `/api/v1/projects` and require authentication.
 Space scoping is enforced via the requested Space (`X-Rainver-Space-Id` header or `space_id` query parameter) resolved by `resolveIdentity`.
 
+The table lists the Project kernel, Sources-binding, Folder, Research and
+Experiment routes. Other Project-scoped routes are documented by their owners:
+Board, Board columns, Task work and Updates in [Project Work](PROJECT_WORK.md)
+and [Task board model](TASK_BOARD_MODEL.md); Research call results, acquisitions,
+report pages and per-Thread call lists in
+[Research calls](PROJECT_RESEARCH_CALLS.md); `/information-monitoring` in
+[Bounded manual information monitoring](#bounded-manual-information-monitoring-p1);
+Folder Locations, drafts and execution config in
+[Files & Code](../modules/project-files.md); conversations, mainline Room,
+readers and host execution targets in [Rooms](../modules/rooms.md); Inquiry,
+graph, Decisions, Knowledge candidates, Learning and imported sessions in
+[MODULES](MODULES.md).
+
 | Method | Path | Description |
 |---|---|---|
 | GET | `/projects` | List projects in the authenticated space |
@@ -1035,6 +1078,14 @@ Space scoping is enforced via the requested Space (`X-Rainver-Space-Id` header o
 | GET | `/projects/{id}` | Get a project |
 | PATCH | `/projects/{id}` | Update name / description / focus / settings |
 | POST | `/projects/{id}/archive` | Archive a project |
+| PUT | `/projects/{id}/focus-area` | Set or clear the Project's Domain classification (`focusAreas` module) |
+| GET / POST | `/projects/{id}/brief-versions` | List Brief versions or append a draft; `GET .../brief-versions/active` reads the active published Brief |
+| POST | `/projects/{id}/brief-versions/{versionId}/submit-review` \| `/publish` | Submit a Brief draft for review / publish it (owner-level authority) |
+| GET / POST | `/projects/{id}/instruction-versions` | List Project Instruction versions or append a draft; `.../active` reads the active published Instruction |
+| POST | `/projects/{id}/instruction-versions/{versionId}/submit-review` \| `/publish` | Submit / publish a Project Instruction version |
+| GET | `/projects/{id}/overview` | Project Shell composition: active Brief, `definition_status`, `has_project_folder`, Attention and `in_progress` |
+| GET | `/projects/{id}/attention` | Per-user Attention items from the registered domain adapters |
+| PUT | `/projects/{id}/attention/{sourceType}/{sourceId}/state` | Save the caller's seen/snooze/pin state for one Attention item |
 | GET | `/projects/{id}/summary` | Counts: activities, artifacts, pending proposals, Project Folders, active runs, memory entries |
 | GET | `/projects/{id}/corpus` | List the project corpus over collected source items, evidence, and graph objects |
 | POST | `/projects/{id}/corpus` | Upsert a project corpus entry for an object, source item, or evidence target; requires project writer |
@@ -1047,11 +1098,14 @@ Space scoping is enforced via the requested Space (`X-Rainver-Space-Id` header o
 | POST | `/projects/{id}/sources/bindings/{bindingId}/propose-backfill` | Create an operation, history-import plan, and start proposal |
 | POST | `/projects/{id}/sources/propose-setup` | Idempotently create one Project operation, paused Source draft, activation proposal, and dependent binding proposal |
 | GET | `/projects/{id}/sources/health` | Read binding-level collection health |
+| GET | `/projects/{id}/sources/extraction-profiles` | List the extraction profiles a binding may select |
 | GET / POST | `/projects/{id}/operations` | List or create product-level Project operations |
 | GET | `/projects/{id}/operations/{operationId}` | Read operation steps, links, and projected progress |
 | POST | `/projects/{id}/operations/{operationId}/cancel` | Cancel a non-terminal grouping record |
 | GET | `/projects/public-summaries` | List published high-level project summaries in the current space |
 | POST | `/projects/public-summaries/search` | Search only `project_public_summary` retrieval objects (published snapshots) |
+| POST | `/projects/public-summaries/feedback` | Record a retrieval feedback signal on a published summary search result |
+| POST | `/projects/retrieval/brief` | Retrieval brief restricted to `project_public_summary` objects |
 | GET | `/projects/{id}/public-summary` | Read the published snapshot for a project; 404 while nothing is published |
 | GET | `/projects/{id}/public-summary/editor` | Draft and published snapshot side by side, plus `can_publish` (project writer authority) |
 | PUT | `/projects/{id}/public-summary` | Save the sanitized draft; bumps `draft_version` and never changes the published snapshot (project writer authority) |
@@ -1078,10 +1132,11 @@ Space scoping is enforced via the requested Space (`X-Rainver-Space-Id` header o
 | GET | `/projects/{id}/research/standing` | Read the standing switch aggregate, daily budget use, recent inflow, batches, and open advice |
 | POST | `/projects/{id}/research/standing/advice/{adviceId}/action` | Idempotently create the advised Inquiry Thread and mark the card actioned after Project writer authorization |
 | POST | `/projects/{id}/research/standing/advice/{adviceId}/dismiss` | Dismiss standing advice after Project writer authorization |
+| POST | `/projects/{id}/research/standing/batches/{batchId}/retry` | Retry a failed standing comparison batch |
 | GET | `/projects/{id}/research/question/assessment?thread_id=…` | Restore the Thread's durable assessment session, ordered messages, latest structured framework, and explicit assessment baseline |
 | POST | `/projects/{id}/research/question/refine` | Persist one Thread-scoped user turn, run refinement from server-owned completed history, and return the updated durable session; `establish_assessment_baseline` atomically promotes a successful result to the comparison baseline |
 | GET | `/projects/{id}/research/question/assessment/confirmations?thread_id=…` | List immutable confirmed framework snapshots newest-first |
-| POST | `/projects/{id}/research/question/assessment/confirm` | Confirm the current framework; an unchanged repeat returns the current confirmation without creating another context version |
+| POST | `/projects/{id}/research/question/assessment/confirm` | Confirm the current framework as a new immutable Research Context version; an unchanged repeat returns the current confirmation without creating another context version |
 | POST | `/projects/{id}/research/workflow/{workflowId}/stages/{stageKey}/run` | Record a workflow stage transition, optionally linking a `run_id` |
 | POST | `/projects/{id}/research/workflow/{workflowId}/trigger` | Trigger an incremental run after baseline monitoring is active |
 | POST | `/projects/{id}/research/workflow/{workflowId}/history-backfill` | Extend a bounded baseline into a non-overlapping earlier arXiv range |
@@ -1090,17 +1145,22 @@ Space scoping is enforced via the requested Space (`X-Rainver-Space-Id` header o
 | POST | `/projects/{id}/research/operations/{operationId}/retry` | Retry a failed managed research operation from its persisted stage |
 | POST | `/projects/{id}/research/operations/{operationId}/cancel` | Cancel a running research operation: the row goes terminal synchronously and a job kills its Runs, screening batches, backfill plans, and pass Execution, and waives its pending checkpoints |
 | POST | `/projects/{id}/research/operations/{operationId}/reconcile` | Repair a stale operation projection from the canonical run; never re-queues the run |
+| POST | `/projects/{id}/research/operations/{operationId}/rescan` | Rescan an empty history backfill under `source.backfill.manage` |
 | PUT | `/projects/{id}/research/operations/{operationId}/item-limit` | Explicitly raise the active research item limit from Project Settings and resume a partial import if needed |
 | PUT | `/projects/{id}/research/item-limit` | Save the explicit body `workflow_id`'s draft intake limit; omitting it creates a new partial draft |
 | POST | `/projects/{id}/research/question/apply-forward` | Explicitly apply the selected `workflow_id`'s revised Inquiry Thread to future runs; existing decisions and artifacts remain unchanged |
-| GET | `/projects/{id}/research/question/assessment/confirmations` | List immutable confirmed assessment-framework snapshots for one `thread_id` |
-| POST | `/projects/{id}/research/question/assessment/confirm` | Confirm the current model/user-adjusted framework and create a new immutable Research Context version |
 | GET | `/projects/{id}/inquiry/threads/{threadId}/revisions` | List immutable full Thread revisions newest-first for wording/version history |
 | GET | `/projects/{id}/research/question/impact?workflow_id=…` | Count papers screened under one explicit Workflow's previous Question version and its synthesis reports |
 | POST | `/projects/{id}/research/question/resolve` | Resolve one explicit `workflow_id` with `rescreen`, `synthesis_only`, or `apply_forward` |
 | GET | `/projects/{id}/research/reports` | List immutable structured reports, newest first |
 | GET | `/projects/{id}/research/reports/{reportId}` | Read combined content, Reader projection, safe resolved references, provenance, integrity, and archive descriptors |
 | POST | `/projects/{id}/research/reports/{reportId}/integrity` | Run report integrity and attach its system archive |
+| GET / POST | `/projects/{id}/research/area` | Read / initialize the Research Area (notebook baseline and starter notes) |
+| GET | `/projects/{id}/research/reading-list` | Reading List read model; `PUT .../reading-list/{sourceItemId}/card` saves an evidence card |
+| POST / PATCH / DELETE | `/projects/{id}/research/checklist[/{itemId}]` | Research checklist item CRUD |
+| GET / POST / PATCH | `/projects/{id}/research/claims[/{claimLinkId}]` | Workflow-scoped claim links read by the integrity gate |
+| POST | `/projects/{id}/research/ask-ai` | Queue an Ask-AI notebook update (`research.adhoc_analyze`) |
+| POST | `/projects/{id}/notebook-chat` | Notebook chat turn (`research.ask`) |
 | GET / PUT | `/projects/{id}/research/screening-criteria` | Read / upsert generic criteria plus profile-declared domain axes (keywords, date range, source restrictions, required evidence fields) |
 | GET | `/projects/{id}/research/evidence-matrix` | Evidence matrix read model over included/maybe corpus objects, with optional academic metadata and evidence/annotation counts |
 | POST | `/projects/{id}/research/evidence-matrix/rebuild` | Backfill the project corpus from sources, then return the refreshed matrix |
@@ -1203,9 +1263,11 @@ All five durable object list endpoints accept an optional `project_id` query par
 | `GET /memory` | `project_id` |
 
 **Isolation guarantee:** Before filtering, each endpoint validates the requested
-project with `assertProjectInSpace(db, space_id, project_id)`, returning HTTP 422
-if the project does not exist in the requesting space or has been deleted. This
-prevents cross-space enumeration via a guessed project ID. Durable writes that
+project. Artifacts, Proposals, Runs and Memory return HTTP 422 if the project
+does not exist in the requesting space or has been deleted (`assertProjectInSpace`
+or an equivalent repository check); Activity applies the stricter
+`assertProjectReadable` and returns 404 unless the caller can read the Project.
+This prevents cross-space enumeration via a guessed project ID. Durable writes that
 accept a `project_id` also validate the association: Activity create, Run create,
 and runtime materialized proposals reject missing/deleted/cross-space projects
 before persisting rows. Runtime proposal materialization also canonicalizes the
@@ -1330,7 +1392,8 @@ in that dialog so an authorized Project or Space owner can complete the publish
 handoff. Its Project Instruction dialog uses the same review/publish lifecycle
 and resets after publication so another immutable version can be created.
 It hosts no Area's working surface — Project Research, Project Sources, and
-Project Folders are reached through Research, Sources, and Files & Code, each
+Project Folders are reached through Inquiry (the selected problem's Research
+section and `/inquiry/records`), Sources, and Files & Code, each
 of which owns its own creation and configuration actions rather than
 delegating them back to Pulse. Workflow creation
 remains an explicit user command after its required inputs are ready.
@@ -1469,12 +1532,13 @@ clicks down (`GET /projects/{id}/conversations`: every conversation the viewer
 can see across the Project's Rooms, mainline first, each opening in its Room;
 reading it enrols the viewer in the mainline like opening the Project does).
 Everything else sits under a collapsible **Areas** disclosure whose open state
-is remembered per browser — six entries, flat: Notes, Inquiry, Research,
-Sources, Files & Code, Decisions. The Rooms page (roster, invitations, the
+is remembered per browser — five entries, flat: Notes, Inquiry, Sources,
+Files & Code, Decisions. Research is reached inside Inquiry; `/research`
+redirects there. The Rooms page (roster, invitations, the
 full conversation surface) is reached from Conversations.
 Reading recommendations and All material are the primary Sources views; candidate review and daily editions remain secondary destinations. Knowledge review and Experiments
 are views of Inquiry. Project `/learning` redirects to Pulse. `/operations`
-redirects to Research's Runs tab. `/digest` and `/raw` redirect to Sources
+redirects to the `/inquiry/records` Runs tab. `/digest` and `/raw` redirect to Sources
 tabs, `/experiments` to the Inquiry experiments view, and `/knowledge-review`
 to the Inquiry review candidates tab. `/delivery` redirects to Board. Nothing about a Project adds, removes, or reorders an
 entry — navigation position carries muscle memory, and a sidebar that grows as
@@ -1499,7 +1563,9 @@ Candidates and Decisions open their selected Project-Area records, research
 operations open the problem workspace records Runs tab with the row selected, and
 operational alerts open the Space Inbox filtered to the Project. Pulse does not copy the domain
 action workflow.
-The Board is the Project's Task surface: lanes are flow statuses, a card
+The Board is the Project's Task surface: lanes are the Project's Board
+columns, each mapped to one Task status (see
+[Task board model](TASK_BOARD_MODEL.md#project-local-columns-and-card-actions)), a card
 shows who holds it, and a drag to Done is refused when the
 Task has not met what it declared unless the person acknowledges what they are
 skipping (`architecture/PROJECT_WORK.md`). `/projects/:projectId/delivery`
@@ -1820,7 +1886,7 @@ All reading cards use the shared Reader with project origin where appropriate.
 Project candidate/source-management Reader links explicitly pass `from=project`.
 Their `returnTo` is limited to the same Sources reading destination or the
 candidates/settings tabs. Research Reading List links return to
-`/projects/:projectId/research?tab=reading`; shared Source annotations return to
+`/projects/:projectId/inquiry/records?tab=reading`; shared Source annotations return to
 Sources settings. The shared Reader validates these bounded destinations and
 names the actual target (Project reading, Source management, Research reading
 list or Daily editions). Daily-edition item links preserve the snapshot’s Project

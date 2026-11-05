@@ -30,14 +30,12 @@ Begin after:
 Controlled local/manual testing does not wait for this plan. Thirty-day
 unattended dogfooding does.
 
-Status of the trigger, checked 2026-08-13: none of the last three conditions
-holds. Acceptance is gated — see
-[../tasks/deferred-register.md](../tasks/deferred-register.md). No CLI runtime
-was installed on this instance, so the CLI half of the smoke cannot run at all.
-And the failure
-evidence this plan needs does not exist: across 2278 Runs there is not one
-`failed` or `degraded` record, so retry classification and backoff timing would
-be designed against imagined failures. That last point is the substantive reason
+Status of the trigger: none of the last three conditions holds. Acceptance is
+gated — see [../tasks/deferred-register.md](../tasks/deferred-register.md). A
+CLI runtime can be installed and logged in on the built-in execution host from
+its host card, but the controlled CLI smoke has not been recorded. And the
+failure evidence this plan needs does not exist, so retry classification and
+backoff timing would be designed against imagined failures. That last point is the substantive reason
 to wait, not a bureaucratic one.
 
 ## Current implemented baseline
@@ -52,6 +50,9 @@ to wait, not a bureaucratic one.
 - orphan recovery (the former CLI stall timeout now only records a silence
   notice; it no longer fails a Run);
 - managed-call abort propagation and two-phase CLI cancellation;
+- per-Run Host egress profiles (`none`, `default`, `install`) enforced by the
+  Host's egress proxy; every dispatch defaults to `default`, and nothing in the
+  product grants `install`;
 - normalized Claude Code, Codex, and OpenCode usage in Run envelopes and the
   append-only usage ledger;
 - bounded Workflow node re-attempt without graph cycles;
@@ -143,9 +144,10 @@ idempotency tests.
 
 Before unattended CLI work consumes untrusted external content:
 
-- deny outbound network by default for high/critical local-CLI execution;
-- define a separately reviewed egress-enabled profile when a workload needs
-  provider/tool network access;
+- select the `none` egress profile by default for high/critical local-CLI
+  execution (today every dispatch gets `default` regardless of risk);
+- give the `install` profile a separately reviewed grant path when a workload
+  needs package or tool network access;
 - allowlist destinations/protocols;
 - preserve credential-channel isolation;
 - record source trust and exposure decisions;

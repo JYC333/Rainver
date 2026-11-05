@@ -5,8 +5,13 @@ import { resetTables } from "./support/resetTables.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { RunWorkflowService } from "../src/modules/evolution/runWorkflowService.js";
-import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
-import { seedServerRuntimeProfile } from "./support/domainSeeds.js";
+import { seedMainlineRoomsForAllProjects, seedServerRuntimeProfile } from "./support/domainSeeds.js";
+import { loadConfig } from "../src/config.js";
+import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
+import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository.js";
+import { EvolvableAssetEvaluationRepository } from "../src/modules/evolution/assetEvaluationRepository.js";
+import { AutomationService } from "../src/modules/automations/service.js";
+import { PgAutomationRepository } from "../src/modules/automations/repository.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -14,6 +19,8 @@ const AGENT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const VERSION = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const ACTOR = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const SERVER_HOST = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const PROJECT = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+const PROJECT_FOLDER = "f0000000-0000-4000-8000-000000000001";
 const IDENTITY = { spaceId: SPACE, userId: USER };
 
 
@@ -189,6 +196,117 @@ async function seedRun(riskLevel: "low" | "high"): Promise<string> {
   return runId;
 }
 
+const SOURCE_SECRET = "sk-testSecretValue1234567890";
+const SOURCE_PATH = "/tmp/private-output";
+
+function serverConfig() {
+  return loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test-internal-token" });
+}
+
+/** Asserts none of the source Run's transient or secret facts reached a definition. */
+function expectSanitizedDefinition(definition: unknown, sourceRunId: string): void {
+  const text = JSON.stringify(definition);
+  expect(text).not.toContain(sourceRunId);
+  expect(text).not.toContain(SOURCE_SECRET);
+  expect(text).not.toContain(SOURCE_PATH);
+  expect(text).toContain("[REDACTED_SECRET]");
+  expect(text).toContain("[PATH]");
+}
+
+/**
+ * The rest of the journey every saved draft takes: the existing promotion
+ * lifecycle (draft → candidate → promotion Proposal accepted through the
+ * standard apply gate → approved), then a Workflow Automation launch of the
+ * approved version. Returns what the launch created.
+ */
+async function promoteAndLaunch(input: { assetId: string; versionId: string; assetKey: string; expectedRisk: string }) {
+  const assets = new EvolvableAssetRepository(db.pool);
+  const evaluations = new EvolvableAssetEvaluationRepository(db.pool);
+  const automations = new AutomationService(serverConfig(), new PgAutomationRepository(db.pool), null);
+  // The seeded Agent's runtime reads files, so a launch needs a Project Folder.
+  const now = new Date().toISOString();
+  await db.pool.query(
+    `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
+     VALUES ($1, $2, $3, 'Workflow Project', 'active', $4, $4)`,
+    [PROJECT, SPACE, USER, now],
+  );
+  await seedMainlineRoomsForAllProjects(db.pool);
+  await db.pool.query(
+    `INSERT INTO project_folders (
+       id, space_id, project_id, created_by_user_id, name, status,
+       kind, is_primary, protected, system_managed, created_at, updated_at
+     ) VALUES ($1, $2, $3, $4, 'Workflow code', 'active', 'code', true, false, false, $5, $5)`,
+    [PROJECT_FOLDER, SPACE, PROJECT, USER, now],
+  );
+  const launchBody = {
+    name: "Saved workflow",
+    agent_id: AGENT,
+    project_id: PROJECT,
+    project_folder_id: PROJECT_FOLDER,
+  };
+  const workflowConfig = {
+    target_type: "workflow",
+    workflow_asset_key: input.assetKey,
+    workflow_resolution: "pin",
+    workflow_version_id: input.versionId,
+  };
+  // A draft is neither promotable nor launchable until it passes review.
+  await expect(evaluations.createPromotionProposal(IDENTITY, input.assetId, input.versionId, { target_scope_type: "space" }))
+    .rejects.toMatchObject({ statusCode: 422 });
+  await expect(assets.transitionVersionStatus(IDENTITY, input.assetId, input.versionId, { status: "approved" }))
+    .rejects.toMatchObject({ statusCode: 422 });
+  await expect(automations.create({
+    spaceId: SPACE,
+    ownerUserId: USER,
+    body: { ...launchBody, config_json: workflowConfig },
+  })).rejects.toMatchObject({ statusCode: 422, message: expect.stringContaining("approved version") });
+
+  await assets.transitionVersionStatus(IDENTITY, input.assetId, input.versionId, { status: "candidate" });
+  const promotion = await evaluations.createPromotionProposal(IDENTITY, input.assetId, input.versionId, {
+    target_scope_type: "space",
+    reason: "Reviewed workflow saved from a Run",
+  });
+  const promotionRow = await db.pool.query<{ status: string; risk_level: string }>(
+    `SELECT status, risk_level FROM proposals WHERE id = $1`,
+    [String(promotion.proposal_id)],
+  );
+  expect(promotionRow.rows[0]).toEqual({ status: "pending", risk_level: input.expectedRisk });
+  const accepted = await PgProposalApplyService.fromConfig(serverConfig()).accept(String(promotion.proposal_id), IDENTITY);
+  expect(accepted?.proposal.status).toBe("accepted");
+  const approved = await db.pool.query<{ status: string; promotion_proposal_id: string | null; content_json: unknown }>(
+    `SELECT status, promotion_proposal_id, content_json FROM evolvable_asset_versions WHERE id = $1`,
+    [input.versionId],
+  );
+  expect(approved.rows[0]).toMatchObject({ status: "approved", promotion_proposal_id: String(promotion.proposal_id) });
+
+  const automation = await automations.create({
+    spaceId: SPACE,
+    ownerUserId: USER,
+    body: { ...launchBody, config_json: workflowConfig },
+  });
+  expect(automation.config_json).toMatchObject({ workflow_resolution: "pin", workflow_version_id: input.versionId });
+  const fired = await automations.fire({ spaceId: SPACE, automationId: automation.id, actorUserId: USER });
+  expect(fired).toMatchObject({ target_type: "workflow", workflow_version_id: input.versionId });
+  const execution = await db.pool.query<{ status: string; workflow_version_id: string; definition_json: unknown }>(
+    `SELECT status, workflow_version_id, definition_json FROM workflow_executions WHERE id = $1`,
+    [String(fired.workflow_execution_id)],
+  );
+  expect(execution.rows[0]).toMatchObject({ status: "running", workflow_version_id: input.versionId });
+  const children = await db.pool.query<{
+    status: string;
+    workflow_version_id: string;
+    instruction: string | null;
+    contract_snapshot_json: Record<string, unknown>;
+  }>(
+    `SELECT status, workflow_version_id, instruction, contract_snapshot_json
+       FROM runs WHERE space_id = $1 AND parent_run_id = $2`,
+    [SPACE, String(fired.root_run_id)],
+  );
+  expect(children.rows).toHaveLength(1);
+  expect(children.rows[0]).toMatchObject({ status: "queued", workflow_version_id: input.versionId });
+  return { approvedContent: approved.rows[0]!.content_json, execution: execution.rows[0]!, child: children.rows[0]! };
+}
+
 describe("save run as workflow (real Postgres)", () => {
   it("previews and saves a sanitized low-risk draft with evidence", async () => {
     if (!db.available) return;
@@ -262,59 +380,71 @@ describe("save run as workflow (real Postgres)", () => {
     await expect(service.save(IDENTITY, input)).rejects.toMatchObject({ statusCode: 422 });
   });
 
-  it("requires a proposal for high-risk extraction and applies it as a draft", async () => {
+  it("carries a low-risk saved draft through promotion to an approved, launchable Workflow", async () => {
     if (!db.available) return;
-    const runId = await seedRun("high");
+    const sourceRunId = await seedRun("low");
     const saved = await new RunWorkflowService(db.pool).save(IDENTITY, {
-      run_id: runId,
-      asset_key: "workflow.saved.review",
+      run_id: sourceRunId,
+      asset_key: "workflow.saved.journey",
+      display_name: "Journey workflow",
+    });
+    expect(saved).toMatchObject({ status: "draft_saved", version_status: "draft" });
+    expect(saved).not.toHaveProperty("proposal_id");
+
+    const launched = await promoteAndLaunch({
+      assetId: String(saved.asset_id),
+      versionId: String(saved.version_id),
+      assetKey: "workflow.saved.journey",
+      expectedRisk: "medium",
+    });
+    expectSanitizedDefinition(launched.approvedContent, sourceRunId);
+    expect(launched.execution.definition_json).toEqual(launched.approvedContent);
+    expect(JSON.stringify(launched.child)).not.toContain(sourceRunId);
+    expect(JSON.stringify(launched.child)).not.toContain(SOURCE_SECRET);
+    expect(launched.child.instruction).toContain("Workflow Node: Inspect [PATH]");
+  });
+
+  it("carries a high-risk save through its workflow_save Proposal, promotion and launch", async () => {
+    if (!db.available) return;
+    const sourceRunId = await seedRun("high");
+    const saved = await new RunWorkflowService(db.pool).save(IDENTITY, {
+      run_id: sourceRunId,
+      asset_key: "workflow.saved.reviewed",
+      display_name: "Reviewed workflow",
     });
     expect(saved).toMatchObject({ status: "proposal_required", proposal_type: "workflow_save", risk_level: "high" });
-    const proposal = await db.pool.query<{ id: string; space_id: string; proposal_type: string; payload_json: Record<string, unknown>; status: string }>(
-      `SELECT id, space_id, proposal_type, payload_json, status FROM proposals WHERE id = $1`,
+    // Nothing is saved until the Proposal is accepted.
+    expect((await db.pool.query(`SELECT id FROM evolvable_assets WHERE asset_key = $1`, ["workflow.saved.reviewed"])).rows).toEqual([]);
+    const proposal = await db.pool.query<{ payload_json: Record<string, unknown>; created_by_run_id: string | null }>(
+      `SELECT payload_json, created_by_run_id FROM proposals WHERE id = $1`,
       [String(saved.proposal_id)],
     );
-    expect(proposal.rows[0]?.status).toBe("pending");
-    const client = await db.pool.connect();
-    try {
-      await client.query("BEGIN");
-      const result = await createDefaultProposalApplierRegistry().apply({
-        config: {} as never,
-        db: client,
-        proposal: {
-          id: proposal.rows[0]!.id,
-          space_id: proposal.rows[0]!.space_id,
-          proposal_type: proposal.rows[0]!.proposal_type,
-          status: "accepted",
-          risk_level: "high",
-          preview: false,
-          payload_json: proposal.rows[0]!.payload_json,
-          project_folder_id: null,
-          visibility: "space_shared",
-          created_by_user_id: USER,
-          owner_user_id: null,
-          created_by_agent_id: null,
-          created_by_run_id: runId,
-          project_id: null,
-          title: "Save workflow",
-          required_approver_role: null,
-        },
-        userId: USER,
-      });
-      await client.query("COMMIT");
-      expect(result.result).toMatchObject({ status: "draft" });
-      const versionId = String(result.result.version_id);
-      expect(versionId).toBeTruthy();
-      const version = await db.pool.query<{ status: string }>(
-        `SELECT status FROM evolvable_asset_versions WHERE id = $1`,
-        [versionId],
-      );
-      expect(version.rows[0]?.status).toBe("draft");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
+    // The Proposal names its source Run for review; the definition it carries does not.
+    expect(proposal.rows[0]?.created_by_run_id).toBe(sourceRunId);
+    expectSanitizedDefinition(proposal.rows[0]?.payload_json.content_json, sourceRunId);
+
+    const accepted = await PgProposalApplyService.fromConfig(serverConfig()).accept(String(saved.proposal_id), IDENTITY);
+    expect(accepted).toMatchObject({
+      proposal: { status: "accepted" },
+      result_type: "evolvable_asset_version",
+      result: { status: "draft", asset_key: "workflow.saved.reviewed" },
+    });
+    const draft = accepted!.result as { asset_id: string; version_id: string };
+    const draftRow = await db.pool.query<{ status: string; content_json: unknown }>(
+      `SELECT status, content_json FROM evolvable_asset_versions WHERE id = $1 AND asset_id = $2`,
+      [draft.version_id, draft.asset_id],
+    );
+    expect(draftRow.rows[0]?.status).toBe("draft");
+    expect(draftRow.rows[0]?.content_json).toEqual(proposal.rows[0]?.payload_json.content_json);
+
+    const launched = await promoteAndLaunch({
+      assetId: draft.asset_id,
+      versionId: draft.version_id,
+      assetKey: "workflow.saved.reviewed",
+      expectedRisk: "high",
+    });
+    expectSanitizedDefinition(launched.approvedContent, sourceRunId);
+    expect(JSON.stringify(launched.child)).not.toContain(sourceRunId);
+    expect(launched.child.contract_snapshot_json).toMatchObject({ risk_level: "high" });
   });
 });

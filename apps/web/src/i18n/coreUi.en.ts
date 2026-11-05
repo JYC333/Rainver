@@ -32,6 +32,12 @@ export const coreUiEn = {
       notes_knowledge: 'Notes & knowledge',
       none: 'None.',
       add: 'Add',
+      load_more: 'Load more',
+      load_more_projects: 'Load more projects in this domain',
+      load_more_objects: 'Load more notes and knowledge in this domain',
+      more_choices: 'More choices',
+      more_project_choices: 'Load more projects to add',
+      more_object_choices: 'Load more notes and knowledge items to add',
     },
     dialog: {
       close: 'Close',

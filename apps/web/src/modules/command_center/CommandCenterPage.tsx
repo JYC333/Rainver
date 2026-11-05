@@ -1,15 +1,17 @@
 import { Server } from 'lucide-react'
 import { useSpace } from '../../contexts/SpaceContext'
 import HostsPanel from './HostsPanel'
+import { useAppTranslation } from '../../i18n'
 
 /**
- * The machines you have paired, and what runs on them: pairing, provider
- * bindings, the login terminal, host Agents and their directories. Work is
+ * The available execution environments and what runs in them: pairing, each
+ * Host's Agent Runtimes and logins, its ordinary CLI tools and connection. Work is
  * started from a Task or a Room. A turn is read where the conversation is
  * (`modules/conversation`). Do not add a dispatch composer or a second
  * conversation surface here.
  */
 export default function CommandCenterPage() {
+  const { t } = useAppTranslation()
   const { activeSpaceId, activeSpaceName, preferredSpaceId, spaces } = useSpace()
   const browsingSpaceId = activeSpaceId ?? preferredSpaceId
   const browsingSpaceName = activeSpaceName ?? spaces.find(s => s.id === browsingSpaceId)?.name ?? null
@@ -28,7 +30,7 @@ export default function CommandCenterPage() {
         </div>
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Command Center</h1>
-          <p className="text-sm text-muted-foreground">Pair machines, bind their providers, and manage what runs on them.</p>
+          <p className="text-sm text-muted-foreground">{t('command_center.subtitle')}</p>
           <p className="text-xs text-muted-foreground">Viewing: {browsingSpaceName ?? browsingSpaceId ?? 'No operational space selected'}</p>
         </div>
       </div>

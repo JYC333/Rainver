@@ -165,15 +165,16 @@ What an Agent learns about **itself** is placed by `memory_type` rather than by
 creation context: `note`, `decision` and `lesson` are the Agent's own notes and
 carry `origin_room_id`, `persona` is the one entry per Agent that is delivered
 everywhere. Composite foreign keys require both the owning Agent and an origin
-Room, when present, to belong to the Memory row's Space. An `agent`-scope note is returned to its Agent only where the
-current Room's active human members are a subset of the origin Room's, computed
-at dispatch by `memory/agentMemoryDelivery.ts` — which is the only path that
-returns them at all, since the scope is excluded from the person-facing
+Room, when present, to belong to the Memory row's Space. An `agent`-scope note is returned to its Agent only where
+everyone who may read the current Room's conversations may also read the origin
+Room's, asked of the Room read gate (`roomConversationReadAccessSql`) rather than
+the roster. The test is computed at dispatch by `memory/agentMemoryDelivery.ts`,
+which is the only path that returns them at all, since the scope is excluded from the person-facing
 retrieval index. Widening one is promotion to Project Memory through the
 proposal path; the entry itself never widens. What renders the result into a
 prompt is the dispatch path: `agentGroups/agentIdentityPrompt.ts`. The scope is
-also outside Space oversight — a note's audience is the origin Room's roster,
-and oversight is not it.
+also outside Space oversight — a note's audience is whoever may read the origin
+Room's conversations, and oversight is not it.
 
 ## Implementation map
 

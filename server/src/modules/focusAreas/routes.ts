@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
+  intQuery,
   jsonBody,
   optionalString,
   params,
@@ -9,7 +10,7 @@ import {
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
-import { FocusAreaService } from "./service.js";
+import { FOCUS_AREA_CONTENTS_PAGE_SIZE, FocusAreaService } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const service = () => FocusAreaService.fromConfig(context.config);
@@ -105,7 +106,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.send(await service().contents(identity, params(request).focusAreaId ?? ""));
+      const q = query(request);
+      const limit = intQuery(q.limit, FOCUS_AREA_CONTENTS_PAGE_SIZE);
+      if (limit === null) throw new HttpError(422, "limit must be an integer");
+      return reply.send(await service().contents(identity, params(request).focusAreaId ?? "", {
+        projectsCursor: optionalString(q.projects_cursor) ?? undefined,
+        objectsCursor: optionalString(q.objects_cursor) ?? undefined,
+        limit,
+      }));
     } catch (error) {
       return sendRouteError(reply, error);
     }

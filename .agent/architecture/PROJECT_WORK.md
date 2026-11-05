@@ -18,7 +18,9 @@ Attempt and Supervisor.
 Task Detail and Agent tools: `inbox · ready · in_progress · waiting_for_review ·
 blocked · done · cancelled`. `waiting_for_review` means a person must decide;
 `blocked` means an external blocker. Run execution and completion evidence
-remain separate facts rather than another user-managed Task progression.
+remain separate facts rather than another user-managed Task progression. Project
+Board columns may customize names and ordering and share a lifecycle status;
+see [Task board model](TASK_BOARD_MODEL.md#project-local-columns-and-card-actions).
 
 ## 2. Retired inner Task Loop
 
@@ -79,11 +81,12 @@ Do not hand-roll the insert beside it.
 
 ### Kinds
 
-`task.created · task.flow_changed · task.accepted ·
-task.responsibility_changed · task.run_settled · task.merged ·
+`task.created · task.deleted · task.entity_linked · task.flow_changed ·
+task.accepted · task.responsibility_changed · task.run_settled · task.merged ·
 task.merge_blocked · task.reported ·
 project.reported · thread.created · thread.archived · thread.reopened ·
-thread.concluded · memory.remembered ·
+thread.concluded · thread.work_recorded · thread.round_closed ·
+thread.round_closeout_reverted · memory.remembered ·
 memory.revised · memory.archived · agent.persona_revised ·
 agent.persona_restored`
 
@@ -99,7 +102,8 @@ The service actor `task_merge` writes them (ADR 0016 §11;
 [modules/hosts.md](../modules/hosts.md), "Merging a done Task").
 
 The `thread.*` kinds are Inquiry advancement, subject `inquiry_thread`,
-declared by the `inquiry` module in the same registry. A direct write is
+registered in `eventKinds.ts` with owner `inquiry` so the vocabulary is complete
+whenever the registry is imported. A direct write is
 visible here afterwards and reversible
 ([ADR 0017](../decisions/0017-authorization-by-cost-not-authorship.md) §4).
 Each carries the statement,
@@ -109,8 +113,8 @@ Each carries the statement,
 reverting a conclusion means recording the position it replaced.
 
 The `memory.*` kinds are the same arrangement for what an Agent chose to
-remember during Project work, subject `memory_entry`, declared by the
-`memory` module ([ADR 0003](../decisions/0003-memory-proposal-flow.md) §3).
+remember during Project work, subject `memory_entry`, registered in the
+same file with owner `memory` ([ADR 0003](../decisions/0003-memory-proposal-flow.md) §3).
 The entry itself is user-scoped and carries no Project — a user-scoped memory
 may not, by `ck_memory_entries_scope_placement` — so this event is what ties
 the write to the work it happened during. `memory.archived` is the reversal
@@ -284,10 +288,13 @@ same `contentReadSql` the Task's `/runs` list uses: a shared Task does not
 reveal another member's private Run. The close-gate `taskCompletionState` used
 by writes stays unfiltered so the owner still closes against every Run.
 
-Card lanes are flow statuses. `cancelled` is archived off the Board, and
-`blocked` is an **overlay**: it keeps its own status and carries a
-`column_key` naming the lane it is drawn in, because a status with no lane is a
-card that is counted and then never drawn.
+Card lanes are the Project's Board columns, each mapped to one flow status
+([Task board model](TASK_BOARD_MODEL.md#project-local-columns-and-card-actions)).
+Every card carries a `column_key` naming the lane it is drawn in; a status no
+column maps lands in the Unassigned lane. `cancelled` is archived off the Board,
+and `blocked` is an **overlay**: it keeps its own status and, unless a column
+maps `blocked`, is drawn in an `in_progress` lane, because a status with no lane is a card that is counted and
+then never drawn.
 
 Person-facing writes:
 
@@ -314,7 +321,7 @@ nothing is decided by it.
 model: the same stream filtered to `task.reported`, `project.reported`,
 `task.accepted` (a Task closing is an update; nothing writes a report for it,
 so the acceptance is rendered as itself), `task.merged` and
-`task.merge_blocked` (whether a done Task's change landed), the five
+`task.merge_blocked` (whether a done Task's change landed), the seven
 `thread.*` kinds, the three
 `memory.*` kinds and the two `agent.persona_*` kinds, newest first. A persona
 revision is the one row that carries `previous_summary` — what it replaced,
@@ -328,9 +335,10 @@ Each row names its `subject` (`task`, `inquiry_thread` or `memory_entry` —
 carries none, since no read model joins `projects` and an unreachable third
 member would be speculative) and, where the
 advancement can be put back, an `undo` (`archive_thread`, `reopen_thread`,
-`revert_iteration`, `archive_memory`, `restore_memory`) that `POST /projects/:projectId/updates/:eventId/undo`
+`revert_iteration`, `revert_round_closeout`, `archive_memory`,
+`restore_memory`) that `POST /projects/:projectId/updates/:eventId/undo`
 dispatches to the owning domain command. Undo is an ordinary `manual`-origin
-write: it goes through `transitionLifecycle`/`recordIteration` under their own
+write: it goes through `transitionLifecycle`/`recordIteration`/`revertRoundCloseout` under their own
 authority checks and locks, records its own event naming the one it reversed
 (`data_json.undo_of_event_id`, set only by the undo path and never readable
 from a request body), and the reversed row then reports `undone_by_event_id`
@@ -379,9 +387,10 @@ which turn" is a query rather than a search through prompt text.
 
 ## 8. What an Agent may do
 
-Seven System Actions (`projectWork/taskActions.ts`,
+Eight System Actions (`projectWork/taskActions.ts`,
 `projectWork/artifactDeclarations.ts`, `projectWorkSystemActionExecutors.ts`),
-plus the read-only `task.list` that feeds them Task ids. The first six are on
+plus the read-only `task.list` that feeds them Task ids and `task.create_batch`
+([below](#explicitly-requested-task-batches)). The first seven are on
 the Room conversation tool surface and on a dispatched Run's; `artifact.submit`
 is on a dispatched Run's only, for the reason its own paragraph below gives:
 
@@ -389,6 +398,7 @@ is on a dispatched Run's only, for the reason its own paragraph below gives:
 |---|---|---|
 | `task.create` | a Task (recording the Run as `tasks.source_run_id`, so its merge can be told in the conversation it came from), and its `task_entity_links` | `task.created` |
 | `task.report` | nothing | `task.reported` |
+| `task.delete` | soft deletion; status and execution evidence retained | `task.deleted` |
 | `task.handoff` | the claim on a Task | `task.responsibility_changed` |
 | `task.set_status` | Board status via canonical Task update (completion/review delegate to their existing actions) | `task.flow_changed` |
 | `task.complete` | `status = done` (refused while a declared output is missing) | `task.flow_changed` + `task.reported` |
@@ -417,7 +427,7 @@ hand a decision back, the only signals a person gets are failures.
 
 ### The origin gate
 
-`task.create`, `task.set_status`, and `task.complete` are `require_approval` when the Run's
+`task.create`, `task.delete`, `task.set_status`, and `task.complete` are `require_approval` when the Run's
 `trigger_origin` is `autonomous` or `automation`
 (`ruleUnattendedProjectWrite` in `decisionCore.ts`). The same action definition
 serves both origins, because it is the same write — what differs is who wanted
@@ -481,9 +491,9 @@ Seed changes reach existing Assistants at boot and on the daily
 
 **Who may write.** Reading a Task is not licence to change it. `PATCH
 /tasks/:taskId`, `POST /tasks/:taskId/evaluations`
-(the newest evaluation decides the close gate) and the five Task-addressed
+(the newest evaluation decides the close gate) and the six Task-addressed
 Agent actions (`task.report`, `task.handoff`, `task.set_status`,
-`task.complete`, `task.request_review`) all require Project **writer** authority
+`task.complete`, `task.request_review`, `task.delete`) all require Project **writer** authority
 (`assertProjectWriterForMutation`) on the Task's Project — and, for a move, on
 the Project it is moving to. `PATCH` and a new evaluation also take the
 archive fence (`lockActiveProjectForMutation`), so an archived Project's Task

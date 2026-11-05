@@ -1,3 +1,4 @@
+import { ProjectAccessSchema, ProjectMemberInputSchema } from "../src/projects.js";
 import { describe, expect, it } from "vitest";
 import {
   ProjectBriefVersionWriteRequestSchema,
@@ -120,5 +121,14 @@ describe("ProjectWorkUpdateSchema", () => {
     expect(ProjectWorkUpdateSchema.safeParse({
       ...base, members: null, undo: { action: "delete_thread", target_id: base.subject.id },
     }).success).toBe(false);
+  });
+});
+
+describe("Project membership access", () => {
+  it("keeps roster management separate from read permission and validates role changes", () => {
+    expect(ProjectAccessSchema.parse({ current_user_can_read: false, current_user_grantable_member_role: "member" })).toEqual({ current_user_can_read: false, current_user_grantable_member_role: "member" });
+    expect(ProjectMemberInputSchema.parse({ user_id: "user" })).toEqual({ user_id: "user", role: "member" });
+    expect(ProjectMemberInputSchema.safeParse({ user_id: "user", role: "admin" }).success).toBe(false);
+    expect(ProjectMemberInputSchema.safeParse({ user_id: "user", role: "member", space_id: "other" }).success).toBe(false);
   });
 });

@@ -688,7 +688,7 @@ describe("RunOrchestrationService", () => {
       session_id: "session-1",
     });
     const adapterCalls: string[] = [];
-    let snapshotInputs: { runtimeInstallation: string | null; policyDecisionRecordIds: string[]; dispatchesToHostDaemon?: boolean } | null = null;
+    let snapshotInputs: { runtimeInstallation: string | null; policyDecisionRecordIds: string[] } | null = null;
     let routedRequestedRuntimeProfileId: string | null | undefined;
     let routedBindings: Pick<RunRecord, "project_id" | "project_folder_id" | "agent_id"> | null = null;
     let snapshottedBindings: Pick<RunRecord, "project_id" | "project_folder_id" | "agent_id"> | null = null;
@@ -766,7 +766,6 @@ describe("RunOrchestrationService", () => {
     expect(snapshotInputs).toEqual({
       runtimeInstallation: null,
       policyDecisionRecordIds: ["decision-runtime.execute"],
-      dispatchesToHostDaemon: true,
     });
     expect(prepareInvocation).toHaveBeenCalledTimes(1);
     expect(prepareInvocation).toHaveBeenCalledWith(expect.objectContaining({

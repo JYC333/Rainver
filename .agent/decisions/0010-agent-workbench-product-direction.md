@@ -39,8 +39,8 @@ selected by task shape rather than by a universal API-first rule
   driven through the Agent Client Protocol ([ADR 0007](0007-multi-cli-mvp.md)
   decision 3). None is the preferred universal runtime, none replaces the
   managed API path, and none receives a global preference order. Each is
-  independently disableable, and no core workbench authority depends on any
-  of them.
+  available only where an execution host holds an installed, logged-in copy,
+  and no core workbench authority depends on any of them.
 - A subscription is spent only through the vendor's own CLI (Claude Pro/Max
   through Claude Code, ChatGPT plans through Codex, each reached via its ACP
   wrapper) or through Rainver's in-process managed subscription OAuth channel

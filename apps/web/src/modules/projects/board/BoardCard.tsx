@@ -1,4 +1,7 @@
-import { memo } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { useAppTranslation } from '../../../i18n'
+import { Button } from '../../../components/ui/button'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../../components/ui/dropdown-menu'
 import { useDraggable } from '@dnd-kit/core'
 import { Bot, CircleDot, User, GripVertical } from 'lucide-react'
 import { SpaceLink as Link } from '../../../core/spaceNav'
@@ -18,58 +21,86 @@ import { projectTaskHref } from '../taskHref'
  * the same object, so the default shallow compare is exactly right: a card
  * re-renders when it actually changed and not when its neighbour did.
  */
-const BoardCard = memo(function BoardCard({ card, projectId, canMove }: {
+const BoardCard = memo(function BoardCard({ card, projectId, canMove, onAction }: {
   card: ProjectBoardCard
   projectId: string
   /** Whether the viewer may move it. A viewer sees the card and drags nothing. */
   canMove: boolean
+  onAction: (card: ProjectBoardCard, mode: 'edit' | 'delete') => void
 }) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, isDragging } = useDraggable({
     id: card.id,
     disabled: !canMove,
   })
+  const { t } = useAppTranslation()
+  const [menuOpen,setMenuOpen]=useState(false)
+  const [contextPoint,setContextPoint]=useState<{x:number;y:number}|null>(null)
+  const handleRef=useRef<HTMLButtonElement|null>(null)
+  const setHandleRef=useCallback((node:HTMLButtonElement|null)=>{handleRef.current=node;setActivatorNodeRef(node)},[setActivatorNodeRef])
+  const dragged=useRef(false)
+  useEffect(()=>{if(isDragging){dragged.current=true;setMenuOpen(false);setContextPoint(null)}},[isDragging])
   const blocked = card.status === 'blocked'
   const style = transform
     ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
     : undefined
 
+  const actions=<>
+    <DropdownMenuItem asChild><Link to={projectTaskHref(projectId,card.id)}>{t('board_ui.open')}</Link></DropdownMenuItem>
+    {canMove&&<><DropdownMenuItem onSelect={()=>onAction(card,'edit')}>{t('board_ui.edit')}</DropdownMenuItem><DropdownMenuItem className="text-destructive" onSelect={()=>onAction(card,'delete')}>{t('board_ui.delete')}</DropdownMenuItem></>}
+  </>
+  const preventRightRelease:React.PointerEventHandler<HTMLDivElement>=event=>{
+    // Opening beneath the cursor must not select an item on right mouse-up.
+    if(event.button!==0){event.preventDefault();event.stopPropagation()}
+  }
   return (
+    <>
+    <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
     <div
       ref={setNodeRef}
       style={style}
-      // The whole card is the drag surface: reaching for a four-pixel grip is
-      // not how a board is used. Only the pointer activator goes here, so the
-      // card does not become a focusable `button` with a link inside it — the
-      // grip below stays the keyboard target and keeps that structure honest.
-      // The sensor's 6px distance constraint is what lets a click through to
-      // the title link: a press that does not travel is still a click.
-      onPointerDown={canMove ? (listeners?.onPointerDown as React.PointerEventHandler<HTMLDivElement> | undefined) : undefined}
+      onPointerDown={event=>{
+        if(event.button!==0||!canMove)return
+        dragged.current=false
+        setContextPoint(null)
+        listeners?.onPointerDown?.(event)
+      }}
+      onContextMenu={event=>{
+        event.preventDefault();event.stopPropagation()
+        if(isDragging)return
+        setMenuOpen(false)
+        setContextPoint({x:event.clientX,y:event.clientY})
+      }}
       className={[
         'rounded-lg border bg-card p-3 text-left shadow-sm transition-shadow',
-        canMove ? 'cursor-grab active:cursor-grabbing' : '',
+        canMove?'cursor-grab select-none active:cursor-grabbing':'',
         isDragging ? 'opacity-60 shadow-md' : 'hover:shadow',
         blocked ? 'border-destructive/60' : 'border-border',
       ].join(' ')}
       data-testid={`board-card-${card.id}`}
     >
       <div className="flex items-start gap-1.5">
-        {/* Kept for the keyboard, not for the pointer: focus it, Space to pick
-            up, arrows to change lane, Space to drop. It is also the only
-            element carrying the drag `attributes`, so the card itself stays a
-            plain container rather than a button wrapping a link. */}
-        {canMove && (
-          <button
-            type="button"
-            className="mt-0.5 shrink-0 cursor-grab rounded text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label={`Move ${card.title}`}
+        <DropdownMenuTrigger asChild>
+          <Button
+            ref={setHandleRef} type="button" size="icon" variant="ghost"
+            className="size-6 shrink-0 touch-none cursor-grab active:cursor-grabbing"
+            aria-label={t('board_ui.actions',{title:card.title})}
+            title={t('board_ui.drag_help')}
             data-testid={`board-card-handle-${card.id}`}
-            {...listeners}
             {...attributes}
-          >
-            <GripVertical className="size-4" />
-          </button>
-        )}
+            onPointerDown={event=>{event.stopPropagation();dragged.current=false;setContextPoint(null);if(canMove)listeners?.onPointerDown?.(event);event.preventDefault()}}
+            onKeyDown={event=>{
+              // The document-level KeyboardSensor owns every key until drop
+              // or cancellation. Suppress Radix's earlier trigger handler,
+              // including Space/Enter on a drop that keeps this card mounted.
+              if(isDragging){event.preventDefault();return}
+              if(event.key==='Enter'){event.preventDefault();setContextPoint(null);setMenuOpen(true)}
+              else if(canMove)listeners?.onKeyDown?.(event)
+            }}
+            onClick={()=>{if(!dragged.current){setContextPoint(null);setMenuOpen(open=>!open)}}}
+          ><GripVertical className="size-4" /></Button>
+        </DropdownMenuTrigger>
         <Link
+          draggable={false}
           to={projectTaskHref(projectId, card.id)}
           className="block min-w-0 flex-1 text-sm font-medium leading-snug hover:underline"
         >
@@ -110,6 +141,17 @@ const BoardCard = memo(function BoardCard({ card, projectId, canMove }: {
         Updated {new Date(card.updated_at).toLocaleString()}
       </p>
     </div>
+    <DropdownMenuContent align="start" onPointerUpCapture={preventRightRelease}>{actions}</DropdownMenuContent>
+    </DropdownMenu>
+    <DropdownMenu open={contextPoint!==null} onOpenChange={open=>{if(!open)setContextPoint(null)}}>
+      {/* Radix's measurable point trigger reuses its positioning, viewport
+          collision handling and menu keyboard behaviour. It is not a control. */}
+      {contextPoint&&<DropdownMenuTrigger asChild><span aria-hidden tabIndex={-1} style={{position:'fixed',left:contextPoint.x,top:contextPoint.y,width:0,height:0,pointerEvents:'none'}}/></DropdownMenuTrigger>}
+      <DropdownMenuContent align="start" sideOffset={0} collisionPadding={8} onPointerUpCapture={preventRightRelease}
+        onCloseAutoFocus={event=>{event.preventDefault();handleRef.current?.focus()}}>{actions}</DropdownMenuContent>
+    </DropdownMenu>
+    </>
+
   )
 })
 

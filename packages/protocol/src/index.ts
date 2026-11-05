@@ -36,6 +36,8 @@ export * from "./providers.js";
 export * from "./networkProfiles.js";
 export * from "./hosts.js";
 export * from "./hostWire.js";
+export * from "./ordinaryTools.js";
+export * from "./ordinaryToolAccounts.js";
 export * from "./conversationExecution.js";
 
 // Agent runtime profile contracts

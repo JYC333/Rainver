@@ -16,10 +16,10 @@ import {
 import { getDbPool } from "../../db/pool.js";
 import { RetrievalProjectionService } from "../retrieval/index.js";
 import { assertProjectOwnerLevelForMutation, assertProjectWriter, canWriteProject, isProjectOwnerLevel, lockProjectAudienceForChange } from "./access.js";
-import { assertProjectReadable } from "./access.js";
+import { accessibleProjectIds, canReadProject, assertProjectReadable } from "./access.js";
 import { projectRetrievalRegistry } from "./retrievalAdapter.js";
 import { isUniqueViolation } from "./projectOperationRepository.js";
-import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
+import { contentReadSql, projectReadAccessSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { assertCanGrantRole } from "../access/roles.js";
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
 import { memorySensitivityReadSql } from "../memory/memorySensitivitySql.js";
@@ -116,8 +116,16 @@ export class PgProjectRepository {
     identity: SpaceUserIdentity,
     filters: { status?: string | null; limit: number; offset: number },
   ): Promise<Record<string, unknown>> {
+    const writable = await this.loadWritableContext(identity.spaceId, identity.userId);
     const params: unknown[] = [identity.spaceId];
     const clauses = ["space_id = $1", "deleted_at IS NULL"];
+    // Filter before counting and paginating: a Space membership alone does
+    // not put another person's Project in this user's list. Space admins
+    // retain the metadata entry from which they manage Project membership.
+    if (!writable.spaceAdmin) {
+      params.push(identity.userId);
+      clauses.push(projectReadAccessSql("projects.space_id", "projects.id", "$2"));
+    }
     if (filters.status) {
       params.push(filters.status);
       clauses.push(`status = $${params.length}`);
@@ -134,12 +142,14 @@ export class PgProjectRepository {
         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, filters.limit, filters.offset],
     );
-    const writable = await this.loadWritableContext(identity.spaceId, identity.userId);
+    const readable = await accessibleProjectIds(this.db, identity.spaceId, identity.userId, rows.rows.map(row => row.id));
     const items = rows.rows.map((row) =>
       projectToOut(
         row,
         canSeeSettings(writable, identity.userId, row),
         canApproveProjectContext(writable, identity.userId, row),
+        readable.has(row.id),
+        grantableMemberRole(writable.spaceRole, identity.userId, row),
       ),
     );
     return page(items, countFromRow(total.rows[0]), filters.limit, filters.offset);
@@ -225,7 +235,7 @@ export class PgProjectRepository {
         now,
       });
       result.rows[0]!.active_brief_version_id = briefId;
-      return projectToOut(result.rows[0]!, true, true);
+      return projectToOut(result.rows[0]!, true, true, true, "owner");
     });
   }
 
@@ -237,7 +247,9 @@ export class PgProjectRepository {
     // owner|member) see it; other space members get a null placeholder.
     const includeSettings = await canWriteProject(this.db, identity.spaceId, projectId, identity.userId);
     const canApproveContext = await isProjectOwnerLevel(this.db, identity.spaceId, projectId, identity.userId);
-    return projectToOut(row, includeSettings, canApproveContext);
+    return projectToOut(row, includeSettings, canApproveContext,
+      await canReadProject(this.db, identity.spaceId, projectId, identity.userId),
+      await this.grantableProjectRole(identity, row));
   }
 
   async update(
@@ -294,6 +306,8 @@ export class PgProjectRepository {
       result.rows[0]!,
       true,
       await isProjectOwnerLevel(this.db, identity.spaceId, projectId, identity.userId),
+      await canReadProject(this.db, identity.spaceId, projectId, identity.userId),
+      await this.grantableProjectRole(identity, result.rows[0]!),
     );
   }
 
@@ -322,6 +336,8 @@ export class PgProjectRepository {
       result.rows[0]!,
       true,
       await isProjectOwnerLevel(this.db, identity.spaceId, projectId, identity.userId),
+      await canReadProject(this.db, identity.spaceId, projectId, identity.userId),
+      await this.grantableProjectRole(identity, result.rows[0]!),
     );
   }
 
@@ -734,7 +750,7 @@ export class PgProjectRepository {
    * the Space's owner hand out any; a Space admin runs the roster but does not
    * make owners.
    */
-  private async grantableProjectRole(identity: SpaceUserIdentity, project: ProjectRow): Promise<string | null> {
+  private async grantableProjectRole(identity: SpaceUserIdentity, project: ProjectRow): Promise<"owner" | "member" | null> {
     if (project.owner_user_id === identity.userId) return "owner";
     const role = await this.db.query<{ role: string }>(
       `SELECT role FROM space_memberships
@@ -742,9 +758,7 @@ export class PgProjectRepository {
       [identity.spaceId, identity.userId],
     );
     const spaceRole = role.rows[0]?.role;
-    if (spaceRole === "owner") return "owner";
-    if (spaceRole === "admin") return "member";
-    return null;
+    return grantableMemberRole(spaceRole, identity.userId, project);
   }
 
   /** Taking away the role a member holds now takes the standing to grant it. */
@@ -919,7 +933,7 @@ export class PgProjectRepository {
     );
     const spaceRole = role.rows[0]?.role;
     if (spaceRole === "owner" || spaceRole === "admin") {
-      return { spaceAdmin: true, memberProjectIds: new Set(), ownerProjectIds: new Set() };
+      return { spaceRole, spaceAdmin: true, memberProjectIds: new Set(), ownerProjectIds: new Set() };
     }
     const members = await this.db.query<{ project_id: string; role: string }>(
       `SELECT project_id, role FROM project_members
@@ -928,6 +942,7 @@ export class PgProjectRepository {
       [spaceId, userId],
     );
     return {
+      spaceRole: spaceRole ?? null,
       spaceAdmin: false,
       memberProjectIds: new Set(members.rows.map((row) => row.project_id)),
       ownerProjectIds: new Set(members.rows.filter((row) => row.role === "owner").map((row) => row.project_id)),
@@ -963,9 +978,15 @@ export class PgProjectRepository {
 }
 
 interface WritableContext {
+  spaceRole: string | null;
   spaceAdmin: boolean;
   memberProjectIds: Set<string>;
   ownerProjectIds: Set<string>;
+}
+
+function grantableMemberRole(spaceRole: string | null | undefined, userId: string, row: ProjectRow): "owner" | "member" | null {
+  if (row.owner_user_id === userId || spaceRole === "owner") return "owner";
+  return spaceRole === "admin" ? "member" : null;
 }
 
 function canSeeSettings(ctx: WritableContext, userId: string, row: ProjectRow): boolean {
@@ -996,6 +1017,8 @@ function projectToOut(
   row: ProjectRow,
   includeSettings = true,
   currentUserCanApproveContext = false,
+  currentUserCanRead = true,
+  grantableRole: "member" | "owner" | null = null,
 ): Record<string, unknown> {
   return {
     id: row.id,
@@ -1012,6 +1035,8 @@ function projectToOut(
     active_brief_version_id: row.active_brief_version_id,
     current_user_can_approve_context: currentUserCanApproveContext,
     current_user_can_write: includeSettings,
+    current_user_can_read: currentUserCanRead,
+    current_user_grantable_member_role: grantableRole,
     created_at: dateIso(row.created_at) ?? new Date(0).toISOString(),
     updated_at: dateIso(row.updated_at) ?? new Date(0).toISOString(),
     archived_at: dateIso(row.archived_at),

@@ -298,3 +298,22 @@ export const ProjectOverviewResponseSchema = z
     in_progress: z.array(ProjectRunningOperationSchema),
   })
   .passthrough();
+
+/** Shared Project metadata is discoverable; these flags describe internal access. */
+export const ProjectAccessSchema = z.object({
+  current_user_can_read: z.boolean(),
+  current_user_grantable_member_role: z.enum(["member", "owner"]).nullable(),
+});
+export type ProjectAccess = z.infer<typeof ProjectAccessSchema>;
+export const ProjectMemberRoleSchema = z.enum(["viewer", "member", "owner"]);
+export const ProjectMemberInputSchema = z.object({
+  user_id: IdSchema,
+  role: ProjectMemberRoleSchema.default("member"),
+}).strict();
+export type ProjectMemberInput = z.input<typeof ProjectMemberInputSchema>;
+export const ProjectMemberSchema = z.object({
+  id: IdSchema, space_id: IdSchema, project_id: IdSchema, user_id: IdSchema,
+  role: ProjectMemberRoleSchema, status: z.enum(["active", "invited", "revoked"]),
+  created_at: ISODateTimeSchema, updated_at: ISODateTimeSchema,
+});
+export type ProjectMember = z.infer<typeof ProjectMemberSchema>;

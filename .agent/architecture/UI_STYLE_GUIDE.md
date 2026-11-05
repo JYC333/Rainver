@@ -46,7 +46,7 @@ authorize restyling unrelated pages.
 | --- | --- | --- |
 | Action | `components/ui/button.tsx` | Use supported variants/sizes; do not recreate a button with a bare link or local CSS |
 | Navigation styled as an action | `Button asChild` + `SpaceLink`/safe link | Preserve link semantics and scope while matching the action group |
-| Dropdown | `components/ui/select.tsx` | Use `options`, `value`, `onChange`, accessible label and disabled state; no bare `<select>` |
+| Dropdown | `components/ui/select.tsx` | Use `options`, `value`, `onChange`, accessible label and disabled state; no bare `<select>`. Keyboard: Enter/Space/arrow opens on the selected option, arrows/Home/End move (disabled skipped), Enter chooses and returns to the trigger, Escape closes only the menu (also in a dialog), Tab leaves from the trigger's place in the page |
 | Single/multiline entry | shared `Input` / `Textarea` | Retain token surfaces, border, focus and disabled behaviour |
 | Card/dialog/tabs | shared `Card`, dialog and tabs | Keep shared surface, selection, focus and keyboard conventions |
 | Interactive floating detail | `components/ui/popover.tsx` | Use the theme-token Radix surface for source/context cards; keep collision handling and dismissal with Radix. Tooltips remain for noninteractive hints |

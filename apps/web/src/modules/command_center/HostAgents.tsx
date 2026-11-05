@@ -300,9 +300,10 @@ export default function HostAgents({
     })
 
   return (
-    <div className="w-full border-t pt-2 space-y-1" data-testid={`host-agents-${host.id}`}>
+    <div className="w-full border-t border-border pt-2 space-y-1" data-testid={`host-agents-${host.id}`}>
       <div className="flex items-center justify-between">
-        <p className="text-xs font-medium">Agents</p>
+        {/* Under the Host detail's "Agent Runtimes" heading: these are copies, not Agents. */}
+        <p className="text-xs font-medium">Installed copies</p>
         {manageable && (
           <Button size="sm" variant={adding ? 'ghost' : 'outline'} disabled={!online} onClick={toggleAdding}>
             {adding ? 'Close' : 'Add agent…'}

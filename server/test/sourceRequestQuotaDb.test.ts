@@ -8,10 +8,13 @@ const group = () => sourceQuotaGroup(randomUUID(), "provider-endpoint");
 describe("service account request admission", () => {
   it("shares hard limits across concurrent workers and all windows", async () => {
     const key = group();
-    const admissions = await Promise.all(Array.from({ length: 30 }, () => admitSourceRequest(db.pool, key, [{ window: "minute", limit: 20 }, { window: "day", limit: 7 }])));
+    // Windows are clock-aligned and a refused call past a boundary starts the
+    // next window at zero, so a concurrent batch is asserted on hour and day
+    // windows a loaded run will not straddle; minute expiry is covered below.
+    const admissions = await Promise.all(Array.from({ length: 30 }, () => admitSourceRequest(db.pool, key, [{ window: "hour", limit: 20 }, { window: "day", limit: 7 }])));
     expect(admissions.filter(r => r.allowed)).toHaveLength(7);
     const state = await db.pool.query(`SELECT windows_json FROM source_request_quota_state WHERE group_key=$1`, [key]);
-    expect(state.rows[0].windows_json.minute.used).toBe(7);
+    expect(state.rows[0].windows_json.hour.used).toBe(7);
     expect(state.rows[0].windows_json.day.used).toBe(7);
   });
   it("retains omitted restrictions and UTC reset boundaries across new callers", async () => {
@@ -40,12 +43,12 @@ describe("service account request admission", () => {
 
 it("shares account daily limits across endpoints and debits endpoint limits atomically", async () => {
   const account = group(), endpointA = group(), endpointB = group();
-  const send = (endpoint:string) => admitSourceRequestGroups(db.pool,[{key:account,windows:[{window:"day",limit:3}]},{key:endpoint,windows:[{window:"minute",limit:2}]}]);
+  const send = (endpoint:string) => admitSourceRequestGroups(db.pool,[{key:account,windows:[{window:"day",limit:3}]},{key:endpoint,windows:[{window:"day",limit:2}]}]);
   const results = await Promise.all(Array.from({length:20},(_,i)=>send(i%2 ? endpointA:endpointB)));
   expect(results.filter(r=>r.allowed)).toHaveLength(3);
   const {rows} = await db.pool.query(`SELECT group_key, windows_json FROM source_request_quota_state WHERE group_key=ANY($1::text[])`,[[account,endpointA,endpointB]]);
   expect(rows.find(r=>r.group_key===account).windows_json.day.used).toBe(3);
-  expect(rows.filter(r=>r.group_key!==account).reduce((sum,r)=>sum+r.windows_json.minute.used,0)).toBe(3);
+  expect(rows.filter(r=>r.group_key!==account).reduce((sum,r)=>sum+r.windows_json.day.used,0)).toBe(3);
 });
 
 it("honors an HTTP-date cooldown and treats a missing header conservatively", async () => {

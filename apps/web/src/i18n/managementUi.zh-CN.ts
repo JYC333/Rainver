@@ -1,6 +1,43 @@
 /** UI copy: Prompts, Skills, plugins, project files, network profiles and the job queue. */
 export const managementUiZhCN = {
   management_ui: {
+    project_members: {
+      "loading_project": "正在加载项目…",
+      "title": "成员",
+      "description": "从当前空间成员中添加人员。加入空间不会自动获得本项目的访问权限。",
+      "retry": "重试",
+      "loading": "正在加载成员…",
+      "creator": "项目创建者 · 始终拥有访问权限",
+      "role_viewer": "查看者",
+      "role_member": "成员",
+      "role_owner": "所有者",
+      "unavailable_person": "不可用的空间成员",
+      "role_for": "{{name}} 的角色",
+      "remove_person": "移除 {{name}}",
+      "remove": "移除",
+      "add": "添加成员",
+      "person": "空间成员",
+      "choose_person": "选择空间成员",
+      "role": "项目角色",
+      "no_candidates": "暂无可添加的其他空间成员，请先邀请新用户加入空间。",
+      "roles_help": "查看者可以阅读，成员可以编辑，所有者可以审批项目配置。项目创建者和空间管理员负责管理成员。",
+      "remove_title": "移除项目成员？",
+      "remove_help": "移除后，该用户将失去项目及其对话和工作的访问权限，但仍保留空间成员身份。",
+      "access_title": "需要项目访问权限",
+      "access_help": "你已加入此空间，因此可以看到项目基本信息。如需访问项目内的工作和对话，请联系项目创建者或空间管理员将你添加为项目成员。",
+      "manager_help": "你可以管理本项目的成员。如果你也需要进入项目，请通过“成员”将自己添加到项目。",
+      "refresh_access": "重新检查权限",
+      "limited": "需要项目授权"
+},
+    instance_invite: {
+      "title": "邀请注册",
+      "description": "仅创建账号和个人空间，不加入共享空间。请复制并自行发送邀请链接，有效期为 7 天。",
+      "email": "受邀邮箱",
+      "creating": "正在生成…",
+      "generate": "生成邀请链接",
+      "failed": "无法生成邀请，请检查邮箱和管理员权限后重试。",
+      "link": "{{email}} 的注册邀请"
+},
     host_catalog: {
       "more_label": "{{host}} 上 {{name}} 的更多操作",
       "version_management": "版本管理",
@@ -415,6 +452,17 @@ export const managementUiZhCN = {
       attempt: '第 {{number}} 次尝试',
       settlement_pending: '结算待完成',
       settlement_pending_hint: 'Agent 已完成；把结果写入任务和计划的步骤仍在重试（{{reason}}）。',
+    },
+    run_workflow_save: {
+      draft_saved: '工作流草稿已保存',
+      draft_saved_hint: '草稿需要在“演进”中审阅并晋升后才能启动。',
+      open_draft: '打开草稿',
+      proposal_created: '已创建待审阅的工作流提案',
+      proposal_created_hint: '接受提案后会保存草稿，然后在“演进”中晋升。',
+      review_proposal: '审阅提案',
+      accepted_draft: '已接受——工作流草稿已创建。',
+      accepted_asset: '已接受——资产版本已更新。',
+      open_in_evolution: '在“演进”中打开',
     },
   },
 }

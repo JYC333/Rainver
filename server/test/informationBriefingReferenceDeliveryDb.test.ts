@@ -104,11 +104,11 @@ async function addLocalProfile() {
 }
 
 /** Where orchestration routes the Run: its Profile and the binding persisted on the Run. */
-interface Route { profile: string; runtimeKey: string; providerId: string | null; backendMode: "runtime_native" | "model_provider"; hostDaemon: boolean }
+interface Route { profile: string; runtimeKey: string; providerId: string | null; backendMode: "runtime_native" | "model_provider" }
 /** The native CLI on the host: an external destination (the runtime owner's account). */
-const NATIVE: Route = { profile: PROFILE, runtimeKey: "claude_code", providerId: null, backendMode: "runtime_native", hostDaemon: true };
-/** Bound to the trusted local ModelProvider, which the Delivery itself calls: a local-provider destination. */
-const LOCAL: Route = { profile: LOCAL_PROFILE, runtimeKey: "opencode", providerId: LOCAL_PROVIDER, backendMode: "model_provider", hostDaemon: false };
+const NATIVE: Route = { profile: PROFILE, runtimeKey: "claude_code", providerId: null, backendMode: "runtime_native" };
+/** The Host CLI bound to the trusted local ModelProvider through its proxy lease: a local-provider destination. */
+const LOCAL: Route = { profile: LOCAL_PROFILE, runtimeKey: "opencode", providerId: LOCAL_PROVIDER, backendMode: "model_provider" };
 
 /**
  * Sends a message and takes its Run through the production chain up to the
@@ -129,7 +129,7 @@ async function sendAndPrepare(room: string, conversation: string, content: strin
   const orchestration = buildRunOrchestration(config).orchestration as unknown as { executionControlSnapshotWriter: (run: unknown, inputs: unknown) => Promise<{ id: string; work_context_setup_ref: { id: string } }> };
   const bindings = await new ExecutionControlSnapshotRepository(db.pool).resolveEffectiveBindingsForRun(routed);
   await new WorkContextService(db.pool).ensureForInvocation(owner, bindings.workContextScopeId, { agentId: AGENT, runtimeProfileId: route.profile });
-  const control = await orchestration.executionControlSnapshotWriter(routed, { dispatchesToHostDaemon: route.hostDaemon });
+  const control = await orchestration.executionControlSnapshotWriter(routed, {});
   const setup = (await db.pool.query(`SELECT * FROM work_context_setups WHERE id=$1`, [control.work_context_setup_ref.id])).rows[0];
   const turn = { work_context_scope_id: setup.work_context_scope_id, expected_setup_version: Number(setup.version), current_message_ref: { type: "message" as const, id: sent.message.id as string }, one_off_refs: [], invocation_purpose: "agent_task" as const };
   const settle = <T,>(promise: Promise<T>) => promise.then((value) => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error }));

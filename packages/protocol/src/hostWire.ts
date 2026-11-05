@@ -31,6 +31,15 @@ import {
 import { HostUsageQuotaSchema, LaunchWorkspaceSchema, LocationLaunchWorkspaceSchema, ManagedWorkspaceHeartbeatSchema, RuntimeAuthMethodSchema } from "./hosts.js";
 import { ConversationInputResourceSchema } from "./conversationInput.js";
 import { RuntimeKeySchema } from "./runtimeAuthority.js";
+import { OrdinaryToolActionSchema, OrdinaryToolResultSchema } from "./ordinaryTools.js";
+import {
+  HostLaunchOrdinaryToolsSchema,
+  HostOrdinaryAccountRequestFrameSchema,
+  HostOrdinaryAccountSessionCloseFrameSchema,
+  HostOrdinaryAccountSessionOpenFrameSchema,
+  OrdinaryAccountResultSchema,
+  OrdinaryAccountSessionEventSchema,
+} from "./ordinaryToolAccounts.js";
 import { HostSkillScanSchema, HostSkillFilesSchema, HostSkillCandidateSchema } from "./skills.js";
 
 /**
@@ -417,6 +426,12 @@ export const HostLaunchFrameSchema = z.object({
   isolation: HostLaunchIsolationSchema.optional(),
   /** Instance-admin-selected public route for a strict host; ignored by a trusted one. */
   egress_transport: HostEgressTransportSchema.optional(),
+  /**
+   * Ordinary CLI tools for this Run and the instructing person's own account
+   * (`ordinaryToolAccounts.ts`). Sent only to a daemon reporting
+   * `ordinary_tools_runs`; absent, the daemon changes nothing.
+   */
+  ordinary_tools: HostLaunchOrdinaryToolsSchema.optional(),
 });
 export type HostLaunchFrame = z.infer<typeof HostLaunchFrameSchema>;
 /** What a dispatcher supplies; the registry adds `type`, `run_id` and the `launch_id` nonce. */
@@ -700,6 +715,18 @@ export const HostUninstallToolFrameSchema = z.object({
   runtime_key: RuntimeKeySchema,
   version: z.string().min(1),
 });
+/**
+ * An ordinary CLI tool operation (`ordinaryTools.ts`). Sent only to a daemon
+ * whose capability report carries `ordinary_tools.protocol`; the action names a
+ * catalog tool and version, never a URL, archive or command.
+ */
+export const HostOrdinaryToolRequestFrameSchema = z.object({
+  type: z.literal("ordinary_tool_request"),
+  request_id: IdSchema,
+  operation: OrdinaryToolActionSchema,
+  /** Instance-admin-selected network route for built-in host artifact downloads. */
+  egress_transport: HostEgressTransportSchema.optional(),
+});
 export const HostLoginOpenFrameSchema = z.object({
   type: z.literal("login_open"),
   session_id: IdSchema,
@@ -822,6 +849,12 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
   HostUpdateOwnToolFrameSchema,
   HostInstallToolFrameSchema,
   HostUninstallToolFrameSchema,
+  HostOrdinaryToolRequestFrameSchema,
+  // Personal ordinary-tool accounts; sent only to a daemon that reports
+  // `ordinary_tool_accounts` as supported.
+  HostOrdinaryAccountRequestFrameSchema,
+  HostOrdinaryAccountSessionOpenFrameSchema,
+  HostOrdinaryAccountSessionCloseFrameSchema,
   HostLoginOpenFrameSchema,
   z.object({ type: z.literal("login_input"), session_id: IdSchema, data: z.string().max(LOGIN_INPUT_MAX_CHARS) }),
   /**
@@ -1033,6 +1066,9 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
     changed: z.boolean(),
     error: z.string().nullable(),
   }),
+  OrdinaryToolResultSchema.extend({ type: z.literal("ordinary_tool_result"), request_id: IdSchema }),
+  OrdinaryAccountResultSchema.extend({ type: z.literal("ordinary_account_result"), request_id: IdSchema }),
+  z.object({ type: z.literal("ordinary_account_session_event"), session_id: IdSchema, event: OrdinaryAccountSessionEventSchema }),
   z.object({
     type: z.literal("tool_result"),
     request_id: IdSchema,

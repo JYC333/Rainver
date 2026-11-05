@@ -6,22 +6,24 @@ Backend has the canonical schema,
 `/api/v1/knowledge` API, and proposal apply handlers. Frontend: `/knowledge` is a thin
 entry that redirects to the last-used workspace (default `/knowledge/notes`);
 `/knowledge/home` is an **optional** overview hub, never the forced landing. Sub-areas
-(Notes / Wiki / Sources / Cards) switch via an in-header breadcrumb switcher
+(Notes / Wiki / Sources / Cards / Domains) switch via an in-header breadcrumb switcher
 (`Knowledge / Notes ▼`) — there is **no** Knowledge scene sidebar or tab strip, so each
 workspace owns its own layout. Notes is a working-knowledge workspace (configurable
 collection tree + open-note tabs, create / edit + links/backlinks); Wiki is the KnowledgeItem browser under
-`/knowledge/wiki`; Sources lists evidence; Cards does not schedule reviews. The backend
+`/knowledge/wiki`; Sources lists evidence; Cards does not schedule reviews; Domains
+(`/knowledge/domains`) mounts the Focus Area list and detail. The backend
 supports source list/create/get/update/archive and item-source link CRUD;
 the web client exposes Sources as list-only evidence browsing. There is
 no automatic generation, assessment, or card-generation path.
 
 ### Frontend information architecture
 - **Knowledge** is first-level; **Notes** are working knowledge; **Wiki** is powered by
-  `KnowledgeItem`; **Sources** and **Cards** are Knowledge sub-areas.
+  `KnowledgeItem`; **Sources**, **Cards** and **Domains** are Knowledge sub-areas.
 - `/knowledge` opens the last-used workspace by default (Notes on a fresh client); the
   overview is reached intentionally at `/knowledge/home`, not forced on every visit.
 - Cross-section navigation is the breadcrumb switcher in `KnowledgeSectionHeader`
-  (last-used section persisted via `rememberKnowledgeSection`, excluding `home`).
+  (last-used section persisted via `rememberKnowledgeSection`, excluding `home` and
+  `domains`).
 - The Notes collection tree is **local to the Notes workspace** and loaded from the backend,
   never a third-level global nav tier. PARA (Inbox / Projects / Areas / Resources / Archive)
   is only the default initialization template for a space. `NotesPage` claims
@@ -316,7 +318,7 @@ than a missing button.
   `note_link` in one call) and `GET /api/v1/knowledge/objects/{id}/note-links`
   (what notes cite this object; the note `backlinks` route is note-keyed on
   both sides and cannot answer it).
-- Frontend Knowledge module (breadcrumb switcher, Notes workspace, Wiki/Sources/Cards, overview hub) under `apps/web/src/modules/knowledge/`
+- Frontend Knowledge module (breadcrumb switcher, Notes workspace, Wiki/Sources/Cards/Domains, overview hub) under `apps/web/src/modules/knowledge/`
 - Relation and evidence-link records backed by database rows, not only Markdown links
 
 ### Current Sources frontend
@@ -370,8 +372,8 @@ schema export/import serializes registry definitions; import creates draft
 object-profile proposals and never activates definitions directly. This registry is
 object schema config only; it does not add retrieval object types or write
 canonical Knowledge, Memory, Claim, Project, relation, or retrieval projection
-rows. Follow-up retrieval/context-layer quality work and non-goals are tracked in
-[ROADMAP_AND_FUTURE_RISKS.md](../architecture/ROADMAP_AND_FUTURE_RISKS.md#retrieval-and-context-layer-stabilization).
+rows. Follow-up retrieval/context-layer work is tracked in
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md#23-source--retrieval-leftovers).
 Canonical lifecycle ownership:
 KnowledgeItem writes are proposal-gated. Notes and Sources are direct CRUD,
 and retrieval projection rows are derived indexes that can be rebuilt from the
@@ -379,7 +381,7 @@ canonical tables.
 
 The projection indexes:
 
-- `KnowledgeItem` title, slug, aliases, content/plain text, excerpt, source URL,
+- `KnowledgeItem` title, slug, aliases, content/plain text, excerpt,
   item status, visibility, owner, Project Folder, accepted object relations, and
   item-source evidence links.
 - `Note` title, plain text, excerpt, status, Project Folder/project associations where
@@ -468,7 +470,10 @@ provenance is not treated as human ownership authority.
 Knowledge reads are viewer-aware:
 
 - `space_shared` is readable by any authenticated member of the current space.
-- Project Folder-scoped `space_shared` is readable by any authenticated member of the current space. There is no Project Folder-role narrowing.
+- Project Folder-scoped content also requires its folder's Project to be live and
+  readable (`projectFolderReadAccessSql`): inside a personal Space the folder imposes
+  no further restriction; in a shared Space the reader must be the Project owner or an
+  active Project member. There is no finer Project Folder-role narrowing.
 - `private` has owner base access and never consults grants; private content
   cannot omit its owner.
 - `selected_users` requires an active grant in `content_access_grants` for an
@@ -499,6 +504,16 @@ endpoints remain collaborative within the current scope.
 
 Knowledge proposal apply relies on proposal approval and the `proposal.apply` policy gate (`PgProposalApplyService`). The Knowledge appliers run no source-monitoring evaluation (it exists only in `modules/memory/sourceMonitoring.ts`). There is no evaluator for external or untrusted Activity/Artifact-derived Knowledge.
 
+Knowledge items promoted from a Note revision, Inquiry Thread revision or Experiment
+interpretation carry that exact source in `knowledge_items.pinned_source_ref_json`.
+The `knowledgePromotion` revalidation worker (`knowledgePromotion/revalidationService.ts`)
+consumes `domain_change_outbox` events for later Note or Thread revisions (an
+interpretation is immutable and never revalidated) and records
+one idempotent `knowledge_revalidation_outcomes` row per item and event
+(`no_impact`, `candidate_created`, or `already_superseded`). A material change
+creates a pending revalidation Knowledge Candidate for review; the worker never edits
+the Wiki item, which still changes only through an accepted proposal.
+
 ## Policy Actions
 
 - `knowledge.create`
@@ -516,7 +531,7 @@ These actions are `WIRED_VIA_PROPOSAL`: durable mutation is protected by `propos
 
 Project is not a Knowledge type. Project Folder is not a Knowledge type. They are contextual associations.
 
-KnowledgeItem rows may carry `project_id` and/or `project_folder_id`, but the primary content model must not be a project tree taxonomy.
+A KnowledgeItem's `space_objects` root may carry `primary_project_id` and/or `project_folder_id`, but the primary content model must not be a project tree taxonomy.
 
 ## Models
 
@@ -524,10 +539,12 @@ KnowledgeItem rows may carry `project_id` and/or `project_folder_id`, but the pr
 SpaceObject:                           # identity-and-governance root for every ontology object
   id, space_id                    # not Knowledge-owned: `ontology` owns the root (B12I)
   object_type                     # knowledge_item|note|source|person|organization|
-                                  #   claim|inquiry_thread|decision_case|experiment
+                                  #   claim|inquiry_thread|decision_case|experiment|
+                                  #   research_workflow
   title, summary                  # title is a projection of the domain's own label
   visibility, access_level
   owner_user_id, primary_project_id, project_folder_id
+  focus_area_id                   # classification only; never read by access checks
   created_by_user_id, created_by_agent_id, created_by_run_id
   created_at, updated_at, archived_at, deleted_at
                                   # NO status column — domain status lives on the
@@ -549,13 +566,14 @@ Note:                                 # working-knowledge layer (direct CRUD)
   version, content_hash           # optimistic version + revision history
   created_from_activity_id        # optional capture provenance (FK activity_records)
   project_role, role_project_id   # system-reserved Project notebook role:
-                                  #   understanding|questions|ideas|experiments,
+                                  #   understanding|questions|ideas|experiments|inbox,
                                   #   one per role per project (partial unique index).
                                   #   Membership is owned by
                                   #   modules/knowledge/noteProjectRoles.ts (B12F);
                                   #   the column carries only a format constraint.
                                   #   The role — never the title — is what binds the
-                                  #   Project research baseline.
+                                  #   Project research baseline (the first four) and
+                                  #   the Project quick-capture inbox (`inbox`).
 
 NoteLink:                             # working note UI links (direct CRUD; not canonical graph)
   id, space_id
@@ -609,9 +627,12 @@ KnowledgeItem:
   content_schema_version          # int, default 1
   plain_text                      # derived projection for search/preview/LLM context
   verification_status, reflection_status
-  tags_json, confidence, source_url
-  source_activity_id, source_artifact_id, created_from_proposal_id
-  approved_by_user_id
+  status                          # draft|active|superseded|archived|deleted (domain-owned)
+  version, deprecated_at
+  tags_json, confidence
+  created_from_proposal_id, approved_by_user_id
+  pinned_source_ref_json          # immutable pointer to the exact source revision this
+                                  #   version was promoted or revalidated from; null otherwise
 
 Claim:
   object_id, space_id             # object_id is PK/FK to SpaceObject.id
@@ -745,7 +766,7 @@ not replaced by Source.
 - `server/test/` - live schema and API tests for Knowledge surfaces
 - `server/src/modules/policy/` - Knowledge policy actions wired via proposal
 - `server/src/gateway/routeRegistry.ts` - active backend module registry entry
-- `apps/web/src/modules/knowledge/` - `KnowledgeModule` (index redirect + routes), `KnowledgeSectionHeader` (breadcrumb switcher), `utils.ts` (last-used section storage + canonical vocabularies), `KnowledgeOverviewPage` (`/knowledge/home`), `NotesPage` workspace + `NoteEditor`, `KnowledgePage`/`KnowledgeDetailPage` (Wiki), `SourcesPage`, `KnowledgeCardsPanel`
+- `apps/web/src/modules/knowledge/` - `KnowledgeModule` (index redirect + routes), `KnowledgeSectionHeader` (breadcrumb switcher), `utils.ts` (last-used section storage + canonical vocabularies), `KnowledgeOverviewPage` (`/knowledge/home`), `NotesPage` workspace + `NoteEditor`, `KnowledgePage`/`KnowledgeDetailPage` (Wiki), `SourcesPage`, `KnowledgeCardsPanel`; the `domains` routes mount `focusAreas/FocusAreasPage`
 - `apps/web/src/core/navigation.tsx` - first-level "Knowledge" rail item only (Knowledge has **no** scene; sections switch via the in-header breadcrumb)
 - `server/test/` - ingestion/review boundary and API contract tests
 

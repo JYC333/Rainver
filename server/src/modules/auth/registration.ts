@@ -5,7 +5,7 @@ import { withTransaction } from "../../db/tx.js";
 import { seedSpaceDefaults } from "../spaces/spaceSeeds.js";
 import { hashOpaqueToken, normalizeAuthEmail } from "./securityPolicy.js";
 
-type RegistrationAuthority = "bootstrap" | "space_invitation";
+type RegistrationAuthority = "bootstrap" | "space_invitation" | "instance_invitation";
 interface RegistrationIntentResult { intentId: string; claimSecret: string; authority: RegistrationAuthority; email: string; invitationId: string | null }
 interface RegistrationCompletion { userId: string; intentId: string; authority: RegistrationAuthority }
 
@@ -15,6 +15,7 @@ type RegistrationClient = {
 
 type PendingUser = { id: string; status: string };
 type Invitation = {
+  space_id: string | null;
   id: string;
   invited_email: string;
   status: string;
@@ -99,8 +100,8 @@ export class RegistrationService {
       } else {
         if (!invitationToken) throw new Error("registration_invitation_required");
         const invitationResult = await client.query<Invitation>(
-          `SELECT id, invited_email, status, expires_at, reserved_by_intent_id
-             FROM space_invitations
+          `SELECT id, space_id, invited_email, status, expires_at, reserved_by_intent_id
+             FROM user_invitations
             WHERE token_hash = $1
             FOR UPDATE`,
           [hashOpaqueToken(invitationToken)],
@@ -110,7 +111,7 @@ export class RegistrationService {
           throw new Error("registration_invitation_invalid");
         }
 
-        authority = "space_invitation";
+        authority = invitation.space_id ? "space_invitation" : "instance_invitation";
         invitationId = invitation.id;
 
         if (invitation.status === "reserved" && invitation.reserved_by_intent_id) {
@@ -141,7 +142,7 @@ export class RegistrationService {
       );
       if (invitationId) {
         const reserved = await client.query(
-          `UPDATE space_invitations
+          `UPDATE user_invitations
               SET status = 'reserved', reserved_by_intent_id = $1, reserved_at = now()
             WHERE id = $2 AND status = 'available'
             RETURNING id`,
@@ -151,6 +152,19 @@ export class RegistrationService {
       }
       return { intentId, claimSecret, authority, email, invitationId };
     });
+  }
+
+  async createInstanceInvitation(actorId: string, email: string) {
+    const invitedEmail = normalizeAuthEmail(email);
+    const token = randomBytes(32).toString("base64url");
+    const invitation = await this.pool.query<{ id: string; expires_at: Date | string }>(
+      `INSERT INTO user_invitations
+         (id, invited_email, token_hash, status, invited_by_user_id, created_at, expires_at)
+       VALUES ($1, $2, $3, 'available', $4, now(), now() + interval '7 days')
+       RETURNING id, expires_at`,
+      [randomUUID(), invitedEmail, hashOpaqueToken(token), actorId],
+    );
+    return { id: invitation.rows[0]!.id, invited_email: invitedEmail, token, expires_at: new Date(invitation.rows[0]!.expires_at).toISOString() };
   }
 
   async sessionUserId(sessionToken: string | undefined): Promise<string | null> {
@@ -204,19 +218,19 @@ export class RegistrationService {
         await seedSpaceDefaults(client, spaceId, input.userId);
       }
       if (intent.invitation_id) {
-        const invitation = await client.query<{ space_id: string; role: string; status: string; reserved_by_intent_id: string | null }>("SELECT space_id, role, status, reserved_by_intent_id FROM space_invitations WHERE id = $1 FOR UPDATE", [intent.invitation_id]);
+        const invitation = await client.query<{ space_id: string | null; role: string | null; status: string; reserved_by_intent_id: string | null; expires_at: Date | string }>("SELECT space_id, role, status, reserved_by_intent_id, expires_at FROM user_invitations WHERE id = $1 FOR UPDATE", [intent.invitation_id]);
         const row = invitation.rows[0];
-        if (!row || row.status !== "reserved" || row.reserved_by_intent_id !== intent.id) throw new Error("registration_invitation_invalid");
-        await client.query(
+        if (!row || row.status !== "reserved" || row.reserved_by_intent_id !== intent.id || new Date(row.expires_at).getTime() <= Date.now() || (row.space_id ? "space_invitation" : "instance_invitation") !== intent.authority) throw new Error("registration_invitation_invalid");
+        if (row.space_id) await client.query(
           `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
            VALUES ($1, $2, $3, $4, 'active', now(), now())
            ON CONFLICT (space_id, user_id)
            DO UPDATE SET role = EXCLUDED.role, status = 'active', updated_at = now()`,
           [randomUUID(), row.space_id, input.userId, row.role],
         );
-        await client.query("UPDATE space_invitations SET status = 'accepted', accepted_at = now() WHERE id = $1", [intent.invitation_id]);
+        await client.query("UPDATE user_invitations SET status = 'accepted', accepted_at = now() WHERE id = $1", [intent.invitation_id]);
       }
-      await client.query("UPDATE users SET status = 'active', registration_source = $1, updated_at = now() WHERE id = $2", [intent.authority === "space_invitation" ? "space_invitation" : "bootstrap", input.userId]);
+      await client.query("UPDATE users SET status = 'active', registration_source = $1, updated_at = now() WHERE id = $2", [intent.authority, input.userId]);
       await client.query("UPDATE registration_intents SET state = 'completed', completed_at = now(), last_activity_at = now() WHERE id = $1", [intent.id]);
       return { userId: input.userId, intentId: intent.id, authority: intent.authority };
     });
@@ -291,7 +305,7 @@ async function retireActiveIntents(client: RegistrationClient, pendingUserId: st
   );
   if (retired.rows.length) {
     await client.query(
-      `UPDATE space_invitations
+      `UPDATE user_invitations
           SET status = 'available', reserved_by_intent_id = NULL, reserved_at = NULL
         WHERE reserved_by_intent_id = ANY($1::text[])`,
       [retired.rows.map((row) => row.id)],
@@ -348,7 +362,7 @@ async function expireIntents(client: RegistrationClient, now: Date): Promise<num
 
   const intentIds = expired.rows.map((row) => row.id);
   await client.query(
-    `UPDATE space_invitations
+    `UPDATE user_invitations
         SET status = 'available', reserved_by_intent_id = NULL, reserved_at = NULL
       WHERE reserved_by_intent_id = ANY($1::text[])`,
     [intentIds],

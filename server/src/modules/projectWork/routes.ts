@@ -1,3 +1,4 @@
+import { configureProjectBoard } from "./boardConfiguration.js";
 import { readTaskHistory } from "./taskHistory.js";
 import type { FastifyInstance } from "fastify";
 import * as protocol from "@rainver/protocol";
@@ -32,6 +33,15 @@ export function registerRoutes(app: FastifyInstance, context: { config: ServerCo
     } catch (error) {
       return sendRouteError(reply, error);
     }
+  });
+
+  app.put("/api/v1/projects/:projectId/board/columns", async (request, reply) => {
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try {
+      const projectId=requiredString(params(request).projectId,"project_id");
+      await configureProjectBoard(pool(),identity,projectId,jsonBody(request));
+      return reply.send(await getProjectBoard(pool(),identity,projectId));
+    } catch(error){return sendRouteError(reply,error);}
   });
 
   app.get("/api/v1/tasks/:taskId/work-history",async(request,reply)=>{

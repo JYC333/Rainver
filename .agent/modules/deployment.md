@@ -175,8 +175,8 @@ that refuses to migrate on a failed dump, so it is reported as one `migrate` sta
 whose log tail carries the dump path. A `failed` stage ends the job at that stage;
 nothing rolls back automatically.
 
-**What an update does not carry.** It moves the four services' images and
-nothing else. The compose files, `ops/scripts` and `migrate.sh` the stages run
+**What an update does not carry.** It moves three services' images (`server`,
+`frontend`, `sandbox-runner`) and nothing else. The compose files, `ops/scripts` and `migrate.sh` the stages run
 are the host's `ops/` tree, mounted read-only, and the deployer's own image is
 never recreated (ADR 0020 §6). That tree may come from a checkout or the
 versioned production bundle published after CI pushes all four images. A release
@@ -201,7 +201,7 @@ parsed by strict schemas on both sides, and the deployer is the peer an update
 cannot upgrade. A change to that wire contract is therefore a change that
 requires the host step, not one an instance can adopt by pressing Update.
 
-**Drain.** While an `update` job is queued or running, three shared admission points
+**Drain.** While an `update` job is queued or running, four shared admission points
 consult one predicate (`instanceUpdatePending`):
 
 - `scanAutomationsAndFire` skips the tick, so a due automation stays due — no
@@ -213,9 +213,11 @@ consult one predicate (`instanceUpdatePending`):
   `agent.delegate` a way past the drain. The parent is parked in
   `waiting_for_dependency` while its child runs, so it is not counted by the drain
   and deferring the child does not stall it.
+- The `provider_task_run` job handler (bounded ProviderTask Runs) applies the same gate to a Run whose
+  effective trigger origin is drained, so bounded work waits rather than fails.
 - The job families that start an unattended Run themselves instead of enqueueing
   `agent_run` (`UNATTENDED_RUN_JOB_TYPES`: daily capture report, source
-  post-processing, source annotation) are deferred by job type, wrapped once where
+  post-processing, source annotation, Source goal tick) are deferred by job type, wrapped once where
   the handler registry is built.
 
 Together these stop every unattended Run that would occupy the instance for any

@@ -45,7 +45,6 @@ and triggers the pg@9 deprecation warning.
 - Run terminal status
 - Proposal status
 - MemoryEntry creation, update, archive, and provenance/source fields
-- Policy row creation and supersession
 - Runtime Context Policy version + active binding + typed audit write
 - Work Context Setup immutable version + base-version check + typed diff
 - Execution Control Snapshot creation before adapter invocation
@@ -545,7 +544,6 @@ and domain keys only; no member id leaves the repository.
 | Artifact persistence | Caller (`RunOrchestrationService`) | File storage write |
 | Proposal creation / acceptance / rejection | proposals module | Code patch file write |
 | Memory proposal apply | `PgProposalApplyService.accept` — one commit with rollback on failure | Source monitoring only (in-process) |
-| Policy proposal apply | `PgProposalApplyService.accept` — one commit | None |
 | Runtime Context Policy mutation | `RuntimeContextPolicyRepository.write` — version, binding, audit in one commit | None |
 | Execution control preflight | `ExecutionControlSnapshotRepository.createForRun` — one immutable insert before adapter | Adapter runs only after commit |
 | Work Context Setup mutation | `WorkContextService.create` — serialized base check, revalidation, immutable version and typed diff | None |
@@ -561,7 +559,7 @@ and domain keys only; no member id leaves the repository.
 | BackupService | Independent from ORM — no business commits | Tar/snapshot/file IO |
 | Deployment/deployer client | `deployment_jobs` persist (ADR 0020); socket/network remains outside the DB | High: socket/network |
 
-Advisory locks are process-local. `RunStep` ordering uses `MAX()+1`.
+Advisory locks are PostgreSQL locks shared by every server process on the database. `RunStep` ordering uses `MAX()+1`.
 
 ## Schema Authoring (drizzle-kit as a generator)
 
@@ -682,8 +680,11 @@ for this repository.
 ## Sources retained-body reading versions
 
 Sources distinguishes its operational `content_hash` (metadata/raw/text) from
-retained Reader body identity. Additive migrations 0011–0014 define the canonical
-body hash/revision and rolling-writer guards in PostgreSQL. The guards run at
+retained Reader body identity. Migration `0005_project_reading_and_source_goals`
+(the squashed form of the earlier reading migrations) defines the canonical
+body hash/revision (`source_items.reading_body_hash` / `reading_body_revision`,
+`source_item_user_states.read_body_revision`) and the rolling-writer guard
+functions and triggers in PostgreSQL. The guards run at
 actual Reader artifact-pointer/fallback-snapshot changes, normalize retained
 text, preserve revision zero on first retention, and advance only between known
 different bodies. Historical fallback snapshots cannot displace a newer one.
@@ -693,7 +694,7 @@ update cannot renew a stale completion. Application explicit writes still use
 Sources' state store and one transaction per authorized group. No feed/hash
 update or projection GET performs a new version write.
 
-Migration 0015 drops the unused `read_content_hash` introduced in the unpublished
-0009 migration. Current writers bind only `read_body_revision`; the released
-0008 writers and Sources body/state guard functions do not reference the removed
-column. Earlier migration files and their data backfills remain append-only.
+There is no `read_content_hash` column: the same migration adds it for its
+backfill and drops it before it ends. Current writers bind only
+`read_body_revision`, and the Sources body/state guard functions do not
+reference the removed column.

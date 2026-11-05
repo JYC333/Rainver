@@ -1,3 +1,5 @@
+import { isNotFoundError } from '../../lib/utils'
+import ProjectDetailPage from './ProjectDetailPage'
 import {useSpace} from '../../contexts/SpaceContext'
 import {registerInMemoryResidue,sessionEpoch} from '../../lib/sessionResidue'
 import { useEffect, useState } from 'react'
@@ -31,7 +33,7 @@ const primary = [
 ] as const
 
 /**
- * Six, flat. Reading/material and secondary collection views share Sources; Knowledge review
+ * Five, flat. Research is reached inside Inquiry. Reading/material and secondary collection views share Sources; Knowledge review
  * and Experiments are views of Inquiry; every Room's conversations are one
  * list under Conversations, and the Rooms page (roster, invitations) is
  * reached from there. Do not put them back into labeled groups, and do not
@@ -63,7 +65,14 @@ export default function ProjectAreaLayout() {
     // navigating to another must refresh the sidebar's attention badge, not
     // just wait for the projectId itself to change.
     let live=true;const epoch=sessionEpoch()
-    Promise.all([projectsApi.get(projectId), projectsApi.getOverview(projectId)])
+    projectsApi.get(projectId).then(async metadata => {
+      if (metadata.current_user_can_read === false) return [metadata, null] as const
+      try { return [metadata, await projectsApi.getOverview(projectId)] as const }
+      catch (error) {
+        if (isNotFoundError(error) || (error instanceof Error && 'status' in error && [401, 403].includes(Number(error.status)))) return [{ ...metadata, current_user_can_read: false }, null] as const
+        throw error
+      }
+    })
       .then(([nextProject, nextOverview]) => {
         if(!live||epoch!==sessionEpoch())return
         setLoadedScope(scope)
@@ -72,7 +81,7 @@ export default function ProjectAreaLayout() {
       })
       .catch(error => {
         if(!live||epoch!==sessionEpoch())return
-        if([401,403,404].includes(error?.status)){setLoadedScope('');setProject(null);setOverview(null)}
+        setLoadedScope(scope);setProject(null);setOverview(null)
       })
     return()=>{live=false}
   }, [projectId, pathname,spaceId,userId,cleared])
@@ -80,13 +89,16 @@ export default function ProjectAreaLayout() {
   useEffect(() => {
     let active = true;const epoch=sessionEpoch()
     const refreshOverview = () => {
+      if (project?.current_user_can_read === false) return
       void projectsApi.getOverview(projectId)
         .then(nextOverview => {
           if (active&&epoch===sessionEpoch()) setOverview(nextOverview)
         })
-        .catch(() => {
-          // Attention is advisory. Keep the last known overview if this
-          // event-driven refresh encounters a transient request failure.
+        .catch(error => {
+          if (active && epoch === sessionEpoch() && [401, 403, 404].includes(error?.status)) {
+            setOverview(null)
+            setProject(current => current ? { ...current, current_user_can_read: false } : current)
+          }
         })
     }
     window.addEventListener(REVIEW_ATTENTION_CHANGED_EVENT, refreshOverview)
@@ -94,7 +106,7 @@ export default function ProjectAreaLayout() {
       active = false
       window.removeEventListener(REVIEW_ATTENTION_CHANGED_EVENT, refreshOverview)
     }
-  }, [projectId,spaceId,userId])
+  }, [projectId,spaceId,userId,project?.current_user_can_read])
 
   // Capture is one affordance in the app shell, not one per Area and not a
   // second one per Project: a thought that arrives while doing an experiment
@@ -112,9 +124,11 @@ export default function ProjectAreaLayout() {
     try { localStorage.setItem('project.areas.open', String(areasOpen)) } catch { /* private mode */ }
   }, [areasOpen])
 
-  useDeclareProjectCaptureProject(projectId)
+  useDeclareProjectCaptureProject(loadedScope === scope && project?.current_user_can_read !== false ? projectId : null)
 
   const visibleProject=loadedScope===scope?project:null,visibleOverview=loadedScope===scope?overview:null
+  if (loadedScope !== scope) return <div className="p-6 text-sm text-muted-foreground">{t('management_ui.project_members.loading_project')}</div>
+  if (!visibleProject || visibleProject.current_user_can_read === false) return <ProjectDetailPage key={scope} onAccessChanged={() => setCleared(n => n + 1)} />
   return (
     <ProjectFolderConversationProvider key={projectId} projectId={projectId}>
       <div className="min-h-full lg:h-full lg:min-h-0 lg:overflow-hidden lg:grid lg:grid-cols-[220px_minmax(0,1fr)]">
@@ -204,7 +218,7 @@ export default function ProjectAreaLayout() {
           at never means leaving it. It renders the Room's own conversation, not
           a private one. */}
       <div className="flex min-w-0 lg:min-h-0 lg:overflow-hidden">
-        <main data-project-area-content className="min-w-0 flex-1 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain"><Outlet /></main>
+        <main data-project-area-content className="min-w-0 flex-1 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain"><Outlet context={{ onAccessChanged: () => setCleared(n => n + 1) }} /></main>
         <div data-shell-chrome className="contents"><ProjectChatSidecar /></div>
       </div>
       </div>

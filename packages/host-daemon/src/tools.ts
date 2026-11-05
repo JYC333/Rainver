@@ -471,7 +471,8 @@ export function platformKey(): string {
   return `${os}-${cpu}`;
 }
 
-async function extract(archive: string, url: string, dir: string, log: (line: string) => void): Promise<void> {
+/** Unpacks a verified artifact by its URL suffix; shared with ordinary CLI tools. */
+export async function extract(archive: string, url: string, dir: string, log: (line: string) => void): Promise<void> {
   if (/\.(tar\.gz|tgz|tar\.xz|tar\.bz2|tar)(\?.*)?$/i.test(url)) {
     await run("tar", ["-xf", archive, "-C", dir], dir, log);
     return;

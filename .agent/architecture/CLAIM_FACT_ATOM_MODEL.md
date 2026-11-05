@@ -51,8 +51,9 @@ and `memory_entries`.
 Knowledge is already a first-level product module:
 
 - API routes use `/api/v1/knowledge`.
-- Frontend routes use `/knowledge`, `/knowledge/wiki`, `/knowledge/notes`,
-  `/knowledge/sources`, and `/knowledge/cards`.
+- Frontend routes use `/knowledge`, `/knowledge/home`, `/knowledge/wiki`,
+  `/knowledge/notes`, `/knowledge/sources`, `/knowledge/cards`, and
+  `/knowledge/domains`.
 - Proposal types use `knowledge_*` for governed Wiki item writes. Relations use
   `object_relation_create` / `object_relation_delete`.
 - Protocol and retrieval types expose `knowledge_item`, `note`, `source`, and
@@ -238,11 +239,15 @@ Fields that belong here:
 - `plain_text`
 - `tags_json`
 - `confidence`
+- `status`
 - `verification_status`
 - `reflection_status`
 - `root_item_id`, `supersedes_item_id`, `redirect_to_item_id`, `version`
 - `created_from_proposal_id`, `approved_by_user_id`
 - `deprecated_at`
+- `pinned_source_ref_json`: immutable pointer to the exact Note revision,
+  Inquiry Thread revision, or Experiment interpretation the version was promoted
+  or revalidated from (null otherwise)
 
 `source` should remain the `sources` table, not a `knowledge_kind`. Notes should
 remain direct-CRUD working knowledge, not governed Wiki items.
@@ -383,8 +388,8 @@ All canonical claim writes are proposal-gated:
 1. Extraction, Context Brief, retrieval diagnostics, maintenance scans, or user
    action creates a proposal/review packet. The implemented
    `claim_candidate_packet` starts from selected `retrieval_brief`,
-   `retrieval_maintenance_report`, `retrieval_eval_report`, and
-   `memory_maintenance_report` artifacts.
+   `retrieval_maintenance_report`, `retrieval_eval_report`,
+   `memory_maintenance_report`, and `claim_contradiction_report` artifacts.
 2. The packet contains proposed claims, claim/object-relation candidates,
    review notes, evidence refs, source connection ids, source-policy snapshots,
    confidence, markers, and proposed child proposal payloads when enough

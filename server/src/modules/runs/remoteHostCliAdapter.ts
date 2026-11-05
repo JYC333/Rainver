@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type InvocationDelivery, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent, type RuntimeSessionConfigDroppedSelection as DroppedSessionConfigSelection } from "@rainver/protocol";
+import { ordinaryToolsForLaunch } from "./ordinaryToolLaunch.js";
+import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type HostLaunchOrdinaryTools, type InvocationDelivery, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent, type RuntimeSessionConfigDroppedSelection as DroppedSessionConfigSelection } from "@rainver/protocol";
 import type { ContentBlock } from "./cliConversationProtocol.js";
 import type { CredentialSpendDeps } from "../policy/credentialSpend.js";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
@@ -26,6 +27,7 @@ import { sharedHostConnectionRegistry, type HostConnectionRegistry, type HostRun
 import { createThreadEventNormalizer, type ThreadEventDraft } from "../hosts/threadEventNormalization.js";
 import { getDbPool } from "../../db/pool.js";
 import { ConversationInputService } from "../sessions/conversationInputService.js";
+import { promptInputLimitFailure, RUNTIME_INPUT_TOO_LARGE } from "./promptInputLimit.js";
 import type { ServerConfig } from "../../config.js";
 import type { ProviderProxyLeaseRegistry } from "../providers/proxy/lease.js";
 import type { Queryable } from "../routeUtils/common.js";
@@ -636,12 +638,47 @@ async function runRemoteHostCliAdapter(
 
   if (stopRequested()) return stoppedBeforeLaunch();
 
+  // Ordinary CLI tools and the instructing person's own account
+  // (`ordinaryToolLaunch.ts`). Only a Host read that succeeded and shows an
+  // older daemon means "send nothing". A read that failed is not that: a
+  // daemon that supports the field launches without it as before the
+  // feature, so the Run would get the machine's own `LARKSUITE_CLI_*`
+  // selection instead of a fresh empty state, and could reach the Host
+  // user's login. The Run fails before anything is sent; a retry reads again.
+  let ordinaryTools: Awaited<ReturnType<typeof ordinaryToolsForLaunch>>;
+  try {
+    ordinaryTools = await ordinaryToolsForLaunch(deps.config?.databaseUrl, hostId, input.run, deps.db);
+  } catch {
+    return remoteFailureWithEvent(
+      input,
+      spec.runtime_key,
+      "ordinary_tools_unavailable",
+      "Could not read the execution host's ordinary CLI tools; the Run was not started. Try again.",
+      startedAt,
+    );
+  }
+  if (ordinaryTools.instruction) supplementalInstructions.push(ordinaryTools.instruction);
+
   if (input.invocation_delivery) {
     promptBlocks = [acpRuntimeContextPromptBlocks(
       input.invocation_delivery,
       hydratedBlocks,
       supplementalInstructions,
     )];
+  }
+
+  // Whatever put it there — a person's message, a delegation, a resume — a
+  // prompt the runtime would refuse fails here with its size, not later as
+  // the runtime's opaque error.
+  const oversized = promptInputLimitFailure({
+    runtimeName: spec.display_name,
+    limit: spec.invocation.max_prompt_chars,
+    prompts: input.invocation_delivery || !prompt ? [] : [prompt],
+    promptBlocks,
+  });
+  if (oversized) {
+    await input.thread_event_sink?.([{ event_type: "diagnostic", text: oversized }]);
+    return remoteFailureWithEvent(input, spec.runtime_key, RUNTIME_INPUT_TOO_LARGE, oversized, startedAt);
   }
 
   // Named here because the result envelope reports it too, and both must be
@@ -686,6 +723,7 @@ async function runRemoteHostCliAdapter(
     egressTransport,
     input.max_concurrent_runs ?? null,
     launchId,
+    ordinaryTools.field ?? null,
   );
   let stdoutText = "";
   // Provider binding is authoritative for a bound run. User-selected generic
@@ -1177,6 +1215,8 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     private readonly maxConcurrentRuns: number | null = null,
     /** Recorded on the Run's attempt by the caller; uploads are accepted against it. */
     private readonly launchId: string = randomUUID(),
+    /** Ordinary tools and the instructing person's account; null for a daemon without the capability. */
+    private readonly ordinaryTools: HostLaunchOrdinaryTools | null = null,
   ) {}
 
   async runCommand(input: Parameters<CliCommandExecutor["runCommand"]>[0]): Promise<CliExecutionResult> {
@@ -1267,6 +1307,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         input_resources: this.inputResources,
         isolation: this.isolation,
         egress_transport: this.egressTransport,
+        ...(this.ordinaryTools ? { ordinary_tools: this.ordinaryTools } : {}),
       },
       onOutput,
       (chunk) => { lastOutputAt = Date.now(); input.on_stderr_chunk?.(chunk); },

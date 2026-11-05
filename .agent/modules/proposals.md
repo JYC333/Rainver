@@ -92,7 +92,9 @@ The public proposal review/apply surface is owned by the server:
   `evolvable_asset_version_promote`, `workflow_save`, `plan_review`,
   `plan_checkpoint`, `workflow_execution_checkpoint`,
   `evolution_bundle_rollback`, `research_query_strategy_activation`,
-  `research_history_extend`, `project_brief_publish`, and `egress_review`.
+  `research_history_extend`, `project_brief_publish`,
+  `project_information_monitoring_details`,
+  `project_information_monitoring_activation`, and `egress_review`.
   Unregistered proposal types fail closed until
   their owning domain registers an applier.
   Migration `0004_remove_capability_layer` supersedes pending legacy capability

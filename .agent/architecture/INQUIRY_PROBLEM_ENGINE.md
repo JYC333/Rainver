@@ -111,8 +111,8 @@ Focused real-PG coverage lives in `server/test/inquiryProblemEngineDb.test.ts`,
 `inquiryProblemReadModelDb.test.ts`, and the existing Thread/Signal/
 DirectWrites/ReadPlane suites. Protocol parsing is covered by
 `packages/protocol/test/problemEngine.test.ts`. Schema, registered actions,
-policy, Updates and Research consumers are checked separately. Migration and
-retirement coverage lives in `problemUpgradeDrillDb.test.ts`.
+policy, Updates and Research consumers are checked separately. The migration
+chain itself is covered by `baselineSchema.test.ts`.
 
 ## Current consumers and references
 
@@ -207,7 +207,7 @@ History pages closeouts and work independently; cognitive Iterations remain a
 separate history.
 
 A nullable `scope_boundary` is part of the Thread definition, introduced by
-Drizzle migration 0016. Only a semantic Definition revision changes it, using
+Drizzle migration `0009_problem_engine`. Only a semantic Definition revision changes it, using
 the existing Project/Thread locks, version increment and immutable revision
 snapshot. Older snapshots are preserved. It is not a cognitive judgment patch.
 Question resolution criteria and hypothesis falsification criteria use the same
@@ -220,4 +220,4 @@ The Research section uses bound P3 calls/results and explicit applicability
 assessment into Verify. Read-only/closed Threads retain readable history;
 backend gates remain authoritative for stale clients.
 
-One-time offline cutover, static archives and actual backup/restore verification are documented in [the upgrade guide](PROBLEM_ENGINE_UPGRADE.md).
+One-time offline cutover and static archives are documented in [the upgrade guide](PROBLEM_ENGINE_UPGRADE.md).

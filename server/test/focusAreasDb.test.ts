@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { useTestDatabase } from "./support/testDatabase.js";
-import { FocusAreaService } from "../src/modules/focusAreas/service.js";
+import { FOCUS_AREA_CONTENTS_PAGE_SIZE, FocusAreaService } from "../src/modules/focusAreas/service.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
@@ -134,6 +134,82 @@ describe("focus areas (real Postgres)", () => {
     await expect(service.setProjectFocusArea(otherIdentity, projectId, null)).rejects.toMatchObject({
       statusCode: expect.any(Number),
     });
+  });
+
+  it("continues every list past one page without widening what the reader sees", async () => {
+    if (!db.available) return;
+    const service = new FocusAreaService(db.pool);
+    const area = await service.create(identity, { name: `Paged ${randomUUID()}` });
+    // One shared timestamp for every row, so the order rests entirely on the
+    // id tie-breaker, and more rows than one default page holds.
+    const at = "2026-03-04T05:06:07.123456Z";
+    const insertMany = (count: number, visibility: string) => db.pool.query<{ id: string }>(
+      `INSERT INTO space_objects
+         (id, space_id, object_type, title, owner_user_id, visibility, access_level, focus_area_id, created_at, updated_at)
+       SELECT gen_random_uuid()::text, $1, 'note', 'Paged ' || n, $2, $3, 'full', $4, $5, $5
+         FROM generate_series(1, $6::int) AS n
+       RETURNING id`,
+      [SPACE, OWNER, visibility, area.id, at, count],
+    );
+    const shared = (await insertMany(FOCUS_AREA_CONTENTS_PAGE_SIZE + 30, "space_shared")).rows.map((r) => r.id);
+    const hidden = (await insertMany(20, "private")).rows.map((r) => r.id);
+
+    const readAll = async (reader: SpaceUserIdentity) => {
+      const ids: string[] = [];
+      let cursor: string | undefined;
+      let pages = 0;
+      do {
+        const page = await service.contents(reader, area.id, { objectsCursor: cursor });
+        expect(page.objects.length).toBeLessThanOrEqual(FOCUS_AREA_CONTENTS_PAGE_SIZE);
+        ids.push(...page.objects.map((o) => o.id));
+        cursor = page.objects_next_cursor ?? undefined;
+        pages += 1;
+      } while (cursor && pages < 10);
+      return { ids, pages };
+    };
+
+    const mine = await readAll(identity);
+    expect(mine.pages).toBe(2);
+    expect(new Set(mine.ids).size).toBe(mine.ids.length);
+    expect([...mine.ids].sort()).toEqual([...shared, ...hidden].sort());
+
+    // Paging happens inside the read gate: the other member pages through the
+    // shared notes only, and a page boundary never lets a private one through.
+    const theirs = await readAll(otherIdentity);
+    expect(theirs.pages).toBe(2);
+    expect(new Set(theirs.ids).size).toBe(theirs.ids.length);
+    expect([...theirs.ids].sort()).toEqual([...shared].sort());
+
+    // Projects page the same way. Only active names are unique, so an active
+    // Project and archived ones can share a name; the id breaks that tie.
+    const now = new Date().toISOString();
+    const projectIds = [randomUUID(), randomUUID(), randomUUID()];
+    for (const [index, projectId] of projectIds.entries()) {
+      await db.pool.query(
+        `INSERT INTO projects (id,space_id,owner_user_id,name,status,focus_area_id,created_at,updated_at)
+         VALUES ($1,$2,$3,'Same name',$4,$5,$6,$6)`,
+        [projectId, SPACE, OWNER, index === 0 ? "active" : "archived", area.id, now],
+      );
+    }
+    await seedMainlineRoomsForAllProjects(db.pool);
+    const first = await service.contents(otherIdentity, area.id, { limit: 2 });
+    expect(first.projects).toHaveLength(2);
+    expect(first.projects_next_cursor).not.toBeNull();
+    const second = await service.contents(otherIdentity, area.id, {
+      limit: 2,
+      projectsCursor: first.projects_next_cursor!,
+    });
+    expect(second.projects_next_cursor).toBeNull();
+    expect([...first.projects, ...second.projects].map((p) => p.id)).toEqual([...projectIds].sort());
+
+    // A cursor only continues the list and area it came from.
+    const other = await service.create(identity, { name: `Other ${randomUUID()}` });
+    await expect(service.contents(identity, other.id, { projectsCursor: first.projects_next_cursor! }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    await expect(service.contents(identity, area.id, { objectsCursor: first.projects_next_cursor! }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    await expect(service.contents(identity, area.id, { objectsCursor: "not-a-cursor" }))
+      .rejects.toMatchObject({ statusCode: 422 });
   });
 
   it("refuses to file content into an archived area", async () => {

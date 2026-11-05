@@ -14,6 +14,24 @@ an execution host (ADR 0016), and its login lives inside that copy's own
 `HOME` on that host — never copied here, never brokered per run, never on a
 path the control plane knows (BOUNDARIES B64).
 
+A personal ordinary-tool account (the official `lark-cli`) is the same kind:
+- **Where it lives.** It stays on the Host, under the daemon's
+  `ordinary-tool-state/<tool>/<key>/`. The key is derived from the Rainver
+  user, and the control plane never learns a path.
+- **What Rainver keeps.** Nothing of the credential is stored, logged or
+  audited. Only the protocol fields cross the wire:
+  - a status summary;
+  - during setup or login, the official authorization link, the user code
+    and its expiry, sent to that person alone;
+  - the session's end, with a fixed-text error.
+- **In Runs.** A Run of that person may use it from inside the namespace, and
+  the CLI refreshes it in place.
+- **Logout.** It clears the local token. Remote revocation is attempted by
+  the CLI but not confirmed.
+
+See [modules/hosts.md](../modules/hosts.md), "Personal ordinary-tool
+accounts" and "Ordinary tools in Runs".
+
 This doc covers the **ModelProvider API key** and **managed subscription OAuth**
 channels used by bounded server-owned ProviderTask calls and the authorized
 ACP ModelProvider proxy path. Agent Runs do not execute through a Provider

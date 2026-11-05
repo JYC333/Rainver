@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   IdentityIntrospectionResponseSchema,
+  InstanceInvitationCreateSchema,
   MODEL_PROVIDERS_READ_COLUMNS,
   MODEL_PROVIDERS_TABLE,
 } from "../src/index";
@@ -52,5 +53,14 @@ describe("provider DB read allowlist", () => {
         "updated_at",
       ].sort(),
     );
+  });
+});
+
+describe("instance invitation contract", () => {
+  it("normalizes the invited email and refuses membership or administrator grants", () => {
+    expect(InstanceInvitationCreateSchema.parse({ email: " New@Example.Test " })).toEqual({ email: "new@example.test" });
+    expect(InstanceInvitationCreateSchema.safeParse({ email: "invalid" }).success).toBe(false);
+    expect(InstanceInvitationCreateSchema.safeParse({ email: "new@example.test", role: "admin" }).success).toBe(false);
+    expect(InstanceInvitationCreateSchema.safeParse({ email: "new@example.test", space_id: "a-space" }).success).toBe(false);
   });
 });

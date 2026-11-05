@@ -1,16 +1,68 @@
-import { execFileSync, fork, type ChildProcess } from "node:child_process";
+import { execFile, fork, type ChildProcess } from "node:child_process";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { inject } from "vitest";
 import type { WorkerCommand, WorkerReport } from "./briefingWorkerProtocol.js";
 
 const SCRIPT = fileURLToPath(new URL("./briefingWorkerProcess.mjs", import.meta.url));
 const SERVER_ROOT = fileURLToPath(new URL("../..", import.meta.url));
+const TSC = fileURLToPath(new URL("../../node_modules/typescript/bin/tsc", import.meta.url));
+const BUILD_STATE = join(SERVER_ROOT, "node_modules", ".test-dist-build");
+const BUILD_LOCK = join(BUILD_STATE, "lock");
+const BUILD_STAMP = join(BUILD_STATE, "built-run");
 
 /**
  * Builds the server (`tsc -p tsconfig.json` → `dist`, what `node dist/index.js`
  * runs) from the current sources, so the worker process runs this code.
+ *
+ * Once per test run, not once per call: sources do not change during a run,
+ * and parallel files rebuilding the same `dist` would overwrite modules a
+ * running worker process may still be loading. The run id from global setup
+ * keys a stamp; an atomic `mkdir` lock makes concurrent callers wait for the
+ * first build. A lock left by an earlier (killed) run names that run's id, or
+ * names none and is over two minutes old, and is taken over. Without a run id
+ * (no shared Postgres) every call builds.
  */
-export function buildServerDist(): void {
-  execFileSync(process.execPath, [fileURLToPath(new URL("../../node_modules/typescript/bin/tsc", import.meta.url)), "-p", "tsconfig.json"], { cwd: SERVER_ROOT, stdio: "pipe" });
+export async function buildServerDist(): Promise<void> {
+  const runId = inject("sharedPostgres").runId;
+  if (!runId) return compile();
+  await mkdir(BUILD_STATE, { recursive: true });
+  const deadline = Date.now() + 300_000;
+  for (;;) {
+    if ((await readText(BUILD_STAMP)) === runId) return;
+    try {
+      await mkdir(BUILD_LOCK);
+    } catch {
+      const owner = await readText(join(BUILD_LOCK, "run"));
+      const stale = owner === undefined
+        ? Date.now() - ((await stat(BUILD_LOCK).catch(() => undefined))?.mtimeMs ?? Date.now()) > 120_000
+        : owner !== runId;
+      if (stale) await rm(BUILD_LOCK, { recursive: true, force: true });
+      else if (Date.now() > deadline) throw new Error("timed out waiting for another test file's server build");
+      else await new Promise((resolve) => setTimeout(resolve, 50));
+      continue;
+    }
+    try {
+      await writeFile(join(BUILD_LOCK, "run"), runId);
+      if ((await readText(BUILD_STAMP)) !== runId) {
+        await compile();
+        await writeFile(BUILD_STAMP, runId);
+      }
+      return;
+    } finally {
+      await rm(BUILD_LOCK, { recursive: true, force: true });
+    }
+  }
+}
+
+async function compile(): Promise<void> {
+  await promisify(execFile)(process.execPath, [TSC, "-p", "tsconfig.json"], { cwd: SERVER_ROOT });
+}
+
+async function readText(path: string): Promise<string | undefined> {
+  return readFile(path, "utf8").catch(() => undefined);
 }
 
 /** One real jobs-worker process (`briefingWorkerProcess.ts`), its reports, and a way to wait for one. */

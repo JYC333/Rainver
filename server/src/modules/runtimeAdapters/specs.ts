@@ -142,6 +142,14 @@ export interface RuntimeAdapterSpec {
      * credential profile, or ModelProvider binding.
      */
     remote_host_only?: boolean;
+    /**
+     * The most text one prompt may carry, in characters, when the runtime
+     * refuses anything longer. Checked before launch
+     * (`runs/promptInputLimit.ts`), so an oversized turn fails as
+     * `runtime_input_too_large` with its size rather than as the runtime's
+     * opaque error. Absent where the runtime states no limit.
+     */
+    max_prompt_chars?: number;
   };
   /** How an execution host obtains a managed copy; absent = only the machine's own install. */
   distribution?: RuntimeDistribution | { registry_id: string };
@@ -288,6 +296,8 @@ export interface LocalCliRuntimeAdapterSpec extends RuntimeAdapterSpec {
     protocol?: "acp";
     remote_capability_probe?: string;
     remote_host_only?: boolean;
+    /** See `RuntimeAdapterSpec.invocation.max_prompt_chars`. */
+    max_prompt_chars?: number;
   };
   credentials: RuntimeAdapterSpec["credentials"] & {
     credential_mode: "cli_profile" | "cli_profile_or_model_provider";
@@ -491,6 +501,10 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       headless_command_template: ["{executable}"],
       protocol: "acp",
       remote_capability_probe: "codex",
+      // Codex's app-server refuses a turn's input over 2^20 characters
+      // ("Input exceeds the maximum length of 1048576 characters");
+      // codex-acp reports it only as "Internal error".
+      max_prompt_chars: 1_048_576,
     },
     credentials: {
       login: {

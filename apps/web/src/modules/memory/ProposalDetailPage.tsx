@@ -19,6 +19,8 @@ import { notifyReviewAttentionChanged } from '../../core/reviewAttention'
 import { MemoryRevisionEditor } from './MemoryRevisionEditor'
 import { formatDateTime } from '../../i18n/format'
 import { proposalTitle } from './proposalTitle'
+import { useAppTranslation } from '../../i18n'
+import { evolutionAssetPath } from '../evolution/paths'
 
 function fmt(dt: string | null | undefined) {
   return formatDateTime(dt)
@@ -30,6 +32,8 @@ export default function ProposalDetailPage() {
   const [p, setP] = useState<Proposal | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [acceptedAsset, setAcceptedAsset] = useState<{ proposalId: string; assetId: string } | null>(null)
+  const { t } = useAppTranslation()
 
   useEffect(() => {
     if (!proposalId) return
@@ -85,6 +89,14 @@ export default function ProposalDetailPage() {
         } else if (out.result_type === 'retrieval_maintenance_packet') {
           const n = out.result.generated_child_proposal_count ?? out.result.generated_child_proposal_ids?.length ?? 0
           toast.success(`Accepted — ${n} child proposal${n === 1 ? '' : 's'} created.`)
+        } else if (out.result_type === 'evolvable_asset_version') {
+          // A saved workflow's draft, or a promoted version: its lifecycle
+          // continues on the asset in Evolution.
+          const assetId = typeof out.result.asset_id === 'string' ? out.result.asset_id : null
+          setAcceptedAsset(assetId ? { proposalId: p.id, assetId } : null)
+          toast.success(t(p.proposal_type === 'workflow_save'
+            ? 'management_ui.run_workflow_save.accepted_draft'
+            : 'management_ui.run_workflow_save.accepted_asset'))
         } else if (out.result_type === 'claim_candidate_packet') {
           const n = out.result.generated_child_proposal_count ?? out.result.generated_child_proposal_ids?.length ?? 0
           const skipped = out.result.skipped_child_proposal_count ?? 0
@@ -205,6 +217,13 @@ export default function ProposalDetailPage() {
           )}
           <p className="text-xs text-muted-foreground italic">Rationale: {p.rationale}</p>
           <p className="text-xs text-muted-foreground">{fmt(p.created_at)}</p>
+          {p.status === 'accepted' && acceptedAsset?.proposalId === p.id && (
+            <div className="pt-2 border-t border-border">
+              <Button size="sm" variant="outline" asChild>
+                <Link to={evolutionAssetPath(acceptedAsset.assetId)}>{t('management_ui.run_workflow_save.open_in_evolution')}</Link>
+              </Button>
+            </div>
+          )}
           {p.status === 'accepted' && p.resulting_memory_id && (
             <div className="pt-2 border-t border-border">
               <Link

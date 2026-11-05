@@ -38,7 +38,9 @@ async function applyWorkflowSaveProposal(context: ProposalApplyContext): Promise
        id, space_id, asset_type, asset_key, display_name, description,
        owner_scope_type, owner_scope_id, status, metadata_json, created_at, updated_at
      ) VALUES ($1, $2, 'workflow_template', $3, $4, $5, $6, $7, 'active', $8::jsonb, $9, $9)`,
-    [assetId, context.proposal.space_id, payload.asset_key, payload.display_name, payload.description, owner.ownerScopeType, owner.ownerScopeId, JSON.stringify({ source: "run_extraction", proposal_id: context.proposal.id }), now],
+    // The reviewed definition's extracted risk stays on the asset so its later
+    // promotion Proposal is judged at least as strictly as this save was.
+    [assetId, context.proposal.space_id, payload.asset_key, payload.display_name, payload.description, owner.ownerScopeType, owner.ownerScopeId, JSON.stringify({ source: "run_extraction", proposal_id: context.proposal.id, risk_level: definition.metadata_json?.risk_level ?? null }), now],
   );
   await context.db.query(
     `INSERT INTO evolvable_asset_versions (

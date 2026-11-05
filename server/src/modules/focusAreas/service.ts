@@ -32,6 +32,55 @@ export interface FocusArea {
 export interface FocusAreaContents {
   projects: Array<{ id: string; name: string; status: string }>;
   objects: Array<{ id: string; object_type: string; title: string | null }>;
+  /** Continue each list on its own; `null` once that list is complete. */
+  projects_next_cursor: string | null;
+  objects_next_cursor: string | null;
+}
+
+export interface FocusAreaContentsQuery {
+  projectsCursor?: string;
+  objectsCursor?: string;
+  limit?: number;
+}
+
+export const FOCUS_AREA_CONTENTS_PAGE_SIZE = 100;
+export const FOCUS_AREA_CONTENTS_MAX_PAGE_SIZE = 200;
+
+type ProjectCursor = { area: string; list: "projects"; name: string; id: string };
+type ObjectCursor = { area: string; list: "objects"; at: string; id: string };
+
+function encodeCursor(cursor: ProjectCursor | ObjectCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+}
+
+/**
+ * A malformed or foreign cursor is refused rather than read as "first page":
+ * silently restarting would make "load more" repeat page one forever.
+ */
+function decodeCursor<T extends ProjectCursor | ObjectCursor>(
+  value: string | undefined,
+  area: string,
+  list: T["list"],
+): T | null {
+  if (value === undefined) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+  } catch {
+    throw new HttpError(422, "Invalid contents cursor");
+  }
+  const cursor = parsed as Record<string, unknown> | null;
+  const key = list === "projects" ? "name" : "at";
+  if (
+    typeof cursor !== "object" || cursor === null
+    || typeof cursor.id !== "string" || typeof cursor[key] !== "string"
+  ) {
+    throw new HttpError(422, "Invalid contents cursor");
+  }
+  if (cursor.area !== area || cursor.list !== list) {
+    throw new HttpError(422, "Cursor belongs to another contents list");
+  }
+  return cursor as T;
 }
 
 interface FocusAreaRow {
@@ -143,9 +192,23 @@ export class FocusAreaService {
    * What points at this area, filtered by the reader's own access. A focus area
    * grants nothing: content the reader could not otherwise see does not appear
    * here, and content they can see is listed whoever classified it.
+   *
+   * Each list is keyset-paged inside its unchanged read predicate, so a page
+   * boundary never decides visibility; `id` breaks ties so no row is skipped
+   * or repeated between pages.
    */
-  async contents(identity: SpaceUserIdentity, id: string): Promise<FocusAreaContents> {
+  async contents(
+    identity: SpaceUserIdentity,
+    id: string,
+    query: FocusAreaContentsQuery = {},
+  ): Promise<FocusAreaContents> {
     await this.get(identity, id);
+    const limit = query.limit ?? FOCUS_AREA_CONTENTS_PAGE_SIZE;
+    if (!Number.isInteger(limit) || limit < 1 || limit > FOCUS_AREA_CONTENTS_MAX_PAGE_SIZE) {
+      throw new HttpError(422, `limit must be between 1 and ${FOCUS_AREA_CONTENTS_MAX_PAGE_SIZE}`);
+    }
+    const projectsAfter = decodeCursor<ProjectCursor>(query.projectsCursor, id, "projects");
+    const objectsAfter = decodeCursor<ObjectCursor>(query.objectsCursor, id, "objects");
     // Project metadata is space-visible by design — `projects/access.ts` reserves
     // the member ACL for project-scoped *content*. Filtering this list by that
     // ACL would show fewer Projects here than `/projects` already shows.
@@ -153,19 +216,37 @@ export class FocusAreaService {
       `SELECT p.id, p.name, p.status
          FROM projects p
         WHERE p.space_id = $1 AND p.focus_area_id = $2 AND p.deleted_at IS NULL
-        ORDER BY p.name ASC`,
-      [identity.spaceId, id],
+          AND ($3::text IS NULL OR (p.name::text, p.id::text) > ($3::text, $4::text))
+        ORDER BY p.name::text ASC, p.id::text ASC
+        LIMIT $5::int`,
+      [identity.spaceId, id, projectsAfter?.name ?? null, projectsAfter?.id ?? null, limit + 1],
     );
-    const objects = await this.db.query<{ id: string; object_type: string; title: string | null }>(
-      `SELECT o.id, o.object_type, o.title
+    const objects = await this.db.query<{ id: string; object_type: string; title: string | null; cursor_at: string }>(
+      // The cursor keeps the column's own precision; a JS Date would truncate
+      // it to milliseconds and skip rows sharing that millisecond.
+      `SELECT o.id, o.object_type, o.title, o.updated_at::text AS cursor_at
          FROM space_objects o
         WHERE o.space_id = $1 AND o.focus_area_id = $2 AND o.deleted_at IS NULL
           AND ${contentReadSql("space_object", "o", "$3")}
-        ORDER BY o.updated_at DESC
-        LIMIT 200`,
-      [identity.spaceId, id, identity.userId],
+          AND ($4::timestamptz IS NULL OR (o.updated_at, o.id::text) < ($4::timestamptz, $5::text))
+        ORDER BY o.updated_at DESC, o.id::text DESC
+        LIMIT $6::int`,
+      [identity.spaceId, id, identity.userId, objectsAfter?.at ?? null, objectsAfter?.id ?? null, limit + 1],
     );
-    return { projects: projects.rows, objects: objects.rows };
+    const projectPage = projects.rows.slice(0, limit);
+    const objectPage = objects.rows.slice(0, limit);
+    const lastProject = projectPage.at(-1);
+    const lastObject = objectPage.at(-1);
+    return {
+      projects: projectPage,
+      objects: objectPage.map((row) => ({ id: row.id, object_type: row.object_type, title: row.title })),
+      projects_next_cursor: projects.rows.length > limit && lastProject
+        ? encodeCursor({ area: id, list: "projects", name: lastProject.name, id: lastProject.id })
+        : null,
+      objects_next_cursor: objects.rows.length > limit && lastObject
+        ? encodeCursor({ area: id, list: "objects", at: lastObject.cursor_at, id: lastObject.id })
+        : null,
+    };
   }
   /**
    * Classifying content is an owner's act. There is no general write guard for

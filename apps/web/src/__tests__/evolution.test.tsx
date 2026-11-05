@@ -327,6 +327,38 @@ describe('Evolution module', () => {
     expect(screen.getByText('v1')).toBeInTheDocument()
   })
 
+  it('opens the asset a link names, such as a workflow saved from a Run', async () => {
+    const asset = (id: string, key: string, name: string) => ({
+      id,
+      space_id: 'personal-1',
+      asset_type: 'workflow_template',
+      asset_key: key,
+      display_name: name,
+      description: null,
+      owner_scope_type: 'space',
+      owner_scope_id: null,
+      status: 'active',
+      current_system_version_id: null,
+      default_eval_suite_ref: null,
+      metadata_json: {},
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    })
+    mockEvolutionData({
+      assets: [asset('asset-1', 'workflow.a', 'First workflow'), asset('asset-2', 'workflow.saved.b', 'Saved workflow')],
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/evolution?asset=asset-2']} future={routerFuture}>
+        <EvolutionPage />
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findAllByText('Saved workflow')).toHaveLength(2)
+    await waitFor(() => expect(evolutionApi.assetVersions).toHaveBeenCalledWith('asset-2'))
+    expect(evolutionApi.assetVersions).not.toHaveBeenCalledWith('asset-1')
+  })
+
   it('renders a selected target and target-scoped signals, runs, proposals, and validation results', async () => {
     mockEvolutionData({
       summary: {

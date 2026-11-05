@@ -24,6 +24,7 @@ import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { ConversationCacheNotice, isPromptCacheExpired } from './ConversationCacheNotice'
 import { ConversationGitContext } from './ConversationGitContext'
+import { commandCenterHostPath } from '../command_center/hostLinks'
 
 interface ConversationExecutionPreflightProps {
   spaceId?: string
@@ -495,7 +496,8 @@ function ConversationExecutionPreflightContent({
           <div className="flex flex-wrap gap-2">
             <Button size="sm" disabled={busy || draftBlockedReason !== null} onClick={() => void initialize()}>{busy ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : null}{t('conversation_ui.preflight.confirm')}</Button>
             {!manager && <Button size="sm" variant="outline" disabled={busy} onClick={() => void openDraft()}>{t('conversation_ui.preflight.retry_agent')}</Button>}
-            <Link to="/command-center" className="inline-flex items-center text-xs underline">{t('conversation_ui.preflight.configure_host')}</Link>
+            {/* The Host chosen above, when there is one; otherwise the overview. */}
+            <Link to={hostId ? commandCenterHostPath(hostId, 'runtime') : '/command-center'} className="inline-flex items-center text-xs underline">{t('conversation_ui.preflight.configure_host')}</Link>
           </div>
         </div>
       )}
@@ -567,7 +569,7 @@ function InitializedSummary({ summary, profiles, participants }: {
     <SummaryRow label={t('conversation_ui.preflight.primary_cwd')} value={primary?.display_path ?? (primary?.kind === 'managed' ? t('conversation_ui.preflight.managed_workspace') : t('conversation_ui.preflight.unavailable_value'))} />
     <ConversationGitContext snapshot={summary.git ?? null} />
     {summary.blocked_reason && <p className="rounded bg-destructive/10 px-2 py-1 text-destructive">{summary.blocked_reason}</p>}
-    {host?.online === false && <div className="flex items-center gap-1 text-muted-foreground"><Unplug className="size-3.5" />{t('conversation_ui.preflight.offline_note')}<Link to="/command-center" className="underline">{t('conversation_ui.preflight.reconnect_host')}</Link></div>}
+    {host?.online === false && <div className="flex items-center gap-1 text-muted-foreground"><Unplug className="size-3.5" />{t('conversation_ui.preflight.offline_note')}<Link to={commandCenterHostPath(host.host_id, 'connection')} className="underline">{t('conversation_ui.preflight.reconnect_host')}</Link></div>}
     {!runtime && <p className="text-muted-foreground">{t('conversation_ui.preflight.runtime_gone')}</p>}
   </div>
 }

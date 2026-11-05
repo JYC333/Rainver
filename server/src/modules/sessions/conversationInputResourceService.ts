@@ -34,6 +34,12 @@ const ARTIFACT_ACCESS = contentResourceDefinition("artifact")!;
  */
 export const RUN_ARTIFACT_URI_PREFIX = "rainver://artifacts/";
 
+/**
+ * A delegation's task too long to inline, stored on the delegating Run
+ * (`agentGroups/delegationBrief.ts`); its link reaches the child the same way.
+ */
+export const DELEGATION_BRIEF_ARTIFACT_TYPE = "delegation_brief";
+
 export class ConversationInputResourceToolError extends Error {
   constructor(readonly code: "resource_not_found" | "resource_unavailable" | "invalid_resource_request", message: string) {
     super(message);
@@ -210,9 +216,10 @@ export class ConversationInputResourceService {
   }
 
   /**
-   * Another Run's change, handed to this Run as a `rainver://artifacts/<id>`
-   * link: only a `remote_diff` Artifact of a Run in this Run's own
-   * conversation, and only when the person this Run acts for can read that
+   * Another Run's change or delegated task, handed to this Run as a
+   * `rainver://artifacts/<id>` link: only a `remote_diff` or
+   * `delegation_brief` Artifact of a Run in this Run's own conversation,
+   * and only when the person this Run acts for can read that
    * Artifact through the ordinary Artifact read gate (content ACL and Room Run
    * grants) with its body — never by admin oversight, since the Agent's reply
    * goes to everyone in the conversation. The read is audited for that person.
@@ -243,7 +250,7 @@ export class ConversationInputResourceService {
           AND session_row.status = 'active'
         WHERE artifact.id = $2
           AND artifact.space_id = $3
-          AND artifact.artifact_type = 'remote_diff'
+          AND artifact.artifact_type IN ('remote_diff', '${DELEGATION_BRIEF_ARTIFACT_TYPE}')
           AND ${liveRunInConversationSql("run_row", "session_row")}
           AND ${contentReadSql("artifact", "artifact", reader, { includeOversight: false })}
           AND ${roomRunReadAccessSql("artifact.run_id", "artifact.space_id", reader)}

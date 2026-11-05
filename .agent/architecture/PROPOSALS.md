@@ -12,22 +12,34 @@ Proposals are the product review and application boundary for durable mutations.
   entrypoints remain in their source product modules.
 - `GET /api/v1/proposals` defaults to pending proposals.
 - `status=all` is explicit and returns proposals across statuses.
-- Product-recognized proposal types are `memory_create`, `memory_update`,
-  `memory_archive`, `code_patch`, `egress_review`,
-  `follow_up_task`, `agent_config_update`, `knowledge_create`,
+- Product-recognized proposal types are the keys of the proposal risk table
+  (`SUPPORTED_PROPOSAL_TYPES`, `server/src/modules/policy/gateway.ts`):
+  `memory_create`, `memory_update`, `memory_archive`, `follow_up_task`,
+  `plan_review`, `plan_checkpoint`, `code_patch`, `egress_review`,
+  `agent_config_update`, `prompt_update`, `knowledge_create`,
   `knowledge_update`, `knowledge_archive`, `claim_create`, `claim_update`,
   `claim_archive`, `object_relation_create`, `object_relation_delete`,
-  `claim_candidate_packet`, `memory_maintenance_packet`,
-  `imported_history_memory_packet`,
-  `retrieval_maintenance_packet`, `retrieval_diagnostics_packet`,
-  `custom_source_policy_delta`, `custom_source_credentialed_source`, and
-  `custom_source_repair_activation`.
+  `object_profile_create`, `object_profile_update`,
+  `object_profile_deprecate`, `object_profile_archive`,
+  `claim_candidate_packet`, `imported_history_memory_packet`,
+  `memory_maintenance_packet`, `retrieval_diagnostics_packet`,
+  `retrieval_maintenance_packet`, `relation_discovery_packet`,
+  `skill_import_approve`, `runtime_skill_binding_update`,
+  `custom_source_policy_delta`, `custom_source_credentialed_source`,
+  `custom_source_repair_activation`, `source_recipe_activation`,
+  `evolution_bundle_rollback`, `project_information_monitoring_details`, and
+  `project_information_monitoring_activation`. A registered type missing from
+  that table is assessed at `high` risk.
 - Registered server apply types include `memory_create`, `memory_update`,
   `memory_archive`, `code_patch`, Knowledge proposal types,
-  Claim Candidate Packet, retrieval review packet types, task proposal types,
-  Project Folder proposal types, and capability proposal types contributed through
-  the server `ProposalApplierRegistry`, plus the Custom Source proposal types
-  registered by the Sources module. Unregistered proposal types fail closed on
+  Claim Candidate Packet, relation discovery, retrieval and imported-history
+  review packet types, Memory maintenance packets, Skill review/binding types,
+  task, plan, workflow, Project Folder, Project definition and monitoring,
+  research, evolvable-asset promotion and Evolution bundle rollback types
+  contributed through the server `ProposalApplierRegistry`
+  (`createDefaultProposalApplierRegistry`), plus the Custom Source, Source
+  recipe/channel/backfill and Project source proposal types registered by the
+  Sources and Projects modules. Unregistered proposal types fail closed on
   accept. Do not apply a type that has no server applier. `egress_review` is
   registered by `egressReviewApplier.ts`.
 - Accept returns the general `ProposalAcceptOut` response shape.
@@ -79,9 +91,9 @@ Proposals are the product review and application boundary for durable mutations.
 - Memory maintenance packet apply records creator-owned review of owner-private
   Memory maintenance work. A space admin cannot accept another user's private
   packet through the current applier. It acknowledges review and may create
-  child pending `memory_archive` proposals for supported duplicate findings and
-  child pending `memory_update` proposals for supported stale, thin, lifecycle,
-  archived-state, project-scope, source-policy, and contradiction findings. It
+  child pending `memory_archive` proposals for duplicate findings and child
+  pending `memory_update` proposals for source-policy-drift and contradiction
+  findings; stale and thin findings are hints and create nothing. It
   does not write canonical Memory directly; child proposals require their
   own review/apply step.
 - Retrieval maintenance and diagnostics packet apply records creator-owned

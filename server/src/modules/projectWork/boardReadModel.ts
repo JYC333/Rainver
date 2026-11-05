@@ -16,7 +16,7 @@ import { assertProjectReadable, canWriteProject } from "../projects/access.js";
 import { completionFrom, taskCompletionState } from "./completion.js";
 import { declaredRequiredOutputs } from "./settlement.js";
 import { PERSON_ONLY_STATUSES, responsibleActorOf, responsibleAgentSql, responsibleUserSql } from "./responsibility.js";
-import { DEFAULT_COLUMNS } from "../tasks/taskRepositoryRows.js";
+import { readProjectColumns, columnForTask, UNASSIGNED_COLUMN } from "../tasks/boardColumns.js";
 
 /**
  * The Board and the Task work view.
@@ -31,6 +31,7 @@ import { DEFAULT_COLUMNS } from "../tasks/taskRepositoryRows.js";
 interface BoardCardRow {
   id: string;
   title: string;
+  column_id: string | null;
   status: string;
   priority: string;
   risk_level: string;
@@ -62,7 +63,7 @@ export const ARCHIVED_CARD_STATUSES = ["cancelled"];
 export const COLUMN_FOR_STATUS: Record<string, string> = { blocked: "in_progress" };
 
 const CARD_SELECT = `
-  SELECT t.id, t.title, t.status, t.priority, t.risk_level, t.due_at, t.updated_at,
+  SELECT t.id, t.title, t.column_id, t.status, t.priority, t.risk_level, t.due_at, t.updated_at,
          t.blocked_reason, t.required_outputs_json,
          ${responsibleUserSql("t", "p")} AS responsible_user_id,
          ${responsibleAgentSql("t")} AS responsible_agent_id,
@@ -135,6 +136,7 @@ export async function getProjectBoard(
   // Attached outputs come back with the card, so the completion answer costs
   // no extra round trip. Do not ask per card. That turns one Board load into
   // one query per Task that declared anything.
+  const configured = await readProjectColumns(db, identity.spaceId, projectId);
   const cards: ProjectBoardCard[] = cardRows.rows.map((row) => {
     const declared = declaredRequiredOutputs(row.required_outputs_json);
     const present = new Set(row.present_outputs ?? []);
@@ -143,7 +145,7 @@ export async function getProjectBoard(
       id: row.id,
       title: row.title,
       status: row.status,
-      column_key: COLUMN_FOR_STATUS[row.status] ?? row.status,
+      column_key: columnForTask(row, configured.columns),
       priority: row.priority,
       risk_level: row.risk_level,
       due_at: dateIso(row.due_at),
@@ -161,10 +163,13 @@ export async function getProjectBoard(
     });
   });
 
-  const columns = await boardColumns(db, identity, projectId, cards);
+  const source = [...configured.columns];
+  if(cards.some(c=>c.column_key===UNASSIGNED_COLUMN)) source.push({key:UNASSIGNED_COLUMN,label:"Unassigned",status_key:"",wip_limit:null,board_id:null});
+  const columns = source.map(column=>({...column,count:cards.filter(c=>c.column_key===column.key).length}));
   return {
     project: { id: projectRow.id, name: projectRow.name },
     columns,
+    columns_revision: configured.revision,
     cards,
     viewer_user_id: identity.userId,
     viewer_can_write: await canWriteProject(db, identity.spaceId, projectId, identity.userId),
@@ -183,43 +188,6 @@ export async function getProjectBoard(
         && card.responsible.id === identity.userId).length,
     },
   };
-}
-
-/**
- * A Project's own Board columns when it has one, the defaults otherwise.
- *
- * A Project with no Board row is ordinary. Boards are created explicitly.
- * Showing nothing would make the Board look broken. Do not omit the defaults.
- */
-async function boardColumns(
-  db: Queryable,
-  identity: SpaceUserIdentity,
-  projectId: string,
-  cards: readonly ProjectBoardCard[],
-): Promise<ProjectBoardResponse["columns"]> {
-  // One Board's columns. Nothing stops a Project having two Board rows.
-  // Do not concatenate them. That draws duplicate lanes and every card twice.
-  const configured = await db.query<{ status_key: string; name: string; wip_limit: number | null }>(
-    `SELECT c.status_key, c.name, c.wip_limit
-       FROM board_columns c
-      WHERE c.space_id = $1 AND c.deleted_at IS NULL
-        AND c.board_id = (
-          SELECT b.id FROM boards b
-           WHERE b.space_id = $1 AND b.project_id = $2
-             AND b.deleted_at IS NULL AND b.status = 'active'
-           ORDER BY b.sort_order NULLS LAST, b.created_at ASC, b.id ASC
-           LIMIT 1
-        )
-      ORDER BY c.position ASC, c.id ASC`,
-    [identity.spaceId, projectId],
-  );
-  const source = configured.rows.length > 0
-    ? configured.rows.map((row) => ({ status_key: row.status_key, label: row.name, wip_limit: row.wip_limit }))
-    : DEFAULT_COLUMNS.map((column) => ({ status_key: column.status_key, label: column.name, wip_limit: null }));
-  return source.map((column) => ({
-    ...column,
-    count: cards.filter((card) => card.column_key === column.status_key).length,
-  }));
 }
 
 const WORK_VIEW_EVENT_LIMIT = 50;

@@ -75,7 +75,9 @@ pnpm test
 # server suite is ~1:40 (web ~40s); one file is 5–20s. Real-Postgres files
 # work alone — each clones its own database from the shared template.
 pnpm exec vitest run test/memoryApply*                 # a file or glob
-pnpm exec vitest run test/roomsDb.test.ts -t "dedupe"  # one test by name
+pnpm exec vitest run test/roomsDb -t "dedupe"          # one test by name
+# A long suite split across entry files (roomsDb.1/2/3.test.ts registering
+# roomsDb.suite.ts) is run by its shared prefix, as above.
 # Do not reach for `vitest --changed` / `vitest related` here: the backend
 # import graph is one large cycle, so a single source change selects a
 # quarter of the suite (~70s) — barely faster than running everything.
@@ -481,7 +483,7 @@ move `verifiedOn` to that day.
 
 ## Problem engine upgrade verification
 
-The one-time new-model cutover and isolated backup/restore drill are documented
+The one-time new-model cutover is documented
 in [PROBLEM_ENGINE_UPGRADE](architecture/PROBLEM_ENGINE_UPGRADE.md). There is no
 runtime problemUpgradeAudit CLI. Use the standard migrator and offline operators,
 not an application fallback or manual per-request backfill.

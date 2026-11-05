@@ -34,7 +34,7 @@ navigation labels are translated through `apps/web/src/i18n/`; route IDs, Space
 scope, and permission gates remain language-independent.
 
 The Agents scene includes a distinct Skills link (`/skills`, “技能库” in
-Chinese), alongside the legacy Capabilities link. Both desktop sidebar and
+Chinese). Both desktop sidebar and
 mobile scene tabs use `SCENES` in `navigation.tsx`; registering a module in
 `registry.ts` alone does not add it to this navigation. The Skills route keeps
 the Agents scene active after navigation.

@@ -1,6 +1,10 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import BoardColumnLane from './BoardColumnLane'
+import { BoardColumnDraft, BoardColumnRemoval } from './BoardColumnControls'
+import BoardTaskEditor from './BoardTaskEditor'
+import { useAppTranslation } from '../../../i18n'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { DndContext, KeyboardSensor, PointerSensor, useDroppable, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
+import { DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { laneKeyboardCoordinates } from './laneKeyboardCoordinates'
 import { applyCardMove, mergeBoard } from './mergeBoard'
 import { toast } from 'sonner'
@@ -18,7 +22,6 @@ import { usePeriodicRefresh } from '../../../hooks/usePeriodicRefresh'
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../../../components/ui/dialog'
-import BoardCard from './BoardCard'
 import { PERSON_ONLY_TASK_STATUSES } from '@rainver/protocol'
 
 type BoardFilter = 'all' | 'mine' | 'agent_held' | 'needs_me'
@@ -35,12 +38,25 @@ const BOARD_REFRESH_MS = 5_000
 
 export default function ProjectBoardPage() {
   const { projectId = '' } = useParams()
+  return <ProjectBoardContent key={projectId} projectId={projectId}/>
+}
+
+function ProjectBoardContent({projectId}:{projectId:string}) {
+  const { t } = useAppTranslation()
+  const [addingColumn,setAddingColumn]=useState<{after:string|null}|null>(null)
+  const [removingColumn,setRemovingColumn]=useState<ProjectBoard['columns'][number]|null>(null)
+  const [columnSaving,setColumnSaving]=useState(false)
+  const columnPending=useRef(false)
+  const loadVersion=useRef(0)
+  const [cardAction,setCardAction]=useState<{card:ProjectBoardCard;mode:'edit'|'delete'}|null>(null)
+  const [createColumn,setCreateColumn]=useState<ProjectBoard['columns'][number]|null>(null)
+  const onCardAction=useCallback((card:ProjectBoardCard,mode:'edit'|'delete')=>setCardAction({card,mode}),[])
   const [board, setBoard] = useState<ProjectBoard | null>(null)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<BoardFilter>('all')
   // A close the server refused. Holding the card and its reasons here is what
   // turns the 422 into a decision the person can act on rather than an error.
-  const [blockedClose, setBlockedClose] = useState<{ card: ProjectBoardCard; missing: string[] } | null>(null)
+  const [blockedClose, setBlockedClose] = useState<{ card: ProjectBoardCard; missing: string[]; destination:string } | null>(null)
   const [overriding, setOverriding] = useState(false)
   const [creating, setCreating] = useState(false)
   const [agents, setAgents] = useState<AgentOut[]>([])
@@ -56,11 +72,13 @@ export default function ProjectBoardPage() {
   // painted under the new Project's header.
   const showingRef = useRef(projectId)
   const load = useCallback(async (quiet = false) => {
+    if(columnPending.current)return
+    const version=loadVersion.current
     showingRef.current = projectId
     if (!quiet) setLoading(true)
     try {
       const next = await projectsApi.getBoard(projectId)
-      if (showingRef.current !== projectId) return
+      if (showingRef.current !== projectId || version!==loadVersion.current) return
       // Folded in rather than replaced: a read where nothing moved returns the
       // very same object and sets no state, and a read where one card moved
       // keeps every other card's identity so only its lane re-renders.
@@ -99,12 +117,14 @@ export default function ProjectBoardPage() {
     toStatus: string,
     acknowledged?: string[],
   ) => {
+    const destination=board?.columns.find(c=>c.key===toStatus)
+    if(!destination?.status_key)return
     // Draw the card where it was dropped before the request goes out, and put
     // it back if the server refuses. Do not re-read through the loading path.
     // That replaces the whole Board with a skeleton on every drag.
     setBoard(current => (current ? applyCardMove(current, card.id, toStatus) : current))
     try {
-      await moveCardStatus(card.id, toStatus, acknowledged)
+      await moveCardStatus(card.id, card.status==='blocked'&&destination.status_key==='in_progress'?'blocked':destination.status_key, acknowledged, destination.board_id?{column_id:destination.key,board_id:destination.board_id}:undefined)
       setBlockedClose(null)
       // Quiet: the optimistic move is already drawn, and `mergeBoard` touches
       // only what the server decided differently.
@@ -114,47 +134,80 @@ export default function ProjectBoardPage() {
       // In Progress lane, and must come back blocked, not in progress.
       setBoard(current => {
         if (!current) return current
-        const restored = applyCardMove(current, card.id, card.column_key)
-        return { ...restored, cards: restored.cards.map(item => (item.id === card.id ? { ...item, status: card.status } : item)) }
+        const cards=current.cards.map(item=>item.id===card.id?{...item,status:card.status,column_key:card.column_key}:item)
+        return {...current,cards,columns:current.columns.map(column=>({...column,count:cards.filter(item=>item.column_key===column.key).length}))}
       })
       const missing = blockedCompletion(error)
       if (missing) {
-        setBlockedClose({ card, missing })
+        setBlockedClose({ card, missing, destination:toStatus })
         return
       }
       toast.error(errMsg(error))
     }
-  }, [load])
+  }, [load,board])
+
+  const saveColumns=useCallback(async(columns:ProjectBoard['columns'],moves:Record<string,string>={})=>{
+    if(!board||columnPending.current)throw new Error(t('board_ui.saving'))
+    columnPending.current=true
+    loadVersion.current++
+    setColumnSaving(true)
+    try {
+      const next=await projectsApi.configureBoard(projectId,{
+        revision:board.columns_revision,
+        columns:columns.filter(c=>c.status_key).map(({key,label,status_key,wip_limit})=>({key,label,status_key,wip_limit})),
+        moves,
+      })
+      setBoard(next)
+    } finally {
+      loadVersion.current++
+      columnPending.current=false
+      setColumnSaving(false)
+    }
+  },[board,projectId,t])
 
   const onDragEnd = useCallback((event: DragEndEvent) => {
     const toStatus = event.over?.id
-    if (typeof toStatus !== 'string') return
+    if (typeof toStatus !== 'string'||columnPending.current) return
+    if(event.active.data?.current?.type==='column'){
+      if(!board)return
+      const columns=board.columns.filter(c=>c.status_key)
+      const from=columns.findIndex(c=>c.key===event.active.data?.current?.key)
+      const to=columns.findIndex(c=>c.key===toStatus)
+      if(from<0||to<0||from===to)return
+      const next=[...columns]
+      next.splice(to,0,next.splice(from,1)[0]!)
+      const before=board
+      setBoard({...board,columns:[...next,...board.columns.filter(c=>!c.status_key)]})
+      void saveColumns(next).catch(error=>{setBoard(before);toast.error(errMsg(error))})
+      return
+    }
     const card = board?.cards.find(item => item.id === event.active.id)
     // Compared with the lane, not the status: a blocked card sits in the In
     // Progress lane, and dropping it back there must not unblock it.
     if (!card || card.column_key === toStatus) return
     void moveCard(card, toStatus)
-  }, [board, moveCard])
+  }, [board, moveCard, saveColumns])
 
-  const openCreate = useCallback(async () => {
+  const openCreate = useCallback(async (column?:ProjectBoard['columns'][number]) => {
+    setCreateColumn(column??board?.columns.find(c=>c.status_key==='ready')??board?.columns.find(c=>c.status_key && c.status_key!=='done')??null)
     setCreating(true)
     try {
       setAgents(await agentsApi.list({ limit: '100' }))
     } catch (error) {
       toast.error(errMsg(error))
     }
-  }, [])
+  }, [board])
 
   const createTask = useCallback(async (body: Record<string, unknown>) => {
     // Created here, in the Project: the daily action of putting work on the
     // Board must not mean leaving the Board for the cross-Project list.
-    await tasksApi.create({ ...body, project_id: projectId, status: 'ready' })
+    await tasksApi.create({ ...body, project_id: projectId, status: createColumn?.status_key??'ready', ...(createColumn?.board_id?{board_id:createColumn.board_id,column_id:createColumn.key}:{}) })
     toast.success('Task created')
     setCreating(false)
     // Quiet for the same reason a move is: the new card arrives in its lane
     // without the rest of the Board blinking through a skeleton.
     await load(true)
-  }, [projectId, load])
+  }, [projectId, load, createColumn])
 
   if (loading) return <div className="p-6 space-y-3"><Skeleton className="h-8 w-64" /><Skeleton className="h-64 w-full" /></div>
   if (!board) {
@@ -170,7 +223,7 @@ export default function ProjectBoardPage() {
         </div>
         <div className="flex flex-wrap items-center gap-1">
           {board.viewer_can_write && (
-            <Button size="sm" className="mr-2" onClick={() => void openCreate()}>New Task</Button>
+            <Button size="sm" className="mr-2" disabled={columnSaving} onClick={() => void openCreate()}>{t('board_ui.new_task')}</Button>
           )}
           {(Object.keys(FILTER_LABELS) as BoardFilter[]).map(key => (
             <Button
@@ -186,6 +239,9 @@ export default function ProjectBoardPage() {
         </div>
       </div>
 
+      {removingColumn&&<BoardColumnRemoval column={removingColumn} columns={board.columns} disabled={columnSaving}
+        onClose={()=>setRemovingColumn(null)} onDelete={async target=>{await saveColumns(board.columns.filter(c=>c.key!==removingColumn.key),{[removingColumn.key]:target});setRemovingColumn(null)}}/>}
+      {cardAction&&<BoardTaskEditor key={cardAction.card.id+cardAction.mode} {...cardAction} onClose={()=>setCardAction(null)} onSaved={()=>{setCardAction(null);void load(true)}}/>}
       <Dialog open={creating} onOpenChange={setCreating}>
         <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
           <DialogHeader>
@@ -199,16 +255,32 @@ export default function ProjectBoardPage() {
       <DndContext sensors={sensors} onDragEnd={onDragEnd}>
         <div className="grid flex-1 auto-cols-[minmax(15rem,1fr)] grid-flow-col gap-3 overflow-x-auto pb-2">
           {board.columns.map(column => (
-            <BoardColumnLane
-              key={column.status_key}
-              statusKey={column.status_key}
-              label={column.label}
-              wipLimit={column.wip_limit}
-              cards={visibleCards.filter(card => card.column_key === column.status_key)}
-              projectId={projectId}
-              canMove={board.viewer_can_write}
-            />
+            <Fragment key={column.key}>
+              <BoardColumnLane column={column}
+                cards={visibleCards.filter(card=>card.column_key===column.key)} projectId={projectId}
+                canWrite={board.viewer_can_write} busy={columnSaving}
+                canDelete={board.columns.filter(c=>c.status_key).length>1}
+                canAdd={board.columns.filter(c=>c.status_key).length<30}
+                onAction={onCardAction}
+                onCreate={column.status_key&&column.status_key!=='done'?()=>void openCreate(column):undefined}
+                onRename={name=>saveColumns(board.columns.map(c=>c.key===column.key?{...c,label:name}:c))}
+                onMeaning={status_key=>saveColumns(board.columns.map(c=>c.key===column.key?{...c,status_key}:c))}
+                onAdd={()=>setAddingColumn({after:column.key})}
+                onRemove={()=>setRemovingColumn(column)}
+              />
+              {addingColumn?.after===column.key&&<BoardColumnDraft disabled={columnSaving} onCancel={()=>setAddingColumn(null)} onCreate={async(label,status_key)=>{
+                const columns=board.columns.filter(c=>c.status_key)
+                const index=columns.findIndex(c=>c.key===column.key)
+                columns.splice(index+1,0,{key:`new:${crypto.randomUUID()}`,label,status_key,wip_limit:null,board_id:null,count:0})
+                await saveColumns(columns);setAddingColumn(null)
+              }}/>}
+            </Fragment>
           ))}
+          {board.viewer_can_write&&(addingColumn&&addingColumn.after===null
+            ?<BoardColumnDraft disabled={columnSaving} onCancel={()=>setAddingColumn(null)} onCreate={async(label,status_key)=>{
+              await saveColumns([...board.columns,{key:`new:${crypto.randomUUID()}`,label,status_key,wip_limit:null,board_id:null,count:0}]);setAddingColumn(null)
+            }}/>
+            :<Button variant="outline" className="self-start justify-start" disabled={columnSaving||board.columns.filter(c=>c.status_key).length>=30} onClick={()=>setAddingColumn({after:null})}>+ {t('board_ui.add')}</Button>)}
         </div>
       </DndContext>
 
@@ -233,7 +305,7 @@ export default function ProjectBoardPage() {
                 if (!blockedClose) return
                 setOverriding(true)
                 try {
-                  await moveCard(blockedClose.card, 'done', blockedClose.missing)
+                  await moveCard(blockedClose.card, blockedClose.destination, blockedClose.missing)
                 } finally {
                   setOverriding(false)
                 }
@@ -247,53 +319,3 @@ export default function ProjectBoardPage() {
     </div>
   )
 }
-
-/**
- * Memoised on purpose: `cards` is a fresh array on every read, so without a
- * comparator every lane would re-render whenever any lane changed. The cards
- * themselves keep their identity through `mergeBoard`, which is what makes
- * an element-wise check meaningful here.
- */
-const BoardColumnLane = memo(function BoardColumnLane({ statusKey, label, wipLimit, cards, projectId, canMove }: {
-  statusKey: string
-  label: string
-  wipLimit: number | null
-  cards: ProjectBoardCard[]
-  projectId: string
-  canMove: boolean
-}) {
-  const { setNodeRef, isOver } = useDroppable({ id: statusKey })
-  // The limit is shown, not enforced: a person moving one more card past it is
-  // making a call the Board has no standing to refuse.
-  const overLimit = wipLimit !== null && cards.length > wipLimit
-  return (
-    <div
-      ref={setNodeRef}
-      className={[
-        'flex min-h-[12rem] flex-col gap-2 rounded-xl border border-border bg-card p-3',
-        isOver ? 'ring-2 ring-primary/40' : '',
-      ].join(' ')}
-      data-testid={`board-column-${statusKey}`}
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">{label}</span>
-        <span className={['text-xs', overLimit ? 'text-destructive' : 'text-muted-foreground'].join(' ')}>
-          {cards.length}{wipLimit !== null ? ` / ${wipLimit}` : ''}
-        </span>
-      </div>
-      <div className="flex flex-col gap-2">
-        {cards.map(card => <BoardCard key={card.id} card={card} projectId={projectId} canMove={canMove} />)}
-      </div>
-    </div>
-  )
-}, (before, after) =>
-  before.statusKey === after.statusKey
-  && before.label === after.label
-  && before.wipLimit === after.wipLimit
-  && before.projectId === after.projectId
-  && before.canMove === after.canMove
-  && before.cards.length === after.cards.length
-  // Identity, not value: `mergeBoard` keeps an unchanged card as the same
-  // object, so this says "the same cards in the same order" without walking
-  // their contents.
-  && before.cards.every((card, index) => card === after.cards[index]))

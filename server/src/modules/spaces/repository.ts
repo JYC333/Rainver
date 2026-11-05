@@ -77,7 +77,7 @@ export interface SpaceRepository {
     spaceId: string,
     input: InvitationCreateInput,
   ): Promise<InvitationResult | SpaceFailure>;
-  acceptInvitation(userId: string, token: string): Promise<{ space_id: string } | SpaceFailure>;
+  acceptInvitation(userId: string, token: string): Promise<{ space_id: string | null } | SpaceFailure>;
   getSnapshotDefaults(userId: string, spaceId: string): Promise<SnapshotDefaults | SpaceFailure>;
   updateSnapshotDefaults(
     userId: string,
@@ -263,7 +263,7 @@ export class PgSpaceRepository implements SpaceRepository {
       status: string;
       expires_at: Date | string;
     }>(
-      `INSERT INTO space_invitations
+      `INSERT INTO user_invitations
          (id, space_id, invited_email, role, token_hash, status,
           invited_by_user_id, created_at, expires_at)
        VALUES ($1, $2, $3, $4, $5, 'available', $6, now(), now() + interval '7 days')
@@ -281,7 +281,7 @@ export class PgSpaceRepository implements SpaceRepository {
     };
   }
 
-  async acceptInvitation(userId: string, token: string): Promise<{ space_id: string } | SpaceFailure> {
+  async acceptInvitation(userId: string, token: string): Promise<{ space_id: string | null } | SpaceFailure> {
     if (!token || token.length > 512) return { statusCode: 400, detail: "Invalid invitation" };
     return withTransaction(this.pool, async (client) => {
       const user = await client.query<{ email: string }>(
@@ -289,8 +289,8 @@ export class PgSpaceRepository implements SpaceRepository {
         [userId],
       );
       if (!user.rows[0]) return { statusCode: 403, detail: "Account unavailable" };
-      const invitation = await client.query<{ id: string; space_id: string; invited_email: string; role: string }>(
-        `SELECT id, space_id, invited_email, role FROM space_invitations
+      const invitation = await client.query<{ id: string; space_id: string | null; invited_email: string; role: string | null }>(
+        `SELECT id, space_id, invited_email, role FROM user_invitations
           WHERE token_hash = $1 AND status = 'available' AND expires_at > now()
           FOR UPDATE`,
         [hashToken(token)],
@@ -299,7 +299,7 @@ export class PgSpaceRepository implements SpaceRepository {
       if (!row || normalizeAuthEmail(row.invited_email) !== normalizeAuthEmail(user.rows[0].email)) {
         return { statusCode: 400, detail: "Invalid invitation" };
       }
-      const membership = await client.query<{ id: string }>(
+      const membership = row.space_id ? await client.query<{ id: string }>(
         `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
          VALUES ($1, $2, $3, $4, 'active', now(), now())
          ON CONFLICT (space_id, user_id) DO UPDATE
@@ -307,10 +307,10 @@ export class PgSpaceRepository implements SpaceRepository {
            WHERE space_memberships.status <> 'active'
          RETURNING id`,
         [randomUUID(), row.space_id, userId, row.role],
-      );
-      if (!membership.rowCount) return { statusCode: 409, detail: "Already a member of this Space" };
+      ) : null;
+      if (membership && !membership.rowCount) return { statusCode: 409, detail: "Already a member of this Space" };
       await client.query(
-        "UPDATE space_invitations SET status = 'accepted', accepted_at = now() WHERE id = $1",
+        "UPDATE user_invitations SET status = 'accepted', accepted_at = now() WHERE id = $1",
         [row.id],
       );
       return { space_id: row.space_id };

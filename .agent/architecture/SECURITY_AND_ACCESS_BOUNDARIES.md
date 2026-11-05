@@ -33,7 +33,8 @@ All durable-data API routes require authentication via `resolveIdentity()`
 All other routes, including system-metadata endpoints, are auth-gated:
 
 - `GET /api/v1/auth/reauth/status` — reports only whether the current user's signed recent-auth grant remains valid and when it expires; the browser uses it to gate Security-page controls, while each sensitive mutation still enforces the grant server-side.
-- `POST /api/v1/invitations/accept` — an active account may consume only an unexpired, available invitation addressed to its own normalized email; membership and token consumption commit together.
+- `POST /api/v1/auth/admin/invitations` — instance-admin only; creates an email-bound account invitation, never a shared-Space membership or administrator grant.
+- `POST /api/v1/invitations/accept` — an active account may consume only an unexpired, available invitation addressed to its own normalized email; Space membership (if present) and token consumption commit together. Instance-only invitations grant no membership.
 - `GET /api/v1/skill-packages`, its content/binding reads, and `/api/v1/skills/*` selection/overlay APIs
 - `GET /api/v1/server/catalog`, `/catalog/capabilities`, `/catalog/agent-templates`
 - `GET /api/v1/server/notifications/webhooks/policy`, `POST .../webhooks/dispatch`
@@ -531,7 +532,8 @@ conversation, Project, and membership relations as one scope.
 Tasks enforce visibility on all read, mutation, and sub-resource paths.
 
 - `GET /tasks` and `GET /tasks/{id}` use the canonical content predicate.
-- `PATCH /tasks/{id}` and `POST /tasks/{id}/runs`: visibility enforced before mutation.
+- `PATCH /tasks/{id}`, `DELETE /tasks/{id}` (a soft delete), and `POST /tasks/{id}/runs`:
+  visibility enforced before mutation.
 - Sub-resource endpoints (`GET /tasks/{id}/runs`, `/artifacts`, `/proposals`): `user_id`
   is forwarded to `TaskService.get()` so task visibility runs before the
   sub-resource query.
@@ -728,7 +730,7 @@ Authority comes from the guard chain in `validateGrantApproval`:
 
 The Run-level facts (`run.space_id`, `run.instructed_by_user_id`) are checked once, when
 the grant is created; this route trusts the grant row rather than re-reading the Run. A
-context-taint owner approval (payload `required_taint_owner_user_ids`) takes the same
+context-taint owner approval (payload `required_egress_approver_user_ids`) takes the same
 route with no grant and is authorized by membership in that list.
 
 ### 8b. PersonalView (`/me`) Cross-Space Aggregation
@@ -743,7 +745,7 @@ artifact payloads or full memory content is returned — pointer metadata only i
 user-level cross-Space readers, as are `GET /me/agent-attention/stream` and
 `GET /me/agent-attention/snapshot`. Stream/snapshot windows may include authorized
 work titles and use the same source visibility gates below.
-`PATCH /me/agent-attention/read-state` writes only
+`PATCH /me/agent-attention/read-state` and `POST /me/agent-attention/views` write only
 the session user's personal reading row for a currently authorized source.
 Each source requires its own active Space membership and live Run/Task/Project/
 Room read gate; a direct Session also requires its owning user. Filtering cannot
@@ -885,9 +887,8 @@ authority afterwards.
     read at spend time through `automation_runs`, so revoking the grant stops
     a Run queued under it;
   - an unattended job's setup, re-read at spend time: a scheduled daily
-    report, scheduled imported-session extraction, Inquiry advice, Room
-    conversation summaries and titles, Runtime Context checkpoints, retrieval
-    embedding backfills, the research pipeline, and scheduled source
+    report, scheduled imported-session extraction, Room conversation titles,
+    retrieval embedding backfills, the research pipeline, and scheduled source
     post-processing. [modules/policy.md](../modules/policy.md) lists what each
     re-reads.
 
@@ -913,7 +914,7 @@ authority afterwards.
   since that host is on every member's list already. Install, rollback and
   uninstall are recorded in `host_runtime_changes`; a login is not — it changes
   no version, and the row's `action` column has no value for it.
-- `AgentVersionOut`, `RunOut`, and `ArtifactOut` schemas contain no credential fields.
+- Agent version, `RunDTO`, and `ArtifactOut` response shapes contain no credential fields.
 - Run trace exposes AgentVersion system prompt presence/hash metadata only; it
   does not inline raw system prompt text, raw rendered context text, or artifact
   content.
@@ -1176,9 +1177,11 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   nothing else. The dev Vite proxy forwards that one WebSocket path rather than
   all of `/internal`, so dev exposes exactly what production does.
   A GET whose effects reach past its response — the host and subscription login
-  streams, which start a vendor login on the owner's machine, and the four
+  streams, which start a vendor login on the owner's machine, the four
   Project Folder reads, which spawn `git` there and write a policy-audit row
-  naming the requested path — goes through `stateChangingReadAllowed`. It reads
+  naming the requested path, and the Run file preview
+  (`GET /api/v1/runs/:runId/file-preview`), which reads through the same
+  Project Folder path — goes through `stateChangingReadAllowed`. It reads
   three terms **in order**, and **fails closed**. An explicit `Origin` decides
   it, judged against `FRONTEND_URL`: that is the browser naming who caused the
   request, and it comes first so that a frontend served from a sibling host of
@@ -1216,10 +1219,10 @@ paths, the extract/snapshot paths, and the declarative interpreters'
 
 Every `/api/` response carries `Cache-Control: no-store, no-cache,
 must-revalidate, private` — from one `onSend` hook, and from
-`sseResponseHeaders` for the three event streams that write their own header
+`sseResponseHeaders` for the four event streams that write their own header
 block with `reply.raw.writeHead` — flushed to the socket before any hook could
-set a header, whether or not the route also hijacks the reply (one of the three
-does). `no-cache` alone forbids reuse without revalidation but permits a
+set a header, whether or not the route also hijacks the reply (two of the four
+do). `no-cache` alone forbids reuse without revalidation but permits a
 shared cache to *store* the body; one of them carries live conversation
 turns. Do not stop at `no-cache`. They add `no-transform`, which matters only on
 a stream: an intermediary that re-buffers the response holds every event until

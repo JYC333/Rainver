@@ -526,9 +526,10 @@ test('Board borders enclose long card lists without moving Project navigation', 
     await mockApi(page)
     await page.route('**/api/v1/projects/*/board', route => route.fulfill({ json: {
       project: { id: project.id, name: project.name }, viewer_can_write: false, viewer_user_id: 'user-layout', filters: { all: 20, mine: 0, agent_held: 0, needs_me: 0 },
-      columns: [{ status_key: 'ready', label: 'Ready', wip_limit: null, count: 20 }],
+      columns_revision: 'layout-fixture',
+      columns: [{ key: 'ready', board_id: null, status_key: 'ready', label: 'Ready', wip_limit: null, count: 20 }],
       cards: Array.from({ length: 20 }, (_, index) => ({ id: `board-long-${index}`, title: `Long Board card ${index}`, status: 'ready', column_key: 'ready', priority: 'normal', risk_level: 'low', due_at: null,
-        updated_at: now, loop_stage: null, loop_stage_label: null, responsible: { kind: null, id: null, display_name: null }, active_run_count: 0, latest_run_status: null, evaluation_recommendation: null, blocked_reason: null, completion: { ok: true, missing: [] } })),
+        updated_at: now, responsible: { kind: null, id: null, display_name: null }, active_run_count: 0, latest_run_status: null, evaluation_recommendation: null, blocked_reason: null, completion: { ok: true, missing: [] } })),
     } }))
     await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/board`)
     const last = page.getByTestId('board-card-board-long-19')

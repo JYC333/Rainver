@@ -12,7 +12,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
       expect(definition.id).toMatch(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/);
       expect(policyById.has(definition.policy_action)).toBe(true);
       expect(SystemActionDefinitionSchema.safeParse(definition).success).toBe(true);
-      if(!["source.material.submit","source.material.investigate","source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate","authorization.request","input_resource.read","input_resource.search","conversation.search","source.channel.propose_activation","project.source.propose_bind","project.monitoring.propose","project.monitoring.propose_details","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.record_work","inquiry.link_task","inquiry.list_tasks","inquiry.reference_task_result","inquiry.close_round","inquiry.read_problem","inquiry.promote_knowledge","research.read_result","research.adopt_result","research.start_acquisition","research.cancel_acquisition","agent.delegate","agent.cancel_run","task.create","task.create_batch","task.report","task.handoff","task.set_status","task.complete","task.request_review","proposal.decide","inquiry.adopt_next_step","memory.remember","memory.revise","artifact.submit","handoff.write"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
+      if(!["project.reading.records","project.reading.read","source.material.submit","source.material.investigate","source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate","authorization.request","input_resource.read","input_resource.search","conversation.search","source.channel.propose_activation","project.source.propose_bind","project.monitoring.propose","project.monitoring.propose_details","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.record_work","inquiry.link_task","inquiry.list_tasks","inquiry.reference_task_result","inquiry.close_round","inquiry.read_problem","inquiry.promote_knowledge","research.read_result","research.adopt_result","research.start_acquisition","research.cancel_acquisition","agent.delegate","agent.cancel_run","task.create","task.create_batch","task.report","task.handoff","task.set_status","task.delete","board.configure","task.move_to_column","task.complete","task.request_review","proposal.decide","memory.remember","memory.revise","artifact.submit","handoff.write"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
     }
   });
 
@@ -325,4 +325,12 @@ it("accepts a Thread excerpt of 500 characters outside the Basic Multilingual Pl
  const item=(statement:string)=>({items:[{id:'thread',statement,lifecycle_status:'active',roles:['executes']}],next_cursor:null});
  expect(TaskInquiryThreadsPageSchema.safeParse(item('\u{20000}'.repeat(500))).success).toBe(true);
  expect(TaskInquiryThreadsPageSchema.safeParse(item('x'.repeat(501))).success).toBe(false);
+});
+
+it('Reading reads require exact retained IDs and bounded pages without accepting a caller Project',()=>{
+ const byId=new Map(SYSTEM_ACTION_REGISTRY.map(action=>[action.id,action]));
+ const read=byId.get('project.reading.read')!;
+ expect(read.input_schema.safeParse({item_id:'item',snapshot_id:'snapshot',limit:12000}).success).toBe(true);
+ for(const input of [{item_id:'item'},{item_id:'item',snapshot_id:'snapshot',limit:12001},{item_id:'item',snapshot_id:'snapshot',offset:-1},{item_id:'item',snapshot_id:'snapshot',project_id:'other'}])expect(read.input_schema.safeParse(input).success).toBe(false);
+ expect(read.side_effects).toBe('none');expect(read.grantable).toBe(false);
 });

@@ -237,7 +237,7 @@ async function retrievalIntent(run: RunRecord) {
     [run.id, PROFILE],
   );
   const routed = (await w.runs().getRun(SPACE, run.id))!;
-  const control = await orchestration.executionControlSnapshotWriter(routed, { dispatchesToHostDaemon: true });
+  const control = await orchestration.executionControlSnapshotWriter(routed, {});
   const setup = (await db.pool.query(`SELECT * FROM work_context_setups WHERE id=$1`, [control.work_context_setup_ref.id])).rows[0];
   return new PgRetrievalIntentProvider(db.pool).resolve({
     identity: { spaceId: SPACE, userId: OWNER },
