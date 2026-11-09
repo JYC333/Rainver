@@ -101,6 +101,7 @@ export const ProposalPageSchema = z
 export type ProposalPage = z.infer<typeof ProposalPageSchema>;
 
 export const ProposalAcceptResultTypeSchema = z.enum([
+  "operation_failure",
   "memory_entry",
   "code_patch_apply",
   "egress_review",

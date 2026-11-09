@@ -1,3 +1,4 @@
+import {ActionCatalogInputSchema,ActionCatalogOutputSchema} from "./operations.js";
 import { PROJECT_READING_RECORD_LIMITS } from './reader.js';
 import { BoardConfigurationInputSchema, BoardColumnSelectionSchema } from "./projectWork.js";
 import { ResearchResultAdoptionSchema } from "./researchCalls.js";
@@ -122,6 +123,7 @@ export interface SystemActionPolicyResource {
 }
 
 export const SystemActionDefinitionSchema = z.object({
+  execution: z.object({kind:z.enum(["command","query"]),tx:z.literal("core_owned")}).strict().optional(),
   id: z.string().regex(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/),
   version: z.number().int().positive(),
   title: z.string().min(1),
@@ -166,6 +168,7 @@ export const SystemActionDefinitionSchema = z.object({
 });
 
 export interface SystemActionDefinition {
+  readonly execution?: {readonly kind:"command"|"query";readonly tx:"core_owned"};
   readonly id: string;
   readonly version: number;
   readonly title: string;
@@ -457,6 +460,7 @@ const proposalInputs:Record<string,z.ZodType>={
     include_terminal: z.boolean().optional(),
   }).strict(),
   "research.cancel_acquisition": z.object({
+    project_id: z.string().min(1).optional(),
     operation_id: z.string().min(1).describe("The research Operation id exactly as returned by research.list_operations. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
     reason: z.string().trim().min(1).max(2000).optional(),
   }).strict(),
@@ -494,6 +498,7 @@ const proposalInputs:Record<string,z.ZodType>={
 const visibility = (...values: SystemActionVisibility[]) => new Set(values);
 
 export const SYSTEM_ACTION_REGISTRY = [
+  { ...httpAction("system.actions.list", "List available operation entries", "systemActions", "OperationCatalog.list", "system.actions.list", "none"), input_schema:ActionCatalogInputSchema, output_schema:ActionCatalogOutputSchema, execution:{kind:"query",tx:"core_owned"} },
   agentAction("authorization.request", "Request authorization for a denied action", "policy", "AuthorizationRequestService.createFromDeniedDecision", "authorization.request.create", "durable", { resource_type: "authorization_request", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("input_resource.read", "Read lines from an attached conversation resource", "conversationInput", "ConversationInputResourceService.read", "input_resource.read", "none", { resource_type: "conversation_input_resource", resource_id_input_field: "resource_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("input_resource.search", "Search an attached conversation resource", "conversationInput", "ConversationInputResourceService.search", "input_resource.search", "none", { resource_type: "conversation_input_resource", resource_id_input_field: "resource_id", resource_id_fallback: "run", check_action_approval_grant: false }),
@@ -636,7 +641,7 @@ export const SYSTEM_ACTION_REGISTRY = [
   // The symmetric stop for the action above. Direct execution for the same
   // reason: a stop that waits on a proposal review is not a stop.
   action("research.list_operations", "List this Project's research Operations with their ids", "projectResearch", "ProjectOperationService.list", "research.operation.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, agentToolSurface: "research", inputSchema: proposalInputs["research.list_operations"] }),
-  agentAction("research.cancel_acquisition", "Cancel a running research acquisition", "projectResearch", "ResearchOperationCancelService.cancelOperation", "research.acquisition.cancel", "durable", { resource_type: "project_operation", resource_id_input_field: "operation_id", resource_id_fallback: "run", check_action_approval_grant: false }, "research"),
+  { ...agentAction("research.cancel_acquisition", "Cancel a running research acquisition", "projectResearch", "ResearchOperationCancelService.cancelOperation", "research.acquisition.cancel", "durable", { resource_type: "project_operation", resource_id_input_field: "operation_id", resource_id_fallback: "run", check_action_approval_grant: false }, "research"), visibility: visibility("agent_tool", "public_api"), allowed_actor_types: ["user", "agent"], execution: {kind:"command",tx:"core_owned"}, output_schema:z.object({operation_id:z.string(),status:z.literal("cancelled"),already_terminal:z.boolean()}).strict() },
 ] as const satisfies readonly SystemActionDefinition[];
 
 export type SystemActionId = (typeof SYSTEM_ACTION_REGISTRY)[number]["id"];

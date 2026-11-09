@@ -1,5 +1,9 @@
 # Database and Transactions
 
+The reviewed operation-core contract is recorded in
+[ADR 0028](../decisions/0028-operation-execution-core.md). The opt-in stage-2
+implementation is described below; unmigrated paths keep their existing behavior.
+
 ## Transaction Helper Pattern
 
 `withTransaction` (`server/src/db/tx.ts`) owns transaction control for
@@ -698,3 +702,74 @@ There is no `read_content_hash` column: the same migration adds it for its
 backfill and drops it before it ends. Current writers bind only
 `read_body_revision`, and the Sources body/state guard functions do not
 reference the removed column.
+
+## Core-owned operation transactions
+
+The opt-in operation executor (`systemActions/operations/executor.ts`) uses
+`withTransaction` and an invocation-scoped `db/operationTransaction.ts` query
+port. `withQueryableTransaction` recognizes its active host brand before legacy
+Pool/PoolClient detection. The port exposes neither connect nor release; core
+alone owns outer transaction control and invalidates the port on exit. Domain
+SAVEPOINT/ROLLBACK TO/RELEASE statements with unquoted labels are translated into
+private, host-generated names. A domain port cannot target the core/approval
+savepoint or release an outer scope; repeated/nested labels follow PostgreSQL
+stack semantics. COMMIT/ABORT/full ROLLBACK and multiple statements remain
+refused. The guard skips SQL literals, dollar quotes, identifiers and comments,
+so semicolons in data are permitted. The real note writer/retrieval projection
+uses this capability without a second transaction or domain-service rewrite.
+Node AsyncLocalStorage also rejects the canonical pool getter within migrated
+business execution. This is not isolation of trusted in-process code; no
+pre-retained pool/client or direct import escape is permitted in an executor. Canonical Proposal apply uses its owner client
+through host decision hooks, retaining all existing Proposal authorization.
+
+The Drizzle-authored `operation_idempotency` table has unique scoped caller/key
+identity, version/input/stable-target fingerprint, same-Space unique Proposal
+link and pending/terminal constraints. There is no durable executing state.
+A non-waiting advisory transaction lock precedes row and authorization locks;
+classified domain errors roll back their savepoint before caching a safe failure.
+Policy audit can join this transaction; failure audits resolve COMMIT uncertainty
+before appending independently. Query data transactions are read-only, and their
+canonical cross-person content audit commits through a separate controlled port
+before releasing output. Policy and B11 query audit use a separately bounded
+host-only pool (two connections per database URL), not spare capacity borrowed
+from held data connections. This removes the data-pool exhaustion cycle; it does
+not make an unavailable audit store optional. Pool shutdown closes both pools.
+
+Canonical top-level Proposal accept/reject owns an invocation-local sanitized
+policy-audit recovery journal. On failure, after rollback/client release, it
+checks original audit ids through the independent audit pool and restores only
+uncommitted denial/failure records with their original known ids, tagged with
+`operation_outcome=failed`, preserving returned denial references.
+Committed ids are preserved without duplication, including COMMIT-response loss.
+Audit storage failure still withholds output and never authorizes a denial.
+A mapped `acceptInTransaction`/`rejectInTransaction` caller must wrap its entire
+transaction lifecycle in `withPolicyAuditRecovery`; otherwise the mapping fails
+closed before apply. Unmapped legacy transaction ownership is unchanged.
+
+The hourly `operation_request_retention` task uses the same try-lock and retains
+terminal requests seven days, never deleting actionable pending approvals.
+Expiry/supersession is reconciled under locks; an accepted Proposal lacking its
+atomic request result, or a missing linked Proposal (including LEFT JOIN NULL),
+is retained as inconsistent and raises scheduler attention without deleting its
+frozen evidence.
+Output validation, audit persistence and post-commit/Job recovery obligations in
+ADR 0028 still gate each production migration. The production cancellation pilot joins its existing status/Job service to the
+core. No production approval mapping or external-workflow atomicity is claimed.
+
+
+Stage-3 review refinements: core failed audits reuse the original decision id,
+so a COMMIT becoming visible between check and recovery cannot create a second
+identity. Terminal pruning, actionable pending reconciliation and inconsistent
+pending inspection have separate bounded budgets; corrupt evidence cannot starve
+normal retention. Controlled ports reject session/default transaction settings,
+RESET and set_config escapes in addition to outer transaction control. These
+remain safeguards for trusted owning code, not an isolation sandbox.
+
+
+Real backend termination exposed a second checked-out pg Client error event after
+the active query had rejected. Canonical data/audit pools now register a Client
+error listener as well as their idle pool listener. Query errors still reject,
+transactions roll back, and pg discards unqueryable clients on release; the
+connection event cannot crash the server before a typed 503 is delivered.
+The actual fault/cutover procedures and their limits are recorded in
+[Operation core acceptance](OPERATION_CORE_ACCEPTANCE.md).

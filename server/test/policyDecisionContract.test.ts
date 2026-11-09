@@ -56,3 +56,15 @@ describe("policy decision compatibility", () => {
     });
   }
 });
+
+
+describe('canonical operation approval gate scope',()=>{
+ it('satisfies only the named require_approval rule and still evaluates later rules/default',()=>{
+  const request={force_record:false,action:'task.create',space_id:'s',resource_space_id:'s',context:{trigger_origin:'autonomous'}};
+  expect(computeDecision(registry,request).decision.decision).toBe('require_approval');
+  expect(computeDecision(registry,request,'some_other_gate').decision.decision).toBe('require_approval');
+  expect(computeDecision(registry,request,'unattended_project_write_require_approval').decision.decision).toBe('allow');
+  expect(computeDecision(registry,{...request,resource_space_id:'other'},'unattended_project_write_require_approval').decision.decision).toBe('deny');
+  expect(computeDecision(registry,{...request,action:'unregistered.action'},'registry_default').decision.decision).toBe('deny');
+ });
+});

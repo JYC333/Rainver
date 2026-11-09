@@ -232,6 +232,9 @@ function sendProposalRouteError(
   reply: FastifyReply,
   error: unknown,
 ): FastifyReply | Promise<FastifyReply> {
+  if(error && typeof error==='object' && (error as {code?:unknown}).code==='idempotency_in_progress') {
+    return reply.code(409).send({error:{code:'idempotency_in_progress',domain:'operations',message:'Operation is in progress',metadata:{},retryable:true,request_id:request.id}});
+  }
   if (error instanceof ProposalApplyHttpError) {
     return reply.code(error.statusCode).send({ detail: error.detail });
   }

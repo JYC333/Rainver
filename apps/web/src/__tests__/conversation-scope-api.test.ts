@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { agentsApi, authorizationRequestsApi, conversationInputApi, projectFoldersApi, proposalsApi, roomsApi, runsApi, sessionsApi, skillsApi, setSpaceContext } from '../api/client'
+import { queryOperation,ApiRequestError, agentsApi, authorizationRequestsApi, conversationInputApi, projectFoldersApi, proposalsApi, roomsApi, runsApi, sessionsApi, skillsApi, setSpaceContext } from '../api/client'
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })))
@@ -37,3 +37,18 @@ describe('conversation source Space transport', () => {
     expect(new Headers(vi.mocked(fetch).mock.calls[vi.mocked(fetch).mock.calls.length - 1]![1]?.headers).get('X-Rainver-Space-Id')).toBe('active-space')
   })
 })
+
+describe('typed operation transport',()=>{
+ it('uses current source Space and a private GET query without automatic retries',async()=>{
+  vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({status:'succeeded',data:{actions:[]}}),{status:200,headers:{'Content-Type':'application/json'}}));
+  expect(await queryOperation('system.actions.list',{}, {spaceId:'source-a'})).toEqual({status:'succeeded',data:{actions:[]}});
+  const [url,options]=vi.mocked(fetch).mock.calls[0]!;
+  expect(String(url)).toBe('/api/v1/queries/system.actions.list?input=%7B%7D');expect(options?.method).toBe('GET');
+  expect(new Headers(options?.headers).get('X-Rainver-Space-Id')).toBe('source-a');expect(fetch).toHaveBeenCalledTimes(1);
+ });
+ it('preserves the nested operation error code/status and performs no automatic retry',async()=>{
+  vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({error:{code:'idempotency_in_progress',message:'in progress',metadata:{},retryable:true,request_id:'request',domain:'operations'}}),{status:409,headers:{'Content-Type':'application/json'}}));
+  try{await queryOperation('system.actions.list',{});throw new Error('expected refusal');}catch(error){expect(error).toBeInstanceOf(ApiRequestError);expect(error).toMatchObject({status:409,code:'idempotency_in_progress',message:'in progress'});}
+  expect(fetch).toHaveBeenCalledTimes(1);
+ });
+});

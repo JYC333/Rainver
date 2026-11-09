@@ -173,3 +173,19 @@ describe("Run-local CLI bridge on macOS", () => {
     await expect(readFile(join(outside, `${input.id}.request`), "utf8")).resolves.toBe(JSON.stringify(input));
   });
 });
+
+
+describe('explicit keys through Host bridge',()=>{
+ it('retains one logical key while each attempt uses a fresh correlation id',async()=>{
+  const seen:ToolRequest[]=[];const host=await bridge(async r=>{seen.push(r);return {status:200,text:'{}'};});
+  await localToolRequest(host.directory,{...request(),idempotency_key:'retained'});
+  await localToolRequest(host.directory,{...request(),idempotency_key:'retained'});
+  expect(seen.map(r=>r.idempotency_key)).toEqual(['retained','retained']);expect(seen[0].id).not.toBe(seen[1].id);
+ });
+ it('refuses an older Host before dispatching any explicit-key write',async()=>{
+  let calls=0;const host=await bridge(async()=>{calls++;return {status:200,text:'{}'};});
+  await rm(join(host.directory,'capabilities'));
+  await expect(localToolRequest(host.directory,{...request(),idempotency_key:'retained'})).rejects.toThrow('no request was sent');
+  expect(calls).toBe(0);
+ });
+});

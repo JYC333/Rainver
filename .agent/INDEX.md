@@ -138,6 +138,8 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/SERVER_OWNERSHIP.md](architecture/SERVER_OWNERSHIP.md) | Current server ownership and fail-closed gaps |
 | [architecture/SERVER_MODULE_CONVENTION.md](architecture/SERVER_MODULE_CONVENTION.md) | Server-owned module structure, route registry, error envelope |
 | [architecture/SYSTEM_ACTIONS.md](architecture/SYSTEM_ACTIONS.md) | System action registry, gateway exposure, policy, proposal, grant, idempotency, and audit boundaries |
+| [architecture/OPERATION_CORE_ACCEPTANCE.md](architecture/OPERATION_CORE_ACCEPTANCE.md) | Operation core fault/cutover acceptance matrix, permanent test evidence and production approval exclusions |
+| [architecture/OPERATION_EXECUTION_CONTRACT.md](architecture/OPERATION_EXECUTION_CONTRACT.md) | Permanent operation execution contract: actor, policy, transaction, idempotency, approval and query invariants |
 | [architecture/OFFICIAL_OPTIONAL_MODULES.md](architecture/OFFICIAL_OPTIONAL_MODULES.md) | Official optional-module packaging, enablement, migrations, and host boundaries |
 
 ### Memory / Activity / Proposal
@@ -276,6 +278,7 @@ when shortening a decision; do not delete an ADR merely because it is old.
 | [0025](decisions/0025-unpublished-migration-squash.md) | Unpublished plan migrations may be squashed into one formal migration, with explicit data-preserving history conversion for existing databases |
 | [0026](decisions/0026-sources-isolated-request-execution.md) | Sources-only Host execution, OS network/resource containment and shared per-request account/endpoint admission; generated-code product integration remains gated |
 | [0027](decisions/0027-problem-engine-research-separation.md) | Inquiry owns the generic problem method and round close-out; Task Board status is the only Task progress; Research is a bound capability; no runtime compatibility; one-time cutover and retirement of old-model archives |
+| [0028](decisions/0028-operation-execution-core.md) | Proposed operation executor decision and frozen Plan 1 contracts; runtime not enabled |
 
 ---
 
@@ -290,6 +293,7 @@ Planned work has one durable routing entry per purpose:
 | [plans/backlog.md](plans/backlog.md) | Work pulled on demand |
 | [tasks/deferred-register.md](tasks/deferred-register.md) | Deferred work, triggers, and outstanding acceptance gates |
 | [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | Deferred unattended execution specification |
+| [plans/operation-core/README.md](plans/operation-core/README.md) | Approved phased program: one operation execution core for people and Agents, plugin operations, the PhD application pilot, and their follow-ups |
 | [plans/unimplemented-from-guides.md](plans/unimplemented-from-guides.md) | Designs removed from current-state guides; inventory only, not a pull queue |
 
 Do not create competing task lists or a separate "current focus" document.

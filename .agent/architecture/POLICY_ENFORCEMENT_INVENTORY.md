@@ -1,5 +1,9 @@
 # Policy Enforcement Inventory
 
+The reviewed operation-core contract is recorded in
+[ADR 0028](../decisions/0028-operation-execution-core.md). The opt-in stage-2
+implementation is described below; unmigrated paths keep their existing behavior.
+
 See `docs/POLICY_AND_PRIVACY_BOUNDARIES.md` for the canonical stable reference.
 This file provides additional architectural detail for agents and tools that
 operate on the `.agent` context tree.
@@ -486,3 +490,22 @@ Source and Artifact access. Agent output additionally passes canonical Source
 egress for the granted Run destination. These grants do not authorize new acquisition,
 Source retention, spend, or Knowledge publication. See
 [Research calls](PROJECT_RESEARCH_CALLS.md).
+
+### Opt-in operation execution
+
+`systemActions/operations/executor.ts` uses the existing enforcement service,
+with a host-injected audit transaction for commands; this is not a second policy
+engine. The enabled `system.actions.list` query checks current active Space
+membership before returning enabled public-operation metadata. Legacy actions
+receive no generic authority merely from public_api metadata. Run admission
+also rechecks the stored grant and verified responsible person; the legacy
+Run-bound dispatcher and invalid material-submission behavior remain intact.
+
+Successful command policy audit joins business/output/request persistence.
+Read-decision audit is separate from the constrained canonical content-access
+port, which fixes the authenticated viewer and retains B11's cross-person rule.
+Blocked/failed business work never commits merely to retain audit. No production
+approval mapping is enabled; existing applier and side-writer coverage must pass
+before mapping reach is widened. Try-lock contention is a retryable409, not a
+policy denial or Proposal rejection. Current fixture tests cover the integration;
+production operation/pilot and crash/cutover acceptance remain later-stage gates.

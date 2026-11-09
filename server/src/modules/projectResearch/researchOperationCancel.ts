@@ -7,6 +7,12 @@ import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
 import { assertProjectWriter } from "../projects/access.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 
+export class ResearchCancellationConflict extends HttpError {
+  constructor() { super(409, "Project is archived; reactivate it before making changes"); }
+}
+export class ResearchCancellationInputError extends HttpError {
+  constructor() { super(422, "reason must be at most 2000 characters"); }
+}
 export const RESEARCH_OPERATION_CANCEL_JOB = "research_operation_cancel";
 
 /** The statuses in which a research Operation is over. One list — the SQL
@@ -54,10 +60,11 @@ export class ResearchOperationCancelService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const normalizedReason = reason?.trim() || null;
     if (normalizedReason && normalizedReason.length > 2_000) {
-      throw new HttpError(422, "reason must be at most 2000 characters");
+      throw new ResearchCancellationInputError();
     }
     return withQueryableTransaction(this.db, async (tx) => {
-      await lockActiveProjectForMutation(tx,identity.spaceId,projectId);
+      try { await lockActiveProjectForMutation(tx,identity.spaceId,projectId); }
+      catch(error) { if(error instanceof HttpError && error.statusCode===409) throw new ResearchCancellationConflict(); throw error; }
       const existing = await tx.query<{ id: string;research_call_json:unknown }>(
         `SELECT id,research_call_json FROM project_operations
           WHERE id=$1 AND space_id=$2 AND project_id=$3 AND kind='research'`,

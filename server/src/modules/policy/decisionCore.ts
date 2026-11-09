@@ -975,6 +975,7 @@ const BUILTIN_RULES: readonly Rule[] = [
 export function engineCheck(
   registry: ReadonlyMap<string, PolicyActionDefinition>,
   ctx: Ctx,
+  satisfiedApprovalRule?: string,
 ): PolicyDecision {
   const action = ctx.action;
   let defn: PolicyActionDefinition;
@@ -999,11 +1000,15 @@ export function engineCheck(
 
   for (const rule of BUILTIN_RULES) {
     const result = rule(ctx);
-    if (result !== null) return result;
+    if (result !== null) {
+      // Server-only canonical apply context may satisfy one named approval gate, never DENY.
+      if(satisfiedApprovalRule !== undefined && result.decision === "require_approval" && result.policy_rule_id === satisfiedApprovalRule) continue;
+      return result;
+    }
   }
 
   return makeDecision({
-    decision: defn.default_decision as Decision,
+    decision: (defn.default_decision === "require_approval" && satisfiedApprovalRule === "registry_default" ? "allow" : defn.default_decision) as Decision,
     message: `No rule matched; registry default for ${pyRepr(String(action))} is ${defn.default_decision}`,
     risk_level: defn.default_risk_level as RiskLevel,
     reason_code: "registry_default",

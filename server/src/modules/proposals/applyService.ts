@@ -1,3 +1,5 @@
+import { withPolicyAuditRecovery } from "../policy/auditWriter.js";
+import type {ProposalDecisionHooks} from "./decisionHooks.js";
 import { isProjectOwnerLevel } from "../projects/access.js";
 import { createHash, randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
@@ -18,6 +20,7 @@ import {
   createDefaultProposalApplierRegistry,
   type ProposalApplierContributor,
   type ProposalApplierRegistry,
+  type ProposalApplyResult,
 } from "./applierRegistry.js";
 import {
   PgProposalRepository,
@@ -29,7 +32,7 @@ import { PgProjectFolderRepository } from "../projectFolders/repository.js";
 import { assertCodePatchTargetInsideRoot, CodePatchFileTransaction } from "../projectFolders/codePatch.js";
 import { withCodePatchTarget } from "../projectFolders/codePatchTarget.js";
 import { validatePath } from "@rainver/folder-read";
-import { HttpError } from "../routeUtils/common.js";
+import { HttpError,type Queryable } from "../routeUtils/common.js";
 import { MemoryAudienceError, MemoryOperatorEditRequiredError } from "../memory/memoryApplyRepository.js";
 import type {
   ProposalAcceptOut,
@@ -195,6 +198,7 @@ export class PgProposalApplyService {
   constructor(
     private readonly config: ServerConfig,
     private readonly registry: ProposalApplierRegistry = createDefaultProposalApplierRegistry(),
+    private readonly decisionHooks?: ProposalDecisionHooks,
   ) {}
 
   static fromConfig(
@@ -209,6 +213,14 @@ export class PgProposalApplyService {
   }
 
   async accept(
+    proposalId: string,
+    identity: { spaceId: string; userId: string },
+    options: ProposalAcceptOptions = {},
+  ): Promise<ProposalAcceptOut | null> {
+    return withPolicyAuditRecovery(this.config.databaseUrl, () => this.acceptDecision(proposalId, identity, options));
+  }
+
+  private async acceptDecision(
     proposalId: string,
     identity: { spaceId: string; userId: string },
     options: ProposalAcceptOptions = {},
@@ -244,6 +256,7 @@ export class PgProposalApplyService {
   ): Promise<ProposalTransactionResult<ProposalAcceptOut> | null> {
     let rollbackOnFailure: (() => Promise<void>) | null = null;
     try {
+      if (this.decisionHooks && !await this.decisionHooks.beforeDecision(client,proposalId,identity,"accept")) return null;
       const proposal = await authorizeProposalDecision(
         client, await this.getProposalForUpdate(client, proposalId), identity, "accept",
       );
@@ -257,9 +270,11 @@ export class PgProposalApplyService {
       );
       await this.assertRequiredContextOwnerApprovals(client, proposal);
       await this.enforceApplyPolicy(client, proposal, identity.userId);
-      const result = await this.registry.apply({
+      if(await this.decisionHooks?.beforeApply?.(client,proposalId)===false)return null;
+      let result:ProposalApplyResult;
+      const apply = (db:Queryable = client) => this.registry.apply({
         config: this.config,
-        db: client,
+        db,
         proposal: {
           id: proposal.id,
           space_id: proposal.space_id,
@@ -276,6 +291,11 @@ export class PgProposalApplyService {
         },
         userId: identity.userId,
       });
+      try { result = this.decisionHooks?.runApply ? await this.decisionHooks.runApply(client,proposalId,apply) : await apply(); } catch(error) {
+        if(!this.decisionHooks?.applyFailed)throw error;
+        result=await this.decisionHooks.applyFailed(client,proposalId,error);
+      }
+      await this.decisionHooks?.afterApply(client,proposalId,result);
       rollbackOnFailure = result.rollback ?? null;
       if (afterApply) await afterApply();
       await this.markProposalFinal(client, proposal, identity.userId, result.finalStatus ?? "accepted", result.proposalPayloadPatch);
@@ -368,6 +388,13 @@ export class PgProposalApplyService {
     proposalId: string,
     identity: { spaceId: string; userId: string },
   ): Promise<ProposalOut | null> {
+    return withPolicyAuditRecovery(this.config.databaseUrl, () => this.rejectDecision(proposalId, identity));
+  }
+
+  private async rejectDecision(
+    proposalId: string,
+    identity: { spaceId: string; userId: string },
+  ): Promise<ProposalOut | null> {
     const client = await this.connect();
     try {
       await client.query("BEGIN");
@@ -404,6 +431,7 @@ export class PgProposalApplyService {
     afterReject?: ProposalTransactionCallback,
     allowBundleMemberDecision = false,
   ): Promise<ProposalTransactionResult<ProposalOut> | null> {
+    if(this.decisionHooks && !await this.decisionHooks.beforeDecision(client,proposalId,identity,"reject"))return null;
     const proposal = await authorizeProposalDecision(
       client, await this.getProposalForUpdate(client, proposalId), identity, "reject",
     );
@@ -420,6 +448,7 @@ export class PgProposalApplyService {
     await releaseRejectedSourceRecipeVersion(client, proposalId, identity.spaceId);
     await releaseRejectedSourceChannelDraft(client, proposal);
     await releaseRejectedSourceBackfillPlan(client, proposal);
+    await this.decisionHooks?.afterReject(client,proposalId);
     if (afterReject) await afterReject();
     const out = await new PgProposalRepository(client).getVisible(identity.spaceId, identity.userId, proposalId);
     if (!out) throw new Error("rejected proposal is not visible after reject");
@@ -739,7 +768,7 @@ export class PgProposalApplyService {
     await assertRequiredOwnerMayDecide(client, proposal, userId);
     const role = await effectiveApproverRole(client, proposal, userId);
     const result = await enforceProposalApply(
-      this.config,
+      await this.decisionHooks?.usesAtomicAudit?.(client,proposal.id) ? {...this.config,auditTransaction:client} : this.config,
       {
         user_id: userId,
         space_id: proposal.space_id,

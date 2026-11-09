@@ -93,6 +93,7 @@ export type PolicyActionDefinition = z.infer<
  * a decision input), but carried so audits and docs share the same labels.
  */
 export const POLICY_ACTION_REGISTRY = [
+  {action:"system.actions.list",resource_type:"space",default_risk_level:"low",default_decision:"allow",audit_required:true,approval_capability:null,default_required_approver_role:null,current_enforcement_point:"server/src/modules/systemActions/operations/executor.ts",description:"Discover enabled public operation metadata under current Space membership.",lifecycle_status:"wired_direct",record_failure_mode:"fail_closed"},
   {
     action: "authorization.request.create",
     resource_type: "authorization_request",

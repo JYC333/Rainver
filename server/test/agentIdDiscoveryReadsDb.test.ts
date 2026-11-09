@@ -1,3 +1,8 @@
+import {seedResearchOperation} from './support/researchSeeds.js';
+import {createResearchWorkflow} from '../src/modules/projectResearch/workflowOntology.js';
+import {createBoundResearchOperation} from '../src/modules/projectResearch/researchProblemCalls.js';
+import {CliAgentToolTransport} from '../src/modules/runs/cliToolTransport.js';
+import type {AgentRunRecord} from '../src/modules/runs/repository.js';
 import { randomUUID } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,7 +11,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { SystemActionId } from "@rainver/protocol";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
-import { seedAgentWithVersion, seedSpaceMember } from "./support/domainSeeds.js";
+import { seedAgentWithVersion, seedSpaceMember, seedRun, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { loadConfig } from "../src/config.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
@@ -64,6 +69,20 @@ async function executorsFor(projectId: string, instructedBy = OWNER): Promise<Ma
   return executors;
 }
 
+async function coreCancelFor(projectId:string,instructedBy=OWNER) {
+  const id=randomUUID();
+  await seedRun(db.pool,{id,space:SPACE,owner:instructedBy,agent:AGENT,version:AGENT_VERSION,existingAgent:true});
+  await db.pool.query("UPDATE runs SET status='running',project_id=$2,instructed_by_user_id=$3,permission_snapshot_json=$4::jsonb WHERE id=$1",[id,projectId,instructedBy,JSON.stringify({tool_grants:[{action_id:'research.cancel_acquisition'}]})]);
+  const run=(await db.pool.query<AgentRunRecord>('SELECT * FROM runs WHERE id=$1',[id])).rows[0];
+  const transport=new CliAgentToolTransport(loadConfig({SERVER_DATABASE_URL:db.connectionUri}));
+  return async (operationId:string,extra:Record<string,unknown>={})=>transport.call(run,{id:randomUUID(),name:'research.cancel_acquisition',arguments:{operation_id:operationId,...extra}}) as Promise<{httpStatus:number;body:{error:{message:string;code:string}}}>;
+}
+async function researchRow(projectId:string,title:string,status='active') {
+  const id=randomUUID();
+  await db.pool.query("INSERT INTO project_operations(id,space_id,project_id,kind,title,status,created_by_user_id,progress_json,version,created_at,updated_at) VALUES($1,$2,$3,'research',$4,$5,$6,'{}'::jsonb,1,now(),now())",[id,SPACE,projectId,title,status,OWNER]);
+  return id;
+}
+
 describe("the reads an Agent gets ids from (real Postgres)", () => {
   it("lists the Project's active Threads with the ids a later action must carry", async () => {
     if (!db.available) return;
@@ -117,10 +136,10 @@ describe("the reads an Agent gets ids from (real Postgres)", () => {
     expect((all.modelResult as { operations: Array<{ operation_id: string }> }).operations.map((operation) => operation.operation_id).sort())
       .toEqual([running, finished].sort());
 
-    await expect(executors.get("research.cancel_acquisition" as SystemActionId)!(
-      { operation_id: "classification-run" },
-      { idempotency_key: "call-6" } as never,
-    )).rejects.toThrow(`No research Operation has id 'classification-run'. Use one of these ids exactly: ${running} — Acquisition: classification (active)`);
+    const cancel=await coreCancelFor(project.id as string);
+    const missing=await cancel('classification-run');
+    expect(missing.httpStatus).toBe(404);
+    expect(missing.body.error.message).toBe(`No research Operation has id 'classification-run'. Use one of these ids exactly: ${running} — Acquisition: classification (active)`);
   });
 
   it("stops listing research Operations once the instructing person's Project membership is gone", async () => {
@@ -146,5 +165,59 @@ describe("the reads an Agent gets ids from (real Postgres)", () => {
     // Revoked mid-Run: the Run goes on, this read does not.
     await db.pool.query(`DELETE FROM project_members WHERE project_id = $1 AND user_id = $2`, [project.id, MEMBER]);
     await expect(list()).rejects.toMatchObject({ statusCode: 404 });
+  });
+});
+
+
+describe('core cancellation discovery privacy',()=>{
+  it('names no running operation when only completed operations exist',async()=>{
+    const project=await new PgProjectRepository(db.pool).create(identity(),{name:'Current'});
+    const terminal=await researchRow(project.id as string,'Finished','completed');
+    const result=await (await coreCancelFor(project.id as string))('unknown');
+    expect(result.httpStatus).toBe(404);expect(result.body.error.message).toContain('no research running');
+    expect(JSON.stringify(result)).not.toContain(terminal);
+  });
+  it('never offers ids on cross-Project targets or mismatched caller Project hints',async()=>{
+    const current=await new PgProjectRepository(db.pool).create(identity(),{name:'Current'}),other=await new PgProjectRepository(db.pool).create(identity(),{name:'Other'});
+    const visible=await researchRow(current.id as string,'Current visible'),foreign=await researchRow(other.id as string,'Secret other');
+    const otherSpace=randomUUID(),otherOwner=randomUUID(),otherProject=randomUUID(),foreignSpaceId=randomUUID();
+    await seedSpaceOwnerProject(db.pool,{space:otherSpace,owner:otherOwner,project:otherProject});
+    await seedResearchOperation(db.pool,{id:foreignSpaceId,space:otherSpace,project:otherProject,owner:otherOwner,progress:{},now:new Date().toISOString()});
+    const cancel=await coreCancelFor(current.id as string);
+    const outside=await cancel(foreignSpaceId),missing=await cancel(randomUUID());
+    expect(outside.httpStatus).toBe(missing.httpStatus);
+    expect(outside.body.error.message.replace(foreignSpaceId,'<target>')).toBe(missing.body.error.message.replace(/No research Operation has id '[^']*'/,"No research Operation has id '<target>'"));
+    expect(outside.body.error.message).toContain(visible);
+    for(const result of [await cancel(foreign),await cancel('unknown',{project_id:other.id}),await cancel(visible,{project_id:other.id})]) {
+      expect(result.httpStatus).toBe(404);expect(result.body.error.message).toBe('operation not found');
+      expect(JSON.stringify(result)).not.toContain(visible);expect(JSON.stringify(result)).not.toContain('Secret other');
+    }
+    expect((await db.pool.query('SELECT status FROM project_operations WHERE id=$1',[foreign])).rows[0].status).toBe('active');
+  });
+  it('withholds discovery after current Project permission or Run grant is revoked',async()=>{
+    const member=randomUUID();await seedSpaceMember(db.pool,{space:SPACE,user:member});
+    const project=await new PgProjectRepository(db.pool).create(identity(),{name:'Current'});
+    await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),SPACE,project.id,member]);
+    const visible=await researchRow(project.id as string,'Visible'),cancel=await coreCancelFor(project.id as string,member);
+    expect((await cancel('unknown')).body.error.message).toContain(visible);
+    await db.pool.query('DELETE FROM project_members WHERE project_id=$1 AND user_id=$2',[project.id,member]);
+    expect((await cancel('unknown')).body.error.message).toBe('operation not found');
+    const ownerCancel=await coreCancelFor(project.id as string);
+    await db.pool.query("UPDATE runs SET permission_snapshot_json='{}'::jsonb WHERE project_id=$1",[project.id]);
+    expect((await ownerCancel('unknown')).body.error.message).toBe('operation not found');
+  });
+  it('filters private bound calls from hints and never offers hints for their existing ids',async()=>{
+    const member=randomUUID();await seedSpaceMember(db.pool,{space:SPACE,user:member});
+    const project=await new PgProjectRepository(db.pool).create(identity(),{name:'Current'});
+    await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),SPACE,project.id,member]);
+    const thread=await new InquiryThreadService(db.pool).createThread(identity(),project.id as string,{kind:'question',statement:'Private question'});
+    await db.pool.query("UPDATE space_objects SET visibility='private' WHERE id=$1",[thread.id]);
+    const visible=await researchRow(project.id as string,'Visible');
+    const workflow=randomUUID(),key=randomUUID();
+    await createResearchWorkflow(db.pool,{id:workflow,spaceId:SPACE,projectId:project.id as string,title:'Private workflow',status:'active',state:{},startedByUserId:OWNER,primaryThreadId:thread.id as string,now:new Date().toISOString()});
+    const privateId=(await createBoundResearchOperation(db.pool,identity(),project.id as string,{title:'Private title',intentText:'Private investigation',status:'active',steps:[],progress:{schema_version:'project_research_operation.v1',workflow_id:workflow,thread_scope:[{thread_id:thread.id,version:1,kind:'question',statement:'Private question'}],idempotency:{key,fingerprint:key},history:{max_items:20},channel_ids:[]}})).id;
+    const cancel=await coreCancelFor(project.id as string,member),missing=await cancel('unknown');
+    expect(missing.body.error.message).toContain(visible);expect(JSON.stringify(missing)).not.toContain(privateId);expect(JSON.stringify(missing)).not.toContain('Private title');
+    expect((await cancel(privateId)).body.error.message).toBe('operation not found');
   });
 });

@@ -1,7 +1,7 @@
 import { connectionError } from "./connectionError.ts";
 
 export interface ToolIdentity { apiUrl: string; runId: string; token: string }
-export interface ToolRequest { id: string; method: "GET" | "POST"; path: string; body?: Record<string, unknown> }
+export interface ToolRequest { id: string; idempotency_key?: string; method: "GET" | "POST"; path: string; body?: Record<string, unknown> }
 export interface ToolResponse { status: number; text: string }
 export const TOOL_REQUEST_LIMIT = 4 * 1024 * 1024;
 export const TOOL_RESPONSE_LIMIT = 8 * 1024 * 1024;
@@ -30,13 +30,14 @@ function isToolPath(path: unknown): path is string {
 export function parseToolRequest(value: unknown): ToolRequest {
   const v = value as Partial<ToolRequest> | null;
   if (!v || typeof v !== "object" || !/^[a-f0-9-]{36}$/.test(v.id ?? "")
+    || (v.idempotency_key !== undefined && (typeof v.idempotency_key !== "string" || !/^[\x21-\x7e]{1,256}$/.test(v.idempotency_key)))
     || !isToolPath(v.path)
     || (v.method !== "GET" && v.method !== "POST")
     || (v.method === "POST" && (v.path === "tools" || !v.body || typeof v.body !== "object" || Array.isArray(v.body)))
     || (v.method === "GET" && v.body !== undefined)) {
     throw new Error("Invalid Rainver tool request");
   }
-  return { id: v.id!, method: v.method, path: v.path!, ...(v.body ? { body: v.body } : {}) };
+  return { id: v.id!, ...(v.idempotency_key === undefined ? {} : {idempotency_key:v.idempotency_key}), method: v.method, path: v.path!, ...(v.body ? { body: v.body } : {}) };
 }
 
 /** Shared by direct CLI calls and the Host; authorization remains server-owned. */
@@ -50,7 +51,7 @@ export async function toolHttpRequest(identity: ToolIdentity, input: ToolRequest
       signal: AbortSignal.any([AbortSignal.timeout(30_000), ...(signal ? [signal] : [])]),
       headers: {
         authorization: `Bearer ${identity.token}`,
-        ...(request.body === undefined ? {} : { "content-type": "application/json", "idempotency-key": request.id }),
+        ...(request.body === undefined ? {} : { "content-type": "application/json", "idempotency-key": request.idempotency_key ?? request.id }),
       },
       body: request.body === undefined ? undefined : JSON.stringify(request.body),
     });

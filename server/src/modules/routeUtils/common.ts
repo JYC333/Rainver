@@ -1,3 +1,4 @@
+import {isOperationTransaction} from "../../db/operationTransaction.js";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { z } from "zod";
 import type { ServerConfig } from "../../config.js";
@@ -348,6 +349,7 @@ export async function withQueryableTransaction<T>(
   db: Queryable,
   fn: (db: Queryable) => Promise<T>,
 ): Promise<T> {
+  if (isOperationTransaction(db)) return fn(db);
   const pool = db as Queryable & {
     connect?: () => Promise<PoolClient>;
     release?: () => void;

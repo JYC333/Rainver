@@ -161,7 +161,7 @@ describe("rainver help", () => {
 
   it("explains call's input forms, default and refusal status in its own help", async () => {
     const result = await runCli(["call", "--help"]);
-    expect(result.stdout).toContain("Usage: rainver call <action> [input]");
+    expect(result.stdout).toContain("Usage: rainver call <action> [--idempotency-key <key>] [input]");
     expect(result.stdout).toContain("inline JSON");
     expect(result.stdout).toContain("@file.json");
     expect(result.stdout).toContain("standard input");
@@ -305,4 +305,22 @@ describe("rainver call", () => {
     expect(result.code).toBe(2);
     expect(received).toHaveLength(0);
   });
+});
+
+
+describe('explicit logical retry keys',()=>{
+ it('forwards a deliberate key across separate CLI invocations while default calls remain distinct',async()=>{
+  respond=()=>({status:200,body:'{}'});
+  expect((await runCli(['call','task.report','--idempotency-key','retained-key','{}'])).code).toBe(0);
+  expect(received[0].idempotencyKey).toBe('retained-key');
+  expect((await runCli(['call','task.report','--idempotency-key','retained-key','{}'])).code).toBe(0);
+  expect(received[0].idempotencyKey).toBe('retained-key');
+  await runCli(['call','task.report','{}']);const first=received[0].idempotencyKey;
+  await runCli(['call','task.report','{}']);expect(received[0].idempotencyKey).not.toBe(first);
+ });
+ it('does not retry a retryable conflict automatically',async()=>{
+  respond=()=>({status:409,body:JSON.stringify({error:{code:'idempotency_in_progress',retryable:true}})});
+  expect((await runCli(['call','task.report','--idempotency-key','once','{}'])).code).toBe(1);
+  expect(received).toHaveLength(1);
+ });
 });

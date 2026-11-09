@@ -331,3 +331,27 @@ SourceItem’s own Project. This UI context grants no access. These UI
 query parameters do not replace the Reader's current server authorization.
 See [Information Digest](information-digest.md#unified-reading-projection) for
 routes, pagination, state and immutable edition semantics.
+
+## Opt-in operation entries
+
+Stage-2 operation integration exposes authenticated `GET /api/v1/queries/:opId`
+and `POST /api/v1/actions/:opId`. The only enabled production registration is the
+metadata query `system.actions.list`; legacy registry visibility is insufficient
+to enable another action. Query input is an encoded JSON `input` query parameter
+(default `{}`); responses are private/no-store and never use unchecked 304s.
+Success uses `{status:"succeeded",data}`, mapped approval uses 202
+`{status:"pending_approval",proposal_id}`, and errors use a nested typed `error`
+object with code/domain/message/metadata/retryable/request_id. Core commands
+require an explicit Idempotency-Key; current caller/visibility checks run again
+before stored results are released. The Web `queryOperation`/`callOperation`
+helpers preserve existing session/Space headers and nested error status/code.
+
+Agent Calls keep the existing Run bearer and immutable grants. Migrated entries
+use the operation adapter; others retain their legacy result/error behavior.
+`rainver call <action> --idempotency-key <key> [input]` explicitly reuses logical
+retry identity across separate calls, with a distinct transport correlation id
+per attempt. Default calls still mint fresh keys, and writes are not retried
+automatically. Older file-bridge Hosts refuse explicit-key mode before dispatch.
+Central replay is available only for migrated commands; this is not a promise
+that legacy operations became centrally idempotent. See SYSTEM_ACTIONS and
+ADR 0028 for canonical approval and migration enablement constraints.

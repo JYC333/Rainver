@@ -1,3 +1,4 @@
+import {systemActionsModule} from "../modules/systemActions/index.js";
 /**
  * Route registry — how server routes are composed.
  *
@@ -86,6 +87,11 @@ import { createAuthRuntime, setAuthRuntimeForComposition, type AuthRuntime } fro
 import type { PluginHost } from "../modules/plugins/host/index.js";
 import { registerGatewayConventions, registerUnknownApiRoute } from "./appShell.js";
 
+/** Route annotations are declarations for the exact migration inventory, never authority. */
+declare module 'fastify' {
+  interface FastifyContextConfig { operation?:string; exempt?:string; operationEntry?:boolean }
+}
+
 /** Dependencies handed to every server-owned module at registration time. */
 export interface ModuleContext {
   config: ServerConfig;
@@ -110,6 +116,7 @@ export interface ServerModule {
  */
 export const SERVER_MODULES: readonly ServerModule[] = [
   systemModule,
+  systemActionsModule,
   authModule,
   spacesModule,
   catalogModule,

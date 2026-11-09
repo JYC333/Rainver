@@ -81,6 +81,7 @@ export async function loadChatActionPreviewsByRunIds(
     ),
   ]);
 
+  const proposalIds = new Set(proposalRows.rows.map(row => row.id));
   const proposalCallIds = new Map<string, Set<string>>();
   for (const row of proposalRows.rows) {
     // The same decider the accept path enforces, so the card offers the
@@ -106,6 +107,9 @@ export async function loadChatActionPreviewsByRunIds(
     const metadata = row.metadata_json && typeof row.metadata_json === "object" ? row.metadata_json : {};
     const actionId = typeof metadata.action_id === "string" ? metadata.action_id : null;
     const callId = typeof metadata.tool_call_id === "string" ? metadata.tool_call_id : null;
+    // Canonical Run evidence also exists for legacy proposals without a call key.
+    // The Proposal card owns decision authority; do not render a duplicate public card.
+    if (typeof metadata.proposal_id === "string" && proposalIds.has(metadata.proposal_id)) continue;
     if (!actionId || (callId && proposalCallIds.get(row.run_id)?.has(callId))) continue;
     const failed = row.status === "failed" || metadata.ok === false;
     byRun.get(row.run_id)?.push({

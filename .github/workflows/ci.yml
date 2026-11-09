@@ -17,6 +17,9 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # Operation cutover tests compile the actual pre-core server revision.
+          fetch-depth: 0
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4

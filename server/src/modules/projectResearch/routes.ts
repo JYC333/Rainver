@@ -10,7 +10,11 @@ import { ProjectResearchReportRepository } from "./reportRepository.js";
 import { ProjectResearchQuestionRefineService } from "./questionRefineService.js";
 import { registerProjectResearchAreaRoutes } from "./areaRoutes.js";
 import { ProjectResearchStandingComparisonService } from "./standingComparisonService.js";
-import { ResearchOperationCancelService } from "./researchOperationCancel.js";
+import { operationRuntime } from '../systemActions/operations/runtime.js';
+import { sessionActor } from '../systemActions/operations/actor.js';
+import { assertProjectWriter } from '../projects/access.js';
+import { resolveRequestId } from '../../gateway/requestContext.js';
+import { randomUUID } from 'node:crypto';
 
 let repositoryFactoryOverride: ((context: ModuleContext) => ProjectResearchRepository) | null = null;
 let orchestratorFactoryOverride: ((context: ModuleContext) => ProjectResearchPipelineService) | null = null;
@@ -329,23 +333,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const operationId = requireParam(request, "operationId");
-      const gate = await enforceSources(
-        context,
-        identity,
-        "research.acquisition.cancel",
-        "project_operation",
-        operationId,
-      );
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(
-        await new ResearchOperationCancelService(dbPool(context.config)).cancelOperation(
-          identity,
-          requireParam(request, "projectId"),
-          operationId,
-          optionalString(jsonBody(request).reason),
-        ),
-      );
+      const operationId = requireParam(request, "operationId"), projectId = requireParam(request,"projectId");
+      // Retain legacy 403/404 and error shape. The core repeats live authority checks.
+      await assertProjectWriter(dbPool(context.config),identity.spaceId,projectId,identity.userId);
+      const reason=optionalString(jsonBody(request).reason)?.trim() || undefined;
+      const key=request.headers['idempotency-key'];
+      const result=await (await operationRuntime(context.config)).execute('research.cancel_acquisition',
+        {operation_id:operationId,project_id:projectId,...(reason?{reason}:{})},sessionActor(identity),resolveRequestId(request),typeof key==='string'?key:randomUUID());
+      if('data' in result.body) return reply.code(result.http_status).send(result.body.data);
+      if('error' in result.body) throw new HttpError(result.http_status,result.body.error.code==='operation_not_found'?'Research operation not found':result.body.error.code==='operation_invalid_input'?'reason must be at most 2000 characters':result.body.error.message);
+      throw new HttpError(503,'Cancellation unavailable');
     } catch (error) {
       return sendRouteError(reply, error);
     }

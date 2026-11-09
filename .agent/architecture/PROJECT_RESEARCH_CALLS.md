@@ -305,3 +305,31 @@ Source/target-owner egress policy once to each proven origin (deduplicated by
 Operation identity). A readable leaf marked internal_only still refuses model
 egress. This performs checks only; it creates no Run, spends no new budget and
 does not invoke a provider. Unbound history retains its existing policy path.
+
+
+## Cancellation operation adapter
+
+The stage-3 pilot uses `researchCancelOperation.ts` as its registry adapter.
+REST `/projects/:projectId/research/operations/:operationId/cancel` keeps its URL,
+200 flat receipt and legacy error envelope; generic POST uses the typed outcome.
+Agent calls keep current grants, Project binding, flat cancellation receipts and
+Run action/refusal events. All three dispatch through the shared operation core
+and the one existing cancellation service. Explicit-key response-loss retry
+replays the original already_terminal value and enqueues no second Job. Fresh
+keys retain the existing already-terminal success. No approval is required to
+stop research; no production approval mapping is enabled by this pilot.
+
+Cancellation compatibility refinements: after binding/checking the stable target,
+core input normalization fills its resolved project_id; callers may omit it on
+generic retry after REST without changing the fingerprint. Conflicting Project
+hints are rejected before normalization, and Agent authority always comes from
+the current stored Run Project. An unknown target may offer canonical visible
+running ids only to an authorized Agent in that Project. Same-Space cross-Project or
+private existing ids get no hints. Other-Space UUIDs behave like random missing ids. Policy denial now uses hidden 404 on the old
+REST URL too; its preliminary writer check retains the old 403 error shape.
+
+
+The stage-4 existence-equivalence regression is part of
+[Operation core acceptance](OPERATION_CORE_ACCEPTANCE.md): a missing-id hint
+consults no row outside the actor Space. The same guide records real executor/
+worker death, actual HTTP/file-bridge response loss, and old/new source cutover.

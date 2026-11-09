@@ -161,6 +161,7 @@ interface ComputedDecision {
 export function computeDecision(
   registry: Registry,
   req: PolicyCheckRequest,
+  satisfiedApprovalRule?: string,
 ): ComputedDecision {
   const defn = getActionDefinition(registry, req.action);
 
@@ -243,7 +244,7 @@ export function computeDecision(
   }
 
   const engineCtx = buildEngineCtx(req);
-  const decision = engineCheck(registry, engineCtx);
+  const decision = engineCheck(registry, engineCtx, satisfiedApprovalRule);
   decision.actor_type = decision.actor_type ?? req.actor_type ?? null;
   decision.actor_id = decision.actor_id ?? req.actor_id ?? null;
   decision.actor_ref = decision.actor_ref ?? req.actor_ref ?? null;

@@ -1,3 +1,4 @@
+import type {Queryable} from "../routeUtils/common.js";
 /**
  * Policy enforcement service. The orchestration lives here; decision logic
  * lives in `gateway.ts` / `decisionCore.ts`.
@@ -42,7 +43,7 @@ export interface EnforceResult {
   message?: string;
 }
 
-type PolicyEnforcementConfig = Pick<ServerConfig, "databaseUrl">;
+type PolicyEnforcementConfig = Pick<ServerConfig, "databaseUrl"> & { auditTransaction?:Queryable; auditRecordId?:string };
 
 function blockedErrorCode(
   decision: PolicyDecision,
@@ -59,7 +60,7 @@ async function persistAudit(
   if (!config.databaseUrl) {
     throw new Error("policy enforcement requires SERVER_DATABASE_URL");
   }
-  return writePolicyAudit(config.databaseUrl, envelope);
+  return writePolicyAudit(config.databaseUrl, envelope, config.auditTransaction, config.auditRecordId);
 }
 
 /**
@@ -72,8 +73,11 @@ export async function enforce(
   config: PolicyEnforcementConfig,
   registry: Registry,
   req: PolicyCheckRequest,
+  // Internal only: supplied after canonical Proposal authorization. Not a request/payload field.
+  satisfiedApprovalRule?: string,
 ): Promise<EnforceResult> {
-  const { defn, decision } = computeDecision(registry, req);
+  if(satisfiedApprovalRule && (!config.auditTransaction || !req.proposal_id))throw new Error("Approved gate requires canonical transactional Proposal context");
+  const { defn, decision } = computeDecision(registry, req, satisfiedApprovalRule);
   const nowIso = new Date().toISOString();
 
   if (decision.decision === "deny" || decision.decision === "require_approval") {
@@ -229,5 +233,5 @@ async function writeProposalAudit(
     proposal_id: input.proposal_id,
     metadata_json: decision.metadata_json ?? null,
     created_at: nowIso,
-  });
+  }, config.auditTransaction);
 }

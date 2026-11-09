@@ -1,3 +1,4 @@
+import {pruneOperationRequests} from "../systemActions/operations/retention.js";
 import { SpaceAssistantService } from "../agents/spaceAssistantService.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
@@ -49,6 +50,11 @@ export function startBackgroundServices(
   const tasks: ScheduledTask[] = [
     // Plugin-contributed scheduler tasks (fan out to enabled users internally).
     ...(pluginHost?.getSchedulerTasks() ?? []),
+    {name:"operation_request_retention",intervalSeconds:3600,run:async()=>{
+      if(!config.databaseUrl)return;
+      const result=await pruneOperationRequests(getDbPool(config.databaseUrl));
+      if(result.inconsistent)throw new Error('Operation approval request state requires investigation');
+    }},
     {
       name: "migration_artifact_retention",
       intervalSeconds: 3600,

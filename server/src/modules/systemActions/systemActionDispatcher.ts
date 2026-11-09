@@ -1,4 +1,5 @@
-import {resolveAgentActorId} from '../../db/actorResolver.js';
+import {OperationError} from "./operations/errors.js";
+import {defaultActionEventSink} from '../runs/actionEvents.js';
 import { createHash, randomUUID } from "node:crypto";
 import type {
   CanonicalToolCall,
@@ -25,7 +26,6 @@ import {
   type ResolvedRetrievalToolBinding,
 } from "../runs/managedRetrievalTools.js";
 import type { AgentRunRecord } from "../runs/repository.js";
-import { PgRunRepository } from "../runs/repository.js";
 import { getDbPool } from "../../db/pool.js";
 import { loadSystemActionRegistry } from "./registry.js";
 import { SystemActionGateway, SystemActionGatewayError, type SystemActionExecutor } from "./gateway.js";
@@ -495,6 +495,7 @@ function toolCallFailureResult(call: CanonicalToolCall, error: unknown): SystemA
       ok: false,
       tool: call.name,
       error_code: errorCode,
+      ...(error instanceof OperationError ? {http_status:error.httpStatus,retryable:error.retryable}:{}),
       error: error instanceof Error ? error.message : "Action failed",
       ...(policyDecisionRecordId(error)
         ? { policy_decision_record_id: policyDecisionRecordId(error) }
@@ -511,33 +512,6 @@ function toolCallFailureResult(call: CanonicalToolCall, error: unknown): SystemA
   };
 }
 
-function defaultActionEventSink(config: ServerConfig, run: AgentRunRecord) {
-  if (!config.databaseUrl) return undefined;
-  const db=getDbPool(config.databaseUrl);
-  const repository = new PgRunRepository(db);
-  const collection=(run.contract_snapshot_json as {workflow_input_json?:{source_goal?:{purpose?:string};material_processing?:unknown}})?.workflow_input_json?.source_goal?.purpose==='collect'||!!(run.contract_snapshot_json as {workflow_input_json?:{material_processing?:unknown}})?.workflow_input_json?.material_processing;
-  return async (
-    eventType: "action_invoked" | "action_completed",
-    call: CanonicalToolCall,
-    metadata: Record<string, unknown> = {},
-  ): Promise<void> => {
-    try {
-      await repository.appendRunEvent({
-        run_id: run.id,
-        space_id: run.space_id,
-        event_type: eventType,
-        status: eventType === "action_invoked" ? "running" : (metadata.ok === false ? "failed" : "succeeded"),
-        actor_id: collection?await resolveAgentActorId(db,run.space_id,run.agent_id):run.agent_id,
-        ...(typeof metadata.error_code === "string" ? { error_code: metadata.error_code } : {}),
-        ...(typeof metadata.error_message === "string" ? { error_message: metadata.error_message } : {}),
-        metadata_json: { action_id: call.name, action_version: 1, tool_call_id: call.id, instructed_by_user_id: run.instructed_by_user_id ?? null, ...metadata },
-      });
-    } catch {
-      // RunEvent evidence follows the execution-model best-effort rule; the
-      // PolicyGateway decision record remains the fail-closed audit seam.
-    }
-  };
-}
 
 function policyDecisionRecordId(error: unknown): string | null {
   if (error instanceof SystemActionGatewayError) return error.policy_decision_record_id;

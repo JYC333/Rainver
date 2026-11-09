@@ -24,7 +24,7 @@ const USAGE = `rainver — report to Rainver about the work you were given
 
   rainver list                    the actions this run may call
   rainver describe <action>       one action's JSON input schema
-  rainver call <action> [input]   invoke it; input is JSON, @file, or - for stdin
+  rainver call <action> [--idempotency-key <key>] [input]   invoke it; input is JSON, @file, or - for stdin
 
 Use --help or -h after a subcommand or action for that subcommand's usage.
 Use rainver describe <action> for that action's input schema.
@@ -47,11 +47,14 @@ Read one action's JSON input schema from this Run's tool surface.
   --help, -h   show this command's help locally, not an action's schema
 
 Exit status: 0 on success, 1 on request failure, 2 on invalid CLI input or missing Run identity.`,
-  call: `Usage: rainver call <action> [input]
+  call: `Usage: rainver call <action> [--idempotency-key <key>] [input]
 
 Invoke one action granted to this Run and print its JSON result.
 <action> is an exact action name from rainver list.
 Use rainver describe <action> to read that action's input schema first.
+
+An explicit key is retained by the caller for deliberate same-intent retries.
+A new call gets a fresh key by default. Writes are never automatically retried.
 
 Input (must be a JSON object):
   '{"key":"value"}'   inline JSON; quote it for your shell
@@ -104,8 +107,14 @@ async function main(argv: string[]): Promise<number> {
         return 2;
       }
       let input: string;
+      let key:string|undefined;
+      let inputArgument=rest[1];
+      if(rest[1]==='--idempotency-key'){
+        key=rest[2];inputArgument=rest[3];
+        if(!key||!/^[\x21-\x7e]{1,256}$/.test(key)||rest.length>4){process.stderr.write('Invalid idempotency key or call arguments\n');return 2;}
+      }else if(rest.length>2){process.stderr.write('Unexpected call arguments\n');return 2;}
       try {
-        input = await readInput(rest[1]);
+        input = await readInput(inputArgument);
       } catch (error) {
         process.stderr.write(`${message(error)}\n`);
         return 2;
@@ -121,7 +130,7 @@ async function main(argv: string[]): Promise<number> {
         process.stderr.write("The input must be a JSON object.\n");
         return 2;
       }
-      return request(env, "POST", `tools/${encodeURIComponent(action)}`, parsed as Record<string, unknown>);
+      return request(env, "POST", `tools/${encodeURIComponent(action)}`, parsed as Record<string, unknown>,key);
     }
     default:
       process.stderr.write(`Unknown command '${command}'.\n\n${USAGE}\n`);
@@ -179,8 +188,9 @@ async function request(
   method: "GET" | "POST",
   path: string,
   body?: Record<string, unknown>,
+  explicitKey?:string,
 ): Promise<number> {
-  const input = { id: idempotencyKey(), method, path, ...(body ? { body } : {}) };
+  const input = { id: idempotencyKey(), method, path, ...(body ? { body } : {}), ...(explicitKey === undefined ? {} : {idempotency_key:explicitKey}) };
   let response: ToolResponse;
   try {
     response = "bridge" in env

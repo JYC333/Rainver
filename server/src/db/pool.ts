@@ -1,3 +1,4 @@
+import {inOperationWork} from "./operationTransaction.js";
 /**
  * Single owner of the `pg` driver for server database access.
  *
@@ -9,10 +10,12 @@
 import { Pool } from "pg";
 
 const pools = new Map<string, Pool>();
+const auditPools = new Map<string, Pool>();
 
 export type { Pool, PoolClient } from "pg";
 
 export function getDbPool(databaseUrl: string): Pool {
+  if(inOperationWork())throw new Error("Independent pool access refused during core-owned operation work");
   let pool = pools.get(databaseUrl);
   if (!pool) {
     pool = new Pool({
@@ -36,8 +39,28 @@ export function getDbPool(databaseUrl: string): Pool {
       options: "-c jit=off",
     });
     // A dropped idle connection must not crash the process.
+    // A checked-out Client can emit a second connection error after rejecting
+    // its active query. Keep that event from crashing the server. Query promises
+    // still reject; pg marks the Client unqueryable and discards it on release.
+    pool.on("connect", client => client.on("error", () => {}));
     pool.on("error", () => {});
     pools.set(databaseUrl, pool);
+  }
+  return pool;
+}
+
+/** Host-only audit capacity is independent of held data transactions. Never expose to executors. */
+export function getOperationAuditPool(databaseUrl: string): Pool {
+  if (inOperationWork()) throw new Error("Independent audit pool access refused during operation work");
+  let pool = auditPools.get(databaseUrl);
+  if (!pool) {
+    pool = new Pool({connectionString: databaseUrl, max: 2, connectionTimeoutMillis: 5_000, options: "-c jit=off"});
+    // A checked-out Client can emit a second connection error after rejecting
+    // its active query. Keep that event from crashing the server. Query promises
+    // still reject; pg marks the Client unqueryable and discards it on release.
+    pool.on("connect", client => client.on("error", () => {}));
+    pool.on("error", () => {});
+    auditPools.set(databaseUrl, pool);
   }
   return pool;
 }
@@ -49,8 +72,8 @@ export function getDbPool(databaseUrl: string): Pool {
  * share a worker.
  */
 export async function closeDbPool(databaseUrl: string): Promise<void> {
-  const pool = pools.get(databaseUrl);
-  if (!pool) return;
+  const closing = [pools.get(databaseUrl), auditPools.get(databaseUrl)];
   pools.delete(databaseUrl);
-  await pool.end();
+  auditPools.delete(databaseUrl);
+  await Promise.all(closing.map(pool => pool?.end()));
 }

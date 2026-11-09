@@ -1,3 +1,7 @@
+import {systemActionsModule} from '../src/modules/systemActions/index.js';
+import {CliAgentToolTransport} from '../src/modules/runs/cliToolTransport.js';
+import {seedRun} from './support/domainSeeds.js';
+import type {AgentRunRecord} from '../src/modules/runs/repository.js';
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -46,7 +50,7 @@ beforeAll(async () => {
     SERVER_DATABASE_URL: db.connectionUri,
     SERVER_INTERNAL_TOKEN: "test-internal-token",
     RAINVER_HOME: "/tmp/rainver-research-cancel-test",
-  }), [projectResearchModule, researchModule]);
+  }), [projectResearchModule, researchModule, systemActionsModule]);
 });
 
 beforeEach(async () => {
@@ -256,5 +260,61 @@ describe("ResearchOperationCancelService (real Postgres)", () => {
 
     await expect(service().cancelOperation(identity, PROJECT, OPERATION)).rejects.toMatchObject({ statusCode: 404 });
     expect(await operationStatus()).toBe("active");
+  });
+});
+
+
+describe('production operation-core cancellation pilot',()=>{
+  it('replays the same committed receipt across legacy REST and generic entry without another status write or Job',async()=>{
+    await seedOperation();
+    const key=randomUUID(),payload={reason:'stop'},url=`/api/v1/projects/${PROJECT}/research/operations/${OPERATION}/cancel`;
+    const first=await app!.inject({method:'POST',url,headers:{'idempotency-key':key},payload});
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toEqual({operation_id:OPERATION,status:'cancelled',already_terminal:false});
+    const version=(await db.pool.query('SELECT version FROM project_operations WHERE id=$1',[OPERATION])).rows[0].version;
+    const replay=await app!.inject({method:'POST',url:'/api/v1/actions/research.cancel_acquisition',headers:{'idempotency-key':key},payload:{operation_id:OPERATION,...payload}});
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toEqual({status:'succeeded',data:first.json()});
+    expect(await cancelJobCount()).toBe(1);
+    expect((await db.pool.query('SELECT version FROM project_operations WHERE id=$1',[OPERATION])).rows[0].version).toBe(version);
+    const changed=await app!.inject({method:'POST',url,headers:{'idempotency-key':key},payload:{reason:'changed'}});
+    expect(changed.statusCode).toBe(422);
+    await db.pool.query("UPDATE space_memberships SET status='inactive' WHERE space_id=$1 AND user_id=$2",[SPACE,OWNER]);
+    expect((await app!.inject({method:'POST',url:'/api/v1/actions/research.cancel_acquisition',headers:{'idempotency-key':key},payload:{operation_id:OPERATION,...payload}})).statusCode).toBe(404);
+  });
+  it('routes Agent grants, receipts and lifecycle through the same production registration',async()=>{
+    await seedOperation();
+    const runId=randomUUID(),agent=randomUUID();
+    await seedRun(db.pool,{id:runId,space:SPACE,owner:OWNER,agent,version:randomUUID()});
+    await db.pool.query("UPDATE runs SET project_id=$2,status='running',instructed_by_user_id=$3,permission_snapshot_json=$4::jsonb WHERE id=$1",[runId,PROJECT,OWNER,JSON.stringify({tool_grants:[{action_id:'research.cancel_acquisition'}]})]);
+    const run=(await db.pool.query<AgentRunRecord>('SELECT * FROM runs WHERE id=$1',[runId])).rows[0],transport=new CliAgentToolTransport(loadConfig({SERVER_DATABASE_URL:db.connectionUri}));
+    const call={id:randomUUID(),name:'research.cancel_acquisition',arguments:{operation_id:OPERATION,reason:'stop'}};
+    for(let i=0;i<2;i++)expect(await transport.call(run,call)).toMatchObject({httpStatus:200,body:{ok:true,operation_id:OPERATION,status:'cancelled',already_terminal:false}});
+    expect(await cancelJobCount()).toBe(1);
+    expect((await db.pool.query("SELECT id FROM run_events WHERE run_id=$1 AND event_type='action_completed'",[runId])).rows).toHaveLength(2);
+    await db.pool.query("UPDATE runs SET permission_snapshot_json='{}'::jsonb WHERE id=$1",[runId]);
+    expect(await transport.call(run,call)).toMatchObject({httpStatus:404});
+  });
+  it('rolls back cancellation, Job and request on a real enqueue failure',async()=>{
+    await seedOperation();
+    await db.pool.query(`CREATE FUNCTION reject_cancel_job() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.job_type='research_operation_cancel' THEN RAISE EXCEPTION 'injected'; END IF; RETURN NEW; END $$`);
+    await db.pool.query('CREATE TRIGGER reject_cancel_job BEFORE INSERT ON jobs FOR EACH ROW EXECUTE FUNCTION reject_cancel_job()');
+    try {
+      const result=await app!.inject({method:'POST',url:'/api/v1/actions/research.cancel_acquisition',headers:{'idempotency-key':randomUUID()},payload:{operation_id:OPERATION,project_id:PROJECT}});
+      expect(result.statusCode).toBe(500);
+      expect(await operationStatus()).toBe('active');expect(await cancelJobCount()).toBe(0);
+      expect((await db.pool.query('SELECT id FROM operation_idempotency WHERE space_id=$1',[SPACE])).rows).toHaveLength(0);
+    } finally {await db.pool.query('DROP TRIGGER reject_cancel_job ON jobs');await db.pool.query('DROP FUNCTION reject_cancel_job()');}
+  });
+  it('hides unauthorized targets and returns classified archived conflict without mutation',async()=>{
+    await seedOperation();
+    const url='/api/v1/actions/research.cancel_acquisition',headers={'idempotency-key':randomUUID()},payload={operation_id:OPERATION,project_id:PROJECT};
+    __setAuthIdentityForTests({spaceId:SPACE,userId:STRANGER});
+    expect((await app!.inject({method:'POST',url,headers,payload})).statusCode).toBe(404);
+    await db.pool.query("UPDATE projects SET status='archived' WHERE id=$1",[PROJECT]);
+    expect((await app!.inject({method:'POST',url,headers,payload})).statusCode).toBe(404);
+    __setAuthIdentityForTests(identity);
+    expect((await app!.inject({method:'POST',url,headers,payload})).statusCode).toBe(409);
+    expect(await cancelJobCount()).toBe(0);
   });
 });

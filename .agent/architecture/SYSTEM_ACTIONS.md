@@ -1,5 +1,9 @@
 # System Actions, Dispatcher, and Agent Tool Surfaces
 
+The reviewed operation-core contract is recorded in
+[ADR 0028](../decisions/0028-operation-execution-core.md). The current opt-in
+implementation is described below; unmigrated paths keep their existing behavior.
+
 ## Purpose and source of truth
 
 System actions are the typed inventory of application capabilities that may be
@@ -108,7 +112,8 @@ from the token, expiring, and revoked when the Run stops. Durable rather than
 in-process because the caller outlives the process — a remote Run's CLI keeps
 working across a server restart. The route reloads the Run and rejects unless
 it is `running`; the transport (`assertActive()`) repeats that check before
-every `list`/`call`, then only builds a dispatcher and forwards to it —
+every `list`/`call`. Legacy calls build a dispatcher; opt-in operations use the
+core through `runs/operationToolDispatch.ts` —
 neither computes tool permissions itself; that intersection is computed by
 `buildRunToolGrants` (`systemActions/runToolGrants.ts`) when the Run is
 created, and the dispatcher only reads the persisted result. The CLI never receives database
@@ -704,7 +709,11 @@ Three layers keep a composed id out of an action:
 3. **The failure.** An unknown id answers with the ids that do exist
    (`… Use one of these ids exactly: <id> — <title>`), so the next call can
    correct itself. `task.*`, `proposal.decide`, `research.start_acquisition`
-   and `research.cancel_acquisition` all do this.
+   and `research.cancel_acquisition` all do this. Cancellation uses its core domain
+   error, not a legacy cancellation executor: only a truly absent target for an
+   authorized current Run Project receives the canonical visible active list.
+   Existing same-Space cross-Project/private targets and missing grants return the
+   hidden error without discovery ids.
 
 The Room focus sentence carries `task_id:` alongside the title, so the Task a
 person is looking at is addressable without a `task.list` round trip.
@@ -1021,3 +1030,169 @@ reuse `configureProjectBoard`, Project→Task lock ordering and the normal Task
 mutation service; they do not call an unguarded HTTP adapter or introduce a
 second writer. `board.configure` and `task.column.move` are structural writes
 with the same origin gate as `task.status.set`. See [Task board model](TASK_BOARD_MODEL.md#agent-board-operations).
+
+## Operation executor integration (ADR 0028)
+
+Command admission now holds Run/Agent authorization rows through commit, in
+addition to current membership and owning resource locks. Frozen approval mapping
+mode/gate/Run-liveness requirements and requester namespace are rechecked before
+canonical application; a metadata change cannot silently reinterpret a pending
+request. The transaction port refuses ABORT as well as COMMIT/ROLLBACK.
+
+Stage-1 contracts were reviewed and committed. The stage-2 source now composes
+`systemActions/operations/` as an opt-in execution path over the same protocol
+registry. `execution: {kind, tx: "core_owned"}` is required; legacy visibility
+metadata alone grants no new entry. `system.actions.list` is the first enabled
+user query, returning only the enabled public-operation catalog through
+`GET /api/v1/queries/system.actions.list`. Generic commands use
+`POST /api/v1/actions/:opId`; stage 3 now enables the cancellation pilot below.
+Both entries preserve session/Space authentication and gateway CSRF checks.
+Generic queries are private/no-store. The Web API exposes typed `queryOperation`
+and `callOperation` helpers derived from the shared schema table.
+
+The executor joins a host-branded transaction port, revalidates live membership
+and applicable Run grants, enforces PolicyGateway with a transaction-aware audit
+writer, validates domain output and records command outcomes in
+`operation_idempotency`. Key try-lock precedes linked Proposal/request and domain
+locks. Commands require a key; stored outcomes reauthorize before replay.
+Queries use PostgreSQL READ ONLY and a separate restricted access-audit port:
+it only exposes canonical ContentAccessAuditService.recordReads with server-set
+Space/viewer/Agent/Run, not an arbitrary writable client. Run adapters route only
+explicitly migrated registrations to the core; all other dispatch families,
+immutable grants, legacy outputs and material-submission invalid-attempt hooks
+remain on their existing path. A try-lock conflict remains retryable HTTP409,
+including the proposal UI/Agent decision adapter, never an approval rejection.
+
+Canonical Proposal apply has optional host decision hooks for locking/rechecking
+linked requests and completing the request outcome in its transaction. The
+`operationProposalService` composes those hooks with the existing applier registry;
+it creates no new Proposal type or decision API. Real-PG fixture integrations
+cover pending replay, canonical acceptance/rejection, stale preconditions and
+external supersession. There are **no production approval mappings** in the
+composition. Their enablement still requires the full operation-specific effect
+and status-writer inventory; an internal registration assertion alone is not
+proof. Current status-writing owners found before enablement are:
+
+| Owner | Migration obligation before its affected Proposal type is mapped |
+|---|---|
+| proposals/applyService.ts | acceptance, rejection, rollback and dependent Source supersession; shared multi-key lock/transition port |
+| projects/projectDefinitionProposalService.ts | direct supersession of the prior pending definition |
+| projects/monitoring/service.ts | replacement/supersession of monitoring proposals |
+| memory/proposalRepository.ts | memory proposal payload updates (freeze integrity) |
+| plans/repository.ts | plan review lifecycle transitions |
+| runs/repository.ts | Run-associated Proposal lifecycle writes |
+| importedSessions/extraction.ts | extraction-related Proposal payload updates (freeze integrity) |
+| skills/proposalApplier.ts | Skill-related Proposal transitions |
+
+These legacy writers are not silently rewritten. Enabling one of their mappings
+before adapting all affected writers is disallowed. Replay/cleanup defensively
+reconciles rejected/superseded/expired Proposals; accepted-without-atomic-result
+fails closed and retains evidence. Ineligible compensation/required-postCommit
+appliers cannot claim atomic execution. No production Source/Memory/approval
+operation has generic user or Agent reach in the current core.
+
+The CLI supports `call <action> --idempotency-key <key> [input]`. A new call gets
+a new key unless explicitly supplied; no write is automatically retried.
+ToolRequest's correlation id remains fresh per transport attempt while a distinct
+idempotency_key survives HTTP/file bridge/Host forwarding. The Host advertises
+support in a bounded bridge capability file; explicit-key calls to an older Host
+refuse before sending. This updates the shared CLI/Host library, not vendor
+runtime configuration. Durable dedupe applies only to migrated commands; legacy
+families retain their existing domain-specific semantics.
+
+`operations/routeInventory.json` freezes exact mutating **core module and bundled official-plugin** method/path
+pairs, distinguishing unmigrated business routes from existing auth/internal/
+binary transport exemptions and the generic command adapter. `operationRoutes`
+captures onRoute registrations from real modules and activated bundled plugins and fails on additions or drift;
+an annotation or `/internal*` prefix cannot add an unlisted route. The initial
+inventory has 631 method/path pairs (598 unmigrated business, 31 exact transport
+exemptions and two core adapter entries). Plugin operation migration remains
+program plan 2 work; activation grants no exemption for new plugin bypasses.
+
+The cancellation pilot and process-death/COMMIT-loss, worker recovery and local
+historical-source cutover checks are implemented; executable evidence and limits
+are in [Operation core acceptance](OPERATION_CORE_ACCEPTANCE.md). Source pause/
+resume was not selected as a second pilot. Production approval mappings and the
+eight legacy writer migrations remain disabled/deferred. No live schema change
+or deployment has been performed.
+
+
+Reuse / Dependency Check for stage-2 enforcement: existing transaction helpers,
+PolicyGateway, ContentAccessAuditService, Proposal applier registry and Jobs are
+reused. Node's built-in AsyncLocalStorage scopes canonical pool-getter refusal
+to migrated business execution; no existing repository scoping mechanism was
+found and no new dependency is added. The controlled query port and getter guard
+prevent accidental independent transactions, not arbitrary trusted-code execution
+or pre-retained raw-client misuse. Those remain ownership/review constraints.
+The canonical applier's mapped execution also receives this branded query port;
+unmapped appliers keep their original raw-client behavior. Named gate satisfaction
+is an internal enforcement argument supplied only after canonical role/risk/owner
+checks, never a request/payload field; all other require_approval/DENY checks still
+run. A classified approved business failure rolls back its savepoint, stores the
+failed request and marks the Proposal superseded with an operation_failure result.
+
+Stage-2 review fixes: opt-in Agent calls share the existing RunEvent sink with
+the dispatcher (`runs/actionEvents.ts`). Granted, schema-valid attempts emit
+`action_invoked`; every result/replay/pending response or refusal emits
+`action_completed`, including safe error code/message, policy id and call id.
+Both paths resolve the canonical Agent Actor FK. The adapter repeats current
+identity/grant/schema preflight for lifecycle evidence; core admission/replay
+still rechecks authority. Completion evidence stays best effort and cannot turn
+committed work into failure. Legacy invalid-input attempt recording remains on
+the old dispatcher and is not available to strict core operations.
+
+`OperationRegistration.classifyError` is an explicit domain allowlist for
+recognized deterministic HttpError cases, returning an `OperationBusinessError`
+with a safe registered code, fixed domain and 409/422 status. It never copies
+exception prose or response bodies. The same classifier is used by command and
+mapped applier savepoint failure handling. Unclassified HttpErrors stay generic
+500 (403/404 remain hidden); infrastructure/output/audit errors are not cached.
+The real-PG tests exercise note-service savepoints, two concurrent content queries
+holding every slot of a two-connection data pool, independent approval denial
+recovery, committed-audit deduplication and orphan pending retention. These are
+fixture consumers; production approval mappings remain empty.
+
+
+### Production cancellation pilot (Plan 1 overall dual review passed)
+
+`projectResearch/researchCancelOperation.ts` registers `research.cancel_acquisition`
+for users and Agents. The former REST URL and 200 receipt are adapters to the
+same core used by generic POST and CLI. The old Agent executor is removed; the
+existing ResearchOperationCancelService is the only status/Job writer. Project
+write authority, exact Project/Operation binding, current Run grants and the
+existing Research stop/Thread gates are rechecked, including before replay.
+The generic envelope remains typed; Agent cancellation retains its flat legacy
+receipt. Domain 403/404 are hidden by core, with the legacy REST writer preflight
+retaining its existing status/error envelope. Only explicit cancellation conflict
+and validation types translate to safe 409/422; unknown errors stay internal.
+The legacy URL accepts an explicit retry header; omitted keys create new calls.
+Core normalization fills the stable resolved project_id after verifying any
+caller hint. REST and generic calls omitting project_id therefore fingerprint
+identically. The Run Project is read live by the server; the CLI adapter neither
+injects an overridable Project nor accepts a mismatched caller hint. There is no
+automatic write retry. Status, cancellation Job, request and audit commit together;
+process termination still belongs to the existing worker and stage-4 recovery.
+
+The canonical RunEvent sink now always resolves `actors.id` using the shared
+Agent resolver (pinned to the Agent id), including non-collection legacy calls.
+Previously an absent Actor FK silently lost those events. Proposal previews
+therefore deduplicate by actual proposal_id as well as call key, preserving one
+private decision card rather than exposing a second completed card.
+The route inventory now has 598 legacy business, 31 transport exemptions and two
+core adapters (generic POST and the existing cancellation URL).
+
+
+REST compatibility exception: the legacy writer preflight keeps its 403 error
+shape. PolicyGateway denial inside the shared core is intentionally hidden as
+404 on both REST and generic entries (instead of the old REST 403 `{detail}`).
+This is a stricter disclosure mapping, never an authorization fallback. The
+cancellation domain's authorized missing-id discovery is Agent-only, scoped to
+the live Run Project and canonical list read gates; it is not enabled for REST.
+
+
+Stage-4 fault and scope evidence is in [Operation core acceptance](OPERATION_CORE_ACCEPTANCE.md).
+Missing cancellation ids are checked only within the actor Space: another
+Space's existing UUID has exactly the same hint behavior as an absent UUID.
+The canonical query never widens to inspect other Spaces. Production approval
+mappings remain off; the eight legacy writer families are explicitly inventoried
+in the acceptance guide, not claimed migrated by canonical fixture tests.

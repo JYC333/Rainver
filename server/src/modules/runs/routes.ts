@@ -1,3 +1,4 @@
+import {OperationToolResponse} from "../systemActions/operations/agentResult.js";
 import { stateChangingReadAllowed } from "../../gateway/csrfOrigin.js";
 import { readRunFilePreview } from "./filePreview.js";
 import { randomUUID } from "node:crypto";
@@ -243,6 +244,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         name: actionId,
         arguments: jsonBody(request),
       });
+      if(result instanceof OperationToolResponse)return reply.code(result.httpStatus).send(result.body);
       return reply.send(result);
     } catch (error) {
       // A failing action is a result the agent must be able to read and act

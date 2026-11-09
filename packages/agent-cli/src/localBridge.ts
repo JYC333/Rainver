@@ -105,6 +105,7 @@ export async function startLocalToolBridge(
   let scanning = false;
   let closed = false;
   await writeFile(await pinned.at("active"), "1", { flag: "wx", mode: 0o600 });
+  await writeFile(await pinned.at("capabilities"), JSON.stringify({explicit_idempotency_key:true}), {flag:"wx",mode:0o600});
   async function execute(name: string): Promise<void> {
     processing.add(name);
     const claimed = `${name}.working`;
@@ -179,6 +180,11 @@ export async function localToolRequest(directory: string, input: ToolRequest, ti
   const started = Date.now();
   try {
     await readJson(await pinned.at("active"), 16);
+    if(request.idempotency_key!==undefined){
+      let capabilities:unknown;
+      try{capabilities=await readJson(await pinned.at('capabilities'),1024);}catch{throw new Error('This Host does not support explicit idempotency keys; no request was sent');}
+      if((capabilities as {explicit_idempotency_key?:unknown})?.explicit_idempotency_key!==true)throw new Error('This Host does not support explicit idempotency keys; no request was sent');
+    }
     await publish(pinned, requestName, request);
     while (Date.now() - started < timeoutMs) {
       try {

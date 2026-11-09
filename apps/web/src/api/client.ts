@@ -1,3 +1,4 @@
+import type {OperationId,OperationInput,OperationOutput,OperationOutcome} from "@rainver/protocol"
 import type { ProjectMember, ProjectMemberInput } from "@rainver/protocol"
 import type { InstanceInvitationResponse } from "@rainver/protocol"
 import type {ProblemProjectionSchema,ProblemWorkRequest,ProblemCloseRoundRequest,ResearchResultSchema} from "@rainver/protocol"
@@ -546,6 +547,11 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
       if (err && typeof err === 'object') payload = err as unknown as Record<string, unknown>
       msg = formatApiErrorMessage(err, msg)
       if (typeof err.code === 'string') code = err.code
+      const operationError=(err as unknown as {error?:{code?:unknown;message?:unknown}}).error
+      if(operationError && typeof operationError==='object'){
+        if(typeof operationError.code==='string')code=operationError.code
+        if(typeof operationError.message==='string')msg=operationError.message
+      }
     } catch {
       const text = await r.text().catch(() => '')
       if (text) msg = text
@@ -4429,4 +4435,14 @@ export const projectReadingApi={
  favorite:(space:string,project:string,item:string,favorite:boolean)=>post(`/spaces/${space}/projects/${project}/reading/items/${item}/favorite`,{favorite},{spaceId:space}),
  record:(space:string,project:string,item:string,snapshot:string,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectReadingRecords>(`/reader/source-items/${item}/records?project_id=${project}&snapshot_id=${encodeURIComponent(snapshot)}`,{...options,spaceId:space}),
  records:(space:string,project:string,item:string,offset=0,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectReadingRecords>(`/reader/source-items/${item}/records?project_id=${project}&offset=${offset}`,{...options,spaceId:space}),
+}
+
+/** Generic query adapter. Discovery is a real core consumer; no automatic retries. */
+export function queryOperation<Id extends OperationId>(id:Id,input:OperationInput<Id>,options:RequestOptions={}):Promise<OperationOutcome<OperationOutput<Id>>> {
+  return request('GET',`/queries/${encodeURIComponent(id)}?input=${encodeURIComponent(JSON.stringify(input))}`,undefined,options)
+}
+
+export function callOperation<Id extends OperationId>(id:Id,input:OperationInput<Id>,key:string,options:RequestOptions={}):Promise<OperationOutcome<OperationOutput<Id>>> {
+  if(!key)throw new Error('An explicit idempotency key is required')
+  return request('POST',`/actions/${encodeURIComponent(id)}`,input,{...options,idempotencyKey:key})
 }
