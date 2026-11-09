@@ -196,6 +196,9 @@ export interface SystemActionDefinition {
   readonly policy_adapter?: SystemActionPolicyAdapter;
 }
 
+/** Dynamic runtime definition; the original core interface and literal vocabularies remain compatible. */
+export type RegisteredSystemActionDefinition=Omit<SystemActionDefinition,"policy_action"> & {readonly policy_action:PolicyActionId | import("./pluginOperations.js").PluginOperationId};
+
 const objectInput = z.record(z.string(), z.unknown());
 const objectOutput = z.record(z.string(), z.unknown());
 const proposalOutput = z.object({ modelResult: z.record(z.string(), z.unknown()), summary: z.record(z.string(), z.unknown()) }).passthrough();

@@ -1,3 +1,4 @@
+import {ProjectPluginPage} from '../plugins/PluginSlot'
 import { lazy, Suspense } from 'react'
 import {spacePath} from '../../core/navigation'
 import {useParams} from 'react-router-dom'
@@ -47,6 +48,7 @@ export default function ProjectsModule() {
       <Route index element={<Suspense fallback={<PageFallback />}><ProjectsPage /></Suspense>} />
       <Route path=":projectId" element={<Suspense fallback={<PageFallback />}><ProjectAreaLayout /></Suspense>}>
         <Route index element={<Suspense fallback={<PageFallback />}><ProjectDetailPage /></Suspense>} />
+        <Route path="plugins/:pluginId/:entryId" element={<ProjectPluginPage/>} />
         <Route path="sources/goals" element={<Suspense fallback={<PageFallback />}><GoalList /></Suspense>} />
         <Route path="sources/goals/:goalId" element={<Suspense fallback={<PageFallback />}><GoalPage /></Suspense>} />
         <Route path="sources" element={<Suspense fallback={<PageFallback />}><SourcesAreaPage /></Suspense>} />

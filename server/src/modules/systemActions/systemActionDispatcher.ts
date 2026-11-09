@@ -1,3 +1,4 @@
+import { operationPluginEnabled } from "../plugins/operationEnablement.js";
 import {OperationError} from "./operations/errors.js";
 import {defaultActionEventSink} from '../runs/actionEvents.js';
 import { createHash, randomUUID } from "node:crypto";
@@ -7,7 +8,7 @@ import type {
 } from "@rainver/protocol";
 import { systemActionInputJsonSchema } from "@rainver/protocol";
 import type {
-  SystemActionDefinition,
+  RegisteredSystemActionDefinition as SystemActionDefinition,
   SystemActionId,
   SystemActionPolicyResource,
 } from "@rainver/protocol";
@@ -76,7 +77,12 @@ export class SystemActionDispatcher {
       resolveRetrievalToolBinding(config, run, deps),
       resolveAgentDelegationToolBinding(config, run, deps.agentDelegationTools),
     ]);
-    const registry = await loadSystemActionRegistry();
+    const loaded = await loadSystemActionRegistry(config);
+    const registry=new Map(loaded);
+    for(const d of loaded.values())if(d.id.startsWith('plugin.')){
+      const enabled=config.databaseUrl&&run.instructed_by_user_id&&await operationPluginEnabled(getDbPool(config.databaseUrl),d.id.split('.')[1]!,run.space_id,run.instructed_by_user_id,config);
+      if(!enabled)registry.delete(d.id);
+    }
     const executors = new Map<SystemActionId, SystemActionExecutor>();
     const grantedActionIds = new Set(
       assembleRunInputEnvelope(run).tool_grants.map((grant) => grant.action_id),
@@ -159,7 +165,7 @@ export class SystemActionDispatcher {
     // Policy enforcement has already happened in the Dispatcher's adapter
     // before any executor runs. Executors receive the resulting decision only
     // when their domain call needs its durable decision-record metadata.
-    const policyRegistry = await loadActionRegistry();
+    const policyRegistry = await loadActionRegistry(config);
     const emitActionEvent = async (
       definition: { id: string; policy_action: string },
       eventType: "action_invoked" | "action_completed",
@@ -390,7 +396,7 @@ async function enforcePolicyForAction(
   }
 
   if (definition.policy_adapter === "declared_resource" && definition.policy_resource && config.databaseUrl) {
-    return enforceDeclaredResourcePolicy(config.databaseUrl, definition, definition.policy_resource, input, run);
+    return enforceDeclaredResourcePolicy(config.databaseUrl, definition, definition.policy_resource, input, run, config);
   }
 
   return { allowed: false, reason: "No canonical policy adapter is registered for this action" };
@@ -409,11 +415,12 @@ export async function enforceDeclaredResourcePolicy(
   resource: SystemActionPolicyResource,
   input: unknown,
   run: AgentRunRecord,
+  config?:ServerConfig,
 ) {
   const resourceType = resource.resource_type ?? definition.owning_module;
   const resourceId = resolveDeclaredResourceId(resource, input, run);
   const hasActionGrant = resource.check_action_approval_grant
-    ? await new ActionApprovalGrantService(getDbPool(databaseUrl)).hasMatching({
+    ? await new ActionApprovalGrantService(getDbPool(databaseUrl),config).hasMatching({
         spaceId: run.space_id,
         agentId: run.agent_id,
         actionId: definition.id,
@@ -427,7 +434,7 @@ export async function enforceDeclaredResourcePolicy(
   // the proposal applier. Only the canonical owner-created goal chat qualifies.
   const goalSetupRequest = definition.id === "source.channel.propose_activation"
     && await (await import("../sources/index.js")).canRequestGoalSourceActivation(getDbPool(databaseUrl), run);
-  const decision = await enforce({ databaseUrl }, await loadActionRegistry(), {
+  const decision = await enforce({ databaseUrl }, await loadActionRegistry(config), {
     action: definition.policy_action,
     force_record: true,
     actor_type: "agent",

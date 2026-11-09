@@ -150,6 +150,7 @@ echo "  architecture: linux-$release_arch"
   pnpm --filter @rainver/host-daemon build
   pnpm --filter @rainver/host-daemon deploy --prod --no-optional "$deploy_dir/app"
   pnpm --filter @rainver/host-adapters deploy --prod --no-optional "$deploy_dir/adapters"
+  node tools/acp/prepare-adapters.mjs "$deploy_dir/adapters"
 )
 
 mkdir -p "$host_payload/app" "$adapter_payload" "$node_payload/bin"

@@ -18,23 +18,9 @@ function acpSpecs(): RuntimeAdapterSpec[] {
     && spec.executable?.command);
 }
 
-/**
- * Which machine the probe is for. The built-in Server Host installs what this
- * ACP registry publishes. Existing healthy copies are retained until an
- * authorized administrator or owner explicitly upgrades them.
- */
 export type ProbeHostKind = "server" | "remote";
 
-/**
- * A builtin adapter's managed copy is whatever the ACP registry publishes
- * for it, as last resolved by the acpAgents refresh loop — never fetched
- * here, on a daemon's hello.
- *
- * The Server Host can bootstrap OpenCode from a verified offline artifact when
- * the registry has no entry. Once resolved, both Host kinds use the registry so the
- * install path has a single resolved distribution to send, instead of a
- * second branch deciding the same thing again at the route.
- */
+/** Repository distributions are fixed; Registry Agent releases come from the cache. */
 function resolveDistribution(
   spec: RuntimeAdapterSpec,
   hostKind: ProbeHostKind,

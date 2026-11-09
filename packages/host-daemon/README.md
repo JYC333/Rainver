@@ -250,13 +250,24 @@ RAINVER_HOST_RELEASE_BASE_URL=file:///tmp/rainver-host-release \
 The helper refuses to overwrite an existing output directory. It is intended
 for a Linux Host running Node 24, matching the supported Host runtime.
 
-The pinned Claude ACP adapter includes a pnpm patch in `patches/` that waits
-for SDK cleanup and native CLI exit instead of forcing an immediate exit.
-Capability probes also close stdin and wait for exit, with bounded process-group
-termination for stuck adapters. This gives pending native credential writes
-their existing SDK grace period. The patch is included in the separate adapter
-pack by `pnpm deploy`; an update must install both the daemon and adapter pack.
-It does not restore credentials that the provider has already revoked.
+Claude ACP still requires awaited SDK cleanup in the tested 0.101.0 release.
+`src/acpAdapterCompatibility.ts` supplies one idempotent, source-layout-guarded
+preparation step, shared by workspace postinstall, release packs and Host npm
+materialization. Unknown upstream layouts fail candidate installation and keep
+the previous wrapper. `test/acpCleanup.test.ts` covers EOF and SIGTERM with a
+fake native process and delayed persistence. Remove the shared preparation
+only after equivalent upstream cleanup passes those tests.
+
+Claude/Codex bridges are verified against the repository release catalog and
+ship with the Host. When a native CLI appears on PATH, a missing bridge pack
+is installed from that Host build's immutable release. The active Host and
+adapter build identities must match.
+
+Managed Codex and Claude native CLIs have separate update and rollback actions.
+Updates install a fixed official npm release, verify its version and ACP health,
+and atomically select it without replacing the bridge. One previous native CLI
+is retained. Login homes and runtime installation identities stay stable.
+OpenCode and Registry Agents retain their package installation lifecycle.
 
 ## Optional read-only parallel review (personal Linux)
 

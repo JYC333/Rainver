@@ -693,6 +693,16 @@ export const HostUpdateOwnToolFrameSchema = z.object({
   runtime_key: OwnCliUpdateRuntimeKeySchema,
 });
 
+export const HostManagedCliFrameSchema = z.object({
+  type: z.literal("managed_cli"),
+  request_id: IdSchema,
+  runtime_key: OwnCliUpdateRuntimeKeySchema,
+  operation: z.discriminatedUnion("action", [
+    z.object({ action: z.literal("update"), version: z.string().regex(/^\d+\.\d+\.\d+$/) }).strict(),
+    z.object({ action: z.literal("rollback") }).strict(),
+  ]),
+});
+
 export const HostInstallToolFrameSchema = z.object({
   type: z.literal("install_tool"),
   request_id: IdSchema,
@@ -702,8 +712,6 @@ export const HostInstallToolFrameSchema = z.object({
   login: RuntimeLoginSpecSchema.nullable(),
   /** Fixed argv for reading the bundled vendor CLI version after installation. */
   runtime_version_command: z.array(z.string()).nullable().optional(),
-  /** Explicit vendor CLI target for a staged managed Codex installation. */
-  vendor_cli_version: z.string().regex(/^\d+\.\d+\.\d+$/).optional(),
   /** The daemon must complete this protocol's health handshake before activation. */
   health_check_protocol: z.enum(["acp"]).nullable().optional(),
   /** Instance-admin-selected network route for built-in host artifact downloads. */
@@ -847,6 +855,7 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
   HostUsageProbeFrameSchema,
   HostRollbackToolFrameSchema,
   HostUpdateOwnToolFrameSchema,
+  HostManagedCliFrameSchema,
   HostInstallToolFrameSchema,
   HostUninstallToolFrameSchema,
   HostOrdinaryToolRequestFrameSchema,
@@ -909,6 +918,9 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
     exit_code: z.number(),
     timed_out: z.boolean(),
     error: z.string().nullable(),
+    /** Effective CLI timezone for interpreting vendor-local quota reset clocks. */
+    time_zone: z.string().min(1).max(128).optional(),
+    native_runtime_version: z.string().max(200).nullable().optional(),
     /**
      * What this Run reached through the host's egress proxy, and what it was
      * refused. Reported on completion rather than streamed: it explains a Run

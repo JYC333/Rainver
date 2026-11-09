@@ -1009,6 +1009,14 @@ it('refuses leaking default transaction session settings through a pooled operat
   const r=registration(async tx=>{
     for(const sql of ["SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY","SET default_transaction_read_only=on","SET SESSION default_transaction_isolation='serializable'","RESET default_transaction_read_only","RESET ALL","SELECT set_config('default_transaction_read_only','on',false)"])
       await expect(tx.query(sql)).rejects.toThrow('session settings refused');
+    await expect(tx.query(String.raw`SELECT pg_catalog.U&"set\005fconfig"('application_name','leak',false)`)).rejects.toThrow('identifiers refused');
+    for (const sql of [
+      `UPDATE pg_settings SET setting='on' WHERE name='default_transaction_read_only'`,
+      `UPDATE pg_catalog."pg_settings" SET setting='public' WHERE name='search_path'`,
+      `WITH settings AS (UPDATE pg_settings SET setting='leak' WHERE name='application_name') SELECT 1`,
+      'SELECT setseed(0.5)',
+      'SELECT pg_catalog."setseed"(0.5)',
+    ]) await expect(tx.query(sql)).rejects.toThrow('session settings refused');
     return {name:'safe',version:1};
   });
   expect((await core(r).execute(r.definition.id,{name:'safe'},actor(),'session',randomUUID())).http_status).toBe(200);

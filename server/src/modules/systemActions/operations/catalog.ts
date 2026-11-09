@@ -1,7 +1,9 @@
-import type { SystemActionDefinition } from '@rainver/protocol';
+import type {ServerConfig} from "../../../config.js";
+import { operationPluginEnabled } from "../../plugins/operationEnablement.js";
+import type { RegisteredSystemActionDefinition as SystemActionDefinition } from '@rainver/protocol';
 import type { OperationRegistration } from './types.js';
 /** Discovery describes only enabled user operations, never legacy metadata or Agent grants. */
-export function catalogRegistration(definitions: ReadonlyMap<string, SystemActionDefinition>): OperationRegistration {
+export function catalogRegistration(config:ServerConfig,definitions: ReadonlyMap<string, SystemActionDefinition>): OperationRegistration {
   const definition = definitions.get('system.actions.list');
   if (!definition) throw new Error('Operation catalog definition missing');
   return {
@@ -18,9 +20,14 @@ export function catalogRegistration(definitions: ReadonlyMap<string, SystemActio
       };
     },
     async authorize() {/* Live membership is enforced by core; these are public metadata only. */},
-    async execute() {
+    async execute(db,_input,actor) {
+      const enabled=[];
+      for(const d of definitions.values()){
+        if(d.id.startsWith("plugin.")){const id=d.id.split(".")[1]!;if(!await operationPluginEnabled(db,id,actor.space_id,actor.on_behalf_of_user_id!,config))continue;}
+        enabled.push(d);
+      }
       return {
-        actions: [...definitions.values()].filter(d => d.execution && d.visibility.has("public_api") && d.allowed_actor_types.includes("user")).map(d => ({
+        actions: enabled.filter(d => d.execution && d.visibility.has("public_api") && d.allowed_actor_types.includes("user")).map(d => ({
           id: d.id,
           version: d.version,
           title: d.title,

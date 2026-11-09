@@ -14,6 +14,7 @@ import { Shimmer } from '../../components/ai-elements/shimmer'
 import { ConversationLink as SpaceLink } from './ConversationScope'
 import { cn } from '../../lib/utils'
 import { useAppTranslation } from '../../i18n'
+import { formatDateTime } from '../../i18n/format'
 import { presentConversationParts, presentToolOutput, progressTextIndexes } from './turnPresentation'
 
 /**
@@ -254,11 +255,22 @@ function TurnStep({ part }: { part: StepPart }) {
  */
 const LOCALIZED_DIAGNOSTIC_KEYS: Record<string, string> = {
   run_quiet: 'conversation_ui.turn.run_quiet',
+  runtime_auth_none: 'conversation_ui.turn.runtime_auth_none',
+  runtime_auth_available: 'conversation_ui.turn.runtime_auth_available',
+  runtime_compacting: 'conversation_ui.turn.runtime_compacting',
+  runtime_compacted: 'conversation_ui.turn.runtime_compacted',
+  runtime_compaction_failed: 'conversation_ui.turn.runtime_compaction_failed',
+  runtime_compaction_cancelled: 'conversation_ui.turn.runtime_compaction_cancelled',
+  runtime_retry_waiting: 'conversation_ui.turn.runtime_retry_waiting',
+  runtime_retry_finished: 'conversation_ui.turn.runtime_retry_finished',
+  runtime_subagent_running: 'conversation_ui.turn.runtime_subagent_running',
+  runtime_subagent_waiting: 'conversation_ui.turn.runtime_subagent_waiting',
+  runtime_subagent_done: 'conversation_ui.turn.runtime_subagent_done',
 }
 
-function diagnosticText(part: Extract<TurnPart, { type: 'diagnostic' }>, t: (key: string) => string): string {
+function diagnosticText(part: Extract<TurnPart, { type: 'diagnostic' }>, t: (key: string, options?: Record<string, string>) => string): string {
   const key = part.error_code ? LOCALIZED_DIAGNOSTIC_KEYS[part.error_code] : undefined
-  return key ? t(key) : part.text
+  return key ? t(key, { time: formatDateTime(part.text), name: part.text }) : part.text
 }
 
 function toolState(status: 'pending' | 'running' | 'succeeded' | 'failed'): ToolState {

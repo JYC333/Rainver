@@ -1,3 +1,4 @@
+import type { RunLiveInputAvailability, RunLiveInputRequest, RunLiveInputResult } from "@rainver/protocol"
 import type {OperationId,OperationInput,OperationOutput,OperationOutcome} from "@rainver/protocol"
 import type { ProjectMember, ProjectMemberInput } from "@rainver/protocol"
 import type { InstanceInvitationResponse } from "@rainver/protocol"
@@ -1441,6 +1442,8 @@ export const runsApi = {
   logicalIO: (id: string, options: RequestOptions = {}) => get<RunLogicalIO>(`/runs/${id}/io`, options),
   status: (id: string, options: RequestOptions = {}) => get<RunStatusOut>(`/runs/${id}/status`, options),
   stop:   (id: string, options: RequestOptions = {}) => patch<Record<string, unknown>>(`/runs/${id}/stop`, undefined, options),
+  liveInput: (id: string, options: RequestOptions = {}) => get<RunLiveInputAvailability>(`/runs/${id}/live-input`, options),
+  sendLiveInput: (id: string, body: RunLiveInputRequest, options: RequestOptions = {}) => post<RunLiveInputResult>(`/runs/${id}/live-input`, body, options),
   quotaRecovery: (id: string, autoContinue: boolean, options: RequestOptions = {}) => patch<import('@rainver/protocol').QuotaRecovery>(`/runs/${id}/quota-recovery`, { auto_continue: autoContinue }, options),
   executeQueuedRun: (id: string, options: RequestOptions = {}) => post<Run>(`/runs/${id}/execute`, undefined, options),
   resume: (id: string, options: RequestOptions = {}) => post<{ id: string; status: string; resumed_at: string; resume_kind: string }>(`/runs/${id}/resume`, {}, options),
@@ -2232,6 +2235,8 @@ export const hostsApi = {
   /** Asks the host's daemon to install a managed copy of a runtime (any ACP adapter with a distribution). */
   installRuntime: (hostId: string, runtimeKey: string, expectedVersion?: string) =>
     post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}`, expectedVersion ? { expected_version: expectedVersion } : undefined),
+  updateManagedRuntime: (hostId: string, runtimeKey: string) =>
+    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/managed/update`),
   updateOwnRuntime: (hostId: string, runtimeKey: string) =>
     post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/own/update`),
   uninstallRuntime: (hostId: string, runtimeKey: string, installation: string) =>
@@ -4070,8 +4075,8 @@ export const providersApi = {
 // POST /api/v1/plugins/:id/disable  — disable
 // PATCH /api/v1/plugins/:id/settings — patch settings
 export const pluginsApi = {
-  list: () => get<{ items: unknown[] }>('/plugins'),
-  effective: () => get<OfficialPluginEffectiveResponse>('/plugins/effective'),
+  list: (options:RequestOptions={}) => get<{ items: import('@rainver/protocol').OfficialPluginListItem[] }>('/plugins',options),
+  effective: (options:RequestOptions={}) => get<OfficialPluginEffectiveResponse>('/plugins/effective',options),
   get: (pluginId: string) => get<unknown>(`/plugins/${encodeURIComponent(pluginId)}`),
   install: (pluginId: string) =>
     post<unknown>(`/plugins/${encodeURIComponent(pluginId)}/install`, {}),
@@ -4445,4 +4450,13 @@ export function queryOperation<Id extends OperationId>(id:Id,input:OperationInpu
 export function callOperation<Id extends OperationId>(id:Id,input:OperationInput<Id>,key:string,options:RequestOptions={}):Promise<OperationOutcome<OperationOutput<Id>>> {
   if(!key)throw new Error('An explicit idempotency key is required')
   return request('POST',`/actions/${encodeURIComponent(id)}`,input,{...options,idempotencyKey:key})
+}
+
+/** Local manifest adapters use the same transport and mandatory explicit command keys as core operations. */
+export function queryPluginOperation<T>(id:import('@rainver/protocol').PluginOperationId,input:unknown,options:RequestOptions={}):Promise<OperationOutcome<T>>{
+ return request('GET',`/queries/${encodeURIComponent(id)}?input=${encodeURIComponent(JSON.stringify(input))}`,undefined,options)
+}
+export function callPluginOperation<T>(id:import('@rainver/protocol').PluginOperationId,input:unknown,key:string,options:RequestOptions={}):Promise<OperationOutcome<T>>{
+ if(!key)throw new Error('An explicit idempotency key is required')
+ return request('POST',`/actions/${encodeURIComponent(id)}`,input,{...options,idempotencyKey:key})
 }

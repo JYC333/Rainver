@@ -1,3 +1,4 @@
+import {ProjectPluginNavigation} from '../plugins/ProjectPluginNavigation'
 import { isNotFoundError } from '../../lib/utils'
 import ProjectDetailPage from './ProjectDetailPage'
 import {useSpace} from '../../contexts/SpaceContext'
@@ -138,7 +139,7 @@ export default function ProjectAreaLayout() {
           <button type="button" className="shrink-0 rounded border border-border px-3 py-1.5 text-xs lg:hidden" aria-expanded={navigationOpen} aria-controls="project-navigation-items" onClick={()=>setNavigationOpen(open=>!open)}>{t('monitoring.projectNavigation')} {navigationOpen ? '▴' : '▾'}</button>
         </div>
         <div id="project-navigation-items" className={cn('mt-4 lg:mt-0 lg:block', !navigationOpen && 'hidden')}>
-        <nav className="space-y-4">
+        <nav aria-label={t('plugin_ui.project_navigation')} className="space-y-4">
           <div className="space-y-0.5">
             {primary.map(item => (
               <NavLink
@@ -184,6 +185,7 @@ export default function ProjectAreaLayout() {
                     {item.path === 'inquiry' ? (locale==='zh-CN'?'问题推进':'Problems') : item.path === 'sources' ? t('nav.library') : item.label}
                   </NavLink>
                 ))}
+                <ProjectPluginNavigation onNavigate={()=>setNavigationOpen(false)}/>
               </div>
             )}
           </div>

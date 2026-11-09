@@ -2844,6 +2844,12 @@
     "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
   },
   {
+    "method": "POST",
+    "path": "/api/v1/runs/:runId/live-input",
+    "classification": "legacy_business",
+    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+  },
+  {
     "method": "PATCH",
     "path": "/api/v1/runs/:runId/quota-recovery",
     "classification": "legacy_business",

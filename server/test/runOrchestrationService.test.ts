@@ -79,6 +79,7 @@ async function completeCodexProtocol(
   controller: CliStdioController | undefined,
   text: string,
   sessionId = "session-1",
+  version: string | null = null,
 ): Promise<void> {
   if (!controller) throw new Error("expected ACP stdio controller");
   const sent: Record<string, unknown>[] = [];
@@ -87,7 +88,7 @@ async function completeCodexProtocol(
   controller.start(send);
   const initialize = sent.at(-1)!;
   if (initialize.method !== "initialize") throw new Error(`expected initialize request, got ${JSON.stringify(initialize)}`);
-  await controller.receive({ jsonrpc: "2.0", id: initialize.id, result: { protocolVersion: 1 } }, send, close);
+  await controller.receive({ jsonrpc: "2.0", id: initialize.id, result: { protocolVersion: 1, ...(version ? { agentInfo: { name: "@agentclientprotocol/codex-acp", version } } : {}) } }, send, close);
   const session = sent.at(-1)!;
   if (session.method !== "session/new" && session.method !== "session/resume") {
     throw new Error(`expected session request, got ${JSON.stringify(session)}`);
@@ -2265,7 +2266,7 @@ describe("RunOrchestrationService", () => {
     expect(materializationCalls).toBe(0);
   });
 
-  it("meters a subscription CLI run without letting a failing ledger hold it", async () => {
+  it.each([null, "2.5.0"])("meters subscription CLI identity %s without letting a failing ledger hold it", async version => {
     const repo = new FakeRepo();
     const usageObservations: unknown[] = [];
     repo.run = run({
@@ -2283,8 +2284,8 @@ describe("RunOrchestrationService", () => {
       hostKindResolver: onBuiltinHost,
       ...daemonCli({
         async runCommand(input) {
-          await completeCodexProtocol(input.stdio_controller, "cli ok");
-          return { returncode: 0, stdout: "cli ok", stderr: "", timed_out: false };
+          await completeCodexProtocol(input.stdio_controller, "cli ok", "session-1", version);
+          return { returncode: 0, stdout: "cli ok", stderr: "", timed_out: false, native_runtime_version: "0.166.0" };
         },
       }),
     });
@@ -2304,9 +2305,11 @@ describe("RunOrchestrationService", () => {
       execution_channel: "local_cli",
       runtime_key: "codex_cli",
       event_type: "llm.generation",
+      ...(version ? { runtime_tool_version: version } : {}),
       metadata: {
-        // codex-acp reports its last model request, not the turn (`usage.acp_prompt_usage`).
-        cli_usage: { acp_turns: 1, usage_scope: "last_model_request", estimated_total: 8, estimate_instructions: 3, estimate_current_input: 5 },
+        runtime_native_version: "0.166.0",
+        ...(version ? { acp: { version } } : {}),
+        cli_usage: { acp_turns: 1, usage_scope: version ? "run_attempt_aggregate" : "unknown", estimated_total: 8, estimate_instructions: 3, estimate_current_input: 5 },
       },
       dimensions: { run_outcome: "succeeded", run_purpose: "task" },
     });

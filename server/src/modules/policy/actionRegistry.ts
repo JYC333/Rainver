@@ -6,6 +6,8 @@
  */
 
 
+import { pluginPolicies } from "../plugins/operationRegistry.js";
+import type { ServerConfig } from "../../config.js";
 import type { PolicyActionDefinition } from "@rainver/protocol";
 import { POLICY_ACTION_REGISTRY } from "@rainver/protocol";
 
@@ -24,7 +26,7 @@ export class UnknownPolicyActionError extends Error {
 
 let cached: Promise<ReadonlyMap<string, PolicyActionDefinition>> | null = null;
 
-export function loadActionRegistry(): Promise<
+export async function loadActionRegistry(config?:ServerConfig): Promise<
   ReadonlyMap<string, PolicyActionDefinition>
 > {
   cached ??= (async () => {
@@ -34,7 +36,7 @@ export function loadActionRegistry(): Promise<
     }
     return map;
   })();
-  return cached;
+  return new Map([...(await cached),...pluginPolicies(config).map(p=>[p.action,p] as const)]);
 }
 
 export function getActionDefinition(

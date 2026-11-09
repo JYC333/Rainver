@@ -1,5 +1,7 @@
+import { isOwnCliUpdateRuntimeKey } from "@rainver/protocol";
 import {probeReadOnlyWorkspace} from './readOnlyWorkspace.js';
 import { spawn } from "node:child_process";
+import { resolvePackagedAdapter } from "./adapterInstallation.js";
 import { helperProcessEnv } from "./providerBinding.js";
 import { heldAccounts, installedTools, loggedIn, managedInstallationId, OWN_INSTALLATION, rollbackTargetFor, type ToolLoginSpec, type ToolManifest, type ToolStateBoundary } from "./tools.js";
 import type { OwnCopyCandidate, RuntimeOptions, RuntimeAccount } from "@rainver/protocol";
@@ -42,6 +44,7 @@ export interface RuntimeInstallation {
 
 /** What the server says to look for, per runtime key (`hello_ack.runtime_probes`). */
 export interface RuntimeLookup {
+  argv?: string[];
   runtime_key: string;
   /** The PATH binary of the machine's own install; null for a managed-only runtime. */
   runtime: string | null;
@@ -129,7 +132,7 @@ export function clearFailedRuntimeOptionsCache(): void {
 
 /** Authentication changes this copy's session probe immediately. */
 export function clearRuntimeOptionsCache(runtimeKey: string, installation: string): void {
-  optionsCache.delete(`${runtimeKey}@${installation}`);
+  for (const key of optionsCache.keys()) if (key === `${runtimeKey}@${installation}` || key.startsWith(`${runtimeKey}@${installation}:`)) optionsCache.delete(key);
 }
 
 function loginState(home: string, state: ToolStateBoundary | null | undefined, options: RuntimeOptions | null): boolean | null {
@@ -220,13 +223,13 @@ async function runtimeOptions(
 
 /** Asks one copy for its options; the caller decides how (`api.ts`). */
 export type AskRuntimeOptions = (lookup: RuntimeLookup, installation: string) => Promise<RuntimeOptions | null>;
-type EnsureOwnRuntime = (lookup: RuntimeLookup) => Promise<boolean>;
+type EnsureRuntime = (lookup: RuntimeLookup) => Promise<boolean>;
 
 export async function detectCapabilities(
   askOptions?: AskRuntimeOptions,
   /** What the server can dispatch to; nothing until `hello_ack` says. */
   lookups: readonly RuntimeLookup[] = [],
-  ensureOwnRuntime?: EnsureOwnRuntime,
+  ensureRuntime?: EnsureRuntime,
   log: (line: string) => void = () => {},
 ): Promise<DaemonCapabilities> {
   const runtimes: ProbedBinary[] = [];
@@ -238,12 +241,12 @@ export async function detectCapabilities(
     const found: RuntimeInstallation[] = [];
     if (lookup.runtime) {
       const version = await probeVersion(lookup.runtime);
-      // A held-back own copy (its packaged adapter is missing) drops only
-      // itself; managed copies launch from their own manifest and stay listed.
-      if (version !== null && (!ensureOwnRuntime || await ensureOwnRuntime(lookup))) {
+      // Report installed copies independently of an unavailable bridge.
+      if (version !== null && (!ensureRuntime || await ensureRuntime(lookup))) {
         runtimes.push(lookup.runtime);
         versions[lookup.runtime] = version;
-        const asked = askOptions ? await runtimeOptions(`${lookup.runtime_key}@${OWN_INSTALLATION}`, () => askOptions(lookup, OWN_INSTALLATION)) : null;
+        const entry = lookup.argv?.[0] ? resolvePackagedAdapter(lookup.argv[0]) : null;
+        const asked = askOptions ? await runtimeOptions(`${lookup.runtime_key}@${OWN_INSTALLATION}:${version}:${entry ?? "native"}`, () => askOptions(lookup, OWN_INSTALLATION)) : null;
         const ownAccounts = heldAccounts(homedir(), lookup.state);
         found.push({
           id: OWN_INSTALLATION,
@@ -272,7 +275,8 @@ export async function detectCapabilities(
         });
       }
     }
-    const rollbackTarget = rollbackTargetFor(lookup.runtime_key);
+    if ((managed.get(lookup.runtime_key)?.length ?? 0) > 0 && ensureRuntime) await ensureRuntime(lookup);
+    const rollbackTarget = isOwnCliUpdateRuntimeKey(lookup.runtime_key) ? null : rollbackTargetFor(lookup.runtime_key);
     for (const manifest of managed.get(lookup.runtime_key) ?? []) {
       const id = managedInstallationId(manifest.version);
       const asked = askOptions ? await runtimeOptions(`${lookup.runtime_key}@${id}`, () => askOptions(lookup, id)) : null;
@@ -286,7 +290,7 @@ export async function detectCapabilities(
         options: reportedOptions(manifest.login, await withManagedCliLogin(manifest, asked)),
         ...(managedAccounts ? { accounts: managedAccounts } : {}),
         // Only the current copy offers a rollback; the target itself is not one.
-        rollback_version: rollbackTarget && rollbackTarget.version !== manifest.version
+        rollback_version: isOwnCliUpdateRuntimeKey(lookup.runtime_key) ? manifest.previous_cli?.version ?? null : rollbackTarget && rollbackTarget.version !== manifest.version
           ? rollbackTarget.version
           : null,
       });

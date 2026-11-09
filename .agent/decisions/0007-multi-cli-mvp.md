@@ -60,7 +60,7 @@ a runtime class.
 
 Every local CLI is driven through one server-side ACP controller. Adapters
 that do not speak ACP natively are reached through thin wrapper adapters
-(`claude-agent-acp` for Claude Code; Rainver's own pinned `codex-acp` for
+(`claude-agent-acp` for Claude Code; the upstream `codex-acp` for
 Codex); OpenCode speaks ACP directly; further agents come from the ACP
 registry. Rainver implements no vendor-specific stream protocol, and a
 vendor's own RPC surface is used only where ACP has no equivalent (today: the
@@ -92,8 +92,7 @@ Token accounting lives in the canonical usage ledger, attributed to the Run.
 ACP reports provider-counted usage with cache reads and writes separated;
 those events carry `usage_accuracy = provider_reported` and the `local_cli`
 execution channel. Whether the count covers the whole turn is the adapter's
-to say: Claude Code and OpenCode report the turn, `codex-acp` reports its last
-model request, and the runtime spec's `usage.acp_prompt_usage` labels the
+to say: Claude Code, OpenCode and Codex ACP report the turn, and the runtime spec's `usage.acp_prompt_usage` labels the
 ledger event's `usage_scope` accordingly
 ([runtime-adapters](../modules/runtime-adapters.md)). A provider-bound CLI Run is accounted at the provider
 proxy instead and emits no second CLI event. Usage read from an
@@ -169,8 +168,7 @@ under ADR 0016's trusted-host model.
   three parsers.
 - Exact accounting is available from every implemented CLI; quota awareness
   is as good as what the vendor exposes.
-- The controller is one more moving part on the credential path: every ACP
-  wrapper is pinned, installed through the controlled tool path, and never
+- The controller is one more moving part on the credential path: ACP wrapper sources follow stable releases, each concrete execution version is recorded and installed through the controlled tool path, and never
   the machine's ambient copy on the built-in host.
 
 ## Non-goals
@@ -179,3 +177,11 @@ under ADR 0016's trusted-host model.
 - Reimplementing any vendor's agent harness or tool loop.
 - Programmatic driving of consumer subscriptions beyond what each vendor's
   terms permit ([ADR 0010](0010-agent-workbench-product-direction.md)).
+
+## ACP dependency ownership
+
+Codex and Claude ACP bridges are repository-managed dependencies released with
+Rainver and Host builds. Users manage native CLI versions; Registry Agent and
+OpenCode package installation remains explicit. The repository release catalog
+and lockfile define the tested bridge distribution, and scheduled CI checks new
+candidates. Native CLI and ACP package versions are recorded separately.

@@ -1,10 +1,10 @@
 import { QuotaRecoverySchema, type QuotaRecovery } from "@rainver/protocol";
-import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { HttpError, objectValue, type Queryable } from "../routeUtils/common.js";
 import { canWriteProject } from "../projects/access.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import type { RunRecord } from "../runs/repository.js";
 import { contractRecord } from "../runs/contractSnapshot.js";
-import { runtimeQuotaResetAt } from "../runtimeAdapters/quotaReset.js";
+import { runtimeQuotaResetAt, validQuotaResetAt } from "../runtimeAdapters/quotaReset.js";
 import { accountLabel, cachedQuotaReading, subscriptionLoginOfRun, type QuotaReading } from "./subscriptionLogins.js";
 import type { WaitingForQuota } from "./quotaGate.js";
 
@@ -31,7 +31,9 @@ export async function prepareQuotaRecovery(db: Queryable, run: RunRecord, nextAt
   const user = run.instructed_by_user_id ?? run.owner_user_id;
   if (!login || !user || run.execution_kind !== "agent") return null;
   const reading = await cachedQuotaReading(db, login);
-  const reset = runtimeQuotaResetAt(run.runtime_key, run.error_message ?? null, now)
+  const failure = objectValue(objectValue(run.error_json).runtime_failure);
+  const reset = validQuotaResetAt(failure.resets_at, now)
+    ?? runtimeQuotaResetAt(run.runtime_key, run.error_message ?? null, now)
     ?? (reading.window?.resets_at && Date.parse(reading.window.resets_at) > now.getTime() ? reading.window.resets_at : null);
   const auto = Boolean(await recoveryTaskId(db, run));
   return {

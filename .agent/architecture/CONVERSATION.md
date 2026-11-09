@@ -14,6 +14,27 @@ reconciled against the updated option catalog. A native session that cannot be
 loaded follows the existing explicit session-reset recovery rather than discarding
 Conversation messages. See [Hosts](../modules/hosts.md).
 
+## Additional input during a turn
+
+The Run owner/instructor can use **Add instruction** beside Stop when the
+active wrapper advertises a supported idle-safe steering contract. It targets
+the current physical Delivery only. The server saves a canonical user message
+in the current conversation (linked to the same Run), appends a pending
+`run.live_input` command event and compiles a fresh Runtime Context Delivery.
+Only that pending command, original binding and current attempt can authorize
+an additional current message; the immutable original trigger is unchanged.
+Current membership, message authority, Setup and execution-control checks still
+apply. Skill mounts/tool grants cannot expand on an already running process.
+Acknowledgement and outcome are recorded; unconfirmed input is never retried
+automatically. Ended turns refuse injection and ordinary Room FIFO stays intact.
+The process-local channel shares cancellation's worker-affinity requirement.
+
+Runtime auth/compaction/native retry and declared native subagent transitions
+appear as localized informational activity. Account details are omitted. Native
+children are distinct from product Agents: their text is not the parent's
+answer and their declared running/background work retains the runtime lease.
+Stop uses the existing whole process-group cancellation path.
+
 ## The message tree
 
 `messages` is a tree, not a list. Every message carries `parent_message_id`,
@@ -479,6 +500,29 @@ vendor session to resume in `model_override_json.host_thread`. There is no
 message queue. Do not add one for a remote Task run.
 
 ## Explicit source Space and reusable Run commands
+
+Failed runtime turns and Run detail share `RuntimeFailureNotice`: localized
+cause/advice, the failing phase when known, and collapsed diagnostic text. Only
+server-classified evidence is used; opaque prose does not establish login or
+quota failure. Missing/withheld evidence has no recovery link. A native-login
+failure links to the exact Host/runtime/installation in Command Center; a
+ModelProvider authentication refusal directs the person to provider settings.
+Typed failure evidence refines a generic process exit; specific server outcomes
+such as timeout or invalid session retain precedence. Installation positioning
+is neutral and does not turn other failures into login advice. A provider-bound
+request's Host report never treats native CLI login as provider authentication.
+An explicit status refresh reads the authorized Host heartbeat report, displays
+its timestamp and does not launch a CLI, authenticate or retry. Changing the
+source Space/Run aborts the read and discards late results. Retry remains the
+existing explicit, idempotent conversation command.
+
+Command Center's `runtime` and `installation` query parameters locate and focus
+the requested copy, alongside its existing permissioned login controls. They
+never start login on navigation. A retired copy is reported rather than replaced
+by another signed-in copy. Selecting another Host or returning to the list
+clears this recovery target. The browser recovery fixture checks the conversation
+entry, exact login destination, return and Run-detail entry in both locales,
+themes and phone/desktop widths.
 
 `ConversationSurface` and `ConversationExecutionPreflight` accept an optional
 `spaceId`. The Room page supplies its Room's Space, the Project sidecar supplies

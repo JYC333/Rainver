@@ -123,6 +123,14 @@ model and displays as unknown. The existing Turn stream carries
 
 ## Run read model (`runs/runReadModel.ts`, `runToOut`)
 
+Failed ACP Runs may expose safe `error_json.runtime_failure` evidence (typed
+category, RPC/vendor codes, message, observation/reset times, optional phase and
+phase elapsed milliseconds) and `error_json.runtime_target` (Host, runtime,
+installation, backend mode). The schemas are in `protocol/runtimeFailures.ts`.
+The fields inherit Run error-body withholding; summary readers receive neither.
+They contain no credential, local path or native session id. Older failures
+without these optional fields remain readable.
+
 A Run DTO carries `execution_kind` — `agent` or `provider_task` — and the
 client branches on it rather than on a missing field. For a `provider_task`
 Run, `agent_id` and `agent_version_id` are **null by construction**: a bounded
@@ -355,3 +363,19 @@ automatically. Older file-bridge Hosts refuse explicit-key mode before dispatch.
 Central replay is available only for migrated commands; this is not a promise
 that legacy operations became centrally idempotent. See SYSTEM_ACTIONS and
 ADR 0028 for canonical approval and migration enablement constraints.
+
+## Running-turn additional input
+
+`GET /api/v1/runs/{runId}/live-input` returns `{available,binding_id}` with
+`Cache-Control: no-store`. The authenticated Space-scoped Run owner/instructor
+may `POST` the same path with `{binding_id,content}` (UUID binding; trimmed
+1–8000 characters). These shared DTOs are defined in `protocol/src/acp.ts`.
+The binding identifies the active physical Delivery, never a native session.
+Response: `{state,message_id,delivery_id}` where state is `injected`,
+`not_injected` or `unconfirmed`. A missing/changed/ended binding returns409;
+ordinary visibility/standing failures remain404/403. Malformed input returns422.
+The message is saved before Runtime Context authorization/delivery; an outcome
+failure can therefore leave a saved message. Clients keep the draft, explain
+uncertain delivery and never automatically resend. This process-local command
+requires the same worker affinity as Run cancellation. It has no public CLI
+operation or separate generic agent authority.

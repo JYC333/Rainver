@@ -61,6 +61,11 @@ case "$release_channel" in
   *) echo "--channel must be stable, edge, or nightly" >&2; exit 2 ;;
 esac
 RELEASE_BASE_URL="${RAINVER_HOST_RELEASE_BASE_URL:-$REPOSITORY_DOWNLOAD_ROOT/host-$release_channel}"
+if [[ "$ensure_adapters" == true && -z "${RAINVER_HOST_RELEASE_BASE_URL:-}" ]]; then
+  installed_build_id="$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")"
+  [[ "$installed_build_id" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "The active Host build id is invalid." >&2; exit 1; }
+  RELEASE_BASE_URL="$REPOSITORY_DOWNLOAD_ROOT/host-build-$installed_build_id"
+fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "This installer currently supports Linux only." >&2
@@ -310,6 +315,10 @@ install_adapter_pack() {
     echo "Downloaded adapter pack has an invalid build id." >&2
     exit 1
   fi
+  if [[ ! -f "$INSTALL_ROOT/current/BUILD_ID" || "$adapter_build_id" != "$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")" ]]; then
+    echo "The adapter pack does not match the active Host build. Update this Host." >&2
+    exit 1
+  fi
   mkdir -p "$INSTALL_ROOT/adapters/releases"
   local previous_adapter_build_id=""
   if [[ -f "$INSTALL_ROOT/adapters/current/BUILD_ID" ]]; then
@@ -321,12 +330,14 @@ install_adapter_pack() {
   fi
   ln -s "releases/$adapter_build_id" "$INSTALL_ROOT/adapters/.current-$$"
   mv -Tf "$INSTALL_ROOT/adapters/.current-$$" "$INSTALL_ROOT/adapters/current"
-  while IFS= read -r -d '' candidate; do
-    candidate_id="$(basename "$candidate")"
-    if [[ "$candidate_id" != "$adapter_build_id" && "$candidate_id" != "$previous_adapter_build_id" ]]; then
-      rm -rf -- "$candidate"
-    fi
-  done < <(find "$INSTALL_ROOT/adapters/releases" -mindepth 1 -maxdepth 1 -type d -print0)
+  if [[ ! -f "$CONFIG_DIR/update-restart-requested" ]]; then
+    while IFS= read -r -d '' candidate; do
+      candidate_id="$(basename "$candidate")"
+      if [[ "$candidate_id" != "$adapter_build_id" && "$candidate_id" != "$previous_adapter_build_id" ]]; then
+        rm -rf -- "$candidate"
+      fi
+    done < <(find "$INSTALL_ROOT/adapters/releases" -mindepth 1 -maxdepth 1 -type d -print0)
+  fi
   echo "Installed Rainver Host adapters $adapter_build_id."
 }
 
@@ -465,9 +476,9 @@ fi
 printf '#!/usr/bin/env bash\nexport RAINVER_HOST_INSTALL_ROOT=%q\nexport RAINVER_HOST_UPDATE_CHANNEL=%q\nexport RAINVER_HOST_ADAPTER_ROOT=%q\nexec %q %q "$@"\n' \
   "$INSTALL_ROOT" \
   "$release_channel" \
-  "$INSTALL_ROOT/adapters/current" \
+  "$INSTALL_ROOT/adapters/releases/$build_id" \
   "$node_command" \
-  "$INSTALL_ROOT/current/app/dist/cli.js" > "$BIN_DIR/rainver-host"
+  "$INSTALL_ROOT/releases/$build_id/app/dist/cli.js" > "$BIN_DIR/rainver-host"
 chmod 755 "$BIN_DIR/rainver-host"
 
 service_env="${XDG_CONFIG_HOME:-$HOME/.config}/rainver-host/service.env"
@@ -495,9 +506,9 @@ printf '#!/usr/bin/env bash\nset -a\nsource %q\nset +a\nrainver_host_bin_dir=%q\
   "$BIN_DIR" \
   "$INSTALL_ROOT" \
   "$release_channel" \
-  "$INSTALL_ROOT/adapters/current" \
+  "$INSTALL_ROOT/adapters/releases/$build_id" \
   "$node_command" \
-  "$INSTALL_ROOT/current/app/dist/daemon.js" > "$daemon_launcher"
+  "$INSTALL_ROOT/releases/$build_id/app/dist/daemon.js" > "$daemon_launcher"
 chmod 755 "$daemon_launcher"
 
 installed_script="$INSTALL_ROOT/install-host.sh"

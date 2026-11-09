@@ -123,3 +123,25 @@ isolation; true hot load/unload without restart.
 - **Conditional `SERVER_MODULES` at startup** — rejected; see decision 2.
 - **Full download/install package system at once** — deferred; the package
   format and startup contract are implemented, remote download is the gap.
+
+
+## P2 operation extension
+
+Manifest-based official plugins extend the existing PluginHost and P1 operation
+core rather than adding an execution engine. Static core vocabularies coexist
+with a validated plugin namespace; activation validates declarations against
+registrations and derives the optional-module descriptor. New operation plugins
+receive only a scoped invocation DB port, use existing enablement/grants and
+PolicyGateway, and cannot directly write core tables or introduce an alternate
+proposal path. Roles guard trusted same-process mistakes, not hostile code.
+Current eligibility and staged exclusions are in
+[Official Optional Modules](../architecture/OFFICIAL_OPTIONAL_MODULES.md#operation-manifest-platform).
+Stage 1 is committed. Stage-2 offline migration/reconcile, dependency topology,
+scoped Jobs/schedules/disposal and namespaced canonical proposal contribution
+passed independent dual review and are committed in `a2e623f3`. They reuse existing host engines and transactions;
+core data uses fixed domain ports, never nested top-level operations or plugin
+SQL. Config-less registry reads are core-only. Legacy plugin contracts are
+preserved until explicitly migrated; no production role rollout, legacy eight
+writer migration, sensitive Agent access is implied. Stage-3 local manifest views/Project slots passed independent dual review;
+final whole-P2 read-only code review also passed both reviewers (no test rerun
+by reviewers is claimed); their current contract and cross-layer evidence are in the owner guide. Same-process role guards are not tenant RLS or a hostile sandbox.

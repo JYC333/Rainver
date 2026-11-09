@@ -46,24 +46,58 @@ installation distribution, not in parallel Rainver Agent loops. Claude,
 Codex, and OpenCode all use ACP; Claude stream-JSON and Codex app-server are
 not current execution protocols.
 
-The pinned Claude ACP 0.70.0 and Codex ACP 1.12.0 distributions both advertise
-`_meta.steering.supported` at initialization and implement the
-`_session/steering` extension with `{ sessionId, prompt: ContentBlock[] }`.
-Rainver does not expose that extension: its controller receives its prompt
-list at construction and closes stdin after that list completes. The Host's
-duplex transport is sufficient, but no runtime option enables live input in
-the current product. Conversation queueing still waits for the turn boundary.
-Claude injects active-turn steering with `priority: "now"`; its separate
-`claudeCode.promptQueueing` capability is not the same operation. Claude can
-refuse idle steering without starting work via
-`_meta.steering.idleBehavior: "promptRequired"`. The pinned Codex adapter has
-no such idle option: it can return `startedNewTurn` and start work when the
-original turn finishes before injection. A future integration must keep that
-work tracked, authorize and record the new input through Runtime Context,
-and bind its acknowledgement to the correct Run, attempt and CLI lease;
-concurrent ordinary `session/prompt` calls are not a portable substitute.
-See the mid-turn steering entry in the
-[deferred register](../tasks/deferred-register.md).
+Codex and Claude ACP bridges are repository-managed dependencies. The release
+catalog in `packages/protocol/src/acpAdapters.json` names the approved packages;
+`pnpm-lock.yaml` records the reproducible dependency graph. Installation and
+release preparation verify the catalog against installed packages. Scheduled CI
+resolves stable candidates and exercises the current contracts. Tested updates
+ship with Rainver and Host releases.
+
+Both personal and managed CLI copies use the Host release's bridge. Managed
+native CLIs update independently through a fixed npm recipe, staged version
+verification and isolated ACP initialization. Promotion changes the managed
+manifest atomically and retains one native CLI rollback target. Login HOME,
+installation identity and conversation bindings stay stable. OpenCode and
+Registry Agent packages retain their explicit installation lifecycle.
+
+Negotiated identity is bounded to name, version, wire version and supported
+capabilities; raw vendor account metadata is not persisted. Completion/usage
+metadata records the actual wrapper version and native CLI version separately
+from the selected installation. Model attribution prefers reported per-model
+`_meta.quota.model_usage` rows, then reported actual model identity and a
+concrete selection. `default` remains unknown, never a model name. Claude model
+IDs retain release suffixes; a changed suffix is a distinct ledger model.
+Codex quota input is already uncached and must not be reduced a second time.
+Claude subagent model rows need not sum to parent prompt usage.
+
+Current Claude/Codex wrappers advertise `_meta.steering.supported` on the
+initialize result. Rainver enables active-turn input only for a verified
+idle-safe extension contract. It sends `_session/steering` with
+`_meta.steering.idleBehavior: "promptRequired"`; an ended turn cannot start an
+unowned turn. An unverified idle-safe contract remains unavailable.
+The owner/instructor's explicit additional instruction is saved as a canonical
+conversation message and pending `run.live_input` command event, then compiled
+through Runtime Context with fresh Delivery authority. The exact physical
+Delivery binding must still match. Accepted, rejected and unconfirmed outcomes
+are acknowledged and audited. One submission is in flight; a lost acknowledgement
+never causes an automatic resend. Ordinary Room FIFO messages are unchanged.
+
+The shared controller projects auth-state kinds, compaction transitions,
+OpenCode native retry deadlines and declared native subagent lifecycle into
+bounded status events. These are informational: no account detail is stored,
+no second retry loop is started, and native children are not Rainver Agents.
+Only the root and explicitly declared child sessions are accepted. Child text
+never becomes the parent's answer. Declared running/background children keep
+the process alive after the parent response; Stop cancels the existing process
+group. No independent background scheduler or ACP v2 migration is introduced. Claude currently gates some child-session behavior behind its AIR integration; Rainver advertises the standard client capability and does not impersonate AIR.
+
+Current limitations: declared child-session permission requests still pass
+through the root-only permission check, and unknown/absent child work states
+and error stop reasons are not fully projected. These can fail or retain a
+Run; the native subagent integration is partial. Compaction summaries and the
+capability descriptor also need completion. Ordinary per-Run process shutdown
+prevents the upstream idle-compaction timer from remaining active between
+turns. Restart does not resolve these limitations.
 
 The shared controller accepts non-message session metadata while a known
 session is being resumed, between context and current-user prompts, or just
@@ -72,14 +106,9 @@ start a prompt: the controller still waits for the matching response, and a
 resume error still fails the handshake. Message and thought chunks remain
 confined to an active prompt and updates from another session are rejected.
 
-Claude ACP 0.70 logs the unhandled SDK `system/permission_check_status`
-metadata as `Unexpected case: <JSON>` on stderr. The thread-event projection
-recognizes that exact diagnostic for `claude_code` and omits it from the
-conversation, including split chunks and a final line without a newline.
-Other stderr, malformed JSON and unknown message kinds remain diagnostics.
-This does not acknowledge a permission request or change Run failure handling;
-the Host still relays the original stderr. Keep vendor recognition in
-`runtimeAdapters/runtimeDiagnostic.ts`, rather than matching words in the UI.
+Runtime stderr is preserved as diagnostic events across chunk boundaries,
+including the final unterminated line. Runtime state uses structured ACP
+notifications rather than vendor-log suppression filters.
 
 Model picker values are not necessarily all the model identifiers an adapter
 accepts. The Claude adapter also resolves aliases in `session/set_config_option`
@@ -121,19 +150,57 @@ reads the form). The Run succeeds; see CONVERSATION.md for the reply. The
 detector's `form_elicitation` also makes the controller advertise
 `clientCapabilities.elicitation.form`, which is what makes Claude Code offer
 AskUserQuestion and Codex's `request_user_input` reach the client at all
-(claude-agent-acp 0.70 and codex-acp 1.12); OpenCode declares
+(the current Claude/Codex wrappers); OpenCode declares
 nothing and is not offered it. Room execution rules tell the Agent to ask by
 replying instead (`ASK_THE_PERSON_POLICY`). Per-runtime question shapes on a
 real host are an open acceptance item in `tasks/deferred-register.md`.
 
 ## Run and Host boundary
 
-Terminal subscription refusals are normalized by the runtime spec, including
-Claude's `session limit` wording. `runtimeAdapters/quotaReset.ts` reads only
-spec-declared reset formats; Claude's epoch and a clock with an IANA timezone
-are supported. `Intl` supplies timezone/DST rules, never the server's local
-zone. Unknown reset prose stays unknown. The Supervisor may park the next
-physical attempt at the existing subscription gate; see
+ACP JSON-RPC failures retain bounded, redacted human diagnostics from the
+wrapper and its known `data` fields through `runtimeAdapters/acpFailure.ts`.
+Claude's typed `startupFailureReason` distinguishes authentication from workspace/proxy configuration failures. Codex's `codexErrorInfo` and Claude's
+native `errorKind` or API error types distinguish subscription exhaustion,
+authentication, rate limits, and known transient failures. Raw vendor payloads
+are not persisted. An opaque
+`-32603` alone is not evidence of a transient failure; `-32000` alone is not
+evidence of authentication failure. Authentication is non-retryable
+`runtime_auth_required`; known rate/transient failures use the existing bounded
+Supervisor policy. A quota/auth/rate/transient refusal during resume preserves
+the stored native session; an invalid resume still clears it.
+
+Evidence optionally includes the failing ACP phase and elapsed milliseconds in
+that phase. Startup timing begins when initialize is sent, excluding the Host's
+workspace queue. A failed controller ignores late frames while its process
+drains; a late error cannot overwrite a completed prompt. Failed adapter results
+also carry `runtime_target` (Host, runtime, exact installation and backend mode)
+into the Run/attempt error evidence, with no native session id or credential.
+Failure evidence and optional measurements use the shared protocol schemas.
+
+`packages/host-daemon/test/acpConformance.test.ts` launches the actual resolved
+Codex and Claude ACP packages with isolated HOME/config roots and fake native
+processes. It reads back model and mode changes, runs synthetic turns, validates per-model usage, consecutive-turn deltas and idle-safe steering, and inherits no ambient credentials or real inference access. CI runs it with the packaged shutdown tests. Scheduled/manual CI resolves current stable candidates every six hours and runs the same contract tests. A local frozen install retains the tested lockfile snapshot. These checks do not validate live account login or upstream
+inference availability.
+
+The thread projection suppresses identical bounded tool snapshots by call id;
+changed progress, prose boundaries and final outputs remain observable. Late
+nonterminal progress cannot reopen a terminal tool call. The semantic event
+projection publishes each call's start and each unchanged terminal status once;
+replayed full tool frames cannot reopen a terminal call. A repeated-progress
+fixture measures 1,002 input frames as three stored tool events (start, changed
+progress, completion), rather than 1,002; this is synthetic evidence, not a
+production throughput benchmark.
+
+Terminal subscription refusals also use spec-declared text, including Claude's
+`session limit` wording. Valid structured reset instants take priority.
+`runtimeAdapters/quotaReset.ts` reads spec-declared epochs, explicit delays,
+and local reset clocks. Codex's unzoned `try again at 7:10 PM` requires the
+executing Host's optional completion `time_zone`; an explicit vendor timezone
+takes precedence. The daemon pins the CLI's `TZ` to the reported zone. Older
+Hosts remain compatible but cannot disambiguate an unzoned clock. `Intl`
+supplies timezone/DST rules, never the server's local zone. Unknown reset prose,
+invalid zones and out-of-window timestamps stay unknown. The Supervisor may
+park the next physical attempt at the existing subscription gate; see
 [Runs and outputs](../architecture/RUNS_AND_OUTPUTS.md#attempts-cancellation-and-supervision).
 A runtime that is itself still waiting has not returned a terminal refusal,
 so Rainver never creates a concurrent successor. There is no extra vendor
@@ -142,7 +209,7 @@ agent loop or native-terminal configuration change.
 Reuse / Dependency Check:
 - Existing capability: Run Supervisor/attempts, quota gate and minute scheduler, shared Run commands.
 - Installed dependencies: existing PostgreSQL/transaction helpers and Zod; native Date/Intl for reset instants.
-- External option: n/a for Run intent, authorization and continuation semantics; the scheduler already exists.
+- External option: OpenHands SDK's ACP error extraction, classification and adapter conformance patterns were evaluated ([source snapshot](https://github.com/OpenHands/software-agent-sdk/tree/232d0b05fa5cd798c9c827d1a1c1aafa541757ad)). Reuse the diagnostic pattern; retain Rainver's redaction, native Host login and single retry authority.
 - Approach: extend these existing mechanisms, with no new dependency or migration.
 - Reason: one durable admission and cancellation authority prevents competing retry engines.
 
@@ -172,32 +239,23 @@ and embedded text resources; an oversized turn is not dispatched and fails as
 thread event, whatever put the text there. The code is not retryable: the
 same prompt fails again. Specs without a stated limit are not checked.
 
-The shared controller counts the ACP prompts it actually sends and reports
-the runtime's last valid context
-occupancy/capacity. Neither is an internal model-call count. It also counts
-the `usage_update` notifications a turn received and sums their `used`
-values (`usage_updates`, `usage_updates_used_total`): a runtime sends one per
-model request, so the sum is the context volume the turn processed. The token
-usage on a prompt result is whole-turn for Claude Code and OpenCode; `codex-acp`
-1.12 builds it from Codex's `tokenUsage.last`, the last request alone, which
-the Codex spec declares as `usage.acp_prompt_usage: "last_request"` and the
-ledger records as `usage_scope: "last_model_request"` — a lower bound, not
-the turn (a Codex turn with 76 tool calls was recorded as one request's
-310k tokens). A spec also declares `usage.prompt_cache_ttl_seconds`, how
-long the vendor keeps a prompt cache warm after a request (Claude Code on a
-subscription: one hour, measured on the test instance; Codex: ten minutes,
-OpenAI's in-memory default); the conversation preflight compares it with the
-thread's last Run end to say the next turn will rewrite its context. A notice
-only. The server adds
-the accepted Gateway plan's numeric allocation estimate to usage diagnostics;
-it never reads vendor transcripts to guess missing measurements. Unreported
-model calls are unknown, including legacy aggregate CLI observations. See
-[execution accounting](../architecture/EXECUTION_MODEL.md) for the ledger and
-Usage page semantics. This does not require an execution Host protocol change.
+The shared controller counts ACP prompts and records context occupancy/capacity.
+Neither is an internal model-call count. `usage_updates` and
+`usage_updates_used_total` are counts and sums of occupancy **samples**;
+notifications can repeat or reset at compaction, so their sum is not token
+spend or processed context volume. Prompt-result token usage is whole-turn for
+current Claude/OpenCode and Codex 2.5+. Missing, unverified, preview or
+future-major Codex identities have `unknown` scope. The writer exposes only
+whole-attempt or unknown scope.
+This is derived from actual wrapper identity, not a static per-runtime flag.
+Unreported model calls remain unknown, including vendor helper/title calls.
+A spec's `usage.prompt_cache_ttl_seconds` remains a preflight notice only.
+The accepted Gateway plan's numeric allocation estimate is diagnostic; vendor
+transcripts are never read to guess missing measurements. History is not
+rewritten by this upgrade. See [execution accounting](../architecture/EXECUTION_MODEL.md).
 
 The built-in Server Runtime is an execution Host using the same daemon protocol
-as a paired Host. Its managed OpenCode version is pinned by the Rainver release
-and maintained by Server lifecycle policy; paired Host installs and upgrades
+as a paired Host. Its managed OpenCode distribution follows stable Registry discovery and Server lifecycle policy; paired Host installs and upgrades
 remain explicit Host-owner actions. A runtime that is not installed, healthy,
 or reported by its Host fails admission/launch rather than silently switching
 to another copy.

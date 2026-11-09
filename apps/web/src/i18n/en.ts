@@ -221,6 +221,7 @@ export const en = {
     load_failed: 'Domains unavailable',
   },
   modules: {
+    'plugin.operation_probe.records': 'Records',
     'agent-work': 'Agent Work',
     diary: 'Diary', finance: 'Finance', today: 'Today', capture: 'Capture',
     activity: 'Inbox', library: 'Library', daily_reports: 'Daily Report', sessions: 'Sessions',

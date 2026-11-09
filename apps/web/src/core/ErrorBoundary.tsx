@@ -1,7 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { useAppTranslation } from '../i18n'
 
-interface Props   { children: ReactNode }
+interface Props   { children: ReactNode; fallback?: (retry:()=>void)=>ReactNode }
 interface State   { error: Error | null }
 
 /**
@@ -39,6 +39,7 @@ export default class ErrorBoundary extends Component<Props, State> {
   }
 
   render(): ReactNode {
+    if(this.state.error&&this.props.fallback)return this.props.fallback(()=>this.setState({error:null}))
     if (this.state.error) return <ErrorPanel error={this.state.error} onRetry={() => this.setState({ error: null })} />
     return this.props.children
   }

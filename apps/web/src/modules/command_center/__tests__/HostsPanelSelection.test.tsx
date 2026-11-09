@@ -53,6 +53,26 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers() })
 
 describe('Command Center Host list and detail', () => {
+  it('locates the linked installation without starting login and clears that target when selecting another Host', async () => {
+    renderPanel('?host=host-1&section=runtime&runtime=claude_code&installation=own')
+    const detail = await detailOf('Laptop')
+    expect(within(detail).getByRole('status')).toHaveTextContent('Recovery target: Claude Code · own')
+    expect(within(detail).getByRole('status')).not.toHaveTextContent('login controls')
+    expect(detail.querySelector('[data-recovery-target="true"]')).toHaveAttribute('data-runtime-installation', 'own')
+    expect(screen.queryByTestId('runtime-login-terminal')).toBeNull()
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Execution environments' })).getByRole('button', { name: /Desk/ }))
+    expect(await detailOf('Desk')).toBeInTheDocument()
+    expect(params().has('runtime')).toBe(false)
+    expect(params().has('installation')).toBe(false)
+  })
+
+  it('reports a retired installation instead of selecting another signed-in copy', async () => {
+    renderPanel('?host=host-1&section=runtime&runtime=claude_code&installation=managed%3Aretired')
+    const detail = await detailOf('Laptop')
+    expect(within(detail).getByRole('status')).toHaveTextContent('installation used by this request is no longer reported')
+    expect(detail.querySelector('[data-recovery-target="true"]')).toBeNull()
+    expect(screen.queryByTestId('runtime-login-terminal')).toBeNull()
+  })
   it('opens on the instance Host, says what is wrong with each Host, and names the chosen one in the URL', async () => {
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [LAPTOP, SERVER, DESK] } as never)
     renderPanel()

@@ -806,8 +806,10 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       messageId: item.source_ref.id,
     });
     const canonicalMessageId = chatTurnMessageId(run.model_override_json);
+    const liveInput = canonicalMessageId !== item.source_ref.id
+      && await new (await import("../runs/repository.js")).PgRunRepository(db).isPendingLiveInputMessage(input.spaceId, input.invocationId, item.source_ref.id, input.viewerUserId);
     const skills = await loadConversationSkillDescriptors(db, { spaceId: input.spaceId, messageId: item.source_ref.id });
-    if (!row || canonicalMessageId !== item.source_ref.id || contextItemText(item) !== renderConversationInputMessage(row.content, descriptors, skills)
+    if (!row || (canonicalMessageId !== item.source_ref.id && !liveInput) || contextItemText(item) !== renderConversationInputMessage(row.content, descriptors, skills)
       || item.trust !== (row.role === "system" ? "system_approved" : "user_confirmed")
       || (session.roomId === null && row.metadata_run_id !== input.invocationId)) {
       throw new HttpError(409, "Invocation Delivery Message changed or is no longer authoritative");

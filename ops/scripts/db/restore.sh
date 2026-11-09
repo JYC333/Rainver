@@ -122,4 +122,11 @@ echo "Restoring '$PGDB' from: $DUMP_FILE"
 "${COMPOSE[@]}" exec -T postgres \
   pg_restore -U "$PGUSER" --clean --if-exists --no-owner --no-acl -d "$PGDB" \
   < "$DUMP_FILE"
+
+# pg_restore --no-owner --no-acl strips operation-package ownership and grants.
+# Explicit stopped-service host reconciliation; never run plugin migrations here.
+"${COMPOSE[@]}" run --rm -T --no-deps \
+  -e SERVER_DATABASE_URL="$(local_compose_server_owner_database_url)" \
+  server node dist/db/migrateCli.js plugin-reconcile
+
 echo "Restore complete."

@@ -1,3 +1,4 @@
+import { ensurePackagedAdapter } from "../adapterInstallation.js";
 import {blockSourceExecution,sourceExecutionLocallyEnabled} from "../sourceCapability.js";
 import { recoverSourceExecutions } from "../sourceOwnership.js";
 import { SourceExecutionChannel } from "../sourceExecutionChannel.js";
@@ -39,6 +40,7 @@ import {
 } from "../execution.js";
 import { ReconnectableFrameSink } from "../reconnectableFrameSink.js";
 import { OWN_INSTALLATION, installTool, managedInstallationId, rollbackTool, uninstallTool } from "../tools.js";
+import { manageCli } from "../managedCli.js";
 import { updateOwnTool } from "../ownToolUpdate.js";
 import { handleOrdinaryToolAction } from "../ordinaryTools.js";
 import { closeAllOrdinaryAccountSessions, closeOrdinaryAccountSession, handleOrdinaryAccountRequest, openOrdinaryAccountSession } from "../ordinaryToolAccounts.js";
@@ -705,6 +707,14 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           })();
           return;
         }
+        case "managed_cli": {
+          void withRuntimeKeyDrained(frame.runtime_key, TOOL_DRAIN_TIMEOUT_MS, () => manageCli(frame, log)).then(outcome => {
+            clearRuntimeOptionsCache(frame.runtime_key, outcome.installation);
+            sendHeartbeat();
+            sink.send({ type: "tool_result", request_id: frame.request_id, ok: true, error: null, ...outcome });
+          }, error => sink.send({ type: "tool_result", request_id: frame.request_id, ok: false, error: sanitizeFailure(error), installation: null }));
+          return;
+        }
         case "update_own_tool": {
           void withRuntimeKeyDrained(frame.runtime_key, TOOL_DRAIN_TIMEOUT_MS, async () => {
             const config = await loadConfig();
@@ -764,6 +774,8 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
                 // arrive. A drain that does not converge aborts the upgrade
                 // rather than killing the Run.
                 log(`install ${frame.runtime_key} ${managedInstallationId(frame.version)}`);
+                const bridge = frame.runtime_key === "codex_cli" ? "codex-acp" : frame.runtime_key === "claude_code" ? "claude-agent-acp" : null;
+                if (bridge && !(await ensurePackagedAdapter(bridge))) throw new Error("The Host adapter pack is unavailable");
                 const manifest = await installTool(frame, log);
                 log(`installed ${frame.runtime_key} ${managedInstallationId(frame.version)} → ${manifest.command}`);
                 return managedInstallationId(frame.version);

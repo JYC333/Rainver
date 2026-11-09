@@ -35,7 +35,7 @@ function chunkFileName(chunk: PreRenderedChunk): string {
   return 'assets/[name]-[hash].js'
 }
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   define: { __APP_BUILD__: JSON.stringify(appBuild) },
   build: {
     rollupOptions: {
@@ -49,6 +49,10 @@ export default defineConfig({
   },
   resolve: {
     alias: [
+      ...(mode === 'plugin-acceptance' ? [{
+        find: /^\.\/acceptanceCatalog$/,
+        replacement: resolve(projectRoot, 'src/__tests__/pluginAcceptanceCatalog.fixture.ts'),
+      }] : []),
       // The shadcn CLI writes `@/…` imports into the components it copies.
       // Those imports resolve through this alias. Everything hand-written here stays on
       // relative paths.
@@ -60,6 +64,19 @@ export default defineConfig({
     dedupe: ['react', 'react-dom'],
   },
   plugins: [
+    {
+      name: 'rainver-plugin-fixture-boundary',
+      apply: 'build',
+      moduleParsed(info) {
+        if (mode !== 'plugin-acceptance' && /\/(?:server\/test|src\/__tests__)\//.test(info.id.replaceAll('\\', '/'))) {
+          this.error('Normal web builds must not parse test fixture modules');
+        }
+      },
+      generateBundle() {
+        const fixtures = [...this.getModuleIds()].filter(id => /plugin(?:AcceptanceCatalog|OperationViews)\.fixture|server\/test\/fixtures\/pluginOperation\/manifest/.test(id));
+        console.info(`Plugin fixture build boundary (${mode}): ${fixtures.length} modules`);
+      },
+    },
     {
       name: 'rainver-build-version',
       generateBundle() { this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify(appBuild) }) },
@@ -178,4 +195,4 @@ export default defineConfig({
       interval: 300,
     },
   },
-})
+}))

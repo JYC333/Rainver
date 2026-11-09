@@ -3212,9 +3212,9 @@ export interface HostRuntimeDefinitionOption {
   /** The vendor binary a host's capability probe actually reports (may differ from `command`). */
   capability_probe: string
   remote_eligible: boolean
-  /** The ACP registry entry this adapter's managed copy is installed from, when it has one. */
+  /** Public Registry identity, when this runtime has one. */
   registry_id?: string | null
-  /** Current ACP package version available for a managed install. */
+  /** Available Agent package version; absent for repository bridges. */
   latest_managed_version?: string | null
   /** Latest stable vendor CLI release, independent of the ACP adapter. */
   latest_own_version?: string | null

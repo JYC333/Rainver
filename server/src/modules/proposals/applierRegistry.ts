@@ -1,3 +1,4 @@
+import type {z} from "zod";
 import { registerMonitoringApplier } from "../projects/monitoring/applier.js";
 import {
   memoryColumnsWithAccess,
@@ -70,13 +71,15 @@ export class UnknownProposalApplierError extends Error {
 export type ProposalApplier = (context: ProposalApplyContext) => Promise<ProposalApplyResult>;
 
 export class ProposalApplierRegistry {
+  private readonly schemas=new Map<string,z.ZodType>();
   private readonly appliers = new Map<string, ProposalApplier>();
 
-  register(proposalType: string, applier: ProposalApplier): void {
+  register(proposalType: string, applier: ProposalApplier,payloadSchema?:z.ZodType): void {
     if (!proposalType) throw new Error("proposalType must be non-empty");
     if (this.appliers.has(proposalType)) {
       throw new Error(`an applier is already registered for proposal type ${proposalType}`);
     }
+    if(payloadSchema){if(!proposalType.startsWith("plugin."))throw new Error("Dynamic schema reserved for plugin namespace");this.schemas.set(proposalType,payloadSchema);}
     this.appliers.set(proposalType, applier);
   }
 
@@ -91,7 +94,9 @@ export class ProposalApplierRegistry {
   async apply(context: ProposalApplyContext): Promise<ProposalApplyResult> {
     const applier = this.get(context.proposal.proposal_type);
     if (!applier) throw new UnknownProposalApplierError(context.proposal.proposal_type);
-    validateProposalPayload(context.proposal.proposal_type, context.proposal.payload_json);
+    const schema=this.schemas.get(context.proposal.proposal_type);
+    if(schema)schema.parse(context.proposal.payload_json);
+    else validateProposalPayload(context.proposal.proposal_type, context.proposal.payload_json);
     return applier(context);
   }
 }

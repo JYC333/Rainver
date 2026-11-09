@@ -16,5 +16,5 @@ allowBuilds:
   protobufjs: true
   ssh2: true
 
-patchedDependencies:
-  '@agentclientprotocol/claude-agent-acp@0.70.0': patches/@agentclientprotocol__claude-agent-acp@0.70.0.patch
+minimumReleaseAgeExclude:
+  - '@agentclientprotocol/claude-agent-acp@0.101.0'

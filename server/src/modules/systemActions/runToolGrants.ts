@@ -1,9 +1,13 @@
+import type {ServerConfig} from "../../config.js";
+import type { Queryable } from "../routeUtils/common.js";
+import { operationPluginEnabled } from "../plugins/operationEnablement.js";
 import type { RunToolGrant } from "@rainver/protocol";
 import { loadSystemActionRegistry } from "./registry.js";
 
 export async function buildRunToolGrants(
   capabilities: readonly unknown[],
   toolPermissions: unknown,
+  context?: {db:Queryable;spaceId:string;userId:string|null;config?:ServerConfig},
 ): Promise<RunToolGrant[]> {
   const declared = new Set(
     capabilities.filter(
@@ -11,10 +15,13 @@ export async function buildRunToolGrants(
     ),
   );
   const allowed = new Set(allowedTools(toolPermissions));
-  const registry = await loadSystemActionRegistry();
+  const registry = await loadSystemActionRegistry(context?.config);
+  const enabled=new Set<string>();
+  if(context?.userId)for(const d of registry.values())if(d.id.startsWith('plugin.')&&declared.has(d.id)&&allowed.has(d.id)&&d.allowed_actor_types.includes('agent')&&await operationPluginEnabled(context.db,d.id.split('.')[1]!,context.spaceId,context.userId,context.config))enabled.add(d.id);
   const grants: RunToolGrant[] = [...registry.values()]
     .filter(
       (definition) =>
+        (!definition.id.startsWith("plugin.")||enabled.has(definition.id)) &&
         definition.id !== "authorization.request" &&
         declared.has(definition.id) &&
         allowed.has(definition.id) &&

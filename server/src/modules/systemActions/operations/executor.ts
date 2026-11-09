@@ -94,7 +94,7 @@ export class OperationExecutor {
           const policy = await enforce({
             ...this.config,
             auditTransaction: command ? tx.db : getOperationAuditPool(this.config.databaseUrl!)
-          }, await loadActionRegistry(), policyRequest);
+          }, await loadActionRegistry(this.config), policyRequest);
           decisionId = policy.policy_decision_record_id ?? null;
           if (policy.decision?.decision === 'deny') throw hidden();
           if (policy.status === 'error' || !decisionId) throw new OperationError('operation_audit_unavailable', 503, true);
@@ -200,7 +200,7 @@ export class OperationExecutor {
         try {
           const committed = decisionId ? (await this.pool.query('SELECT id FROM policy_decision_records WHERE id=$1', [decisionId])).rows.length > 0 : false;
           if (!committed) {
-            const audit = await enforce({...this.config, auditTransaction: getOperationAuditPool(this.config.databaseUrl!), auditRecordId: decisionId ?? undefined}, await loadActionRegistry(), {
+            const audit = await enforce({...this.config, auditTransaction: getOperationAuditPool(this.config.databaseUrl!), auditRecordId: decisionId ?? undefined}, await loadActionRegistry(this.config), {
               ...failureAudit,
               metadata_json: {
                 ...failureAudit.metadata_json,

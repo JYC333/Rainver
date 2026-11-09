@@ -1,3 +1,4 @@
+import {manifestModules} from './plugins/manifestCatalog'
 import { lazy, type ComponentType, type LazyExoticComponent } from 'react'
 
 export type NavSection = 'capture' | 'knowledge' | 'agents' | 'dev'
@@ -518,6 +519,7 @@ export const MODULE_REGISTRY: Module[] = [
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./automations/AutomationsPage')),
   },
+  ...manifestModules,
 ]
 
 interface EffectivePluginOverlay {

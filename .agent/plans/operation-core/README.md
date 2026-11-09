@@ -10,7 +10,16 @@ temporary ledger is retired into the permanent
 [execution contract](../../architecture/OPERATION_EXECUTION_CONTRACT.md),
 [SYSTEM_ACTIONS](../../architecture/SYSTEM_ACTIONS.md) and
 [acceptance matrix](../../architecture/OPERATION_CORE_ACCEPTANCE.md).
-Plans 00/02–06 remain unfinished. No deployment or whole-program completion is
+Original Plan 2 delivery was recorded complete within its documented scope: stages `992b5d12`,
+`a2e623f3`, `20ef5240` and final whole-P2 read-only code review passed
+Claude/Antigravity. Independent ACP `b66f1b52` is excluded from that review scope;
+review approval does not imply reviewer test reruns. Its temporary ledger is
+retired to the permanent [plugin platform contract and acceptance matrix](../../architecture/OFFICIAL_OPTIONAL_MODULES.md#operation-platform-acceptance),
+with a minimal redirect retained at the old path.
+A later real-PG security follow-up exposed missed PluginDb role-concurrency and
+Unicode/$ temp-table boundaries; its [correction passed independent dual review](../../architecture/OFFICIAL_OPTIONAL_MODULES.md#invocation-role-and-session-follow-up).
+The historical P2 approvals/test results do not cover that patch.
+Plans 00/03–06 remain unfinished. No deployment or whole-program completion is
 implied. Plans remain forward-looking outside the explicit current
 implementation described in the architecture guides.
 

@@ -20,11 +20,12 @@ import { mergeResolutionWorktree } from "./taskMerge.js";
 import { collectOutputFiles } from "./outputFiles.js";
 import { clearStateRootEnv, clearVendorCredentialEnv, filterAmbientEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "./providerBinding.js";
 import { applyRunOrdinaryToolsEnv, prepareRunOrdinaryTools, type RunOrdinaryTools } from "./ordinaryToolRunAccess.js";
-import { managedToolTree, OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
+import { managedNativeExecutable, managedToolTree, OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { ensureManagedWorkspace, runtimeProfileContainerPath, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
 import { isPackagedAdapter, resolvePackagedAdapter } from "./adapterInstallation.js";
 import { prepareAntigravityHarness } from "./antigravityHarness.js";
 import { ownLaunchFor } from "./ownCopies.js";
+import { probeVersion } from "./capabilities.js";
 import { egressProxyEnv, proxyBypassHosts, type EgressProfile, type EgressProxyHandle } from "./egressProxy.js";
 import { ensureCodexStrictSandboxConfig } from "./codexStrictSandbox.js";
 import { startLocalToolBridge, type LocalToolBridge } from "@rainver/agent-cli/local-bridge";
@@ -343,7 +344,15 @@ export function resolveAcpLaunch(
     // looked up on PATH (`tools.ts`).
     const tool = readToolManifestSync(runtimeKey, installation);
     if (!tool) throw new Error(`This daemon does not have ${runtimeKey} ${installation} installed.`);
-    // The managed manifest already names the ACP entrypoint. A builtin's
+    if (runtimeKey === "codex_cli" || runtimeKey === "claude_code") {
+      const bridge = resolveAcpEntrypoint(runtimeKey === "codex_cli" ? "codex-acp" : "claude-agent-acp");
+      if (!bridge) throw new Error("Update this Host to install its ACP adapter pack");
+      const nativeKey = runtimeKey === "codex_cli" ? "CODEX_PATH" : "CLAUDE_CODE_EXECUTABLE";
+      const executable = managedNativeExecutable(tool);
+      if (!executable) throw new Error("This managed CLI has no executable");
+      return { command: process.execPath, args: [bridge, ...args], env: { ...tool.env, [nativeKey]: executable, HOME: tool.home } };
+    }
+    // The managed manifest names the Agent entrypoint. A builtin's
     // server-authored launch template can name the same prefix for the own
     // copy; keep it once, then append only the template's extra arguments.
     let shared = 0;
@@ -1423,6 +1432,11 @@ async function launchRun(
   }
   const { command, args: spawnArgs } = launch;
   const acpAdapterEnv = { ...launch.env };
+  const nativeRuntimeVersion = (frame.installation ?? OWN_INSTALLATION) !== OWN_INSTALLATION
+    ? readToolManifestSync(frame.runtime_key ?? rawCommand, frame.installation!)?.runtime_version ?? null
+    : launch.env.CODEX_PATH ? await probeVersion(launch.env.CODEX_PATH)
+    : launch.env.CLAUDE_CODE_EXECUTABLE ? await probeVersion(launch.env.CLAUDE_CODE_EXECUTABLE)
+    : null;
 
   const outputsDir = runOutputsDir(frame.run_id);
   await mkdir(outputsDir, { recursive: true });
@@ -1696,6 +1710,10 @@ async function launchRun(
     sendStoppedBeforeStart(frame, send);
     return;
   }
+  // Pin the CLI's clock zone as well as reporting it: a daemon's TZ may
+  // otherwise be filtered out of a strict Run's environment.
+  const executionTimeZone = spawnEnv.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  spawnEnv.TZ = executionTimeZone;
   const child: ChildProcess = spawn(spawnCommand, spawnCommandArgs, {
     cwd,
     env: spawnEnv,
@@ -1904,6 +1922,8 @@ async function launchRun(
         launch_id: frame.launch_id,
         exit_code: code ?? 1,
         timed_out: active.timedOut,
+        ...(executionTimeZone.length <= 128 ? { time_zone: executionTimeZone } : {}),
+        ...(nativeRuntimeVersion ? { native_runtime_version: nativeRuntimeVersion } : {}),
         ...(egress.length > 0 ? { egress } : {}),
         ...(taskWorktree ? { task_worktree: { branch: taskWorktree.branch, start_commit: taskWorktree.startCommit } } : {}),
         error: launchFailureMessage({

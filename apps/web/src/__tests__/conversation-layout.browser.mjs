@@ -673,7 +673,7 @@ test('Agent Work presents results before folded history across themes, languages
   }
 })
 
-test('Host Agent catalog keeps installed ACPs first and upgrades the selected release', async () => {
+test('Host Agent catalog keeps installed Agents first and upgrades the selected release', async () => {
   const {mkdir}=await import('node:fs/promises');await mkdir('/tmp/host-agent-catalog',{recursive:true})
   for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const width of [390,1280]){
     const context=await browser.newContext({viewport:{width,height:1000},serviceWorkers:'block'}),page=await context.newPage();let current='1.2.3',previous='1.0.0',writes=0
@@ -701,9 +701,9 @@ test('Host Agent catalog keeps installed ACPs first and upgrades the selected re
       assert.equal(await list.locator('li').count(),2)
       await page.evaluate(()=>document.fonts.ready);await host.getByTestId('host-add-agent-host-catalog').scrollIntoViewIfNeeded()
       await page.screenshot({path:`/tmp/host-agent-catalog/${width}-${theme}-${locale}-before.png`,animations:'disabled'})
-      await list.getByRole('button',{name:locale==='en'?'Upgrade ACP for goose on Laptop':'升级 Laptop 上 goose 的 ACP',exact:true}).click()
-      await list.getByText(locale==='en'?'ACP 2.0.0 · Available 2.0.0':'ACP 2.0.0 · 可用 2.0.0',{exact:true}).waitFor()
-      assert.equal(await list.getByRole('button',{name:/Upgrade ACP|升级.*ACP/}).count(),0);assert.equal(writes,1)
+      await list.getByRole('button',{name:locale==='en'?'Upgrade goose on Laptop':'升级 Laptop 上的 goose',exact:true}).click()
+      await list.getByText(locale==='en'?'2.0.0 · Available 2.0.0':'2.0.0 · 可用 2.0.0',{exact:true}).waitFor()
+      assert.equal(await list.getByRole('button',{name:/Upgrade|升级/}).count(),0);assert.equal(writes,1)
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
       await page.screenshot({path:`/tmp/host-agent-catalog/${width}-${theme}-${locale}-after.png`,animations:'disabled'})
       assert.equal(await host.getByRole('button',{name:locale==='en'?'Roll back to 1.2.3':'回退到 1.2.3',exact:true}).count(),0)
@@ -712,7 +712,7 @@ test('Host Agent catalog keeps installed ACPs first and upgrades the selected re
       const dialog=page.getByRole('dialog',{name:locale==='en'?'Version management · goose':'版本管理 · goose',exact:true})
       await dialog.waitFor();await page.screenshot({path:`/tmp/host-agent-catalog/${width}-${theme}-${locale}-versions.png`,animations:'disabled'})
       await dialog.getByRole('button',{name:locale==='en'?'Roll back to 1.2.3':'回退到 1.2.3',exact:true}).click()
-      await list.getByText(locale==='en'?'ACP 1.2.3 · Available 2.0.0':'ACP 1.2.3 · 可用 2.0.0',{exact:true}).waitFor()
+      await list.getByText(locale==='en'?'1.2.3 · Available 2.0.0':'1.2.3 · 可用 2.0.0',{exact:true}).waitFor()
       assert.equal(writes,2)
       await dialog.waitFor({state:'hidden'})
       await host.getByRole('button',{name:locale==='en'?'More for goose on Laptop':'Laptop 上 goose 的更多操作',exact:true}).click()

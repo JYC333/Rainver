@@ -25,6 +25,21 @@ export function createVendorEventNormalizer(runtimeKey: string): {
   push(event: Record<string, unknown>, occurredAt: string): RuntimeSemanticEvent[];
 } {
   const toolCalls = createAcpToolCallLifecycle();
+  const startedCalls = new Set<string>();
+  const terminalStates = new Map<string, string>();
+  const compacted = new Set<string>();
+
+  function startEvents(at: string, callId: string, toolName: string | null): RuntimeSemanticEvent[] {
+    if (startedCalls.has(callId) || terminalStates.has(callId)) return [];
+    startedCalls.add(callId);
+    return [toolStartedEvent(runtimeKey, at, callId, toolName)];
+  }
+
+  function terminalEvents(at: string, callId: string, toolName: string | null, status: "completed" | "failed"): RuntimeSemanticEvent[] {
+    if (terminalStates.get(callId) === status) return [];
+    terminalStates.set(callId, status);
+    return [toolTerminalEvent(runtimeKey, at, callId, toolName, status)];
+  }
 
   const push = (event: Record<string, unknown>, occurredAt: string): RuntimeSemanticEvent[] => {
     // All conversation runtimes speak the same
@@ -36,7 +51,13 @@ export function createVendorEventNormalizer(runtimeKey: string): {
     const updateType = stringValue(update.sessionUpdate);
     const suppliedCallId = stringValue(update.toolCallId ?? update.tool_call_id);
     const toolName = normalizeToolName(stringValue(update.title ?? update.name));
-    if (updateType?.toLowerCase().includes("compact")) {
+    if (updateType === "compaction_update" && update.status === "completed") {
+      const params = recordValue(event.params);
+      if (params._rainverChildSession === true) return [];
+      const compactionId = stringValue(update.compactionId);
+      const key = `${stringValue(params.sessionId) ?? ""}:${compactionId ?? ""}`;
+      if (compactionId && compacted.has(key)) return [];
+      if (compactionId && compacted.size < 256) compacted.add(key);
       return [runtimeEvent("provider_compacted", occurredAt, null, "Provider compacted its session context.", {
         runtime_key: runtimeKey,
       })];
@@ -49,9 +70,9 @@ export function createVendorEventNormalizer(runtimeKey: string): {
         status,
       });
       return [
-        toolStartedEvent(runtimeKey, occurredAt, lifecycle.callId, toolName),
+        ...startEvents(occurredAt, lifecycle.callId, toolName),
         ...((status === "completed" || status === "failed")
-          ? [toolTerminalEvent(runtimeKey, occurredAt, lifecycle.callId, toolName, status)]
+          ? terminalEvents(occurredAt, lifecycle.callId, toolName, status)
           : []),
       ];
     }
@@ -59,11 +80,10 @@ export function createVendorEventNormalizer(runtimeKey: string): {
       const status = stringValue(update.status);
       const lifecycle = toolCalls.updated({ callId: suppliedCallId, name: toolName, status });
       const inferredStart = lifecycle.missingStart
-        ? [toolStartedEvent(runtimeKey, occurredAt, lifecycle.callId, toolName)]
+        ? startEvents(occurredAt, lifecycle.callId, toolName)
         : [];
       if (status !== "completed" && status !== "failed") return inferredStart;
-      const terminal=toolTerminalEvent(runtimeKey,occurredAt,lifecycle.callId,toolName,status);
-      return [...inferredStart,terminal];
+      return [...inferredStart, ...terminalEvents(occurredAt, lifecycle.callId, toolName, status)];
     }
     return [];
   };

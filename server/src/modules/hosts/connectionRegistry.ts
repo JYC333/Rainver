@@ -12,7 +12,7 @@ export type HostRequestPayload<T extends HostServerFrame["type"]> = Omit<HostSer
  * machine runs no proxy, and a Run that touched no network has nothing to
  * report.
  */
-export type HostRunCompletion = Pick<HostDaemonFrameOf<"complete">, "exit_code" | "timed_out" | "error" | "egress" | "task_worktree">;
+export type HostRunCompletion = Pick<HostDaemonFrameOf<"complete">, "exit_code" | "timed_out" | "error" | "egress" | "task_worktree" | "time_zone" | "native_runtime_version">;
 /**
  * A Task branch request (settle, branch delete, the merge steps) and the reply
  * frame that answers it, whole. Prepare and continue share one reply shape.
@@ -161,7 +161,7 @@ interface ToolInstallResult {
   error: string | null;
   /** The installation id (`managed:<version>`) the action produced or removed. */
   installation: string | null;
-  /** `update_own_tool` only, from daemons that report it: the CLI version before and after. */
+  /** Native CLI version before and after an update or rollback. */
   from_version?: string | null;
   to_version?: string | null;
 }
@@ -695,7 +695,7 @@ export class HostConnectionRegistry {
       .map(item => ({ runtime_key: item.runtimeKey, action: item.action }));
   }
 
-  requestToolAction<T extends "install_tool" | "uninstall_tool" | "rollback_tool" | "update_own_tool">(hostId: string, type: T, frame: HostRequestPayload<T>): Promise<ToolInstallResult> {
+  requestToolAction<T extends "install_tool" | "uninstall_tool" | "rollback_tool" | "update_own_tool" | "managed_cli">(hostId: string, type: T, frame: HostRequestPayload<T>): Promise<ToolInstallResult> {
     const connection = this.connections.get(hostId);
     if (!connection?.sink) return Promise.resolve({ ok: false, error: "host_offline", installation: null });
     if (this.toolOperations(hostId).some(item => item.runtime_key === frame.runtime_key)) {
@@ -708,7 +708,7 @@ export class HostConnectionRegistry {
         resolve({ ok: false, error: "install_timed_out", installation: null });
       }, TOOL_INSTALL_TIMEOUT_MS);
       timer.unref?.();
-      this.pendingInstalls.set(requestId, { hostId, runtimeKey: frame.runtime_key, action: type, resolve, timer });
+      this.pendingInstalls.set(requestId, { hostId, runtimeKey: frame.runtime_key, action: type === "managed_cli" && (frame as unknown as HostRequestPayload<"managed_cli">).operation.action === "rollback" ? "rollback_tool" : type, resolve, timer });
       connection.sink!.send({ ...frame, type, request_id: requestId } as HostServerFrameOf<T>);
     });
   }

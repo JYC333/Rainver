@@ -1,3 +1,4 @@
+import type { ServerConfig } from "../../config.js";
 import type { OfficialPluginDescriptor } from "@rainver/protocol";
 import { diaryDescriptor } from "./official/diary.js";
 import { financeLedgerDescriptor } from "./official/financeLedger.js";
@@ -24,12 +25,12 @@ const PLUGIN_MAP = new Map<string, OfficialPluginDescriptor>(
   OFFICIAL_PLUGINS.map((d) => [d.id, d]),
 );
 
-export function listOfficialPlugins(): readonly OfficialPluginDescriptor[] {
-  return OFFICIAL_PLUGINS;
+export function listOfficialPlugins(config?:ServerConfig): readonly OfficialPluginDescriptor[] {
+  return [...OFFICIAL_PLUGINS,...(config ? operationDescriptors.get(config)?.values() ?? [] : [])];
 }
 
-export function getOfficialPlugin(pluginId: string): OfficialPluginDescriptor | undefined {
-  return PLUGIN_MAP.get(pluginId);
+export function getOfficialPlugin(pluginId: string,config?:ServerConfig): OfficialPluginDescriptor | undefined {
+  return PLUGIN_MAP.get(pluginId) ?? (config ? operationDescriptors.get(config)?.get(pluginId) : undefined);
 }
 
 /** Validates that no two descriptors share the same id. Throws at startup if violated. */
@@ -42,4 +43,17 @@ export function assertPluginRegistryIntegrity(): void {
     }
     seen.add(id);
   }
+}
+
+const contractsByConfig=new WeakMap<ServerConfig,ReadonlyMap<string,string>>();
+export function operationContract(id:string,config?:ServerConfig){return config?contractsByConfig.get(config)?.get(id):undefined;}
+const pendingByConfig=new WeakMap<ServerConfig,ReadonlySet<string>>();
+export function operationPluginPending(id:string,config?:ServerConfig){return !!config&&!!pendingByConfig.get(config)?.has(id);}
+const operationDescriptors=new WeakMap<ServerConfig,Map<string,OfficialPluginDescriptor>>();
+export function registerOperationDescriptors(config:ServerConfig,descriptors:readonly OfficialPluginDescriptor[],pending:readonly string[]=[],contracts:ReadonlyMap<string,string>=new Map()):()=>void{
+  const ids=new Set<string>();
+  for(const d of descriptors){if(ids.has(d.id)||getOfficialPlugin(d.id,config))throw new Error('Plugin descriptor collision');ids.add(d.id);}
+  const map=new Map(descriptors.map(d=>[d.id,d]));
+  operationDescriptors.set(config,map);pendingByConfig.set(config,new Set(pending));contractsByConfig.set(config,contracts);
+  return ()=>{operationDescriptors.delete(config);pendingByConfig.delete(config);contractsByConfig.delete(config);};
 }

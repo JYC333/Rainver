@@ -275,6 +275,19 @@ describe("handleLaunch", () => {
     expect(output).toContain("hello from the run");
   });
 
+  it("reports the same timezone used by the CLI for vendor-local reset clocks", async () => {
+    const { frames, send, complete } = collectSend();
+    await handleLaunch({
+      run_id: "run-timezone", launch_id: "launch-timezone", workspace_location_id: "folder-1",
+      argv: [process.execPath, "-e", "process.stdout.write(Intl.DateTimeFormat().resolvedOptions().timeZone)"],
+    }, send, () => {});
+    const done = await complete();
+    const output = frames.filter(frame => frame.type === "output").map(frame => frame.chunk).join("");
+    expect(done.exit_code).toBe(0);
+    expect(done.time_zone).toBe(output);
+    expect(output).not.toBe("");
+  });
+
   it("reports a non-zero exit with a stderr tail", async () => {
     const { complete, send } = collectSend();
     await handleLaunch(

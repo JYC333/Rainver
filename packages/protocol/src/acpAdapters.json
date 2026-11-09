@@ -1,0 +1,12 @@
+{
+  "claude_code": {
+    "package": "@agentclientprotocol/claude-agent-acp",
+    "version": "0.101.0",
+    "registry_id": "claude-acp"
+  },
+  "codex_cli": {
+    "package": "@agentclientprotocol/codex-acp",
+    "version": "2.5.0",
+    "registry_id": "codex-acp"
+  }
+}

@@ -21,6 +21,7 @@ interface OfficialPluginPackageManifest {
 
 interface LoadOfficialPluginPackagesOptions {
   allowedPluginIds?: readonly string[];
+  includeOperationPlugins?:boolean;
 }
 
 export function defaultOfficialPluginArtifactRoot(): string {
@@ -50,8 +51,10 @@ export async function loadOfficialPluginPackages(
   const plugins: RainverPlugin[] = [];
   for (const packageRoot of packages) {
     const manifest = parseManifest(packageRoot);
-    if (allowedPluginIds && !allowedPluginIds.has(manifest.id)) continue;
-    plugins.push(await loadOfficialPluginPackage(packageRoot, manifest));
+    if (allowedPluginIds && !allowedPluginIds.has(manifest.id)&&!options.includeOperationPlugins) continue;
+    const plugin=await loadOfficialPluginPackage(packageRoot, manifest);
+    if(allowedPluginIds&&!allowedPluginIds.has(plugin.id)&&!plugin.operationManifest)continue;
+    plugins.push(plugin);
   }
   return plugins;
 }

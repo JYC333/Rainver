@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedConversationMessages, seedRun, seedServerHost, seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
-import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { PgRunRepository, type AgentRunRecord } from "../src/modules/runs/repository.js";
+import { executeRemoteHostCliAdapter, NO_PROVIDER_BINDINGS } from "../src/modules/runs/remoteHostCliAdapter.js";
+import { semanticFailureErrorJson } from "../src/modules/runs/orchestrationResults.js";
 import { PgRunSupervisor } from "../src/modules/runs/supervisor.js";
 import { SUBSCRIPTION_QUOTA_EXHAUSTED } from "../src/modules/runs/retryPolicy.js";
 import { admitAgentOriginRun, continueHeldRuns, enqueueWhenTurnFree, releaseHeldRuns } from "../src/modules/rooms/quotaGate.js";
@@ -70,7 +72,79 @@ async function jobs() {
   return (await db.pool.query(`SELECT * FROM jobs WHERE job_type = 'agent_run' AND payload_json->>'run_id' = $1`, [RUN])).rows;
 }
 
+/** Fake only the external ACP process; failure persistence and recovery use real PostgreSQL. */
+async function persistAcpRefusal(runtime: "codex_cli" | "claude_code", data: unknown, timeZone?: string) {
+  await db.pool.query(`UPDATE agent_runtime_profiles SET runtime_key = $2 WHERE agent_id = $1`, [AGENT, runtime]);
+  await db.pool.query(`UPDATE host_threads SET runtime_key = $2 WHERE id = $1`, [THREAD, runtime]);
+  await db.pool.query(`UPDATE runs SET runtime_key = $2::text,
+    status = 'running', ended_at = NULL,
+    runtime_profile_snapshot_json = runtime_profile_snapshot_json || jsonb_build_object('runtime_key', $2::text) WHERE id = $1`, [RUN, runtime]);
+  await db.pool.query(`UPDATE run_attempts SET status='running', ended_at=NULL WHERE run_id=$1`, [RUN]);
+  const repository = new PgRunRepository(db.pool);
+  const run = (await repository.getRun(SPACE, RUN)) as AgentRunRecord;
+  const result = await executeRemoteHostCliAdapter({ run, prompt: "continue", model: null, resume_session_id: null }, HOST, null, {
+    bindings: NO_PROVIDER_BINDINGS,
+    executor: { async runCommand(input) {
+      const controller = input.stdio_controller!;
+      const send = () => {};
+      controller.start(send);
+      await controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, send);
+      await controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "native-session", configOptions: [] } }, send, send);
+      await controller.receive({ jsonrpc: "2.0", id: 4, error: { code: -32603, message: "Internal error", data } }, send, send);
+      return { returncode: 0, stdout: "", stderr: "", timed_out: false, time_zone: timeZone };
+    } },
+  });
+  expect(await repository.publishRunTerminal({ run_id: RUN, space_id: SPACE, status: "failed",
+    error_json: semanticFailureErrorJson(result, null), completed_at: new Date().toISOString(), exit_code: result.exit_code,
+  })).not.toBeNull();
+  return result;
+}
+
 describe("interrupted quota recovery", () => {
+  it.for(["codex_cli", "claude_code"] as const)("parks a real-shaped %s wrapped refusal and schedules exactly one later attempt", async (runtime, ctx) => {
+    if (!db.available) return ctx.skip();
+    const reset = Math.floor((Date.now() + 3600_000) / 1000);
+    const data = runtime === "codex_cli"
+      ? { message: "You’ve hit your usage limit.", codexErrorInfo: "usageLimitExceeded", additionalDetails: JSON.stringify({ error: { resets_at: reset } }) }
+      : { details: `Claude AI usage limit reached|${reset}` };
+    const result = await persistAcpRefusal(runtime, data);
+    expect(result.error_code).toBe(SUBSCRIPTION_QUOTA_EXHAUSTED);
+    expect(result.error_message).toContain(runtime === "codex_cli" ? "usage limit" : "usage limit reached");
+    const held = await automatic();
+    expect(held.resets_at).toBe(new Date(reset * 1000).toISOString());
+    expect(await releaseHeldRuns(db.pool, { source: emptyQuota })).toBe(0);
+    const results = await Promise.all([0, 1].map(() => releaseHeldRuns(db.pool, {
+      source: emptyQuota, now: new Date(reset * 1000 + 1000),
+    })));
+    expect(results.reduce((a, b) => a + b)).toBe(1);
+    expect(await jobs()).toHaveLength(1);
+    const evidence = (await db.pool.query(`SELECT error_code, error_json FROM run_attempts WHERE run_id=$1 AND attempt_number=1`, [RUN])).rows[0];
+    expect(evidence).toMatchObject({ error_code: SUBSCRIPTION_QUOTA_EXHAUSTED,
+      error_json: { runtime_failure: { category: "quota", resets_at: new Date(reset * 1000).toISOString(), phase: "prompt", phase_elapsed_ms: expect.any(Number) },
+        runtime_target: { host_id: HOST, runtime_key: runtime, installation: expect.any(String), backend_mode: "runtime_native" } } });
+  });
+
+  it("uses the executing Host's local clock for a Codex reset and persists it for the scheduler", async ctx => {
+    if (!db.available) return ctx.skip();
+    const reset = new Date(Math.floor((Date.now() + 3600_000) / 60_000) * 60_000);
+    const time = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Tokyo", hour: "numeric", minute: "2-digit", hour12: true }).format(reset);
+    await persistAcpRefusal("codex_cli", { codexErrorInfo: "usageLimitExceeded", message: `You’ve hit your usage limit. Try again at ${time}.` }, "Asia/Tokyo");
+    const held = await automatic();
+    expect(held.resets_at).toBe(reset.toISOString());
+    expect(held.recovery.next_check_at).toBe(reset.toISOString());
+  });
+
+  it("does not schedule a quota wake-up for a wrapped authentication failure", async ctx => {
+    if (!db.available) return ctx.skip();
+    const result = await persistAcpRefusal("codex_cli", { codexErrorInfo: "unauthorized", message: "Please sign in again." });
+    expect(result.error_code).toBe("runtime_auth_required");
+    const run = (await new PgRunRepository(db.pool).getRun(SPACE, RUN))!;
+    await new PgRunSupervisor(db.pool).supervise({ run, attempt_number: 1,
+      evaluation: { outcome_status: "failed", failure_reason_code: result.error_code! } });
+    expect(await marker()).toBeNull();
+    expect(await jobs()).toHaveLength(0);
+  });
+
   it("parks an ordinary chat with an explicit choice and preserves attempt evidence", async ctx => {
     if (!db.available) return ctx.skip();
     expect(await supervise()).toMatchObject({ decision: "retry_same_route" });

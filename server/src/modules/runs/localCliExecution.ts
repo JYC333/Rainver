@@ -1,10 +1,14 @@
 import type { CanonicalUsage } from "@rainver/protocol";
+import type { AcpRuntimeFailure } from "../runtimeAdapters/acpFailure.js";
 
 export interface CliExecutionResult {
   returncode: number;
   stdout: string;
   stderr: string;
   timed_out: boolean;
+  /** Executing Host's effective CLI timezone, never the control plane's. */
+  time_zone?: string;
+  native_runtime_version?: string | null;
   failure_code?: "timeout" | "launch_wait_timeout" | "stall_timeout" | "sandbox_runner_unavailable" | "sandbox_namespace_unavailable" | "output_limit_exceeded";
   /**
    * How long the runtime had been silent when the run was given up on. Set on
@@ -94,6 +98,8 @@ export interface CliRawStdioController {
 }
 
 export interface CliStdioController {
+  canSteer?(): boolean;
+  steer?(prompt: import("./cliConversationProtocol.js").ContentBlock[]): Promise<"injected" | "promptRequired">;
   start(send: (message: Record<string, unknown>) => void): void;
   /**
    * Async by contract. An SDK-backed implementation's next `send()` can depend on a
@@ -105,7 +111,9 @@ export interface CliStdioController {
   reject(message: string): void;
   result(): {
     completed: boolean;
+    acp?: import("@rainver/protocol").AcpRuntimeInfo | null;
     error: string | null;
+    failure?: AcpRuntimeFailure;
     resume_handshake_failed?: boolean;
     resume_unanswered?: boolean;
     text: string;

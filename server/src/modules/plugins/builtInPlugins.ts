@@ -10,5 +10,5 @@ import { listOfficialPlugins } from "./registry.js";
  */
 export const BUILT_IN_PLUGINS: readonly RainverPlugin[] = await loadOfficialPluginPackages(
   defaultOfficialPluginArtifactRoot(),
-  { allowedPluginIds: listOfficialPlugins().map((descriptor) => descriptor.id) },
+  { allowedPluginIds: listOfficialPlugins().map((descriptor) => descriptor.id),includeOperationPlugins:true },
 );

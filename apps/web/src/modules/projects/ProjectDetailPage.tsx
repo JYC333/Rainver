@@ -1,3 +1,4 @@
+import {ProjectPluginSlots} from '../plugins/PluginSlot'
 import ProjectMembersDialog from './ProjectMembersDialog'
 import { useState, useEffect, useCallback, useRef, type MouseEvent } from 'react'
 import { useParams, useSearchParams, useOutletContext } from 'react-router-dom'
@@ -375,7 +376,7 @@ export default function ProjectDetailPage({ onAccessChanged }: { onAccessChanged
       {/* What this Project is for, and what it is on right now. */}
       <Card className="p-4">
         <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="min-w-0 flex-1 space-y-2">
+          <div className="min-w-0 flex-1 basis-full space-y-2 sm:basis-0">
             <div>
               <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Goal</p>
               <p className="mt-1 text-sm font-medium">
@@ -406,6 +407,8 @@ export default function ProjectDetailPage({ onAccessChanged }: { onAccessChanged
           </div>}
         </div>
       </Card>
+
+      <ProjectPluginSlots placement="project.overview.card"/>
 
       {/* Made once, on the first visit after a folder is bound: a person's own
              terminal history becoming Project content is a decision, not a

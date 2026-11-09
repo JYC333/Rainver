@@ -31,7 +31,7 @@ export function registerRoutes(app: FastifyInstance, config: ServerConfig): void
         const id = (request.params as {
           opId: string;
         }).opId;
-        const definition = (await loadSystemActionRegistry()).get(id as never);
+        const definition = (await loadSystemActionRegistry(config)).get(id as never);
         if (!definition?.execution || definition.execution.kind !== kind) return reply.code(404).send(new OperationError('operation_not_found', 404).body(requestId));
         let input: unknown;
         if (method === 'POST') {

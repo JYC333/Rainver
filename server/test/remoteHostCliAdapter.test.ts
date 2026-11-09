@@ -120,6 +120,27 @@ describe("selected Skill work-surface transport", () => {
 });
 
 describe("executeRemoteHostCliAdapter", () => {
+  it("uses the actual native dispatch for recovery guidance even when the original Run has a stale Provider stamp", async () => {
+    const result = await executeRemoteHostCliAdapter({
+      run: run({ runtime_key: "codex_cli", model_provider_id: "previous-provider", runtime_profile_snapshot_json: { runtime_installation: "managed:2.5.0" } }),
+      prompt: "continue", model: null, resume_session_id: null,
+    }, "host-1", "folder-1", {
+      bindings: NO_PROVIDER_BINDINGS,
+      executor: { async runCommand(input) {
+        const controller = input.stdio_controller!, send = () => {};
+        controller.start(send);
+        await controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, send);
+        await controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session" } }, send, send);
+        await controller.receive({ jsonrpc: "2.0", id: 4, error: { code: -32603, message: "Internal error", data: { codexErrorInfo: "unauthorized", message: "Please sign in again" } } }, send, send);
+        return { returncode: 1, stdout: "", stderr: "", timed_out: false };
+      } },
+    });
+    expect(result).toMatchObject({ error_code: "runtime_auth_required", metadata_json: {
+      runtime_target: { host_id: "host-1", runtime_key: "codex_cli", installation: "managed:2.5.0", backend_mode: "runtime_native" },
+      runtime_failure: { category: "auth", phase: "prompt" },
+    } });
+  });
+
   it("rejects an unimplemented adapter (gemini_cli) before ever dispatching a frame, but still emits a terminal thread event", async () => {
     const registry = new HostConnectionRegistry();
     const sink = new FakeSink();
@@ -1506,6 +1527,20 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       expect(result).toMatchObject({ timed_out: true, returncode: 1 });
       expect(sink.sent).toEqual([]);
       expect(processes.terminate("run-1")).toBe(false);
+    });
+
+    it("preserves the executing Host's timezone through the WebSocket command executor", async () => {
+      const registry = new HostConnectionRegistry();
+      const sink = new FakeSink();
+      registry.registerConnection("host-1", sink);
+      const execution = new RemoteWsCliCommandExecutor("host-1", "folder-1", registry).runCommand({
+        command: ["codex-acp"], cwd: null, timeout_seconds: 0, env: {}, run_id: "run-1", stdin: null,
+      });
+      await vi.waitUntil(() => sink.sent.some(frame => frame.type === "launch"));
+      const launchId = launchIdOf(sink);
+      registry.receiveLaunched("host-1", "run-1", launchId);
+      registry.receiveComplete("host-1", "run-1", { exit_code: 1, timed_out: false, error: "quota refusal", time_zone: "Asia/Tokyo" }, launchId);
+      await expect(execution).resolves.toMatchObject({ returncode: 1, time_zone: "Asia/Tokyo" });
     });
 
     it("keeps the usage and host completion metadata collected before the time limit", async () => {

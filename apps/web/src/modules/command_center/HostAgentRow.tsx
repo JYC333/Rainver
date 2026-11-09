@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useAppTranslation } from '../../i18n'
+import { useEffect, useRef, useState } from 'react'
 import HostRuntimeVersions from './HostRuntimeVersions'
 import { hasStableUpdate } from './runtimeVersions'
 import RuntimeQuotaDetails from './RuntimeQuotaDetails'
@@ -59,6 +60,7 @@ export default function HostAgentRow({
   onUninstall,
   onLogin,
   onRefreshUsage,
+  targetInstallation,
   onRollback,
 }: {
   host: Host
@@ -81,9 +83,17 @@ export default function HostAgentRow({
   onUninstall: (entry: RuntimeInstallation) => void
   onLogin: (installation: string, target: HostAgentLoginTarget) => void
   onRefreshUsage: (installation: string) => void
+  targetInstallation?: string
   onRollback: () => void
 }) {
+  const { t } = useAppTranslation()
+  const nativeCli = isOwnCliUpdateRuntimeKey(adapter.runtime_key)
   const [loginChoice, setLoginChoice] = useState<string | null>(null)
+  const targetRef = useRef<HTMLSpanElement | null>(null)
+  useEffect(() => {
+    targetRef.current?.scrollIntoView?.({ block: 'center' })
+    targetRef.current?.focus({ preventScroll: true })
+  }, [targetInstallation])
   return (
     <li className="flex min-w-0 flex-col items-start gap-2 rounded-md sm:flex-row sm:items-center border border-border px-2 py-1.5 text-xs" data-testid={`host-agent-${host.id}-${adapter.runtime_key}`}>
       <span className="w-28 shrink-0 truncate font-medium" title={adapter.display_name}>{adapter.display_name}</span>
@@ -114,7 +124,9 @@ export default function HostAgentRow({
               {multiAccount ? ` · ${accountSummary}` : entry.logged_in === null ? '' : entry.logged_in ? ' · logged in' : ' · not logged in'}
             </Badge>
           )
-          return <span key={entry.id} className="flex min-w-0 flex-wrap items-center gap-1">
+          return <span key={entry.id} ref={entry.id === targetInstallation ? targetRef : undefined} tabIndex={entry.id === targetInstallation ? -1 : undefined}
+            data-runtime-installation={entry.id} data-recovery-target={entry.id === targetInstallation || undefined}
+            className="flex min-w-0 flex-wrap items-center gap-1 rounded-md data-[recovery-target=true]:ring-2 data-[recovery-target=true]:ring-primary data-[recovery-target=true]:ring-offset-2 data-[recovery-target=true]:ring-offset-background">
               {multiAccount && accounts.length > 0 ? (
                 // The names on hover, in the app's tooltip rather than the
                 // browser's title bubble; the row itself stays one line.
@@ -146,15 +158,15 @@ export default function HostAgentRow({
                   {installBusy.has(`${adapter.runtime_key}:own-update`) ? <Loader2 className="h-3 w-3 animate-spin" /> : <CircleArrowUp className="h-3 w-3" />}
                 </Button>
               )}
-              {manageable && entry.id !== 'own' && adapter.latest_managed_version && (adapter.latest_managed_version !== entry.version || (adapter.runtime_key === 'codex_cli' && hasStableUpdate(entry.runtime_version ?? null, adapter.latest_own_version))) && (
+              {manageable && entry.id !== 'own' && (nativeCli ? hasStableUpdate(entry.runtime_version ?? null, adapter.latest_own_version) : adapter.latest_managed_version && adapter.latest_managed_version !== entry.version) && (
                 <Button
                   size="sm"
                   variant="ghost"
                   className="h-7 w-7 p-0"
                   aria-label={`Upgrade ${adapter.display_name} on ${host.name}`}
-                  title={`Upgrade ${adapter.display_name}`}
+                  title={nativeCli && !host.capabilities_json?.managed_cli_updates ? t('management_ui.host_catalog.upgrade_host_required') : `Upgrade ${adapter.display_name}`}
                   aria-busy={installBusy.has(adapter.runtime_key)}
-                  disabled={host.status !== 'online'}
+                  disabled={host.status !== 'online' || (nativeCli && !host.capabilities_json?.managed_cli_updates)}
                   onClick={onInstall}
                 >
                   {installBusy.has(adapter.runtime_key)
@@ -228,7 +240,7 @@ export default function HostAgentRow({
                 </Button>
               )}
               {manageable && entry.id !== 'own' && <HostRuntimeVersions
-                name={adapter.display_name} host={host.name} current={entry.version} previous={entry.rollback_version}
+                name={adapter.display_name} host={host.name} current={nativeCli ? entry.runtime_version ?? null : entry.version} previous={nativeCli && !host.capabilities_json?.managed_cli_updates ? null : entry.rollback_version}
                 busy={installBusy.has(`${adapter.runtime_key}:rollback`)} online={host.status==='online'} onRollback={onRollback}/>}
               {manageable && entry.id !== 'own' && !(host.kind === 'server' && adapter.runtime_key === 'opencode') && (
                 <Button

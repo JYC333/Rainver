@@ -2,7 +2,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { ServerConfig } from "../../config.js";
 import type { PluginDisabledError } from "@rainver/protocol";
 import { dbPool, resolveIdentity } from "../routeUtils/common.js";
-import { pluginService } from "./service.js";
+import { pluginServiceFor } from "./service.js";
 
 export interface PluginGuardOptions {
   pluginId: string;
@@ -46,7 +46,7 @@ export async function requireOfficialPluginEnabled(
   }
 
   const db = dbPool(config);
-  const { exists, installed, enabled } = await pluginService.isEnabled(
+  const { exists, installed, enabled } = await pluginServiceFor(config).isEnabled(
     db,
     opts.pluginId,
     spaceId,

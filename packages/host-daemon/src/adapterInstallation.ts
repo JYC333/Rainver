@@ -30,7 +30,7 @@ export function resolvePackagedAdapter(command: string, env: NodeJS.ProcessEnv =
   }
 }
 
-/** Installs the selected channel's adapter pack when a vendor CLI appears later. */
+/** Installs the active Host build's adapter pack when a vendor CLI appears. */
 export async function ensurePackagedAdapter(command: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
   if (!isPackagedAdapter(command) || resolvePackagedAdapter(command, env)) return true;
   if (!env.RAINVER_HOST_INSTALL_ROOT) return false;

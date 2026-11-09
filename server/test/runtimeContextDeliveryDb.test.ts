@@ -26,6 +26,10 @@ import { seedConversationMessages } from "./support/domainSeeds.js";
 import { syncBuiltinSkillPackages } from "../src/modules/skills/builtinPackages.js";
 import { builtinSkillFixture } from "./support/builtinSkillFixture.js";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
+import { PgSessionRepository } from "../src/modules/sessions/repository.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { registerRunLiveInput } from "../src/modules/runs/liveInput.js";
+import { submitRunLiveInput } from "../src/modules/runs/liveInputService.js";
 
 const SPACE = "30000000-0000-4000-8000-000000000001";
 const USER = "30000000-0000-4000-8000-000000000002";
@@ -1692,6 +1696,45 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     });
 
     expect(delivery.model).toBe(selectedModel);
+    if (selectedModel === null && !instruction) {
+      const sessions = new PgSessionRepository(db.pool);
+      const session = await sessions.createSession(SPACE, USER, { title: "Live input" });
+      await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, session.id]);
+      const received: string[] = [];
+      const channel = registerRunLiveInput(RUN, delivery, {
+        start() {}, async receive() {}, reject() {}, result: () => ({ completed: false, error: null, text: "" }),
+        canSteer: () => true, steer: async blocks => { received.push(JSON.stringify(blocks)); return "injected"; },
+      });
+      try {
+        await expect(submitRunLiveInput(db.pool, loadConfig({}), { spaceId: SPACE, userId: USER }, RUN, randomUUID(), "wrong attempt"))
+          .rejects.toMatchObject({ statusCode: 409 });
+        await expect(submitRunLiveInput(db.pool, loadConfig({}), { spaceId: SPACE, userId: randomUUID() }, RUN, delivery.id, "foreign user"))
+          .rejects.toMatchObject({ statusCode: 404 });
+        await expect(submitRunLiveInput(db.pool, loadConfig({}), { spaceId: randomUUID(), userId: USER }, RUN, delivery.id, "foreign space"))
+          .rejects.toMatchObject({ statusCode: 404 });
+        expect((await db.pool.query(`SELECT id FROM messages WHERE session_id=$1`, [session.id])).rows).toHaveLength(0);
+        const result = await submitRunLiveInput(db.pool, loadConfig({}), { spaceId: SPACE, userId: USER }, RUN, delivery.id, "Also protect cancellation.");
+        expect(result.state).toBe("injected");
+        expect(received).toHaveLength(1);
+        expect(received[0]).toContain("Also protect cancellation.");
+        expect((await db.pool.query(`SELECT content,run_id FROM messages WHERE id=$1`, [result.message_id])).rows)
+          .toEqual([{ content: "Also protect cancellation.", run_id: RUN }]);
+        expect((await new InvocationSnapshotService(db.pool).listSafeForInvocation(SPACE, RUN))
+          .find(snapshot => snapshot.delivery_id === result.delivery_id)?.acknowledgement?.status).toBe("accepted");
+        expect((await db.pool.query(`SELECT metadata_json->>'message_id' AS message_id FROM run_events WHERE run_id=$1 AND event_type='action_completed' AND metadata_json->>'action_name'='run.live_input'`, [RUN])).rows)
+          .toEqual([{ message_id: result.message_id }]);
+        expect(await new PgRunRepository(db.pool).isPendingLiveInputMessage(SPACE, RUN, result.message_id, USER)).toBe(false);
+        // The parent ends between authorization and steering: preserve the saved
+        // message, explicitly reject Delivery, never start an idle native turn.
+        channel.inject = async () => "promptRequired";
+        const late = await submitRunLiveInput(db.pool, loadConfig({}), { spaceId: SPACE, userId: USER }, RUN, delivery.id, "Ended-turn race");
+        expect(late.state).toBe("not_injected");
+        expect((await new InvocationSnapshotService(db.pool).listSafeForInvocation(SPACE, RUN))
+          .find(snapshot => snapshot.delivery_id === late.delivery_id)?.acknowledgement?.status).toBe("rejected");
+        expect(received).toHaveLength(1);
+
+      } finally { await channel.close(); }
+    }
     const deliveredText = delivery.message_blocks.map((block) => block.content).join("\n");
     expect(deliveredText.split(prompt)).toHaveLength(2);
     if (instruction) expect(deliveredText).toContain(instruction);

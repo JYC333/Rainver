@@ -1196,3 +1196,36 @@ Space's existing UUID has exactly the same hint behavior as an absent UUID.
 The canonical query never widens to inspect other Spaces. Production approval
 mappings remain off; the eight legacy writer families are explicitly inventoried
 in the acceptance guide, not claimed migrated by canonical fixture tests.
+
+
+### Manifest plugin operations
+
+PluginHost merges validated manifest registrations into the server loader and
+per-config P1 runtime/policy catalog. Core literal ids and fixture order/count
+remain unchanged; only plugin names use `PluginOperationId`. Dynamic consumers
+(including advance-approval lookup) use the loader; the legacy Plan repository's
+literal task.plan.propose lookup remains intentionally core-only. Plugins remain non-advance-grantable. Stage-2 declared proposal types now use
+config-local schemas plus canonical ProposalApplyService/P1 atomic hooks; an
+unmapped proposal action stays 503. No legacy production mapping is enabled. Built-in legacy diary/finance
+remain unchanged; the manifest path currently has a real-PG integration fixture.
+
+Run grant construction additionally requires enabled installed plugin scope and
+matching runtime version, without extending the declared/allowed exact-id
+intersection. Listing and every invocation/replay repeat live enablement; the
+shared core still rechecks person/Run authority and immutable grants. Queries use
+READ ONLY and separate audit capacity; eligible plugin content is caller-owned
+only (cross-person B11 integration remains blocked). Sensitive manifest actions
+are never exposed to Agents. Details and the executable fixture are in
+[Official Optional Modules](OFFICIAL_OPTIONAL_MODULES.md#operation-manifest-platform).
+
+Stage-2 runtime composition is config-local: config-less loaders expose core
+only, and grant/authorization/apply callers pass their actual config. Offline
+installed authority hashes, versions, dependency scopes and role flags fail
+closed on drift. Background policy audit, fixed Job-intent host ports and
+canonical proposal apply reuse P1 transactions; no new executor/approval engine.
+Stage 2 passed dual review (`a2e623f3`); web/Project slot integration is implemented for stage-3 review.
+
+Manifest views use the same action/query HTTP adapters, with explicit command
+keys, manifest IO validation and no automatic write retry. Their minimal scoped
+UI port is not a new actor or grant. Current UI/cross-layer evidence is in
+[Operation platform acceptance](OFFICIAL_OPTIONAL_MODULES.md#operation-platform-acceptance).

@@ -90,7 +90,7 @@ async function reconcileAuthorizationRequest(
   }
 
   const reconciliation = await withDbTransaction(db, async (client) => {
-    const runs = new PgRunRepository(client);
+    const runs = new PgRunRepository(client,config);
     const queue = new PgJobQueueRepository(client);
     const updated = await runs.requeueApprovedAuthorizationRequest({
       run_id: runId,

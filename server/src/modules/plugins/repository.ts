@@ -18,6 +18,8 @@ export interface PluginEnablementRow {
 }
 
 export interface PluginInstallRow {
+  lifecycle_state?:string;
+  lifecycle_error?:string|null;
   id: string;
   plugin_id: string;
   installed_version: string;
@@ -208,6 +210,8 @@ export const pluginRepository = {
     db: Queryable,
     input: UpsertEnablementInput,
   ): Promise<PluginEnablementRow> {
+    // Caller owns transaction; serialize enable/disable against core command admission.
+    await db.query("SELECT id FROM plugin_installs WHERE plugin_id=$1 FOR UPDATE",[input.pluginId]);
     const now = new Date().toISOString();
     const enabledAt = input.enabled ? now : null;
     const disabledAt = input.enabled ? null : now;

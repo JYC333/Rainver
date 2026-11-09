@@ -1,6 +1,7 @@
 import type { CliStdioController } from "./localCliExecution.js";
 import {
   acpAgentAuthMethodId,
+  acpRuntimeInfo,
   isAcpAuthRequiredError,
   type CanonicalModelUsage,
   type CanonicalUsage,
@@ -10,7 +11,7 @@ import {
 // checked against the SDK's schema types.
 import type { PermissionOption, ContentBlock } from "@agentclientprotocol/sdk";
 export type { ContentBlock } from "@agentclientprotocol/sdk";
-import { usageFromAcp } from "./cliRuntimeMeasurement.js";
+import { modelUsageFromAcpQuota, usageFromAcp } from "./cliRuntimeMeasurement.js";
 import { decidePermission, type PermissionDecisionRecord } from "./runPermissionPolicy.js";
 import {
   advertisesFormElicitation,
@@ -20,6 +21,7 @@ import {
   type AskedUser,
 } from "./vendorQuestion.js";
 import { getRuntimeAdapterSpec, isAcpRuntimeAdapter } from "../runtimeAdapters/specs.js";
+import { normalizeAcpFailure, type AcpRuntimeFailure } from "../runtimeAdapters/acpFailure.js";
 
 // Registry adapters have dynamic keys; admission is checked against the catalog.
 type ConversationProtocolAdapter = string;
@@ -135,6 +137,7 @@ type Send = (message: Record<string, unknown>) => void;
 
 /** Between `session/new` (2) and the first `session/set_config_option` (3.xx); never a prompt id (4+). */
 const AUTHENTICATE_REQUEST_ID = 2.5;
+const SESSION_PRESERVING_FAILURES = new Set(["auth", "quota", "rate_limit", "transient"]);
 
 /**
  * General Agent Client Protocol controller. All three conversation runtimes
@@ -144,6 +147,8 @@ export class AcpController implements CliStdioController {
   private phase: "initialize" | "session_new" | "authenticate" | "set_config" | "prompt" | "terminal" = "initialize";
   private completed = false;
   private error: string | null = null;
+  private failure: AcpRuntimeFailure | undefined;
+  private phaseStartedAt = Date.now();
   private resumeHandshakeFailed = false;
   /**
    * Whether a `session/prompt` was ever sent. The runtime writes the session's
@@ -176,6 +181,13 @@ export class AcpController implements CliStdioController {
   private usage: CanonicalUsage | null = null;
   private modelUsage: CanonicalModelUsage[] = [];
   private selectedModel: string | null;
+  private reportedUsageModel: string | null = null;
+  private acp: import("@rainver/protocol").AcpRuntimeInfo | null = null;
+  private sendLive: Send | null = null;
+  private steerId = -1;
+  private pendingSteer: { id: number; settle: (value: "injected" | "promptRequired" | Error) => void } | null = null;
+  private finishAfterSteer: (() => void) | null = null;
+  private childSessions = new Map<string, { parent: string; state: string }>();
   private subscriptionQuota: {
     status: string;
     rate_limit_type: string;
@@ -186,11 +198,8 @@ export class AcpController implements CliStdioController {
   /** The runtime's last report of how full its session context is (ACP `usage_update`). */
   private contextWindow: { used: number; size: number } | null = null;
   /**
-   * Every `usage_update` the runtime sent in this turn, and the sum of their
-   * `used` values. A runtime sends one per model request, each saying how
-   * full the context was for that request, so the sum is the context volume
-   * the turn processed — the number a per-call price multiplies — even for a
-   * runtime whose prompt result reports only its last request (Codex).
+   * Occupancy samples only. Notifications may repeat, include output, or
+   * reset at compaction; their sum is never a token-spend or call-count meter.
    */
   private usageUpdates = 0;
   private usageUpdatesUsedTotal = 0;
@@ -222,6 +231,8 @@ export class AcpController implements CliStdioController {
   }
 
   start(send: Send): void {
+    this.sendLive = send;
+    this.phaseStartedAt = Date.now();
     send({
       jsonrpc: "2.0",
       id: 1,
@@ -231,7 +242,8 @@ export class AcpController implements CliStdioController {
         clientCapabilities: {
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
-          session: { configOptions: { boolean: {} } },
+          subagents: {},
+          session: { configOptions: { boolean: {} }, compaction: {} },
           // Only where the runtime's question tool depends on it:
           // advertising it is what lets that question reach us, as a form we
           // translate into the reply rather than one the runtime drops.
@@ -250,11 +262,37 @@ export class AcpController implements CliStdioController {
   // body actually await: those call sites would stop compiling.
   // eslint-disable-next-line @typescript-eslint/require-await
   async receive(message: Record<string, unknown>, send: Send, closeStdin: () => void): Promise<void> {
+    if (this.pendingSteer && message.id === this.pendingSteer.id && message.method === undefined) {
+      const pending = this.pendingSteer;
+      this.pendingSteer = null;
+      const outcome = record(message.result).outcome;
+      if (message.jsonrpc !== "2.0" || message.error) pending.settle(new Error("Runtime did not acknowledge the additional input"));
+      else if (outcome === "injected" || outcome === "promptRequired") pending.settle(outcome);
+      else {
+        send({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.sessionId } });
+        pending.settle(new Error("Runtime returned an unsupported steering outcome"));
+        this.fail(`${this.label()} ACP started work outside the owned prompt lifecycle`, closeStdin);
+      }
+      this.finishWhenIdle();
+      return;
+    }
+    // A timed-out steering acknowledgement can arrive while the original
+    // prompt is still working. It cannot complete or fail a different request.
+    if (message.method === undefined && typeof message.id === "number"
+      && Number.isInteger(message.id) && message.id < 0 && message.id > this.steerId) return;
+    // A failed turn is draining until its Host confirms exit. Late frames
+    // cannot replace its cause or send another prompt on that process.
+    if (this.error || (this.completed && (message.result !== undefined || message.error !== undefined))) return;
     if (message.jsonrpc !== "2.0") {
       this.fail(`${this.label()} ACP emitted a message without jsonrpc 2.0`, closeStdin);
       return;
     }
+    if (message.method === "_auth/status_update" && message.id === undefined) {
+      this.input.on_protocol_event?.(message);
+      return;
+    }
     if (message.error) {
+      if (this.completed) return;
       if (this.askedUser && this.phase === "prompt" && message.id === 4 + this.promptIndex) {
         // A runtime may answer a cancelled prompt with an error rather than
         // `stopReason: "cancelled"`; either way the cancel was ours.
@@ -268,7 +306,7 @@ export class AcpController implements CliStdioController {
         && this.agentAuthMethodId
         && isAcpAuthRequiredError(message.error)
       ) {
-        this.phase = "authenticate";
+        this.enterPhase("authenticate");
         send({
           jsonrpc: "2.0",
           id: AUTHENTICATE_REQUEST_ID,
@@ -278,17 +316,22 @@ export class AcpController implements CliStdioController {
         return;
       }
       if (this.phase === "authenticate" && message.id === AUTHENTICATE_REQUEST_ID) {
+        this.failure = { ...normalizeAcpFailure(this.input.runtime_key, message.error), phase: "authenticate", phase_elapsed_ms: Math.max(0, Date.now() - this.phaseStartedAt) };
         this.fail(
-          `${this.label()} ACP authentication with '${this.agentAuthMethodId}' failed: ${rpcErrorMessage(message.error)}. `
+          `${this.label()} ACP authentication with '${this.agentAuthMethodId}' failed: ${this.failure.message}. `
             + "Log this Agent in on its host first.",
           closeStdin,
         );
         return;
       }
-      if (this.phase === "session_new" && message.id === 2 && this.input.runtime_session_id) {
+      this.failure = { ...normalizeAcpFailure(this.input.runtime_key, message.error), phase: this.phase === "terminal" ? "prompt" : this.phase,
+        phase_elapsed_ms: Math.max(0, Date.now() - this.phaseStartedAt) };
+      // An account refusal says nothing about whether the stored session exists.
+      if (this.phase === "session_new" && message.id === 2 && this.input.runtime_session_id
+        && !SESSION_PRESERVING_FAILURES.has(this.failure.category)) {
         this.resumeHandshakeFailed = true;
       }
-      this.fail(`${this.label()} ACP RPC failed: ${rpcErrorMessage(message.error)}`, closeStdin);
+      this.fail(`${this.label()} ACP RPC failed: ${this.failure.message}`, closeStdin);
       return;
     }
     if (isServerRequest(message) && message.method === "session/request_permission") {
@@ -351,10 +394,11 @@ export class AcpController implements CliStdioController {
         return;
       }
       this.input.on_protocol_event?.(message);
+      this.acp = acpRuntimeInfo(message.result);
       this.agentAuthMethodId = acpAgentAuthMethodId(message.result);
       const directoryCapability = record(record(record(message.result).agentCapabilities).sessionCapabilities).additionalDirectories;
       this.supportsAdditionalDirectories = directoryCapability !== null && typeof directoryCapability === "object" && !Array.isArray(directoryCapability);
-      this.phase = "session_new";
+      this.enterPhase("session_new");
       if (this.input.runtime_session_id) this.sessionId = this.input.runtime_session_id;
       this.captureSelectedModel(record(message.result));
       this.openSession(send);
@@ -362,7 +406,7 @@ export class AcpController implements CliStdioController {
     }
     if (message.id === AUTHENTICATE_REQUEST_ID && this.phase === "authenticate") {
       this.authenticated = true;
-      this.phase = "session_new";
+      this.enterPhase("session_new");
       this.openSession(send);
       return;
     }
@@ -377,7 +421,7 @@ export class AcpController implements CliStdioController {
       }
       this.captureConfigOptions(record(message.result));
       if (!this.sendNextConfig(send, closeStdin)) {
-        this.phase = "prompt";
+        this.enterPhase("prompt");
         this.prompt(send);
       }
       return;
@@ -410,7 +454,7 @@ export class AcpController implements CliStdioController {
           this.dropConfig(selection, "not_applied");
           this.configIndex += 1;
           if (!this.sendNextConfig(send, closeStdin)) {
-            this.phase = "prompt";
+            this.enterPhase("prompt");
             this.prompt(send);
           }
           return;
@@ -428,7 +472,7 @@ export class AcpController implements CliStdioController {
       }
       this.configIndex += 1;
       if (!this.sendNextConfig(send, closeStdin)) {
-        this.phase = "prompt";
+        this.enterPhase("prompt");
         this.prompt(send);
       }
       return;
@@ -451,8 +495,13 @@ export class AcpController implements CliStdioController {
         return;
       }
       this.usage = addUsage(this.usage, usage);
-      if (this.input.runtime_key === "claude_code" && this.selectedModel && usage) {
-        this.modelUsage = addModelUsage(this.modelUsage, this.selectedModel, usage);
+      const reportedModels = this.input.attributed_model ? [] : modelUsageFromAcpQuota(result._meta, this.input.runtime_key);
+      if (reportedModels.length > 0) {
+        for (const row of reportedModels) this.modelUsage = addModelUsage(this.modelUsage, row.model, row.usage);
+        if (reportedModels.length === 1) this.input.on_model_selected?.(reportedModels[0]!.model);
+      } else {
+        const model = this.input.attributed_model ?? this.reportedUsageModel ?? this.selectedModel;
+        if (model && model !== "default" && usage) this.modelUsage = addModelUsage(this.modelUsage, model, usage);
       }
       if (this.askedUser) {
         this.completeAskedTurn(closeStdin);
@@ -461,20 +510,54 @@ export class AcpController implements CliStdioController {
         this.text = "";
         this.prompt(send);
       } else {
-        this.completed = true;
-        this.phase = "terminal";
-        closeStdin();
+        const finish = () => {
+          this.completed = true;
+          this.enterPhase("terminal");
+          closeStdin();
+        };
+        if (this.pendingSteer || this.hasChildWork()) this.finishAfterSteer = finish;
+        else finish();
       }
       return;
     }
     if (message.method === "session/update") {
       const params = record(message.params);
       const update = record(params.update);
-      if (stringField(params, "sessionId") !== this.sessionId) {
+      const updateSession = stringField(params, "sessionId");
+      if (updateSession !== this.sessionId && (!updateSession || !this.childSessions.has(updateSession))) {
         this.fail(`${this.label()} ACP returned an out-of-scope session update`, closeStdin);
         return;
       }
+      if (update.sessionUpdate === "subagent_update") {
+        const childId = stringField(update, "sessionId");
+        if (!childId || childId.length > 256 || childId === this.sessionId || childId === updateSession
+          || (this.childSessions.has(childId) && this.childSessions.get(childId)!.parent !== updateSession)
+          || (!this.childSessions.has(childId) && this.childSessions.size >= 256)) {
+          this.fail(`${this.label()} ACP returned an invalid child session`, closeStdin);
+          return;
+        }
+        const old = this.childSessions.get(childId);
+        const childState = record(update.state);
+        const state = childState.state === "idle" && Array.isArray(childState.background) && childState.background.length > 0
+          ? "background" : ["running", "requires_action", "idle"].includes(String(childState.state)) ? String(childState.state) : old?.state ?? "running";
+        this.childSessions.set(childId, { parent: updateSession!, state });
+      }
+      if (updateSession !== this.sessionId) {
+        // Child output is visible work, not the parent's answer/occupancy.
+        // Namespace tool ids so two native sessions cannot overwrite one row.
+        const callId = stringField(update, "toolCallId");
+        this.input.on_protocol_event?.({ ...message, params: { ...params, _rainverChildSession: true, update: {
+          ...update, ...(callId ? { toolCallId: `${updateSession}:${callId}` } : {}),
+        } } });
+        this.finishWhenIdle();
+        return;
+      }
       this.captureSubscriptionQuota(params, update);
+      const actualModel = stringField(record(update._meta), "_claude/model");
+      if (actualModel && /^[\w./:[\]-]{1,256}$/.test(actualModel) && actualModel !== "default") {
+        this.reportedUsageModel = actualModel;
+        if (!this.input.attributed_model) this.input.on_model_selected?.(actualModel);
+      }
       this.captureContextWindow(update);
       if (update.sessionUpdate === "agent_message_chunk" || update.sessionUpdate === "agent_thought_chunk") {
         const thought = update.sessionUpdate === "agent_thought_chunk";
@@ -525,6 +608,7 @@ export class AcpController implements CliStdioController {
       if (this.phase === "prompt" && this.promptIndex === this.promptCount() - 1) {
         this.input.on_protocol_event?.(message);
       }
+      this.finishWhenIdle();
       return;
     }
     if (hasResponseId(message)) {
@@ -547,14 +631,18 @@ export class AcpController implements CliStdioController {
   result() {
     return {
       completed: this.completed,
+      acp: this.acp,
       error: this.error,
+      ...(this.failure ? { failure: this.failure } : {}),
       ...(this.resumeHandshakeFailed ? { resume_handshake_failed: true } : {}),
       // A `session/resume` sent and never answered: when the Run is stopped
       // for silence or its budget here, the stored session is what hung.
-      ...(this.input.runtime_session_id && this.phase === "session_new" ? { resume_unanswered: true } : {}),
+      ...(this.input.runtime_session_id && this.phase === "session_new" && !this.error ? { resume_unanswered: true } : {}),
       text: this.text,
-      // Only a session the runtime has something on disk for. See `prompted`.
-      external_session_id: this.prompted ? this.sessionId : null,
+      // A prompted session is durable. An account failure cannot disprove
+      // the durability of an existing session, even before initialize replies.
+      external_session_id: this.prompted ? this.sessionId : this.input.runtime_session_id && this.failure
+        && SESSION_PRESERVING_FAILURES.has(this.failure.category) ? this.input.runtime_session_id : null,
       usage: this.usage,
       model_usage: this.modelUsage,
       subscription_quota: this.subscriptionQuota,
@@ -571,7 +659,48 @@ export class AcpController implements CliStdioController {
   }
 
   reject(message: string): void {
-    if (!this.error) this.error = message;
+    if (!this.error && !this.completed) this.error = message;
+    this.pendingSteer?.settle(new Error(message));
+    this.pendingSteer = null;
+  }
+
+  canSteer(): boolean {
+    return Boolean(this.sendLive && this.sessionId && this.phase === "prompt" && !this.completed && !this.error
+      && !this.askedUser && !this.pendingSteer && !this.finishAfterSteer
+      && this.promptIndex === this.promptCount() - 1 && this.acp?.capabilities.steering_idle_prompt_required);
+  }
+
+  /** Content has already crossed Runtime Context authorization at the caller. */
+  steer(prompt: ContentBlock[]): Promise<"injected" | "promptRequired"> {
+    if (!this.canSteer()) return Promise.resolve("promptRequired");
+    return new Promise((resolve, reject) => {
+      const id = this.steerId--;
+      const timer = setTimeout(() => {
+        if (this.pendingSteer?.id !== id) return;
+        this.pendingSteer = null;
+        reject(new Error("Additional input delivery was not acknowledged; it may have been received"));
+        this.finishWhenIdle();
+      }, 10_000);
+      timer.unref?.();
+      this.pendingSteer = { id, settle: value => {
+        clearTimeout(timer);
+        if (value instanceof Error) reject(value); else resolve(value);
+      } };
+      this.sendLive!({ jsonrpc: "2.0", id, method: "_session/steering", params: {
+        sessionId: this.sessionId, prompt, _meta: { steering: { idleBehavior: "promptRequired" } },
+      } });
+    });
+  }
+
+  private hasChildWork(): boolean {
+    return [...this.childSessions.values()].some(child => ["running", "requires_action", "background"].includes(child.state));
+  }
+
+  private finishWhenIdle(): void {
+    if (!this.finishAfterSteer || this.pendingSteer || this.hasChildWork()) return;
+    const finish = this.finishAfterSteer;
+    this.finishAfterSteer = null;
+    if (!this.error) finish();
   }
 
   private orderedConfig(): AcpSessionConfigSelection[] {
@@ -651,7 +780,7 @@ export class AcpController implements CliStdioController {
       this.fail(`${this.label()} ACP received an invalid boolean for session option '${selection.id}'`, closeStdin);
       return true;
     }
-    this.phase = "set_config";
+    this.enterPhase("set_config");
     this.activeConfigRequestId = 3 + this.configIndex / 100;
     send({
       jsonrpc: "2.0",
@@ -709,8 +838,15 @@ export class AcpController implements CliStdioController {
     return Math.max(this.input.prompts.length, this.input.prompt_blocks?.length ?? 0);
   }
 
+  private enterPhase(phase: typeof this.phase): void {
+    this.phase = phase;
+    this.phaseStartedAt = Date.now();
+  }
+
   private fail(message: string, closeStdin: () => void): void {
     this.error = message;
+    this.pendingSteer?.settle(new Error(message));
+    this.pendingSteer = null;
     closeStdin();
   }
 
@@ -741,7 +877,7 @@ export class AcpController implements CliStdioController {
 
   private completeAskedTurn(closeStdin: () => void): void {
     this.completed = true;
-    this.phase = "terminal";
+    this.enterPhase("terminal");
     closeStdin();
   }
 
@@ -799,7 +935,7 @@ export class AcpController implements CliStdioController {
 
   private reportModel(): void {
     const option = this.advertisedConfigOptions.find((candidate) => candidate.category === "model");
-    const model = stringField(option ?? {}, "currentValue");
+    const model = this.reportedUsageModel ?? stringField(option ?? {}, "currentValue");
     // `default` names a selection policy, not a model identity.
     this.input.on_model_selected?.(model && model !== "default" ? model : null);
   }
@@ -916,11 +1052,6 @@ function aliasNamesChoice(option: Record<string, unknown>, value: string, alias:
 
 function isString(value: string | null): value is string {
   return value !== null;
-}
-
-function rpcErrorMessage(value: unknown): string {
-  const error = record(value);
-  return stringField(error, "message") ?? "unknown protocol error";
 }
 
 function isServerRequest(message: Record<string, unknown>): message is Record<string, unknown> & {

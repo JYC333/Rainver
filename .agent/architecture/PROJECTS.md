@@ -1895,3 +1895,19 @@ destination; they never infer the edition scope from SourceItem ownership. Re-ex
 Opening these candidates does not turn them into personal-interest evidence.
 Project inclusion and synchronized completion do not create personal interest
 or exploration evidence, nor change another member’s state.
+
+
+## Manifest plugin slots
+
+P2 stage 3 adds declared local `project.area` entries inside the existing
+ProjectAreaLayout navigation and `project.overview.card` after Pulse's goal.
+These do not replace Project routing, membership or the sidecar. PluginSlot
+binds user/Space/Project lifetime, validates the backend/bundled contract, owns
+loading/error/disabled states and expires old ports/results across scope changes.
+The UI context has only Space, nullable Project, ops and shared UI controls. A
+Project read check gates the view and UI invocation; the ID is context rather
+than a domain grant. Project-owned operations still authorize their own targets.
+The fixture's rows are Space/person-owned, so shared Project placement is not a
+claim of per-Project data partitioning. See the
+[platform contract and acceptance](OFFICIAL_OPTIONAL_MODULES.md#operation-platform-acceptance).
+Stage-3 independent review and final overall P2 review are pending.

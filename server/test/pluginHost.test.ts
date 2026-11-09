@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { PluginEffectScopes } from '../src/modules/plugins/effectScopes.js';
 import type {
   RainverPlugin,
   PluginActivationResult,
@@ -65,5 +66,40 @@ describe("PluginHost", () => {
     expect(() => host.activate(app, loadConfig({}))).toThrow(
       "plugin async_plugin activate() must register synchronously",
     );
+  });
+});
+
+describe('Plugin resource cleanup deadlines', () => {
+  afterEach(() => { vi.useRealTimers(); });
+  it('returns at the deadline but quarantines unfinished cleanup until it actually settles', async () => {
+    vi.useFakeTimers();
+    const effects = new PluginEffectScopes(25), scope = {spaceId:'space',userId:'person'};
+    const resource = effects.enter('probe',scope);
+    let finish!: () => void, calls = 0;
+    const held = new Promise<void>(resolve => { finish = resolve; });
+    const seen: string[] = [];
+    resource.onDispose(() => { seen.push('first'); });
+    resource.onDispose(async () => { calls++; await held; seen.push('last'); });
+    // A Job can already be disposing when disable requests cleanup again.
+    const jobDisposal = expect(resource.dispose()).rejects.toThrow('timed out');
+    const closed = expect(effects.closeWhere('probe',scopeValue=>scopeValue.userId==='person','attempt')).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(25);
+    await closed;
+    await jobDisposal;
+    expect(resource.signal.aborted).toBe(true);
+    effects.reopenWhere('probe',()=>true,'attempt');
+    expect(effects.hasPendingCleanup('probe',()=>true)).toBe(true);
+    expect(() => effects.enter('probe',scope)).toThrow('closing');
+    expect(effects.enter('probe',{...scope,userId:'other'}).signal.aborted).toBe(false);
+    finish();
+    await effects.closeWhere('probe',s=>s.userId==='person','retry');
+    expect(calls).toBe(1);
+    expect(seen).toEqual(['last','first']);
+    expect(effects.hasPendingCleanup('probe',s=>s.userId==='person')).toBe(false);
+    effects.reopenWhere('probe',()=>true,'retry');
+    const fresh = effects.enter('probe',scope);
+    expect(fresh.signal.aborted).toBe(false);
+    await resource.dispose();
+    expect(effects.enter('probe',scope).signal).toBe(fresh.signal);
   });
 });

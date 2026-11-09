@@ -38,6 +38,10 @@ function adapterErrorJson(result: RunAdapterResultEnvelope): unknown {
     runtime_key: result.runtime_key,
     adapter_kind: result.adapter_kind,
     exit_code: result.exit_code,
+    ...(recordValue(result.metadata_json).runtime_failure
+      ? { runtime_failure: recordValue(result.metadata_json).runtime_failure } : {}),
+    ...(recordValue(result.metadata_json).runtime_target
+      ? { runtime_target: recordValue(result.metadata_json).runtime_target } : {}),
     ...(Object.keys(diagnostics).length > 0
       ? { structured_output_diagnostics: diagnostics }
       : {}),

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { isAcpAuthRequiredError, type RuntimeAuthMethod, type RuntimeOptionChoice, type RuntimeOptions, type RuntimeSessionConfigOption } from "@rainver/protocol";
+import { acpRuntimeInfo, isAcpAuthRequiredError, type RuntimeAuthMethod, type RuntimeOptionChoice, type RuntimeOptions, type RuntimeSessionConfigOption } from "@rainver/protocol";
 import { terminalAuthAvailable } from "./terminalAuth.js";
 import { helperProcessEnv } from "./providerBinding.js";
 import { killProcessGroup } from "./processGroup.js";
@@ -175,12 +175,12 @@ export function probeAcpIdentity(
   env: Record<string, string>,
   cwd: string,
   timeoutMs = 15_000,
-): Promise<{ version: string | null } | null> {
+): Promise<{ name?: string; version: string | null } | null> {
   return new Promise((resolve) => {
     let settled = false;
     let buffer = "";
     let child: ReturnType<typeof spawn>;
-    const finish = (identity: { version: string | null } | null) => {
+    const finish = (identity: { name?: string; version: string | null } | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -227,7 +227,7 @@ export function probeAcpIdentity(
         const agentInfo = healthy && result!.agentInfo && typeof result!.agentInfo === "object"
           ? result!.agentInfo as Record<string, unknown>
           : null;
-        finish(healthy ? { version: typeof agentInfo?.version === "string" ? agentInfo.version.slice(0, 100) : null } : null);
+        finish(healthy ? { ...(typeof agentInfo?.name === "string" ? { name: agentInfo.name.slice(0, 128) } : {}), version: typeof agentInfo?.version === "string" ? agentInfo.version.slice(0, 100) : null } : null);
         return;
       }
     });
@@ -314,6 +314,7 @@ export function probeAcpOptions(
 ): Promise<RuntimeOptions | null> {
   return new Promise((resolve) => {
     let authMethods: RuntimeAuthMethod[] = [];
+    let acp: RuntimeOptions["acp"] = null;
     let promptCapabilities: RuntimeOptions["prompt_capabilities"] = null;
     let settled = false;
     let stderr = "";
@@ -336,7 +337,7 @@ export function probeAcpOptions(
       settled = true;
       clearTimeout(timer);
       if (value === null && reason) onFailure?.(reason);
-      void closeProbeProcess(child, onFailure).then(() => resolve(value));
+      void closeProbeProcess(child, onFailure).then(() => resolve(value ? { ...value, ...(acp ? { acp } : {}) } : value));
     };
     /**
      * The session probe never concluded — but `initialize` did, and the auth
@@ -410,6 +411,7 @@ export function probeAcpOptions(
             finish(null, `initialize failed: ${JSON.stringify(message.error)}`);
             continue;
           }
+          acp = acpRuntimeInfo(message.result);
           authMethods = parseAcpAuthMethods(record(message.result).authMethods)
             .filter((method) => method.type !== "terminal" || terminalAuthAvailable());
           promptCapabilities = parseAcpPromptCapabilities(message.result);

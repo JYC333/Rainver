@@ -224,6 +224,7 @@ export const zhCN = {
     load_failed: '无法加载领域',
   },
   modules: {
+    'plugin.operation_probe.records': '记录',
     'agent-work': 'Agent 工作台',
     diary: '日记', finance: '财务', today: '今日', capture: '采集',
     activity: '收件箱', library: '资料库', daily_reports: '每日报告', sessions: '会话',

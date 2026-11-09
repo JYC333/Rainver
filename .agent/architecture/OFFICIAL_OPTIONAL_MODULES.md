@@ -245,6 +245,164 @@ An official optional module may contribute to these extension points:
 
 Any other contribution type preserves the same fail-closed enablement rule.
 
+## Operation manifest platform
+
+P2 stage 1 was independently dual-reviewed and committed in `992b5d12`.
+Stage 2 lifecycle code passed independent dual review and is committed in `a2e623f3`.
+Manifest-derived web navigation and Project slots are implemented in stage 3, which passed independent Claude/Antigravity review. Legacy diary
+and finance keep their existing routes/public tables; no production package,
+role change or sensitive Agent access is enabled by this work.
+
+### Registration and authority
+
+`PluginOperationManifestSchema` validates host API 1, bounded lowercase schema
+namespaces, operation versions/effects, entity coverage, declared migrations,
+Jobs, schedules and proposal payload schemas. PluginHost validates the whole
+`requires` graph before activation: cycles abort startup; missing/transitively
+pending dependencies have descriptors but no operations or background handlers.
+Declarations must match actual registrations exactly. Contribution registration
+returns a disposer; the retained host wrappers check disposal before use.
+
+Core literal IDs/fixtures stay intact beside `PluginOperationId`. Operations,
+policy actions, descriptors, expected package contracts and lifecycle services
+are config-local. A loader without config returns only core/static legacy IDs;
+Agent grant building, policy approval lookup and canonical apply pass their
+actual config. Two server configs cannot grant each other's plugin operations.
+Manifest-derived descriptors default disabled. Admission, catalog listing,
+immutable grant construction and replay require current membership, enabled
+scope/dependencies, installed version/state and the offline installation's exact
+authority-contract hash. A new manifest/schema/effect/dependency contract at the
+same version is not silently trusted. Human and Agent HTTP/CLI consumers use P1.
+
+`caller_owned` is an owning-code SQL review obligation, not row isolation or an
+automatic B11 exemption. Domain SQL must filter both host GUCs
+`rainver.space_id` and `rainver.user_id`; input does not select authority. The
+runtime role can access its whole schema and RLS is off. Only genuinely
+same-owner reads qualify for B11's same-owner exclusion; operation policy audit
+is mandatory. Cross-person content needs a canonical B11 adapter before enabling
+that package. Sensitive operations remain user-only, even with a frozen Agent
+grant. Fixtures exercise cross-person/Space predicates; the manifest label
+cannot prove every future plugin query safe.
+
+### Offline installation and restore
+
+`plugins/operationMigrations.ts` owns the explicit offline transaction. Packages
+from the compiled image are ordered by dependency, reject missing dependencies,
+and must list exactly their generated migrations. Installed legacy IDs are
+excluded from this path: their applied public migrations are not rewritten or
+moved. Only an explicit later migration/inventory may change those packages.
+
+A nonwaiting session advisory lock protects the full install/failure-journal
+window; DDL also takes the matching transaction lock with bounded `lock_timeout`.
+Generated statements execute under the schema's DDL role, never runtime or host
+role. Applied checksums are immutable. `installing → migrated → installed` is
+atomic (intermediate states are not exposed as independently committed installs).
+Failure rolls back data/DDL, then a new transaction on the reserved connection
+records disabled `migration_error`, failed journal and a safe-code event. Earlier
+applied rows/data survive. It requires explicit offline `--repair-failed`;
+ordinary restart never auto-repairs. A same-ID failed row may be retried only
+with that option; durable failure events remain. No remote download or HTTP DDL.
+
+`migrateCli up` installs pending operation packages and reconciles their roles.
+Pending package changes on an existing DB participate in `maintenance-pending`:
+normal start/deployer refuses them and the existing maintenance/backup flow must
+stop writers first. With no package changes, ordinary `up` does no plugin-role
+DDL. The explicit `plugin-install`/`plugin-reconcile` commands are offline owner
+commands; they do not themselves drain applications or create backups. Both
+restore scripts run reconcile after `pg_restore --no-owner --no-acl`, with the
+existing owner channel and matching package image. Missing previously installed
+operation packages fail closed; supplying the correct image is required.
+
+`roleReconcile.ts` recreates/repairs NOLOGIN nonprivileged runtime/DDL roles,
+removes inherited memberships, restores schema/table/view/sequence/type/routine
+ownership and own-schema ACL/default privileges. Unexpected foreign runtime
+table grants fail closed. Host gets SET membership without inheritance (PG16+).
+Runtime admission rechecks role flags/membership. Reconcile is idempotent and is
+never a startup, activation or HTTP side effect. No product DB or roles were
+inspected or modified during implementation.
+
+### Scoped DB and host domain ports
+
+Invocation `PluginDb` joins the existing P1 transaction under local runtime
+role/search_path/Space/person GUCs, expires on return and restores the host
+before core request/result/audit writes. It owns only private savepoints, not
+COMMIT/pool/session controls. Host-owned nested savepoints remain compatible.
+Queries retain PostgreSQL READ ONLY. SQL guards also refuse SELECT INTO,
+LISTEN, prepared statements, holdable cursors and session/advisory controls.
+Role/GUC tripwires poison a corrupted connection rather than returning it to the
+pool. Same-backend two-person tests check no temp/listener/prepared/cursor residue.
+These are safeguards for trusted same-process code, not a malicious-code sandbox.
+
+The only new core-data domain port is declared Job enqueue, implemented by the
+host's existing PgJobQueueRepository in the current transaction. A private
+savepoint bridge restores host role only for this fixed adapter and then
+returns to plugin role. The plugin never receives that host client. Calling
+another top-level OperationExecutor inside an operation remains prohibited.
+Settings are host-resolved from the canonical scoped enablement row, not plugin
+SQL reads of core tables.
+
+### Canonical proposals
+
+Declared `proposalTypes` contribute namespaced, config-local Zod schemas and
+appliers to the existing ProposalApplierRegistry. A linked proposal-class action
+only creates a private host-owned Proposal and P1 request; its action executor
+never runs business SQL. Acceptance uses PgProposalApplyService and P1 approval
+hooks, current requester authority/enablement, frozen preconditions, output
+validation and the same transaction for plugin writes, Job intents, decision
+and request result. Plugin SQL runs under its runtime role, restored before
+canonical audit/result writes. Rejection writes no business effect. Concurrent
+accepts, retry, expired/superseded reconciliation use P1's existing key-lock
+order; failed apply rolls back data/Jobs/status and independently recovers audit.
+Unlinked proposal actions still fail closed with mapping-unavailable.
+
+The new namespace has only host submission/canonical decision/P1 reconciliation
+writers. Legacy type-specific bypass writers cannot target it. The eight legacy
+writer families inventoried in [Operation core acceptance](OPERATION_CORE_ACCEPTANCE.md)
+remain unmigrated/production mappings off; this fixture is not their closure.
+No operation package with these new mappings ships enabled in production.
+
+### Jobs, schedules and disable
+
+Manifest lifecycle registrations wrap the existing JobHandlerRegistry,
+ScheduledTask and ProposalApplierRegistry. Schedule fanout selects enabled scope
+rows on the host; a user scope gets one Job per person/pass in the first eligible
+Space, not one per membership. Current person, dependency/version/scope and
+PolicyGateway checks precede enqueue. A failed scope does not starve later scopes;
+errors reach scheduler health after per-scope work. Job payloads are
+validated; system Job/schedule policy audits retain the responsible human.
+Jobs recheck live authority and enabled dependency closure before commit.
+
+The enable/disable route's canonical lifecycle service serializes install and
+enablement rows in sorted order. It blocks new local effect admission, aborts
+scoped resources, disposes LIFO (continuing after errors), persists disable and cancels canonical pending/claimed/running Jobs for the scope/dependents in that same transaction.
+Cleanup failures record `scope_cleanup_failed` and return `cleanup_pending`;
+disabled data is preserved. Failed enable/disable transactions reopen local
+admission. Re-enable clears only that disable token, preserving other disabled
+dependency blocks. Direct pluginService DB methods remain transaction primitives;
+new operation package routes must use the lifecycle service.
+
+In-flight SQL is cancelled through the independent audit pool, fenced by backend
+pid plus transaction ID; cancellation is awaited before returning the data
+connection. Other processes observe durable disable/Job cancellation through
+polling and final transactional checks. Arbitrary JavaScript cannot be forcibly
+preempted; plugin handlers must honor AbortSignal and dispose resource callbacks.
+A retained PluginDb cannot be used by cleanup. Host shutdown disposes registrations
+in reverse order. Existing Jobs retries are at-least-once: handlers must use
+natural Job IDs/idempotent effects; external exactly-once is not claimed.
+Uninstall/data deletion and hot module reload remain out of scope.
+
+### Executable evidence
+
+`server/test/pluginLifecycleDb.test.ts` uses real PG, generic HTTP, Run bearer
+HTTP and the built Agent CLI, offline compiled plugin-install/reconcile CLI,
+separate canonical worker process, real pg_dump/pg_restore no-owner/no-acl,
+failed DDL/lock timeout/repair, dependency scopes, contract drift, config
+isolation, canonical proposal accept/reject/concurrency/effect rollback,
+disable SQL cancellation/LIFO/error journal and same-connection residue checks.
+`pluginOperationsDb.test.ts` covers the original role/query/core/Agent boundary;
+protocol `pluginOperations.test.ts` covers declaration invariants. All roles,
+DDL, data and subprocesses in these tests belong to isolated test databases.
+
 ## 7. Bundled Official Modules
 
 | Plugin | Scope | Frontend | Routes | Runtime contributions | Data ownership |
@@ -273,13 +431,19 @@ The following are out of scope for the current implementation:
 | Path | Role |
 |---|---|
 | `packages/protocol/src/plugins.ts` | Shared descriptor/state/request and PluginHost contract types |
-| `server/src/modules/plugins/registry.ts` | Static OfficialPluginDescriptor registry (in-memory) |
+| `server/src/modules/plugins/registry.ts` | Static legacy and config-local manifest descriptors (in-memory) |
 | `server/src/modules/plugins/builtInPlugins.ts` | Runtime official plugin artifact loader entrypoint |
 | `server/src/modules/plugins/packageLoader.ts` | Loads compiled official plugin package artifacts |
 | `server/src/modules/plugins/host/` | PluginHost and host context/ports |
 | `server/src/modules/plugins/repository.ts` | DB access for install, migration, enablement, and event rows |
 | `server/src/modules/plugins/service.ts` | Business logic: list, enable, disable, settings patch |
-| `server/src/modules/plugins/installer.ts` | Installer-managed plugin migration runner |
+| `server/src/modules/plugins/installer.ts` | Legacy public-table installer (manifest packages refused) |
+| `server/src/modules/plugins/operationMigrations.ts` | Offline operation-package migration/failure journal |
+| `server/src/modules/plugins/roleReconcile.ts` | Offline schema owners/role/ACL recovery |
+| `server/src/modules/plugins/lifecycle.ts` | Scoped enable/disable and cleanup |
+| `server/src/modules/plugins/background.ts` | Canonical Job handlers, scoped resource ports |
+| `server/src/modules/plugins/schedules.ts` | Canonical scheduler scope fanout |
+| `server/src/modules/plugins/proposalContributions.ts` | Canonical proposal schemas/applier wrappers |
 | `server/src/modules/plugins/routes.ts` | HTTP routes: GET/POST/PATCH /api/v1/plugins/* |
 | `server/src/modules/plugins/guards.ts` | `requireOfficialPluginEnabled()` reusable guard |
 | `server/src/modules/plugins/index.ts` | Module facade: exports pluginsModule + guard |
@@ -297,3 +461,296 @@ The following are out of scope for the current implementation:
 | `apps/web/src/modules/plugins/PluginsPage.tsx` | Official plugins management page |
 | `plugins/official/diary/web/src/DiaryPage.tsx` | diary editor page |
 | `plugins/official/finance_ledger/web/src/FinancePage.tsx` | finance ledger page |
+
+
+## Manifest web contributions
+
+All three P2 stages and final whole-P2 review passed independent Claude and
+Antigravity review for the original delivery. The later invocation/session
+security correction below also passed independent dual review; nothing is deployed.
+Stage 2 remains `a2e623f3`; this does not complete the whole Operation Core program.
+
+New first-party operation packages export their browser-safe declaration as
+`plugins/official/<id>/operationManifest.ts` (default export). The server runtime
+uses that same declaration as `operationManifest`; it must not import Node-only
+runtime code into the declaration. `web.entries` declares bounded entry IDs,
+default titles/icons and typed placements: `navigation`, `project.area`, and
+`project.overview.card`. Protocol `pluginFrontendEntries()` derives descriptor
+`frontend_entries`, namespaced module IDs and reserved `/plugins/<id>/<entry>`
+paths. Arbitrary URLs, code fields, duplicate entry IDs and unknown placements
+are rejected. Web declarations participate in the installed contract hash.
+
+The existing `MODULE_REGISTRY` appends entries derived from these declarations.
+`manifestCatalog.tsx` uses build-time local globs, never imports a URL received
+from a server or manifest. Each package supplies bundled
+`web/src/operationViews.tsx`, default-exporting an entry-ID→component map; the
+host refuses a missing/extra registration or mismatched backend descriptor/version.
+Only `navigation` placement contributes a global module/rail route. Project
+Areas append links inside ProjectAreaLayout's existing navigation, and Pulse
+renders overview cards after the Project goal. No competing navigation system,
+remote frontend code, marketplace or hot reload is provided. With no declared
+Project contributions, these wrappers mount no hook and make no extra request.
+Labels reuse the host's existing `modules.<module_id>` i18next keys (for example
+`modules.plugin.operation_probe.records`); Project links, global navigation and
+slot headings use the same lookup and authored-title fallback. The fixture's
+English “Records” / Chinese “记录” are host-authored translations. Missing keys
+fall back to the manifest title; user text is never automatically translated.
+No second localization system or manifest translation field is introduced.
+Legacy diary/finance retain their existing descriptors, registry entries, pages
+and permissions; they are not claimed migrated to this declaration convention.
+
+`PluginViewContext<UI>` is browser-neutral protocol: only `spaceId`, nullable
+`projectId`, `ops`, and `ui`. UI packages describe the structural controls they
+need without importing app/server implementation. The host supplies shared
+Button/Input/Card and translated state copy, plus a normal link to the existing
+canonical Proposal review page. Scoped ops accept only declared IDs of the
+matching command/query kind, validate input/output against the local manifest,
+use the canonical actions/queries HTTP client, bind Space, and require an explicit
+command key. They expose neither raw request/config/actor nor DB ports and never
+automatically retry writes. A Project slot also rechecks its Project read gate
+before a UI invocation. The Project ID is view context, not a new domain grant:
+Project-owned operations must still declare/authorize their Project targets;
+the fixture's records are intentionally Space/person-owned.
+
+PluginSlot owns initial loading, disabled/withheld, transport/bundle mismatch
+error/retry, and component-error fallback. It does not show raw exception bodies.
+Account/Space/Project/placement changes remount the scope; old ports expire and
+requests abort, with generation/session fences rejecting late results. Current
+membership/enablement is rechecked by P1 on every call/replay. Background refresh
+keeps an enabled same-scope frame stable, while a denial/error immediately removes
+its content; focus and periodic checks revalidate metadata. Logout residue cleanup
+also invalidates the port. These controls prevent trusted-code mistakes; same-
+process browser/plugin code is not a malicious sandbox.
+
+## Invocation role and session follow-up
+
+Post-review real-PG diagnostics exposed two missed boundaries: concurrent plugin
+SQL could run during a named host port's elevated role, and Unicode / internal-$
+SELECT aliases could bypass the SELECT-INTO guard and leave pooled temp data.
+The original full-suite passes and whole-P2 reviews below did not cover these
+cases. They remain historical evidence, not proof of these boundaries. This
+security patch passed independent Claude/Antigravity review without blockers.
+Review approval is distinct from test execution; no reviewer test rerun is claimed.
+The patch has its own implementation-run verification and pre-commit gate.
+
+Each PluginDb invocation now owns one callback-scoped serial dispatcher on the
+same P1 transaction/connection. Queries, the entire nested savepoint lifecycle,
+and named host role transitions share it. Siblings (including Promise.all Jobs)
+queue; ordinary nested transaction callbacks reenter through a child queue
+instead of reacquiring the ancestor queue they occupy. Plugin SQL/nested host calls from inside a host
+callback are explicitly refused. No extra connection or alternate Job engine is
+used. Open frames expire as soon as their callback returns; already-running SQL
+and role restoration drain before rollback/close, queued work is refused, and
+unfinished unawaited work fails that scope. Delayed descendants/retained ports
+cannot start work after scope expiry. This is protection against ordinary trusted
+code misuse, not arbitrary JavaScript preemption or a malicious-code sandbox.
+
+Unsupported task dependency cycles remain possible: a callback awaiting an
+ancestor-created Promise queued behind its current transaction creates a cycle.
+The dispatcher does not detect or time out that user-code cycle and does not
+guarantee global deadlock freedom. During cleanup, an Unawaited-work error can
+replace the callback's earlier exception; original-error preservation is not
+guaranteed. No new timeout or arbitrary JavaScript preemption is provided.
+
+The existing SQL literal/comment scanner now supplies whole PostgreSQL identifier
+tokens: unquoted high-bit/Unicode characters and internal `$`, opaque quoted
+identifiers, AS/CTE parentheses and Unicode dollar-quoted literals. SELECT state
+is not reset by DML-looking aliases; legal WITH SELECT → INSERT remains allowed.
+Session/TEMP creation is still refused, not made safe by wider role privileges.
+
+Permanent behavior evidence: `pluginInvocationDb.test.ts` uses the actual
+PluginHost Jobs port, a jobs trigger and advisory-lock observation scoped to its
+own test database (no timing sleep), checking direct core denial, legal data+Job
+commit, two concurrent enqueues, sibling/nested transactions, rollback, unawaited
+work and expired descendants. `pluginSessionReuseDb.test.ts` first proves the
+alias syntax on real PG, then guard denial, same-backend next-person read failure,
+no temp residue and successful role reconcile. Both use shared useTestDatabase.
+
+Patch implementation-run evidence: related regression files passed 165 tests
+without skips. The separate pre-commit full gate passed server 6419 tests / 5
+existing conditional skips (no PG skip), web 2308, Host 574 / 22 optional skips,
+protocol 382, CLI 49, folder-read 54, reader-document 52 and outbound-guard 12.
+Python deployer / backup / installer passed 38 / 7 / 15. Workspace typechecks,
+recursive builds and schema check (13 migrations in sync) passed. The first web
+attempt executed no tests because its ignored Vitest cache directory was missing
+(ENOENT); recreating that directory and rerunning the complete web suite after
+builds finished passed. That failed attempt is not counted as a pass. No budget,
+skip condition or runtime behavior was changed during commit gating. These are
+implementation validations, not claims that the reviewers reran these suites.
+
+Reuse / Dependency Check: reuse P1 operationTransaction, canonical PluginHost
+Jobs, shared PG fixtures/lock observation, the existing SQL scanner and Node's
+AsyncLocalStorage already used by the transaction layer. A plain non-reentrant
+mutex would deadlock callback queries; the purpose-specific hierarchical queue
+adds callback lifetime control without a generic parser, new dependency, pool or
+execution engine. Caller-owned/RLS/B11 and P3/P4/P5 exclusions are unchanged.
+
+## SQL data-port and lifecycle hardening
+
+A subsequent P2 review found utility wrapping (`EXPLAIN ANALYZE CREATE TEMP
+TABLE AS`), Unicode-escaped function identifiers, SQL-evaluating functions and
+the `pg_try_advisory_*` family outside the earlier guards. Historical review and
+suite results above do not cover this follow-up.
+
+`operationSqlPolicy.ts` now owns PluginDb statement admission: SELECT, INSERT,
+UPDATE, DELETE, MERGE, WITH, VALUES and TABLE are the supported data roots.
+Utility wrappers are refused as a class. The only control exception is a local
+savepoint form recognized by the shared P1 helper; P1 still generates private
+names and enforces ownership. SELECT INTO remains forbidden. Session controls,
+all advisory-lock families, dblink and built-in SQL evaluators (`query_to_xml`,
+`query_to_xmlschema`, `query_to_xml_and_xmlschema`, `ts_stat`, `ts_rewrite`) are
+refused; arbitrary SQL carried in literals/parameters is not recursively parsed.
+Both operation ports fail closed on Unicode-escaped identifiers (`U&"..."`,
+including UESCAPE) rather than treating executable names as opaque data. Ordinary
+Unicode/quoted identifiers, comments and literal contents remain supported.
+This remains a bounded safeguard for trusted first-party code: custom routines,
+operators, extension functions and tenant predicates require domain SQL review;
+this does not make arbitrary PostgreSQL functions safe or create a sandbox.
+
+Local enable/disable transitions serialize per config/plugin/owning scope across
+cleanup, transaction and gate settlement. Cleanup stays before DB locks so it can
+cancel running Jobs. Each disable owns a temporary admission hold; only a
+successful disable installs the stable disabled hold. Failed transitions remove
+only their own hold; a failed enable cannot reopen a disabled scope. Other
+dependency/shutdown holds remain in force. Live DB checks remain authoritative
+across processes; this queue only orders one process's cooperative resources.
+
+The shared operation-session guard also refuses references to `pg_settings`,
+including qualified/quoted names and DML inside WITH. Its UPDATE rewrite is
+session control despite a data-statement root; both P1 and PluginDb use the same
+guard. Read-only diagnostics on that view belong to host code. PluginDb also
+refuses calls to the explicit PostgreSQL large-object API (including descriptor
+operations, `lowrite` and `loread`), which can otherwise create database-wide
+objects outside the plugin schema through public functions. This checks exact
+function names followed by a call, not a reserved `lo_` identifier prefix:
+ordinary columns/aliases such as lo_limit and even a lo_create alias are allowed.
+Quoted/schema-qualified function calls remain refused; literal text containing
+these names remains ordinary data. The list follows PostgreSQL's
+[server-side large-object API](https://www.postgresql.org/docs/18/lo-funcs.html).
+The shared session guard also refuses setseed calls in both P1 and PluginDb,
+preventing pooled-session PRNG state from leaking between invocations.
+
+Scope cleanup and Job resource disposal share one tracked cleanup promise and
+each wait at most three seconds. A Job can unwind its transaction at the
+deadline instead of holding locks behind a hung dispose callback. On timeout,
+disable still records cleanup_pending and commits its DB gate/cancellations;
+the unfinished cleanup remains tracked, including callbacks a Job already
+started disposing. Pending scopes cannot enter resources or reenable (409),
+even if a temporary hold is removed. Once the original cleanup settles, an
+explicit enable can reopen the stable disabled hold. Timeouts do not cancel
+arbitrary JavaScript; a callback that never settles keeps its scope quarantined,
+and synchronous event-loop blocking cannot be preempted. Other scopes are not
+queued behind it. Cleanup rejection is observed even after the timeout.
+
+Migration failure events identify `phase` (install, provision, migration,
+reconcile or finalize) separately from nullable migration_id. Only failures
+attributed to an actual migration enter plugin_migrations; an installation or
+reconcile failure no longer invents an install migration or blames the last
+applied migration. Install state still fails closed until explicit offline repair.
+Historical records are not rewritten. A retry without explicit repair first
+checks migration_error under the install session lock, before the journaled
+transaction. Its 409 refusal preserves the original install error, migration
+rows and failure events instead of recording a second migration failure.
+
+Executable evidence extends `pluginSessionReuseDb.test.ts`: PostgreSQL first
+executes the actual syntax in a rolled-back probe, then PluginDb refuses it and
+reuses the same backend across people without temp/GUC/advisory residue.
+`pluginLifecycleDb.test.ts` covers concurrent enable/disable, new resource
+admission, failed-enable preservation, cleanup deadlines/quarantine and phase-specific
+failure journals. `pluginHost.test.ts` checks deadlines with fake timers and shared
+once-only disposal, without timing sleeps. The shared core consumer also checks
+Unicode identifier refusal in `operationExecutorDb.test.ts`.
+
+Reuse / Dependency Check: keep P1's transaction, savepoint translation, existing
+SQL lexical scanner, PluginEffectScopes and shared PostgreSQL fixture. Evaluated
+[libpg_query](https://github.com/pganalyze/libpg_query), the PostgreSQL parser with
+Node bindings: it can parse utility ASTs, but cannot determine the effects of
+SQL hidden in function inputs or custom routines. A full parser/native runtime
+is unnecessary for this explicitly bounded data-port admission contract; no new
+parser, dependency, connection pool or execution engine is introduced. The small
+per-scope transition tail orders only the existing local resource lifecycle.
+Deadlines use Node timers and observed native Promises within PluginEffectScopes;
+no generic timeout engine, retry loop or dependency is introduced.
+
+## Operation platform acceptance
+
+Reviewed P2 changesets: stage 1 `992b5d12`, stage 2 `a2e623f3`, and stage 3
+`20ef5240`, including build isolation, SQL alias and localization fixes. Independent
+ACP change `b66f1b52` is outside P2 review scope. Both final whole-P2 reviews
+passed without blockers. They were read-only code reviews; no reviewer rerun of
+tests is claimed. Verification below is implementation-run evidence, separate
+from review approval. The completed temporary P2 ledger is retired to this guide. No production DB, role, credential, deployment or old published
+image was inspected/changed. New production operation packages/mappings remain
+absent; the only complete demonstration is an isolated first-party test fixture.
+
+| Contract / layer | Executable evidence | Actual boundary |
+|---|---|---|
+| Single declaration → descriptor → registry / typed placements | protocol `pluginOperations.test.ts`; `pluginFrontendDb.test.ts` | Shared fixture manifest is imported by the real server and the acceptance-mode local catalog; no duplicated frontend metadata |
+| Namespace / declared vs registered / unsupported API / B11 eligibility | protocol manifest tests; `pluginOperationsDb.test.ts` | Core literals unchanged; caller_owned is a domain SQL review obligation, not RLS or automatic audit exemption; cross-person declarations refused |
+| Install, migration failure, advisory/DDL locks, runtime vs DDL role | `pluginLifecycleDb.test.ts`, generated fixture migration | Real isolated PG, independent failed journal, explicit repair; legacy applied public migrations never rewritten |
+| Role/pool/session and read-only boundary | `pluginOperationsDb.test.ts`, `pluginSessionReuseDb.test.ts` | Same backend across people; legal SELECT CTE + INSERT allowed; SELECT INTO/TEMP/session residue refused, including PostgreSQL-valid AS insert/update/delete and quoted aliases; legal SELECT CTE then INSERT preserved; host role restored |
+| Human HTTP + Run grants/HTTP/CLI replay | `pluginOperationsDb.test.ts`, `pluginLifecycleDb.test.ts` | Real P1 consumers; live permission/enablement, immutable exact grants and no automatic write retry |
+| Canonical Proposal accept/reject/concurrent/rollback | `pluginLifecycleDb.test.ts`; browser clicks existing review/Accept page | Real PgProposalApplyService; plugin data/Job/result/status atomic; failure audit independent; no second approval engine |
+| Host Jobs / schedules / disable | lifecycle tests + browser's real JobWorker | Two real scheduler processes reserve one equivalent pending/running intent; original enabling person lost → diagnostic, no arbitrary owner substitution; LIFO/cancel preserved |
+| Audit capacity | lifecycle pool-saturation test | Control probes/cancel use separate max-2 pool at 1s, one outstanding probe per Job; audit pool capacity unaffected |
+| Project parent entry + overview + destination | `pluginFrontendDb.test.ts` | Actual App/registry/ProjectAreaLayout/PluginSlot, Vite and Chromium with real moduleServer+PG; browser `/me`/`/me/spaces` and the existing server auth test seam select seeded real people; domain APIs/data remain real |
+| UI reads/writes → review → Job → disable → reload | same browser workflow | Real HTTP and PG assertions, no browser-only data backend; host loading/error/disabled rendered |
+| User/Space/Project switch, late response, real Project grant revocation | browser workflow; `PluginSlot.test.tsx`, `useEffectivePlugins.test.tsx` | Old PG response held across client-side route switch; other Space/person has no previous records; expired ports/abort results refused; real team-Project viewer grant revoked |
+| Restore → role reconcile → browser reload | browser workflow + stage-2 actual offline CLI test | Real pg_dump/pg_restore --no-owner --no-acl, host reconcile, then browser reads restored rows rather than post-dump changes |
+| Desktop/phone visual acceptance | browser workflow; screenshot names below | 1280×900 and 390×844, dark/light, English/Chinese; navigation and destination both inspected; loading/error/disabled and phone overview inspected |
+
+Implementation-run pre-commit evidence for `20ef5240`: server full suite 6400
+passed / 5 existing conditional skips (no PG skip), web 2301 passed, Host 571
+passed / 22 optional skips. Protocol / CLI / folder-read / reader-document /
+outbound-guard full suites passed 376 / 49 / 54 / 52 / 12 tests; Python deployer /
+backup / installer passed 38 / 7 / 15. Workspace typechecks and recursive builds,
+schema check (13 migrations in sync), 25 guide/hygiene/boundary tests and 74 local
+documentation links passed. Initial sandbox socket EPERM passed on the legal
+permission path. High-worker overlap caused timing/assertion and budget failures;
+separate full runs passed with existing budgets unchanged. Server used a 5-CPU
+affinity so its existing availableParallelism rule selected 4 workers; Chromium
+workflow took about 24s against the original 30s limit. No threshold, skip condition
+or runtime behavior was changed to hide failures. Normal production build parsed
+zero fixture modules; acceptance mode parsed only its three intended consumers.
+
+Reproduce the focused browser acceptance from the repository root, with existing
+Playwright Chromium (or `CHROMIUM_EXECUTABLE`) and access to isolated test Docker:
+
+```bash
+REQUIRE_TEST_POSTGRES=true PLUGIN_VISUAL_OUT=/tmp/rainver-plugin-platform-visual \
+  pnpm --dir server exec vitest run test/pluginFrontendDb.test.ts --maxWorkers=1
+```
+
+`plugin-acceptance` Vite mode activates the bundled fixture only; normal production
+builds resolve an empty `acceptanceCatalog` instead: only plugin-acceptance mode
+aliases that entry to the fixture manifest/view consumer. The normal source graph
+has no fixture import and a build hook fails if a test module is parsed; this is
+not dependent on tree-shaking an imported fixture. Both build modes are verified;
+normal builds do not ship its view chunk. It uses the same
+`server/test/fixtures/pluginOperation/manifest.ts` as the real runtime consumer.
+The normal build still has no new advertised operation package. Authentication cookie/SSO flows are not acceptance targets here; the existing
+server auth seam selects the same seeded people as the browser bootstrap. The test starts
+only local services with minimal environments, uses the existing shared real-PG
+fixture and cleans the auth seams/processes; missing PG/browser fails when required,
+not a fake-DB fallback. An unrelated attention SSE endpoint is absent from the
+focused moduleServer composition; ordinary HTTP attention/chrome reads are real.
+No SSE, provider login, deployment or old-image compatibility acceptance is inferred.
+
+Screenshot family (generated outside the repository, copied to this Run's output
+artifacts for review): `{desktop,phone}-{parent,slot}-{dark-en,light-zh}.png`,
+`{desktop,phone}-{loading,error,disabled}.png`, and
+`phone-overview-{dark-en,light-zh}.png`. The implementer inspected these images:
+Project goal precedes the optional overview card; the area link is in the existing
+nav; the adjacent Pulse goal takes a full row on phones instead of being squeezed
+by its existing action group; controls use shared tokens and wrap on narrow screens, with local 44px narrow
+form targets; keyboard Tab reaches Save. Initial wrong-entry/transition selectors,
+StrictMode lifetime reactivation, same-scope refresh remount, and fixture-origin
+CSRF setup were corrected. This is visual evidence, not just overflow/jsdom checks.
+No budget threshold or permission gate was relaxed to obtain a pass.
+
+Limits retained: the PhD application plugin remains P3; sensitive Agent access/
+full diary-finance migration remain P4;
+eight legacy Proposal writer families remain unmapped for P5; no RLS/cross-person
+B11 adapter, hostile-code isolation, remote packages, uninstall/data deletion,
+external exactly-once or arbitrary-JS preemption is claimed. Existing backend
+lifecycle evidence is reused, not relabeled as production migration closure.

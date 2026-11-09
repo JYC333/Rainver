@@ -1,3 +1,4 @@
+import { repositoryAcpAdapter, isRepositoryAcpRegistryId } from "@rainver/protocol"
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { useAppTranslation } from '../../i18n'
@@ -5,6 +6,7 @@ import { acpAgentsApi, hostsApi, type AcpAgentOut, type AcpRegistryEntry } from 
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog'
 import HostAgentCatalog from './HostAgentCatalog'
 import { hasStableUpdate } from './runtimeVersions'
+import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { errMsg } from '../../lib/utils'
 import type { Host, HostRuntimeDefinitionOption, HostRuntimeUsage, RuntimeInstallation } from '../../types/api'
@@ -48,6 +50,7 @@ export default function HostAgents({
   isInstanceAdmin,
   manageable,
   onChanged,
+  runtimeTarget,
 }: {
   host: Host
   adapters: HostRuntimeDefinitionOption[]
@@ -60,6 +63,7 @@ export default function HostAgents({
    */
   manageable: boolean
   onChanged: () => Promise<void> | void
+  runtimeTarget?: { runtime_key: string; installation: string }
 }) {
   const { t } = useAppTranslation()
   // One key per in-flight action, not one slot: two installs started back to
@@ -148,6 +152,7 @@ export default function HostAgents({
   const registryCandidates = useMemo(() => {
     const needle = registryQuery.trim().toLowerCase()
     return (registry ?? [])
+      .filter(entry => !isRepositoryAcpRegistryId(entry.id))
       .filter(entry => isInstanceAdmin || enabledRegistryById.has(entry.id) || builtinAdaptersByRegistryId.has(entry.id))
       .map(entry => {
         const adapter = builtinAdaptersByRegistryId.get(entry.id)
@@ -159,11 +164,10 @@ export default function HostAgents({
         const installed = copies.length > 0 || installedRegistryVersions.has(entry.id)
           || enabledRegistryById.get(entry.id)?.installed_on.some(item => item.host_id === host.id) === true
         return {entry, installed, managed, runtimeKey: adapter?.runtime_key, own: copies.some(copy => copy.id === 'own'),
-          bundled: copies.some(copy => copy.id === 'own') && adapter?.reports_managed_cli_version === true,
           update: (managed.length > 0 && managed.every(version => hasStableUpdate(version, entry.version)))
-            || (adapter?.runtime_key === 'codex_cli' && copies.some(copy => copy.id !== 'own' && hasStableUpdate(copy.runtime_version ?? null, adapter.latest_own_version))),
+,
           enabled: enabledRegistryById.has(entry.id) || Boolean(adapter),
-          pinned: false}
+          }
       })
       .filter(row => !needle || row.entry.name.toLowerCase().includes(needle) || row.entry.id.toLowerCase().includes(needle))
       .sort((a,b) => Number(b.installed)-Number(a.installed) || a.entry.name.localeCompare(b.entry.name))
@@ -221,9 +225,12 @@ export default function HostAgents({
   }
 
   const install = (adapter: HostRuntimeDefinitionOption) => withBusy(adapter.runtime_key, async () => {
-    const result = await hostsApi.installRuntime(host.id, adapter.runtime_key)
+    const nativeUpdate = repositoryAcpAdapter(adapter.runtime_key) && installationsOn(host, adapter).some(copy => copy.id !== 'own')
+    const result = await (nativeUpdate ? hostsApi.updateManagedRuntime(host.id, adapter.runtime_key) : hostsApi.installRuntime(host.id, adapter.runtime_key))
     if (!result.ok) throw new Error(result.error ?? 'install failed')
-    toast.success(`${adapter.display_name} ${result.installation ?? ''} installed on ${host.name}`)
+    const bridge = repositoryAcpAdapter(adapter.runtime_key)
+    if (bridge && !nativeUpdate && result.installation?.startsWith('managed:')) setInstalledRegistryVersions(previous => new Map(previous).set(bridge.registry_id, result.installation!.slice('managed:'.length)))
+    toast.success(`${adapter.display_name} ${nativeUpdate ? 'updated' : 'installed'} on ${host.name}`)
   })
   const updateOwn = (adapter: HostRuntimeDefinitionOption) => withBusy(`${adapter.runtime_key}:own-update`, async () => {
     const result = await hostsApi.updateOwnRuntime(host.id, adapter.runtime_key)
@@ -299,27 +306,13 @@ export default function HostAgents({
       if (!result.ok) throw new Error(result.error ?? 'rollback failed')
     })
 
-  return (
-    <div className="w-full border-t border-border pt-2 space-y-1" data-testid={`host-agents-${host.id}`}>
-      <div className="flex items-center justify-between">
-        {/* Under the Host detail's "Agent Runtimes" heading: these are copies, not Agents. */}
-        <p className="text-xs font-medium">Installed copies</p>
-        {manageable && (
-          <Button size="sm" variant={adding ? 'ghost' : 'outline'} disabled={!online} onClick={toggleAdding}>
-            {adding ? 'Close' : 'Add agent…'}
-          </Button>
-        )}
-      </div>
-      {present.length === 0 && !adding && (
-        <p className="text-xs text-muted-foreground">No runtime copies are reported on this host yet.</p>
-      )}
-      <ul className="space-y-1">
-        {present.map(adapter => (
+  const runtimeRow = (adapter: HostRuntimeDefinitionOption) => (
           <HostAgentRow
             key={adapter.runtime_key}
             host={host}
             adapter={adapter}
             copies={installationsOn(host, adapter)}
+            targetInstallation={runtimeTarget?.runtime_key === adapter.runtime_key ? runtimeTarget.installation : undefined}
             installBusy={busy}
             manageable={manageable}
             usage={usageFor(usage, adapter.runtime_key)}
@@ -334,11 +327,39 @@ export default function HostAgents({
             }}
             onRefreshUsage={installation => { void refreshUsage(adapter.runtime_key, installation) }}
           />
-        ))}
+  )
+
+  return (
+    <div className="w-full border-t border-border pt-2 space-y-1" data-testid={`host-agents-${host.id}`}>
+      <div className="flex items-center justify-between">
+        {/* Under the Host detail's "Agent Runtimes" heading: these are copies, not Agents. */}
+        <p className="text-xs font-medium">Installed copies</p>
+        {manageable && (
+          <Button size="sm" variant={adding ? 'ghost' : 'outline'} disabled={!online} onClick={toggleAdding}>
+            {adding ? 'Close' : 'Add agent…'}
+          </Button>
+        )}
+      </div>
+      {present.length === 0 && !adding && (
+        <p className="text-xs text-muted-foreground">No runtime copies are reported on this host yet.</p>
+      )}
+      {runtimeTarget && <p role="status" className="rounded-md border border-border bg-muted/30 p-2 text-xs text-muted-foreground">
+        {t(host.capabilities_json?.installations?.[runtimeTarget.runtime_key]?.some(copy => copy.id === runtimeTarget.installation)
+          ? 'runtime_failure_ui.located' : 'runtime_failure_ui.target_missing', {
+          runtime: adapters.find(adapter => adapter.runtime_key === runtimeTarget.runtime_key)?.display_name ?? runtimeTarget.runtime_key,
+          installation: runtimeTarget.installation,
+        })}
+      </p>}
+      <ul className="space-y-1">
+        {present.map(runtimeRow)}
       </ul>
 
       {adding && (
         <div className="space-y-2 rounded-md border border-border p-2" data-testid={`host-add-agent-${host.id}`}>
+          <ul className="space-y-1">{adapters.filter(adapter => repositoryAcpAdapter(adapter.runtime_key) && installationsOn(host, adapter).length === 0).map(adapter =>
+            installedRegistryVersions.has(repositoryAcpAdapter(adapter.runtime_key)!.registry_id)
+              ? <li key={adapter.runtime_key} className="flex items-center gap-2 p-2 text-xs"><span>{adapter.display_name}</span><Badge variant="secondary">{t('management_ui.host_catalog.installed')}</Badge></li>
+              : runtimeRow(adapter))}</ul>
           <section className="space-y-1">
               <HostAgentCatalog hostName={host.name} rows={registryCandidates} query={registryQuery} onQuery={setRegistryQuery}
                 loading={registryLoading} error={registryError} loaded={registry !== null} busy={busy} online={online}

@@ -35,6 +35,7 @@ export * from "./providers.js";
 // Network profile contracts
 export * from "./networkProfiles.js";
 export * from "./hosts.js";
+export * from "./acp.js";
 export * from "./hostWire.js";
 export * from "./ordinaryTools.js";
 export * from "./ordinaryToolAccounts.js";
@@ -182,3 +183,6 @@ export * from "./problemEngine.js";
 export * from "./researchCalls.js";
 export * from './taskAssociations.js';
 export * from './operations.js';
+
+export * from "./pluginOperations.js";
+export * from './runtimeFailures.js';

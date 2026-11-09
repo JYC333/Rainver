@@ -6,7 +6,7 @@ import { loadActionRegistry } from "./actionRegistry.js";
 import { enforce } from "./service.js";
 
 export class ActionApprovalGrantService {
-  constructor(private readonly db: Queryable) {}
+  constructor(private readonly db: Queryable,private readonly config?:ServerConfig) {}
 
   async create(
     config: Pick<ServerConfig, "databaseUrl">,
@@ -17,8 +17,8 @@ export class ActionApprovalGrantService {
     await this.assertOwner(identity);
     const agentId = requiredString(body.agent_id, "agent_id");
     const actionId = requiredString(body.action_id, "action_id");
-    const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
-    const definition = SYSTEM_ACTION_REGISTRY.find((item) => item.id === actionId);
+    const { loadSystemActionRegistry } = await import("../systemActions/registry.js");
+    const definition = (await loadSystemActionRegistry(config as ServerConfig)).get(actionId);
     if (!definition) throw new HttpError(422, "Unknown system action");
     if (!definition.grantable) throw new HttpError(422, "This action cannot be pre-authorized");
     const projectId = optionalString(body.project_id);
@@ -30,7 +30,7 @@ export class ActionApprovalGrantService {
     if (maxUses !== null && (!Number.isInteger(maxUses) || maxUses <= 0)) throw new HttpError(422, "max_uses must be a positive integer");
     const expiresAt = optionalString(body.expires_at);
     if (expiresAt && Number.isNaN(Date.parse(expiresAt))) throw new HttpError(422, "expires_at must be an ISO datetime");
-    const decision = await enforce(config, await loadActionRegistry(), {
+    const decision = await enforce(config, await loadActionRegistry(this.config), {
       action: "policy.action_grant.create",
       actor_type: "user",
       actor_id: identity.userId,
@@ -117,8 +117,8 @@ export class ActionApprovalGrantService {
    * that actually need them.
    */
   async consumeMatching(input: { spaceId: string; agentId: string; actionId: string; runId?: string | null; projectId?: string | null; resourceKind?: string | null; resourceId?: string | null }) {
-    const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
-    const definition = SYSTEM_ACTION_REGISTRY.find((item) => item.id === input.actionId);
+    const { loadSystemActionRegistry } = await import("../systemActions/registry.js");
+    const definition = (await loadSystemActionRegistry(this.config)).get(input.actionId);
     if (!definition?.grantable) return null;
     const now = new Date().toISOString();
     const result = await this.db.query(
@@ -146,8 +146,8 @@ export class ActionApprovalGrantService {
 
   /** Read-only invocation check; the owning proposal transaction consumes the grant. */
   async hasMatching(input: { spaceId: string; agentId: string; actionId: string; runId?: string | null; projectId?: string | null; resourceKind?: string | null; resourceId?: string | null }): Promise<boolean> {
-    const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
-    const definition = SYSTEM_ACTION_REGISTRY.find((item) => item.id === input.actionId);
+    const { loadSystemActionRegistry } = await import("../systemActions/registry.js");
+    const definition = (await loadSystemActionRegistry(this.config)).get(input.actionId);
     if (!definition?.grantable) return false;
     const result = await this.db.query(
       `SELECT 1 FROM action_approval_grants

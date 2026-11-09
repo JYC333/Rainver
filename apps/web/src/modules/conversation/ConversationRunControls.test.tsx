@@ -6,7 +6,7 @@ import type { Artifact, Run } from '../../types/api'
 const { artifactsApiMock, runsApiMock, authorizationApiMock } = vi.hoisted(() => ({
   artifactsApiMock: { get: vi.fn() },
   authorizationApiMock: { approve: vi.fn(), reject: vi.fn() },
-  runsApiMock: { artifacts: vi.fn(), get: vi.fn(), stop: vi.fn(), resume: vi.fn(), authorizationRequests: vi.fn(), quotaRecovery: vi.fn() },
+  runsApiMock: { liveInput: vi.fn().mockResolvedValue({ available: false, binding_id: null }), artifacts: vi.fn(), get: vi.fn(), stop: vi.fn(), resume: vi.fn(), authorizationRequests: vi.fn(), quotaRecovery: vi.fn() },
 }))
 
 vi.mock('../../api/client', () => ({

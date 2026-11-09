@@ -1,3 +1,4 @@
+import { isRepositoryAcpRegistryId } from "@rainver/protocol";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { getDbPool } from "../../db/pool.js";
@@ -54,7 +55,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/acp-agents/registry", async (request, reply) => {
     if (!(await resolveIdentity(context, request, reply))) return reply;
     try {
-      return reply.send({ items: await fetchAcpRegistry() });
+      return reply.send({ items: (await fetchAcpRegistry()).filter(entry => !isRepositoryAcpRegistryId(entry.id)) });
     } catch (error) {
       return sendError(reply, error);
     }

@@ -1,5 +1,13 @@
 # Module: Hosts
 
+Runtime recovery links may name `?host=…&section=runtime&runtime=…&installation=…`
+in Command Center. The requested copy is highlighted and focused; a missing
+copy is reported without choosing another. Navigation never starts login, and
+the existing owner/instance-admin gates still control its login actions. Explicit
+status refresh in the failed Run UI reads authorized Host reports only; it does
+not refresh credentials or launch a probe. Its timestamp makes the cached
+observation distinct from a successful new runtime request.
+
 See [decisions/0016-control-plane-execution-hosts.md](../decisions/0016-control-plane-execution-hosts.md)
 for the design decision this module implements. Every conversation runtime —
 `claude_code`, `codex_cli`, `opencode` — speaks the Agent Client Protocol.
@@ -175,6 +183,13 @@ Conversation image eligibility intersects this runtime report with the selected
 provider/model's known image capability when Rainver owns that Provider binding.
 For an unbound Host-owned ACP CLI, the runtime's initialize capability is the
 authoritative image answer because the model is selected inside the ACP session.
+
+Run completion frames may also carry `time_zone`, the CLI's effective `TZ`
+(pinned to the daemon's resolved timezone when absent). The Server uses it only
+to interpret a vendor-local quota reset clock; it never assumes its own local
+zone. The field is optional so older daemons remain wire-compatible. Invalid
+zones remain unknown to the reset parser.
+
 The daemon resolves server-issued live-folder `ResourceLink` ids to registered
 Workspace Location paths only after validating the launch's explicit access set;
 it never accepts an absolute path from the browser or launch payload. Current
@@ -774,19 +789,14 @@ applies to successful answers, protocol errors, and timeouts. An adapter that
 does not exit gets 10 seconds to drain, then process-group SIGTERM and, after
 another 3 seconds, SIGKILL; descendants must not outlive a wedged probe.
 
-The pinned Claude ACP 0.70.0 package has a pnpm patch in `patches/` for the
-same lifecycle boundary in ordinary sessions: await SDK Query cleanup through
-its async iterator `return()` before aborting the session, and let Node exit
-naturally after disposal instead of calling `process.exit()`. This preserves
-the native CLI's existing SDK exit grace, including pending credential writes.
-Reuse / Dependency Check: reuse the installed ACP/SDK and the Host's existing
-process-group signalling; no new dependency or protocol implementation. The
-upstream adapter's synchronous `Query.close()` does not await that cleanup.
-Remove the patch only after an upstream version provides equivalent awaited
-cleanup and shutdown, verified by `test/acpCleanup.test.ts`. Both the daemon's
-development dependency and the separately deployed adapter pack use this patch.
-This prevents an interruption window; it cannot recover an already revoked
-refresh token or establish why an earlier provider revocation occurred.
+Claude ACP 0.101.0 still needs awaited SDK Query cleanup through `return()`
+and natural Node shutdown. `host-daemon/src/acpAdapterCompatibility.ts` owns
+one idempotent, layout-guarded preparation step shared by workspace installs,
+release packs and runtime npm materialization. Unknown source layouts refuse
+installation rather than silently
+omitting credential flush protection; remove preparation only when upstream
+passes `test/acpCleanup.test.ts` unmodified. Probes retain bounded process-group
+termination. This preserves the native SDK exit grace; login material remains in its stable runtime HOME.
 
 *How* each runtime's ACP process is launched for the ask is not the daemon's
 knowledge: `hello_ack` carries `runtime_probes` — one `{ runtime, argv }` per
@@ -998,18 +1008,15 @@ not a version lock. Instance administrators upgrade and roll back Server
 OpenCode through the same Host controls and `install_tool` lifecycle as paired
 Host owners. The required bootstrap copy cannot be removed from that card.
 
-Managed Codex has two versions: the ACP adapter and its bundled vendor CLI.
-The upgrade control compares both against their respective release sources.
-The common install request can carry an exact `vendor_cli_version` for Codex;
-the daemon writes an npm dependency override in the staging tree, verifies the
-resulting CLI version and ACP health, then promotes it. This avoids a nested
-older Codex dependency continuing to run. Login state stays outside that tree.
-Own copies retain their native package-manager updater; both paths reuse the
-same release metadata, Host authority and operation-status tracking.
+The native CLI version is separate from the repository ACP bridge version.
+Managed CLI updates stage an official npm release under the installation's
+`native-cli/` directory. The verified executable is selected through the
+manifest, shared by execution, login and usage probes. The manifest retains
+one previous native executable for rollback; the bridge follows the Host build.
 
-Reuse / Dependency Check: retain the managed staging installer, npm dependency
-resolution, ACP health gate, runtime drain and Host controls. No additional
-package manager or independent server installer is introduced.
+Reuse / Dependency Check: reuse the npm distribution installer, isolated ACP
+health probe, runtime drain, atomic manifest rename and Host authority. No new
+package manager, protocol engine or dependency is introduced.
 
 Install, upgrade, rollback and removal are recorded in
 `host_runtime_changes` and listed on the Updates page
@@ -1028,24 +1035,23 @@ or a version behind would make routing guess at someone else's machine. The
 cost of that asymmetry is explicit — a Profile naming a `managed:x` copy the
 paired Host does not have passes admission and fails at launch, where the host
 itself answers.
-`GET /api/v1/hosts/runtime-definitions` also exposes each adapter's current
-registry version (`latest_managed_version`). The Host card compares it with the installed package and
-shows its compact CLI upgrade control only while they differ; neither internal
-package version is exposed in that UI.
+Codex and Claude bridges come from the repository release catalog and the
+Host's matching adapter pack. Initial managed installation selects that catalog;
+users manage native CLI versions independently. Personal PATH copies retain the
+fixed own-update recipes. Managed copies use `managed_cli` update/rollback frames,
+which stage official npm packages and verify native version and isolated ACP
+initialization before atomic manifest promotion. The same native executable is
+used for execution, login, logout and quota probes. The installation id, stable
+HOME and conversation bindings remain unchanged. Native CLI changes are recorded
+in `host_runtime_changes`; ACP identities remain available in diagnostics.
 
-The Host Agent catalog keeps this Host's installed agents first, including local
-copies, and offers explicit managed ACP upgrades alongside the available release.
-Local Claude/Codex CLI updates remain separate; their bundled ACP adapters follow
-Host releases, and installing a managed copy does not replace a local CLI or move
-its login. Server-pinned runtimes retain their provisioner-owned update path.
-Both builtin and dynamically enabled ACP agents discover registry releases in the
-existing background cache. Enabled snapshots record approval and bootstrap offline
-reads; they are never mistaken for the latest version. Ordinary reads install
-nothing. An explicit install refreshes metadata and, when the caller names an
-`expected_version`, refuses a changed release with409 before sending an install
-frame. Existing Host ownership, runtime draining, health checks, rollback and
-change history remain the installation path. Updating an already approved agent
-does not require enabling it again.
+OpenCode and Registry Agent packages use the Registry cache and explicit package
+installation, upgrade and rollback lifecycle. Their `expected_version` guard
+rejects stale install requests before dispatch. Registry enablement does not
+expose Rainver's internal Codex/Claude bridges as separate Agents. Ownership,
+runtime draining, atomic promotion, health checks and state isolation apply to
+both kinds of installation.
+
 
 Reuse / Dependency Check: reuse the ACP registry cache, runtime probes, managed
 installer and shared controls. No dependency, new updater or scheduler is added.
@@ -3145,7 +3151,8 @@ the Run cannot write, with no error.
   reconnect: the daemon removes its local registration, terminates active Run
   process groups, and exits successfully so systemd does not restart it.
 
-Linux distribution uses three rolling public GitHub Releases: `host-stable`
+Linux distribution uses immutable `host-build-<sha>` assets for build-matched
+adapter installation and three rolling public GitHub Releases: `host-stable`
 from `master`, `host-edge` from each relevant `dev` push, and `host-nightly`
 from the scheduled `dev` build. Each has separate x64/arm64 base, adapter, and
 fallback-Node assets, a SHA-256 manifest, and `install-host.sh`; a target host

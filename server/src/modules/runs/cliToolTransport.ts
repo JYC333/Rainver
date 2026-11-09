@@ -29,7 +29,7 @@ export class CliAgentToolTransport {
     call: { id: string; name: string; arguments: unknown },
   ): Promise<unknown> {
     this.assertActive(run);
-    const definition=(await loadSystemActionRegistry()).get(call.name as never);
+    const definition=(await loadSystemActionRegistry(this.config)).get(call.name as never);
     if(definition?.execution){
       const runtime=await operationRuntime(this.config);
       // Project authority is resolved from the live Run by the core, never injected/overridden by caller input.

@@ -1,11 +1,17 @@
-import type { SystemActionDefinition, SystemActionId } from "@rainver/protocol";
+import { pluginOperations } from "../plugins/operationRegistry.js";
+import type { ServerConfig } from "../../config.js";
+import type { RegisteredSystemActionDefinition as SystemActionDefinition, SystemActionId } from "@rainver/protocol";
 import * as protocol from "@rainver/protocol";
 
 let cached: ReadonlyMap<SystemActionId, SystemActionDefinition> | null = null;
 
-export async function loadSystemActionRegistry(): Promise<ReadonlyMap<SystemActionId, SystemActionDefinition>> {
+export async function loadSystemActionRegistry(config?:ServerConfig): Promise<ReadonlyMap<string, SystemActionDefinition>> {
+  const core=await loadCoreRegistry();
+  return new Map([...core,...pluginOperations(config).map(r=>[r.definition.id,r.definition] as const)]);
+}
+async function loadCoreRegistry():Promise<ReadonlyMap<SystemActionId,SystemActionDefinition>> {
   if (cached) return cached;
-  const policyActionIds = new Set(
+  const policyActionIds = new Set<string>(
     protocol.POLICY_ACTION_REGISTRY.map((definition) => definition.action),
   );
   const validated = new Map<SystemActionId, SystemActionDefinition>();

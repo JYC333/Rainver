@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import type { HostThreadEventType } from "./threadEventRepository.js";
 import { createAcpToolCallLifecycle } from "../runtimeAdapters/acpToolCallLifecycle.js";
 import { normalizeToolName } from "../runtimeAdapters/toolName.js";
-import { isRuntimeMetadataDiagnostic } from "../runtimeAdapters/runtimeDiagnostic.js";
 import { redactSecretPatterns } from "../runs/evidenceRedaction.js";
+import { createAcpRuntimeStatusProjector } from "../runtimeAdapters/acpRuntimeStatus.js";
 
 export interface ThreadEventDraft {
   event_type: HostThreadEventType;
@@ -27,7 +28,7 @@ const MAX_TOOL_INPUT_SUMMARY_CHARS = 200;
  * replaces an entry and ToolCallUpdate carries patch fields for that same id.
  * It never infers reasoning from message text.
  */
-export function createThreadEventNormalizer(runtimeKey?: string): {
+export function createThreadEventNormalizer(): {
   pushStderr(chunk: string): ThreadEventDraft[];
   pushAcpTextDelta(delta: string): ThreadEventDraft[];
   pushAcpThoughtDelta(delta: string): ThreadEventDraft[];
@@ -35,7 +36,19 @@ export function createThreadEventNormalizer(runtimeKey?: string): {
   finish(): ThreadEventDraft[];
 } {
   let stderrBuffer = "";
+  const projectRuntimeStatus = createAcpRuntimeStatusProjector();
   const toolCalls = createAcpToolCallLifecycle();
+  const toolFingerprints = new Map<string, string>();
+  const terminalTools = new Map<string, string>();
+
+  function changedToolEvents(drafts: ThreadEventDraft[]): ThreadEventDraft[] {
+    return drafts.filter(draft => {
+      const fingerprint = createHash("sha256").update(JSON.stringify(draft)).digest("hex");
+      if (toolFingerprints.get(draft.tool_call_id!) === fingerprint) return false;
+      toolFingerprints.set(draft.tool_call_id!, fingerprint);
+      return true;
+    });
+  }
   let assistantSegment: {
     kind: "assistant_text" | "assistant_thought";
     text: string;
@@ -86,6 +99,8 @@ export function createThreadEventNormalizer(runtimeKey?: string): {
   }
 
   function pushAcpProtocolEvent(event: Record<string, unknown>): ThreadEventDraft[] {
+    const statuses = projectRuntimeStatus(event);
+    if (statuses.length) return [...flushTextSegment(), ...statuses.map(value => ({ event_type: "status" as const, ...value }))];
     if (event.method !== "session/update") return [];
     const update = recordValue(recordValue(event.params).update);
     const callId = stringValue(update.toolCallId ?? update.tool_call_id);
@@ -93,9 +108,11 @@ export function createThreadEventNormalizer(runtimeKey?: string): {
       const status = acpToolStatus(stringValue(update.status)) ?? "pending";
       const toolName = normalizeToolName(stringValue(update.title ?? update.name));
       const lifecycle = toolCalls.started({ callId, name: toolName, status: stringValue(update.status) });
+      if (terminalTools.has(lifecycle.callId) && !["completed", "failed"].includes(stringValue(update.status) ?? "")) return flushTextSegment();
+      if (status === "succeeded" || status === "failed") terminalTools.set(lifecycle.callId, stringValue(update.status)!);
       return [
         ...flushTextSegment(),
-        {
+        ...changedToolEvents([{
           event_type: "tool_activity_started",
           tool_call_id: lifecycle.callId,
           tool_name: toolName,
@@ -105,7 +122,7 @@ export function createThreadEventNormalizer(runtimeKey?: string): {
           tool_kind: stringValue(update.kind),
           tool_result_summary: summarizeToolOutput(update),
           status,
-        },
+        }]),
       ];
     }
     if (update.sessionUpdate === "tool_call_update") {
@@ -116,6 +133,9 @@ export function createThreadEventNormalizer(runtimeKey?: string): {
       const toolInput = summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS, "head");
       const toolOutput = summarizeToolOutput(update);
       const lifecycle = toolCalls.updated({ callId, name: toolName, status });
+      const terminal = terminalTools.get(lifecycle.callId);
+      if (terminal && status && status !== "completed" && status !== "failed") return flushTextSegment();
+      if (status === "completed" || status === "failed") terminalTools.set(lifecycle.callId, status);
       const start: ThreadEventDraft[] = lifecycle.missingStart
         ? [{
             event_type: "tool_activity_started",
@@ -129,18 +149,17 @@ export function createThreadEventNormalizer(runtimeKey?: string): {
         : [];
       return [
         ...flushTextSegment(),
-        ...start,
-        {
+        ...changedToolEvents([...start, {
           event_type: "tool_activity_finished",
           tool_call_id: lifecycle.callId,
           tool_name: toolName,
           tool_input_summary: toolInput,
           tool_kind: toolKind,
-          status: acpToolStatus(status),
+          status: acpToolStatus(status ?? terminal ?? null),
           // Absorbed for claude/opencode; codex-acp reports none
           // (a known adapter asymmetry, not a bug).
           tool_result_summary: toolOutput,
-        },
+        }]),
       ];
     }
     if (update.sessionUpdate === "plan") {
@@ -164,14 +183,13 @@ export function createThreadEventNormalizer(runtimeKey?: string): {
     return lines
       .map((line) => line.trim())
       .filter(Boolean)
-      .filter((line) => !isRuntimeMetadataDiagnostic(runtimeKey, line))
       .map((line): ThreadEventDraft => ({ event_type: "diagnostic", text: line }));
   }
 
   function finish(): ThreadEventDraft[] {
     const drafts: ThreadEventDraft[] = [];
     drafts.push(...flushTextSegment());
-    if (stderrBuffer.trim() && !isRuntimeMetadataDiagnostic(runtimeKey, stderrBuffer.trim())) {
+    if (stderrBuffer.trim()) {
       drafts.push({ event_type: "diagnostic", text: stderrBuffer.trim() });
     }
     stderrBuffer = "";

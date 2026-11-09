@@ -83,6 +83,13 @@
       "when": 1793902500797,
       "tag": "0011_operation_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793916729676,
+      "tag": "0012_plugin_lifecycle",
+      "breakpoints": true
     }
   ],
   "version": "7",

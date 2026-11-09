@@ -83,7 +83,7 @@ describe("ACP probe cleanup", () => {
         rl.resume();
       });
     `;
-    expect(await probeAcpIdentity(process.execPath, ["-e", script], {}, dir, 2_000)).toEqual({ version: "1" });
+    expect(await probeAcpIdentity(process.execPath, ["-e", script], {}, dir, 2_000)).toEqual({ name: "wedged", version: "1" });
     const pid = Number(await readFile(join(dir, "descendant"), "utf8"));
     // SIGKILL delivery and the kernel's exit bookkeeping are asynchronous.
     await expect.poll(() => {
@@ -98,6 +98,9 @@ describe("packaged Claude ACP shutdown", () => {
   it.each(["EOF", "SIGTERM"])("lets the native CLI finish persistence on %s", async (shutdown) => {
     const executable = join(dir, "fake-claude.cjs");
     await writeFile(executable, `#!${process.execPath}
+      if (process.argv.includes('auth') && process.argv.includes('status')) {
+        process.stdout.write(JSON.stringify({loggedIn:false})+'\\n'); process.exit(0);
+      }
       const rl = require("node:readline").createInterface({ input: process.stdin });
       ${delayedFlush}
       rl.on("line", line => {

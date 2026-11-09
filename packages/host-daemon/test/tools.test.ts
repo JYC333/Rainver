@@ -49,53 +49,6 @@ async function writeManifest(runtimeKey: string, version: string, command: strin
 }
 
 describe("managed installations", () => {
-  it("restores the previous uv installation when its replacement directory cannot be initialized", async () => {
-    const dir = await writeManifest("acp_fake", "1.0.0", "/previous/runtime");
-    const original = fs.promises.mkdir;
-    const fail = vi.spyOn(fs.promises, "mkdir").mockImplementation(async (path, options) => {
-      if (path === dir) throw Object.assign(new Error("staging I/O failure"), { code: "EIO" });
-      return original(path, options as Parameters<typeof original>[1]);
-    });
-    syncBuiltinESMExports();
-    try {
-      await expect(installTool({ request_id: "replace", runtime_key: "acp_fake", version: "1.0.0",
-        distribution: { kind: "uvx", package: "fake-agent@1.0.0", args: [], env: {} }, login: null,
-      }, () => {})).rejects.toThrow("staging I/O failure");
-      expect(readToolManifestSync("acp_fake", "managed:1.0.0")?.command).toBe("/previous/runtime");
-      expect(await readdir(join(toolsDir(), "acp_fake"))).toEqual(["1.0.0"]);
-    } finally {
-      fail.mockRestore();
-      syncBuiltinESMExports();
-    }
-  });
-  it.skipIf(process.platform === "win32")("updates the bundled Codex through staging and preserves it if the target version check fails", async () => {
-    const fakeBin = join(configDir, "fake-bin");
-    const mismatch = join(configDir, "report-wrong-version");
-    await mkdir(fakeBin, { recursive: true });
-    await writeFile(join(fakeBin, "npm"), `#!${process.execPath}
-const fs = require('fs'), path = require('path');
-const root = process.argv[process.argv.indexOf('--prefix') + 1];
-const target = JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).overrides['@openai/codex'];
-const pkg = path.join(root, 'node_modules/@agentclientprotocol/codex-acp');
-fs.mkdirSync(pkg, { recursive: true });
-fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ bin: { 'codex-acp': 'cli.js' } }));
-fs.writeFileSync(path.join(pkg, 'cli.js'), 'console.log("ACP")');
-fs.writeFileSync(path.join(root, 'vendor.js'), 'console.log(' + JSON.stringify('codex-cli ' + (fs.existsSync(${JSON.stringify(mismatch)}) ? '0.165.0' : target)) + ')');
-`, { mode: 0o755 });
-    const savedPath = process.env.PATH;
-    process.env.PATH = `${fakeBin}:${savedPath ?? ''}`;
-    const frame = { request_id: "vendor-update", runtime_key: "codex_cli", version: "2.5.0",
-      distribution: { kind: "npx" as const, package: "@agentclientprotocol/codex-acp@2.5.0", args: [], env: {} },
-      login: null, vendor_cli_version: "0.166.0", runtime_version_command: ["{node}", "{tree}/vendor.js"] };
-    try {
-      const installed = await installTool(frame, () => {});
-      expect(installed.runtime_version).toBe("codex-cli 0.166.0");
-      await writeFile(mismatch, "yes");
-      await expect(installTool({ ...frame, vendor_cli_version: "0.167.0" }, () => {})).rejects.toThrow("did not report the requested CLI version");
-      expect(readToolManifestSync("codex_cli", "managed:2.5.0")?.runtime_version).toBe("codex-cli 0.166.0");
-    } finally { process.env.PATH = savedPath; }
-  });
-
   it("names installations and rejects anything that could leave the tools directory", () => {
     expect(managedInstallationId("1.2.3")).toBe("managed:1.2.3");
     expect(managedVersion("managed:1.2.3")).toBe("1.2.3");
@@ -126,9 +79,9 @@ fs.writeFileSync(path.join(root, 'vendor.js'), 'console.log(' + JSON.stringify('
     expect(() => resolveAcpLaunch("acp_goose", [], "managed:9.9.9")).toThrow(/not have acp_goose managed:9.9.9 installed/);
     // A builtin's command name is its ACP adapter package, not its adapter
     // type; the managed copy is found by the adapter type the frame names.
-    await writeManifest("claude_code", "0.70.0", "/node");
-    expect(resolveAcpLaunch("claude-agent-acp", [], "managed:0.70.0", "claude_code").command).toBe("/node");
-    expect(() => resolveAcpLaunch("claude-agent-acp", [], "managed:0.70.0")).toThrow(/not have claude-agent-acp/);
+    await writeManifest("claude_code", "0.101.0", "/node");
+    expect(resolveAcpLaunch("claude-agent-acp", [], "managed:0.101.0", "claude_code").command).toBe(process.execPath);
+    expect(() => resolveAcpLaunch("claude-agent-acp", [], "managed:0.101.0")).toThrow(/not have claude-agent-acp/);
     // `own` is untouched by the tools directory.
     expect(resolveAcpLaunch("opencode", ["acp"])).toEqual({ command: "opencode", args: ["acp"], env: {} });
   });

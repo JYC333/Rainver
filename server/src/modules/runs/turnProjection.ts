@@ -187,6 +187,10 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[]): Turn
         break;
       }
       case "status": {
+        if (row.status && /^runtime_(?:auth_(?:none|available)|compact(?:ing|ed|ion_failed|ion_cancelled)|retry_(?:waiting|finished)|subagent_(?:running|waiting|done))$/.test(row.status)) {
+          openText = null;
+          append({ type: "diagnostic", level: "info", text: row.text ?? "", error_code: row.status });
+        }
         // Only ever downgrades to failed, for the same reason
         // `state_transition` does on the managed side: the host writes this
         // from inside the adapter, before it returns, which is several steps

@@ -3,7 +3,7 @@ import { LOGIN_TERMINAL_COLS, LOGIN_TERMINAL_ROWS } from "@rainver/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
-import { loggedIn, OWN_INSTALLATION, readToolManifestSync, renderManagedLoginCommand, toolsDir, type ToolLoginSpec, type ToolStateBoundary, renderManagedCommand } from "./tools.js";
+import { managedNativeCommand, loggedIn, OWN_INSTALLATION, readToolManifestSync, renderManagedLoginCommand, toolsDir, type ToolLoginSpec, type ToolStateBoundary, renderManagedCommand } from "./tools.js";
 import { parseAcpAuthMethods } from "./acpProbe.js";
 import { holdRuntimeKey, resolveAcpLaunch, substituteCwd } from "./execution.js";
 import { terminalAuthAvailable } from "./terminalAuth.js";
@@ -40,7 +40,9 @@ function resolveAuthAgentLaunch(frame: LoginOpenFrame): { command: string; args:
   if (frame.installation !== OWN_INSTALLATION) {
     const manifest = readToolManifestSync(frame.runtime_key, frame.installation);
     if (!manifest) throw new Error(`This daemon does not have ${frame.runtime_key} ${frame.installation} installed.`);
-    return { command: manifest.command, args: manifest.args, env: manifest.env, home: manifest.home };
+    const command = frame.runtime_key === "codex_cli" ? "codex-acp" : frame.runtime_key === "claude_code" ? "claude-agent-acp" : manifest.command;
+    const args = command === manifest.command ? manifest.args : [];
+    return { ...resolveAcpLaunch(command, args, frame.installation, frame.runtime_key), home: manifest.home };
   }
   if (!frame.argv?.length) throw new Error("This ACP authentication flow has no launch command");
   const home = homedir();
@@ -93,11 +95,11 @@ export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[];
   // placeholders can gain meanings after a copy was installed.
   const tree = join(toolsDir(), manifest.runtime_key, manifest.version);
   const login = frame.login ?? manifest.login;
-  const command = renderManagedLoginCommand(tree, login) ?? manifest.login_command;
+  const command = managedNativeCommand(manifest, login?.command) ?? renderManagedLoginCommand(tree, login) ?? manifest.login_command;
   if (!command) throw new Error("This installation does not declare a supported login method");
   return { command, env: sanitizedEnv({ ...manifest.env, ...login?.env }, manifest.home, frame.runtime_key), home: manifest.home, login,
     state: frame.state ?? null,
-    verification_command: renderManagedCommand(tree, login?.managed_verification_command) };
+    verification_command: managedNativeCommand(manifest, login?.verification_command) ?? renderManagedCommand(tree, login?.managed_verification_command) };
 }
 
 /**
@@ -120,7 +122,7 @@ function resolveLogoutCommand(
   if (!manifest) throw new Error(`This daemon does not have ${frame.runtime_key} ${frame.installation} installed.`);
   const login = frame.login ?? manifest.login;
   const tree = join(toolsDir(), manifest.runtime_key, manifest.version);
-  const specCommand = renderManagedCommand(tree, login?.managed_logout_command);
+  const specCommand = managedNativeCommand(manifest, login?.logout_command) ?? renderManagedCommand(tree, login?.managed_logout_command);
   const state = frame.state ?? null;
   if (specCommand) {
     return { command: specCommand, env: sanitizedEnv({ ...manifest.env, ...login?.env }, manifest.home, frame.runtime_key), home: manifest.home, login, state };

@@ -12,6 +12,10 @@
 
 import type { Pool, PoolClient } from "pg";
 
+const unsafeTransactions = new WeakSet<object>();
+/** Host tripwires poison a connection; caught plugin errors cannot make it reusable. */
+export function poisonTransaction(client: object): void { unsafeTransactions.add(client); }
+
 export async function withTransaction<T>(
   pool: Pool,
   fn: (client: PoolClient) => Promise<T>,
@@ -29,6 +33,7 @@ export async function withTransaction<T>(
       throw err;
     }
     try {
+      if (unsafeTransactions.has(client)) throw new Error("Unsafe transaction refused");
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
@@ -36,6 +41,6 @@ export async function withTransaction<T>(
     }
     return result;
   } finally {
-    client.release();
+    client.release(unsafeTransactions.has(client));
   }
 }

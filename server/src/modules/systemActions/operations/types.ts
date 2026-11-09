@@ -1,5 +1,5 @@
 import type { OperationBusinessError } from './errors.js';
-import type { OperationActor, SystemActionDefinition } from '@rainver/protocol';
+import type { OperationActor, RegisteredSystemActionDefinition as SystemActionDefinition } from '@rainver/protocol';
 import type { Queryable } from '../../routeUtils/common.js';
 import type { PolicyCheckRequest } from '@rainver/protocol';
 export interface OperationReadAuditPort {

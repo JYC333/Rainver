@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { HostServerFrameSchema, HostFolderReadFrameSchema, HostInstallToolFrameSchema, HostUpdateOwnToolFrameSchema, RuntimeProbeSchema, HostLaunchProviderBindingSchema } from "../src/hostWire.js";
+import { HostDaemonFrameSchema, HostServerFrameSchema, HostFolderReadFrameSchema, HostInstallToolFrameSchema, HostManagedCliFrameSchema, HostUpdateOwnToolFrameSchema, RuntimeProbeSchema, HostLaunchProviderBindingSchema } from "../src/hostWire.js";
 import { HostSkillFilesSchema, SkillImportPreviewRequestSchema, SkillImportRequestSchema } from "../src/skills.js";
+
+it("accepts completion from older Hosts and retains an executing Host's optional timezone", () => {
+  const frame = { type: "complete", run_id: "run-1", launch_id: "launch-1", exit_code: 0, timed_out: false, error: null };
+  expect(HostDaemonFrameSchema.parse(frame)).toEqual(frame);
+  expect(HostDaemonFrameSchema.parse({ ...frame, time_zone: "Asia/Tokyo" })).toMatchObject({ time_zone: "Asia/Tokyo" });
+  expect(HostDaemonFrameSchema.safeParse({ ...frame, time_zone: "" }).success).toBe(false);
+  expect(HostDaemonFrameSchema.safeParse({ ...frame, time_zone: "x".repeat(129) }).success).toBe(false);
+});
 
 it("discovers global Skills using opaque ids without accepting a caller filesystem path", () => {
   expect(HostServerFrameSchema.parse({ type: "skill_scan", request_id: "scan-1", path: "/private" })).toEqual({ type: "skill_scan", request_id: "scan-1" });
@@ -97,7 +105,7 @@ it("bounds Sources kernel tasks and rejects credential-bearing request headers",
 });
 
 it("carries only an exact managed vendor CLI version", () => {
-  const frame = { type: "install_tool", request_id: "install-1", runtime_key: "codex_cli", version: "2.5.0", distribution: { kind: "npx", package: "@agentclientprotocol/codex-acp@2.5.0", args: [], env: {} }, login: null, vendor_cli_version: "0.166.0" };
-  expect(HostInstallToolFrameSchema.parse(frame)).toMatchObject({ vendor_cli_version: "0.166.0" });
-  expect(HostInstallToolFrameSchema.safeParse({ ...frame, vendor_cli_version: "latest" }).success).toBe(false);
+  const frame = { type: "managed_cli", request_id: "install-1", runtime_key: "codex_cli", operation: { action: "update", version: "0.166.0" } };
+  expect(HostManagedCliFrameSchema.parse(frame)).toMatchObject({ operation: { version: "0.166.0" } });
+  expect(HostManagedCliFrameSchema.safeParse({ ...frame, operation: { action: "update", version: "latest" } }).success).toBe(false);
 });

@@ -1,3 +1,5 @@
+import {operationPackages} from "./operationRegistry.js";
+import {setOperationPluginEnabled} from "./lifecycle.js";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ServerConfig } from "../../config.js";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
@@ -11,7 +13,7 @@ import {
   withDbTransaction,
 } from "../routeUtils/common.js";
 import { requireSpaceOwnerOrAdmin, requireInstanceAdmin } from "../routeUtils/access.js";
-import { pluginService } from "./service.js";
+import { pluginServiceFor } from "./service.js";
 import { getOfficialPlugin } from "./registry.js";
 import { installOfficialPlugin } from "./installer.js";
 import { BUILT_IN_PLUGINS } from "./builtInPlugins.js";
@@ -30,7 +32,7 @@ async function requirePluginWritePermission(
   pluginId: string,
   reply: FastifyReply,
 ): Promise<boolean> {
-  const descriptor = getOfficialPlugin(pluginId);
+  const descriptor = getOfficialPlugin(pluginId,config);
   if (!descriptor) {
     reply.code(404).send({ detail: `Plugin not found: ${pluginId}` });
     return false;
@@ -51,7 +53,7 @@ export function registerRoutes(app: FastifyInstance, { config }: ModuleContext):
     try {
       const identity = await resolveIdentity(config, request, reply);
       if (!identity) return;
-      const items = await pluginService.listPlugins(db(), identity.spaceId, identity.userId);
+      const items = await pluginServiceFor(config).listPlugins(db(), identity.spaceId, identity.userId);
       reply.send({ items });
     } catch (err) {
       sendRouteError(reply, err);
@@ -67,7 +69,7 @@ export function registerRoutes(app: FastifyInstance, { config }: ModuleContext):
     try {
       const identity = await resolveIdentity(config, request, reply);
       if (!identity) return;
-      const map = await pluginService.getEffectiveMap(db(), identity.spaceId, identity.userId);
+      const map = await pluginServiceFor(config).getEffectiveMap(db(), identity.spaceId, identity.userId);
       reply.send({ plugins: map });
     } catch (err) {
       sendRouteError(reply, err);
@@ -83,11 +85,11 @@ export function registerRoutes(app: FastifyInstance, { config }: ModuleContext):
       const identity = await resolveIdentity(config, request, reply);
       if (!identity) return;
       const { pluginId } = request.params as { pluginId: string };
-      if (!pluginId || !getOfficialPlugin(pluginId)) {
+      if (!pluginId || !getOfficialPlugin(pluginId,config)) {
         reply.code(404).send({ detail: `Plugin not found: ${pluginId}` });
         return;
       }
-      const item = await pluginService.getPlugin(db(), pluginId, identity.spaceId, identity.userId);
+      const item = await pluginServiceFor(config).getPlugin(db(), pluginId, identity.spaceId, identity.userId);
       reply.send(item);
     } catch (err) {
       sendRouteError(reply, err);
@@ -115,7 +117,7 @@ export function registerRoutes(app: FastifyInstance, { config }: ModuleContext):
             source: "official",
           }),
       );
-      const item = await pluginService.getPlugin(db(), pluginId, identity.spaceId, identity.userId);
+      const item = await pluginServiceFor(config).getPlugin(db(), pluginId, identity.spaceId, identity.userId);
       reply.code(200).send({ install, item });
     } catch (err) {
       sendRouteError(reply, err);
@@ -136,10 +138,10 @@ export function registerRoutes(app: FastifyInstance, { config }: ModuleContext):
       const settings = settingsObject(body.settings);
       if (!(await requirePluginWritePermission(config, identity, pluginId, reply))) return;
 
-      const item = await withDbTransaction(
+      const item = operationPackages(config).some(p=>p.id===pluginId||p.operationManifest?.requires.includes(pluginId))?await setOperationPluginEnabled(config,pluginId,identity.spaceId,identity.userId,true,settings):await withDbTransaction(
         db(),
         (client) =>
-          pluginService.enablePlugin(
+          pluginServiceFor(config).enablePlugin(
             client,
             pluginId,
             identity.spaceId,
@@ -169,10 +171,10 @@ export function registerRoutes(app: FastifyInstance, { config }: ModuleContext):
       const { pluginId } = request.params as { pluginId: string };
       if (!(await requirePluginWritePermission(config, identity, pluginId, reply))) return;
 
-      const item = await withDbTransaction(
+      const item = operationPackages(config).some(p=>p.id===pluginId||p.operationManifest?.requires.includes(pluginId))?await setOperationPluginEnabled(config,pluginId,identity.spaceId,identity.userId,false):await withDbTransaction(
         db(),
         (client) =>
-          pluginService.disablePlugin(
+          pluginServiceFor(config).disablePlugin(
             client,
             pluginId,
             identity.spaceId,
@@ -210,7 +212,7 @@ export function registerRoutes(app: FastifyInstance, { config }: ModuleContext):
       const item = await withDbTransaction(
         db(),
         (client) =>
-          pluginService.patchSettings(
+          pluginServiceFor(config).patchSettings(
             client,
             pluginId,
             identity.spaceId,

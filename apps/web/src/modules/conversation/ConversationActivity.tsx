@@ -6,6 +6,7 @@ import { RunQuotaRecoveryControls, runQuotaRecovery } from '../runs/RunQuotaReco
 
 import { useRunActions } from '../runs/useRunActions'
 import { Button } from '../../components/ui/button'
+import { RunLiveInputControls } from '../runs/RunLiveInputControls'
 
 /** A compact, persistent companion to the chronological Room/Project transcript. */
 export function ConversationActivity({ runs, turns, agentName, onChanged, allowCommands = true }: {
@@ -55,7 +56,8 @@ function ActivityStop({ run, onChanged }: { run: Run; onChanged?: (run: Run) => 
   const scope = useConversationScope()
   const { t } = useAppTranslation()
   const actions = useRunActions(run.id, scope, next => onChanged?.(next))
-  return <div className="shrink-0">
+  return <div className="flex shrink-0 items-center gap-2">
+    <RunLiveInputControls run={run} scope={scope} onChanged={onChanged} />
     <Button type="button" size="sm" variant="outline" className="h-6 px-2" disabled={Boolean(actions.busy) || run.status === 'cancelling'} onClick={() => void actions.perform({ kind: 'stop' })}>
       <Square className="mr-1 size-3" />{t(run.status === 'cancelling' ? 'conversation_ui.run.stopping' : 'conversation_ui.run.stop')}
     </Button>

@@ -1,3 +1,6 @@
+import {pluginProposalContributor} from '../plugins/proposalContributions.js';
+import {operationProposalService} from "../systemActions/operations/approvals.js";
+import {pluginOperations} from "../plugins/operationRegistry.js";
 import { withPolicyAuditRecovery } from "../policy/auditWriter.js";
 import type {ProposalDecisionHooks} from "./decisionHooks.js";
 import { isProjectOwnerLevel } from "../projects/access.js";
@@ -205,7 +208,9 @@ export class PgProposalApplyService {
     config: ServerConfig,
     contributor?: ProposalApplierContributor,
   ): PgProposalApplyService {
-    return new PgProposalApplyService(config, createDefaultProposalApplierRegistry(contributor));
+    const registry=createDefaultProposalApplierRegistry(contributor??pluginProposalContributor(config));
+    const operations=pluginOperations(config);
+    return operations.length?operationProposalService(config,registry,new Map(operations.map(o=>[o.definition.id,o]))):new PgProposalApplyService(config,registry);
   }
 
   supportedProposalTypes(): ReadonlySet<string> {
@@ -330,8 +335,8 @@ export class PgProposalApplyService {
         return null;
       }
       await this.assertBundleMemberMayBeDecided(client, proposal.id, false);
-      const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
-      const definition = SYSTEM_ACTION_REGISTRY.find((item) => item.id === action.actionId);
+      const { loadSystemActionRegistry } = await import("../systemActions/registry.js");
+      const definition = (await loadSystemActionRegistry(this.config)).get(action.actionId);
       const payloadActionId = proposal.payload_json?.action_id;
       if (
         !definition
@@ -344,7 +349,7 @@ export class PgProposalApplyService {
         await client.query("ROLLBACK");
         return null;
       }
-      const grant = await new ActionApprovalGrantService(client).consumeMatching({
+      const grant = await new ActionApprovalGrantService(client,this.config).consumeMatching({
         spaceId: proposal.space_id,
         agentId: proposal.created_by_agent_id,
         actionId: action.actionId,
@@ -792,7 +797,7 @@ export class PgProposalApplyService {
     userId: string,
   ): Promise<void> {
     if (!proposal.project_folder_id) return;
-    const policy = await enforce(this.config, await loadActionRegistry(), {
+    const policy = await enforce(this.config, await loadActionRegistry(this.config), {
       action: "project_folder.write_patch",
       actor_type: "user",
       actor_id: userId,

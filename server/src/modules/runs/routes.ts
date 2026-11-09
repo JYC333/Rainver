@@ -2,7 +2,7 @@ import {OperationToolResponse} from "../systemActions/operations/agentResult.js"
 import { stateChangingReadAllowed } from "../../gateway/csrfOrigin.js";
 import { readRunFilePreview } from "./filePreview.js";
 import { randomUUID } from "node:crypto";
-import { QuotaRecoveryUpdateSchema } from "@rainver/protocol";
+import { RunLiveInputRequestSchema, QuotaRecoveryUpdateSchema } from "@rainver/protocol";
 import { updateQuotaRecovery } from "../rooms/quotaRecovery.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
@@ -23,6 +23,8 @@ import { RunMaterializationService } from "./materializationService.js";
 import { buildRunOrchestration } from "./orchestrationFactory.js";
 import { InvocationSnapshotService } from "../runtimeContext/index.js";
 import { loadRunTurn } from "./turnReadModel.js";
+import { liveInputChannel } from "./liveInput.js";
+import { submitRunLiveInput } from "./liveInputService.js";
 import {
   canonicalRunOutput,
   isHardTerminalRunStatus,
@@ -148,6 +150,28 @@ function commandServices(context: ModuleContext): RunsCommandServices {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  app.get("/api/v1/runs/:runId/live-input", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    try {
+      const runId = params(request).runId!;
+      const run = await authorizeRunCommand(commandServices(context).repository, identity, runId, "steer");
+      const channel = liveInputChannel(runId);
+      reply.header("cache-control", "no-store");
+      const available = run.status === "running" && Boolean(run.session_id) && channel?.available() === true;
+      return reply.send({ available, binding_id: available ? channel!.delivery.id : null });
+    } catch (error) { return sendRouteError(reply, error); }
+  });
+  app.post("/api/v1/runs/:runId/live-input", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    try {
+      const parsed = RunLiveInputRequestSchema.safeParse(jsonBody(request));
+      if (!parsed.success) return reply.code(422).send({ detail: "A binding_id and 1–8000 characters of additional input are required" });
+      const body = parsed.data;
+      return reply.send(await submitRunLiveInput(dbPool(context.config), context.config, identity, params(request).runId!, body.binding_id, body.content));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
   app.get("/api/v1/runs/:runId/file-preview", async (request, reply) => {
     if (!stateChangingReadAllowed(request, context.config.frontendUrl)) return reply.code(403).send({ detail: "Cross-site request refused" });
     const identity = await resolveIdentity(context, request, reply);

@@ -1,5 +1,82 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCliConversationController } from "../src/modules/runs/cliConversationProtocol.js";
+
+afterEach(() => { vi.useRealTimers(); });
+
+describe("ACP live input and owned native child sessions", () => {
+  function opened(supported = true) {
+    const sent: Record<string, unknown>[] = [];
+    let closed = false;
+    const send = (value: Record<string, unknown>) => { sent.push(value); };
+    const controller = createCliConversationController({ runtime_key: "codex_cli", cwd: "/workspace", prompt: "continue" })!;
+    const receive = (value: Record<string, unknown>) => controller.receive({ jsonrpc: "2.0", ...value }, send, () => { closed = true; });
+    controller.start(send);
+    receive({ id: 1, result: { protocolVersion: 1, agentInfo: { name: "@agentclientprotocol/codex-acp", version: "2.5.0" }, _meta: { steering: { supported } } } });
+    receive({ id: 2, result: { sessionId: "parent" } });
+    return { controller, sent, receive, closed: () => closed };
+  }
+  it("injects through the advertised extension and forbids adapter-owned idle fallback", async () => {
+    const s = opened();
+    expect(s.controller.canSteer?.()).toBe(true);
+    const delivery = s.controller.steer!([{ type: "text", text: "Also cover errors" }]);
+    const request = s.sent.at(-1)!;
+    expect(request).toMatchObject({ method: "_session/steering", params: { sessionId: "parent", _meta: { steering: { idleBehavior: "promptRequired" } } } });
+    s.receive({ id: request.id, result: { outcome: "injected" } });
+    await expect(delivery).resolves.toBe("injected");
+    expect(s.controller.result().completed).toBe(false);
+  });
+  it("does not close the stream before an in-flight steering acknowledgement arrives", async () => {
+    const s = opened(), delivery = s.controller.steer!([{ type: "text", text: "More" }]), id = s.sent.at(-1)!.id;
+    s.receive({ id: 4, result: { stopReason: "end_turn" } });
+    expect(s.closed()).toBe(false);
+    s.receive({ id, result: { outcome: "promptRequired" } });
+    await expect(delivery).resolves.toBe("promptRequired");
+    expect(s.closed()).toBe(true);
+  });
+  it("keeps the original turn working after an uncertain delivery and ignores its late acknowledgement", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = opened(), delivery = s.controller.steer!([{ type: "text", text: "More" }]), id = s.sent.at(-1)!.id;
+      const rejected = expect(delivery).rejects.toThrow("not acknowledged");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejected;
+      s.receive({ id, result: { outcome: "injected" } });
+      expect(s.controller.result().error).toBeNull();
+      s.receive({ id: 4, result: { stopReason: "end_turn" } });
+      expect(s.controller.result().completed).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+  it("settles a pending delivery when the owned process is cancelled", async () => {
+    const s = opened(), delivery = s.controller.steer!([{ type: "text", text: "More" }]);
+    s.controller.reject("Run cancelled");
+    await expect(delivery).rejects.toThrow("Run cancelled");
+    expect(s.controller.canSteer?.()).toBe(false);
+  });
+  it("does not send live input when the current runtime does not advertise it", async () => {
+    const s = opened(false);
+    expect(s.controller.canSteer?.()).toBe(false);
+    await expect(s.controller.steer!([{ type: "text", text: "More" }])).resolves.toBe("promptRequired");
+    expect(s.sent.some(frame => frame.method === "_session/steering")).toBe(false);
+  });
+  it("keeps declared child work alive, scopes its output, and waits for it to end", () => {
+    const s = opened();
+    const child = (state: string) => s.receive({ method: "session/update", params: { sessionId: "parent", update: { sessionUpdate: "subagent_update", sessionId: "child", state: { state } } } });
+    child("running");
+    s.receive({ method: "session/update", params: { sessionId: "child", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "child work" } } } });
+    s.receive({ id: 4, result: { stopReason: "end_turn" } });
+    expect(s.closed()).toBe(false);
+    expect(s.controller.result().text).toBe("");
+    child("idle");
+    expect(s.controller.result()).toMatchObject({ completed: true, error: null });
+    expect(s.closed()).toBe(true);
+  });
+  it("still rejects output from a session no owned parent declared", () => {
+    const s = opened();
+    s.receive({ method: "session/update", params: { sessionId: "foreign", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "foreign" } } } });
+    expect(s.controller.result().error).toContain("out-of-scope");
+    expect(s.closed()).toBe(true);
+  });
+});
 
 describe("Run-local tool directory negotiation", () => {
   for (const resumed of [false, true]) {

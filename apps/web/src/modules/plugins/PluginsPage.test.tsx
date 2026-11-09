@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import PluginsPage from './PluginsPage'
+import {pluginsApi} from '../../api/client'
 import i18n from '../../i18n'
 import { formatDate } from '../../i18n/format'
 
@@ -40,4 +41,10 @@ describe('Optional modules', () => {
     expect(screen.getByText('已安装 v1.0.0')).toBeInTheDocument()
     expect(screen.getByText(`启用于 ${formatDate('2026-07-25T00:00:00.000Z')}`)).toBeInTheDocument()
   })
+})
+
+
+it('keeps operation packages on the explicit offline installation path',async()=>{
+ vi.mocked(pluginsApi.list).mockResolvedValueOnce({items:[{descriptor:{id:'probe',name:'Probe',description:'Safe module',version:'1.0.0',category:'system',default_enabled:false,scope:'space',lifecycle_status:'available',permissions:{},operation_api:1},effective:{plugin_id:'probe',installed:false,enabled:false,visible:false,settings:{}}}]} as never)
+ render(<PluginsPage/>);expect(await screen.findByText('Installation requires the instance administrator’s offline upgrade.')).toBeInTheDocument();expect(screen.queryByRole('button',{name:/^Install$/})).toBeNull()
 })

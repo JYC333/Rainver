@@ -1,5 +1,5 @@
 import {listResearchOperationRefs} from './researchOperationDiscovery.js';
-import type {OperationActor,SystemActionDefinition} from '@rainver/protocol';
+import type {OperationActor,RegisteredSystemActionDefinition as SystemActionDefinition} from '@rainver/protocol';
 import type {Queryable} from '../routeUtils/common.js';
 import {HttpError} from '../routeUtils/common.js';
 import {assertProjectWriter,assertProjectWriterForMutation,lockActiveProjectForMutation} from '../projects/access.js';

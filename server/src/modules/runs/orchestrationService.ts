@@ -2765,7 +2765,8 @@ export class RunOrchestrationService {
         execution_channel: "local_cli",
         runtime_key: adapterResult.runtime_key,
         // Which copy ran it, as the host names it (`own` / `managed:<version>`).
-        runtime_tool_version: stringConfigValue(metadata.runtime_installation),
+        runtime_tool_version: stringConfigValue(recordValue(metadata.acp).version)
+          ?? stringConfigValue(metadata.runtime_installation),
         vendor: cliVendor(adapterResult.runtime_key),
         model: observation.model,
         run_id: run.id,
@@ -2788,6 +2789,9 @@ export class RunOrchestrationService {
         metadata: {
           ...(usageSourceId ? { runtime_context_audit_refs: auditRefs } : {}),
           cli_usage: recordValue(metadata.cli_usage),
+          acp: recordValue(metadata.acp),
+          runtime_installation: stringConfigValue(metadata.runtime_installation),
+          runtime_native_version: stringConfigValue(metadata.runtime_native_version),
         },
         dimensions: {
           runtime_profile_id: run.runtime_profile_id ?? null,

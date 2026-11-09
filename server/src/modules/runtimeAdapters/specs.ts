@@ -1,3 +1,4 @@
+import { REPOSITORY_ACP_ADAPTERS } from "@rainver/protocol";
 import { getDynamicRuntimeAdapterSpec, listDynamicRuntimeAdapterSpecs } from "./dynamicSpecs.js";
 
 export type RuntimeKey =
@@ -248,15 +249,6 @@ export interface RuntimeAdapterSpec {
   usage: {
     usage_accuracy: "precise" | "estimated" | "unknown";
     /**
-     * What the token usage on an ACP prompt result covers. `turn` is the sum
-     * over every model request the turn made (Claude Code, OpenCode).
-     * `last_request` is the last request's count alone, as `codex-acp`
-     * 1.12 builds it from Codex's `tokenUsage.last`: a lower bound for the
-     * turn, recorded as `usage_scope: "last_model_request"` on the ledger.
-     * Absent means `turn`.
-     */
-    acp_prompt_usage?: "turn" | "last_request";
-    /**
      * How long the vendor keeps a prompt cache warm after a request, in
      * seconds (Claude Code on a subscription: one hour; Codex: OpenAI's
      * in-memory default, five to ten minutes). A resumed session whose last
@@ -274,7 +266,7 @@ export interface RuntimeAdapterSpec {
      * at the quota gate; an unrecovered refusal ends a discussion at its cap.
      */
     quota_exhausted_patterns?: readonly string[];
-    /** Named captures: epoch, or hour/minute/period/zone for a local reset clock. */
+    /** Named captures: epoch, delay_hours/minutes/seconds, or hour/minute/period/zone. */
     quota_reset_patterns?: readonly string[];
   };
   output: {
@@ -380,7 +372,8 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     data_exposure: "provider",
     baseline_trust_level: "low",
     executable: { command: "claude-agent-acp", allow_path_override: true },
-    distribution: { registry_id: "claude-acp" },
+    distribution: { kind: "npx", package: `${REPOSITORY_ACP_ADAPTERS.claude_code.package}@${REPOSITORY_ACP_ADAPTERS.claude_code.version}`, args: [], env: {} },
+    distribution_version: REPOSITORY_ACP_ADAPTERS.claude_code.version,
     managed_runtime_version_command: ["{tree}/node_modules/@anthropic-ai/claude-agent-sdk-{node_platform}/claude", "--version"],
     invocation: {
       headless_command_template: ["{executable}"],
@@ -432,7 +425,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       permission_bypass_arg_template: [],
       permission_bypass_policy_key: "allow_permission_bypass",
     },
-    // claude-agent-acp 0.70: AskUserQuestion becomes a form
+    // Claude AskUserQuestion becomes a form
     // elicitation — one question in `message`, several as `question_<n>`
     // fields with the question in `description`.
     interaction: {
@@ -489,13 +482,10 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     side_effect_level: "workspace",
     data_exposure: "provider",
     baseline_trust_level: "low",
-    // `codex-acp` is the pinned ACP adapter, not the vendor CLI
-    // itself — it bundles a compatible `@openai/codex` and, absent
-    // `CODEX_PATH`, spawns that bundled copy directly. `remote_capability_probe`
-    // below still points capability checks at the vendor CLI name a trusted
-    // host actually reports.
+    // The Host release's ACP bridge drives the selected native Codex copy.
     executable: { command: "codex-acp", allow_path_override: true },
-    distribution: { registry_id: "codex-acp" },
+    distribution: { kind: "npx", package: `${REPOSITORY_ACP_ADAPTERS.codex_cli.package}@${REPOSITORY_ACP_ADAPTERS.codex_cli.version}`, args: [], env: {} },
+    distribution_version: REPOSITORY_ACP_ADAPTERS.codex_cli.version,
     managed_runtime_version_command: ["{node}", "{tree}/node_modules/@openai/codex/bin/codex.js", "--version"],
     invocation: {
       headless_command_template: ["{executable}"],
@@ -536,7 +526,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       provider_api: "openai_compatible",
     },
     permissions: { supports_permission_bypass: false },
-    // codex-acp 1.12: request_user_input becomes a form
+    // Codex request_user_input becomes a form
     // elicitation whose generic `message` is "Codex needs your input to
     // continue."; each question is a field whose `title` is the question.
     interaction: {
@@ -546,15 +536,16 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     },
     usage: {
       usage_accuracy: "precise",
-      // codex-acp 1.12 builds the prompt result's usage from Codex's
-      // `tokenUsage.last`: the turn's last model request, not its sum.
-      acp_prompt_usage: "last_request",
       prompt_cache_ttl_seconds: 10 * 60,
       supports_usage_probe: false,
       // `usage_limit_reached`; "You've hit your usage limit. … try again in 2 hours".
       quota_exhausted_patterns: [
         "usage_limit_reached",
         "you['’]ve (hit|reached) your usage limit",
+      ],
+      quota_reset_patterns: [
+        "try again at\\s+(?<hour>\\d{1,2})(?::(?<minute>\\d{2}))?\\s*(?<period>am|pm)(?:\\s*\\((?<zone>[^)]+)\\))?",
+        "try again in\\s+(?:(?<delay_hours>\\d+)\\s*hours?\\s*)?(?:(?<delay_minutes>\\d+)\\s*minutes?\\s*)?(?:(?<delay_seconds>\\d+)\\s*seconds?)?",
       ],
     },
     output: {

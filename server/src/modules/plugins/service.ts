@@ -1,3 +1,4 @@
+import type { ServerConfig } from "../../config.js";
 import type {
   OfficialPluginDescriptor,
   OfficialPluginEffectiveState,
@@ -5,7 +6,7 @@ import type {
   OfficialPluginEffectiveMap,
 } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
-import { getOfficialPlugin, listOfficialPlugins } from "./registry.js";
+import { getOfficialPlugin, listOfficialPlugins,operationPluginPending,operationContract } from "./registry.js";
 import {
   pluginRepository,
   type PluginEnablementRow,
@@ -13,14 +14,22 @@ import {
 } from "./repository.js";
 import { HttpError } from "../routeUtils/common.js";
 
+function contractReady(descriptor:OfficialPluginDescriptor,install:PluginInstallRow|null,expected?:string){
+ return !descriptor.operation_api||!!install&&install.installed_version===descriptor.version&&install.manifest_json?.operation_api===1&&install.manifest_json.operation_contract===expected;
+}
 function rowToEffective(
   descriptor: OfficialPluginDescriptor,
   row: PluginEnablementRow | null,
   install: PluginInstallRow | null,
+  pending=false,
+  expected?:string,
 ): OfficialPluginEffectiveState {
-  const installed = install?.status === "active";
+  const ready=contractReady(descriptor,install,expected);
+  const installed = install?.status === "active" && (install.lifecycle_state??"installed")==="installed"&&!pending&&ready;
+  const lifecycle=descriptor.operation_api?{lifecycle_state:pending?"pending_dependency":!ready&&install?"migration_pending":install?.lifecycle_state??"registered",lifecycle_error:install?.lifecycle_error??null}:{};
   if (!row) {
     return {
+      ...lifecycle,
       plugin_id: descriptor.id,
       installed,
       install_status: install?.status ?? null,
@@ -32,6 +41,7 @@ function rowToEffective(
     };
   }
   return {
+    ...lifecycle,
     plugin_id: descriptor.id,
     installed,
     install_status: install?.status ?? null,
@@ -74,12 +84,13 @@ function rowMatchesDescriptor(
 }
 
 export const pluginService = {
+  config:undefined as ServerConfig|undefined,
   async listPlugins(
     db: Queryable,
     spaceId: string,
     userId: string,
   ): Promise<OfficialPluginListItem[]> {
-    const descriptors = listOfficialPlugins();
+    const descriptors = listOfficialPlugins(this.config);
     const rows = await pluginRepository.findAllForContext(db, spaceId, userId);
     const installs = await pluginRepository.findAllInstalls(db);
 
@@ -89,6 +100,7 @@ export const pluginService = {
         d,
         rows.find((row) => row.plugin_id === d.id && rowMatchesDescriptor(d, row)) ?? null,
         installs.find((install) => install.plugin_id === d.id) ?? null,
+        operationPluginPending(d.id,this.config),operationContract(d.id,this.config),
       ),
     }));
   },
@@ -112,14 +124,14 @@ export const pluginService = {
     spaceId: string,
     userId: string,
   ): Promise<OfficialPluginListItem> {
-    const descriptor = getOfficialPlugin(pluginId);
+    const descriptor = getOfficialPlugin(pluginId,this.config);
     if (!descriptor) {
       throw new HttpError(404, `Plugin not found: ${pluginId}`);
     }
     const { scopeSpaceId, scopeUserId } = scopeKeys(descriptor, spaceId, userId);
     const row = await pluginRepository.findEnablement(db, pluginId, scopeSpaceId, scopeUserId);
     const install = await pluginRepository.findInstall(db, pluginId);
-    return { descriptor, effective: rowToEffective(descriptor, row, install) };
+    return { descriptor, effective: rowToEffective(descriptor, row, install,operationPluginPending(pluginId,this.config),operationContract(pluginId,this.config)) };
   },
 
   async enablePlugin(
@@ -129,12 +141,12 @@ export const pluginService = {
     userId: string,
     opts: { settings?: Record<string, unknown> },
   ): Promise<OfficialPluginListItem> {
-    const descriptor = getOfficialPlugin(pluginId);
+    const descriptor = getOfficialPlugin(pluginId,this.config);
     if (!descriptor) {
       throw new HttpError(404, `Plugin not found: ${pluginId}`);
     }
     const install = await pluginRepository.findInstall(db, pluginId);
-    if (install?.status !== "active") {
+    if (install?.status !== "active"||(install.lifecycle_state??"installed")!=="installed"||!contractReady(descriptor,install,operationContract(pluginId,this.config))) {
       throw new HttpError(409, `Plugin is not installed: ${pluginId}`);
     }
     const { scopeSpaceId, scopeUserId } = scopeKeys(descriptor, spaceId, userId);
@@ -146,7 +158,7 @@ export const pluginService = {
       settings: opts.settings,
       actorUserId: userId,
     });
-    return { descriptor, effective: rowToEffective(descriptor, row, install) };
+    return { descriptor, effective: rowToEffective(descriptor, row, install,operationPluginPending(pluginId,this.config),operationContract(pluginId,this.config)) };
   },
 
   async disablePlugin(
@@ -155,7 +167,7 @@ export const pluginService = {
     spaceId: string,
     userId: string,
   ): Promise<OfficialPluginListItem> {
-    const descriptor = getOfficialPlugin(pluginId);
+    const descriptor = getOfficialPlugin(pluginId,this.config);
     if (!descriptor) {
       throw new HttpError(404, `Plugin not found: ${pluginId}`);
     }
@@ -168,7 +180,7 @@ export const pluginService = {
       actorUserId: userId,
     });
     const install = await pluginRepository.findInstall(db, pluginId);
-    return { descriptor, effective: rowToEffective(descriptor, row, install) };
+    return { descriptor, effective: rowToEffective(descriptor, row, install,operationPluginPending(pluginId,this.config),operationContract(pluginId,this.config)) };
   },
 
   async patchSettings(
@@ -178,7 +190,7 @@ export const pluginService = {
     userId: string,
     settings: Record<string, unknown>,
   ): Promise<OfficialPluginListItem> {
-    const descriptor = getOfficialPlugin(pluginId);
+    const descriptor = getOfficialPlugin(pluginId,this.config);
     if (!descriptor) {
       throw new HttpError(404, `Plugin not found: ${pluginId}`);
     }
@@ -194,7 +206,7 @@ export const pluginService = {
     });
 
     const install = await pluginRepository.findInstall(db, pluginId);
-    return { descriptor, effective: rowToEffective(descriptor, row, install) };
+    return { descriptor, effective: rowToEffective(descriptor, row, install,operationPluginPending(pluginId,this.config),operationContract(pluginId,this.config)) };
   },
 
   /** Check whether a plugin is enabled for the given space/user. Used by guards. */
@@ -204,7 +216,7 @@ export const pluginService = {
     spaceId: string,
     userId: string | null,
   ): Promise<{ exists: boolean; installed: boolean; enabled: boolean }> {
-    const descriptor = getOfficialPlugin(pluginId);
+    const descriptor = getOfficialPlugin(pluginId,this.config);
     if (!descriptor) return { exists: false, installed: false, enabled: false };
 
     // User-scoped plugins require a concrete userId — fail closed when absent.
@@ -213,7 +225,7 @@ export const pluginService = {
     }
 
     const install = await pluginRepository.findInstall(db, pluginId);
-    const installed = install?.status === "active";
+    const installed=install?.status==='active'&&(install.lifecycle_state??'installed')==='installed'&&!operationPluginPending(pluginId,this.config)&&contractReady(descriptor,install,operationContract(pluginId,this.config));
     if (!installed) return { exists: true, installed: false, enabled: false };
 
     const { scopeSpaceId, scopeUserId } = scopeKeys(descriptor, spaceId, userId ?? "");
@@ -222,3 +234,6 @@ export const pluginService = {
     return { exists: true, installed, enabled: row.enabled };
   },
 };
+
+/** Config-local descriptor view. The legacy singleton intentionally sees core descriptors only. */
+export function pluginServiceFor(config?:ServerConfig){return {...pluginService,config};}

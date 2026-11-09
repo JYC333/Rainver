@@ -1,3 +1,5 @@
+import {pluginUiEn} from './pluginUi.en'
+import {pluginUiZhCN} from './pluginUi.zh-CN'
 import { boardUiEn } from './boardUi.en'
 import { cliToolsUiEn } from './cliToolsUi.en'
 import { cliToolsUiZhCN } from './cliToolsUi.zh-CN'
@@ -40,6 +42,8 @@ import { skillPackagesEn } from './skillPackages.en'
 import { skillPackagesZhCN } from './skillPackages.zh-CN'
 import { conversationUiEn } from './conversationUi.en'
 import { conversationUiZhCN } from './conversationUi.zh-CN'
+import { runtimeFailureUiEn } from './runtimeFailureUi.en'
+import { runtimeFailureUiZhCN } from './runtimeFailureUi.zh-CN'
 import { sessionsUiEn } from './sessionsUi.en'
 import { sessionsUiZhCN } from './sessionsUi.zh-CN'
 import { managementUiEn } from './managementUi.en'
@@ -76,8 +80,8 @@ void i18n.use(initReactI18next).init({
   fallbackLng: 'en',
   supportedLngs: ['en', 'zh-CN'],
   resources: {
-    en: { translation: { ...en, ...projectReadingEn, ...sourceGoalsEn, ...sourceTopicsEn, ...readingEn, ...readingMethodEn, ...researchReportEn, ...monitoringEn, home: homeEn, evolution: evolutionEn, digest_reports: digestReportsEn, briefing: briefingEn, ...mixedSurfacesEn, ...publicAuthEn, ...conversationRetrievalEn, ...skillPackagesEn, ...conversationUiEn, ...sessionsUiEn, ...managementUiEn, ...activityUiEn, ...knowledgeUiEn, ...coreUiEn, ...sourcesUiEn, ...workspaceUiEn, ...boardUiEn, ...cliToolsUiEn, ...commandCenterUiEn } },
-    'zh-CN': { translation: { ...zhCN, ...projectReadingZhCN, ...sourceGoalsZhCN, ...sourceTopicsZhCN, ...readingZhCN, ...readingMethodZhCN, ...researchReportZhCN, ...monitoringZhCN, home: homeZhCN, evolution: evolutionZhCN, digest_reports: digestReportsZhCN, briefing: briefingZhCN, ...mixedSurfacesZhCN, ...publicAuthZhCN, ...conversationRetrievalZhCN, ...skillPackagesZhCN, ...conversationUiZhCN, ...sessionsUiZhCN, ...managementUiZhCN, ...activityUiZhCN, ...knowledgeUiZhCN, ...coreUiZhCN, ...sourcesUiZhCN, ...workspaceUiZhCN, ...boardUiZhCN, ...cliToolsUiZhCN, ...commandCenterUiZhCN } },
+    en: { translation: { ...en, ...projectReadingEn, ...sourceGoalsEn, ...sourceTopicsEn, ...readingEn, ...readingMethodEn, ...researchReportEn, ...monitoringEn, home: homeEn, evolution: evolutionEn, digest_reports: digestReportsEn, briefing: briefingEn, ...mixedSurfacesEn, ...publicAuthEn, ...conversationRetrievalEn, ...skillPackagesEn, ...conversationUiEn, ...sessionsUiEn, ...managementUiEn, ...activityUiEn, ...knowledgeUiEn, ...coreUiEn, ...sourcesUiEn, ...workspaceUiEn, ...boardUiEn, ...cliToolsUiEn, ...commandCenterUiEn, ...runtimeFailureUiEn, ...pluginUiEn } },
+    'zh-CN': { translation: { ...zhCN, ...projectReadingZhCN, ...sourceGoalsZhCN, ...sourceTopicsZhCN, ...readingZhCN, ...readingMethodZhCN, ...researchReportZhCN, ...monitoringZhCN, home: homeZhCN, evolution: evolutionZhCN, digest_reports: digestReportsZhCN, briefing: briefingZhCN, ...mixedSurfacesZhCN, ...publicAuthZhCN, ...conversationRetrievalZhCN, ...skillPackagesZhCN, ...conversationUiZhCN, ...sessionsUiZhCN, ...managementUiZhCN, ...activityUiZhCN, ...knowledgeUiZhCN, ...coreUiZhCN, ...sourcesUiZhCN, ...workspaceUiZhCN, ...boardUiZhCN, ...cliToolsUiZhCN, ...commandCenterUiZhCN, ...runtimeFailureUiZhCN, ...pluginUiZhCN } },
   },
   interpolation: { escapeValue: false }, // React escapes text when it renders.
   initAsync: false,

@@ -126,7 +126,7 @@ export type GroupedRunTrigger =
 export class PgRunRepository {
   private readonly usageRepository: PgUsageRepository;
 
-  constructor(private readonly db: Queryable) {
+  constructor(private readonly db: Queryable,private readonly config?:ServerConfig) {
     this.usageRepository = new PgUsageRepository(db);
   }
 
@@ -149,7 +149,7 @@ export class PgRunRepository {
     if (!config.databaseUrl) {
       throw new Error("Run repository requires SERVER_DATABASE_URL");
     }
-    return new PgRunRepository(getDbPool(config.databaseUrl));
+    return new PgRunRepository(getDbPool(config.databaseUrl),config);
   }
 
   async recoverStaleRuns(staleAfterSeconds = 3600, now = new Date()): Promise<number> {
@@ -793,6 +793,7 @@ export class PgRunRepository {
       input.scenario_tool_allowance
         ? { allowed_tools: [...input.scenario_tool_allowance] }
         : agentVersion.tool_permissions_json,
+      {db:this.db,spaceId:input.space_id,userId:input.user_id,config:this.config},
     );
     const toolGrants = input.trigger_origin === "autonomous"
       ? declaredToolGrants.filter((grant) =>
@@ -1891,12 +1892,14 @@ export class PgRunRepository {
     return withQueryableTransaction(this.db, async (db) => {
       const selected = await db.query<{
         current_version_id: string;
+        space_id:string;
+        instructed_by_user_id:string|null;
         capabilities_json: unknown;
         trigger_origin: string;
         permission_snapshot_json: unknown;
         tool_permissions_json: unknown;
       }>(
-        `SELECT agent.current_version_id, run.capabilities_json, run.trigger_origin,
+        `SELECT agent.current_version_id, run.space_id, run.instructed_by_user_id, run.capabilities_json, run.trigger_origin,
                 run.permission_snapshot_json,
                 version.tool_permissions_json
            FROM runs run
@@ -1927,6 +1930,7 @@ export class PgRunRepository {
         scenarioToolAllowance !== undefined
           ? { allowed_tools: scenarioToolAllowance }
           : row.tool_permissions_json,
+        {db,spaceId:row.space_id,userId:row.instructed_by_user_id??null,config:this.config},
       );
       const toolGrants = row.trigger_origin === "autonomous"
         ? grants.filter((grant) =>
@@ -2995,6 +2999,32 @@ export class PgRunRepository {
    * Appends one Run event. Returns null only for an event of an attempt a
    * retry has superseded (`input.attempt_number`), which is dropped.
    */
+  /** A command-authorized live Message on the currently executing attempt.
+   * Ordinary Messages cannot replace a Run's immutable triggering Message. */
+  async isPendingLiveInputMessage(spaceId: string, runId: string, messageId: string, userId: string): Promise<boolean> {
+    const result = await this.db.query<{ allowed: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM run_events event
+         JOIN runs run ON run.id=event.run_id AND run.space_id=event.space_id
+         JOIN invocation_snapshots snapshot
+           ON snapshot.delivery_id=event.metadata_json->>'binding_id'
+          AND snapshot.invocation_id=event.run_id AND snapshot.space_id=event.space_id
+         JOIN actors actor ON actor.id=event.actor_id AND actor.space_id=event.space_id
+         WHERE event.space_id=$1 AND event.run_id=$2 AND actor.user_id=$4 AND actor.actor_type='user' AND actor.status='active'
+           AND event.event_type='action_invoked' AND event.status='pending' AND event.metadata_json->>'action_name'='run.live_input'
+           AND event.metadata_json->>'message_id'=$3 AND run.status='running'
+           AND event.attempt_number IS NOT DISTINCT FROM
+             (SELECT MAX(attempt_number) FROM run_attempts WHERE space_id=$1 AND run_id=$2)
+           AND NOT EXISTS (
+             SELECT 1 FROM run_events settled WHERE settled.space_id=event.space_id AND settled.run_id=event.run_id
+               AND settled.event_type='action_completed' AND settled.metadata_json->>'action_name'='run.live_input'
+               AND settled.metadata_json->>'message_id'=$3 AND settled.event_index>event.event_index
+           )
+       ) AS allowed`, [spaceId, runId, messageId, userId],
+    );
+    return result.rows[0]?.allowed === true;
+  }
+
   async appendRunEvent(input: RunEventInput): Promise<RunEventRecord | null> {
     // Two writers append to one Run at once — the runtime event sink and a
     // tool call's own HTTP request — and MAX()+1 computed on two connections

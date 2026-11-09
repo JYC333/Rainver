@@ -197,6 +197,18 @@ DATABASE_URL=postgresql://... ./ops/scripts/db/migrate.sh --host [--mode dev|tes
 PRE_MIGRATION_BACKUP=1 ./ops/scripts/db/migrate.sh --mode dev
 ./ops/scripts/db/migrate.sh --mode dev --pre-migration-backup
 
+# Operation-manifest package changes also require the existing stopped-writer
+# maintenance path on an existing database; pending/status checks use the image's
+# compiled packages. No package changes means no plugin role DDL on ordinary up.
+# Explicit owner-only diagnostics/repair, from server/ using the matching built
+# image/packages, applications stopped and a verified pre-change backup:
+# node dist/db/migrateCli.js plugin-install [--repair-failed]
+# node dist/db/migrateCli.js plugin-reconcile
+# These raw CLI commands do not stop apps or make a backup themselves. Never run
+# them against production without explicit operational authorization. Both restore
+# scripts call plugin-reconcile after --no-owner --no-acl restore. Legacy plugin
+# public migrations are excluded from the operation-package installer/reconcile.
+
 # Dump database to $RAINVER_ROOT/<mode>/db/dumps/
 ./ops/scripts/db/dump.sh
 
@@ -449,6 +461,24 @@ pnpm run build
 
 ```
 
+## ACP Recovery Verification
+
+Focused ACP recovery acceptance (no real credentials or inference):
+
+```bash
+cd packages/host-daemon
+pnpm exec vitest run test/acpConformance.test.ts test/acpCleanup.test.ts
+cd ../../apps/web
+pnpm run build
+node --test src/__tests__/runtime-recovery.browser.mjs
+```
+
+The browser fixture uses synthetic APIs; screenshots are written under
+`/tmp/rainver-acp-experience-shots` (`RUNTIME_RECOVERY_SHOTS` overrides it).
+The native-process fixtures isolate HOME and configuration, while the ACP
+packages are the actual lockfile pins. Upstream account/inference availability
+still requires separate real-account acceptance.
+
 ## SQL Guards
 
 Two layers, both prepare real statements against a migrated schema so a bad
@@ -641,3 +671,37 @@ they must not inherit test's zero-legacy-Step assumption. The original0020 secti
 history's canonical top-level ACL/provenance fields. Source histories0009–0021
 require ADR0025 frozen-pair conversion before starting the composed chain;
 never rewrite checksums or use ordinary up to replace applied history.
+
+### Current ACP compatibility verification
+
+From `packages/host-daemon`, run `pnpm exec vitest run test/acpConformance.test.ts
+test/acpCleanup.test.ts test/adapterInstallation.test.ts` (arguments on one line).
+The actual resolved wrappers use isolated fake native processes, no live login
+or inference. Workspace postinstall prepares Claude cleanup; to repeat use
+`node tools/acp/prepare-adapters.mjs packages/host-adapters packages/host-daemon`
+from the root. Scheduled/manual CI resolves latest stable candidates while
+ordinary frozen installs preserve the lockfile snapshot.
+The repository ACP catalog lives in `packages/protocol/src/acpAdapters.json`;
+preparation verifies it against the installed distributions. Native CLI updates
+use the Host controls independently of the bridge release.
+
+From `apps/web`, build first, then run `node --test --test-name-pattern='live input'
+src/__tests__/runtime-recovery.browser.mjs` (one line). Set `CHROMIUM_EXECUTABLE`
+when Chromium is outside Playwright's default cache. Screenshots default to
+`/tmp/rainver-acp-experience-shots`; browser routes use offline fixtures.
+
+## Operation plugin platform acceptance (isolated tests only)
+
+Use Node 24 and the existing Playwright Chromium (CHROMIUM_EXECUTABLE can select
+another installed executable); no product DB or role changes are needed.
+
+```bash
+REQUIRE_TEST_POSTGRES=true PLUGIN_VISUAL_OUT=/tmp/rainver-plugin-platform-visual \
+  pnpm --dir server exec vitest run test/pluginFrontendDb.test.ts --maxWorkers=1
+```
+
+This starts a local Vite acceptance-mode frontend against focused real-PG server
+modules, drives actual operations/Proposal/Jobs/restore and emits screenshots
+outside the repo. Authentication bootstrap/seams select seeded real people; domain data is
+real isolated PG (not cookie/SSO acceptance). Normal frontend builds do not activate the demonstration plugin.
+See [the permanent matrix](architecture/OFFICIAL_OPTIONAL_MODULES.md#operation-platform-acceptance).

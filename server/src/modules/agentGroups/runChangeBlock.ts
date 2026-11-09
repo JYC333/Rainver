@@ -1,3 +1,5 @@
+import {RunToolGrantSchema} from "@rainver/protocol";
+import type {ServerConfig} from "../../config.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { buildRunToolGrants } from "../systemActions/runToolGrants.js";
 import { INPUT_RESOURCE_TOOL_ALLOWANCE } from "../systemActions/scenarioToolAllowance.js";
@@ -246,13 +248,15 @@ export async function loadRunChanges(
 export async function grantRunChangeReadTools(
   db: Queryable,
   run: { space_id: string; id: string },
+  config?:ServerConfig,
 ): Promise<void> {
   const selected = await db.query<{
+    instructed_by_user_id:string|null;
     capabilities_json: unknown;
     permission_snapshot_json: unknown;
     trigger_origin: string | null;
   }>(
-    `SELECT capabilities_json, permission_snapshot_json, trigger_origin
+    `SELECT instructed_by_user_id, capabilities_json, permission_snapshot_json, trigger_origin
        FROM runs
       WHERE space_id = $1 AND id = $2 AND status = 'queued'
       FOR UPDATE`,
@@ -271,7 +275,9 @@ export async function grantRunChangeReadTools(
   if (INPUT_RESOURCE_TOOL_ALLOWANCE.every((action) => capabilities.includes(action) && allowance.includes(action))) return;
   const nextCapabilities = [...new Set([...capabilities, ...INPUT_RESOURCE_TOOL_ALLOWANCE])];
   const nextAllowance = [...new Set([...allowance, ...INPUT_RESOURCE_TOOL_ALLOWANCE])];
-  const grants = await buildRunToolGrants(nextCapabilities, { allowed_tools: nextAllowance });
+  const additions = await buildRunToolGrants(INPUT_RESOURCE_TOOL_ALLOWANCE, {allowed_tools:INPUT_RESOURCE_TOOL_ALLOWANCE},{db,spaceId:run.space_id,userId:row.instructed_by_user_id,config});
+  const prior=(Array.isArray(snapshot.tool_grants)?snapshot.tool_grants:[]).flatMap(value=>{const parsed=RunToolGrantSchema.safeParse(value);return parsed.success?[parsed.data]:[];});
+  const grants=[...new Map([...prior,...additions].map(grant=>[grant.action_id,grant])).values()];
   const toolGrants = row.trigger_origin === "autonomous"
     ? grants.filter((grant) => grant.action_id !== "authorization.request" && !grant.side_effecting)
     : grants;

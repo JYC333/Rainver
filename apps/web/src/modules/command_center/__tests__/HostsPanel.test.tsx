@@ -14,7 +14,7 @@ vi.mock('../../../api/client', () => ({
     list: vi.fn(), pairingCode: vi.fn(), revoke: vi.fn(), listRuntimeDefinitions: vi.fn(),
     // Subscription quota is read on the host and cached server-side; the card
     // reads the cache when it mounts.
-    usage: vi.fn(), refreshUsage: vi.fn(), installRuntime: vi.fn(), rollbackRuntime: vi.fn(),
+    usage: vi.fn(), refreshUsage: vi.fn(), installRuntime: vi.fn(), updateManagedRuntime: vi.fn(), rollbackRuntime: vi.fn(),
     serverRuntimeProvisioning: vi.fn(), retryServerRuntimeProvisioning: vi.fn(),
   },
 }))
@@ -440,7 +440,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
   })
 
   it('keeps rollback in version management and asks for it by adapter', async () => {
-    vi.mocked(hostsApi.list).mockResolvedValue({ items: [CLAUDE_HOST] })
+    vi.mocked(hostsApi.list).mockResolvedValue({ items: [{ ...CLAUDE_HOST, capabilities_json: { ...CLAUDE_HOST.capabilities_json, managed_cli_updates: true } }] })
     vi.mocked(hostsApi.usage).mockResolvedValue({ items: [] })
     vi.mocked(hostsApi.rollbackRuntime).mockResolvedValue({
       host_id: 'host-1', runtime_key: 'claude_code', ok: true, error: null, installation: 'managed:1.0.0',
@@ -457,21 +457,22 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     await waitFor(() => expect(hostsApi.rollbackRuntime).toHaveBeenCalledWith('host-1', 'claude_code'))
   })
 
-  it('shows only the vendor CLI version, and offers upgrade when the internal package has changed', async () => {
+  it('shows the vendor CLI version and upgrades its newer native release', async () => {
     vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({
-      items: [{ ...CLAUDE_ADAPTER, latest_managed_version: '3.0.0', reports_managed_cli_version: true }],
+      items: [{ ...CLAUDE_ADAPTER, latest_managed_version: null, latest_own_version: '2.1.5', reports_managed_cli_version: true }],
     })
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [{
       ...CLAUDE_HOST,
       capabilities_json: {
         ...CLAUDE_HOST.capabilities_json,
+        managed_cli_updates: true,
         installations: { claude_code: [{
           ...CLAUDE_HOST.capabilities_json.installations.claude_code[0],
           runtime_version: 'claude 2.1.4 (Claude Code)',
         }] },
       },
     }] })
-    vi.mocked(hostsApi.installRuntime).mockResolvedValue({
+    vi.mocked(hostsApi.updateManagedRuntime).mockResolvedValue({
       host_id: 'host-1', runtime_key: 'claude_code', ok: true, error: null, installation: 'managed:3.0.0',
     })
     renderPanel()
@@ -479,7 +480,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     expect(await screen.findByText('managed · 2.1.4 · logged in')).toBeInTheDocument()
     expect(screen.queryByText(/ACP/i)).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Upgrade Claude Code on Laptop' }))
-    await waitFor(() => expect(hostsApi.installRuntime).toHaveBeenCalledWith('host-1', 'claude_code'))
+    await waitFor(() => expect(hostsApi.updateManagedRuntime).toHaveBeenCalledWith('host-1', 'claude_code'))
   })
 
   it('hides the upgrade icon when the managed package is current', async () => {

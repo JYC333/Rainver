@@ -11,6 +11,7 @@ import { Pool } from "pg";
 
 const pools = new Map<string, Pool>();
 const auditPools = new Map<string, Pool>();
+const pluginControlPools = new Map<string, Pool>();
 
 export type { Pool, PoolClient } from "pg";
 
@@ -65,6 +66,14 @@ export function getOperationAuditPool(databaseUrl: string): Pool {
   return pool;
 }
 
+/** Independent bounded lifecycle probes/cancellation must never consume audit capacity. */
+export function getPluginControlPool(databaseUrl:string):Pool {
+ if(inOperationWork())throw new Error('Plugin control pool refused during operation work');
+ let pool=pluginControlPools.get(databaseUrl);
+ if(!pool){pool=new Pool({connectionString:databaseUrl,max:2,connectionTimeoutMillis:5000,options:'-c jit=off'});pool.on('connect',client=>client.on('error',()=>{}));pool.on('error',()=>{});pluginControlPools.set(databaseUrl,pool);}
+ return pool;
+}
+
 /**
  * Ends and forgets the cached pool for `databaseUrl`, if any. Tests drop
  * their per-file database in teardown, and `DROP DATABASE` waits on any
@@ -72,8 +81,9 @@ export function getOperationAuditPool(databaseUrl: string): Pool {
  * share a worker.
  */
 export async function closeDbPool(databaseUrl: string): Promise<void> {
-  const closing = [pools.get(databaseUrl), auditPools.get(databaseUrl)];
+  const closing = [pools.get(databaseUrl), auditPools.get(databaseUrl),pluginControlPools.get(databaseUrl)];
   pools.delete(databaseUrl);
   auditPools.delete(databaseUrl);
+  pluginControlPools.delete(databaseUrl);
   await Promise.all(closing.map(pool => pool?.end()));
 }

@@ -16,11 +16,11 @@ export async function installOfficialPlugin(
   plugins: readonly RainverPlugin[],
   opts: InstallPluginOptions,
 ): Promise<PluginInstallRow> {
-  const descriptor = getOfficialPlugin(pluginId);
-  if (!descriptor) throw new HttpError(404, `Plugin not found: ${pluginId}`);
-
-  const plugin = plugins.find((candidate) => candidate.id === pluginId);
-  if (!plugin) throw new HttpError(404, `Plugin runtime not found: ${pluginId}`);
+  const plugin = plugins.find(candidate=>candidate.id===pluginId);
+  if(!plugin)throw new HttpError(404,`Plugin runtime not found: ${pluginId}`);
+  if(plugin.operationManifest)throw new HttpError(409,'Operation packages require the offline installer');
+  const descriptor=getOfficialPlugin(pluginId);
+  if(!descriptor)throw new HttpError(404,`Plugin not found: ${pluginId}`);
 
   for (const migration of plugin.migrations ?? []) {
     const checksum = sha256(migration.sql);

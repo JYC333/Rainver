@@ -252,6 +252,7 @@ export default async function setup(project: GlobalSetupProject): Promise<() => 
 
     const context: SharedPostgresContext = {
       available: true,
+      containerId:container.getId(),
       adminUri,
       templateDatabase,
       runId,

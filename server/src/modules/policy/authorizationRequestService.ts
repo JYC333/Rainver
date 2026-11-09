@@ -104,7 +104,7 @@ export class AuthorizationRequestService {
       }
       if (!run.instructed_by_user_id) throw new HttpError(409, "Run has no instructing user who can review authorization");
 
-      const requestClass = await classifyRequestableDecision(decision);
+      const requestClass = await classifyRequestableDecision(decision,this.config as ServerConfig);
       if (!requestClass) {
         throw new HttpError(403, "This denial is a hard authorization boundary and cannot be requested");
       }
@@ -279,7 +279,7 @@ export class AuthorizationRequestService {
     request: AuthorizationRequestOut,
   ): Promise<string> {
     await this.assertMayReview(client, identity, request);
-    const grant = await new ActionApprovalGrantService(client).create(this.config, identity, {
+    const grant = await new ActionApprovalGrantService(client,this.config as ServerConfig).create(this.config, identity, {
       agent_id: request.agent_id,
       action_id: request.action_id,
       target_run_id: request.run_id,
@@ -306,6 +306,7 @@ export class AuthorizationRequestService {
 
 export async function classifyRequestableDecision(
   decision: DecisionRow,
+  config?:ServerConfig,
 ): Promise<{ actionId: string } | null> {
   if (
     decision.policy_source === "hard_invariant"
@@ -317,8 +318,8 @@ export async function classifyRequestableDecision(
     !metadataActionId
     || decision.metadata_json?.surface !== "managed_run_system_action_gateway"
   ) return null;
-  const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
-  const definition = SYSTEM_ACTION_REGISTRY.find(
+  const { loadSystemActionRegistry } = await import("../systemActions/registry.js");
+  const definition = [...(await loadSystemActionRegistry(config)).values()].find(
     (candidate) =>
       candidate.grantable
       && candidate.policy_action === decision.action

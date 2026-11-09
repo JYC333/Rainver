@@ -50,6 +50,16 @@ describe("runtime-reported quota reset times", () => {
     expect(runtimeQuotaResetAt("claude_code", "resets 11pm", new Date())).toBeNull();
     expect(runtimeQuotaResetAt("opencode", "resets 11pm (Europe/London)", new Date())).toBeNull();
   });
+  it("reads Codex clocks only with a vendor or execution timezone, and accepts explicit relative delays", () => {
+    const now = new Date("2026-11-05T18:53:32Z");
+    expect(runtimeQuotaResetAt("codex_cli", "try again at 7:10 PM", now)).toBeNull();
+    expect(runtimeQuotaResetAt("codex_cli", "try again at 7:10 PM", now, "Europe/London")).toBe("2026-11-05T19:10:00.000Z");
+    expect(runtimeQuotaResetAt("codex_cli", "try again at 7:10 PM (Asia/Tokyo)", now, "Europe/London")).toBe("2026-11-06T10:10:00.000Z");
+    expect(runtimeQuotaResetAt("codex_cli", "try again in 2 hours 3 minutes", now)).toBe("2026-11-05T20:56:32.000Z");
+    expect(runtimeQuotaResetAt("codex_cli", "try again in 45 seconds", now)).toBe("2026-11-05T18:54:17.000Z");
+    expect(runtimeQuotaResetAt("codex_cli", "try again in 999 hours", now)).toBeNull();
+    expect(runtimeQuotaResetAt("codex_cli", "try again at 7:10 PM (Not/AZone)", now, "Europe/London")).toBeNull();
+  });
 });
 
 describe("a CLI refusal as a reading", () => {

@@ -16,6 +16,7 @@ interface EffectiveState {
 }
 
 interface PluginDescriptor {
+  operation_api?:1
   id: string
   name: string
   description: string
@@ -182,7 +183,9 @@ export default function PluginsPage() {
                 <span style={{ fontSize: 13, color: effective.enabled ? '#2e7d32' : '#757575', fontWeight: 500 }}>
                   {effective.enabled ? t('management_ui.plugins.state_enabled') : effective.installed ? t('management_ui.plugins.installed') : t('management_ui.plugins.state_available')}
                 </span>
-                {!effective.installed ? (
+                {!effective.installed ? descriptor.operation_api===1 ? (
+                  <span className="text-sm text-muted-foreground">{t('plugin_ui.offline')}</span>
+                ) : (
                   <button
                     onClick={() => handleInstall(descriptor.id)}
                     disabled={actions[descriptor.id] === 'loading'}

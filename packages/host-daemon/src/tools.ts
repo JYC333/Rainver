@@ -1,4 +1,4 @@
-import type { HostEgressTransport, HostServerFrameOf, RuntimeDistribution, RuntimeLoginSpec, RuntimeStateBoundary, RuntimeAccount } from "@rainver/protocol";
+import { isOwnCliUpdateRuntimeKey, type HostEgressTransport, type HostServerFrameOf, type RuntimeDistribution, type RuntimeLoginSpec, type RuntimeStateBoundary, type RuntimeAccount } from "@rainver/protocol";
 import { helperProcessEnv } from "./providerBinding.js";
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -9,6 +9,7 @@ import { configDir } from "./config.js";
 import { probeAcpHealth } from "./acpProbe.js";
 import { downloadRuntimeArtifact, type RuntimeArtifactDownloadDependencies } from "./toolDownload.js";
 import { extractZip } from "./zipExtract.js";
+import { prepareClaudeAcp } from "./acpAdapterCompatibility.js";
 
 /**
  * Agents from the ACP registry that the control plane asked this daemon to
@@ -34,9 +35,10 @@ export type ToolStateBoundary = RuntimeStateBoundary;
 export interface ToolManifest {
   runtime_key: string;
   version: string;
-  /** Version reported by the vendor CLI bundled inside this ACP package. */
+  /** Version reported by the selected native CLI. */
   runtime_version: string | null;
   health_check_protocol?: "acp" | null;
+  previous_cli?: { executable: string | null; version: string | null };
   /** How to launch: the command, resolved to an absolute path where one exists. */
   command: string;
   args: string[];
@@ -154,6 +156,22 @@ export function renderManagedLoginCommand(tree: string, login: ToolLoginSpec | n
   return renderManagedCommand(tree, login?.managed_command);
 }
 
+export function managedNativeExecutable(manifest: ToolManifest): string | null {
+  if (!isOwnCliUpdateRuntimeKey(manifest.runtime_key)) return null;
+  const override = manifest.env[manifest.runtime_key === "codex_cli" ? "CODEX_PATH" : "CLAUDE_CODE_EXECUTABLE"];
+  if (override) return override;
+  const count = (manifest.login?.command.length ?? 0) - 1;
+  if (count < 0 || !manifest.login_command) return null;
+  const prefix = manifest.login_command.slice(0, manifest.login_command.length - count);
+  return prefix.length === 2 ? prefix[1]! : prefix.length === 1 ? prefix[0]! : null;
+}
+
+export function managedNativeCommand(manifest: ToolManifest, command: string[] | undefined): string[] | null {
+  const executable = manifest.runtime_key === "codex_cli" ? manifest.env.CODEX_PATH
+    : manifest.runtime_key === "claude_code" ? manifest.env.CLAUDE_CODE_EXECUTABLE : null;
+  return executable && command?.length ? [executable, ...command.slice(1)] : null;
+}
+
 /** Whether a login has been completed for this HOME, by the runtime's own credential file. */
 export function loggedIn(home: string, state: ToolStateBoundary | null | undefined): boolean | null {
   if (!state) return null;
@@ -209,9 +227,7 @@ export function managedVersionsFor(runtimeKey: string): ToolManifest[] {
       const manifest = readToolManifestSync(runtimeKey, managedInstallationId(directory));
       // Keyed by the directory it was found in, not by what the file claims:
       // a manifest whose `version` disagrees would otherwise make a rollback
-      // delete some other version's directory. `installed_at` may be missing
-      // in a manifest an older release wrote, and must not throw on the
-      // heartbeat path — an unknown install time sorts oldest.
+      // delete another directory. Unknown installation times sort last.
       return manifest ? [{ ...manifest, version: directory, installed_at: manifest.installed_at ?? "" }] : [];
     })
     .sort((a, b) => b.installed_at.localeCompare(a.installed_at));
@@ -230,6 +246,7 @@ export function rollbackTargetFor(runtimeKey: string): ToolManifest | null {
  * remain in the runtime's stable HOME.
  */
 export async function rollbackTool(runtimeKey: string): Promise<ToolManifest | null> {
+  if (isOwnCliUpdateRuntimeKey(runtimeKey)) throw new Error("Use the native CLI rollback operation");
   const versions = managedVersionsFor(runtimeKey);
   const [current, previous] = versions;
   if (!current || !previous) return null;
@@ -272,18 +289,7 @@ export async function installTool(
     stagingStarted = true;
     await rm(stagingDir, { recursive: true, force: true });
     await mkdir(stagingDir, { recursive: true, mode: 0o700 });
-    if (frame.vendor_cli_version) {
-      if (frame.runtime_key !== "codex_cli" || frame.distribution.kind !== "npx") {
-        throw new Error("A vendor CLI version override is supported only for managed Codex");
-      }
-      // npm applies this throughout the dependency tree, so the ACP adapter
-      // cannot silently keep spawning a nested older Codex. Installation,
-      // ACP health checks and promotion use the same lifecycle on every Host.
-      await writeFile(join(stagingDir, "package.json"), JSON.stringify({
-        private: true, overrides: { "@openai/codex": frame.vendor_cli_version },
-      }));
-    }
-    const launch = await materialize(frame.distribution, stagingDir, log, downloadDependencies, frame.egress_transport ?? { mode: "direct" });
+    const launch = await materializeRuntimeDistribution(frame.distribution, stagingDir, log, downloadDependencies, frame.egress_transport ?? { mode: "direct" });
     // User data is outside the version directory, so replacing or pruning
     // binaries cannot remove login, native history, settings, or Skills.
     await mkdir(home, { recursive: true, mode: 0o700 });
@@ -293,9 +299,6 @@ export async function installTool(
       home,
       launch.env,
     );
-    if (frame.vendor_cli_version && runtimeVersion?.match(/\b\d+\.\d+\.\d+\b/)?.[0] !== frame.vendor_cli_version) {
-      throw new Error("The managed Codex did not report the requested CLI version; the previous installation remains active.");
-    }
     if (frame.health_check_protocol === "acp") {
       const healthy = await probeAcpHealth(
         launch.command,
@@ -413,7 +416,7 @@ function managedHomeEnvironment(home: string): Record<string, string> {
   };
 }
 
-async function materialize(
+export async function materializeRuntimeDistribution(
   distribution: ToolDistribution,
   dir: string,
   log: (line: string) => void,
@@ -427,6 +430,7 @@ async function materialize(
     await run("npm", ["install", "--prefix", dir, "--no-audit", "--no-fund", "--no-package-lock", distribution.package], dir, log);
     const name = packageName(distribution.package);
     const packageRoot = join(dir, "node_modules", ...name.split("/"));
+    if (name === "@agentclientprotocol/claude-agent-acp") prepareClaudeAcp(packageRoot);
     const bin = await packageBin(packageRoot);
     return { command: process.execPath, args: [bin, ...distribution.args], entry_args: [bin], env: distribution.env };
   }

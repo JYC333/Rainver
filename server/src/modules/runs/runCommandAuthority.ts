@@ -4,7 +4,7 @@ import type { PgRunRepository } from "./repository.js";
 import type { VisibleRunRecord } from "./runRepositoryTypes.js";
 import { recordValue } from "./runRepositoryHelpers.js";
 
-type RunCommand = "execute" | "stop" | "resume" | "abandon" | "finalize";
+type RunCommand = "execute" | "stop" | "resume" | "abandon" | "finalize" | "steer";
 
 type RunReader = Pick<PgRunRepository, "getVisibleRun">;
 

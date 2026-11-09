@@ -66,7 +66,11 @@ the built server image; its build enforces the schema check, as production does.
 The server image
 copies runtime dependencies for each workspace package it loads; its Dockerfile
 imports `@rainver/outbound-guard` during the image build to catch missing
-package-local dependencies before publication.
+package-local dependencies before publication. Cropped server/web dependency
+layers contain no Host wrapper packages; the workspace install lifecycle skips
+Host preparation there. Host release packs explicitly run the shared Claude
+compatibility preparation after `pnpm deploy`, which otherwise recopies pristine
+package-store files.
 
 The bundled deployer is a separate privileged sidecar with docker.sock, `ops/` mounted
 read-only, and the instance mode root mounted at its host path. docker.sock alone is

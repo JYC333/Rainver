@@ -1,3 +1,4 @@
+import { isRepositoryAcpRegistryId } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { ScopedSettingsStore } from "../settings/scopedSettings.js";
 import { listRuntimeAdapterSpecs, setDynamicRuntimeAdapterSpecs, type RuntimeAdapterSpec } from "../runtimeAdapters/index.js";
@@ -84,6 +85,7 @@ export class AcpAgentService {
 
   /** Enables (or re-snapshots) a registry agent and republishes the adapter catalog. */
   async enable(registryId: string, userId: string | null): Promise<EnabledAcpAgent> {
+    if (isRepositoryAcpRegistryId(registryId)) throw new AcpRegistryError("repository_managed_adapter", "This ACP adapter is managed by the Rainver release", 422);
     const entry = (await fetchAcpRegistry()).find((candidate) => candidate.id === registryId);
     if (!entry) throw new AcpRegistryError("acp_agent_not_in_registry", `'${registryId}' is not in the ACP registry.`, 404);
     const agent: EnabledAcpAgent = { ...entry, enabled_at: new Date().toISOString(), enabled_by_user_id: userId };
@@ -172,5 +174,5 @@ export class AcpAgentService {
 }
 
 function publish(agents: EnabledAcpAgent[]): void {
-  setDynamicRuntimeAdapterSpecs(agents.map(acpAgentRuntimeAdapterSpec));
+  setDynamicRuntimeAdapterSpecs(agents.filter(agent => !isRepositoryAcpRegistryId(agent.id)).map(acpAgentRuntimeAdapterSpec));
 }

@@ -1,19 +1,21 @@
 import type { InvocationDelivery, RunAdapterResultEnvelope } from "@rainver/protocol";
-import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 
 /**
  * What the event's token buckets cover. `run_attempt_aggregate` is the whole
- * attempt; `last_model_request` is the attempt's last model request alone,
- * for a runtime whose ACP prompt result reports no more than that
- * (`RuntimeAdapterSpec.usage.acp_prompt_usage`). The buckets are then a lower
- * bound; `usage_updates_used_total` carries the turn's context volume.
+ * attempt under the current wrapper contract. Unverified identity is unknown;
+ * occupancy samples are diagnostic and never supply missing spend.
  */
-export type CliUsageScope = "run_attempt_aggregate" | "last_model_request";
+export type CliUsageScope = "run_attempt_aggregate" | "unknown";
 
-export function cliUsageScope(runtimeKey: string | null | undefined): CliUsageScope {
-  return getRuntimeAdapterSpec(runtimeKey)?.usage.acp_prompt_usage === "last_request"
-    ? "last_model_request"
-    : "run_attempt_aggregate";
+export function cliUsageScope(runtimeKey: string | null | undefined, adapterVersion?: string | null): CliUsageScope {
+  if (runtimeKey === "codex_cli") {
+    const version = adapterVersion?.match(/^v?(\d+)\.(\d+)\.(\d+)(?:$|\+)/);
+    if (!version) return "unknown";
+    const major = Number(version[1]), minor = Number(version[2]);
+    if (major === 2 && minor >= 5) return "run_attempt_aggregate";
+    return "unknown";
+  }
+  return "run_attempt_aggregate";
 }
 
 /** Numbers and bounded classifications only; never copy prompt or transcript bodies. */
@@ -36,7 +38,7 @@ export function withCliUsageDiagnostics(
       ...metadata,
       cli_usage: {
         ...numeric,
-        usage_scope: cliUsageScope(result.runtime_key),
+        usage_scope: cliUsageScope(result.runtime_key, typeof object(metadata.acp).version === "string" ? object(metadata.acp).version as string : null),
         estimated_total: delivery?.expected_prompt_tokens ?? null,
         ...(allocations ? Object.fromEntries(Object.entries(allocations).map(([key, value]) => [`estimate_${key}`, value])) : {}),
         ...(typeof observed.resumed_session === "boolean" ? { resumed_session: observed.resumed_session } : {}),

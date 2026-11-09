@@ -123,8 +123,8 @@ describe('HostAgents', () => {
 
   it('updates managed Codex when only its vendor CLI has a newer version', async () => {
     const { hostsApi } = await import('../../../api/client')
-    const install = vi.spyOn(hostsApi, 'installRuntime').mockResolvedValue({ ok: true, installation: 'managed:2.5.0', error: null } as never)
-    const host = { ...HOST, kind: 'server', capabilities_json: { installations: { codex_cli: [{ id: 'managed:2.5.0', version: '2.5.0', runtime_version: 'codex-cli 0.165.0', logged_in: true }] } } } as unknown as Host
+    const install = vi.spyOn(hostsApi, 'updateManagedRuntime').mockResolvedValue({ ok: true, installation: 'managed:2.5.0', error: null } as never)
+    const host = { ...HOST, kind: 'server', capabilities_json: { managed_cli_updates: true, installations: { codex_cli: [{ id: 'managed:2.5.0', version: '2.5.0', runtime_version: 'codex-cli 0.165.0', logged_in: true }] } } } as unknown as Host
     const adapter = { runtime_key: 'codex_cli', display_name: 'Codex CLI', latest_managed_version: '2.5.0', latest_own_version: '0.166.0', reports_managed_cli_version: true } as HostRuntimeDefinitionOption
     const view = render(<HostAgents host={host} adapters={[adapter]} isInstanceAdmin manageable onChanged={vi.fn()} />)
     try {
@@ -220,10 +220,8 @@ describe('HostAgents', () => {
     expect(onChanged).toHaveBeenCalled()
 
     await userEvent.click(screen.getByRole('button', { name: 'Add agent…' }))
-    // One list, the registry: the builtin CLI is installable from it like any
-    // enabled agent, and nothing is listed above it as a default.
-    await userEvent.click(await screen.findByRole('button', { name: 'Install Claude Code on Laptop' }))
-    await waitFor(() => expect(installRuntime).toHaveBeenCalledWith('h1', 'claude_code', '1.2.3'))
+    await userEvent.click(await screen.findByRole('button', { name: 'Add a managed copy of Claude Code on Laptop' }))
+    await waitFor(() => expect(installRuntime).toHaveBeenCalledWith('h1', 'claude_code'))
     // Not an admin: entries that would first need enabling are not offered.
     expect(screen.queryByText('Kilo')).toBeNull()
     expect(screen.queryByRole('button', { name: /Enable and install/ })).toBeNull()
@@ -356,7 +354,7 @@ describe('HostAgents', () => {
     render(<HostAgents host={hostWithoutOpenCode} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={onChanged} />)
     await userEvent.click(screen.getByRole('button', { name: 'Add agent…' }))
-    const claude = await screen.findByRole('button', { name: 'Install Claude Code on Laptop' })
+    const claude = await screen.findByRole('button', { name: 'Add a managed copy of Claude Code on Laptop' })
     const opencode = screen.getByRole('button', { name: 'Install OpenCode on Laptop' })
     await userEvent.click(claude)
     await userEvent.click(opencode)
@@ -368,7 +366,7 @@ describe('HostAgents', () => {
     expect(opencode.querySelector('.animate-spin')).not.toBeNull()
     pending.get('claude_code')!({ host_id: 'h1', runtime_key: 'claude_code', ok: true, error: null, installation: 'managed:1.2.3' })
     // A finished entry turns into its Installed badge; the button is gone.
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Install Claude Code on Laptop' })).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Add a managed copy of Claude Code on Laptop' })).toBeNull())
     // goose was already on the host; Claude joins it.
     expect(screen.getAllByText('Installed')).toHaveLength(2)
     // The first finishing must not clear the second's spinner.
@@ -388,7 +386,7 @@ describe('HostAgents', () => {
     const onChanged = vi.fn(async () => undefined)
     render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin manageable onChanged={onChanged} />)
     await userEvent.click(screen.getByRole('button', { name: 'Add agent…' }))
-    expect(await screen.findByRole('button', { name: 'Install Claude Code on Laptop' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Add a managed copy of Claude Code on Laptop' })).toBeInTheDocument()
     const search = await screen.findByLabelText('Search agent registry')
     await userEvent.type(search, 'goose')
     // One occurrence is the installed host row; the second proves the
@@ -414,12 +412,12 @@ describe('HostAgents', () => {
     await userEvent.click(screen.getByRole('button',{name:'Add agent…'}))
     const catalog=await screen.findByRole('list',{name:'Agent catalog'})
     expect(within(catalog).getAllByRole('listitem')[0]).toHaveTextContent('goose')
-    expect(within(catalog).getByText('ACP 1.2.3 · Available 2.0.0')).toBeVisible()
+    expect(within(catalog).getByText('1.2.3 · Available 2.0.0')).toBeVisible()
     const before=enable.mock.calls.length
-    await userEvent.click(within(catalog).getByRole('button',{name:'Upgrade ACP for goose on Laptop'}))
+    await userEvent.click(within(catalog).getByRole('button',{name:'Upgrade goose on Laptop'}))
     await waitFor(()=>expect(installRuntime).toHaveBeenCalledWith('h1','acp_goose','2.0.0'))
-    await waitFor(()=>expect(within(catalog).getByText('ACP 2.0.0 · Available 2.0.0')).toBeVisible())
-    expect(within(catalog).queryByRole('button',{name:'Upgrade ACP for goose on Laptop'})).toBeNull()
+    await waitFor(()=>expect(within(catalog).getByText('2.0.0 · Available 2.0.0')).toBeVisible())
+    expect(within(catalog).queryByRole('button',{name:'Upgrade goose on Laptop'})).toBeNull()
     expect(enable.mock.calls.length).toBe(before)
     expect(changed).toHaveBeenCalled()
   })

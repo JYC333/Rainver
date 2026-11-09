@@ -51,6 +51,8 @@ export type OfficialPluginLifecycleStatus = "available" | "deprecated";
  * reference (components are bundled statically, not described here).
  */
 export interface OfficialPluginFrontendEntry {
+  entry_id?:string;
+  placements?:import('./pluginOperations.js').PluginWebEntry['placements'];
   /** Must match the `Module.id` in the frontend registry. */
   module_id: string;
   /** Display label. */
@@ -73,6 +75,7 @@ export interface OfficialPluginFrontendEntry {
  * unit. OfficialPluginDescriptor is the product-level control-plane object.
  */
 export interface OfficialPluginDescriptor {
+  operation_api?:1;
   /** Stable unique identifier. Snake_case. Max 128 chars. */
   id: string;
   /** Human-readable name. */
@@ -134,6 +137,8 @@ export interface OfficialPluginDescriptor {
  * Computed by overlaying the DB enablement row on top of descriptor defaults.
  */
 export interface OfficialPluginEffectiveState {
+  lifecycle_state?:string;
+  lifecycle_error?:string|null;
   plugin_id: string;
   /** Whether the plugin package has been installed on this instance. */
   installed: boolean;
@@ -325,6 +330,9 @@ export interface PluginProposalPort {
  * directly — use this context instead.
  */
 export interface PluginHostContext {
+  /** Present only for manifest-based operation plugins. */
+  readonly lifecycle?:import("./pluginOperations.js").PluginLifecyclePort;
+  readonly actions?: import("./pluginOperations.js").PluginActionPort;
   /** Stable plugin id matching OfficialPluginDescriptor.id. */
   readonly pluginId: string;
 
@@ -372,6 +380,7 @@ export interface PluginMigration {
  * Remote package download is not implemented.
  */
 export interface RainverPlugin {
+  readonly operationManifest?: import("./pluginOperations.js").PluginOperationManifest;
   /** Must match OfficialPluginDescriptor.id. */
   readonly id: string;
   /** Must match OfficialPluginDescriptor.version for built-in official plugins. */

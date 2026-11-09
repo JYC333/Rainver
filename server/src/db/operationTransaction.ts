@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { operationSqlCode } from "./operationSql.js";
+import { operationSqlCode, operationSavepoint, assertOperationSessionSql } from "./operationSql.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Queryable, QueryResult } from '../modules/routeUtils/common.js';
 const operationWork = new AsyncLocalStorage<boolean>();
@@ -11,6 +11,7 @@ export function runOperationWork<T>(work: () => Promise<T>): Promise<T> {
 }
 const ports = new WeakMap<object, {
   active: boolean;
+  host: Queryable;
 }>();
 export function isOperationTransaction(db: Queryable): boolean {
   const state = ports.get(db);
@@ -24,7 +25,8 @@ export function operationTransaction(db: Queryable): {
   close(): void;
 } {
   const state = {
-    active: true
+    active: true,
+    host: db
   };
   // Domain labels are translated into private host-owned savepoints. They cannot
   // target operation_work / approval savepoints or release the outer transaction.
@@ -36,9 +38,8 @@ export function operationTransaction(db: Queryable): {
       if (!state.active) throw new Error('Operation transaction expired');
       const code = operationSqlCode(sql);
       if (code.includes(';')) throw new Error('Operation transaction control refused');
-      if (/^set\s+(?:(?:local|session)\s+)?(?:session\s+characteristics|default_transaction_)\b/i.test(code) || /^set\s+(?:(?:local|session)\s+)?default_transaction_/i.test(code)) throw new Error('Operation session settings refused');
-      if (/^reset\s+(?:all\b|default_transaction_)/i.test(code) || /\bset_config\s*\(/i.test(code)) throw new Error('Operation session settings refused');
-      const savepoint = /^(SAVEPOINT|RELEASE(?:\s+SAVEPOINT)?|ROLLBACK\s+TO(?:\s+SAVEPOINT)?)\s+([a-z_][a-z_0-9]*)$/i.exec(code);
+      assertOperationSessionSql(code);
+      const savepoint = operationSavepoint(code);
       if (savepoint) {
         if (params?.length) throw new Error('Savepoint parameters refused');
         const label = savepoint[2]!.toLowerCase();
@@ -69,4 +70,11 @@ export function operationTransaction(db: Queryable): {
       state.active = false;
     }
   };
+}
+
+/** Internal host bridge only; never exported through plugin/protocol contexts. */
+export function operationTransactionHost(db: Queryable): Queryable {
+  const state = ports.get(db);
+  if (!state?.active) throw new Error('Active host transaction required');
+  return state.host;
 }

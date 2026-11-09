@@ -183,6 +183,7 @@ export function normalizeHostCapabilities(raw: unknown): HostCapabilities {
   const toolBridges = Array.isArray(source.tool_bridge_protocols) ? strings(source.tool_bridge_protocols) : undefined;
   return HostCapabilitiesSchema.parse({
     runtimes, versions, installations,
+    ...(source.managed_cli_updates === true ? { managed_cli_updates: true } : {}),
     ...(HostCapabilitiesSchema.shape.workspace_read_only.safeParse(source.workspace_read_only).success?{workspace_read_only:source.workspace_read_only}:{}),
     ...(toolBridges ? { tool_bridge_protocols: toolBridges } : {}),
     // Kept whole or not at all: a report that does not parse reads as a daemon

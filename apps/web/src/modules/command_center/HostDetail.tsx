@@ -20,7 +20,7 @@ import type { HostSection } from './hostLinks'
  */
 export default function HostDetail({
   host, isInstanceAdmin, adapters, provisioning, provisioningLoading, sectionRequest,
-  showBack, onBack, onRefresh, onAdaptersChanged, onRevoke,
+  showBack, onBack, onRefresh, onAdaptersChanged, onRevoke, runtimeTarget,
 }: {
   host: Host
   isInstanceAdmin: boolean
@@ -30,6 +30,7 @@ export default function HostDetail({
   /** A navigation that names a group of this Host; `key` is that navigation's own. */
   sectionRequest: { section: HostSection; key: string } | null
   showBack: boolean
+  runtimeTarget?: { runtime_key: string; installation: string }
   onBack: () => void
   onRefresh: () => Promise<void>
   onAdaptersChanged: () => Promise<void>
@@ -103,6 +104,7 @@ export default function HostDetail({
             adapters={adapters}
             isInstanceAdmin={isInstanceAdmin}
             manageable={host.kind === 'remote' || isInstanceAdmin}
+            runtimeTarget={runtimeTarget}
             onChanged={onAdaptersChanged}
           />
         </section>

@@ -29,7 +29,7 @@ function sendDomainError(reply: FastifyReply, error: unknown): FastifyReply {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
-  const grants = () => new ActionApprovalGrantService(dbPool(context.config));
+  const grants = () => new ActionApprovalGrantService(dbPool(context.config),context.config);
   const authorizationRequests = () => new AuthorizationRequestService(
     dbPool(context.config),
     context.config,
@@ -107,7 +107,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try {
       const grantId = requiredString(params(request).grantId, "grant_id");
-      const result = await enforce(context.config, await loadActionRegistry(), { action: "policy.action_grant.revoke", actor_type: "user", actor_id: identity.userId, space_id: identity.spaceId, resource_type: "action_approval_grant", resource_id: grantId, force_record: true });
+      const result = await enforce(context.config, await loadActionRegistry(context.config), { action: "policy.action_grant.revoke", actor_type: "user", actor_id: identity.userId, space_id: identity.spaceId, resource_type: "action_approval_grant", resource_id: grantId, force_record: true });
       if (result.status !== "allow") return reply.code(result.status === "blocked" ? 403 : 503).send({ detail: result.message ?? "Policy enforcement failed" });
       return reply.send(await grants().revoke(identity, grantId));
     } catch (error) { return sendRouteError(reply, error); }
@@ -119,7 +119,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
     try {
       const req = protocol.PolicyCheckRequestSchema.parse(jsonBody(request));
-      const registry = await loadActionRegistry();
+      const registry = await loadActionRegistry(context.config);
       const result = await enforce(context.config, registry, req);
       return reply.send(protocol.PolicyEnforceResultSchema.parse(result));
     } catch (error) {

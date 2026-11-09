@@ -10,10 +10,8 @@ export interface CatalogAgent {
   installed: boolean
   managed: string[]
   own: boolean
-  bundled: boolean
   update: boolean
   enabled: boolean
-  pinned: boolean
   runtimeKey?: string
 }
 
@@ -38,15 +36,12 @@ export default function HostAgentCatalog({hostName,rows,query,onQuery,loading,er
         <ul aria-label={tr('title')} className="max-h-80 divide-y divide-border overflow-y-auto">
           {rows.map(row=>{
             const {entry}=row,working=busy.has(`registry:${entry.id}`)||Boolean(row.runtimeKey&&busy.has(row.runtimeKey))
-            const actionable=!row.pinned && (row.update || !row.installed || row.own && row.managed.length===0)
+            const actionable=row.update || !row.installed || row.own && row.managed.length===0
             const action=row.update?'upgrade':row.installed?'managed_copy':row.enabled?'install':'enable_install'
             return <li key={entry.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 py-3 text-xs" data-registry-agent={entry.id}>
               <div className="min-w-0 flex-1 basis-40 space-y-1">
                 <div className="flex flex-wrap items-center gap-2"><span className="break-words font-medium">{entry.name}</span>{row.installed&&<Badge variant="secondary">{tr('installed')}</Badge>}</div>
                 <p className="break-words text-muted-foreground">{row.managed.length>0?tr('versions',{current:row.managed.join(', '),latest:entry.version}):tr('available',{version:entry.version})}</p>
-                {row.bundled&&<p className="text-muted-foreground">{tr('bundled')}</p>}
-                {row.own&&!row.bundled&&<p className="text-muted-foreground">{tr('own')}</p>}
-                {row.pinned&&<p className="text-muted-foreground">{tr('pinned')}</p>}
                 {entry.description&&<p className="truncate text-muted-foreground" title={entry.description}>{entry.description}</p>}
               </div>
               {actionable&&<Button size="sm" variant="outline" disabled={working||!online} aria-label={tr(`${action}_label`,{name:entry.name,host:hostName})} onClick={()=>onInstall(entry)}>

@@ -435,6 +435,17 @@ space-scoped result read model.
 
 ## Attempts, cancellation, and supervision
 
+ACP failures keep safe normalized evidence in `error_json.runtime_failure` on
+the Run and physical attempt: RPC/vendor codes, category, human message,
+observation time and an optional reset instant. The original `error.data` is
+not stored. Codex's generic `Internal error` can therefore carry a subscription
+refusal into the quota gate instead of hiding its cause. Authentication becomes
+non-retryable `runtime_auth_required`; known rate limits and transient failures
+reuse existing Supervisor codes, while an unknown internal error remains
+unknown. A vendor reset timestamp or declared relative delay is preferred to a
+clock; an unzoned clock requires the executing Host's timezone. Missing timezone
+does not fall back to the application server's clock.
+
 An execution-time `subscription_quota_exhausted` refusal can park a bounded
 successor attempt through `rooms/quotaRecovery.ts` and the existing
 `waiting_for_quota` gate. The failed attempt and its usage remain intact; the

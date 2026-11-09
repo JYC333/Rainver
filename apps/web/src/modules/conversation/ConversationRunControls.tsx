@@ -1,5 +1,6 @@
 import { hasRunAuthorizationPause, useRunActions } from '../runs/useRunActions'
 import { RunQuotaRecoveryControls, runQuotaRecovery } from '../runs/RunQuotaRecoveryControls'
+import { RuntimeFailureNotice } from '../runs/RuntimeFailureNotice'
 import { POLICY_APPROVER_MAX_RISK, POLICY_RISK_LEVEL_VALUES, PolicyRiskLevelEnum } from '@rainver/protocol'
 import { ConversationScope, useConversationScope } from './ConversationScope'
 import { useEffect, useState } from 'react'
@@ -120,6 +121,7 @@ function ConversationRunControlsContent({
   return <div className="mt-2 w-full min-w-0 max-w-full space-y-2 empty:hidden" data-testid={`conversation-run-controls-${runId}`}>
     {showStandaloneLabel && <div className="text-[11px] font-medium text-muted-foreground">{agentLabel}</div>}
     {run && <RunQuotaRecoveryControls run={run} scope={scope} canControl={standing} onChanged={async next => { setRun(next); await onChanged?.() }} />}
+    {run && <RuntimeFailureNotice key={`${run.space_id}:${run.id}`} run={run} />}
     {active && standing && (
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" role="status" aria-live="polite">
         {showStatus && !runQuotaRecovery(run!) && <span>{stopping || run?.status === 'cancelling' ? t('conversation_ui.run.stopping') : run?.status === 'queued' ? t('conversation_ui.run.queued') : run?.status === 'waiting_for_dependency' ? t('conversation_ui.run.waiting_previous') : t('conversation_ui.run.working')}</span>}

@@ -1,4 +1,4 @@
-import type { OperationActor, OperationResponse, SystemActionDefinition, CanonicalToolCall } from '@rainver/protocol';
+import type { OperationActor, OperationResponse, RegisteredSystemActionDefinition as SystemActionDefinition, CanonicalToolCall } from '@rainver/protocol';
 import type { ServerConfig } from '../../config.js';
 import { dbPool } from '../routeUtils/common.js';
 import { runActor, assertCurrentActor, assertOperationGrant } from '../systemActions/operations/actor.js';
@@ -28,7 +28,7 @@ export async function dispatchRunOperation(
     if (!definition.input_schema.safeParse(call.arguments).success) throw new OperationError('operation_invalid_input', 422);
     try { await sink?.('action_invoked', eventCall, {action_version: definition.version}); }
     catch (error) {
-      if ((await loadActionRegistry()).get(definition.policy_action)?.record_failure_mode === 'fail_closed') throw error;
+      if ((await loadActionRegistry(config)).get(definition.policy_action)?.record_failure_mode === 'fail_closed') throw error;
     }
     result = await invoke(actor);
   } catch (error) {

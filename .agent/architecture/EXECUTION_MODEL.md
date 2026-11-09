@@ -306,10 +306,13 @@ priced subset of `cache_creation_input_tokens`; it is never added a second time
 when deriving total tokens. `usage_accuracy` describes token evidence only.
 CLI Run observations aggregate internal model calls where the runtime's ACP
 prompt result does (`metadata_json.cli_usage.usage_scope =
-"run_attempt_aggregate"`); where it reports only its last model request
-(Codex, `usage_scope = "last_model_request"`), the buckets are that request's
-and a lower bound for the attempt, and `usage_updates_used_total` records the
-context volume the turn's `usage_update` notifications summed to. If the
+"run_attempt_aggregate"`). Codex 2.5+ reports whole-turn deltas; missing or
+unverified Codex identities have `unknown` scope. Only the current wrapper
+contract is implemented; an unrecognized diagnostic scope is shown as unknown.
+`usage_updates_used_total` is only the sum of context occupancy samples, which
+may repeat or reset, never token spend or processed context volume. Actual
+wrapper/native identities and per-model versioned IDs are recorded separately
+from installation identity; `default` is not a concrete model. If the
 runtime does not report a call count, the writer records zero as the numeric placeholder plus
 `metadata_json.request_count_known=false`. Reads treat old `local_cli` rows
 without affirmative count evidence as unknown too; no historical rows are

@@ -87,6 +87,8 @@ export const officialPluginEvents = pgTable("official_plugin_events", {
 ]);
 
 export const pluginInstalls = pgTable("plugin_installs", {
+ lifecycleState: varchar("lifecycle_state", {length:32}).default("installed").notNull(),
+ lifecycleError: text("lifecycle_error"),
 	id: varchar({ length: 36 }).default(sql`gen_random_uuid()`).primaryKey().notNull(),
 	pluginId: varchar("plugin_id", { length: 64 }).notNull(),
 	installedVersion: varchar("installed_version", { length: 32 }).notNull(),

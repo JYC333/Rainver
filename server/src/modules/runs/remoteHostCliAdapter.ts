@@ -11,6 +11,7 @@ import { acpRuntimeContextPromptBlocks } from "./acpRuntimeContextPrompt.js";
 import { RUN_QUIET_STATUS, stallTimeoutSeconds } from "./stallTimeout.js";
 import { RUN_TIMED_OUT_ERROR_CODE } from "./runTimeLimit.js";
 import { classifyRuntimeFailure } from "./retryPolicy.js";
+import { acpFailureRunCode, withAcpFailureTimezone } from "../runtimeAdapters/acpFailure.js";
 import { workSkillPromptPointer } from "../skills/workSkill.js";
 import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
@@ -25,12 +26,13 @@ import {
 import { createVendorEventNormalizer } from "./runtimeEventNormalization.js";
 import { sharedHostConnectionRegistry, type HostConnectionRegistry, type HostRunCompletion } from "../hosts/connectionRegistry.js";
 import { createThreadEventNormalizer, type ThreadEventDraft } from "../hosts/threadEventNormalization.js";
+import { registerRunLiveInput } from "./liveInput.js";
 import { getDbPool } from "../../db/pool.js";
 import { ConversationInputService } from "../sessions/conversationInputService.js";
 import { promptInputLimitFailure, RUNTIME_INPUT_TOO_LARGE } from "./promptInputLimit.js";
 import type { ServerConfig } from "../../config.js";
 import type { ProviderProxyLeaseRegistry } from "../providers/proxy/lease.js";
-import type { Queryable } from "../routeUtils/common.js";
+import { objectValue, type Queryable } from "../routeUtils/common.js";
 import { managedHostEgressTransport, readInstanceOperationsPolicy } from "../settings/index.js";
 import {
   boundAcpModelId,
@@ -311,11 +313,24 @@ export async function executeRemoteHostCliAdapter(
   workspaceLocationId: string | null,
   deps: RemoteHostCliAdapterDeps = {},
 ): Promise<RunAdapterResultEnvelope> {
-  const leases: Array<() => void> = [];
+  const leases: Array<() => void | Promise<void>> = [];
   try {
-    return await runRemoteHostCliAdapter(input, hostId, workspaceLocationId, deps, leases);
+    const result = await runRemoteHostCliAdapter(input, hostId, workspaceLocationId, deps, leases);
+    if (!result.success) {
+      const metadata = objectValue(result.metadata_json);
+      result.metadata_json = {
+        ...metadata,
+        runtime_target: { host_id: hostId, runtime_key: result.runtime_key, installation: dispatchInstallation(input.run),
+          backend_mode: metadata.bound_model_provider_id === null ? "runtime_native"
+            : metadata.bound_model_provider_id || input.run.model_provider_id ? "model_provider" : "unknown" },
+      };
+    }
+    return result;
   } finally {
-    for (const revoke of leases) revoke();
+    let cleanupError: unknown;
+    for (const revoke of leases) {
+      try { await revoke(); } catch (error) { cleanupError ??= error; }
+    }
     // Unconditional, and by Run rather than by token: every path out of this
     // function is a Run that has stopped executing, and a Run that was never
     // issued an identity simply matches no row. The tool surface must not
@@ -325,6 +340,7 @@ export async function executeRemoteHostCliAdapter(
         .revoke(input.run.id)
         .catch(() => undefined);
     }
+    if (cleanupError) throw cleanupError;
   }
 }
 
@@ -336,7 +352,7 @@ async function runRemoteHostCliAdapter(
   // to the real directory on the owning machine.
   workspaceLocationId: string | null,
   deps: RemoteHostCliAdapterDeps,
-  leases: Array<() => void>,
+  leases: Array<() => void | Promise<void>>,
 ): Promise<RunAdapterResultEnvelope> {
   if((input.run.contract_snapshot_json as {workflow_input_json?:{source_goal?:{purpose?:string};material_processing?:unknown}})?.workflow_input_json?.material_processing||(input.run.contract_snapshot_json as {workflow_input_json?:{source_goal?:{purpose?:string}}})?.workflow_input_json?.source_goal?.purpose==='collect'){const {assertMaterialProcessingDispatch}=await import('../sources/index.js');if(!deps.config)throw new Error('source_native_context_refused');await assertMaterialProcessingDispatch(deps.config,input.run);}
   const startedAt = new Date().toISOString();
@@ -435,7 +451,7 @@ async function runRemoteHostCliAdapter(
   }
 
   const registry = deps.connectionRegistry ?? sharedHostConnectionRegistry;
-  const threadEvents = createThreadEventNormalizer(spec.runtime_key);
+  const threadEvents = createThreadEventNormalizer();
   const runtimeEvents = createVendorEventNormalizer(spec.runtime_key);
   // A Run has no wall-clock deadline. Short-lived credentials are renewed
   // while execution is active and revoked on every terminal path.
@@ -749,7 +765,7 @@ async function runRemoteHostCliAdapter(
   // settled — on this server process or another — refuses here. A test with
   // no database runs the protocol alone.
   if (deps.config?.databaseUrl) {
-    const bound = await new PgRunRepository(deps.db ?? getDbPool(deps.config.databaseUrl))
+    const bound = await new PgRunRepository(deps.db ?? getDbPool(deps.config.databaseUrl),deps.config)
       .bindAttemptLaunch({ space_id: input.run.space_id, run_id: input.run.id, launch_id: launchId });
     if (!bound && !input.deadline_signal?.aborted) {
       return remoteFailureWithEvent(input, spec.runtime_key, "run_cancelled", "The Run's attempt was closed before its command was launched.", startedAt);
@@ -814,6 +830,10 @@ async function runRemoteHostCliAdapter(
       }]);
     },
   });
+  if (input.invocation_delivery && stdioController && input.run.session_id) {
+    const liveInput = registerRunLiveInput(input.run.id, input.invocation_delivery, stdioController);
+    leases.push(() => liveInput.close());
+  }
   void input.thread_event_sink?.([{ event_type: "status", status: "run_started" }]);
   const result = await executor.runCommand({
     command: argv,
@@ -866,6 +886,9 @@ async function runRemoteHostCliAdapter(
   // dispatch reaches this with a controller and a completed protocol result;
   // `stdoutText` stays only as that edge case's last-resort fallback.
   const protocolResult = stdioController?.result() ?? null;
+  const failure = protocolResult?.failure
+    ? withAcpFailureTimezone(spec.runtime_key, protocolResult.failure, result.time_zone)
+    : undefined;
   const resumedSessionInvalid = Boolean(
     input.resume_session_id
     && protocolResult
@@ -887,6 +910,8 @@ async function runRemoteHostCliAdapter(
       .catch(() => undefined);
   }
   const metadata = {
+    acp: protocolResult?.acp ?? null,
+    runtime_native_version: result.native_runtime_version ?? null,
     runtime_key: spec.runtime_key,
     external_session_id: measurement.external_session_id,
     // Which copy on the host actually ran it. The usage ledger records it as
@@ -911,6 +936,7 @@ async function runRemoteHostCliAdapter(
     // Run that unbinds leaves a stale stamp behind. Metering keys on this.
     bound_model_provider_id: providerBinding ? boundProviderId : null,
     subscription_quota: measurement.subscription_quota,
+    ...(failure ? { runtime_failure: failure } : {}),
     ...(protocolResult ? {
       cli_usage: {
         acp_turns: protocolResult.acp_prompt_count ?? null,
@@ -1008,10 +1034,12 @@ async function runRemoteHostCliAdapter(
       ? null
       : resumedSessionInvalid
         ? "runtime_session_invalid"
+        : result.failure_code === "sandbox_runner_unavailable" ? "sandbox_runner_unavailable"
         // A refusal for an exhausted subscription is its own, non-retryable
         // code — read from the error the turn ended on, or, with none, the
         // end of stderr, never from a notice logged earlier in the run.
-        : classifyRuntimeFailure(spec.runtime_key, protocolResult?.error ?? stderrTail(result.stderr), {
+        : acpFailureRunCode(failure, Boolean(providerBinding))
+        ?? classifyRuntimeFailure(spec.runtime_key, protocolResult?.error ?? stderrTail(result.stderr), {
           providerBound: Boolean(providerBinding),
         }) ?? "runtime_nonzero_exit",
     error_message: success
@@ -1401,6 +1429,8 @@ function toExecutionResult(
     stderr: protocol?.error ?? outcome.error ?? "",
     ...(outcome.egress?.length ? { egress: outcome.egress } : {}),
     ...(outcome.task_worktree ? { task_worktree: outcome.task_worktree } : {}),
+    ...(outcome.time_zone ? { time_zone: outcome.time_zone } : {}),
+    ...(outcome.native_runtime_version ? { native_runtime_version: outcome.native_runtime_version } : {}),
     timed_out: outcome.timed_out,
   };
 }

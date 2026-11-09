@@ -13,6 +13,7 @@ import { IdSchema, ISODateTimeSchema } from "./common.js";
 import { OrdinaryToolsHostReportSchema } from "./ordinaryTools.js";
 import { OrdinaryToolAccountsCapabilitySchema, OrdinaryToolsRunCapabilitySchema } from "./ordinaryToolAccounts.js";
 import { RuntimePromptCapabilitiesSchema, type RuntimePromptCapabilities } from "./conversationInput.js";
+import { AcpRuntimeInfoSchema } from "./acp.js";
 
 export const RuntimeOptionChoiceSchema = z.object({
   value: z.string(),
@@ -98,8 +99,10 @@ export type RuntimeAuthMethod = z.infer<typeof RuntimeAuthMethodSchema>;
 export function isAcpAuthRequiredError(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const error = value as { message?: unknown; data?: unknown };
-  const data = error.data && typeof error.data === "object" ? (error.data as { reason?: unknown }) : null;
+  const data = error.data && typeof error.data === "object" ? (error.data as { reason?: unknown; startupFailureReason?: unknown }) : null;
   if (data?.reason === "auth_required") return true;
+  if (typeof data?.startupFailureReason === "string"
+    && ["gateway_signin_required", "org_pin_mismatch", "org_config_refused"].includes(data.startupFailureReason)) return true;
   return typeof error.message === "string" && /authentication required|not (?:logged|signed) in|unauthenticated/i.test(error.message);
 }
 
@@ -120,6 +123,7 @@ export function acpAgentAuthMethodId(initializeResult: unknown): string | null {
 
 /** What a copy of a runtime says during ACP initialization/session setup. */
 export const RuntimeOptionsSchema = z.object({
+  acp: AcpRuntimeInfoSchema.nullable().optional(),
   config_options: z.array(RuntimeSessionConfigOptionSchema),
   auth_methods: z.array(RuntimeAuthMethodSchema).optional(),
   /** Rainver verified that this managed copy supports its fixed top-level `login` command. */
@@ -146,7 +150,7 @@ export const RuntimeInstallationSchema = z.object({
   /** `own` or `managed:<version>`. */
   id: z.string(),
   version: z.string().nullable(),
-  /** Vendor CLI version; distinct from the managed ACP package version above. */
+  /** Version reported by the selected native CLI. */
   runtime_version: z.string().nullable().optional(),
   /** The lifecycle health handshake this managed copy passed before activation. */
   health_check_protocol: z.enum(["acp"]).nullable().optional(),
@@ -156,11 +160,7 @@ export const RuntimeInstallationSchema = z.object({
   options: RuntimeOptionsSchema.nullable(),
   /** Present only for a CLI whose login spec declares an accounts format; the list may be empty. */
   accounts: z.array(RuntimeAccountSchema).optional(),
-  /**
-   * The ACP package version this copy can be rolled back to. Its binaries are
-   * kept on the host and share the stable managed HOME. Null when this is
-   * the first version installed, or when the copy is the machine's own.
-   */
+  /** Native CLI rollback version for repository bridges, Agent package version otherwise. */
   rollback_version: z.string().nullable().optional(),
   /**
    * Whether this runtime has a subscription quota that can be read at all.
@@ -174,6 +174,7 @@ export const RuntimeInstallationSchema = z.object({
 export type RuntimeInstallation = z.infer<typeof RuntimeInstallationSchema>;
 
 export const HostCapabilitiesSchema = z.object({
+  managed_cli_updates: z.literal(true).optional(),
   workspace_read_only: z.object({supported:z.boolean(),mechanism:z.literal("bwrap-v1"),reason:z.string().nullable()}).optional(),
   /** PATH binaries the daemon found (vendor CLIs and git), for display only. */
   runtimes: z.array(z.string()),

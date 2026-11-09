@@ -248,7 +248,7 @@ class FakeClient {
       }));
       return { rows: rows as Row[], rowCount: rows.length };
     }
-    if (sql.includes("SELECT capabilities_json, permission_snapshot_json, trigger_origin")) {
+    if (sql.includes("SELECT instructed_by_user_id, capabilities_json, permission_snapshot_json, trigger_origin")) {
       const row = this.state.runTools?.get(String(params[1]));
       const run = this.state.runs.get(String(params[1]));
       return row && run?.status === "queued" ? { rows: [row as Row], rowCount: 1 } : { rows: [], rowCount: 0 };

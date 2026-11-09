@@ -2,34 +2,34 @@ import { describe, expect, it } from "vitest";
 import { createThreadEventNormalizer } from "../src/modules/hosts/threadEventNormalization.js";
 
 describe("createThreadEventNormalizer", () => {
-  it("keeps Claude permission-check metadata out of the conversation across stderr chunks", () => {
-    const normalizer = createThreadEventNormalizer("claude_code");
-    const metadata = 'Unexpected case: {"type":"system","subtype":"permission_check_status","status":"checking"}';
-    expect(normalizer.pushStderr(metadata.slice(0, 40))).toEqual([]);
-    expect(normalizer.pushStderr(metadata.slice(40) + "\r\n" + metadata + "\npermission denied\n")).toEqual([
-      { event_type: "diagnostic", text: "permission denied" },
-    ]);
-    normalizer.pushStderr(metadata);
-    expect(normalizer.finish()).toEqual([]);
+  it("projects bounded auth, compaction, retry and child states without account secrets or duplicate samples", () => {
+    const normalizer = createThreadEventNormalizer();
+    const auth = { method: "_auth/status_update", params: { authStatus: { kind: "account", account: { email: "private@test.invalid" }, detail: "do not persist" } } };
+    expect(normalizer.pushAcpProtocolEvent(auth)).toEqual([{ event_type: "status", status: "runtime_auth_available" }]);
+    expect(normalizer.pushAcpProtocolEvent(auth)).toEqual([]);
+    const compact = { method: "session/update", params: { sessionId: "parent", update: { sessionUpdate: "compaction_update", compactionId: "c1", status: "in_progress" } } };
+    expect(normalizer.pushAcpProtocolEvent(compact)).toEqual([{ event_type: "status", status: "runtime_compacting" }]);
+    expect(normalizer.pushAcpProtocolEvent(compact)).toEqual([]);
+    expect(normalizer.pushAcpProtocolEvent({ method: "session/update", params: { update: { sessionUpdate: "session_info_update", _meta: { "opencode/retry": { nextRetryAt: "2026-11-05T23:00:00Z", error: { token: "do not persist" } } } } } }))
+      .toEqual([{ event_type: "status", status: "runtime_retry_waiting", text: "2026-11-05T23:00:00.000Z" }]);
+    expect(normalizer.pushAcpProtocolEvent({ method: "session/update", params: { update: { sessionUpdate: "subagent_update", sessionId: "child", title: "Review", state: { state: "running" } } } }))
+      .toEqual([{ event_type: "status", status: "runtime_subagent_running", text: "Review" }]);
+  });
+  it("redacts a child title before truncating across a credential boundary", () => {
+    const normalizer = createThreadEventNormalizer();
+    const title = "x ".repeat(77) + "sk-" + "p".repeat(30);
+    const events = normalizer.pushAcpProtocolEvent({ method: "session/update", params: { update: {
+      sessionUpdate: "subagent_update", sessionId: "child", title, state: { state: "running" },
+    } } });
+    expect(JSON.stringify(events)).not.toContain("sk-");
+    expect(events[0]?.text?.length).toBeLessThanOrEqual(160);
   });
 
-  it.each([undefined, "codex_cli", "opencode"])("preserves other runtimes' diagnostics (%s)", (runtimeKey) => {
-    const normalizer = createThreadEventNormalizer(runtimeKey);
-    const text = 'Unexpected case: {"type":"system","subtype":"permission_check_status"}';
-    expect(normalizer.pushStderr(text + "\n")).toEqual([{ event_type: "diagnostic", text }]);
-  });
-
-  it.each([
-    'Unexpected case: {"type":"system","subtype":"unknown_new_event"}',
-    'Unexpected case: {"type":"error","subtype":"permission_check_status"}',
-    'Unexpected case: {"type":"system","subtype":"permission_check_status"',
-    'Error: permission_check_status failed',
-    "You've reached your Fable limit",
-  ])("preserves errors and unknown Claude diagnostics: %s", (text) => {
-    const normalizer = createThreadEventNormalizer("claude_code");
-    expect(normalizer.pushStderr(text + "\n")).toEqual([{ event_type: "diagnostic", text }]);
-    normalizer.pushStderr(text);
-    expect(normalizer.finish()).toEqual([{ event_type: "diagnostic", text }]);
+  it("preserves diagnostic stderr across chunks and flushes the final unterminated line", () => {
+    const normalizer = createThreadEventNormalizer();
+    expect(normalizer.pushStderr("runtime diag")).toEqual([]);
+    expect(normalizer.pushStderr("nostic\npermission denied")).toEqual([{ event_type: "diagnostic", text: "runtime diagnostic" }]);
+    expect(normalizer.finish()).toEqual([{ event_type: "diagnostic", text: "permission denied" }]);
   });
 
   it.each(["completed", "failed"])("retains exit metadata and the output tail without classifying warnings (%s)", (status) => {

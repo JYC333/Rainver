@@ -46,11 +46,15 @@ async function main(): Promise<void> {
       // chain — marker or not — is an ordinary first migration. Gating it
       // would send a first-time operator to a maintenance command that needs a
       // running instance to drain, on a machine that has never started one.
-      const pending = rows.some((row) => row.applied)
+      const existing = rows.some((row) => row.applied);
+      const {operationPluginsPending}=await import("../modules/plugins/offline.js");
+      const pluginPending=existing?await operationPluginsPending(pool):[];
+      const pending = existing
         ? rows.filter((row) => !row.applied && row.maintenance)
         : [];
       for (const row of pending) console.log(`${row.version}_${row.name}`);
-      process.exitCode = pending.length > 0 ? 10 : 0;
+      for(const id of pluginPending)console.log(id);
+      process.exitCode = pending.length+pluginPending.length > 0 ? 10 : 0;
       return;
     }
     // Asked by `migrate.sh` before its pre-migration dump: the first line is
@@ -58,14 +62,25 @@ async function main(): Promise<void> {
     // pending files; exit 10 when anything is pending, 0 when nothing is.
     if (command === "pending") {
       const rows = await status(pool, dir);
+      const {operationPluginsPending}=await import("../modules/plugins/offline.js");
+      const pluginPending=await operationPluginsPending(pool);
       const pending = rows.filter((row) => !row.applied);
       console.log(rows.filter((row) => row.applied).at(-1)?.version ?? "none");
       for (const row of pending) console.log(`${row.version}_${row.name}`);
-      process.exitCode = pending.length > 0 ? 10 : 0;
+      for(const id of pluginPending)console.log(id);
+      process.exitCode = pending.length+pluginPending.length > 0 ? 10 : 0;
+      return;
+    }
+    if(command === "plugin-reconcile"||command === "plugin-install"){
+      const {offlineOperationPlugins}=await import("../modules/plugins/offline.js");
+      await offlineOperationPlugins(pool,command==="plugin-install"?"migrate":"reconcile",process.argv.includes("--repair-failed"));
       return;
     }
     if (command === "up") {
       const result = await migrate(pool, dir, { log: (m) => console.log(m) });
+      const {offlineOperationPlugins,operationPluginsPending}=await import("../modules/plugins/offline.js");
+      // No role/owner DDL on an ordinary restart with no package changes.
+      if((await operationPluginsPending(pool)).length)await offlineOperationPlugins(pool,"migrate");
       console.log(
         result.applied.length === 0
           ? "schema is up to date (no migrations applied)"
@@ -73,7 +88,7 @@ async function main(): Promise<void> {
       );
       return;
     }
-    console.error(`unknown command: ${command} (expected "up", "status", "pending" or "maintenance-pending")`);
+    console.error(`unknown command: ${command} (expected "up", "status", "pending", "maintenance-pending", "plugin-install" or "plugin-reconcile")`);
     process.exitCode = 2;
   } finally {
     await pool.end();

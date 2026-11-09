@@ -17,6 +17,7 @@ import HostSummaryList from './HostSummaryList'
 import HostDetail from './HostDetail'
 import { fmt, type HostProvisioning } from './hostDisplay'
 import { hostSectionParam } from './hostLinks'
+import { RuntimeFailureTargetSchema } from '@rainver/protocol'
 
 const HOST_REFRESH_INTERVAL_MS = 3_000
 
@@ -52,6 +53,7 @@ export default function HostsPanel() {
   const [searchParams, setSearchParams] = useSearchParams()
   const hostParam = searchParams.get('host')
   const sectionParam = hostSectionParam(searchParams.get('section'))
+  const recoveryTarget = RuntimeFailureTargetSchema.safeParse({ host_id: hostParam, runtime_key: searchParams.get('runtime'), installation: searchParams.get('installation') })
   const defaultHost = hosts.find(host => host.kind === 'server') ?? orderedHosts[0] ?? null
   // Only a named Host, or the default when none is named; never a stand-in for a missing one.
   const selected = hostParam ? hosts.find(host => host.id === hostParam) ?? null : defaultHost
@@ -60,7 +62,7 @@ export default function HostsPanel() {
     setSearchParams(current => {
       const next = new URLSearchParams(current)
       next.set('host', hostId)
-      if (current.get('host') !== hostId) next.delete('section')
+      if (current.get('host') !== hostId) { next.delete('section'); next.delete('runtime'); next.delete('installation') }
       return next
     }, { replace })
   }, [setSearchParams])
@@ -96,6 +98,8 @@ export default function HostsPanel() {
       const next = new URLSearchParams(current)
       next.delete('host')
       next.delete('section')
+      next.delete('runtime')
+      next.delete('installation')
       return next
     })
   }, [setSearchParams])
@@ -276,6 +280,7 @@ export default function HostsPanel() {
                 provisioning={provisioning[selected.id]}
                 provisioningLoading={provisioningLoading}
                 sectionRequest={hostParam === selected.id && sectionParam ? { section: sectionParam, key: location.key } : null}
+                runtimeTarget={recoveryTarget.success && recoveryTarget.data.host_id === selected.id ? recoveryTarget.data : undefined}
                 showBack={multiple}
                 onBack={() => { returnTo.current = selected.id; showAllHosts() }}
                 onRefresh={() => load()}

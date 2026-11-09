@@ -9,10 +9,12 @@
  * import server/src/modules directly.
  */
 
+import type {z} from "zod";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { ServerConfig } from "../../../config.js";
 import type {
   RainverPlugin,
+  PluginActionPort, PluginOperationExecutor,
   PluginHostContext,
   PluginHttpPort,
   PluginJobHandler,
@@ -31,7 +33,7 @@ import { getDbPool } from "../../../db/pool.js";
 import { resolveIdentity, sendRouteError, jsonBody } from "../../routeUtils/common.js";
 import { requireOfficialPluginEnabled } from "../guards.js";
 import { PgJobQueueRepository } from "../../jobs/repository.js";
-import { pluginService } from "../service.js";
+import { pluginServiceFor } from "../service.js";
 
 export type PluginRouteFn = (app: FastifyInstance) => void;
 
@@ -40,10 +42,12 @@ export interface PluginContributions {
   routeFns: PluginRouteFn[];
   jobHandlers: Array<{ jobType: string; handler: JobHandler }>;
   schedulerTasks: ScheduledTask[];
-  proposalAppliers: Array<{ proposalType: string; applier: ProposalApplier }>;
+  proposalAppliers: Array<{ proposalType: string; applier: ProposalApplier;payloadSchema?:z.ZodType }>;
 }
 
 export class PluginHostContextImpl implements PluginHostContext {
+  readonly operationExecutors = new Map<string,PluginOperationExecutor>();
+  readonly actions?:PluginActionPort;
   readonly pluginId: string;
   readonly fastify: FastifyInstance;
   readonly db: Queryable;
@@ -54,8 +58,14 @@ export class PluginHostContextImpl implements PluginHostContext {
 
   constructor(plugin: RainverPlugin, fastify: FastifyInstance, config: ServerConfig) {
     this.pluginId = plugin.id;
+    if(plugin.operationManifest){
+      this.actions={register:(id,execute)=>{
+        if(!plugin.operationManifest!.operations.some(o=>o.id===id)||this.operationExecutors.has(id))throw new Error('Undeclared/duplicate plugin operation');
+        this.operationExecutors.set(id,execute);
+      }};
+    }
     this.fastify = fastify;
-    this.db = config.databaseUrl
+    this.db = plugin.operationManifest ? {query:async()=>{throw new Error("Use invocation PluginDb through ctx.actions");}} : config.databaseUrl
       ? getDbPool(config.databaseUrl)
       : { query: async () => ({ rows: [], rowCount: 0 }) };
     this.config = config;
@@ -76,7 +86,7 @@ export class PluginHostContextImpl implements PluginHostContext {
   async isEnabled(spaceId: string | null, userId: string | null): Promise<boolean> {
     if (!this._dbUrl) return false;
     const db = getDbPool(this._dbUrl);
-    const result = await pluginService.isEnabled(db, this.pluginId, spaceId ?? "", userId);
+    const result = await pluginServiceFor(this.config).isEnabled(db, this.pluginId, spaceId ?? "", userId);
     return result.enabled;
   }
 
@@ -123,7 +133,7 @@ export class PluginHostContextImpl implements PluginHostContext {
       const wrapped: JobHandler = async (envelope: JobEnvelopeForHandler) => {
         if (dbUrl) {
           const db = getDbPool(dbUrl);
-          const { enabled } = await pluginService.isEnabled(
+          const { enabled } = await pluginServiceFor(this.config).isEnabled(
             db,
             pluginId,
             envelope.space_id ?? "",
@@ -177,7 +187,7 @@ export class PluginHostContextImpl implements PluginHostContext {
       const wrapped: ProposalApplier = async (ctx: ProposalApplyContext): Promise<ProposalApplyResult> => {
         if (dbUrl) {
           const db = getDbPool(dbUrl);
-          const { enabled } = await pluginService.isEnabled(
+          const { enabled } = await pluginServiceFor(this.config).isEnabled(
             db,
             pluginId,
             ctx.proposal.space_id,

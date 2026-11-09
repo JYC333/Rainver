@@ -1,3 +1,4 @@
+import { manageNativeCli } from "./managedCli.js";
 import { ownCliReleases } from "./ownCliReleases.js";
 import { AcpAgentService } from "../acpAgents/index.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -7,7 +8,7 @@ import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
 import { HostDaemonFrameSchema, HostHelloInfoSchema, HostRunDiffUploadSchema,
-  HostRunOutputsUploadSchema, type HostHelloInfo, isOwnCliUpdateRuntimeKey, LOGIN_CALLBACK_URL_MAX_CHARS, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
+  HostRunOutputsUploadSchema, repositoryAcpAdapter, type HostHelloInfo, isOwnCliUpdateRuntimeKey, LOGIN_CALLBACK_URL_MAX_CHARS, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import { scheduleAmbientSyncs } from "../importedSessions/syncScheduler.js";
 import { authRepositoryFromConfig, sessionRefreshSink, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
 import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow, type HostUploadRefusal } from "./repository.js";
@@ -369,9 +370,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           remote_eligible: isRemoteDispatchEligible(spec.runtime_key),
           // A built-in runtime's managed copy comes from this ACP registry entry;
           // the registry picker hides it so the same agent is not offered twice.
-          registry_id: spec.distribution && "registry_id" in spec.distribution ? spec.distribution.registry_id : null,
-          /** Current ACP package version available to install from the registry. */
-          latest_managed_version: latestManagedVersions.get(spec.runtime_key) ?? null,
+          registry_id: repositoryAcpAdapter(spec.runtime_key)?.registry_id ?? (spec.distribution && "registry_id" in spec.distribution ? spec.distribution.registry_id : null),
+          /** Available Registry Agent package version. */
+          latest_managed_version: repositoryAcpAdapter(spec.runtime_key) ? null : latestManagedVersions.get(spec.runtime_key) ?? null,
           // Never awaited: answered from memory, refreshed in the background.
           latest_own_version: ownCliReleases.peek(spec.runtime_key),
           /** Current bootstrap/upgrade target for the built-in Server Host. */
@@ -458,6 +459,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     });
   });
 
+  app.post("/api/v1/hosts/:hostId/installations/:runtimeKey/managed/update", (request, reply) => manageNativeCli(context, request, reply, "update"));
+
   // A managed copy of a runtime on a host, installed and removed by its
   // daemon on the owner's request. Any ACP adapter with a distribution
   // qualifies — a builtin CLI as much as a registry agent — and each managed
@@ -471,14 +474,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
     // Installation is explicit. Refresh release metadata here; ordinary
     // capability reads and running copies never install an upstream update.
-    await new AcpAgentService(resolved.pool).refreshRegistryCache();
+    if (!repositoryAcpAdapter(runtimeKey)) await new AcpAgentService(resolved.pool).refreshRegistryCache();
     const targetHost = await resolved.pool.query<{ kind: string }>(
       "SELECT kind FROM hosts WHERE id = $1 LIMIT 1",
       [resolved.hostId],
     );
-    // The probe for *this* machine already resolved which copy it installs —
-    // the release pin for the Server Host, the registry's answer for a paired
-    // one. Do not decide that again here. Two sources of truth would disagree.
+    // Install the distribution resolved for this Host.
     const probe = acpRuntimeProbe(runtimeKey, targetHost.rows[0]?.kind === "server" ? "server" : "remote");
     const distribution = probe?.distribution;
     const version = probe?.version;
@@ -486,10 +487,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.code(422).send({ detail: `Runtime adapter '${runtimeKey}' has no distribution to install from` });
     }
     const expectedVersion = body<{ expected_version: string }>(request).expected_version;
+    if (repositoryAcpAdapter(runtimeKey) && expectedVersion !== undefined) return reply.code(400).send({ detail: "ACP adapter versions are managed by the Rainver release" });
     if (expectedVersion !== undefined && expectedVersion !== version) {
       return reply.code(409).send({ detail: "The available ACP version changed. Refresh the agent list before installing." });
     }
     const before = await currentManagedVersion(resolved.pool, resolved.hostId, runtimeKey);
+    if (repositoryAcpAdapter(runtimeKey) && before) return reply.code(409).send({ detail: "Use the native CLI update action; ACP adapters follow the Rainver release" });
     const egressTransport = targetHost.rows[0]?.kind === "server"
       ? managedHostEgressTransport(await readInstanceOperationsPolicy(context.config))
       : { mode: "direct" as const };
@@ -499,8 +502,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       distribution,
       login: probe.login,
       runtime_version_command: getRuntimeAdapterSpec(runtimeKey)?.managed_runtime_version_command ?? null,
-      ...(runtimeKey === "codex_cli" && ownCliReleases.peek("codex_cli")
-        ? { vendor_cli_version: ownCliReleases.peek("codex_cli")! } : {}),
       health_check_protocol: getRuntimeAdapterSpec(runtimeKey)?.invocation?.protocol === "acp" ? "acp" : null,
       egress_transport: egressTransport,
     });
@@ -573,6 +574,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
    * host kept behind it; both versions use the adapter's stable managed HOME.
    */
   app.post("/api/v1/hosts/:hostId/installations/:runtimeKey/rollback", async (request, reply) => {
+    if (repositoryAcpAdapter(params(request).runtimeKey ?? "")) return manageNativeCli(context, request, reply, "rollback");
     const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
     const runtimeKey = params(request).runtimeKey ?? "";
@@ -1175,6 +1177,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                 error: frame.error,
                 egress: frame.egress,
                 task_worktree: frame.task_worktree,
+                time_zone: frame.time_zone,
+                native_runtime_version: frame.native_runtime_version,
               }, frame.launch_id);
               return;
             case "task_run_settle_result":

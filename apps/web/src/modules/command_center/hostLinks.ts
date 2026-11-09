@@ -10,3 +10,8 @@ export function commandCenterHostPath(hostId: string, section?: HostSection): st
 export function hostSectionParam(value: string | null): HostSection | null {
   return value === 'runtime' || value === 'cli' || value === 'connection' ? value : null
 }
+
+export function commandCenterRuntimePath(target: { host_id: string; runtime_key: string; installation: string }): string {
+  const params = new URLSearchParams({ host: target.host_id, section: 'runtime', runtime: target.runtime_key, installation: target.installation })
+  return `/command-center?${params.toString()}`
+}

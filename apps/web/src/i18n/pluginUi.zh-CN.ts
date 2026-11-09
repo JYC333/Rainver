@@ -1,0 +1,1 @@
+export const pluginUiZhCN={plugin_ui:{offline:'请联系实例管理员通过离线升级安装此模块。',project_navigation:'Project 导航',title:'可选模块',loading:'正在加载模块…',disabled:'模块已禁用或您已无权访问。',error:'无法加载此模块。',retry:'重试',review:'审查提案',records:'记录',value:'记录内容',save:'保存',propose:'提议修改',background:'后台执行',refresh:'刷新',empty:'暂无记录。',saved:'已保存',pending:'等待您的审查',queued:'后台工作已排队'}}

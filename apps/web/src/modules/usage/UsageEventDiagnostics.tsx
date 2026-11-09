@@ -27,10 +27,14 @@ export function UsageEventDiagnostics({ event }: { event: UsageEventDTO }) {
   ]
   if (event.execution_channel === 'local_cli') {
     rows.push(['acp_turns', number('acp_turns')], ['occupancy', `${number('occupancy_used')} / ${number('occupancy_size')}`])
-    if (diagnostics.usage_scope === 'last_model_request') {
-      // codex-acp reports its last model request, not the turn; the buckets above are a lower bound.
-      rows.push(['usage_scope', t('workspace_ui.usage.diagnostics.scope_last_model_request')])
+    if (typeof diagnostics.usage_scope === 'string') {
+      const usageScope = diagnostics.usage_scope === 'run_attempt_aggregate' ? 'run_attempt_aggregate' : 'unknown'
+      rows.push(['usage_scope', t(`workspace_ui.usage.diagnostics.scope_${usageScope}`)])
     }
+    const rawAcp = event.metadata.acp
+    const acp = rawAcp && typeof rawAcp === 'object' && !Array.isArray(rawAcp) ? rawAcp as Record<string, unknown> : {}
+    if (typeof acp.version === 'string') rows.push(['adapter_version', acp.version])
+    if (typeof event.metadata.runtime_native_version === 'string') rows.push(['runtime_version', event.metadata.runtime_native_version])
     if (typeof diagnostics.usage_updates === 'number') {
       rows.push(['usage_updates', number('usage_updates')], ['usage_updates_used_total', number('usage_updates_used_total')])
     }

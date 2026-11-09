@@ -184,7 +184,24 @@ space or per user. Their control-plane descriptor lives in the `plugins` module,
 while runtime code for bundled official plugins lives under `plugins/official/<plugin_id>/`,
 is compiled into `server/dist/official-plugins/<plugin_id>/`, and is activated by `PluginHost`.
 
-Steps:
+For new operation-manifest packages, follow the
+[operation manifest platform](OFFICIAL_OPTIONAL_MODULES.md#operation-manifest-platform):
+manifest-derived descriptors/config-local registry, P1 invocation PluginDb,
+`ctx.actions`/`ctx.lifecycle`, named host Job intents, canonical proposal schemas,
+and explicit offline migration/reconcile. Raw legacy HTTP/Jobs/DB ports below
+are unavailable to those packages. Domain SQL must enforce host Space/person
+GUC predicates; caller_owned is not RLS or an automatic B11 exemption. Frontend manifest/Project slots are implemented in P2 stage 3 (stage and final whole-P2 dual review passed).
+Use one browser-safe operationManifest.ts and a bundled operationViews.tsx; the
+host derives entries and binds local components. New package authors must use
+ESM at the package root and include this shared declaration in their server
+TypeScript root (for example rootDir `..`, outDir the package artifact root,
+include `../operationManifest.ts` plus server/src, and matching
+plugin.json server.main `server/src/index.js`). The existing builder honors the
+package tsconfig; do not copy the legacy src-only root when importing a shared
+root declaration. Existing legacy configurations are not rewritten. The protocol PluginViewContext
+lets plugin UI define its own structural UI port without importing app internals.
+
+Legacy steps (existing diary/finance contract):
 1. Add an `OfficialPluginDescriptor` under `server/src/modules/plugins/official/<pluginId>.ts`.
 2. Register the descriptor in `server/src/modules/plugins/registry.ts`.
 3. If the plugin contributes runtime behavior, create `plugins/official/<plugin-id>/`.

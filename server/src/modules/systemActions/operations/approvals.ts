@@ -102,7 +102,7 @@ export function operationProposalService(config: ServerConfig, registry: Proposa
       const policy = await enforce({
         ...config,
         auditTransaction: db
-      }, await loadActionRegistry(), {
+      }, await loadActionRegistry(config), {
         action: item.definition.policy_action,
         actor_type: frozen.actor.principal.kind,
         actor_id: frozen.actor.principal.id,

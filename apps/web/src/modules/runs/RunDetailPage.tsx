@@ -5,6 +5,8 @@ import { RunQuotaRecoveryControls } from './RunQuotaRecoveryControls'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
+import { RuntimeFailureNotice } from './RuntimeFailureNotice'
+import { runtimeFailure } from './runtimeFailure'
 import { ArrowLeft, ExternalLink, FileCode2, FlaskConical, Loader2, Save, ShieldCheck, UserRoundCheck, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { artifactsApi, evolutionApi, runsApi, type SaveWorkflowFromRunResult } from '../../api/client'
@@ -626,7 +628,8 @@ function RunDetailPageContent() {
             </Button>
           </Card>
         )}
-        {r.status === 'failed' && r.error_message && (
+        <RuntimeFailureNotice key={`${r.space_id}:${r.id}`} run={r} />
+        {r.status === 'failed' && r.error_message && !runtimeFailure(r) && (
           <Card className="p-3 border-destructive/30 bg-destructive/5 text-sm text-destructive">
             {r.error_message}
             {r.error_json && (

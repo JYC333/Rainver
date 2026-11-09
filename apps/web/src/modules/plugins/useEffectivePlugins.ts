@@ -1,4 +1,6 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import {useSpace} from '../../contexts/SpaceContext'
+import {registerInMemoryResidue,sessionEpoch} from '../../lib/sessionResidue'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import type { OfficialPluginEffectiveMap } from '@rainver/protocol'
 import { pluginsApi } from '../../api/client'
 import i18n from '../../i18n'
@@ -27,39 +29,55 @@ interface UseEffectivePluginsResult {
  *   const showDiary = isEnabled('diary')
  */
 export function useEffectivePlugins(): UseEffectivePluginsResult {
+  const {userId,activeSpaceId,preferredSpaceId}=useSpace()
+  const space=activeSpaceId??preferredSpaceId
+  const scope=`${userId}:${space}`
+  const sequence=useRef(0)
+  const [loadedScope,setLoadedScope]=useState('')
   const [plugins, setPlugins] = useState<EffectivePluginMap>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const fetch = useCallback(() => {
+    const call=++sequence.current,epoch=sessionEpoch()
     setLoading(true)
     setError(null)
-    pluginsApi.effective()
+    pluginsApi.effective(space?{spaceId:space}:{})
       .then((data) => {
+        if(call!==sequence.current||epoch!==sessionEpoch())return
+        setLoadedScope(scope)
         setPlugins(data?.plugins ?? {})
         setLoading(false)
       })
       .catch((err: unknown) => {
+        if(call!==sequence.current||epoch!==sessionEpoch())return
+        setPlugins({});setLoadedScope(scope)
         setError(err instanceof Error ? err.message : i18n.t('management_ui.plugins.state_load_failed'))
         setLoading(false)
       })
-  }, [])
+  }, [scope,space])
 
   useEffect(() => {
     fetch()
+    const refresh=()=>fetch()
+    window.addEventListener('focus',refresh)
+    const timer=window.setInterval(refresh,30000)
+    return()=>{++sequence.current;window.removeEventListener('focus',refresh);window.clearInterval(timer)}
   }, [fetch])
+  useEffect(()=>registerInMemoryResidue(()=>{++sequence.current;setPlugins({});setLoadedScope('')}),[])
+  const visiblePlugins=loadedScope===scope?plugins:{}
 
   const isEnabled = useCallback(
-    (pluginId: string): boolean => plugins[pluginId]?.enabled ?? false,
-    [plugins],
+    (pluginId: string): boolean => visiblePlugins[pluginId]?.enabled ?? false,
+    [visiblePlugins],
   )
 
   const isVisible = useCallback(
-    (pluginId: string): boolean => plugins[pluginId]?.visible ?? true,
-    [plugins],
+    (pluginId: string): boolean => visiblePlugins[pluginId]?.visible ?? true,
+    [visiblePlugins],
   )
 
-  return { plugins, loading, error, refresh: fetch, isEnabled, isVisible }
+  return { plugins:visiblePlugins, loading:loading||loadedScope!==scope, error, refresh: fetch, isEnabled, isVisible }
 }
 
 interface UseEffectiveModulesResult {

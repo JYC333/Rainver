@@ -16,6 +16,31 @@ export interface CliRuntimeMeasurement {
   } | null;
 }
 
+/** The wrappers' turn-scoped quota extension, already differenced by the wrapper.
+ * Claude rows can include child models, so they need not sum to main-loop usage.
+ */
+export function modelUsageFromAcpQuota(meta: unknown, runtimeKey: string): CanonicalModelUsage[] {
+  const object = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
+  const rows = object(object(meta).quota).model_usage;
+  if (!Array.isArray(rows) || rows.length > 64) return [];
+  const result: CanonicalModelUsage[] = [];
+  for (const row of rows) {
+    const item = object(row), count = object(item.token_count);
+    if (typeof item.model !== "string" || item.model === "default" || !/^[\w./:[\]-]{1,256}$/.test(item.model)) return [];
+    const usage = usageFromAcp({
+      inputTokens: count.inputTokens, outputTokens: count.outputTokens, totalTokens: count.totalTokens,
+      cachedReadTokens: count.cachedInputTokens,
+      cachedWriteTokens: runtimeKey === "codex_cli" ? count.cacheWriteInputTokens : count.cachedWriteTokens,
+      thoughtTokens: count.reasoningOutputTokens,
+    }); // Both wrappers have already removed cached input from inputTokens.
+    if (!usage) return [];
+    const existing = result.find(value => value.model === item.model);
+    if (existing) return []; // Ambiguous duplicate identities are not independently billable rows.
+    result.push({ model: item.model, usage });
+  }
+  return result;
+}
+
 export function usageFromAcp(value: Record<string, unknown>, cacheIncludedInInput = false): CanonicalUsage | null {
   const usage = strictUsage({
     input_tokens: value.inputTokens,
@@ -26,7 +51,7 @@ export function usageFromAcp(value: Record<string, unknown>, cacheIncludedInInpu
     reasoning_tokens: value.thoughtTokens,
   }, ["input_tokens", "output_tokens", "total_tokens"]);
   if (!usage) return null;
-  // Antigravity 1.4.3 maps Google's prompt_token_count directly to input:
+  // Antigravity maps Google's prompt_token_count directly to input:
   // cached_content_token_count is a subset, not an additional input bucket.
   if (cacheIncludedInInput) {
     const cached = (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);

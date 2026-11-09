@@ -1,7 +1,7 @@
 # Database and Transactions
 
 The reviewed operation-core contract is recorded in
-[ADR 0028](../decisions/0028-operation-execution-core.md). The opt-in stage-2
+[ADR 0028](../decisions/0028-operation-execution-core.md). The current opt-in
 implementation is described below; unmigrated paths keep their existing behavior.
 
 ## Transaction Helper Pattern
@@ -17,8 +17,8 @@ Repositories and stores still own domain queries and row construction. The
 transaction helper owns only transaction control.
 
 `withQueryableTransaction` (`server/src/modules/routeUtils/common.ts`) accepts
-either a pool or an already checked-out `pg` `PoolClient`. It identifies an
-existing client by its `release()` method; `pg` clients also expose `connect()`
+either a pool or an already checked-out `pg` `PoolClient`. It first recognizes an active host-branded operation port, then identifies a
+legacy checked-out client by its `release()` method; `pg` clients also expose `connect()`
 on their prototype, so `connect` alone is not a valid Pool discriminator.
 Existing clients join the caller's transaction without issuing a nested
 `BEGIN`/`COMMIT`. Code given a checked-out Client must await each query before
@@ -773,3 +773,89 @@ transactions roll back, and pg discards unqueryable clients on release; the
 connection event cannot crash the server before a typed 503 is delivered.
 The actual fault/cutover procedures and their limits are recorded in
 [Operation core acceptance](OPERATION_CORE_ACCEPTANCE.md).
+
+
+## Operation plugin roles
+
+Manifest plugins run with `plugin_<id>` search_path and a NOLOGIN DML-only
+`rainver_plugin_<id>` role inside the existing core transaction. The separate
+`rainver_plugin_<id>_ddl` owns the schema. Host membership uses PG16+ INHERIT FALSE,
+SET TRUE; provision validates role flags/absence of inherited memberships and
+schema ownership, and grants no core-table access. No startup DDL is performed.
+P2 stage 1 is committed; stage-2 offline lifecycle/reconcile passed dual review (`a2e623f3`). The migration CLI uses bounded advisory/DDL locking and a separate
+post-rollback failure journal transaction; restore scripts reconcile role,
+owner and ACL state after no-owner/no-acl dumps. No product rollout is implied.
+
+`withPluginDb` uses the private active-operation host bridge to install local
+role/settings, expose a fresh query/transaction port, check role/GUC tripwires,
+and restore host settings before mandatory core result/audit writes. Failure
+rolls back its savepoint; poisoned connections cannot COMMIT and are destroyed.
+Plugin SQL cannot issue outer transaction/session control. Quoted simple function
+names are recognized by the shared SQL guard, so quoted set_config is also
+refused. PostgreSQL still enforces READ ONLY and schema/table privileges. Local
+savepoints do not grant transaction ownership. Neither roles nor the port are a
+malicious same-process sandbox; domain tenant predicates remain mandatory, and
+RLS/cross-person plugin content are not claimed implemented.
+
+
+The private PluginDb host bridge permits only named host adapters (currently
+canonical Job enqueue) in the existing transaction, with role restoration on
+success/failure; it does not permit nested top-level dispatch or expose a pool.
+Proposal appliers join the canonical P1 approval transaction and restore host
+role before canonical result/status/audit writes. Session-residue SQL (SELECT
+INTO, LISTEN, PREPARE, holdable cursors) is refused. Runtime admission validates
+role flags/memberships. See [the operation manifest platform](OFFICIAL_OPTIONAL_MODULES.md#operation-manifest-platform)
+for offline maintenance/restore, caller-owned SQL review and at-least-once Job
+boundaries. Drizzle-authored lifecycle columns are generated migration 0012.
+
+
+### Plugin invocation concurrency correction (dual review passed)
+
+The original P2 passes/reviews did not cover host-role/query overlap or Unicode/$
+SELECT-INTO alias leakage. Follow-up real-PG diagnostics proved both vulnerabilities;
+the fix passed independent Claude/Antigravity review (not a claim of reviewer
+test reruns). PluginDb SQL,
+nested savepoint lifetimes and named host transitions now serialize on one P1
+connection using callback-scoped reentrant child queues. Host-context plugin
+reentry is refused. Callback exit seals its frame, drains already-running work
+before rollback/role restoration, rejects queued/late work, and refuses unfinished
+unawaited work; no extra connection can split atomic data/Job writes. The SQL
+scanner keeps PostgreSQL Unicode/$ identifiers whole and handles quoted aliases,
+comments, literals and AS/CTE boundaries. Temp/session creation remains forbidden.
+Actual Job-trigger lock barriers, nested/concurrent/expiry tests and same-backend
+next-person temp absence/reconcile evidence live in pluginInvocationDb and
+pluginSessionReuseDb; see the [owner follow-up](OFFICIAL_OPTIONAL_MODULES.md#invocation-role-and-session-follow-up).
+Historical full-suite counts are not relabeled as covering the new cases.
+User-created cyclic Promise dependencies are unsupported; no global deadlock
+freedom or original-exception preservation during Unawaited-work cleanup is
+guaranteed. The owner follow-up describes those diagnostic limits.
+
+### Plugin data-port admission and local lifecycle
+
+PluginDb statement policy lives in `plugins/operationSqlPolicy.ts`: supported
+roots are data statements, with local savepoint syntax delegated to P1's shared
+recognizer and ownership checks. Utility wrappers, SELECT INTO, built-in SQL
+string evaluators and session/advisory functions are refused. The shared lexical
+scanner rejects Unicode-escaped identifiers instead of losing their executable
+meaning in placeholders. This is a trusted-code safeguard, not general SQL
+function safety. Local enable/disable transitions order cleanup before DB locks
+and settle attempt-owned versus committed admission holds independently; failed
+enables preserve existing disabled holds. See the
+[owner contract](OFFICIAL_OPTIONAL_MODULES.md#sql-data-port-and-lifecycle-hardening)
+for admitted SQL, concurrency boundaries and real-PG evidence.
+
+The shared operation-session guard refuses `pg_settings` references because its
+UPDATE rule changes session GUCs; this applies to both P1 and PluginDb. PluginDb
+also refuses calls to the exact database-wide large-object functions, without
+reserving the lo_ prefix for ordinary identifiers. Both ports refuse setseed
+session-state changes. Resource cleanup has a
+three-second cooperative deadline: disable commits with cleanup_pending while
+unfinished callbacks quarantine only their scopes; reenable returns 409 until
+those callbacks settle. Phase-specific failure events distinguish installation,
+provision, individual migrations, reconcile and finalization; only an actual
+migration failure gets a failed plugin_migrations row. No schema change or
+historical journal rewrite is required.
+
+A repair-required install retry is rejected under the install session lock before
+the journaled transaction starts; it preserves the original failure summary and
+events instead of relabeling an admission denial as another migration failure.

@@ -4,6 +4,7 @@ import { inject } from "vitest";
 
 export interface SharedPostgresContext {
   available: boolean;
+  containerId?:string;
   adminUri?: string;
   templateDatabase?: string;
   runId?: string;

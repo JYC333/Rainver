@@ -1,4 +1,4 @@
-import type { SystemActionActorType, SystemActionDefinition, SystemActionId } from "@rainver/protocol";
+import type { SystemActionActorType, RegisteredSystemActionDefinition as SystemActionDefinition, SystemActionId } from "@rainver/protocol";
 import { loadSystemActionRegistry } from "./registry.js";
 
 interface SystemActionActor {

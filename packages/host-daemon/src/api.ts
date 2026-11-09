@@ -130,7 +130,8 @@ async function helloInfo(
     probes ? askRuntimeOptions(probes, log) : undefined,
     probes ?? [],
     async (lookup) => {
-      const command = probes?.find(candidate => candidate.runtime_key === lookup.runtime_key)?.argv[0];
+      const probe = probes?.find(candidate => candidate.runtime_key === lookup.runtime_key);
+      const command = probe?.argv[0];
       return command ? ensurePackagedAdapter(command) : true;
     },
     log,
@@ -145,7 +146,7 @@ async function helloInfo(
     daemon_version: daemonVersion(),
     environment_kind,
     // The control plane offers the file tool bridge only where this daemon can pin it.
-    capabilities_json: { ...capabilities, sources_execution:await sourceExecutionOffer(), tool_bridge_protocols: localToolBridgeSupported(currentPlatform) ? ["file-v1"] : [],
+    capabilities_json: { ...capabilities, ...(currentPlatform !== "win32" ? { managed_cli_updates: true } : {}), sources_execution:await sourceExecutionOffer(), tool_bridge_protocols: localToolBridgeSupported(currentPlatform) ? ["file-v1"] : [],
       // Separate from `installations`: ordinary CLIs are not ACP Runtimes.
       ordinary_tools: await ordinaryToolsReport(log),
       ordinary_tool_accounts: ordinaryToolAccountsCapability(),
