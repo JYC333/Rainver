@@ -97,3 +97,5 @@ export * from './projectReadingRounds.js';
 
 export * from "./projectReadingCompositions.js";
 export * from './operationIdempotency.js';
+
+export * from "./codePatchDecisions.js";

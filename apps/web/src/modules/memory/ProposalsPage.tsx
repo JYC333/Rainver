@@ -107,7 +107,8 @@ export default function ProposalsPage() {
         const options = codePatchAcceptOptions(proposal)
         if (options === null) return
         const out: ProposalAcceptOut = await proposalsApi.accept(id, options)
-        if (out.result_type === 'memory_entry') {
+        if(out.result_type==='code_patch_pending'){toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));}
+        else if (out.result_type === 'memory_entry') {
           toast.success('Accepted — memory entry created.')
         } else if (out.result_type === 'code_patch_apply') {
           const n = out.result.updated_paths.length

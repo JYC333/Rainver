@@ -1,3 +1,4 @@
+import {NoteObjectError} from './noteObjectErrors.js';
 import { randomUUID } from "node:crypto";
 import { NOTE_CROSS_PROJECT_SHARE_REQUIRED_CODE } from "@rainver/protocol";
 import { HttpError, type Queryable, withQueryableTransaction } from "../routeUtils/common.js";
@@ -438,7 +439,7 @@ export async function addNotePlacement(
     `SELECT id FROM note_collection_items WHERE space_id = $1 AND collection_id = $2 AND note_id = $3`,
     [spaceId, collectionId, noteId],
   );
-  if (existing.rows[0]) throw new HttpError(409, "This note is already in that folder");
+  if (existing.rows[0]) throw new NoteObjectError(409, "This note is already in that folder");
   await bindNoteToPlacementProject(db, { spaceId, noteId, collectionId, actor, shareWithProject });
   await insertNotePlacement(db, spaceId, noteId, collectionId);
 }
@@ -502,7 +503,7 @@ export async function bindNoteToPlacementProject(
       // `responseBody` replaces the default `{ detail }`, so the prose has to
       // be repeated inside it or the client is left with a bare status.
       const detail = "This note belongs to another project. Placing it here also makes it readable by this project's members.";
-      throw new HttpError(409, detail, {
+      throw new NoteObjectError(409, detail, {
         detail,
         code: NOTE_CROSS_PROJECT_SHARE_REQUIRED_CODE,
         owner_project_id: currentProjectId,
@@ -636,7 +637,7 @@ async function assignNoteProjectRole(db: Queryable, input: NoteProjectRoleInput)
   }
   assertNoteProjectRole(role);
   const projectId = input.projectId ?? (await noteProjectId(db, input.spaceId, input.noteId));
-  if (!projectId) throw new HttpError(422, "A note must belong to a project before it can hold a project role");
+  if (!projectId) throw new NoteObjectError(422, "A note must belong to a project before it can hold a project role");
   const actorUserId = actingUserId(input.actor);
   if (actorUserId) {
     await assertProjectWriter(db, input.spaceId, projectId, actorUserId);

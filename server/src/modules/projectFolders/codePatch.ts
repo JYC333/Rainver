@@ -1,6 +1,6 @@
-import {tryWithDedicatedSessionAdvisoryLock} from '../../db/advisoryLock.js';
+import {CodePatchDecisionRefusal} from './codePatchDecisionErrors.js';
 import {sha256Json} from '../evolution/hash.js';
-import {codePatchEffectReceipt} from './codePatchEffectContext.js';
+import {codePatchDecisionAudit,codePatchEffectReceipt} from './codePatchEffectContext.js';
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
@@ -30,6 +30,10 @@ import { withCodePatchTarget } from "./codePatchTarget.js";
 
 const MAX_PATCH_FILE_BYTES = 2 * 1024 * 1024;
 
+/** Internal rollback effects may remove an originally absent file or restore binary bytes.
+ * Public patch parsing remains replace-file/UTF-8 only. */
+export interface CodePatchEffectOperation {type:'replace_file'|'remove_file';path:string;content:string;encoding?:'base64';preimage_sha256:string|null;preimage_exists:boolean}
+function effectContent(op:CodePatchEffectOperation):Buffer|null{return op.type==='remove_file'?null:Buffer.from(op.content,op.encoding==='base64'?'base64':'utf8');}
 export interface CodePatchOperation {
   type: "replace_file";
   path: string;
@@ -157,6 +161,7 @@ async function collectAndCreateCodePatchProposal(input: {
     force_record: true,
   });
   if (policy.status !== "allow") {
+    if(policy.status!=="error")throw new CodePatchDecisionRefusal(403, "project_folder.write_patch denied by policy");
     return {
       item: {
         kind: "code_patch",
@@ -328,24 +333,20 @@ async function preimageForPath(
 }
 
 async function applyCodePatchProposal(context: ProposalApplyContext): Promise<ProposalApplyResult> {
-  const {proposal,payload,operations,root,folder,folderId}=await prepareCodePatchPlan(context);
+  const {proposal,payload,root,folder,folderId}=await prepareCodePatchPlan(context);
   const receipt=codePatchEffectReceipt(proposal.id);
   if(receipt && (receipt.payloadHash!==sha256Json(payload)||receipt.root!==root||receipt.protectedFolder!==folder.protected))throw new HttpError(409,'Code patch effect receipt does not match current proposal/target');
-  const tx = new CodePatchFileTransaction(root, folder.protected);
+  if(!receipt)throw new HttpError(503,'Code patch requires a durable effect receipt');
   let applied: Array<{ path: string; sha256: string }> = [];
   let proposalPayloadPatch: Record<string, unknown>;
   try {
-    if(receipt)applied=receipt.applied;
-    else{
-      const lock=await tryWithDedicatedSessionAdvisoryLock(getDbPool(context.config.databaseUrl!),`code-patch-folder:${folderId}`,()=>tx.apply(operations));
-      if(!lock.acquired)throw new HttpError(409,'Code patch Folder is busy');applied=lock.value;
-    }
+    applied=receipt.applied;
     const now = new Date().toISOString();
     proposalPayloadPatch = {
       ...payload,
       applied_paths: applied.map((file) => file.path),
       applied_files: applied,
-      applied_at: receipt?.completedAt??now,
+      applied_at: receipt.completedAt,
     };
     const audience = proposalActivityAudience(proposal, context.userId);
     await context.db.query(
@@ -381,12 +382,11 @@ async function applyCodePatchProposal(context: ProposalApplyContext): Promise<Pr
       proposalId: proposal.id,
       spaceId: proposal.space_id,
       projectFolderId: folderId,
-      files: receipt?.before??tx.capturedPreimages(),
+      files: receipt.before,
       retentionDays: folder.snapshot_retention_days,
       maxCount: folder.snapshot_max_count,
     });
   } catch (error) {
-    if(!receipt)await tx.rollback();
     throw error;
   }
   return {
@@ -395,7 +395,6 @@ async function applyCodePatchProposal(context: ProposalApplyContext): Promise<Pr
       updated_paths: applied.map((file) => file.path),
       code_patch_files: applied,
     },
-    rollback: receipt?undefined:() => tx.rollback(),
     proposalPayloadPatch,
   };
 }
@@ -433,12 +432,14 @@ export async function prepareCodePatchPlan(context:ProposalApplyContext,phase='a
       proposal_type: "code_patch",
       proposal_id: proposal.id,
       decision_phase:codePatchEffectReceipt(proposal.id)?'bundle_commit':phase,
+      ...codePatchDecisionAudit(),
       project_folder_id: proposal.project_folder_id,
       file_count: operations.length,
     },
     force_record: true,
   });
   if (policy.status !== "allow") {
+    if(policy.status!=="error")throw new CodePatchDecisionRefusal(403, "project_folder.write_patch denied by policy");
     throw new HttpError(
       policy.status === "error" ? 500 : 403,
       policy.message ?? "project_folder.write_patch denied by policy",
@@ -494,52 +495,52 @@ export class CodePatchFileTransaction {
 
   /** Read/capture before any content write; caller persists this intent first.
    * Repeated paths retain the existing sequential replace-file semantics. */
-  async prepare(operations:CodePatchOperation[]):Promise<SnapshotFile[]>{
+  async prepare(operations:CodePatchEffectOperation[]):Promise<SnapshotFile[]>{
     const before:SnapshotFile[]=[],planned=new Map<string,Buffer|null>();
     for(const op of operations){
-      const target=this.validateOperation(op);await assertCodePatchTargetInsideRoot(this.root,target,op.path);
+      const target=this.validateOperation({...op,type:'replace_file'});await assertCodePatchTargetInsideRoot(this.root,target,op.path);
       if(!planned.has(op.path))await withCodePatchTarget(this.root,op.path,true,async file=>{planned.set(op.path,await file.read());});
       const content=planned.get(op.path)!;
       if((content!==null)!==op.preimage_exists || (content!==null && sha256(content)!==op.preimage_sha256))throw new HttpError(409,`stale_code_patch: ${op.path} preimage mismatch`);
       before.push({path:op.path,existed:content!==null,content:content?.toString('base64')??null,encoding:'base64'});
-      planned.set(op.path,Buffer.from(op.content,'utf8'));
+      planned.set(op.path,effectContent(op));
     }
     return before;
   }
 
-  private preparedPaths(operations:CodePatchOperation[],before:SnapshotFile[]){
-    const paths=new Map<string,{original:SnapshotFile;steps:CodePatchOperation[]}>();
+  private preparedPaths(operations:CodePatchEffectOperation[],before:SnapshotFile[]){
+    const paths=new Map<string,{original:SnapshotFile;steps:CodePatchEffectOperation[]}>();
     for(const [index,op] of operations.entries()){
       const original=before[index];if(!original||original.path!==op.path)throw new HttpError(409,'Invalid code patch intent');
-      this.validateOperation(op);
+      this.validateOperation({...op,type:'replace_file'});
       const group=paths.get(op.path);if(group)group.steps.push(op);else paths.set(op.path,{original,steps:[op]});
     }
     return paths;
   }
 
   /** Retry after a lost receipt resumes at a known content boundary. */
-  async applyPrepared(operations:CodePatchOperation[],before:SnapshotFile[]){
+  async applyPrepared(operations:CodePatchEffectOperation[],before:SnapshotFile[]){
     for(const [path,group] of this.preparedPaths(operations,before)){
       await assertCodePatchTargetInsideRoot(this.root,this.targetPath(path),path);
       await withCodePatchTarget(this.root,path,true,async file=>{
         const content=await file.read(),original=group.original;
         let stage=content===null&&!original.existed || content!==null&&original.existed&&content.equals(Buffer.from(original.content??'',original.encoding==='base64'?'base64':'utf8'))?0:-1;
-        for(const [index,op] of group.steps.entries())if(content!==null&&sha256(content)===sha256(Buffer.from(op.content,'utf8')))stage=index+1;
+        for(const [index,op] of group.steps.entries())if(content===null&&effectContent(op)===null||content!==null&&effectContent(op)!==null&&sha256(content)===sha256(effectContent(op)!))stage=index+1;
         if(stage<0)throw new HttpError(409,`stale_code_patch: ${path} changed during effect`);
-        for(const op of group.steps.slice(stage))await file.write(op.content);
+        for(const op of group.steps.slice(stage)){const desired=effectContent(op);if(desired===null)await file.remove();else await file.write(desired);}
       });
     }
-    return operations.map(op=>({path:op.path,sha256:sha256(Buffer.from(op.content,'utf8'))}));
+    return operations.filter(op=>op.type!=='remove_file').map(op=>({path:op.path,sha256:sha256(effectContent(op)!)}));
   }
 
   /** Compensate only known writes; concurrent unrelated content is retained. */
-  async compensatePrepared(operations:CodePatchOperation[],before:SnapshotFile[]){
+  async compensatePrepared(operations:CodePatchEffectOperation[],before:SnapshotFile[]){
     for(const [path,group] of [...this.preparedPaths(operations,before)].reverse()){
       await assertCodePatchTargetInsideRoot(this.root,this.targetPath(path),path);
       await withCodePatchTarget(this.root,path,true,async file=>{
         const content=await file.read(),original=group.original;
         if((content===null&&!original.existed)||(content!==null&&original.existed&&content.equals(Buffer.from(original.content??'',original.encoding==='base64'?'base64':'utf8'))))return;
-        if(content===null||!group.steps.some(op=>sha256(content)===sha256(Buffer.from(op.content,'utf8'))))throw new HttpError(409,`code_patch_compensation_conflict: ${path}`);
+        if(!group.steps.some(op=>content===null&&effectContent(op)===null||content!==null&&effectContent(op)!==null&&sha256(content)===sha256(effectContent(op)!)))throw new HttpError(409,`code_patch_compensation_conflict: ${path}`);
         if(original.existed && original.content!==null)await file.write(Buffer.from(original.content,original.encoding==='base64'?'base64':'utf8'));else await file.remove();
       });
     }

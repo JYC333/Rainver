@@ -1,3 +1,4 @@
+import {NoteObjectError} from './noteObjectErrors.js';
 import {
   NOTE_OWNING_ENTRY_REQUIRED_CODE,
   type NoteOwningEntryAction,
@@ -153,5 +154,5 @@ function noteOwningEntryRequired(note: LockedNoteForPlacement, affectedCount: nu
     actions,
     affected_note_count: affectedCount,
   };
-  return new HttpError(422, detail, body);
+  return new NoteObjectError(422, detail, body);
 }

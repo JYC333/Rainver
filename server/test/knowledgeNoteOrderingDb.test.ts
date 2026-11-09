@@ -178,6 +178,7 @@ describe("PgKnowledgeRepository note ordering (real Postgres)", () => {
     const response = await app.inject({
       method: "PATCH",
       url: "/api/v1/knowledge/notes/tree/reorder",
+      headers: { "idempotency-key": randomUUID() },
       payload: {
         kind: "notes",
         updates: [
@@ -188,22 +189,27 @@ describe("PgKnowledgeRepository note ordering (real Postgres)", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ kind: "notes", updated: 2 });
+    expect(response.json()).toEqual({ status: "succeeded", data: { kind: "notes", updated: 2 } });
     const listed = await repository.listNotes(identity, { status: null, projectId: null, collectionId: folder, collectionIds: null, q: null, limit: 50, offset: 0 });
     expect((listed as { items: Array<{ id: string }> }).items.map((item) => item.id)).toEqual([b.id, a.id]);
   });
 
   it("rejects ambiguous duplicate positions at the API boundary", async () => {
     if (!db.available || !app) return;
-    const collectionId = randomUUID();
+    const collectionId = await insertNoteCollection(db.pool, { space: SPACE, name: "Duplicates" });
+    const repository = new PgKnowledgeRepository(db.pool);
+    const identity = { spaceId: SPACE, userId: USER };
+    const first = await repository.createNote(identity, { title: "First", collection_id: collectionId });
+    const second = await repository.createNote(identity, { title: "Second", collection_id: collectionId });
     const response = await app.inject({
       method: "PATCH",
       url: "/api/v1/knowledge/notes/tree/reorder",
+      headers: { "idempotency-key": randomUUID() },
       payload: {
         kind: "notes",
         updates: [
-          { id: randomUUID(), collection_id: collectionId, sort_order: 0 },
-          { id: randomUUID(), collection_id: collectionId, sort_order: 0 },
+          { note_id: first.id, from_collection_id: collectionId, collection_id: collectionId, sort_order: 0 },
+          { note_id: second.id, from_collection_id: collectionId, collection_id: collectionId, sort_order: 0 },
         ],
       },
     });
@@ -219,6 +225,7 @@ describe("PgKnowledgeRepository note ordering (real Postgres)", () => {
     const response = await app.inject({
       method: "PATCH",
       url: "/api/v1/knowledge/notes/tree/reorder",
+      headers: { "idempotency-key": randomUUID() },
       payload: {
         kind: "collections",
         updates: [
@@ -229,7 +236,7 @@ describe("PgKnowledgeRepository note ordering (real Postgres)", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ kind: "collections", updated: 2 });
+    expect(response.json()).toEqual({ status: "succeeded", data: { kind: "collections", updated: 2 } });
     const rows = await db.pool.query<{ id: string; parent_id: string | null; sort_order: number }>(
       `SELECT id,parent_id,sort_order FROM note_collections WHERE id = ANY($1::varchar[]) ORDER BY id`,
       [[first, second]],

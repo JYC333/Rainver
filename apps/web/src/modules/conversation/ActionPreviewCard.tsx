@@ -78,8 +78,9 @@ function ActionPreviewCard({
   const [checkingStatus, setCheckingStatus] = useState(Boolean(preview.proposal_id))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [pendingPatch, setPendingPatch] = useState(false)
   const [resultMessage, setResultMessage] = useState<string | null>(null)
-  const decidable = Boolean(onDecision) && !checkingStatus && status === 'proposed' && Boolean(preview.proposal_id)
+  const decidable = Boolean(onDecision) && !pendingPatch && !checkingStatus && status === 'proposed' && Boolean(preview.proposal_id)
   const canContinue = continueAfterDecision && Boolean(onDecision) && (status === 'auto_applied' || status === 'rejected') && !resultMessage
   const appliedDescription = preview.action_id === 'project.propose_definition'
     ? t('mixed_surfaces.action_preview.action_project_definition_saved')
@@ -113,7 +114,7 @@ function ActionPreviewCard({
     let cancelled = false
     proposalsApi.get(preview.proposal_id, scope).then(proposal => {
       if (cancelled) return
-      setStatus(proposalStatus(proposal.status))
+      setStatus(proposalStatus(proposal.status));if(proposal.status==='accepted')setResultMessage(null)
     }).catch(() => { /* retain the auditable snapshot when refresh is unavailable */ })
       .finally(() => {
         if (!cancelled) setCheckingStatus(false)
@@ -142,7 +143,7 @@ function ActionPreviewCard({
     setBusy(true)
     setError(null)
     try {
-      if (action === 'accept') await proposalsApi.accept(preview.proposal_id, scope)
+      if (action === 'accept'){const out=await proposalsApi.accept(preview.proposal_id,scope);if(out?.result_type==='code_patch_pending'){setPendingPatch(['pending','applying','compensating','compensation_failed'].includes(out.result.status));setResultMessage(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));return;}}
       else await proposalsApi.reject(preview.proposal_id, scope)
       if (scope.signal?.aborted) return
       setStatus(action === 'accept' ? 'auto_applied' : 'rejected')
@@ -186,6 +187,21 @@ function ActionPreviewCard({
           <Button size="sm" variant="outline" disabled={busy} onClick={continueFromDecided}>
             {busy ? t('mixed_surfaces.action_preview.continue_busy') : status === 'rejected' ? t('mixed_surfaces.action_preview.continue_rejected') : t('mixed_surfaces.action_preview.continue_accepted')}
           </Button>
+        </div>
+      )}
+      {pendingPatch && preview.proposal_id && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" disabled={busy} onClick={async () => {
+            setBusy(true)
+            try {
+              const p = await proposalsApi.get(preview.proposal_id!, scope)
+              setStatus(proposalStatus(p.status))
+              const active = p.code_patch_decision && ['pending','applying','compensating','compensation_failed'].includes(p.code_patch_decision.status)
+              setPendingPatch(Boolean(active))
+              setResultMessage(p.status === 'accepted' ? null : p.code_patch_decision ? t(`mixed_surfaces.code_patch_${p.code_patch_decision.status}`) : t('mixed_surfaces.code_patch_queued'))
+            } catch (e) { setError(errMsg(e)) } finally { setBusy(false) }
+          }}>{t('mixed_surfaces.code_patch_refresh')}</Button>
+          <Button size="sm" variant="outline" asChild><SpaceLink to={`/proposals/${preview.proposal_id}`}>{t('mixed_surfaces.action_preview.review_proposal')}</SpaceLink></Button>
         </div>
       )}
       {!onDecision && preview.proposal_id && (

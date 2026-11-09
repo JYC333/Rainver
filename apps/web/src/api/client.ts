@@ -219,7 +219,6 @@ import type {
   NotePromoteBody,
   NoteRevision,
   NotesTreeReorderBody,
-  NotesTreeReorderResult,
   NoteSummary,
   NoteUpdateBody,
   ObjectSchemaExportManifest,
@@ -288,6 +287,7 @@ import type {
   PromptVersionCreateRequest,
   Proposal,
   ProposalAcceptOut,
+  CodePatchDecisionReceipt,
   ProposalApprovalResponse,
   ReaderAnnotation,
   ReaderAnnotationCreate,
@@ -1163,17 +1163,24 @@ export const objectSchemaApi = {
 }
 
 // ── Notes (working knowledge; direct CRUD) ─────────────────────────────────
+/** User mutation keys belong to the event; a caller can explicitly retry the same input/key.
+ * No write retry is performed here. Receipts never cache Note content. */
+async function noteObjectCall<Id extends import('@rainver/protocol').OperationId>(id:Id,input:import('@rainver/protocol').OperationInput<Id>,key:string){
+ try{const result=await callOperation(id,input,key);if(!('status' in result)||result.status!=='succeeded')throw new Error('Note action did not complete');return result.data;}
+ catch(e){if(e instanceof ApiRequestError){const metadata=(e.payload?.error as {metadata?:Record<string,unknown>}|undefined)?.metadata;if(metadata&&['note_owning_entry_required','note_cross_project_share_required'].includes(String(metadata.code)))throw new ApiRequestError(e.message,e.status,String(metadata.code),metadata);}throw e;}
+}
+async function currentNote(receipt:{id:string;space_id:string}){return get<Note>(`/knowledge/notes/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id});}
+async function currentCollection(receipt:{id:string;space_id:string}){const rows=await get<NoteCollection[]>('/notes/collections',{spaceId:receipt.space_id});const row=rows.find(r=>r.id===receipt.id);if(!row)throw new Error('Collection no longer available');return row;}
 export const notesCollectionsApi = {
   list: () => get<NoteCollection[]>('/notes/collections'),
   /**
    * The Project's notes folder, created on first use. The Project notes surface
    * is hoisted to it, so it has to exist before the surface can show anything.
    */
-  ensureForProject: (projectId: string) =>
-    post<NoteCollection>(`/notes/collections/project/${encodeURIComponent(projectId)}`, {}),
-  create: (body: NoteCollectionCreateBody) => post<NoteCollection>('/notes/collections', body),
-  update: (id: string, body: NoteCollectionUpdateBody) => patch<NoteCollection>(`/notes/collections/${id}`, body),
-  delete: (id: string) => del<void>(`/notes/collections/${id}`),
+  ensureForProject: async (projectId:string,key:string=crypto.randomUUID()) => currentCollection(await noteObjectCall('knowledge.collection.ensure_project',{project_id:projectId},key)),
+  create: async (body:NoteCollectionCreateBody,key:string=crypto.randomUUID()) => currentCollection(await noteObjectCall('knowledge.collection.create',body,key)),
+  update: async (id:string,body:NoteCollectionUpdateBody,key:string=crypto.randomUUID()) => currentCollection(await noteObjectCall('knowledge.collection.update',{collection_id:id,changes:body},key)),
+  delete: async (id:string,key:string=crypto.randomUUID()) => {await noteObjectCall('knowledge.collection.delete',{collection_id:id},key)},
 }
 
 /**
@@ -1187,8 +1194,7 @@ export const projectNotebookChatApi = {
 }
 
 export const notesTreeApi = {
-  reorder: (body: NotesTreeReorderBody) =>
-    patch<NotesTreeReorderResult>('/knowledge/notes/tree/reorder', body),
+  reorder: (body:NotesTreeReorderBody,key:string=crypto.randomUUID()) => noteObjectCall('knowledge.note.tree.reorder',body,key),
 }
 
 export const notesApi = {
@@ -1209,27 +1215,22 @@ export const notesApi = {
     return get<Page<NoteSummary>>('/knowledge/notes?' + new URLSearchParams(q))
   },
   get: (id: string) => get<Note>(`/knowledge/notes/${id}`),
-  create: (body: NoteCreateBody) => post<Note>('/knowledge/notes', body),
-  update: (id: string, body: NoteUpdateBody) => patch<Note>(`/knowledge/notes/${id}`, body),
-  delete: (id: string) => del<Note>(`/knowledge/notes/${id}`),
+  create: async (body:NoteCreateBody,key:string=crypto.randomUUID()) => currentNote(await noteObjectCall('knowledge.note.create',body,key)),
+  update: async (id:string,body:NoteUpdateBody,key:string=crypto.randomUUID()) => currentNote(await noteObjectCall('knowledge.note.update',{note_id:id,changes:body},key)),
+  delete: async (id:string,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('knowledge.note.delete',{note_id:id},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Note trash action did not complete');
+    return get<Note>(`/knowledge/notes/${encodeURIComponent(result.data.id)}`,{spaceId:result.data.space_id});
+  },
   purgeDeleted: () => post<{ deleted: number; retention_days: number }>('/knowledge/notes/deleted/purge'),
   /**
    * Place a note in a further folder, keeping the ones it is already in —
    * distinct from moving it, which the tree reorder does.
    */
-  addPlacement: (id: string, collectionId: string, shareWithProject = false) =>
-    post<Note>(`/knowledge/notes/${id}/placements`, {
-      collection_id: collectionId,
-      ...(shareWithProject ? { share_with_project: true } : {}),
-    }),
-  /** Which other Projects this note is readable in, and who opened it. */
-  shares: (id: string) => get<NoteProjectShare[]>(`/knowledge/notes/${id}/shares`),
-  /** Withdraw a share. Takes the note's placements in that Project with it. */
-  revokeShare: (id: string, projectId: string) =>
-    del<Note>(`/knowledge/notes/${id}/shares/${encodeURIComponent(projectId)}`),
-  /** Take a note out of one folder. Refused on its last one. */
-  removePlacement: (id: string, collectionId: string) =>
-    del<Note>(`/knowledge/notes/${id}/placements/${collectionId}`),
+  addPlacement: async (id:string,collectionId:string,shareWithProject=false,key:string=crypto.randomUUID()) => currentNote(await noteObjectCall('knowledge.note.placement.add',{note_id:id,collection_id:collectionId,share_with_project:shareWithProject},key)),
+  shares: (id:string) => get<NoteProjectShare[]>(`/knowledge/notes/${id}/shares`),
+  revokeShare: async (id:string,projectId:string,key:string=crypto.randomUUID()) => currentNote(await noteObjectCall('knowledge.note.share.revoke',{note_id:id,project_id:projectId},key)),
+  removePlacement: async (id:string,collectionId:string,key:string=crypto.randomUUID()) => currentNote(await noteObjectCall('knowledge.note.placement.remove',{note_id:id,collection_id:collectionId},key)),
   links: (id: string) => get<EntityLink[]>(`/knowledge/notes/${id}/links`),
   backlinks: (id: string) => get<EntityLink[]>(`/knowledge/notes/${id}/backlinks`),
   createLink: (id: string, body: NoteLinkCreateBody) =>
@@ -1239,11 +1240,11 @@ export const notesApi = {
   revisions: (id: string, limit?: number) =>
     get<NoteRevision[]>(`/knowledge/notes/${id}/revisions` + (limit ? `?limit=${limit}` : '')),
   /** With `expectVersion`, refused (409) unless the note is still at that version. */
-  rollback: (id: string, toVersion: number, expectVersion?: number) =>
-    post<Note>(`/knowledge/notes/${id}/rollback`, {
-      to_version: toVersion,
-      ...(expectVersion === undefined ? {} : { expect_version: expectVersion }),
-    }),
+  rollback: async (id:string,toVersion:number,expectVersion?:number,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('knowledge.note.rollback',{note_id:id,to_version:toVersion,expect_version:expectVersion??null},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Note revision restore did not complete');
+    return get<Note>(`/knowledge/notes/${encodeURIComponent(result.data.id)}`,{spaceId:result.data.space_id});
+  },
   /**
    * Jot a note against an object and link it in one call. Two calls would
    * strand a note whenever the link failed. Do not make the connection by
@@ -1257,8 +1258,10 @@ export const notesApi = {
    * proposal — the review gate still applies — with the note recorded as
    * provenance.
    */
-  promote: (id: string, body: NotePromoteBody) =>
-    post<Proposal>(`/knowledge/notes/${id}/promote`, body),
+  promote: async (id: string, body: NotePromoteBody, key:string=crypto.randomUUID()) => {
+    const receipt=await noteObjectCall('note.promote_to_knowledge',{...body,note_id:id},key);
+    return get<Proposal>(`/proposals/${receipt.id}`,{spaceId:receipt.space_id});
+  },
   /** Knowledge items this note produced. */
   promoted: (id: string) => get<KnowledgeItemSummary[]>(`/knowledge/notes/${id}/promoted`),
 }
@@ -1770,6 +1773,7 @@ export const proposalsApi = {
     const suffix = options.confirmIncompletePatch ? '?confirm_incomplete_patch=true' : ''
     return post<ProposalAcceptOut>(`/proposals/${id}/accept${suffix}`, undefined, options)
   },
+  rollback: (id: string, options: RequestOptions = {}) => post<CodePatchDecisionReceipt>(`/proposals/${id}/rollback`, undefined, options),
   reject: (id: string, options: RequestOptions = {}) => post<Proposal>(`/proposals/${id}/reject`, undefined, options),
   approveEgressGrantingUserProposal: (id: string, input: EgressApprovalRequest = {}) =>
     post<ProposalApprovalResponse>(`/proposals/${id}/approvals/egress-granting-user`, input),
@@ -3478,29 +3482,22 @@ export const knowledgePromotionApi = {
     get<{ pending: number; promotion: number; revalidation: number; no_impact: number; summary: string }>(
       `/projects/${encodeURIComponent(projectId)}/knowledge-candidates-review-summary`,
     ),
-  decide: (
-    projectId: string,
-    candidateId: string,
-    body: { decision: 'promote' | 'dismiss' | 'defer'; proposed_title?: string; proposed_content?: string },
-  ) => post<KnowledgePromotionCandidate>(
-    `/projects/${encodeURIComponent(projectId)}/knowledge-candidates/${encodeURIComponent(candidateId)}/decision`,
-    body,
-  ),
-  reopen: (projectId: string, candidateId: string) =>
-    post<KnowledgePromotionCandidate>(
-      `/projects/${encodeURIComponent(projectId)}/knowledge-candidates/${encodeURIComponent(candidateId)}/reopen`,
-      {},
-    ),
-  openPacket: (projectId: string, limit = 10) =>
-    post<{ id: string; status: string; created_at: string; candidates: KnowledgePromotionCandidate[] }>(
-      `/projects/${encodeURIComponent(projectId)}/knowledge-candidate-review-packets`,
-      { limit },
-    ),
-  closePacket: (projectId: string, packetId: string) =>
-    post<Record<string, unknown>>(
-      `/projects/${encodeURIComponent(projectId)}/knowledge-candidate-review-packets/${encodeURIComponent(packetId)}/close`,
-      {},
-    ),
+  decide: async (projectId:string,candidateId:string,body:{decision:'promote'|'dismiss'|'defer';proposed_title?:string;proposed_content?:string},key:string=crypto.randomUUID()) => {
+    const receipt=await noteObjectCall('knowledge.candidate.decide',{...body,project_id:projectId,candidate_id:candidateId},key);
+    return get<KnowledgePromotionCandidate>(`/projects/${encodeURIComponent(projectId)}/knowledge-candidates/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id});
+  },
+  reopen: async (projectId:string,candidateId:string,key:string=crypto.randomUUID()) => {
+    const receipt=await noteObjectCall('knowledge.candidate.reopen',{project_id:projectId,candidate_id:candidateId},key);
+    return get<KnowledgePromotionCandidate>(`/projects/${encodeURIComponent(projectId)}/knowledge-candidates/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id});
+  },
+  openPacket: async (projectId:string,limit=10,key:string=crypto.randomUUID()) => {
+    const receipt=await noteObjectCall('knowledge.candidate.packet.open',{project_id:projectId,limit},key);
+    return get<{id:string;status:string;created_at:string;candidates:KnowledgePromotionCandidate[]}>(`/projects/${encodeURIComponent(projectId)}/knowledge-candidate-review-packets/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id});
+  },
+  closePacket: async (projectId:string,packetId:string,key:string=crypto.randomUUID()) => {
+    const receipt=await noteObjectCall('knowledge.candidate.packet.close',{project_id:projectId,packet_id:packetId},key);
+    return get<Record<string,unknown>>(`/projects/${encodeURIComponent(projectId)}/knowledge-candidate-review-packets/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id});
+  },
 }
 
 export interface ProjectReviewSession {

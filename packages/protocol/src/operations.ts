@@ -1,5 +1,9 @@
+import {KNOWLEDGE_REVIEW_SCHEMAS} from './knowledgeReviewOperations.js';
+import {KNOWLEDGE_OBJECT_SCHEMAS} from './knowledgeObjectOperations.js';
+import {NOTE_OBJECT_SCHEMAS} from './noteObjectOperations.js';
 import {SourceProcessingCreateSchema,SourceProcessingUpdateSchema,SourceProcessingDispatchSchema,SourceExtractionDispatchSchema,SourceProcessingRuleSchema,SourceDispatchReceiptSchema} from './sourceProcessingOperations.js';
 import {SourceChannelCreateInputSchema,SourceChannelCreateOutputSchema} from './sourceChannelCreateOperation.js';
+import {NoteControlTargetSchema,NoteRollbackInputSchema,NoteControlReceiptSchema} from './noteControlOperations.js';
 import {SourceMonitorTargetSchema,SourceMonitorUpdateSchema,SourceMonitorOutputSchema,SourceMonitorScanOutputSchema} from './sourceMonitorOperations.js';
 import {SourceRecipeCreateInputSchema,SourceRecipeCreateOutputSchema} from './sourceRecipeOperations.js';
 import {SourceSubscriptionInputSchema,SourceRecommendationInputSchema,SourceSubscriptionOutputSchema} from './sourceSubscriptionOperations.js';
@@ -145,6 +149,11 @@ export const OPERATION_SCHEMA_TABLE = {
   'source.processing.rule.dispatch':{input:SourceProcessingDispatchSchema,output:SourceDispatchReceiptSchema},
   'source.extraction.dispatch':{input:SourceExtractionDispatchSchema,output:SourceDispatchReceiptSchema},
   'source.channel.create':{input:SourceChannelCreateInputSchema,output:SourceChannelCreateOutputSchema},
+  ...NOTE_OBJECT_SCHEMAS,
+  ...KNOWLEDGE_OBJECT_SCHEMAS,
+  ...KNOWLEDGE_REVIEW_SCHEMAS,
+  'knowledge.note.rollback':{input:NoteRollbackInputSchema,output:NoteControlReceiptSchema},
+  'knowledge.note.delete':{input:NoteControlTargetSchema,output:NoteControlReceiptSchema},
   'source.channel.update':{input:SourceMonitorUpdateSchema,output:SourceMonitorOutputSchema},
   'source.channel.scan':{input:SourceMonitorTargetSchema,output:SourceMonitorScanOutputSchema},
   'source.recipe.create':{input:SourceRecipeCreateInputSchema,output:SourceRecipeCreateOutputSchema},

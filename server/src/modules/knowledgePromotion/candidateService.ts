@@ -1,3 +1,5 @@
+import {CandidateMutationError} from './candidateErrors.js';
+import {insertProposalRow} from '../proposals/reviewPackets.js';
 import { createHash, randomUUID } from "node:crypto";
 import {
   HttpError,
@@ -124,7 +126,7 @@ export class KnowledgePromotionCandidateService {
           ORDER BY r.version DESC LIMIT 1`,
         [threadId, identity.spaceId, projectId],
       );
-      if (!revision.rows[0]) throw new HttpError(422, "thread_id has no revisions to pin");
+      if (!revision.rows[0]) throw new CandidateMutationError(422, "thread_id has no revisions to pin");
       const ref: PinnedSourceRef = {
         kind: "inquiry_thread_revision", thread_id: threadId, revision_id: revision.rows[0].id,
         version: revision.rows[0].version, content_hash: revision.rows[0].content_hash,
@@ -252,7 +254,7 @@ export class KnowledgePromotionCandidateService {
       );
       const row = interpretation.rows[0];
       if (!row) throw new HttpError(404, "Experiment Interpretation not found");
-      if (row.status !== "converted") throw new HttpError(409, "Only a converted Interpretation can be pinned as a Knowledge source");
+      if (row.status !== "converted") throw new CandidateMutationError(409, "Only a converted Interpretation can be pinned as a Knowledge source");
       const runIds = Array.isArray(row.run_ids_json) ? row.run_ids_json.filter((v): v is string => typeof v === "string") : [];
       const contentHash = sha256(JSON.stringify({ verdict: row.verdict, conclusion: row.conclusion, negative_results: row.negative_results, limitations: row.limitations }));
       const reproLockHash = sha256(JSON.stringify(objectValue(row.repro_lock_json)));
@@ -275,7 +277,7 @@ export class KnowledgePromotionCandidateService {
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const candidateKind = requiredString(body.candidate_kind, "candidate_kind");
-    if (!CANDIDATE_KINDS.has(candidateKind)) throw new HttpError(422, `candidate_kind must be one of: ${[...CANDIDATE_KINDS].join(", ")}`);
+    if (!CANDIDATE_KINDS.has(candidateKind)) throw new CandidateMutationError(422, `candidate_kind must be one of: ${[...CANDIDATE_KINDS].join(", ")}`);
     const proposedTitle = requiredString(body.proposed_title, "proposed_title");
     const proposedContent = requiredString(body.proposed_content, "proposed_content");
     const supersedesKnowledgeItemId = optionalString(body.supersedes_knowledge_item_id);
@@ -349,7 +351,7 @@ export class KnowledgePromotionCandidateService {
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const decision = requiredString(body.decision, "decision");
-    if (!DECISIONS.has(decision)) throw new HttpError(422, `decision must be one of: ${[...DECISIONS].join(", ")}`);
+    if (!DECISIONS.has(decision)) throw new CandidateMutationError(422, `decision must be one of: ${[...DECISIONS].join(", ")}`);
     const now = new Date().toISOString();
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
@@ -362,7 +364,7 @@ export class KnowledgePromotionCandidateService {
       );
       const candidate = row.rows[0];
       if (!candidate) throw new HttpError(404, "Candidate not found");
-      if (candidate.status !== "pending") throw new HttpError(409, `Candidate already ${candidate.status}`);
+      if (candidate.status !== "pending") throw new CandidateMutationError(409, `Candidate already ${candidate.status}`);
 
       if (decision === "dismiss" || decision === "defer") {
         const status = decision === "dismiss" ? "dismissed" : "deferred";
@@ -400,7 +402,9 @@ export class KnowledgePromotionCandidateService {
           project_id: projectId,
           pinned_source_ref: candidate.source_ref_json,
           visibility: candidate.visibility,
-          owner_user_id: candidate.owner_user_id,
+          // Canonical Knowledge ownership follows the submitting human, not
+          // a different author of the shared source. Source authorship stays pinned.
+          owner_user_id: identity.userId,
           ...(actionId ? { action_id: actionId } : {}),
         };
       // Attribute the action to the Agent while retaining the instructing user
@@ -414,18 +418,7 @@ export class KnowledgePromotionCandidateService {
       const proposalVisibility = actor.visibility === "selected_users"
         ? "selected_users"
         : candidate.visibility === "space_shared" ? actor.visibility ?? "space_shared" : "private";
-      await db.query(
-        `INSERT INTO proposals (
-           id, space_id, proposal_type, status, risk_level, urgency, title, summary,
-           payload_json, created_at, updated_at, created_by_user_id, owner_user_id, project_id,
-           created_by_agent_id, created_by_run_id, action_idempotency_key, visibility
-         ) VALUES ($1, $2, $3, 'pending', 'low', 'normal', $4, $5, $6::jsonb, $7, $7, $8, $13, $9, $10, $11, $12, $14)`,
-        [proposalId, identity.spaceId, payload.proposal_type, `Promote Knowledge Candidate: ${promotedTitle}`,
-          `Created from a ${candidate.trigger} Candidate over ${candidate.source_kind} ${candidate.source_id}.`,
-          JSON.stringify(payload), now, createdByUserId, projectId,
-          actor.agentId ?? null, actor.runId ?? null, actor.idempotencyKey ?? null,
-          identity.userId, proposalVisibility],
-      );
+      await insertProposalRow(db,{id:proposalId,spaceId:identity.spaceId,proposalType:String(payload.proposal_type),status:'pending',riskLevel:'low',urgency:'normal',title:`Promote Knowledge Candidate: ${promotedTitle}`,summary:`Created from a ${candidate.trigger} Candidate over ${candidate.source_kind} ${candidate.source_id}.`,payload,rationale:null,createdAt:now,createdByUserId,ownerUserId:identity.userId,projectId,createdByAgentId:actor.agentId??null,createdByRunId:actor.runId??null,actionIdempotencyKey:actor.idempotencyKey??null,visibility:proposalVisibility});
       if (proposalVisibility === "selected_users" && actor.runId) {
         await inheritContentAccessGrants(db, {
           spaceId: identity.spaceId,
@@ -460,7 +453,7 @@ export class KnowledgePromotionCandidateService {
       RETURNING *`,
       [candidateId, identity.spaceId, projectId, now, identity.userId],
     );
-    if (!row.rows[0]) throw new HttpError(409, "Only a deferred Candidate can be reopened");
+    if (!row.rows[0]) throw new CandidateMutationError(409, "Only a deferred Candidate can be reopened");
     return candidateToOut(row.rows[0]);
   }
 
@@ -553,6 +546,14 @@ export class KnowledgePromotionCandidateService {
         candidates: selected.rows.map((row) => candidateToOut({ ...row, review_packet_id: packetId })),
       };
     });
+  }
+
+  async getReviewPacket(identity: SpaceUserIdentity, projectId: string, packetId: string): Promise<Record<string,unknown>> {
+    await assertProjectReadable(this.db,identity.spaceId,projectId,identity.userId);
+    const packet=(await this.db.query('SELECT id,status,created_at,closed_at FROM knowledge_promotion_review_packets WHERE id=$1 AND space_id=$2 AND project_id=$3 AND opened_by_user_id=$4',[packetId,identity.spaceId,projectId,identity.userId])).rows[0];
+    if(!packet)throw new HttpError(404,'Review packet not found');
+    const candidates=(await this.listCandidates(identity,projectId)).filter(row=>row.review_packet_id===packetId);
+    return {...packet,created_at:dateIso(packet.created_at),closed_at:dateIso(packet.closed_at),candidates};
   }
 
   async closeReviewPacket(

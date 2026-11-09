@@ -1,3 +1,4 @@
+export * from './noteControlOperations.js';
 export * from './sourceMonitorOperations.js';
 export * from './sourceRecipeOperations.js';
 /**
@@ -204,3 +205,9 @@ export * from './sourceSubscriptionOperations.js';
 export * from './sourceChannelCreateOperation.js';
 
 export * from './sourceProcessingOperations.js';
+
+export * from './noteObjectOperations.js';
+
+export * from './knowledgeObjectOperations.js';
+
+export * from './knowledgeReviewOperations.js';

@@ -1542,6 +1542,7 @@ export interface Note extends NoteSummary {
 
 export interface NoteCreateBody {
   title: string
+  excerpt?: string | null
   plain_text?: string | null
   content_json?: Record<string, unknown> | null
   content_format?: NoteContentFormat
@@ -1554,6 +1555,7 @@ export interface NoteCreateBody {
 
 export interface NoteUpdateBody {
   title?: string
+  excerpt?: string | null
   plain_text?: string | null
   content_json?: Record<string, unknown> | null
   content_format?: NoteContentFormat
@@ -1588,17 +1590,7 @@ export interface NoteJotBody {
   link_type?: EntityLinkType
 }
 
-export interface NotePromoteBody {
-  /** The selected passage. Not the note's whole text — a note holds several ideas. */
-  content: string
-  /** Defaults to the note's own title. */
-  title?: string
-  knowledge_kind?: string
-  content_format?: NoteContentFormat
-  /** Defaults to the note's project. */
-  project_id?: string
-  rationale?: string
-}
+export type NotePromoteBody = Omit<import('@rainver/protocol').OperationInput<'note.promote_to_knowledge'>,'note_id'>
 
 /**
  * One note placement's new position. `from_collection_id` is what identifies
@@ -2296,7 +2288,10 @@ export interface Artifact {
 }
 
 /** Canonical proposal (`GET /proposals`, `ProposalOut`). */
+export type CodePatchDecisionReceipt = import("@rainver/protocol").CodePatchDecisionReceipt
+
 export interface Proposal {
+  code_patch_decision?: import("@rainver/protocol").CodePatchDecisionReceipt
   id: string
   space_id: string
   user_id: string

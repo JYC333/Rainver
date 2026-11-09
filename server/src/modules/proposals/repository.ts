@@ -1,7 +1,7 @@
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { assertProjectInSpace } from "../projects/access.js";
-import type { ProposalOut, ProposalPage } from "@rainver/protocol";
+import {CodePatchDecisionReceiptSchema, type ProposalOut, type ProposalPage } from "@rainver/protocol";
 import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { isProvenanceSourceType } from "../ontology/entities.js";
 import { proposalTitleParts } from "./titleParts.js";
@@ -125,7 +125,18 @@ export class PgProposalRepository {
       [spaceId, proposalId, userId],
     );
     const row = result.rows[0];
-    return row ? proposalToOut(row, now) : null;
+    if(!row)return null;
+    const out=proposalToOut(row,now);
+    if(row.proposal_type==='code_patch'){
+      // File-effect receipts remain personal to the deciding user, just like Jobs.
+      // The Proposal's canonical content/Room gate has already allowed this read.
+      const decision=(await this.db.query(`SELECT id,proposal_id,phase,status,job_id,
+        CASE WHEN error IS NULL THEN NULL ELSE 'code_patch_decision_'||status END AS error
+        FROM code_patch_decisions WHERE space_id=$1 AND proposal_id=$2 AND user_id=$3
+        ORDER BY created_at DESC,id DESC LIMIT 1`,[spaceId,proposalId,userId])).rows[0];
+      if(decision)out.code_patch_decision=CodePatchDecisionReceiptSchema.parse(decision);
+    }
+    return out;
   }
 }
 

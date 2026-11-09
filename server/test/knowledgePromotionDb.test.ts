@@ -206,6 +206,7 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     const promoted = await candidates.decideCandidate(identity, PROJECT, candidate.id as string, { decision: "promote" });
     expect(promoted.status).toBe("promoted");
     expect(promoted.created_proposal_id).toBeTruthy();
+    expect((await db.pool.query('SELECT rationale,created_by_user_id,owner_user_id FROM proposals WHERE id=$1',[promoted.created_proposal_id])).rows[0]).toEqual({rationale:null,created_by_user_id:identity.userId,owner_user_id:identity.userId});
 
     const applied = await proposalApplyService().accept(promoted.created_proposal_id as string, identity);
     expect(applied?.proposal.status).toBe("accepted");

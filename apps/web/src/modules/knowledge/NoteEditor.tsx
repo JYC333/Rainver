@@ -232,6 +232,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   // sends the note being left.
   const saveChainRef = useRef<Promise<unknown>>(Promise.resolve())
   const savedVersionRef = useRef(new Map<string, number>())
+  const pendingSaveKeys = useRef(new Map<string,{input:string;key:string}>())
   const performSaveImpl = useCallback(() => {
     const current = noteRef.current
     if (!current) return Promise.resolve()
@@ -240,11 +241,17 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
     const run = saveChainRef.current.then(async () => {
       const expectVersion = Math.max(current.version, savedVersionRef.current.get(current.id) ?? 0)
       try {
-        const updated = await notesApi.update(current.id, {
+        const changes = {
           ...(trimmedTitle ? { title: trimmedTitle } : {}),
           ...snapshot,
           expect_version: expectVersion,
-        })
+        }
+        const input = JSON.stringify(changes)
+        const previous = pendingSaveKeys.current.get(current.id)
+        const key = previous?.input === input ? previous.key : crypto.randomUUID()
+        pendingSaveKeys.current.set(current.id,{input,key})
+        const updated = await notesApi.update(current.id, changes, key)
+        if(pendingSaveKeys.current.get(current.id)?.key===key)pendingSaveKeys.current.delete(current.id)
         savedVersionRef.current.set(updated.id, updated.version)
         onNoteResolved(updated)
         noteCacheRef.current.set(updated.id, updated)

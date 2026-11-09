@@ -220,6 +220,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     await runRepo.insertRunEvaluation({space_id:SPACE,run_id:source,outcome_status:'passed',trajectory_status:'acceptable',evaluated_at:new Date().toISOString()});
     await plans.reconcilePlan(identity,planId);
     const checkpoint=(await db.pool.query("SELECT approval_proposal_id AS id FROM plan_nodes WHERE plan_version_id=$1 AND node_kind='approval_checkpoint'",[versionId])).rows[0]!.id;
+    expect((await db.pool.query('SELECT rationale,visibility FROM proposals WHERE id=$1',[checkpoint])).rows[0]).toEqual({rationale:null,visibility:'space_shared'});
     const draft=await insertProposalRow(db.pool,{spaceId:SPACE,createdByRunId:String(executed.root_run_id),proposalType:'memory_create',title:'Linked Plan output',payload:{proposed_content:'Frozen'},rationale:'test',createdByUserId:USER,visibility:'private'});
     const request=await linkProposalOperation(db.pool,identity,draft.id);
     const apply=PgProposalApplyService.fromConfig(loadConfig({SERVER_DATABASE_URL:db.connectionUri,SERVER_INTERNAL_TOKEN:'test-internal-token'}));
@@ -1043,6 +1044,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       [SPACE, execution.workflowExecutionId],
     )).rows[0];
     expect(checkpoint?.proposal_id).toBeTruthy();
+    expect((await db.pool.query('SELECT rationale,visibility FROM proposals WHERE id=$1',[checkpoint!.proposal_id])).rows[0]).toEqual({rationale:null,visibility:'space_shared'});
     const apply = PgProposalApplyService.fromConfig(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test-internal-token" }));
     const root=(await db.pool.query('SELECT root_run_id FROM workflow_executions WHERE id=$1',[execution.workflowExecutionId])).rows[0]!.root_run_id;
     const draft=await insertProposalRow(db.pool,{spaceId:SPACE,createdByRunId:root,proposalType:'memory_create',title:'Nested checkpoint output',payload:{proposed_content:'Frozen nested output'},rationale:'test',createdByUserId:USER,visibility:'private'});

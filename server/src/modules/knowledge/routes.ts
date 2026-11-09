@@ -1,3 +1,6 @@
+import {registerKnowledgeReviewRoutes} from '../knowledgePromotion/reviewOperationRoutes.js';
+import {registerNoteObjectOperationRoutes} from './noteObjectOperationRoutes.js';
+import {registerNoteControlOperationRoutes} from './noteControlOperationRoutes.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import * as protocol from "@rainver/protocol";
 import type {
@@ -33,7 +36,6 @@ import {
   parsePage,
   params,
   query,
-  requiredString,
   resolveIdentity,
   sendRouteError,
   withDbTransaction,
@@ -46,7 +48,6 @@ import {
 } from "../access/creationContext.js";
 import { authRepositoryFromConfig } from "../auth/identity.js";
 import { PgKnowledgeRepository } from "./repository.js";
-import { parseNotesTreeReorder, persistNotesTreeReorder } from "./notesTreeReorder.js";
 import {
   RetrievalFeedbackService,
   RetrievalMaintenanceService,
@@ -84,6 +85,9 @@ import { resolveProviderCommandStore } from "../providers/commands/store.js";
 import { knowledgeRetrievalRegistry } from "./retrievalAdapter.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerNoteControlOperationRoutes(app,context);
+  registerNoteObjectOperationRoutes(app,context);
+  registerKnowledgeReviewRoutes(app,context,'evidence');
   const repository = () => new PgKnowledgeRepository(dbPool(context.config));
 
   app.get("/api/v1/knowledge", knowledgeHealth(context));
@@ -1295,24 +1299,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/knowledge/sources", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const creation = await resolveContentCreationContext(dbPool(context.config), {
-        userId: identity.userId,
-        requestSpaceId: identity.spaceId,
-        projectId: optionalString(body.project_id),
-      });
-      return reply.code(201).send(await repository().createSource(
-        { spaceId: creation.spaceId, userId: identity.userId },
-        applyContentCreationContext(body, creation),
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   app.get("/api/v1/knowledge/sources/:sourceId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -1326,27 +1313,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.patch("/api/v1/knowledge/sources/:sourceId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await repository().updateSource(identity, params(request).sourceId ?? "", jsonBody(request)),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.delete("/api/v1/knowledge/sources/:sourceId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await repository().archiveSource(identity, params(request).sourceId ?? ""));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
+
 
   app.get("/api/v1/knowledge/sources/:sourceId/items", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -1368,28 +1337,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/knowledge/items/:itemId/sources", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply
-        .code(201)
-        .send(await repository().createItemSource(identity, params(request).itemId ?? "", jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.delete("/api/v1/knowledge/items/:itemId/sources/:linkId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      await repository().deleteItemSource(identity, params(request).itemId ?? "", params(request).linkId ?? "");
-      return reply.code(204).send();
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
+
 
   app.get("/api/v1/knowledge/entity-links", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -1429,17 +1379,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
    * Notes are a Project-level surface reachable from every Area. Do not
    * create this folder from the Research Area.
    */
-  app.post("/api/v1/notes/collections/project/:projectId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await repository().ensureProjectNotesCollection(identity, params(request).projectId ?? ""),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   app.get("/api/v1/notes/collections", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -1451,47 +1391,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/notes/collections", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const created = await withDbTransaction(dbPool(context.config), (client) =>
-        new PgKnowledgeRepository(client).createNoteCollection(identity, jsonBody(request)),
-      );
-      return reply.code(201).send(created);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.patch("/api/v1/notes/collections/:collectionId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await repository().updateNoteCollection(
-          identity,
-          params(request).collectionId ?? "",
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.delete("/api/v1/notes/collections/:collectionId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      await withDbTransaction(dbPool(context.config), (client) =>
-        new PgKnowledgeRepository(client).deleteNoteCollection(identity, params(request).collectionId ?? ""),
-      );
-      return reply.code(204).send();
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
+
+
 
   app.post("/api/v1/knowledge/notes/deleted/purge", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -1503,28 +1407,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/knowledge/notes", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const creation = await resolveContentCreationContext(dbPool(context.config), {
-        userId: identity.userId,
-        requestSpaceId: identity.spaceId,
-        projectId: optionalString(body.primary_project_id),
-      });
-      return reply.code(201).send(await repository().createNote(
-        { spaceId: creation.spaceId, userId: identity.userId },
-        {
-          ...body,
-          primary_project_id: creation.projectId,
-          visibility: creation.visibility,
-        },
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   // "jot a note" from an evidence or material card. Creates (or appends
   // to) a note and makes the note_link in one call, so the connection is
@@ -1552,19 +1435,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.patch("/api/v1/knowledge/notes/tree/reorder", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const plan = parseNotesTreeReorder(jsonBody(request));
-      const result = await withDbTransaction(dbPool(context.config), async (client) =>
-        persistNotesTreeReorder(client, identity, plan),
-      );
-      return reply.send(result);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   app.get("/api/v1/knowledge/notes/:noteId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -1578,67 +1449,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.patch("/api/v1/knowledge/notes/:noteId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await repository().updateNote(identity, params(request).noteId ?? "", jsonBody(request)),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.delete("/api/v1/knowledge/notes/:noteId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await repository().deleteNote(identity, params(request).noteId ?? ""));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   /**
    * Placements. A note may sit in several folders at once; adding one is a
    * separate action from moving the note, and removing the last one is refused
    * rather than quietly leaving a note no tree can reach.
    */
-  app.post("/api/v1/knowledge/notes/:noteId/placements", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      return reply.status(201).send(
-        await repository().addNotePlacement(
-          identity,
-          params(request).noteId ?? "",
-          requiredString(body.collection_id, "collection_id"),
-          body.share_with_project === true,
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.delete("/api/v1/knowledge/notes/:noteId/placements/:collectionId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const routeParams = params(request);
-      return reply.send(
-        await repository().removeNotePlacement(
-          identity,
-          routeParams.noteId ?? "",
-          routeParams.collectionId ?? "",
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
+
 
   /**
    * Cross-Project shares. Listing is gated by the note's own read gate, so
@@ -1654,36 +1474,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.delete("/api/v1/knowledge/notes/:noteId/shares/:projectId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const routeParams = params(request);
-      return reply.send(
-        await repository().revokeNoteProjectShare(
-          identity,
-          routeParams.noteId ?? "",
-          routeParams.projectId ?? "",
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   // Promote a selected passage into a Knowledge Item. Builds an ordinary
   // knowledge_create proposal — the review gate still applies — and records the
   // originating Note as provenance.
-  app.post("/api/v1/knowledge/notes/:noteId/promote", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const noteId = params(request).noteId ?? "";
-      return reply.code(202).send(await repository().promoteNoteToKnowledge(identity, noteId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   // The reverse of a promotion: what this note produced.
   app.get("/api/v1/knowledge/notes/:noteId/promoted", async (request, reply) => {
@@ -1704,23 +1500,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const limit = numberValue(query(request).limit) ?? undefined;
       return reply.send(
         await repository().listNoteRevisions(identity, params(request).noteId ?? "", limit),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/knowledge/notes/:noteId/rollback", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const toVersion = numberValue(body.to_version);
-      if (toVersion === null || toVersion === undefined) {
-        return reply.code(422).send({ detail: "to_version is required" });
-      }
-      return reply.send(
-        await repository().rollbackNote(identity, params(request).noteId ?? "", toVersion, numberValue(body.expect_version)),
       );
     } catch (error) {
       return sendRouteError(reply, error);

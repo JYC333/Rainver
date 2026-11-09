@@ -1447,6 +1447,31 @@ returns a202 succeeded enqueue receipt; the unchanged worker performs IO later.
 This enables no Agent, activation/proposal bypass or alternate scan executor.
 
 
+## Human Note history and trash controls
+
+`knowledge.note.rollback` and `knowledge.note.delete` are strict user-only,
+ungrantable core commands under the new audited note.edit policy for the
+existing manual capability. Formal rollback POST/Note DELETE and the typed
+Notes client share the same explicit keys and canonical repository/NoteWriter.
+They restore a revision or soft-delete; no Note/Wiki promotion, Note link,
+Memory, Agent or purge permission is added. Note linking remains separately
+reserved/default-denied pending the tracked human choice. Ordinary create/
+update/placement/rollback-history reads retain their separate owners.
+
+Current full-readable/writable Note authority is the canonical owner/shared
+rule, excluding oversight as write authority; Project writer authority is
+pinned before the Note row. The row is rechecked after waiting; Project scope
+drift conflicts before executing. Note body/version/revision/outbox, mandatory
+read audit, policy audit and receipt share the core transaction. Derived index
+errors remain behind the existing private savepoint and cannot poison a valid
+canonical write. No folder/placement write is performed by these controls.
+
+Receipts contain id, actual Space and original resulting version, not cached
+Note bodies. Replays recheck current write authority and never restore/trash
+again, including after newer edits or a legitimate restore. Notes clients then
+read the current body through the existing authorized GET in the receipt Space,
+with its normal B11 audit. An optimistic restore conflict remains409.
+
 P5-2 Source Monitor creation: `source.channel.create` is user-only, ungrantable,
 core-owned and uses strict public input/output DTOs. Retained POST
 `/api/v1/sources/channels` and the typed browser call share the generic command,
@@ -1470,3 +1495,53 @@ core policy/audit/receipt ownership. Dispatch success means durable enqueue;
 finished extraction returns a noop receipt, running extraction conflicts.
 The existing workers own external execution/results. No new Agent grant or
 production approval mapping is enabled.
+
+## Ordinary human Note object family (basis4cf62800)
+
+All ten entries below are user-only, ungrantable, strict, explicit-key core
+commands under existing note.edit (default allow/mandatory failclosed audit).
+No default for note.link.create, Agent grant or approval mapping is changed.
+
+| Command | Retained REST adapter |
+|---|---|
+| knowledge.note.create | POST /api/v1/knowledge/notes |
+| knowledge.note.update | PATCH /api/v1/knowledge/notes/:noteId |
+| knowledge.collection.create | POST /api/v1/notes/collections |
+| knowledge.collection.update/delete | PATCH/DELETE /api/v1/notes/collections/:collectionId |
+| knowledge.collection.ensure_project | POST /api/v1/notes/collections/project/:projectId |
+| knowledge.note.placement.add | POST /api/v1/knowledge/notes/:noteId/placements |
+| knowledge.note.placement.remove | DELETE /api/v1/knowledge/notes/:noteId/placements/:collectionId |
+| knowledge.note.share.revoke | DELETE /api/v1/knowledge/notes/:noteId/shares/:projectId |
+| knowledge.note.tree.reorder | PATCH /api/v1/knowledge/notes/tree/reorder |
+
+The adapters return canonical envelopes, including a receipt for collection
+DELETE (200 instead of the old204) and body-free Note results. The typed browser
+preserves its Note/collection-returning interface by performing current reads in
+the receipt Space. Source/Note helpers retain optional explicitly supplied keys;
+this is not a claim that a random default prevents same-key retries. The editor
+now retains a failed snapshot's key for explicit Retry, without an automatic
+write retry engine. Known sharing/owning-entry metadata still drives the existing
+human association dialogs. Changed input needs a new key; per-folder positions,
+client-assigned collection id and placement/Project-role uniqueness remain
+independent domain contracts.
+
+P5-5 on1d156dfd: `note.promote_to_knowledge` now submits through core under
+`proposal.create`, preserving public human-only selection applicability and the
+exposure/knowledge_create draft metadata. `knowledge.create` still governs
+accepted Knowledge writes; submission does not enable production mappings.
+`knowledge.source.create/update/archive` use source.item_create/item_update for
+ordinary evidence objects (`sources`), distinct from managed connection policy.
+All four retain thin keyed REST adapters and body-free id/Space receipts. This
+working projection is636=549 legacy/39 exempt/48 core, remaining534 after15
+plugin URLs. Committed HEAD remains538 until coordinator submission.
+
+P5-5 curated evidence/Candidate family on1d16069e: human-only commands are
+knowledge.evidence.add/remove; knowledge.candidate.from_note/from_thread/
+from_interpretation/decide/reopen/packet.open/packet.close. Candidate decision
+submission uses proposal.create; ordinary Candidate review uses the existing
+inquiry.knowledge.promote action; curated links use source.item_update. Canonical
+proposal.apply remains the acceptance authority. No new Agent action/grant or
+production operation approval mapping is enabled. Nine retained POST/DELETE URLs
+are thin adapters, with body-free receipts and current reader calls. Packet GET
+adds no mutating route. Working inventory636=540legacy/39exempt/57core, remaining525
+after15 plugin paths; committed HEAD remains534 until coordinator submission.

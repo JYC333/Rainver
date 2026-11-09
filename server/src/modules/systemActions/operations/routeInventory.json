@@ -974,14 +974,14 @@
   {
     "method": "POST",
     "path": "/api/v1/knowledge/items/:itemId/sources",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.evidence.add"
   },
   {
     "method": "DELETE",
     "path": "/api/v1/knowledge/items/:itemId/sources/:linkId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.evidence.remove"
   },
   {
     "method": "POST",
@@ -992,20 +992,20 @@
   {
     "method": "POST",
     "path": "/api/v1/knowledge/notes",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.note.create"
   },
   {
     "method": "DELETE",
     "path": "/api/v1/knowledge/notes/:noteId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.note.delete"
   },
   {
     "method": "PATCH",
     "path": "/api/v1/knowledge/notes/:noteId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.note.update"
   },
   {
     "method": "POST",
@@ -1022,32 +1022,32 @@
   {
     "method": "POST",
     "path": "/api/v1/knowledge/notes/:noteId/placements",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.note.placement.add"
   },
   {
     "method": "DELETE",
     "path": "/api/v1/knowledge/notes/:noteId/placements/:collectionId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.note.placement.remove"
   },
   {
     "method": "POST",
     "path": "/api/v1/knowledge/notes/:noteId/promote",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for note.promote_to_knowledge"
   },
   {
     "method": "POST",
     "path": "/api/v1/knowledge/notes/:noteId/rollback",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.note.rollback"
   },
   {
     "method": "DELETE",
     "path": "/api/v1/knowledge/notes/:noteId/shares/:projectId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.note.share.revoke"
   },
   {
     "method": "POST",
@@ -1064,8 +1064,8 @@
   {
     "method": "PATCH",
     "path": "/api/v1/knowledge/notes/tree/reorder",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.note.tree.reorder"
   },
   {
     "method": "DELETE",
@@ -1178,20 +1178,20 @@
   {
     "method": "POST",
     "path": "/api/v1/knowledge/sources",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.source.create"
   },
   {
     "method": "DELETE",
     "path": "/api/v1/knowledge/sources/:sourceId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.source.archive"
   },
   {
     "method": "PATCH",
     "path": "/api/v1/knowledge/sources/:sourceId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.source.update"
   },
   {
     "method": "POST",
@@ -1376,26 +1376,26 @@
   {
     "method": "POST",
     "path": "/api/v1/notes/collections",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.collection.create"
   },
   {
     "method": "DELETE",
     "path": "/api/v1/notes/collections/:collectionId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.collection.delete"
   },
   {
     "method": "PATCH",
     "path": "/api/v1/notes/collections/:collectionId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.collection.update"
   },
   {
     "method": "POST",
     "path": "/api/v1/notes/collections/project/:projectId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.collection.ensure_project"
   },
   {
     "method": "POST",
@@ -1934,44 +1934,44 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/knowledge-candidate-review-packets",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.candidate.packet.open"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/knowledge-candidate-review-packets/:packetId/close",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.candidate.packet.close"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/knowledge-candidates/:candidateId/decision",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.candidate.decide"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/knowledge-candidates/:candidateId/reopen",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.candidate.reopen"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/knowledge-candidates/from-interpretation",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.candidate.from_interpretation"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/knowledge-candidates/from-note",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.candidate.from_note"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/knowledge-candidates/from-thread",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.candidate.from_thread"
   },
   {
     "method": "POST",

@@ -260,13 +260,27 @@ describe('NoteEditor keeps one save and one note in flight', () => {
     fireEvent.change(title, { target: { value: 'Second' } })
     fireEvent.keyDown(document, { key: 's', ctrlKey: true })
     await waitFor(() => expect(notesApi.update).toHaveBeenCalledTimes(1))
-    expect(notesApi.update).toHaveBeenLastCalledWith('note-1', expect.objectContaining({ title: 'First', expect_version: 1 }))
+    expect(notesApi.update).toHaveBeenLastCalledWith('note-1', expect.objectContaining({ title: 'First', expect_version: 1 }),expect.any(String))
 
     finishFirst(makeNote({ title: 'First', version: 2 }))
     await waitFor(() => expect(notesApi.update).toHaveBeenCalledTimes(2))
-    expect(notesApi.update).toHaveBeenLastCalledWith('note-1', expect.objectContaining({ title: 'Second', expect_version: 2 }))
+    expect(notesApi.update).toHaveBeenLastCalledWith('note-1', expect.objectContaining({ title: 'Second', expect_version: 2 }),expect.any(String))
   })
 
+  it('reuses a failed save key only for explicit retry of the same snapshot; changed input gets a new key',async()=>{
+    vi.mocked(notesApi.get).mockResolvedValue(makeNote())
+    vi.mocked(notesApi.update).mockRejectedValueOnce(new Error('response lost')).mockResolvedValueOnce(makeNote({title:'Retried',version:2})).mockResolvedValueOnce(makeNote({title:'Changed',version:3}))
+    render(renderEditor('note-1'))
+    const title=await screen.findByDisplayValue('Portable note')
+    fireEvent.change(title,{target:{value:'Retried'}});fireEvent.keyDown(document,{key:'s',ctrlKey:true})
+    const retry=await screen.findByRole('button',{name:'Retry'})
+    expect(notesApi.update).toHaveBeenCalledTimes(1)
+    fireEvent.click(retry);await waitFor(()=>expect(notesApi.update).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(notesApi.update).mock.calls[1][2]).toBe(vi.mocked(notesApi.update).mock.calls[0][2])
+    fireEvent.change(title,{target:{value:'Changed'}});fireEvent.keyDown(document,{key:'s',ctrlKey:true})
+    await waitFor(()=>expect(notesApi.update).toHaveBeenCalledTimes(3))
+    expect(vi.mocked(notesApi.update).mock.calls[2][2]).not.toBe(vi.mocked(notesApi.update).mock.calls[1][2])
+  })
   it('keeps the note switched to when an earlier note read answers late', async () => {
     let finishA: (note: Note) => void = () => {}
     vi.mocked(notesApi.get).mockImplementation(id => id === 'note-a'

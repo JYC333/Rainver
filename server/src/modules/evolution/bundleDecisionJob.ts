@@ -1,3 +1,4 @@
+import {applyPreparedCodePatchEffect,compensateCodePatchEffect} from '../projectFolders/codePatchEffects.js';
 import { EvolutionBundleDecisionReceiptSchema } from '@rainver/protocol';
 import { randomUUID } from 'node:crypto';
 import type { Pool } from '../../db/pool.js';
@@ -10,7 +11,7 @@ import { tryWithDedicatedSessionAdvisoryLock } from '../../db/advisoryLock.js';
 import { PgJobQueueRepository } from '../jobs/repository.js';
 import { JobDeferredError, type JobHandlerRegistry } from '../jobs/handlerRegistry.js';
 import { PgProposalApplyService } from '../proposals/applyService.js';
-import { prepareCodePatchPlan, CodePatchFileTransaction } from '../projectFolders/codePatch.js';
+import { prepareCodePatchPlan } from '../projectFolders/codePatch.js';
 import { withCodePatchEffectReceipts, type CodePatchEffectReceipt } from '../projectFolders/codePatchEffectContext.js';
 import { EvolutionBundleRepository, lockBundleDecision, type EvolutionBundleDecision, type ProposalDecisionPort } from './bundleRepository.js';
 import { sha256Json } from './hash.js';
@@ -222,7 +223,6 @@ export async function executeBundleDecision(config: ServerConfig, id: string, sp
         const locked = await tryWithDedicatedSessionAdvisoryLock(pool, `code-patch-folder:${plan.folderId}`, async () => {
           let effect = row.effects_json[proposalId];
           if (effect && (effect.root !== plan.root || effect.protectedFolder !== plan.folder.protected || sha256Json(effect.operations) !== sha256Json(plan.operations))) throw new HttpError(409, 'Code patch target changed');
-          const files = new CodePatchFileTransaction(plan.root, plan.folder.protected);
           if (!effect) {
             effect = {
               root: plan.root,
@@ -233,22 +233,7 @@ export async function executeBundleDecision(config: ServerConfig, id: string, sp
             };
             row.effects_json[proposalId] = effect;
           }
-          if (!effect.before.length) {
-            effect.before = await files.prepare(plan.operations);
-            await saveEffects(pool, row);
-          }
-          await assertLease();
-          // Lost post-effect receipt is recovered by exact desired-content comparison.
-          const applied = await files.applyPrepared(effect.operations, effect.before);
-          effect.receipt = {
-            payloadHash: sha256Json(plan.payload),
-            root: plan.root,
-            protectedFolder: plan.folder.protected,
-            before: effect.before,
-            applied,
-            completedAt: effect.receipt?.completedAt ?? new Date().toISOString()
-          };
-          await saveEffects(pool, row);
+          await applyPreparedCodePatchEffect(effect,sha256Json(plan.payload),()=>saveEffects(pool,row),()=>assertLease());
         });
         if (!locked.acquired) throw new JobDeferredError('Code patch Folder is busy', 1000);
       }
@@ -295,9 +280,7 @@ async function compensate(pool: Pool, row: BundleDecisionRow) {
     for (const effect of Object.values(row.effects_json).reverse()) {
       if (effect.compensated || !effect.before.length) continue;
       const lock = await tryWithDedicatedSessionAdvisoryLock(pool, `code-patch-folder:${effect.folderId}`, async () => {
-        await new CodePatchFileTransaction(effect.root, effect.protectedFolder).compensatePrepared(effect.operations, effect.before);
-        effect.compensated = true;
-        await saveEffects(pool, row);
+        await compensateCodePatchEffect(effect,()=>saveEffects(pool,row));
       });
       if (!lock.acquired) throw new JobDeferredError('Code patch compensation is busy', 1000);
     }

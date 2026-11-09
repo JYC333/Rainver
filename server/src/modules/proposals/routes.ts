@@ -96,7 +96,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         confirmIncompletePatch: confirm.value,
       });
       if (!result) return reply.code(404).send({ detail: "Proposal not found or already decided" });
-      return reply.send(result);
+      return reply.code(result.result_type==='code_patch_pending'?202:200).send(result);
     } catch (error) {
       return sendProposalRouteError(request, reply, error);
     }
@@ -124,7 +124,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const result = await services.applyService.rollback(proposalId, identity);
       if (!result) return reply.code(404).send({ detail: "Proposal not found or not eligible for rollback" });
-      return reply.send(result);
+      return reply.code(['pending','applying','compensating'].includes(result.status)?202:200).send(result);
     } catch (error) {
       return sendProposalRouteError(request, reply, error);
     }

@@ -509,3 +509,38 @@ approval mapping is enabled; existing applier and side-writer coverage must pass
 before mapping reach is widened. Try-lock contention is a retryable409, not a
 policy denial or Proposal rejection. Current fixture tests cover the integration;
 production operation/pilot and crash/cutover acceptance remain later-stage gates.
+
+
+Human Note history/trash core commands now enforce note.edit (wired_direct,
+low risk, audited fail_closed). This instruments the pre-existing canonical
+manual write capability; registration is user-only and ungrantable. It does
+not relax the reserved/default-deny note.link.create entry or authorize Note
+promotion, Memory, Agent mutation or purge. The protocol registry fixture adds
+only this policy, reaching123 entries.
+
+P5-5 basis4cf62800: note.edit also covers the ordinary human Note draft/edit,
+collection/placement/reorder commands through noteObjectOperations. Default
+allow, mandatory failclosed audit and human-only scope are unchanged. Existing
+NoteWriter/Project/read gates remain authoritative. note.link.create stays
+reserved/default-deny; existing link/jot behavior is not changed by this batch.
+No production approval mapping or new Agent permission is enabled.
+
+P5-5 passage/evidence migration on1d156dfd adds transactional core enforcement at
+knowledge/knowledgeObjectOperations.ts: pending Note promotion uses proposal.create,
+while evidence Source create and update/archive use source.item_create and
+source.item_update respectively. Core force-records and requires the audit decision
+in the same transaction despite those registry actions' legacy best-effort modes.
+This is submission/ordinary evidence authority, not accepted Knowledge authority:
+knowledge.create/proposal.apply and canonical approver permissions remain unchanged.
+No operation approval mapping or Agent surface is enabled by these four commands.
+
+P5-5 curated evidence/Candidate core registration lives in
+knowledgePromotion/reviewOperations.ts. Core records one mandatory transactional
+policy decision per invocation: source.item_update for citation mutations,
+proposal.create for Candidate decisions and inquiry.knowledge.promote for other
+ordinary Candidate/review commands. The decision field distinguishes promote
+(proposal submission) from dismiss/defer (Candidate-only state); none accepts a
+Knowledge proposal. Existing canonical ProposalApplyService and accepted domain
+appliers retain their roles/provenance checks. Full citation reads record B11
+endpoint audits; mandatory storage failure withholds quotes. No policy default,
+Note-link decision or approval mapping is changed.

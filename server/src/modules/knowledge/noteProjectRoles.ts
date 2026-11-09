@@ -1,4 +1,4 @@
-import { HttpError } from "../routeUtils/common.js";
+import {NoteObjectError} from './noteObjectErrors.js';
 
 /**
  * The system-reserved roles a Note can play in its Project's notebook.
@@ -48,6 +48,6 @@ export function isNoteProjectRole(value: unknown): value is NoteProjectRole {
 /** The registry is the closed set. Do not add a closed-set CHECK on the column. */
 export function assertNoteProjectRole(value: unknown): asserts value is NoteProjectRole {
   if (!isNoteProjectRole(value)) {
-    throw new HttpError(422, `Unknown note project role: ${String(value)}`);
+    throw new NoteObjectError(422, `Unknown note project role: ${String(value)}`);
   }
 }

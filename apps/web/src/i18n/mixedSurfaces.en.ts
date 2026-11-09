@@ -1,6 +1,15 @@
 /** UI copy for SecurityPage and conversation action surfaces. */
 export const mixedSurfacesEn = {
   mixed_surfaces: {
+    code_patch_pending: 'File execution is queued. The proposal remains pending.',
+    code_patch_applying: 'File execution is in progress. The proposal remains pending.',
+    code_patch_succeeded: 'File execution and the decision receipt are complete.',
+    code_patch_failed: 'The decision did not complete; prepared file changes were restored. Inspect Job Queue before explicitly retrying.',
+    code_patch_compensating: 'The decision did not complete. File restoration is queued or in progress.',
+    code_patch_compensation_failed: 'File restoration needs attention. Inspect Job Queue and resolve the files before continuing.',
+    code_patch_refresh: 'Refresh decision',
+    code_patch_jobs: 'Open Job Queue',
+    code_patch_queued: 'Code patch decision recorded. File execution is queued; inspect Job Queue before continuing.',
     security: {
       load_failed: 'Security information is temporarily unavailable.',
       verification_expired: 'Verification expired. Verify your identity again to continue.',

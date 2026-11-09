@@ -134,12 +134,12 @@ creation; do not replace requester authority with approver authority.
 | Checkpoint / family | Implementation scope | State |
 |---|---|---|
 | P5-1 inventory/contracts | Corrected baseline, approval writer closure, family gates and permanent guide links above | Closed |
-| P5-2 action grants / Project operation | Public grant create/revoke and Project operation commands with shared core contracts | Committed in 7aea6793 / dac5d44b; P5-2 overall remains in progress |
-| P5-2 remaining ready commands | Source DB-only families | Backfill preview/create/pause/resume committed in 0b0ab8f9; other ordinary Source scopes remain pending |
+| P5-2 action grants / Project operation | Public grant create/revoke and Project operation commands with shared core contracts | Committed; original ready scope accepted/completed after7594f2ec |
+| P5-2 remaining ready commands | Source DB-only families, including processing/extraction controls | Original23 ready entries completed; Source processing38-file family committed7594f2ec |
 | P5-3 Board configure / exact Task placement | REST, generic, Agent and typed Board consumers share core writers | Committed in 4ffdeca8 |
 | P5-3 remaining Task controls | set_status/delete and standalone Space Board placement | Lifecycle committed in b2a47192; standalone placement closure below completes this checkpoint's capability scope |
 | P5-6 Task advancement | report/complete/request_review/handoff; original done/review delegation | Committed in b2a47192; Inquiry and other advancement remain pending |
-| P5-4 internal writer subsets | canonical decisions/cascade, replacement/frozen payload, Plan review, Skill set, Run/root/nested owners and Evolution mixed effects | Committed through 8600172e; qualification/exclusions remain explicit below, no production mapping enabled |
+| P5-4 internal writer subsets | canonical decisions/cascade, replacement/frozen payload, Plan review, Skill set, Run/root/nested owners and Evolution mixed effects | Committed through8600172e; final standalone effect/creation closure below awaits review, no production mapping enabled |
 | P5-4 through P5-8 remaining | Approval closures, Note/Source, advancement, sensitive semantics and remaining inventory | Pending |
 
 At the grant-family basis, inventory was 633 entries = 598 legacy + 31 exemptions + 4 core
@@ -1460,6 +1460,50 @@ No full-suite/visual claim. Existing pg/Router/act warnings and deliberate P1
 projection-failure log remain visible; no new warning suppression.
 
 
+## Human Note history/trash controls (basisfea06988, uncommitted)
+
+Implemented knowledge.note.rollback/delete with strict user-only contracts,
+current canonical Note/Project write authority and explicit transport keys.
+The existing formal endpoints join the same canonical NoteWriter/core tx.
+Only the already-available manual restore/soft-delete capability is evaluated
+by new wired/audited note.edit; plain Note linking stays reserved/default-denied
+and its human choice is still pending. No Agent, Wiki/Memory promotion, purge,
+Note create/update/placement or new selection-toolbar action is enabled here.
+
+Project authority is pinned before the Note root, then authority/scope rechecked
+after waiting. Revision/outbox/root/extension/read-audit/policy/receipt writes
+are atomic. The derived retrieval projection retains its existing private
+savepoint recovery. Immutable receipts contain only id/Space/version: the typed
+client then reads the current Note via the existing authorized GET/B11 in that
+Space. Historical key replay does not reapply after newer content or restore.
+Explicit revision conflicts are typed/cached409, not arbitrary reflected errors.
+
+Reuse / Dependency Check: inspected canonical Note access/writer/revisions,
+placement lock discipline, Project authority gates, read-audit and retrieval
+savepoints, existing Notes client/editor and real PG fixtures. Reused all domain
+writes and version/outbox/index mechanisms, P1 admission/audit and Zod. No new
+writer, dependency, queue or retry engine. Namespace knowledge.note separates
+ordinary controls from the existing note.* selection actions without changing
+those menus or their exhaustive type contract.
+
+Working inventory636=569legacy+39exempt+28core,554 baseline core legacy remain;
+HEAD before this draft remains556. This is preparatory P5-5 Note work, not P5-8 execution or completion. Independent dual review is outstanding because the fixed shared budget
+is exhausted; self-inspection/test evidence is not a substitute approval.
+Other partial checkpoints have been returned to ready, retaining their commit
+reports. P5-5 still waits only on the explicit Note-link policy decision.
+
+Verification for this uncommitted draft: affected selections cover8 server
+files/141 tests, zero skips (real PG103: Note controls19, canonical writer8,
+Project binding9, P1 67; object actions6, route inventory12, guides8, hygiene12).
+The new canonical Project-move race exposed an admission conflict mapped to500;
+it is now explicitly409 before domain execution, and all19 PG cases pass.
+Protocol51 and web63 pass, including the Notes parent/editor and API body reload
+in the receipt Space. Node24 deps/server/plugins build, source+test/web types
+and diff check pass. No full-suite/visual or independent dual-review claim.
+Existing act warnings and intentional projection-failure logs remain visible.
+The draft remains uncommitted and unqualified for completion/review acceptance.
+
+
 ## Delivery-order correction after user review
 
 P5-8 is the final inventory/exception/stateful-GET/retirement/evidence closure,
@@ -1945,3 +1989,437 @@ Server5 files101 tests and Web3 files24 tests pass after the final code changes;
 server/web typechecks, deps/server build (official plugins), final web build and
 diff check pass. Existing warnings are not a clean/full-suite claim. No further
 old-family review is requested by this implementation turn.
+
+## P5-4 final writer/effect closure (basis7594f2ec, uncommitted)
+
+Only checkpoint4 is active. Checkpoints1/2/3 are accepted/done; checkpoint8 stays
+last. Historical sections describing unimplemented Evolution or synchronous
+standalone patching are snapshots superseded by committed8600172e and this diff,
+not reasons to re-review old families or enable later permissions.
+
+Reuse / Dependency Check: reused `withCheckpointDecisionOwner`, canonical
+`insertProposalRow`/`acceptInTransaction`, `withPolicyAuditRecovery`, existing
+PgJobQueue/JobWorker, dedicated advisory gates and Evolution's prepared file
+transaction/recovery pattern. Extracted only the purpose-specific file-effect
+helper shared by both workers; no dependency, generic retry/transaction framework,
+second business applier or synchronous fallback. Added Drizzle-generated0014
+intent persistence. Schema generation did not apply anything to a live database.
+
+Actual remaining gap implemented: standalone code-patch apply/rollback now persist
+frozen intent + required Job, expose pending receipt and finalize canonical
+Proposal/request/snapshot/history/result only after real file IO outside the DB
+transaction. Conditional compensation preserves unrelated edits. Receipt loss,
+Job exhaustion/cleanup and explicit retry retain the original human decision and
+intent; old keys are not redirected to new revisions. Proposal detail and Room
+cards read the sanitized per-user receipt and do not claim enqueue means applied.
+Three previously raw INSERT sites (Plan checkpoint, Workflow checkpoint, Knowledge
+Candidate promotion) now join canonical insertion/fresh registration on their
+actual transaction owner with existing fields/audience intact.
+
+Final SQL inventory: reviewPackets INSERT; payloadRevision UPDATE; canonical
+applyService status/payload/cascade/rollback; definition and monitoring replacement;
+Skill bulk supersession; Plan review supersession; Run terminal CTE/publication;
+P1 approval hooks. Memory/import use payloadRevision; no direct B10 table writer.
+Outer/root/nested owner implementations already committed remain unchanged.
+The detailed original-DoD and candidate qualification matrix is in permanent
+OPERATION_CORE_ACCEPTANCE's basis7594f2ec section, not a new checklist fork.
+
+New evidence: real shared PG8 files108 pass (codePatchDecision13, routes8,
+nested8, Candidate12, Plan20, Run23, linked Job owners22, apply unit2); safe
+file12/Evolution17 pass in the prior focused run after shared-helper extraction.
+P1 targeted9 pass/58 intentionally not selected: sorted cascades, expiry/cleanup,
+rollback and accepted-without-result refusal. Web parent/detail/Room/list/Today/
+Evolution affected checks and protocol receipt checks are separately recorded on
+completion. No full-suite claim. Earlier fixture/type assertions failed before
+correction and are not included as passes.
+
+Production mappings/public proposal.decide/Agent reach remain disabled. No known
+current eight-family writer/effect gap remains unimplemented; candidate permission,
+Source consent/egress, Note/Memory and conversation semantics retain checkpoints5–7.
+P5-4 is not marked complete before coordinator review/acceptance. No URL was
+migrated by this internal closure: formal550, Source inventory636=565/39/32 minus15
+plugin; Note draft projection548 excluded. Note shared hunks/INDEX/worktree-plan/
+reports and concurrent work are preserved; no staging/commit/deployment performed.
+
+Final qualification evidence for this diff: standalone14 (including hidden private
+target with real busy linked keys before either phase's admission) and P1
+approval/cascade37 selected/30 not selected pass. Across scoped server runs this
+is13 distinct files188 selected passes, not a full-suite result. Web5 files15
+pass, protocol receipt1 pass. Workspace deps, server/web typechecks, server build
+with official plugins, web build, guide/boundary checks and diff check pass.
+Chromium2 actual Space-scoped parent journeys pass (English dark desktop and
+Chinese light phone), reading queued/compensation/success receipts without a
+second acceptance; four screenshots created and two inspected. Initial browser
+fixture attempts wrongly used an unscoped route (Home redirect); they are failures,
+not pass evidence. No new Task/Proposal, permission or production mapping enabled.
+
+### Limited dual-review follow-up (basis7594f2ec)
+
+N1: explicit typed policy/frozen/snapshot refusal, durable terminal marker before
+safe compensation; existing handler failed-result convention stops automatic
+apply retries. Unfinished cleanup never re-enters apply; DB/lease/advisory errors
+are not a blanket HTTP-status business whitelist. Explicit user resubmission
+retains the original intent/approval history and obtains a new bounded Job.
+N2: active fingerprint check is before failed reset/enqueue, returning409 for a
+different active intent; the domain unique constraint remains as a final guard.
+N3: Folder gate contention defers cleanup in compensating without consuming an
+attempt, rather than manufacturing compensation_failed/operator repair.
+N4: preserve mandatory audit at each independent authority phase; correlate
+worker preparation/commit by decision_id and phase. Fix unlinked final apply's
+previous independent-audit choice to join the transaction whenever the trusted
+effect receipt is present; original-id failed recovery remains unique.
+N5: git-show comparison confirms all three raw INSERTs omitted rationale and
+used nullable DB default; restore NULL via canonical input. Visibility, creators,
+owner and provenance are unchanged; real Plan/Workflow/Candidate parents assert it.
+
+Scoped PG4 files67 pass: standalone18, Evolution17, Plan20, Candidate12. No new
+schema, protocol, visual presentation, mapping or URL migration in this limited
+follow-up. Formal550/Note548 unchanged; no subsequent checkpoint advanced.
+
+## P5-5 Codex adoption: Note history/trash (basis9d6613eb)
+
+P5-4 is committed/accepted;1/2/3/4 done,5 is the current scope,8 remains last.
+The coordinator's original Note draft was not independently reviewed. This batch
+adopts its23 files (excluding INDEX/worktree-plan/reports) as one reviewable
+history/trash capability subfamily; no unrelated diff is overwritten or staged.
+It does not claim full Note CRUD or full checkpoint5 completion.
+
+Reuse / Dependency Check: canonical PgKnowledgeRepository/NoteWriteScope,
+noteRevisionService, typed conflict allowlist, core executor/adapters and the
+existing recordDetailRead B11 gate. No dependency, retry/transaction framework,
+Memory writer, external IO, artificial revision/outbox or required Job introduced.
+No Source code dependency is needed by these two Note commands. The draft's
+body-free receipt and receipt-Space GET are retained. New implementation fixes
+null default/key normalization, request-id header and historical body audit.
+Malformed/unknown errors and real granted-Agent exclusions gain PG evidence.
+
+Original checkpoint5 DoD, bounded current scope:
+- Implemented/review-ready: Note rollback+trash REST/generic/typed browser closure;
+  current Note/Project authority on replay, reparent/role lock races; canonical
+  revision/outbox and policy/request/read-audit atomicity, private projection
+  savepoint containment. No old handler for these URLs remains.
+- Not implemented by this batch: Note create/edit/collection/placement/jot/promotion
+  and Source object mutations/activation/promotion/consent/egress entry closures.
+  Existing implementations and all human consent/egress/invalid-material attempts
+  remain unchanged. Knowledge evidence Source CRUD (knowledge/routes, sources
+  table) is distinct from managed sources/SourceConnection/recipe activation.
+  The former still uses retained direct repository calls, the latter keeps its
+  canonical appliers/worker boundaries. P5-4 writer qualification is not a flag
+  enabling any of those production mappings.
+- Awaiting only a permission choice: note.link.create reserved/default-deny versus
+  existing human link REST/editor. No link behavior or new Agent rights changed.
+  Other remaining engineering does not need another product confirmation.
+
+Final scoped server5files63, protocol2files42, Web3files65 pass. Real PG is used
+for durable behavior; one injected unknown HttpError tests classification without
+replacing persistence. Tests include a valid manual Agent/current grant identity
+before core rejects the human-only surface. Body-reload tests bind to receipt
+Space. No presentation changes or visual claim. Deps/types/server build/diffcheck
+pass. Existing React act warnings and intentional projection failure logs remain.
+Initial erroneous filename selections and the rejected trash-outbox assumption
+are not passes; permanent acceptance documents the corrections.
+
+Formal HEAD550 remains unchanged; this two-URL working projection is548
+(636=563legacy/39exempt/34core minus15 plugin). No schema changes; committed0014
+is preserved. No stage/commit/deploy, Task/Proposal creation or handover file.
+
+## P5-5 ordinary Note create/edit/collection/placement (basis4cf62800)
+
+The23-file history/trash subset is now committed and independently reviewed in
+4cf62800; its earlier awaiting-review text is historical. This batch implements
+one complete ordinary Note object family:10 retained command URLs and typed
+consumers, not another history-only repair. Checkpoints1–4 remain done, current5,
+8 last. Independent review of this new diff is coordinator-owned and pending.
+
+Reuse / Dependency Check: NoteWriter/NoteWriteScope/revision/outbox and canonical
+repository/placement/reorder/share writers, access-owned creation context,
+Project authority locks, core schema/adapters/errors and existing metadata/body
+readers. New modules are purpose-bound Note admission/registration/errors/REST;
+no dependency, second business writer, generic transaction/retry engine or
+external IO. A Note manual draft uses the existing draft seam, with only a
+specific authorized-collection child rule; the durable Source exception and
+Agent guards are not widened. No schema change or migration generation needed.
+
+Scope includes create/edit (all legitimate rich-editor fields and versions),
+collection create/update/delete/Project ensure, add/remove placement, share
+revocation and tree reorder. Former direct REST implementations are retired.
+Existing selection-object actions and lawful internal Agent writer/ops remain
+unchanged. Root-before-extension is unified in the canonical content writer to
+avoid inversion with core admission; forced PG overlap preserves the original
+ops conflict-append semantics. A bounded ancestor/child/Note/role closure is
+rediscovered before/after locks, not a global-row lock or fabricated ready flag.
+
+Transport cutover: explicit keys and canonical envelopes; collection DELETE now
+returns a body-free receipt200 instead of204. Typed APIs maintain their existing
+Note/collection/void return contracts by current reader calls in receipt Space.
+Editor serial saves retain an unresolved snapshot/key for manual Retry, change
+key on changed input, and introduce no automatic retry. Human sharing and owning-
+entry dialog metadata is preserved; hidden folder blockers give404 and visible
+blocker metadata is not retained under a stale key. Existing domain uniqueness,
+archived-Project controls and Project viewer ensure no-op are preserved.
+
+Original checkpoint5 DoD progress:
+- Done before this batch: Note history/trash, reviewed/committed4cf62800.
+- Implemented here, awaiting dual review: complete ordinary Note create/edit/
+  collection/placement/reorder family, related current metadata/body consumption,
+  strict key/schema/authority/audit/transaction/consumer closure.
+- Remaining engineering in5: Note/Wiki promotion and ordinary Source object/
+  activation/promotion/consent-egress/invalid-material-attempt entry closures.
+  P5-4 writer qualification is reused, not permission to enable mappings.
+- Only existing human permission choice: reserved/default-denied Note link versus
+  current human linking. Link and its atomic targeted jot public contract stay
+  unchanged/excluded; that choice does not block the independent engineering.
+- Sensitive purge and final stateful-GET/inventory closure are not smuggled into
+  ordinary Note capabilities or used to claim checkpoint5/overall P5 completion.
+
+Working inventory regenerated with UPDATE_OPERATION_ROUTE_INVENTORY:636=553/39/44,
+remaining538; formal HEAD548 until coordinator commit. Exactly10 URLs moved,
+no internal fix counted. INDEX/worktree plan/reports and any concurrent work
+are preserved; no stage/commit/deploy, new Task/Proposal or handover file.
+
+Final evidence: server11files164 pass (objects28, history28, collections11,
+placements13, shares16, writer8, binding9, roles7, role guard5, Source creation27,
+inventory12); guides/boundaries13 separately. Protocol43, Web68, real Chromium2
+parent/editor explicit-retry journeys pass. English desktop includes collection
+creation/current metadata; Chinese phone checks editor retry/body refresh.
+No live APIs, full suite or visual appearance acceptance claim. Deps/server+web
+types/server+official plugins/web build/diffcheck pass. Earlier missing-key/
+old-envelope assertions were updated for the intentional cutover without losing
+domain placement assertions; the confirmation fixture now genuinely crosses two
+Projects. INDEX/worktree-plan/reports remain outside this manifest.
+
+### Ordinary Note scoped review repair on4cf62800
+
+Coordinator reports both independent main reviews without a blocker apart from
+Claude's confirmed P2 replay disclosure. This repair does not claim to have read
+the truncated Antigravity tail or to substitute local tests for independent review.
+P2: notes reorder now checks explicit input Note write authority before and after
+waits. Owning-entry help follows collection.delete's current-read/noncacheable
+refusal boundary, preserving visible dialog actions without caching private
+blocker identity/title/count. PG verifies both transports replay safely after
+privatization with unchanged Project membership, initial hidden refusal, actual
+root-row overlap, full domain/request rollback and one recovered failed audit.
+
+N2 source comparison found unnecessary tightening, not a newly approved rule:
+canonical folder delete controls its own Project, while a shared Note's owning
+Project need not be writable; canonical collection reorder only demands writer
+for reparenting, not same-parent ordering. Discovery still freezes folder/Note/
+role-holder references, but authorization Projects now match those actual writer
+requirements. Per-Note reorder and real source/destination placement gates remain.
+PG covers both restored legal operations and denied unauthorized reparenting.
+Reuse: the existing admission, canonical writers, blocker read shield and plain
+OperationError rollback; no dependency, retry engine or new error allowlist.
+
+Only repair increments: noteObjectAdmission.ts, noteObjectOperations.ts,
+noteObjectOperationsDb.test.ts, knowledgeNoteOrderingDb.test.ts and these existing
+plan/knowledge-owner/acceptance sections. The older ordering consumer now supplies
+explicit keys and reads canonical envelopes while retaining durable order and
+real duplicate-position checks. No protocol/web production changes in this repair.
+Formal548/ordinary10-URL projection538 remains uncommitted; P5-5 remains incomplete,
+link choice stays pending, production mappings and Agent reach are unchanged.
+
+Repair validation: real shared PG6files88 pass (32+13+11+16+9+7); guides/boundaries
+13 and Web API consumer21 pass. Node24 workspace deps/server noEmit types and
+diffcheck pass. First audit query mistakenly included prior request evidence;
+it now asserts exactly one failed audit for the refusing request. Old ordering
+consumers' missing keys/envelopes were corrected, not bypassed with relaxed
+statuses. Those initial failures are excluded from passing evidence. No full
+suite or repeated browser/visual claim. This evidence is local verification,
+not an independent third review; coordinator retains submission/acceptance.
+
+## P5-5 passage promotion + evidence Source objects (basis1d156dfd)
+
+Prior ordinary Note10-command family and reorder repair are committed in
+1d156dfd after coordinator-managed independent review; do not reopen that family.
+This batch migrates4 retained URLs: Note passage promotion and evidence Source
+create/update/archive. Scope is `knowledge.sources` evidence rows, not managed
+SourceConnection activation. Original checkpoint5 stays current;1–4done,8last.
+
+Reuse / Dependency Check: existing PgKnowledgeRepository/proposeCreate,
+insertProposalRow/P5-4 transaction port, canonical approval applier/provenance,
+profile compiler, source root/extension CTE writer and projection savepoint,
+access creation context, current ACL/Project locks, existing core/REST adapter,
+policy audit recovery and typed current GET. No dependency, migration/schema,
+second writer, generic retry or execution engine. No external IO or required Job
+exists in these DB-only commands; future worker-backed controls cannot be claimed
+complete by this batch.
+
+The proposal-producing operation uses existing proposal.create; knowledge.create
+continues to gate actual accepted Knowledge. This removes the old registry's
+submission/apply ambiguity without enabling an operation approval mapping or
+public proposal.decide/new Agent capability. The human still reviews the original
+knowledge_create proposal exactly once. A 202 command receipt says draft created,
+not Knowledge accepted. Body-free id/Space receipts reread current authorized
+Proposal; original selected content, author, fields, profile validation, source
+refs and Note-version provenance are retained in the canonical payload. Old keys
+retain old receipt identity; no revision redirect or duplicated approval occurs.
+
+Scope admission discovers actual current Note/Source Project before key wait,
+locks sorted Project authorities then object root, rechecks growth and uses
+current object ACL. Source roots preserve private Personal/Project-shared access
+placement. Different keys are independent Source creation intent, not transport
+substitution for domain uniqueness. Source detail B11 storage is fail-closed.
+Only the actual profile compiler's typed validation refusal is cacheable; arbitrary
+HTTP422 is not a business allowlist. Link/jot and Agent exposure stay unchanged.
+
+Original checkpoint5 coverage: committed history/trash + ordinary Note objects;
+implemented here passage-to-Knowledge proposal submission and evidence Source
+CRUD. Actual remaining independent families: curated item-to-evidence Source
+links (POST/DELETE /knowledge/items/:itemId/sources...), modern KnowledgeCandidate
+promotion submission, managed activation and consent/egress/material-attempt
+controls. They are not mislabelled as this evidence CRUD. Note link policy remains
+the existing human choice; atomic jot stays excluded. No claim checkpoint5 done.
+
+Inventory: formal HEAD538; working534=636(549legacy/39exempt/48core) minus15plugin.
+Exactly4 retained URLs migrate. Internal B11/error/authority fixes do not reduce
+URL counts. Independent review is for coordinator to schedule; local tests are
+not dual review. INDEX/worktreeplan/reports and parallel changes are excluded.
+
+Scoped final verification: new shared-PG knowledgeObjectOperationsDb19; existing
+notePromotionDb6, KnowledgeCandidate/Knowledge revalidation knowledgePromotionDb12,
+placement13, selection registry6 and inventory12 pass; guide/boundary13. Protocol
+operations21, Web API22 and parent editor mount11 pass. Node24 deps and server/web
+noEmit types/diffcheck pass. No full suite or browser/visual acceptance claim.
+First invalid private-owner seed and waiting-admission expectation were corrected
+to actual schema and nonwaiting P1 contract; B11 Source audit failure now explicitly
+returns503 without body, and the Web test uses the real X-Rainver-Space-Id header.
+Wrong root-package invocations are not passes. Independent dual review is pending.
+
+Owned review manifest (21 files; excludes INDEX/worktreeplan/reports):
+- Protocol src: knowledgeObjectOperations.ts (new), operations.ts, systemActions.ts,
+  index.ts; protocol test/operations.test.ts.
+- Server knowledge: knowledgeObjectOperations.ts / knowledgeObjectErrors.ts (new),
+  noteObjectOperationRoutes.ts, repository.ts, routes.ts.
+- Server core integration: operations/runtime.ts and routeInventory.json.
+- Server test: knowledgeObjectOperationsDb.test.ts (new).
+- Web: api/client.ts, types/api.ts, __tests__/conversation-scope-api.test.ts.
+- Permanent docs: knowledge-base.md, SYSTEM_ACTIONS.md,
+  POLICY_ENFORCEMENT_INVENTORY.md, OPERATION_CORE_ACCEPTANCE.md; this original plan.
+No stage/commit/push/deploy/online writes, new Project Task/Proposal or handover file.
+
+## P5-5 curated evidence and modern Candidate review (basis1d16069e)
+
+The prior21-file passage/evidence CRUD batch is committed and independently
+reviewed in1d16069e; it is not being reopened. This batch implements a complete
+nine-command DB-only family: curated knowledge_item_sources add/remove; Candidate
+creation from Note/Thread/converted Interpretation; promote/dismiss/defer decision,
+reopen; and review packet open/close. Seven original Candidate and two evidence
+mutating URLs now share core/REST adapters and canonical domain writers. The
+Agent-specific combined Thread→Candidate→Proposal path remains its original
+scoped internal service/attribution/audience; no new Agent grant is exposed.
+
+Reuse / Dependency Check: existing repository citation/FK/unique index and safe
+projection savepoint; Candidate state machine, immutable pinned source refs,
+canonical insertProposalRow and accepted ProposalApplyService; P1 transaction/key/
+policy/audit recovery; existing Project aggregate fence and authority locks;
+current Candidate/list readers and a purpose-bound owner packet reader. No new
+library, generic retry/admission/approval engine, schema or external effect.
+Manual commands create no required Job. Extraction enqueue/worker is a separate
+remaining entry, not faked completed by a receipt from these DB-only commands.
+
+Authority follows actual original owner/role semantics. Evidence mutations need
+Knowledge owner plus full personal read of both endpoints, never arbitrary Note
+FK carriers or Source ownership/write authority. Candidate mutations retain active
+Project writer requirements and source/current Candidate ownership. A full-read
+source grantee still may insert a private Candidate for the source owner without
+receiving read/decision rights over it. Minimal receipts do not confer those rights.
+All Project/root sets are discovered before waits and rechecked; actual target
+Project aggregate FOR UPDATE precedes roots and service calls. This fixes the
+observed concurrent FOR SHARE→FOR UPDATE upgrade deadlock rather than adding retry
+or weakening the PG test to permit503. Real archive transitions are typed at the
+actual existing owner throw site; unknown helper409/422 remains internal/uncached.
+
+Candidate promote remains original Proposal submission, not proposal approval.
+The tested shared-source/different-submitter failure was real: payload owner was
+copied from source owner while Proposal creator belonged to the submitting writer.
+New Knowledge payload owner now matches the trusted submitting human, preserving
+the applier invariant; source/Candidate ownership/pinned authorship is unchanged.
+The new full-chain test proves a member writer can submit but cannot approve;
+authorized owner approval still succeeds after submitter writer revocation. No
+imagined blanket Project-writer acceptance rule replaces the real canonical gate.
+
+Original checkpoint5 progress: history/trash, ordinary Note objects, passage
+promotion/evidence CRUD committed; this batch implements curated citations and
+manual modern Candidate/review closure. Actual remaining engineering: Candidate
+extraction Job/worker command entry; managed Source activation, consent/egress and
+material submission/invalid-attempt controls. Note link still awaits the existing
+human choice; atomic jot remains excluded. No checkpoint6/7/8 work is claimed,
+no production mapping/publicproposal.decide/Agent authority is enabled, and5 is
+not declared complete. Working525=636(540legacy/39exempt/57core) minus15plugins;
+formal534 until coordinator commit. Only9 migrated retained URLs reduce counts.
+Internal ownership/audit/lock fixes and the new packet GET do not reduce URLs.
+
+Verification: new knowledgeReviewOperationsDb23 real-PG tests pass; original
+knowledgePromotionDb12, knowledgeGroup17, operationRoutes12 and guide/boundary13
+pass. Protocol operations22 and Web API/Project Knowledge Review parent30 pass.
+Node24 workspace deps, Web noEmit types and diffcheck pass. Earlier server types
+passed; the final workspace rerun fails8 unrelated parallel Host errors in
+acpToolPresentation/threadEventNormalization/threadEventRepository: missing
+ToolCallDetails export, unused summarizeToolOutput and missing
+MAX_TOOL_RESULT_SUMMARY_CHARS. No parallel file was edited or used to excuse a
+pass claim; final server workspace typecheck remains a verification limitation. No full suite
+or actual browser/visual acceptance claim; only transports/read-after-write changed.
+Initial tests exposed real owner-payload and Project lock-upgrade defects, both
+fixed with the strict original assertions retained. A private-vs-selected-user grant
+fixture and unused variables/root-package invocations were corrected, not counted
+as passes. Local checks are not the coordinator's pending independent dual review.
+
+Owned review manifest (23 files; exclude INDEX/worktreeplan/reports and all parallel
+turnParts/Host event/presentation/Run read-model work):
+- packages/protocol/src: knowledgeReviewOperations.ts(new), operations.ts,
+  systemActions.ts, index.ts; test/operations.test.ts.
+- server knowledge: repository.ts and routes.ts.
+- server knowledgePromotion: candidateService.ts, routes.ts,
+  candidateErrors.ts(new), reviewOperations.ts(new), reviewOperationRoutes.ts(new).
+- server projects/access.ts: actual archived aggregate-fence throw uses its
+  existing explicit ProjectArchivedMutationError subclass (same409 semantics).
+- server systemActions/operations: runtime.ts and routeInventory.json.
+- server test/knowledgeReviewOperationsDb.test.ts(new).
+- apps/web/src: api/client.ts and __tests__/conversation-scope-api.test.ts.
+- Existing docs: knowledge-base.md, OPERATION_CORE_ACCEPTANCE.md, SYSTEM_ACTIONS.md,
+  POLICY_ENFORCEMENT_INVENTORY.md and this original plan.
+No stage/commit/push/deploy/online DB, new Project Task/Proposal or handover file.
+
+### Curated/Candidate scoped review repair on1d16069e
+
+Coordinator reports the main23-file diff dual-reviewed; this turn fixes confirmed
+P2/P3 only, not a new family or repeat full review. Restored original source-
+independent Candidate dismiss/defer/reopen, with current Candidate ACL/active
+Project writer/state and their current replay checks. Creation/promotion retains
+required live/full source checks. Note soft-delete/purge/private and Thread
+soft-delete/private PG cases use a non-source-owner writer and preserve pinned
+history; cleanup succeeds across REST/generic original keys while promote and
+private-Candidate/withdrawn-writer access remain hidden404.
+Unlink discovers/locks only current Knowledge and exact association, not inaccessible
+Source content. Private/deleted Source cleanup and old-key replay leave a newer
+link untouched; add/full-read/FK and B11 rules stay unchanged. Wrong same-Space
+item/link binding is hidden, never removed. Supersedes target uses canonical
+create()'s original contentReadSql predicate, including readable summary/oversight,
+and a shared root lock; no new full-content or reference-Project gate is invented.
+Source/root/Project ordering and the fixed aggregate upgrade-deadlock guard remain.
+
+Reuse: bounded action-specific discovery in the existing admission module, original
+Candidate/repository writers and existing packet clamp; no framework/DTO/schema/
+policy/Agent/mapping changes. Packet.open clamps1..20 before fingerprint (default10),
+so100 and20 / negative and1 replay identically; no min/max rejection was added.
+All Candidate/packet follow-up GET path segments encode Project and returned id,
+with receipt-Space headers unchanged.
+
+Repair increment exactly7 files: reviewOperations.ts; knowledgeReviewOperationsDb.
+test.ts; Web api/client.ts and conversation-scope-api.test.ts; knowledge-base.md,
+OPERATION_CORE_ACCEPTANCE.md and this original plan. Main23-file manifest remains
+the review/commit boundary; INDEX/worktreeplan/reports, parallel Host/turnParts/
+conversation work and schema0015/journal are excluded and preserved. No stage,
+commit, deployment, new Project Task/Proposal or handover file. Formal534 / nine-
+URL working projection525 is unchanged. P5-5/link choice/remaining extraction and
+managed activation-consent-material scopes remain open as before.
+
+Repair evidence: new review file33 real-PG tests (10 added) + original promotion12,
+inventory12, guides/boundaries13 =5 server files70 pass. Web API25 + Knowledge
+Review parent6 =31 pass. Current Node24 deps/server/Web types pass, replacing the
+previous Host type limitation with actual new rerun evidence; no parallel file
+was repaired. Scoped seven-file diffcheck passes. Global diffcheck still reports
+parallel apps/web/src/modules/conversation/ConversationTurn.tsx:252 EOF blank line;
+it is preserved, not silently cleaned or reported as a global pass. No full suite,
+new presentation/browser acceptance, schema or permission change. Coordinator
+retains independent verification/submission; local tests are not another dual review.

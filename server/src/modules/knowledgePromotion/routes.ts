@@ -1,10 +1,12 @@
+import {registerKnowledgeReviewRoutes} from './reviewOperationRoutes.js';
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { dbPool, jsonBody, numberValue, params, query, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { dbPool, jsonBody, params, query, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
 import { KnowledgePromotionCandidateService } from "./candidateService.js";
 import { KnowledgeExtractionService } from "./extractionService.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerKnowledgeReviewRoutes(app,context,'candidate');
   const candidates = () => new KnowledgePromotionCandidateService(dbPool(context.config));
   const extraction = () => new KnowledgeExtractionService(dbPool(context.config));
 
@@ -19,6 +21,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  app.get("/api/v1/projects/:projectId/knowledge-candidate-review-packets/:packetId",async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try{const p=params(request);return reply.header('cache-control','private, no-store').send(await candidates().getReviewPacket(identity,requiredString(p.projectId,'project_id'),requiredString(p.packetId,'packet_id')));}catch(error){return sendRouteError(reply,error);}
+  });
   app.get("/api/v1/projects/:projectId/knowledge-candidates", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -41,31 +47,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/knowledge-candidate-review-packets", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      return reply.code(201).send(await candidates().openReviewPacket(
-        identity, projectId, numberValue(jsonBody(request).limit) ?? undefined,
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/knowledge-candidate-review-packets/:packetId/close", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      return reply.send(await candidates().closeReviewPacket(
-        identity, requiredString(p.projectId, "project_id"), requiredString(p.packetId, "packet_id"),
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
+
 
   app.get("/api/v1/projects/:projectId/knowledge-candidates/:candidateId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -78,62 +62,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/knowledge-candidates/from-note", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      return reply.code(201).send(await candidates().createFromNote(identity, projectId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/knowledge-candidates/from-thread", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      return reply.code(201).send(await candidates().createFromThread(identity, projectId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/knowledge-candidates/from-interpretation", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      return reply.code(201).send(await candidates().createFromInterpretation(identity, projectId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/knowledge-candidates/:candidateId/decision", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      return reply.send(await candidates().decideCandidate(
-        identity, requiredString(p.projectId, "project_id"), requiredString(p.candidateId, "candidate_id"), jsonBody(request),
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/knowledge-candidates/:candidateId/reopen", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      return reply.send(await candidates().reopenCandidate(
-        identity, requiredString(p.projectId, "project_id"), requiredString(p.candidateId, "candidate_id"),
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
+
+
+
+
 }

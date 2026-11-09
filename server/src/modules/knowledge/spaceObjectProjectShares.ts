@@ -1,3 +1,4 @@
+import {NoteObjectError} from './noteObjectErrors.js';
 import { randomUUID } from "node:crypto";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { assertProjectWriter } from "../projects/access.js";
@@ -61,7 +62,7 @@ export async function shareSpaceObjectWithProject(
   },
 ): Promise<void> {
   if (input.projectId === input.ownerProjectId) {
-    throw new HttpError(422, "This is already the object's own project");
+    throw new NoteObjectError(422, "This is already the object's own project");
   }
   // Both directions are writes: to the Project gaining access, and to the one
   // giving it up. A member of B alone must not be able to pull A's note into B.

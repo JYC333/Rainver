@@ -200,6 +200,14 @@ it('keeps Monitor commands user-only and separates durable scan enqueue from act
   expect(OPERATION_SCHEMA_TABLE['source.channel.scan'].input.safeParse({source_channel_id:'channel',force:true}).success).toBe(false);
 });
 
+it('keeps human Note history/trash controls strict and separate from selection actions and body reads',()=>{
+  for(const id of ['knowledge.note.rollback','knowledge.note.delete']){const d=SYSTEM_ACTION_REGISTRY.find(d=>d.id===id)!;expect(d.allowed_actor_types).toEqual(['user']);expect(d.visibility.has('agent_tool')).toBe(false);expect(d.grantable).toBe(false);expect(d.applies_to).toBeUndefined();}
+  const input=OPERATION_SCHEMA_TABLE['knowledge.note.rollback'].input;
+  expect(input.safeParse({note_id:'note',to_version:1,expect_version:2}).success).toBe(true);
+  for(const extra of [{to_version:0},{force:true},{user_id:'other'}])expect(input.safeParse({note_id:'note',to_version:1,...extra}).success).toBe(false);
+  expect(OPERATION_SCHEMA_TABLE['knowledge.note.delete'].output.safeParse({id:'note',space_id:'space',version:1,content_json:{}}).success).toBe(false);
+});
+
 it('keeps public Monitor creation strict, user-only and ungrantable',()=>{
  const d=SYSTEM_ACTION_REGISTRY.find(d=>d.id==='source.channel.create')!;
  expect(d.allowed_actor_types).toEqual(['user']);expect(d.grantable).toBe(false);expect(d.execution).toEqual({kind:'command',tx:'core_owned'});
@@ -215,4 +223,33 @@ it('keeps Source rule/extraction dispatch strictly user-only with explicit enque
  expect(schema.safeParse({source_channel_id:'c',rule:{_force_create:true}}).success).toBe(false);
  expect(OPERATION_SCHEMA_TABLE['source.extraction.dispatch'].input.safeParse({extraction_job_id:'j',user_id:'forged'}).success).toBe(false);
  expect(OPERATION_SCHEMA_TABLE['source.processing.rule.dispatch'].output.safeParse({job_id:'j',status:'pending',source_channel_id:'c',extraction_job_id:null,extraction_status:null}).success).toBe(true);
+});
+
+it('canonicalizes optional Note rollback concurrency to null without loosening the strict DTO',()=>{
+ const schema=OPERATION_SCHEMA_TABLE['knowledge.note.rollback'].input;
+ expect(schema.parse({note_id:'note',to_version:1})).toEqual({note_id:'note',to_version:1,expect_version:null});
+ expect(schema.parse({note_id:'note',to_version:1,expect_version:null})).toEqual(schema.parse({note_id:'note',to_version:1}));
+ expect(schema.safeParse({note_id:'note',to_version:1,force:true}).success).toBe(false);
+});
+
+it('keeps all Note object commands strictly human-only without author/Run/permission injection',()=>{
+ const ids=['knowledge.note.create','knowledge.note.update','knowledge.collection.create','knowledge.collection.update','knowledge.collection.delete','knowledge.collection.ensure_project','knowledge.note.placement.add','knowledge.note.placement.remove','knowledge.note.share.revoke','knowledge.note.tree.reorder'] as const;
+ for(const id of ids){const def=SYSTEM_ACTION_REGISTRY.find(d=>d.id===id)!;expect(def.allowed_actor_types).toEqual(['user']);expect(def.grantable).toBe(false);expect(def.visibility.has('agent_tool')).toBe(false);expect(def.execution).toEqual({kind:'command',tx:'core_owned'});}
+ const schema=OPERATION_SCHEMA_TABLE['knowledge.note.create'].input;
+ for(const extra of [{user_id:'other'},{created_by_run_id:'run'},{force:true},{space_id:'other'}])expect(schema.safeParse({title:'Draft',...extra}).success).toBe(false);
+ const doc={type:'doc',attrs:{custom:'kept'},content:[{type:'paragraph',attrs:{block_id:'stable'},content:[{type:'text',text:'Working'}]}]};expect(schema.parse({title:'Draft',content_json:doc}).content_json).toEqual(doc);
+});
+
+it('keeps Note promotion a human-only proposal draft and evidence Source DTOs strict',()=>{
+ for(const id of ['note.promote_to_knowledge','knowledge.source.create','knowledge.source.update','knowledge.source.archive'] as const){const d=SYSTEM_ACTION_REGISTRY.find(d=>d.id===id)!;expect(d.allowed_actor_types).toEqual(['user']);expect(d.visibility.has('agent_tool')).toBe(false);expect(d.execution?.tx).toBe('core_owned');}
+ expect(OPERATION_SCHEMA_TABLE['note.promote_to_knowledge'].input.parse({note_id:'n',content:'Passage'})).toMatchObject({project_id:null,source_refs:[],tags:[]});
+ expect(OPERATION_SCHEMA_TABLE['knowledge.source.update'].input.safeParse({source_id:'s',changes:{visibility:'space_shared'}}).success).toBe(false);
+ expect(OPERATION_SCHEMA_TABLE['note.promote_to_knowledge'].input.safeParse({note_id:'n',content:'Passage',depends_on_proposal_id:'foreign'}).success).toBe(false);
+});
+
+it('declares curated evidence and Candidate commands as strict human-only core operations',()=>{
+ for(const id of ['knowledge.evidence.add','knowledge.evidence.remove','knowledge.candidate.from_note','knowledge.candidate.from_thread','knowledge.candidate.from_interpretation','knowledge.candidate.decide','knowledge.candidate.reopen','knowledge.candidate.packet.open','knowledge.candidate.packet.close'] as const){const definition=SYSTEM_ACTION_REGISTRY.find(d=>d.id===id)!;expect(definition.execution?.tx).toBe('core_owned');expect(definition.visibility.has('agent_tool')).toBe(false);expect(definition.allowed_actor_types).toEqual(['user']);}
+ expect(OPERATION_SCHEMA_TABLE['knowledge.candidate.decide'].input.safeParse({project_id:'p',candidate_id:'c',decision:'accept'}).success).toBe(false);
+ expect(OPERATION_SCHEMA_TABLE['knowledge.evidence.add'].input.parse({item_id:'i',source_id:'s'})).toMatchObject({quote:null,note:null,locator:null,confidence:null});
+ expect(OPERATION_SCHEMA_TABLE['knowledge.candidate.from_note'].input.safeParse({project_id:'p',note_id:'n',candidate_kind:'concept',proposed_title:'T',proposed_content:'C',visibility:'space_shared'}).success).toBe(false);
 });

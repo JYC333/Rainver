@@ -1,3 +1,4 @@
+import {NoteObjectError} from './noteObjectErrors.js';
 import {
   HttpError,
   optionalString,
@@ -43,7 +44,7 @@ type NotesTreeReorderPlan =
 export function parseNotesTreeReorder(body: Record<string, unknown>): NotesTreeReorderPlan {
   const kind = optionalString(body.kind);
   if (kind !== "notes" && kind !== "collections") {
-    throw new HttpError(422, "kind must be notes or collections");
+    throw new NoteObjectError(422, "kind must be notes or collections");
   }
   const rows = parseReorderRows(body);
   const ids = new Set<string>();
@@ -55,9 +56,9 @@ export function parseNotesTreeReorder(body: Record<string, unknown>): NotesTreeR
       const fromCollectionId = optionalString(row.from_collection_id);
       const collectionId = optionalString(row.collection_id);
       const sortOrder = row.sort_order;
-      if (!noteId) throw new HttpError(422, `updates.${index}.note_id is required`);
-      if (!fromCollectionId) throw new HttpError(422, `updates.${index}.from_collection_id is required`);
-      if (!collectionId) throw new HttpError(422, `updates.${index}.collection_id is required`);
+      if (!noteId) throw new NoteObjectError(422, `updates.${index}.note_id is required`);
+      if (!fromCollectionId) throw new NoteObjectError(422, `updates.${index}.from_collection_id is required`);
+      if (!collectionId) throw new NoteObjectError(422, `updates.${index}.collection_id is required`);
       validateTreeOrderPosition(
         ids,
         positions,
@@ -74,13 +75,13 @@ export function parseNotesTreeReorder(body: Record<string, unknown>): NotesTreeR
   const updates = rows.map((row, index) => {
     const id = optionalString(row.id);
     const sortOrder = row.sort_order;
-    if (!id) throw new HttpError(422, `updates.${index}.id is required`);
+    if (!id) throw new NoteObjectError(422, `updates.${index}.id is required`);
     if (!Object.hasOwn(row, "parent_id") || (row.parent_id !== null && typeof row.parent_id !== "string")) {
-      throw new HttpError(422, `updates.${index}.parent_id must be a string or null`);
+      throw new NoteObjectError(422, `updates.${index}.parent_id must be a string or null`);
     }
     const parentId = optionalString(row.parent_id);
     if (typeof row.parent_id === "string" && !parentId) {
-      throw new HttpError(422, `updates.${index}.parent_id must not be empty`);
+      throw new NoteObjectError(422, `updates.${index}.parent_id must not be empty`);
     }
     validateTreeOrderPosition(ids, positions, id, `parent:${parentId ?? "root"}`, sortOrder, index);
     return { id, parentId, sortOrder: sortOrder as number };
@@ -102,14 +103,14 @@ export async function persistNotesTreeReorder(
 function parseReorderRows(body: Record<string, unknown>): Array<Record<string, unknown>> {
   const rawUpdates = body.updates;
   if (!Array.isArray(rawUpdates) || rawUpdates.length === 0) {
-    throw new HttpError(422, "updates must be a non-empty array");
+    throw new NoteObjectError(422, "updates must be a non-empty array");
   }
   if (rawUpdates.length > 500) {
-    throw new HttpError(422, "updates must contain at most 500 tree items");
+    throw new NoteObjectError(422, "updates must contain at most 500 tree items");
   }
   return rawUpdates.map((raw, index) => {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      throw new HttpError(422, `updates.${index} must be an object`);
+      throw new NoteObjectError(422, `updates.${index} must be an object`);
     }
     return raw as Record<string, unknown>;
   });
@@ -124,12 +125,12 @@ function validateTreeOrderPosition(
   index: number,
 ): void {
   if (!Number.isInteger(sortOrder) || (sortOrder as number) < 0) {
-    throw new HttpError(422, `updates.${index}.sort_order must be a non-negative integer`);
+    throw new NoteObjectError(422, `updates.${index}.sort_order must be a non-negative integer`);
   }
-  if (ids.has(id)) throw new HttpError(422, `updates contains duplicate entry ${id}`);
+  if (ids.has(id)) throw new NoteObjectError(422, `updates contains duplicate entry ${id}`);
   const position = `${parentKey}\u0000${sortOrder}`;
   if (positions.has(position)) {
-    throw new HttpError(422, `updates contains duplicate sort_order ${sortOrder} under the same parent`);
+    throw new NoteObjectError(422, `updates contains duplicate sort_order ${sortOrder} under the same parent`);
   }
   ids.add(id);
   positions.add(position);
@@ -252,7 +253,7 @@ async function reorderNoteItems(
       updates.map((update) => update.collectionId),
     ],
   );
-  if (occupied.rows.length > 0) throw new HttpError(409, "This note is already in that folder");
+  if (occupied.rows.length > 0) throw new NoteObjectError(409, "This note is already in that folder");
 
   const result = await db.query(
     `UPDATE note_collection_items AS item
@@ -272,7 +273,7 @@ async function reorderNoteItems(
     ],
   );
   if ((result.rowCount ?? 0) !== updates.length) {
-    throw new HttpError(409, "Note ordering changed concurrently; retry the reorder");
+    throw new NoteObjectError(409, "Note ordering changed concurrently; retry the reorder");
   }
   // A drag out of a Project's subtree is a removal of that entry; the last
   // one is refused here exactly as the explicit placement action refuses it.
@@ -310,7 +311,7 @@ async function reorderNoteCollections(
     const visited = new Set<string>();
     let currentId: string | null = collectionId;
     while (currentId) {
-      if (visited.has(currentId)) throw new HttpError(422, "Folder reorder would create a cycle");
+      if (visited.has(currentId)) throw new NoteObjectError(422, "Folder reorder would create a cycle");
       visited.add(currentId);
       const current = collectionById.get(currentId);
       if (!current) throw new HttpError(404, "Note collection not found");
@@ -329,7 +330,7 @@ async function reorderNoteCollections(
     const movableCollection = current.system_role === "project"
       || (current.system_role === "normal" && !current.is_system);
     if (!movableCollection && update.parentId !== current.parent_id) {
-      throw new HttpError(422, "System folders cannot be moved");
+      throw new NoteObjectError(422, "System folders cannot be moved");
     }
   }
 
@@ -337,7 +338,7 @@ async function reorderNoteCollections(
     const visited = new Set<string>([update.id]);
     let parentId = update.parentId;
     while (parentId) {
-      if (visited.has(parentId)) throw new HttpError(422, "Folder reorder would create a cycle");
+      if (visited.has(parentId)) throw new NoteObjectError(422, "Folder reorder would create a cycle");
       visited.add(parentId);
       const parent = collectionById.get(parentId);
       if (!parent) throw new HttpError(404, "Parent note collection not found");
@@ -356,7 +357,7 @@ async function reorderNoteCollections(
     const before = owningProject(update.id, false);
     const after = owningProject(update.id, true);
     if (before !== after) {
-      throw new HttpError(422, "Folders cannot be moved into or out of a Project notes workspace");
+      throw new NoteObjectError(422, "Folders cannot be moved into or out of a Project notes workspace");
     }
     if (after && !checkedProjects.has(after)) {
       await assertProjectWriter(db, identity.spaceId, after, identity.userId);
@@ -380,7 +381,7 @@ async function reorderNoteCollections(
     ],
   );
   if ((result.rowCount ?? 0) !== updates.length) {
-    throw new HttpError(409, "Folder ordering changed concurrently; retry the reorder");
+    throw new NoteObjectError(409, "Folder ordering changed concurrently; retry the reorder");
   }
   return updates.length;
 }

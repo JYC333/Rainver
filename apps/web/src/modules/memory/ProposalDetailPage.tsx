@@ -64,7 +64,8 @@ export default function ProposalDetailPage() {
   // Every pending proposal, as on the list: plan reviews, capability installs
   // and the rest are sent here to be decided, and a type the server cannot
   // apply yet is reported by `decide`.
-  const canDecide = p?.status === 'pending'
+  const patchBusy = Boolean(p?.code_patch_decision && ['pending','applying','compensating','compensation_failed'].includes(p.code_patch_decision.status))
+  const canDecide = p?.status === 'pending' && !patchBusy
   // A maintenance update waits for the person's revision before it can be accepted.
   const awaitingRevision = Boolean(p?.operator_revision && !p.operator_revision.edited_by_user_id)
 
@@ -76,7 +77,8 @@ export default function ProposalDetailPage() {
         const options = codePatchAcceptOptions(p)
         if (options === null) return
         const out: ProposalAcceptOut = await proposalsApi.accept(p.id, options)
-        if (out.result_type === 'memory_entry') {
+        if(out.result_type==='code_patch_pending'){toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));}
+        else if (out.result_type === 'memory_entry') {
           toast.success('Accepted — memory entry created.')
         } else if (out.result_type === 'code_patch_apply') {
           const n = out.result.updated_paths.length
@@ -162,6 +164,15 @@ export default function ProposalDetailPage() {
 
       {!loading && p && (
         <Card className="p-5 space-y-4">
+          {p.code_patch_decision && (
+            <div className="space-y-2 text-sm text-muted-foreground">
+              <p>{t(`mixed_surfaces.code_patch_${p.code_patch_decision.status}`)}</p>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={async () => setP(await proposalsApi.get(p.id))}>{t('mixed_surfaces.code_patch_refresh')}</Button>
+                <Button size="sm" variant="outline" asChild><Link to="/jobs">{t('mixed_surfaces.code_patch_jobs')}</Link></Button>
+              </div>
+            </div>
+          )}
           <div className="flex flex-wrap justify-between gap-3 items-start">
             <div>
               <h1 className="text-lg font-semibold tracking-tight">{proposalTitle(p.proposed_title, p.title_parts)}</h1>

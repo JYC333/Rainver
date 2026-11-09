@@ -6,7 +6,7 @@ import type { Proposal } from '../../../types/api'
 
 const mocked = vi.hoisted(() => ({ get: vi.fn(), accept: vi.fn(), memoryGet: vi.fn(), reviseProposal: vi.fn() }))
 
-vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({ activeSpaceId: 'space-1', activeSpaceName: 'Space One', userId: 'user-owner' }),
 }))
@@ -96,6 +96,22 @@ describe('ProposalDetailPage', () => {
     const link = await screen.findByRole('link', { name: 'Open in Evolution' })
     expect(link).toHaveAttribute('href', '/evolution?asset=asset-7')
     expect(mocked.accept).toHaveBeenCalledWith('proposal-1', expect.anything())
+  })
+
+  it('keeps queued file decisions pending, reads the receipt and offers the existing Job destination', async () => {
+    const pending = proposal({proposal_type:'code_patch'})
+    const decision = {id:'decision-1',proposal_id:pending.id,phase:'apply' as const,status:'pending' as const,job_id:'job-1',error:null}
+    mocked.get.mockResolvedValueOnce(pending).mockResolvedValue({...pending,code_patch_decision:decision})
+    mocked.accept.mockResolvedValue({proposal:pending,result_type:'code_patch_pending',result:decision})
+    renderPage()
+    fireEvent.click(await screen.findByRole('button',{name:'Accept'}))
+    expect(await screen.findByText('File execution is queued. The proposal remains pending.')).toBeInTheDocument()
+    expect(screen.queryByRole('button',{name:'Accept'})).not.toBeInTheDocument()
+    expect(screen.getByRole('link',{name:'Open Job Queue'})).toHaveAttribute('href','/jobs')
+    mocked.get.mockResolvedValue({...pending,status:'accepted',code_patch_decision:{...decision,status:'succeeded'}})
+    fireEvent.click(screen.getByRole('button',{name:'Refresh decision'}))
+    expect(await screen.findByText('File execution and the decision receipt are complete.')).toBeInTheDocument()
+    expect(mocked.accept).toHaveBeenCalledTimes(1)
   })
 
   it('lets a required content owner approve an egress review', async () => {

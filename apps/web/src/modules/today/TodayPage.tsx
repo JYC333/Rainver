@@ -359,7 +359,7 @@ export default function TodayPage() {
           : null
         const options = detail ? codePatchAcceptOptions(detail) : {}
         if (options === null) return
-        await proposalsApi.accept(proposal.id, options)
+        const out=await proposalsApi.accept(proposal.id,options);if(out.result_type==='code_patch_pending'){notifyReviewAttentionChanged();toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));await loadSummary();return;}
       } else {
         await proposalsApi.reject(proposal.id)
       }

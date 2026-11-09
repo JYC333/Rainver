@@ -40,7 +40,7 @@ export interface InsertProposalRowInput {
   title: string;
   summary?: string | null;
   payload: unknown;
-  rationale: string;
+  rationale: string | null;
   createdByUserId: string | null;
   ownerUserId?: string | null;
   visibility: string;

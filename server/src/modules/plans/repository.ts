@@ -762,13 +762,14 @@ export class PgPlanRepository {
         if (node.approval_proposal_id) continue;
         const proposalId = randomUUID();
         const now = new Date().toISOString();
-        await client.query(
-          `INSERT INTO proposals (id, space_id, proposal_type, status, risk_level, urgency, title, summary,
-             payload_json, created_at, updated_at, created_by_user_id, owner_user_id, project_id, project_folder_id)
-           VALUES ($1, $2, 'plan_checkpoint', 'pending', $3, 'normal', $4, $5, $6::jsonb, $7, $7, $8, $8, $9, $10)`,
-          [proposalId, identity.spaceId, node.risk_level, `Approve plan checkpoint: ${node.title}`,
-            "This Plan Node is an explicit approval checkpoint.", JSON.stringify({ plan_id: input.planId, plan_version_id: input.planVersionId, node_id: node.id }), now, identity.userId, input.projectId, input.projectFolderId],
-        );
+        await insertProposalRow(client,{
+          id:proposalId,spaceId:identity.spaceId,proposalType:'plan_checkpoint',status:'pending',
+          riskLevel:node.risk_level,title:`Approve plan checkpoint: ${node.title}`,
+          summary:'This Plan Node is an explicit approval checkpoint.',rationale:null,
+          payload:{plan_id:input.planId,plan_version_id:input.planVersionId,node_id:node.id},
+          createdAt:now,createdByUserId:identity.userId,ownerUserId:identity.userId,
+          projectId:input.projectId,projectFolderId:input.projectFolderId,visibility:'space_shared',
+        });
         await client.query(`UPDATE plan_nodes SET status = 'waiting_for_review', approval_proposal_id = $3, blocked_reason = $4, updated_at = $5 WHERE space_id = $1 AND id = $2`, [identity.spaceId, node.id, proposalId, "Approval checkpoint is pending", now]);
         scheduled.push(node.id);
         continue;

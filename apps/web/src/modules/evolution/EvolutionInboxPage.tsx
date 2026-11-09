@@ -114,9 +114,9 @@ export default function EvolutionInboxPage() {
             ? t('evolution.inbox_page.incomplete_patch_skipped', { count: skipped })
             : t('evolution.inbox_page.incomplete_patch_unknown')
           if (!window.confirm(message)) return
-          await proposalsApi.accept(proposalId, { confirmIncompletePatch: true })
+          const out=await proposalsApi.accept(proposalId,{confirmIncompletePatch:true});if(out.result_type==='code_patch_pending'){toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));await load();return;}
         } else {
-          await proposalsApi.accept(proposalId)
+          const out=await proposalsApi.accept(proposalId);if(out.result_type==='code_patch_pending'){toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));await load();return;}
         }
       } else await proposalsApi.reject(proposalId)
       notifyReviewAttentionChanged()

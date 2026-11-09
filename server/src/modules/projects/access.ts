@@ -217,6 +217,9 @@ export async function assertProjectWriterForMutation(
   }
 }
 
+/** Explicit active-Project mutation refusal; callers may classify this known condition. */
+export class ProjectArchivedMutationError extends HttpError {}
+
 export async function assertProjectWriter(
   db: Queryable,
   spaceId: string,
@@ -239,7 +242,7 @@ export async function assertProjectWriter(
     throw new HttpError(403, "Requires project writer, project owner, or space owner/admin role");
   }
   if (!options.allowArchived && exists.rows[0]?.status !== "active") {
-    throw new HttpError(409, "Project is archived; reactivate it before making changes");
+    throw new ProjectArchivedMutationError(409, "Project is archived; reactivate it before making changes");
   }
 }
 
@@ -260,7 +263,7 @@ export async function lockActiveProjectForMutation(
   );
   if (!project.rows[0]) throw new HttpError(404, "Project not found");
   if (project.rows[0].status !== "active") {
-    throw new HttpError(409, "Project is archived; reactivate it before making changes");
+    throw new ProjectArchivedMutationError(409, "Project is archived; reactivate it before making changes");
   }
 }
 

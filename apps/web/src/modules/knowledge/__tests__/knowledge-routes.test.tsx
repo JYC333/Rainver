@@ -888,7 +888,7 @@ describe('Knowledge routing', () => {
           title: 'Markdown note edited',
           content_format: 'prosemirror_json',
           content_schema_version: 1,
-        })),
+        }),expect.any(String)),
       { timeout: 2000 },
     )
     const payload = vi.mocked(notesApi.update).mock.calls[0][1]

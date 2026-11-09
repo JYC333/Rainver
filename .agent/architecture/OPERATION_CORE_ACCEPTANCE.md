@@ -776,6 +776,21 @@ list/detail and Project Sources consumer tests retain current behavior. No
 external scan IO, visual acceptance or independent-model review is claimed.
 
 
+## Note history/trash controls — implemented, independent review outstanding
+
+noteControlOperationsDb covers actual canonical rollback revisions/outbox and
+soft-delete timestamps, formal/generic key replay after later edits/restore,
+stale-version conflict caching, private/oversight/shared/summary/Project writer
+permissions, creator/membership revocation, foreign scope hiding and strict
+input. Concurrent same-key restore, owner change while waiting and Project
+writer downgrade are exercised with real PG locks. Revision/outbox/request/
+policy failure rolls back canonical state; required cross-person read-audit
+failure withholds results and rolls back. Derived-index failure is contained
+by the existing NoteWriter savepoint. UI API tests require one core command
+then an authorized body GET scoped to the receipt Space; parent Notes/history/
+trash consumers retain their behavior. No independent dual review or complete
+P5 checkpoint is claimed under the exhausted fixed collaboration budget.
+
 P5-2 Source continuation (basis fea06988): new Monitor creation closure is awaiting
 independent review alongside the five coordinator Source commits listed precisely
 in the P5 matrix. Real PG tests cover REST/generic replay/input conflict, same-key
@@ -813,3 +828,289 @@ user's Job id/identity is reused. The UI parent-to-existing-result journey is
 checked in real Chromium for en/zh-CN, light/dark, phone/desktop; review and tests
 are not interchangeable, and this uncommitted family is not called submitted.
 Original checkpoint2 DoD/remaining acceptance is audited in its original plan.
+
+## P5-4 standalone effects and final writer inventory (basis7594f2ec)
+
+Implementation is awaiting the coordinator's independent reviews; the checks
+below are Codex execution evidence, not reviewer-run evidence or task acceptance.
+The earlier standalone synchronous-effect exclusion is now replaced by a real
+frozen intent/required Job/receipt path. Evolution and standalone effects share
+one file implementation; canonical DB appliers remain singular. Both apply and
+explicit rollback perform IO outside DB transactions and finalize through the
+prepared checkpoint/cascade owner. The resulting file effect is recoverable,
+not atomically invisible to filesystem observers.
+
+| Original checkpoint4 requirement | Current implementation/evidence |
+|---|---|
+| All eight writer families and actual insertion sites | Canonical apply/cascade, definition/monitoring replacement, versioned Memory/import payload, Plan review/checkpoint, Run/root/nested/publication, Skill whole-package and Evolution owners remain prepared; the three raw Plan/Workflow/Candidate INSERT sites now use canonical insertion on the real owner port. Only reviewPackets inserts Proposal rows directly. |
+| Frozen payload and immutable old-key evidence | Versioned payload replacement/supersession ports remain unchanged. Standalone intent freezes payload/options/snapshot/target; drift refuses without IO. Old successful request result remains byte-for-byte unchanged after rollback/replay. |
+| Complete sorted keys before domain, multi-Run/root qualification | Existing purpose-bound owner, fresh registration and shared terminal/exclusive attachment fences reused. Real nested/Plan/Run/Job parent regressions pass; no late boolean readiness, new waiting gate or retry engine. |
+| Cascades, expiry, cleanup, atomic results | Selected real P1 tests cover sorted cascade keys, dependency growth, request rollback, expiry/retention and accepted-without-atomic-result refusal. No reconcile is substituted for same-transaction writes. |
+| Pure DB and mixed/standalone effects | Mixed Bundle17 + safe file12 tests pass; standalone14 tests cover actual Job, concurrent worker gate, linked final result rollback, required Job/audit failures, frozen drift, revoked authority before/after IO, exact recovery, orphan cleanup and independent-edit compensation refusal. |
+| Mandatory audit and required result/Job | Storage refusal leaves pending Proposal/request; failed transactional audits recover through the existing helper. If audit storage itself is unavailable, admission fails closed; no fabricated audit pass. |
+| Original permissions, B10 and consumers | Canonical Memory applier untouched. Existing approver/content/Room/risk/Folder gates are reused. Pending HTTP/typed consumers do not report applied files or advance a Room; personal receipt reads use existing Proposal authority and filter deciding user. |
+
+Technical qualification matrix (no production mapping enabled):
+
+| Candidate type/group | Writer/effect boundary | Enablement still requires |
+|---|---|---|
+| `project_brief_publish`, `project_information_monitoring_activation/details` | Prepared replacement/frozen/cascade owners and canonical DB appliers | Review of the actual proposed operation mapping/authority/input/precondition/result contract; no permission changes here |
+| `source_channel_activation`, `project_source_bind`, `source_backfill_start` | Canonical DB apply + existing transactional scheduler/Job intents; dependent requests included | Checkpoint5 Source consent/egress/activation semantics and a candidate-specific mapping review |
+| `plan_review` and nested Plan/Workflow checkpoints | Prepared outer graph/Run/Proposal owner and original required Jobs | Actual operation mapping and live requester/approval preconditions; no new Plan/Agent grant |
+| `knowledge_create` (Note/Inquiry promotion) | Canonical Candidate creation/applier and linked transition infrastructure | Checkpoint5 Note policy and checkpoint6/7 conversation/person semantics; Note draft excluded |
+| Memory/import revisions and Skill package/bindings | Canonical payload/version/provenance, B10, complete Skill sibling set and original human review | Candidate-specific mapping contract/authority evidence; no direct Memory or Skill review bypass |
+| `code_patch`, Evolution mixed members/rollback | Durable effect intents/Jobs and receipt-only canonical final DB writers | Independent review of this diff and future explicit mapping/operation contract; no current first-party grantable code-patch action exists |
+
+No known current writer/effect gap from the eight-family inventory is left as a
+permanent failclosed implementation substitute. This does not qualify arbitrary
+new plugin/contributor appliers or approve any mapping. P5-4 remains in progress
+until independent review and coordinator acceptance; subsequent checkpoints are
+not advanced by these internal edits. Formal inventory stays636=565/39/32,
+remaining550 after15 plugin paths; Note workspace projection548 is separate.
+
+Final verification for basis7594f2ec: server13 distinct files/188 selected tests
+passed across scoped runs (including final standalone14 and P1 approval37, with
+30 P1 tests intentionally not selected); Web5 files15 tests and protocol1 test
+passed. Node24 workspace dependencies, server/web types, server build including
+official plugins, web build and diff check passed. Real Chromium2 journeys passed
+(en/dark1280 and zh-CN/light390): actual Space-scoped Proposal list acceptance,
+detail pending/read/compensation/success receipt, existing Job link, no second
+accept. Four screenshots were generated; desktop pending and phone restoration
+were inspected for readable wrapping, reachable controls and theme consistency.
+Earlier browser attempts used the wrong unscoped route and timed out at Home;
+those fixture failures are not visual acceptance. No live API/online DB was used.
+
+P5-4 limited pre-submit review fixes (basis7594f2ec): standalone PG18,
+Evolution17, Plan20 and Candidate12 pass (4 files67). Coverage adds actual
+JobWorker definitive final policy/frozen refusal, repeated handler delivery with
+one external write/compensation, failed-A/active-B/retry-A concurrent409 without
+partial Jobs/state, and held Folder gate cleanup defer/attempt preservation and
+subsequent convergence. The existing independent-edit refusal remains passing.
+Policy refusal uses a real Project/Space authority downgrade; no durable DB,
+policy decision or audit writer is mocked. One failed final audit is restored
+under its original unique id and correlated to the worker decision. Earlier
+fixture attempts (default write_patch denial is overridden by the canonical
+approved-patch invariant) are not passes. The actual downgrade exercises the
+canonical proposal.apply policy refusal instead.
+
+The three converted INSERTs now retain their original NULL rationale (not new
+explanatory prose). Generated Plan/Workflow checkpoints remain space_shared and
+Candidate ownership/creator remain unchanged, with PG assertions at the real
+parent entry points. No schema or wire/UI change is part of these review fixes.
+Writer/effect DoD is implemented, pending coordinator acceptance; later permission
+and mapping decisions are not checkpoint4 engineering gaps. None is enabled.
+
+## P5-5 Note history/trash adoption (basis9d6613eb, awaiting independent review)
+
+Codex took over the coordinator's unreviewed draft; this is not a dual-review
+claim. The complete two-command history/trash subfamily shares core transactions
+across retained REST/generic/browser calls. Current content/write authority,
+Project writer locks and post-wait scope/ACL rechecks protect original and replay
+calls. Agent surface remains excluded, even for a real valid manual Run with
+explicit matching tool grants. Canonical body-free receipts cannot release old
+content after an authority change; browser rereads in their bound Space.
+
+New takeover fixes: canonical omitted/null expect_version fingerprint; canonical
+malformed JSON/primitive handling with request-id/no-store headers; B11 audit
+before historical whole-body release. Real PG tests cover conflicts/concurrency,
+foreign/private/summary access, membership/owner/Project revocation and reparent
+races, outbox/revision/request/policy/read-audit storage failures, derived-index
+savepoint containment and unknown422→internal/no terminal cache. Trash emits no
+new content revision, so its required atomic effects are status/request/policy;
+revision/outbox rollback coverage belongs to the restore writer, not an invented
+new trash event or external Job.
+
+Validation: server5 files63 pass (Note control28, canonical writer8, Project
+binding9, route inventory12, original object actions6), protocol2 files42 pass,
+Web3 files65 pass including Notes parent/editor and receipt-Space API calls.
+Node24 deps/server+web types and server build pass; no full-suite or visual
+acceptance claim (no presentation change). Two initial PG command patterns named
+nonexistent Project-binding files; they selected only controls/writer and are not
+claimed Project evidence. The final run used knowledgeNoteProjectBindingDb.
+An initial test incorrectly expected trash to emit a content-revision outbox;
+the real canonical contract was verified and retained instead of changed.
+
+Only two retained URLs are projected from legacy to core: working636=563/39/34,
+remaining548 after15 plugin paths; committed HEAD remains550. No internal/read
+fix decreases URL counts. P5-5 remains incomplete: other Note object/placement/
+collection/promotion and Source object/activation/consent closures remain distinct
+implementation work. The only current permission choice awaiting a person is
+Note linking; it does not block those independent engineering scopes. No production
+approval mapping, new Agent reach or public proposal.decide authority is enabled.
+
+## P5-5 ordinary Note object family (basis4cf62800, awaiting independent review)
+
+The ten retained Note create/edit/collection/placement/share-revoke/reorder URLs
+are thin core adapters; old business handlers are removed. Existing canonical
+writers and domain constraints remain singular. Root creation uses private
+Personal/Project-shared placement, children use their authorized collection
+context; a real granted manual Agent cannot borrow the new human entry. Source
+creation guard regressions pass after the bounded draft addition. Memory,
+canonical Knowledge promotion, consent/egress and public proposal.decide authority
+are unchanged, and no production approval mapping is enabled.
+
+Evidence includes REST/generic key replay, changed input, distinct-key version
+concurrency, actual row-wait overlap with history restore/placement/internal Agent
+ops, closure growth during folder deletion, Project-role transfer/rebind, current
+private/Project/Space authority, real membership-row revocation, hidden blockers,
+required B11 storage failure, new-root and edit root/extension/placement/revision/
+outbox/request/policy rollback, derived projection savepoint containment and
+unknown422 refusal without a cached request. Existing archive controls are not
+silently narrowed; the active-Project refusal is typed at its actual access-owner
+site, not by broadly matching HTTP409. Sharing decisions still require explicit
+confirmation; owning-entry actionable metadata is preserved.
+
+Route accounting: the exact regenerated working inventory is636=553 legacy/
+39 exempt/44 core, remaining538 after15 plugin routes. HEAD remains548 until
+commit. Exactly10 retained URLs migrate; internal lock/error/read fixes remove
+no URL. Statefully bootstrapped metadata GETs are retained with their current
+reader behavior and not falsely classified as readonly core queries.
+
+Final scoped validation for basis4cf62800: server11 files164 pass (new Note
+objects28; history/trash28; collections11; placements13; cross-Project shares16;
+writer8; Project binding9; Project roles7; role guard5; Source creation port27;
+route inventory12). Guide/boundary2 files13 pass separately. Protocol2 files43
+and Web3 files68 pass. Node24 workspace deps, server/web types, server including
+official plugin builds, web build and diff check pass. No full suite was run.
+Existing React act warnings, the Source fixture pg query deprecation warning and
+intentional derived-projection failure logs remain visible.
+
+Actual local Chromium2 journeys (en/dark1280, zh-CN/light390) exercise the Notes
+parent/editor, simulated lost command response, explicit Retry with the same
+key and no second write, changed snapshot/new key, and current body reload;
+English desktop also creates a collection and reads its current metadata. APIs
+are intercepted fixtures, not live backend/DB. No presentation redesign or visual
+appearance acceptance is claimed. Earlier missing-key/envelope legacy-test
+failures were corrected to the explicit canonical contract while retaining
+placement-state assertions; a cross-Project fixture was corrected to actually
+use a second Project, not a normal Space folder. Those failures are not passes.
+
+P5-5 Note ordinary review repair (still uncommitted on4cf62800): coordinator
+reports the main diff independently reviewed; this is the scoped P2/N2 repair,
+not another full-family review. Notes-kind reorder authorizes every input Note
+before/after waits. Visible owning-entry refusals remain actionable but are not
+cached; unreadable blockers return hidden404 with no title/id/count. Real PG
+covers visible refusal/one recovered failed policy decision, same-key REST and
+generic replay after privatization without Project membership changes, fresh-key
+hidden refusal, no request/domain/outbox/placement partial writes, and a forced
+root-row wait followed by privatization. Existing collection-delete shielding
+continues to pass. Project admission is aligned with canonical folder-delete and
+collection-order writers, with PG coverage for destination-only writer deleting
+a shared entry and nonwriter same-parent ordering without reparent authority.
+No new policy, Agent authority, link choice, schema or migrated URL is added.
+
+New repair verification: shared real PG6 files88 pass (objects32, placements13,
+collections11, cross-Project shares16, Project binding9, ordering7); guide/boundary
+2 files13 pass after documentation edits; Web API consumer1 file21 pass. Node24
+workspace-dependency build, server tsc --noEmit and diffcheck pass. Initial global
+instead-of-request audit selection and old key/envelope consumer assertions failed
+and were corrected; they are not passes. Intentional derived-projection failure
+logging remains. No full suite, schema, frontend presentation change or new visual
+acceptance claim; previous browser evidence is not represented as rerun here.
+
+## P5-5 passage promotion / evidence Source family (basis1d156dfd)
+
+Four retained commands are implemented, awaiting coordinator-owned independent
+review. Core owns explicit keys, strict DTOs, current authority, policy/audit and
+request outcome in the same transaction as the original domain writer. Promotion
+creates a pending canonical knowledge_create Proposal, never a Knowledge item or
+secondary approval. Minimal receipt/current Proposal GET preserves caller and
+reviewer separation. Existing approved provenance and KnowledgeCandidate pinned
+revision/revalidation tests are regression evidence, not migrated candidate URLs.
+Source create/update/archive are ordinary evidence objects, not managed Channels.
+Current Source body reads require B11 audit; no external work or required Job is
+claimed by this DB-only family. No mapping/Agent/link policy was enabled.
+
+Real PG covers REST/generic replay, changed input, same-key nonwaiting admission
+and explicit subsequent replay, independent-key Source edits, Personal private
+roots/default-null fingerprint, current private/foreign scope, actual Agent Run
+refusal, Project membership revocation while waiting, Note scope growth under
+root-row wait, pending payload/provenance/old receipt identity and Proposal/root/
+extension/request/mandatory audit rollback. Unknown helper422 remains internal.
+Full P5-5 remains incomplete; promotion/Source-link/candidate/activation/consent/
+egress/material boundaries are listed precisely in the owner and original plan.
+
+Scoped final evidence: knowledgeObjectOperationsDb19; existing notePromotionDb6,
+knowledgePromotionDb12, knowledgeNotePlacementDb13, noteObjectActions6 and route
+inventory12; guide/boundary13. Protocol operations21; Web API22 and parent editor
+mount11. Node24 workspace dependency builds, server/web noEmit types and diffcheck
+pass. Initial invalid private-owner fixture, incorrect expectation of waiting
+same-key admission, wrong test header and generic500 B11 audit refusal were fixed;
+those failures are not passing evidence. No full suite or actual browser/visual
+acceptance was run: this batch changes transport/result retrieval, not rendering.
+No required external Job exists here; invalid-material-attempt/external-worker
+failure tests are not falsely claimed as this family's new evidence.
+
+## P5-5 curated evidence and Candidate review (basis1d16069e)
+
+Nine retained commands are implemented for independent coordinator-scheduled
+review, not declared reviewed by local verification. Actual FK-backed evidence
+add/remove, three manual Candidate creation variants, decision/reopen and review
+packet open/close share canonical writers with their formal/generic entries.
+Typed Knowledge Review consumers fetch current Candidate/packet state after
+body-free receipts; no private proposed text or blocker metadata is cached.
+
+Real shared-PG evidence covers retained REST/generic replay, changed input,
+original unlink replay after a new association, distinct-key citation uniqueness,
+forced same-key decision admission before a root wait, distinct-key decision
+serialization, private/selected-user summary/full/revoked/oversight and real
+foreign Space/Agent refusal, scope growth, source soft deletion, packet/state
+transitions, converted Interpretation and Thread revision pins, Proposal/request/
+audit/result-store rollback with unique failed recovery, and B11 quote audit
+failure. A full-read source grantee may create the original owner's private
+Candidate without gaining review/read authority over it.
+
+Full-chain acceptance exposed and fixed copying a shared source owner's identity
+into a different submitter's new Knowledge payload. The canonical creator-owner
+invariant is preserved, source/Candidate authorship and provenance stay pinned,
+and actual ProposalApply role gates remain unchanged. Target Project admission
+now takes its existing aggregate update fence before root locks, eliminating a
+real shared-to-exclusive upgrade deadlock without retrying or accepting503.
+Current archive conflicts use the concrete archived owner error, not HTTP409
+classification. No new schema, external effect/required Job, Memory writer or
+approval mapping is introduced. Remaining checkpoint5 work stays explicit in
+the original plan; this is not whole-stage acceptance.
+
+Scoped evidence for this batch: new knowledgeReviewOperationsDb23 real-PG tests;
+existing knowledgePromotionDb12 (including legitimate Agent/selected-user audience
+and pinned revalidation), knowledgeGroup17, inventory12 and guide/boundary13 pass.
+Protocol operations22 and Web API/current Project review parent surface30 pass.
+Node24 dependency builds, Web noEmit types and diffcheck pass. Earlier server
+noEmit passed before parallel Host edits; the final workspace server check fails
+with8 errors in unrelated hosts/acpToolPresentation.ts, threadEventNormalization.ts
+and threadEventRepository.ts (ToolCallDetails export, unused summarizeToolOutput,
+missing MAX_TOOL_RESULT_SUMMARY_CHARS). Those parallel files are preserved; final
+workspace types are not reported as passing. No full suite
+or browser/visual acceptance was run; rendering is unchanged. The first cross-author
+acceptance failure and concurrent503 were actual defects repaired without relaxing
+those assertions. The grant fixture was corrected to selected_users (a private
+row does not grant access by adding a grant). Early unused-variable/root-package
+command failures are not passes. Required external Job failure is not claimed:
+these commands are DB-only and extraction-worker dispatch remains a separate entry.
+
+### Scoped review repair on1d16069e (no new family)
+
+Candidate source-dependent admission now applies only to creation/actual promote.
+Dismiss/defer/reopen retain original Candidate visibility/Project-writer/state
+rules even after source soft delete, purge or privatization. Evidence unlink
+retains original Knowledge-owner cleanup authority and exact link binding, without
+requiring source read/full access; add and both-endpoint B11 reads stay protected.
+Minimal old unlink receipts never delete a newly inserted relation. Supersession
+uses canonical create()'s original readable-reference predicate and shared root
+lock, without imposing full-body or extra Project authority. Packet clamp inputs
+normalize before fingerprint; follow-up browser ids are encoded.
+New real-PG cases use a reviewer who is not the source owner, include Thread
+sources, unchanged pinned history, original-key REST/generic success, current
+Project/Candidate refusal and missing/private-source promote refusal. No private
+body or new approval/request partial outcome is introduced. Previous parallel Host
+workspace errors are historical: current dependency build/server types rerun now
+passes after parallel work; no Host/schema0015 fix is part of this repair.
+
+New repair verification: shared-PG review file33 tests (10 added), original
+Knowledge promotion12, inventory12 and guide/boundary13: five server files70 pass.
+Web API25 plus Project review parent6:31 pass. Current Node24 dependency build,
+server and Web noEmit checks pass; prior eight Host type errors no longer reproduce
+in the current parallel workspace, and no Host/schema0015 repair was made here.
+The seven repair files pass scoped diffcheck. Global diffcheck still flags only
+parallel ConversationTurn.tsx:252 (new EOF blank line), preserved and not counted
+as a clean whole-workspace check. No full suite or new visual/browser claim.

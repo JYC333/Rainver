@@ -1098,17 +1098,9 @@ export const POLICY_ACTION_REGISTRY = [
     lifecycle_status: "wired_direct",
     record_failure_mode: "best_effort",
   },
-  // Both are `reserved`, not `wired_direct`. No code path evaluates either,
-  // so nothing is gated by them and no audit record carries their name.
-  //
-  // Do not mark them `wired_direct` to make the action auditable. They are
-  // not: the enforcement is the route's own
-  // Project ACL, and who did it is already on the domain row
-  // (`space_objects.created_by_user_id` for a Thread,
-  // `note_links.created_by_user_id` for a link), so a policy audit record
-  // would restate what the canonical row already says. They stay `reserved`:
-  // no code path evaluates them. The same holds for the other actions that
-  // carry `reserved`.
+  // Thread creation and human Note history/trash use their canonical direct
+  // writers. Navigational note links below remain reserved/default-denied;
+  // migrating independent Note controls does not relax their separate policy.
   {
     // Raising a passage of a note as a Question. Direct-write, matching
     // the Thread create route it calls. Thread structure stays a direct write.
@@ -1126,6 +1118,19 @@ export const POLICY_ACTION_REGISTRY = [
     current_enforcement_point: "server/src/modules/inquiry/threadCreationOperations.ts; server/src/modules/systemActions/systemActionDispatcher.ts for Agent create_thread",
     description:
       "Open an Inquiry Thread in a Project the actor can write to. Allowed when a person asked for it in the turn; an autonomous origin requires approval, because a question nobody asked for is a commitment made on the Project's behalf. Bounded per turn, and every Thread an Agent opens is archivable from the Project's updates.",
+    lifecycle_status: "wired_direct",
+    record_failure_mode: "fail_closed",
+  },
+  {
+    action: "note.edit",
+    resource_type: "note",
+    default_risk_level: "low",
+    default_decision: "allow",
+    audit_required: true,
+    approval_capability: null,
+    default_required_approver_role: null,
+    current_enforcement_point: "server/src/modules/knowledge/noteObjectOperations.ts; noteControlOperations.ts",
+    description: "Human Note draft/edit, collection/placement and history/trash controls with canonical read/write and Project authority. No new Agent, Memory/Wiki promotion, Note linking or hard-delete permission.",
     lifecycle_status: "wired_direct",
     record_failure_mode: "fail_closed",
   },

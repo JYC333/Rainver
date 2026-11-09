@@ -5,6 +5,15 @@ type TranslateShape<T> = { [K in keyof T]: T[K] extends string ? string : Transl
 /** UI copy for SecurityPage and conversation action surfaces. */
 export const mixedSurfacesZhCN = {
   mixed_surfaces: {
+    code_patch_pending: '文件执行已排队，提案仍待处理。',
+    code_patch_applying: '文件执行进行中，提案仍待处理。',
+    code_patch_succeeded: '文件执行和决定回执已完成。',
+    code_patch_failed: '决定未完成；已准备的文件变更已恢复。请先查看任务队列，再明确重试。',
+    code_patch_compensating: '决定未完成，文件恢复已排队或正在进行。',
+    code_patch_compensation_failed: '文件恢复需要处理。请查看任务队列并解决文件问题后再继续。',
+    code_patch_refresh: '刷新决定',
+    code_patch_jobs: '打开任务队列',
+    code_patch_queued: '代码补丁决定已记录，文件操作已入队；请在任务队列查看结果后继续。',
     security: {
       load_failed: '安全信息暂时无法加载。',
       verification_expired: '验证已过期，请重新验证后继续。',

@@ -1,3 +1,4 @@
+import {insertProposalRow} from '../proposals/reviewPackets.js';
 import {researchGraphRunRefs,withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
@@ -327,12 +328,7 @@ export class WorkflowExecutionService {
         if (node.approval_proposal_id) continue;
         const proposalId = randomUUID();
         const now = new Date().toISOString();
-        await input.db.query(
-          `INSERT INTO proposals (id, space_id, proposal_type, status, risk_level, urgency, title, summary,
-             payload_json, created_at, updated_at, created_by_user_id, owner_user_id, project_id, project_folder_id)
-           VALUES ($1, $2, 'workflow_execution_checkpoint', 'pending', 'medium', 'normal', $3, $4, $5::jsonb, $6, $6, $7, $7, $8, $9)`,
-          [proposalId, input.identity.spaceId, `Approve workflow checkpoint: ${node.title}`, "This fixed Workflow Execution is paused at an explicit approval checkpoint.", JSON.stringify({ workflow_execution_id: context.executionId, node_id: node.id, automation_id: input.automation.id }), now, input.identity.userId, input.automation.project_id, input.automation.project_folder_id],
-        );
+        await insertProposalRow(input.db,{id:proposalId,spaceId:input.identity.spaceId,proposalType:'workflow_execution_checkpoint',status:'pending',riskLevel:'medium',urgency:'normal',title:`Approve workflow checkpoint: ${node.title}`,summary:'This fixed Workflow Execution is paused at an explicit approval checkpoint.',payload:{workflow_execution_id:context.executionId,node_id:node.id,automation_id:input.automation.id},rationale:null,createdAt:now,createdByUserId:input.identity.userId,ownerUserId:input.identity.userId,projectId:input.automation.project_id,projectFolderId:input.automation.project_folder_id,visibility:'space_shared'});
         await input.db.query(`UPDATE workflow_execution_nodes SET status = 'waiting_for_review', approval_proposal_id = $3, blocked_reason = $4, updated_at = $5 WHERE id = $1 AND space_id = $2`, [node.id, input.identity.spaceId, proposalId, "Approval checkpoint is pending", now]);
         scheduled.push(node.id);
         continue;

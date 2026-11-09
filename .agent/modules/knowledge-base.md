@@ -836,3 +836,228 @@ independent producer uniqueness remain supported. Receipt replay rechecks
 both current Project authority and Note/Thread reach. No Wiki approval, Agent
 permission or plain `note_links` policy is changed. The latter's reserved-deny
 versus existing UI conflict remains a separate recorded human decision.
+
+
+### Core human history/trash controls
+
+Human restore and soft-delete enter knowledge.note.rollback/delete through
+keyed core adapters and the canonical Note repository/writer. note.edit is
+wired/audited for these existing human controls only; it grants no Agent,
+Wiki/Memory promotion, plain Note-link or purge capability. The separate
+note.link.create reserved-deny discrepancy is unchanged and awaits its recorded
+choice. Source Note creation/editing/placement interfaces remain separate.
+
+Project writer authority is pinned before a Note root lock; canonical current
+read/write authority is rechecked afterwards. No folder/placement mutation is
+introduced. Version conflict stays409. Revisions/outbox, root/extension,
+mandatory B11 read audit, policy and original receipt commit atomically; the
+derived index keeps its existing savepoint-based failure recovery. Core stores
+only id/Space/version, never a body snapshot. Browser restore/trash reads the
+current authorized Note in its actual Space after the command; original-key
+replay cannot repeat a restore or delete a Note someone subsequently restored.
+
+### P5-5 adopted Note history/trash family (basis9d6613eb)
+
+The previously unreviewed rollback/delete draft is now a Codex-owned review
+scope: two user-only commands, one canonical repository/NoteWriteScope, retained
+REST adapters, generic core and typed browser receipt-to-current-GET consumer.
+Receipts contain only id/Space/version; content is reread with current authority
+in the receipt Space. Optional expect_version normalizes to null before key
+fingerprinting, so omitted/null replay the same result. Unknown writer errors
+are not a business-error whitelist or a cached terminal request.
+
+History releases whole bodies and now uses the same registered space_object
+B11 audit as Note detail, after full-content read authorization and before
+returning revisions. Audit storage failure withholds history. Root owner reads
+retain the existing no-log exemption. Restore uses the canonical version writer,
+revision/outbox transaction and private derived-index savepoint. Trash retains
+the existing metadata/status lifecycle: it creates no synthetic content revision
+or revision-created outbox event. Neither command has a required external Job.
+
+This scope does not migrate create/edit/placement/promotion/collection/jot or
+change Note links. Link's reserved/default-deny registry versus existing human
+REST/editor policy choice remains unresolved; existing link behavior is retained.
+Memory/Wiki promotion still requires its canonical proposal/provenance path.
+
+### Ordinary Note objects, collections and placement (basis4cf62800)
+
+Ten human-only core commands now replace the retained create/edit/collection/
+placement/tree handlers: knowledge.note.create/update, knowledge.collection.
+create/update/delete/ensure_project, knowledge.note.placement.add/remove,
+knowledge.note.share.revoke and knowledge.note.tree.reorder. They dispatch to
+existing PgKnowledgeRepository/NoteWriteScope/placement/reorder writers, not a
+second implementation. Link/jot/promotion/purge and stateful GET initialization
+are not registered by this family. Existing read APIs remain canonical current
+readers, including Project filtering of collection metadata and B11 Note bodies.
+
+New root drafts use the access-owned private Personal/Project-shared context.
+An explicit existing collection is instead a child context in the authenticated
+request Space: its current authorized Project is inherited, explicit mismatch
+conflicts, and no global id-to-Space lookup or arbitrary actor callback exists.
+The creation flag remains a public-only/ungrantable manual draft; no durable
+creation exception was widened and no Agent action was enabled. The original
+Source creation guard is regression-tested after this purpose-bound addition.
+
+Admission discovers only addressed ancestors/children, affected placements and
+role holders (including a new Project's occupied role). It takes any existing
+append-order gate before domain rows, then sorted Project authority, folder rows,
+Note roots and existing share/placement writers. The same closure is rechecked
+after waits; growth or reparenting conflicts rather than taking late Project/
+Note locks. All content writers, including legal internal Agent ops, now lock
+root before extension to avoid inversion with core placement admission. Old
+version conflicts and internal ops conflict-append behavior are retained.
+
+Note receipts are body-free id/Space/version plus an empty Project-reference
+list; typed clients reread the current authorized body in the receipt Space.
+Collection receipts contain identity, deletion state and only necessary authority
+references; metadata is reread through the existing filtered collection list.
+Explicitly sharing a cross-Project placement still requires human confirmation;
+revocation is controlled by the owning Project and does not require continued
+writer rights in the destination. An existing Project collection may still be
+ensured by a viewer without granting creation rights. Existing archived-Project
+Note metadata/history controls remain allowed; active-Project requirements of
+new folders/drafts are preserved with a concrete typed archived refusal.
+
+Only explicit owning validation errors/known collection primary-key collision
+are business-classified; arbitrary helper HTTP422/409 is not an allowlist.
+Owning-entry and sharing refusals retain safe decision codes/actions. A hidden
+Note blocking folder deletion gives hidden404 without metadata. Because a
+folder blocker is not an input target, its visible structured refusal is not
+cached under a key after the blocker's read authority could change.
+
+Editor autosave still serializes saves and does not automatically retry writes.
+An unresolved save keeps its input fingerprint/key for explicit Retry; a changed
+snapshot/version uses a new key. A saved receipt followed by failed GET can be
+retried without a second mutation. Canonical root/extension/revision/placement/
+outbox, required B11 read audit, policy and request remain one core transaction;
+projection failures stay behind the existing private savepoint. There is no
+external IO/required external Job or new schema in these ordinary commands.
+
+### Ordinary Note review repair: current reorder blockers and original authority
+
+Notes-kind reorder admission now rechecks each explicitly addressed Note's
+canonical write authority before and after row waits, including receipt replay.
+It does not require every Note beneath a reordered folder to be writable.
+Owning-entry blockers from reorder and collection deletion share the existing
+current-read shield: unreadable candidates give hidden404 without identity,
+title or count. Visible refusals retain their fixed actionable message and
+original dialog metadata, but use noncacheable OperationError so the entire
+transaction rolls back; there is no sensitive failed receipt to replay after
+privatization. Mandatory failed-policy recovery remains the existing core path.
+
+Project locks follow original writer authority, not all discovered references.
+`repository.deleteNoteCollection`/`updateNoteCollection` require the folder's own
+Project writer; a shared Note's other owning Project is not an extra requirement.
+`notesTreeReorder.reorderNoteItems` still requires writable addressed Notes and
+source/destination Project writers through `assertNoteCollectionProjectWriter`
+and `bindNoteToPlacementProject`. Its collection variant checks Project writer
+only for reparenting, not same-parent ordering. Admission preserves that existing
+ordering permission; it adds no content read or reparent permission. Role-holder
+and blocker roots remain in the bounded locked/rechecked closure without turning
+all discovered objects into new write-authorization requirements.
+
+### P5-5 passage promotion and evidence Source objects (basis1d156dfd)
+
+`note.promote_to_knowledge` and `knowledge.source.create/update/archive` are
+human-only core commands with four retained REST adapters. Typed Note promotion
+uses the same command, then rereads the current Proposal in the receipt Space.
+The existing selection toolbar still says promotion was proposed for review.
+HTTP202 with a succeeded command receipt means the pending Proposal was created,
+not that Knowledge exists. Policy is `proposal.create` for this submission;
+`knowledge.create` remains the accepted canonical applier's policy. No operation
+approval mapping or second approval of proposal creation is introduced. Proposal
+id/Space receipts contain no passage/title/body; old keys retain old evidence,
+even when the original draft is superseded. New intentions use new keys.
+
+Promotion retains the existing repository/proposeCreate/insertProposalRow writer,
+profile compiler, user attribution, selected passage and Note-version provenance.
+It does not copy approval, move Note content, or directly create Knowledge/Memory.
+Current full Note read excludes oversight; sorted current/target Project read
+locks precede the Note root, and scope drift after waits conflicts. Actual
+proposal decision/applier permissions are unchanged. Only the profile compiler's
+concrete validation exception is business-classified; unknown helper422 remains
+internal and uncached.
+
+Evidence Source means the `sources` extension of `space_objects`, not managed
+`source_connections`/Channels/activation. Its existing create/update/archive
+writer, statuses, creator, metadata/body fields and safe projection savepoint
+remain singular. Root creation uses access-owned private Personal/Project-shared
+placement; update/archive use actual current Project writer and object write
+access. Optional creation null/default fields normalize under one fingerprint;
+update omission still retains a field and explicit null clears it. Separate keys
+remain separate creation intentions, not a new domain dedup rule. Current Source
+detail reads now require the existing B11 detail-read audit before releasing body.
+There is no worker/external IO/required Job in these four DB-only commands.
+
+Not migrated here: curated Knowledge-item Source-link add/remove, modern
+KnowledgeCandidate promotion entry, managed activation/consent/egress/material
+submission controls, Note link/jot or sensitive purge. Existing candidate and
+accepted applier workflows remain regression consumers, not newly migrated URLs.
+
+### P5-5 curated evidence and modern Candidate review (basis1d16069e)
+
+Nine human-only core commands replace the retained evidence add/remove, Candidate
+from-note/from-thread/from-interpretation, decision/reopen and review-packet
+open/close handlers. They reuse PgKnowledgeRepository and
+KnowledgePromotionCandidateService, including original profile/state checks,
+pinned revisions, private-source ownership, packet membership, canonical Proposal
+insertion and accepted applier. Existing Agent atomic Thread-to-Proposal service
+calls and their attribution/audience/idempotency stay unchanged; these new public
+commands expose no Agent tool or grant and enable no approval mapping.
+
+Curated evidence still points only to `sources` via knowledge_item_sources; a Note
+carrier is refused and no FK is widened (B12A). Knowledge owner, not a Space admin
+or merely a Project writer, controls mutations. Add requires current full personal read of both endpoints, excluding oversight;
+full Source grantees need not own/write the Source. Unlink only requires current
+Knowledge-owner authority and the exact link binding: an unreadable or deleted
+Source cannot prevent removal of a stale citation. It returns no Source identity
+or quote. Add still checks Source/root deletion and current grants on replay.
+The existing unique citation constraint remains domain uniqueness across distinct
+request keys. Unlink receipts identify only the old link/item/Space: replay does
+not remove a new relation with a different id. Quote/locator/note lists preserve
+summary redaction, omit deleted endpoints and require B11 audits of both full
+endpoints before releasing content.
+
+Candidate mutations require the original active Project writer role. Creation/promotion discovery freezes required source/target roots and private
+Candidate ownership before waits. Dismiss/defer/reopen depend on the Candidate
+and Project, not on a source that may have been removed or made private. Sorted
+Project fences precede sorted root locks and Candidate/domain writes; the target
+Project's existing aggregate FOR UPDATE fence is taken before any FOR SHARE
+admission lock can be upgraded. Closure growth conflicts without late locks.
+Known Candidate states and the actual archived-Project owner exception are typed;
+unknown helper HTTP422/409 is not a business allowlist.
+
+Only id/Space/Project/item identity is cached. Candidate decisions reread current
+Candidate content; packet consumers reread a purpose-bound packet GET that checks
+the original opened-by owner and current Project/Candidate read gates. A full-read
+source grantee may still create a private Candidate owned by its source owner:
+the body-free creation receipt proves the caller's insertion, not a new right to
+read/decide that private Candidate. Current source access controls creation replay.
+
+Promote submits the original pending knowledge_create/update Proposal, not an
+accepted item or a second approval. A real full-chain test found/fixed shared
+Candidate submission by a different Project writer: a new Knowledge payload's
+owner must follow the submitting human, matching the canonical proposal creator
+constraint; it must not copy a different source author's owner id. Candidate/source
+ownership and pinned provenance remain unchanged. Private-source cases keep their
+existing owner gate. Updates keep their existing target-owner applier checks.
+The canonical approver is still determined by ProposalApplyService's effective
+Space/project-owner-level role, not by assuming every submitter or Project writer
+may accept. A member submitter cannot accept; an authorized owner can accept after
+that submitter loses writer rights. No new per-Project approver rule is invented.
+
+Candidate extraction enqueue/worker execution, managed Source activation/consent/
+egress/material attempts, Note links and jot are not migrated by these commands.
+There is no external IO, required external Job or new schema in this DB-only family.
+
+Scoped review repair: supersession references retain canonical create()'s exact
+contentReadSql rule (readable summary/oversight included), not a full-body gate.
+Their roots use FOR SHARE; no extra Project-writer/read requirement is inferred
+from a reference-only target. Actual new sources still use full/no-oversight and
+existing root/aggregate order. Cleanup does not read source bodies or grant new
+Candidate visibility. Both initial cleanup and replay recheck Candidate ACL and
+Project writer; promotion remains refused for missing/private sources.
+Packet.open normalizes its existing service clamp1..20 before fingerprinting;
+omission still defaults10. Current Candidate/packet GET paths encode both Project
+and resource ids. Packet rereads remain bounded to the original reader semantics;
+no query optimization or knowledge_update ownership change is added here.

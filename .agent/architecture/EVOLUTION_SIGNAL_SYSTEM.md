@@ -190,3 +190,11 @@ rows. Historical labels and references remain readable only as archive data;
 constraints prevent them from becoming active, and API create/update accepts
 only supported target types. No retired target becomes a Skill. The Skill
 library's own review/binding proposal path remains separate from Evolution.
+
+Standalone Proposal accept/rollback now share the same purpose-specific
+`projectFolders/codePatchEffects` implementation with the mixed Bundle worker.
+Its optional internal restore/remove operations do not expand the public patch
+schema. Bundle member ordering, frozen hashes, current decision authority,
+conditional compensation, bounded cleanup and the single final member/request
+transaction remain unchanged. There is still no transaction across filesystem
+visibility and PostgreSQL, nor a second member business applier.

@@ -1,3 +1,7 @@
+import {KnowledgeProfileValidationError} from './knowledgeObjectErrors.js';
+import {NoteObjectError} from './noteObjectErrors.js';
+import {assertProjectWriterForMutation} from '../projects/access.js';
+import {NoteMutationConflict} from './noteControlErrors.js';
 import { PgOntologyRepository } from "../ontology/repository.js";
 import { assertEvidenceableObjectType } from "../ontology/validation.js";
 import { hasDeclaration } from "../ontology/linkTypes.js";
@@ -45,7 +49,7 @@ import { assertWritableSpaceObject } from "./knowledgeWriteAccess.js";
 import { contentAccessLevelSql, contentReadSql, contentVisibilityParamFilterSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
-import { recordDetailRead } from "../contentAccess/audit.js";
+import { ContentAccessAuditService, recordDetailRead } from "../contentAccess/audit.js";
 import { proposalToOut } from "../proposals/repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import type { ProposalOut } from "@rainver/protocol";
@@ -849,6 +853,10 @@ export class PgKnowledgeRepository {
 
   async getSource(identity: SpaceUserIdentity, sourceId: string): Promise<Record<string, unknown> | null> {
     const row = await this.getSourceRow(identity, sourceId);
+    if (row) {
+      try { await recordDetailRead(this.db,{spaceId:identity.spaceId,viewerUserId:identity.userId,resourceType:"space_object",resourceId:sourceId}); }
+      catch { throw new HttpError(503,"Content audit unavailable"); }
+    }
     return row ? sourceOut(row) : null;
   }
 
@@ -1200,30 +1208,30 @@ export class PgKnowledgeRepository {
       await assertProjectWriter(this.db, identity.spaceId, currentProjectId, identity.userId);
     }
     if (current.is_system && Object.hasOwn(body, "system_role")) {
-      throw new HttpError(422, "system_role cannot be changed");
+      throw new NoteObjectError(422, "system_role cannot be changed");
     }
     // System folders (Inbox/Archive/each project's notes folder) are exempt
     // from client-side drag affordances via isProtectedCollection(), but that
     // is UI-only — enforce it here too so the invariant holds regardless of
     // caller.
     if (current.is_system && Object.hasOwn(body, "parent_id") && optionalString(body.parent_id) !== current.parent_id) {
-      throw new HttpError(422, "System folders cannot be moved");
+      throw new NoteObjectError(422, "System folders cannot be moved");
     }
     const parentId = Object.hasOwn(body, "parent_id")
       ? optionalString(body.parent_id)
       : current.parent_id;
-    if (parentId === collectionId) throw new HttpError(422, "parent_id cannot reference the same collection");
+    if (parentId === collectionId) throw new NoteObjectError(422, "parent_id cannot reference the same collection");
     if (parentId) await this.requireNoteCollection(identity, parentId);
     // Nothing in the database stops a cycle, and a folder in one has no path
     // to the root: every note below it disappears from the tree.
     if (parentId && await this.isDescendantNoteCollection(identity.spaceId, parentId, collectionId)) {
-      throw new HttpError(422, "parent_id cannot reference a descendant of the collection");
+      throw new NoteObjectError(422, "parent_id cannot reference a descendant of the collection");
     }
     if (parentId !== current.parent_id) {
       const nextProjectId = current.project_id
         ?? (parentId ? await projectOwningCollection(this.db, identity.spaceId, parentId) : null);
       if (currentProjectId !== nextProjectId) {
-        throw new HttpError(422, "Folders cannot be moved into or out of a Project notes workspace");
+        throw new NoteObjectError(422, "Folders cannot be moved into or out of a Project notes workspace");
       }
     }
 
@@ -1292,7 +1300,7 @@ export class PgKnowledgeRepository {
     if (projectId) {
       await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     }
-    if (current.is_system) throw new HttpError(422, "System note collections cannot be deleted");
+    if (current.is_system) throw new NoteObjectError(422, "System note collections cannot be deleted");
     // Folder rows before note rows (`notePlacementInvariant`): the folder and
     // the subfolders this moves, so a reorder or placement holding them
     // waits here rather than after this has taken the notes it needs.
@@ -1364,7 +1372,7 @@ export class PgKnowledgeRepository {
     await this.requireWritableNote(identity, noteId);
     const now = new Date().toISOString();
     const status = optionalString(body.status);
-    if (status && !NOTE_STATUSES.has(status)) throw new HttpError(422, "invalid note status");
+    if (status && !NOTE_STATUSES.has(status)) throw new NoteObjectError(422, "invalid note status");
     // Binding a note to a Project is a write to that Project — see the note
     // writer. Checked here rather than inside the update statement because the
     // whole request has to be refused before any of it lands.
@@ -1483,7 +1491,7 @@ export class PgKnowledgeRepository {
         userId: identity.userId,
       });
       if (result.outcome === "version_conflict") {
-        throw new HttpError(409, "Note changed since it was loaded; reload and retry", { current_version: result.currentVersion });
+        throw new NoteObjectError(409, "Note changed since it was loaded; reload and retry", { current_version: result.currentVersion });
       }
     }
     if (collectionId) {
@@ -1685,7 +1693,20 @@ export class PgKnowledgeRepository {
     // Every revision is a whole body, so a summary-level reader gets the
     // note's summary and not its history.
     if (!note || bodyWithheld(note.effective_access_level)) throw new HttpError(404, "Note not found");
+    // Revisions release whole bodies just like the detail reader. Audit the
+    // registered root before releasing any historical content (B11).
+    await recordDetailRead(this.db,{spaceId:identity.spaceId,viewerUserId:identity.userId,resourceType:'space_object',resourceId:noteId});
     return listNoteRevisionRows(this.db, { spaceId: identity.spaceId, noteId, limit });
+  }
+
+  /** History/trash control admission: Project authority precedes the note lock.
+   * These controls do not take folder locks or change placement. */
+  async authorizeNoteControl(identity: SpaceUserIdentity, noteId: string): Promise<void> {
+    const before=await this.requireWritableNote(identity,noteId);
+    if(before.primary_project_id)await assertProjectWriterForMutation(this.db,identity.spaceId,before.primary_project_id,identity.userId);
+    await this.db.query("SELECT id FROM space_objects WHERE id=$1 AND space_id=$2 AND object_type='note' FOR UPDATE",[noteId,identity.spaceId]);
+    const current=await this.requireWritableNote(identity,noteId);
+    if(current.primary_project_id!==before.primary_project_id)throw new NoteMutationConflict('Note Project changed during admission');
   }
 
   async rollbackNote(
@@ -2336,7 +2357,7 @@ export class PgKnowledgeRepository {
       warnings: result.enforcement === "strict" ? [] : result.errors,
     };
     if (result.enforcement === "strict" && result.errors.length > 0) {
-      throw new HttpError(422, `object_profile_fields invalid: ${result.errors.join("; ")}`);
+      throw new KnowledgeProfileValidationError(`object_profile_fields invalid: ${result.errors.join("; ")}`);
     }
     return { fields, validation };
   }
@@ -2514,11 +2535,15 @@ export class PgKnowledgeRepository {
          JOIN space_objects item_object ON item_object.id = link.knowledge_item_id AND item_object.space_id = link.space_id
          JOIN space_objects source_object ON source_object.id = link.source_id AND source_object.space_id = link.space_id
         WHERE link.${column} = $1 AND link.space_id = $2
+          AND item_object.deleted_at IS NULL AND source_object.deleted_at IS NULL
           AND ${contentReadSql("space_object", "item_object", "$3")}
           AND ${contentReadSql("space_object", "source_object", "$3")}
         ORDER BY link.created_at DESC, link.id DESC`,
       [value, identity.spaceId, identity.userId],
     );
+    const full=rows.rows.filter(row=>row.effective_access_level==='full');
+    try { await new ContentAccessAuditService(this.db).recordReads({spaceId:identity.spaceId,resourceType:'space_object',resourceIds:[...new Set(full.flatMap(row=>[String(row.knowledge_item_id),String(row.source_id)]))],viewerUserId:identity.userId,accessType:'detail'}); }
+    catch { throw new HttpError(503,'Content audit unavailable'); }
     return rows.rows.map(({ effective_access_level, ...row }) => normalizeDates(
       bodyWithheld(effective_access_level) ? { ...row, locator: null, quote: null, note: null } : row,
     ));

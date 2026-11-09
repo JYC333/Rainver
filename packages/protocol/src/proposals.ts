@@ -26,6 +26,9 @@ export const ProposalTitlePartsSchema = z
   .strict();
 export type ProposalTitleParts = z.infer<typeof ProposalTitlePartsSchema>;
 
+export const CodePatchDecisionReceiptSchema=z.object({id:z.string(),proposal_id:z.string(),phase:z.enum(['apply','rollback']),status:z.enum(['pending','applying','succeeded','failed','compensating','compensation_failed']),job_id:z.string().nullable(),error:z.string().nullable()}).strict();
+export type CodePatchDecisionReceipt=z.infer<typeof CodePatchDecisionReceiptSchema>;
+
 export const ProposalOutSchema = z
   .object({
     id: IdSchema,
@@ -82,6 +85,7 @@ export const ProposalOutSchema = z
       .strict()
       .optional(),
     incomplete_patch: z.boolean().optional(),
+    code_patch_decision: CodePatchDecisionReceiptSchema.optional(),
     skipped_changes: z.array(JsonObjectSchema).optional(),
     skipped_count: z.number().int().nonnegative().optional(),
     ...SecretResponseGuards,
@@ -104,6 +108,7 @@ export const ProposalAcceptResultTypeSchema = z.enum([
   "operation_failure",
   "memory_entry",
   "code_patch_apply",
+  "code_patch_pending",
   "egress_review",
   "follow_up_task",
   "agent_version",
@@ -168,6 +173,7 @@ const ProposalAcceptBaseShape = {
 };
 
 export const ProposalAcceptOutSchema = z.union([
+  z.object({...ProposalAcceptBaseShape,result_type:z.literal("code_patch_pending"),result:CodePatchDecisionReceiptSchema}).passthrough(),
   z
     .object({
       ...ProposalAcceptBaseShape,
@@ -189,6 +195,7 @@ export const ProposalAcceptOutSchema = z.union([
       // union whose fallback also accepts their literals narrows to nothing.
       result_type: ProposalAcceptResultTypeSchema.exclude([
         "code_patch_apply",
+        "code_patch_pending",
         "retrieval_maintenance_packet",
         "claim_candidate_packet",
       ]),

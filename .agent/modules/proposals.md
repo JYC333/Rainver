@@ -278,3 +278,21 @@ prepared owners join the real transaction and recover only after rollback/releas
 Bundle transaction Pools must expose `options.connectionString` for canonical
 audit recovery; missing configuration fails before writes. No production approval
 mapping or public proposal.decide expansion is enabled by writer closure alone.
+
+P5-4 standalone file decisions now enter the same durable effect protocol as
+Evolution: `projectFolders/codePatchDecision` owns a required Job and frozen intent;
+`codePatchEffects` owns outside-transaction IO; `acceptInTransaction` remains the
+canonical final applier. No synchronous IO fallback exists in that applier or in
+explicit rollback. Pending is not accepted; only the real final result/receipt
+can terminalize a linked request. Original-key historical results are immutable,
+including after explicit rollback. A changed frozen Proposal must be reread and
+decided as its own revision, never substituted into the old intent.
+
+The remaining raw creation sites in Plan checkpoint scheduling, Workflow checkpoint
+scheduling and Knowledge Candidate promotion now use `insertProposalRow` on their
+existing transaction port. Field ownership, audience, approval role, scheduling
+and Candidate provenance are retained; fresh Proposal registration joins the exact
+prepared owner lifetime. SQL status/payload mutation sites remain the canonical
+apply/cascade, payloadRevision, definition/monitoring replacement, Skill set,
+Plan review, Run terminal/publication and P1 hook owners. No independent direct
+Memory writer or new public decision authority is introduced.

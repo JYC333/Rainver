@@ -215,17 +215,17 @@ describe("note placements (real Postgres)", () => {
     const also = await repository.createNote(identity, { title: "Also elsewhere", collection_id: doomed.id }) as { id: string };
     await repository.addNotePlacement(identity, also.id, elsewhere);
 
-    const deleteDoomed = () => app!.inject({ method: "DELETE", url: `/api/v1/notes/collections/${doomed.id}` });
+    const deleteDoomed = () => app!.inject({ method: "DELETE", headers:{"idempotency-key":randomUUID()}, url: `/api/v1/notes/collections/${doomed.id}` });
     const refused = await deleteDoomed();
     expect(refused.statusCode).toBe(422);
-    expect(refused.json()).toMatchObject({ code: "note_owning_entry_required", note_id: only.id, affected_note_count: 1 });
+    expect(refused.json().error.metadata).toMatchObject({ code: "note_owning_entry_required", note_id: only.id, affected_note_count: 1 });
     // Nothing moved: the refusal is the whole answer.
     expect(placements(await repository.getNote(identity, only.id))).toEqual([{ collection_id: doomed.id, sort_order: 0 }]);
     const childRow = await db.pool.query<{ parent_id: string | null }>(`SELECT parent_id FROM note_collections WHERE id = $1`, [child.id]);
     expect(childRow.rows[0]?.parent_id).toBe(doomed.id);
 
     await repository.addNotePlacement(identity, only.id, elsewhere);
-    expect((await deleteDoomed()).statusCode).toBe(204);
+    expect((await deleteDoomed()).statusCode).toBe(200);
     // The folder's own placements go with it; its subfolder moves up to its
     // parent rather than to the root.
     expect(placements(await repository.getNote(identity, only.id))).toEqual([{ collection_id: elsewhere, sort_order: 1 }]);
@@ -249,7 +249,7 @@ describe("note placements (real Postgres)", () => {
     const note = await repository.createNote(identity, { title: "Trashed", primary_project_id: projectId, collection_id: doomed.id }) as { id: string };
     await repository.updateNote(identity, note.id, { status: "deleted" });
     // A deleted note holds no folder back, so its only folder can go.
-    expect((await app!.inject({ method: "DELETE", url: `/api/v1/notes/collections/${doomed.id}` })).statusCode).toBe(204);
+    expect((await app!.inject({ method: "DELETE", headers:{"idempotency-key":randomUUID()}, url: `/api/v1/notes/collections/${doomed.id}` })).statusCode).toBe(200);
 
     await expect(repository.updateNote(identity, note.id, { status: "active" }))
       .rejects.toMatchObject({ statusCode: 422, responseBody: expect.objectContaining({ code: "note_owning_entry_required", note_id: note.id }) });
@@ -263,7 +263,7 @@ describe("note placements (real Postgres)", () => {
     const doomed = await repository.createNoteCollection(identity, { name: "Doomed" }) as { id: string };
     const note = await repository.createNote(identity, { title: "Loose", collection_id: doomed.id }) as { id: string };
     await repository.updateNote(identity, note.id, { status: "deleted" });
-    expect((await app!.inject({ method: "DELETE", url: `/api/v1/notes/collections/${doomed.id}` })).statusCode).toBe(204);
+    expect((await app!.inject({ method: "DELETE", headers:{"idempotency-key":randomUUID()}, url: `/api/v1/notes/collections/${doomed.id}` })).statusCode).toBe(200);
     await expect(repository.updateNote(identity, note.id, { status: "active" })).resolves.toMatchObject({ id: note.id });
   });
 
@@ -297,16 +297,20 @@ describe("note placements (real Postgres)", () => {
       method: "POST",
       url: `/api/v1/knowledge/notes/${note.id}/placements`,
       payload: { collection_id: second },
+      headers:{"idempotency-key":randomUUID()},
     });
     expect(added.statusCode).toBe(201);
-    expect(placements(added.json())).toHaveLength(2);
+    expect(added.json().data.id).toBe(note.id);
+    expect(placements(await repository.getNote(identity,note.id))).toHaveLength(2);
 
     const removed = await app.inject({
       method: "DELETE",
       url: `/api/v1/knowledge/notes/${note.id}/placements/${first}`,
+      headers:{"idempotency-key":randomUUID()},
     });
     expect(removed.statusCode).toBe(200);
-    expect(placements(removed.json())).toEqual([{ collection_id: second, sort_order: 0 }]);
+    expect(removed.json().data.id).toBe(note.id);
+    expect(placements(await repository.getNote(identity,note.id))).toEqual([{ collection_id: second, sort_order: 0 }]);
   });
 
   /**

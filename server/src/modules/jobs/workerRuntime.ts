@@ -1,3 +1,4 @@
+import {registerCodePatchDecisionHandler,recoverCodePatchDecisions} from '../projectFolders/codePatchDecision.js';
 import {registerBundleDecisionHandler,recoverBundleDecisionJobs} from '../evolution/bundleDecisionJob.js';
 import {registerRunProposalPublication} from '../runs/proposalPublicationJob.js';
 import {registerProjectReadingJobs} from '../informationDigest/index.js';
@@ -115,6 +116,7 @@ export function buildJobHandlerRegistry(
   registerRetrievalEmbeddingHandler(registry, config);
   registerEvaluationHarnessHandler(registry, config);
   registerBundleDecisionHandler(registry,config);
+  registerCodePatchDecisionHandler(registry,config);
   registerProjectResearchHandler(registry, config);
   registerKnowledgeExtractionHandler(registry, config);
   registerExperimentReconcileHandler(registry, config);
@@ -163,6 +165,7 @@ export function startJobsWorker(
     } catch (error) {
       log?.error(`[jobs-worker] stuck job reclaim failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+    await recoverCodePatchDecisions(config).catch(error=>log?.error(`[jobs-worker] code patch recovery failed: ${error instanceof Error?error.message:String(error)}`));
     await recoverBundleDecisionJobs(config).catch(error=>log?.error(`[jobs-worker] bundle decision recovery failed: ${error instanceof Error?error.message:String(error)}`));
     await lifecycle.recover(log);
   }, RECLAIM_INTERVAL_MS, error => log?.error(`[jobs-worker] recovery failed: ${error instanceof Error ? error.message : String(error)}`), {

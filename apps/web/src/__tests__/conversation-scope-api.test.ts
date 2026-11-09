@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { inquiryApi, sourcesApi, queryOperation,projectsApi,tasksApi,ApiRequestError, agentsApi, authorizationRequestsApi, conversationInputApi, projectFoldersApi, proposalsApi, roomsApi, runsApi, sessionsApi, skillsApi, setSpaceContext } from '../api/client'
+import { knowledgePromotionApi, notesApi,inquiryApi, sourcesApi, queryOperation,projectsApi,tasksApi,ApiRequestError, agentsApi, authorizationRequestsApi, conversationInputApi, projectFoldersApi, proposalsApi, roomsApi, runsApi, sessionsApi, skillsApi, setSpaceContext } from '../api/client'
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })))
@@ -192,6 +192,15 @@ it('saves a Monitor and queues its scan via one keyed core call each, retaining 
   expect(new Headers(calls[0]![1]?.headers).get('Idempotency-Key')).toBe('save-key');expect(new Headers(calls[1]![1]?.headers).get('Idempotency-Key')).toBe('scan-key');expect(new Headers(calls[1]![1]?.headers).get('X-Rainver-Space-Id')).toBe('source-space');expect(fetch).toHaveBeenCalledTimes(2);
 });
 
+it('restores/trashes a Note once through core then reloads its current authorized body in the receipt Space',async()=>{
+  const reply=(data:unknown)=>new Response(JSON.stringify(data),{status:200,headers:{'Content-Type':'application/json'}});
+  vi.mocked(fetch).mockImplementationOnce(async()=>reply({status:'succeeded',data:{id:'note',space_id:'source-space',version:3}})).mockImplementationOnce(async()=>reply({id:'note',version:3})).mockImplementationOnce(async()=>reply({status:'succeeded',data:{id:'note',space_id:'source-space',version:3}})).mockImplementationOnce(async()=>reply({id:'note',version:3,status:'deleted'}));
+  expect(await notesApi.rollback('note',1,2,'restore-key')).toEqual({id:'note',version:3});expect(await notesApi.delete('note','trash-key')).toEqual({id:'note',version:3,status:'deleted'});
+  const calls=vi.mocked(fetch).mock.calls;expect(calls.map(c=>c[0])).toEqual(['/api/v1/actions/knowledge.note.rollback','/api/v1/knowledge/notes/note','/api/v1/actions/knowledge.note.delete','/api/v1/knowledge/notes/note']);
+  expect(JSON.parse(calls[0]![1]?.body as string)).toEqual({note_id:'note',to_version:1,expect_version:2});expect(JSON.parse(calls[2]![1]?.body as string)).toEqual({note_id:'note'});expect(new Headers(calls[0]![1]?.headers).get('Idempotency-Key')).toBe('restore-key');expect(new Headers(calls[2]![1]?.headers).get('Idempotency-Key')).toBe('trash-key');
+  for(const i of [1,3])expect(new Headers(calls[i]![1]?.headers).get('X-Rainver-Space-Id')).toBe('source-space');expect(fetch).toHaveBeenCalledTimes(4);
+});
+
 it('creates a Monitor through the named core with the explicit key and caller request scope',async()=>{
  const channel={id:'monitor',space_id:'personal',source_connection_id:'source'};
  vi.mocked(fetch).mockImplementation(async()=>new Response(JSON.stringify({status:'succeeded',data:channel}),{status:201}));
@@ -215,4 +224,51 @@ it('uses canonical keyed Source processing/extraction commands and keeps enqueue
  expect(vi.mocked(fetch).mock.calls.map(x=>x[0])).toEqual(['/api/v1/actions/source.processing.rule.create','/api/v1/actions/source.processing.rule.update','/api/v1/actions/source.processing.rule.dispatch','/api/v1/actions/source.processing.rule.dispatch','/api/v1/actions/source.extraction.dispatch']);
  expect(vi.mocked(fetch).mock.calls.map(x=>new Headers(x[1]?.headers).get('Idempotency-Key'))).toEqual(['create-key','update-key','run-key','drain-key','job-key']);
  expect(new Headers(vi.mocked(fetch).mock.calls[4]![1]?.headers).get('X-Rainver-Space-Id')).toBe('source-space');
+});
+
+it('edits and creates Notes through explicit core keys and reloads only in the receipt Space',async()=>{
+ const reply=(data:unknown)=>new Response(JSON.stringify(data),{status:200,headers:{'Content-Type':'application/json'}})
+ vi.mocked(fetch).mockImplementationOnce(async()=>reply({status:'succeeded',data:{id:'n',space_id:'source',version:1,project_ids:[]}})).mockImplementationOnce(async()=>reply({id:'n',version:1})).mockImplementationOnce(async()=>reply({status:'succeeded',data:{id:'n',space_id:'source',version:2,project_ids:[]}})).mockImplementationOnce(async()=>reply({id:'n',version:2}))
+ await notesApi.create({title:'Draft'},'create-key');await notesApi.update('n',{title:'Edited'},'edit-key')
+ const calls=vi.mocked(fetch).mock.calls;expect(calls.map(c=>c[0])).toEqual(['/api/v1/actions/knowledge.note.create','/api/v1/knowledge/notes/n','/api/v1/actions/knowledge.note.update','/api/v1/knowledge/notes/n'])
+ expect(new Headers(calls[0][1]?.headers).get('Idempotency-Key')).toBe('create-key');expect(new Headers(calls[2][1]?.headers).get('Idempotency-Key')).toBe('edit-key');expect(JSON.parse(String(calls[2][1]?.body))).toEqual({note_id:'n',changes:{title:'Edited'}})
+ for(const index of [1,3])expect(new Headers(calls[index][1]?.headers).get('X-Rainver-Space-Id')).toBe('source')
+})
+
+it('retains the Note sharing decision metadata instead of replacing it with generic conflict prose',async()=>{
+ vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({error:{code:'operation_conflict',domain:'knowledge',message:'operation conflict',retryable:false,request_id:'r',metadata:{code:'note_cross_project_share_required',owner_project_id:'project-a'}}}),{status:409,headers:{'Content-Type':'application/json'}}))
+ await expect(notesApi.addPlacement('n','folder-b',false,'placement-key')).rejects.toMatchObject({status:409,code:'note_cross_project_share_required',payload:{owner_project_id:'project-a'}})
+ expect(fetch).toHaveBeenCalledTimes(1)
+});
+
+it('submits Note promotion once with the event key and reads the current pending Proposal in receipt Space',async()=>{
+ const reply=(body:unknown)=>new Response(JSON.stringify(body),{status:200,headers:{'Content-Type':'application/json'}});
+ const proposal={id:'proposal',status:'pending',proposal_type:'knowledge_create'};
+ vi.mocked(fetch).mockResolvedValueOnce(reply({status:'succeeded',data:{id:'proposal',space_id:'parent-space'}})).mockResolvedValueOnce(reply(proposal));
+ expect(await notesApi.promote('note',{content:'Selected'},'promotion-key')).toEqual(proposal);
+ const [url,init]=vi.mocked(fetch).mock.calls[0]!;
+ expect(url).toBe('/api/v1/actions/note.promote_to_knowledge');expect(new Headers(init?.headers).get('Idempotency-Key')).toBe('promotion-key');expect(JSON.parse(init?.body as string)).toEqual({note_id:'note',content:'Selected'});
+ expect(vi.mocked(fetch).mock.calls[1]![0]).toBe('/api/v1/proposals/proposal');expect(new Headers(vi.mocked(fetch).mock.calls[1]![1]?.headers).get('X-Rainver-Space-Id')).toBe('parent-space');expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it('submits a Candidate decision once with the event key then reads current Candidate content in receipt Space',async()=>{
+ const reply=(body:unknown)=>new Response(JSON.stringify(body),{status:200,headers:{'Content-Type':'application/json'}}),candidate={id:'candidate',status:'promoted',created_proposal_id:'proposal'};
+ vi.mocked(fetch).mockResolvedValueOnce(reply({status:'succeeded',data:{id:'candidate',space_id:'original',project_id:'project',item_id:null}})).mockResolvedValueOnce(reply(candidate));
+ expect(await knowledgePromotionApi.decide('project','candidate',{decision:'promote'},'review-key')).toEqual(candidate);
+ const [url,init]=vi.mocked(fetch).mock.calls[0]!;expect(url).toBe('/api/v1/actions/knowledge.candidate.decide');expect(new Headers(init?.headers).get('Idempotency-Key')).toBe('review-key');expect(JSON.parse(init?.body as string)).toEqual({project_id:'project',candidate_id:'candidate',decision:'promote'});expect(vi.mocked(fetch).mock.calls[1]![0]).toBe('/api/v1/projects/project/knowledge-candidates/candidate');expect(new Headers(vi.mocked(fetch).mock.calls[1]![1]?.headers).get('X-Rainver-Space-Id')).toBe('original');expect(fetch).toHaveBeenCalledTimes(2);
+});
+it('opens a keyed review packet then reads its current members instead of caching private proposal text',async()=>{
+ const reply=(body:unknown)=>new Response(JSON.stringify(body),{status:200,headers:{'Content-Type':'application/json'}}),packet={id:'packet',status:'open',candidates:[]};vi.mocked(fetch).mockResolvedValueOnce(reply({status:'succeeded',data:{id:'packet',space_id:'original',project_id:'project',item_id:null}})).mockResolvedValueOnce(reply(packet));expect(await knowledgePromotionApi.openPacket('project',10,'packet-key')).toEqual(packet);expect(vi.mocked(fetch).mock.calls[0]![0]).toBe('/api/v1/actions/knowledge.candidate.packet.open');expect(vi.mocked(fetch).mock.calls[1]![0]).toBe('/api/v1/projects/project/knowledge-candidate-review-packets/packet');expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it('encodes Candidate and packet follow-up GET segments without changing operation inputs or receipt Space',async()=>{
+ const reply=(body:unknown)=>new Response(JSON.stringify(body),{status:200,headers:{'Content-Type':'application/json'}}),project='project/a b',candidate='candidate/?x',packet='packet/#x';
+ for(const [kind,id] of [['decide',candidate],['reopen',candidate],['openPacket',packet],['closePacket',packet]] as const){
+  vi.mocked(fetch).mockClear();const current={id,status:'current',candidates:[]};vi.mocked(fetch).mockResolvedValueOnce(reply({status:'succeeded',data:{id,space_id:'original',project_id:project,item_id:null}})).mockResolvedValueOnce(reply(current));
+  if(kind==='decide')expect(await knowledgePromotionApi.decide(project,candidate,{decision:'defer'},'key')).toEqual(current);
+  else if(kind==='reopen')expect(await knowledgePromotionApi.reopen(project,candidate,'key')).toEqual(current);
+  else if(kind==='openPacket')expect(await knowledgePromotionApi.openPacket(project,10,'key')).toEqual(current);
+  else expect(await knowledgePromotionApi.closePacket(project,packet,'key')).toEqual(current);
+  const calls=vi.mocked(fetch).mock.calls;expect(JSON.parse(calls[0]![1]?.body as string).project_id).toBe(project);expect(calls[1]![0]).toBe(`/api/v1/projects/${encodeURIComponent(project)}/${kind==='decide'||kind==='reopen'?'knowledge-candidates':'knowledge-candidate-review-packets'}/${encodeURIComponent(id)}`);expect(new Headers(calls[1]![1]?.headers).get('X-Rainver-Space-Id')).toBe('original');expect(fetch).toHaveBeenCalledTimes(2);
+ }
 });

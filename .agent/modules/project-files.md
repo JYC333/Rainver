@@ -291,3 +291,52 @@ changing its text. Conversation links are resolved through the producing
 Run's file-preview API before navigation; the server never uses a model's
 absolute path to read outside the authorized registered workspace. Raster
 image links open the conversation preview dialog instead of the text editor.
+
+### Durable Proposal file decisions (P5-4)
+
+Standalone `code_patch` accept and explicit rollback now record a frozen private
+`code_patch_decisions` intent and required `code_patch_decision` Job. HTTP returns
+202 with `code_patch_pending` (accept) or a phase/status receipt (rollback), not
+an applied-file result. The Proposal stays pending/accepted respectively until
+actual effects and the final canonical DB transaction complete. Proposal GET
+exposes only the requesting user's sanitized receipt after the existing content/
+Room gate; it never exposes persisted preimages, root paths or raw exceptions.
+The Review detail page refreshes that receipt and links to the existing Job Queue.
+Room cards do not continue the conversation on enqueue.
+
+The worker reuses Evolution's `codePatchEffects` boundary and the same per-Folder
+session gate. Short key-first prepared owners surround admission and final commit;
+no filesystem operation runs inside those transactions. Preimages are durable
+before writing; exact-content resume handles a lost receipt. The canonical
+code-patch applier is now receipt-only and remains the single activity/snapshot/
+payload/result writer. Explicit rollback restores original binary bytes or removes
+originally absent files, uses current authority and snapshot identity, and retains
+already-successful operation history instead of redirecting/copying it.
+
+Failure compensates only recognized content. An unrelated edit is preserved and
+leaves `compensation_failed`; there is no claim of atomic filesystem visibility.
+A stopped Job gets one required cleanup handoff; failed cleanup stays explicit.
+The existing bounded Job retry or explicit exhausted-Job resubmission reuses the
+same frozen intent, not another human approval. Foreign/unsupported Host targets
+retain the resolver's existing refusal. No new Agent action or production approval
+mapping is enabled. Migration0014 is generated from Drizzle, additive, and has
+only been exercised against isolated shared PostgreSQL fixtures in this batch.
+
+Review closure at basis7594f2ec: only explicit policy-refusal and frozen/snapshot
+refusal sites produce `CodePatchDecisionRefusal`; arbitrary403/409, database and
+lease errors are not classified by HTTP status. A definitive refusal persists a
+terminal marker before compensation. Job completion then means the handler
+settled a `status:failed` decision, never applied success. Repeated delivery reads
+that failed result without repeating effects; explicit authorized resubmission
+can reset the original failed intent with a new Job and fresh authority checks.
+If cleanup is unfinished, delivery can only compensate. A busy Folder gate keeps
+`compensating` and uses JobDeferredError without consuming an attempt; it is not
+operator repair or exhaustion. Unknown independent edits still remain untouched.
+
+Admission audits retain Proposal/phase correlation. Worker preparation and final
+commit carry the real `decision_id` with `worker_prepare`/`worker_commit`; these
+are independent live authority checks, not duplicated approvals. Both final
+proposal.apply and write_patch audits join the DB transaction, including unlinked
+standalone decisions. Recovery uses the original audit id after rollback/release.
+Active-fingerprint admission precedes failed-intent reset/enqueue; same-intent
+replay is allowed and another active intent gives409 before any domain/Job write.

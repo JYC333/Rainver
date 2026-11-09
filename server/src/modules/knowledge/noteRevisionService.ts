@@ -1,3 +1,4 @@
+import {NoteMutationConflict} from './noteControlErrors.js';
 import { createHash, randomUUID } from "node:crypto";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { applyNoteOps, normalizePmText, parseNoteOps, pmBlocksText, type NoteOp } from "./noteDocument.js";
@@ -50,6 +51,10 @@ export async function writeNote(db: Queryable, input: {
   refs?: string[];
   diff?: unknown;
 }): Promise<NoteWriteResult> {
+  // All callers, including internal Agent ops, share root -> extension order.
+  // Core placement/edit admission already holds this root; taking the extension
+  // first here would invert that order for an otherwise legitimate internal write.
+  await db.query("SELECT id FROM space_objects WHERE space_id=$1 AND id=$2 AND object_type='note' FOR UPDATE",[input.spaceId,input.noteId]);
   const locked = await db.query<NoteContentRow>(
     `SELECT object_id, content_json, content_format, plain_text, content_hash, version, updated_by_user_id, updated_by_run_id
        FROM notes WHERE object_id=$1 AND space_id=$2 FOR UPDATE`,
@@ -128,6 +133,7 @@ export async function applyNoteOpsWithConflictFallback(db: Queryable, input: {
   runId: string;
   refs: string[];
 }): Promise<{ note: NoteContentRow; conflict: boolean } | null> {
+  await db.query("SELECT id FROM space_objects WHERE space_id=$1 AND id=$2 AND object_type='note' FOR UPDATE",[input.spaceId,input.noteId]);
   const note = await db.query<{ version: number; content_json: Record<string, unknown> }>(
     `SELECT version, content_json FROM notes WHERE object_id=$1 AND space_id=$2 FOR UPDATE`,
     [input.noteId, input.spaceId],
@@ -184,9 +190,9 @@ export async function rollbackNote(db: Queryable, input: {
   // Undoing one edit restores the whole revision before it, so it is refused
   // once anything else has been written on top: that later work would vanish.
   if (result.outcome === "version_conflict") {
-    throw new HttpError(409, "The note changed after this edit; restore an earlier version from its history instead");
+    throw new NoteMutationConflict("The note changed after this edit; restore an earlier version from its history instead");
   }
-  if (result.outcome !== "written") throw new HttpError(409, "Note changed while rolling back; retry");
+  if (result.outcome !== "written") throw new NoteMutationConflict("Note changed while rolling back; retry");
   return result.note;
 }
 

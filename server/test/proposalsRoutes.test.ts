@@ -194,7 +194,7 @@ describe("proposal review routes", () => {
           };
         },
         async rollback() {
-          return { rolled_back_paths: ["README.md"] };
+          return {id:"decision",proposal_id:"proposal-1",phase:"rollback" as const,status:"pending" as const,job_id:"job",error:null};
         },
       },
     }));

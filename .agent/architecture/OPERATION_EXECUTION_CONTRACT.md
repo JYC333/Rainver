@@ -798,3 +798,40 @@ The existing Job result UI distinguishes a failed started-without-receipt Source
 intent from a claim that nothing happened. User/audit/receipt isolation remains
 per request principal even when another principal or automatic worker owns the
 same domain extraction claim.
+
+## Standalone code-patch effect qualification (P5-4, basis7594f2ec)
+
+Standalone accept/rollback use a private frozen DB intent plus required Job,
+not synchronous filesystem work inside an approval transaction. Admission and
+final commit reuse the complete checkpoint/cascade/Run prepared owner. File IO
+uses the existing safe target handles and shared Evolution effect helper outside
+DB transactions. The canonical applier accepts only a trusted internal effect
+receipt matching payload and current target; final domain, snapshot/history,
+mandatory audit, request result and intent receipt commit together. A failed
+commit rolls back DB state and starts hash-conditional compensation; unrelated
+edits are not overwritten. Lost receipts resume from known exact content, not an
+unconditional second execution. A stopped/exhausted Job receives one durable
+cleanup handoff, and a failed cleanup requires explicit repair.
+
+A queued decision does not consume another approval or mark its linked request
+successful. Existing successful request receipts survive rollback and never point
+to a new revision. Production approval mappings remain disabled. Writer/effect
+closure alone does not approve a new Source/Memory/person/Agent policy surface;
+those later checkpoints retain their own requirements. No current first-party
+SystemAction maps/grants `code_patch`; a future action cannot use the internal
+receipt capability or bypass human approval by metadata alone.
+
+Human Note draft creation uses the existing draft-only userContentCreation seam.
+Its primary_project_id is mapped to the access-owned creation context. An explicit
+existing collection is a purpose-bound child exception: it inherits only its
+current authorized parent in the authenticated request Space, with no global
+lookup/actor-space rewrite. Parent Project drift or mismatch conflicts before
+writing; startup still rejects arbitrary durable/Agent creation flags. No new
+production mapping or public proposal decision reach follows from this seam.
+
+Note object admission is a bounded collection/placement/role closure, not a
+workspace-wide lock or readiness boolean. Existing append gates precede sorted
+Project/folder/Note root locks; a second discovery verifies the exact set.
+Canonical Note content writers use root-before-extension order for internal ops
+as well as public core calls. Body-free receipts require current read authority
+on their typed follow-up GET; they never authorize release of an old cached body.
