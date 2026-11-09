@@ -3,6 +3,18 @@ import type { en } from './en'
 type TranslateShape<T> = { [K in keyof T]: T[K] extends string ? string : TranslateShape<T[K]> }
 
 export const zhCN = {
+  quota_refresh: { all: '全部刷新', refreshing: '正在刷新额度…', description: '进入页面时自动刷新额度，离线的 CLI 连接会跳过。', cli: '刷新 CLI 额度' },
+  api_plan_usage: {
+    reload: '刷新 API 额度',
+    "title": "API 套餐额度",
+    "description": "查询你自己持有的 API 套餐额度。每个连接使用主密钥，不推断或合并账号身份。",
+    "empty": "暂无支持的 API 套餐连接，可在模型服务中添加 MiniMax、Kimi Code 或 z.ai Coding Plan。",
+    "unverified": "依据官方资料接入，尚未经过真实账号验证。",
+    "not_queried": "暂无读数，可刷新额度重试。",
+    "query_failed": "额度查询失败，请检查订阅密钥、套餐状态、访问权限和网络后重试。",
+    "load_failed": "无法加载 API 套餐账号，请重新加载。",
+    "manage": "管理模型服务"
+},
   subscription_usage: {
     title: '订阅额度', history: '历史消耗',
     description: '按厂商账号及共享额度池展示整体额度，包含 Rainver 之外的使用。',
@@ -16,6 +28,7 @@ export const zhCN = {
     online: '在线', offline: '离线', not_logged_in: '此 CLI 副本尚未登录。',
     no_measurement: '暂无当前有效的额度读数，可刷新在线连接查询。',
     exhausted: '账号 {{account}} 有额度窗口已耗尽，查看额度以了解受影响的连接。',
+    refresh_failed: '刷新失败：{{error}}', showing_previous: '显示的是上次成功测量的读数及其原测量时间。',
   },
   file_preview: { title: '文件预览', open_image: '查看图片', loading: '正在加载预览…', retry: '重试', unavailable: '预览不可用、已失效，或不在当前对话的工作区内，请让 Agent 重新提供。', expired: '这次运行时的文件版本已不再保留：工作已合并、工作区已清理，且历史保留期已结束{{date}}。合并后的结果可在项目文件中查看。', expired_date: '（{{date}}）' },
   fileTree: { openInNewTab: '在新标签中打开', loading: '加载中…', empty: '没有文件', retry: '目录加载失败 · 重试', more: '加载更多' },

@@ -288,3 +288,87 @@ Delivery transaction; Reading uses it to fence Source/full-audience authority an
 actual destination. The optional shared abort deadline propagates through the
 existing Pi provider fetch/stream path. See [Reading methods](../architecture/READING_METHODS.md)
 for private origins, two-target versions, quotas and cancellation limits.
+
+## API subscription plan quota
+
+The Usage page's subscription tab includes owner-only API plan quota, separate
+from the historical Token/cost ledger and CLI account pools. `GET
+/api/v1/providers/plan-usage` lists supported enabled API-key Providers owned by
+the viewer with an enabled grant and active membership in the current Space;
+it never contacts a vendor. `POST /api/v1/providers/:configId/plan-usage` makes
+one read-only quota request using that Provider's primary credential.
+Sharing permission to invoke a Provider does not share its account quota.
+
+`providers/planUsage/` owns endpoint selection, vendor parsing and the read
+service. It reuses the encrypted Credential resolver and active grant's
+NetworkProfile; there is no new credential store, table, migration, scheduler,
+persistent quota cache, model call, pool rotation or pool health update. The quota page automatically queries every listed API Provider on entry and with
+its shared "Refresh all quotas" action. At most three API requests run at once
+within the section, each card updating as its own answer arrives, and one
+account's failure does not stop the remaining accounts; a card stops showing
+refresh activity once its own answer settles. Concurrent queries for
+the same owner, Space, Provider, key revision and NetworkProfile share one
+vendor request on the server; nothing is cached after it settles. After the
+vendor answers, the server re-reads the caller's grant and refuses (409) if the
+Provider, key revision, base URL or effective NetworkProfile changed meanwhile —
+a different profile id (a Space grant's profile changes without moving the
+Provider's revision) or the same profile edited or disabled in place (its
+`updated_at`, which every profile edit moves). The route then resolves each
+HTTP caller's own session again, so a caller who joined a shared request is
+judged separately: a session signed out or an account disabled during the
+vendor wait gets the 401 a new request would, not the quota. Existing
+same-page readings remain visible with their measured time while refreshing;
+returning to the page always queries again. No browser persistent quota cache or
+background interval is used. Results remain only in the current page. A failed query clears that account's
+reading; the UI distinguishes not queried, failure, measured zero and exhaustion.
+Provider/key revisions and access are rechecked after the network request.
+No account identity is inferred from the Rainver user or API key, so distinct
+Provider connections remain separate rather than claiming a shared account.
+Additional pool credentials are not queried by this first API-plan integration.
+
+Only exact official HTTPS origins are eligible; custom gateways are excluded.
+MiniMax's domestic/international API origins select the matching official
+`www.minimaxi.com` / `www.minimax.io` `/v1/token_plan/remains` endpoint.
+MiniMax reset times follow MiniMax's own CLI (`mmx-cli` 1.0.28,
+`QuotaModelRemain`): `end_time`/`weekly_end_time` are epoch milliseconds and
+`remains_time`/`weekly_remains_time` are millisecond durations. A future end
+time wins; an end already past, below epoch-millisecond magnitude, or more than
+31 days ahead falls back to the duration, and no reset is shown when neither is
+plausible. Values are never rescaled by guesswork.
+Kimi Code uses `/coding/v1/usages` on `api.kimi.com` / `api.kimi.ai`; Z.ai and
+BigModel Coding Plan use `/api/monitor/usage/quota/limit` on `api.z.ai` /
+`open.bigmodel.cn`. General Moonshot/prepaid Z.ai balance APIs are not plan
+quota and are excluded. Redirects are refused, requests time out after 15s,
+and only normalized windows/timestamps leave the collector. Error bodies and
+credential-bearing transport errors are not returned or logged. Rainver uses
+its own User-Agent, not another client's identity.
+
+Official references (checked 2026-11-07):
+
+- [MiniMax domestic Token Plan](https://platform.minimaxi.com/subscribe/coding-plan)
+  and [international Token Plan](https://platform.minimax.io/subscribe/token-plan).
+- [Kimi Code API configuration](https://www.kimi.com/code/docs/) and
+  [official usage implementation](https://github.com/MoonshotAI/kimi-code/blob/main/packages/oauth/src/managed-usage.ts).
+- [Z.ai official usage-query implementation](https://github.com/zai-org/zai-coding-plugins/blob/main/plugins/glm-plan-usage/skills/usage-query-skill/scripts/query-usage.mjs).
+
+MiniMax was verified with the existing test instance's real subscription on
+2026-11-07; both 5-hour and weekly readings were returned. Kimi and Z.ai are
+implemented from official references and intentionally not account-tested in
+this change, per the requested scope. They are labelled unverified in the UI.
+
+
+### Delivery and verification record
+
+The CLI quota/account presentation is documented in [Credentials](credentials.md#subscription-quota)
+and [Hosts](hosts.md); the API-plan implementation was merged to `dev` as
+`89203593` on 2026-11-08. Final native-session checks passed: 9 provider-contract
+cases, 78 server cases (including real PostgreSQL authorization, credential changes
+and route checks), and 65 web cases; affected type checks and server/web builds
+also passed. Earlier full-suite runs had unrelated failures and are not evidence
+of an entirely green suite. MiniMax's real-account verification and Kimi/Z.ai's
+explicitly untested status remain as described above.
+
+The completed subscription-usage implementation plan was retired on 2026-11-08;
+its step-by-step implementation and historical test logs remain in Git history.
+This guide and the linked owning module guides retain the current behavior,
+permissions and supported limits; the retired plan is not an active work queue.

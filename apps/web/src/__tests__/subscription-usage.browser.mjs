@@ -33,6 +33,12 @@ async function fixtures(page, state) {
     else if (path === '/me/spaces') data = [{ id: space, name: 'Quota Space', type: 'personal', role: 'owner' }]
     else if (path === '/plugins/effective') data = { plugins: {} }
     else if (path === '/hosts') data = { items: [host] }
+    else if (path === '/providers/plan-usage') data = { items: state.apiPlans ? [{ provider_id: 'mini', name: 'My MiniMax Token Plan', vendor: 'minimax' }] : [] }
+    else if (path === '/providers/mini/plan-usage') {
+      state.apiRefreshes = (state.apiRefreshes ?? 0) + 1
+      if (state.apiDenied) return route.fulfill({ status: 403, json: { detail: 'Access denied' } })
+      data = { provider_id: 'mini', checked_at: now, windows: [{ id: 'session', label: '5h', used_pct: 1, resets_at: '2026-11-07T16:00:00Z' }, { id: 'week', label: '7d', used_pct: 1, resets_at: '2026-11-08T16:00:00Z' }] }
+    }
     else if (path === '/hosts/subscription-usage') {
       if (state.denied) return route.fulfill({ status: 403, json: { detail: 'Access denied' } })
       data = { items: state.unavailable ? [{ ...pool, account: null, windows: [], connections: pool.connections.map(c => ({ ...c, online: false, error: 'Host offline' })) }] : [pool] }
@@ -41,7 +47,11 @@ async function fixtures(page, state) {
     else if (path === '/hosts/desk/usage') data = { items: usage }
     else if (path === '/hosts/desk/cli-tools') data = { tools: [], operations: [], installable: false, availability: 'online' }
     else if (path === '/hosts/desk/tool-operations') data = { items: [] }
-    else if (path.endsWith('/usage') && route.request().method() === 'POST') { state.refreshes++; data = usage[0] }
+    else if (path.endsWith('/usage') && route.request().method() === 'POST') {
+      state.refreshes++
+      if (state.probeFailure) return route.fulfill({ status: 502, json: { detail: state.probeFailure } })
+      data = usage[0]
+    }
     else if (path.endsWith('/attention')) data = { items: [], counts: { needs_you: 0, unread: 0 } }
     else if (path.endsWith('/quota')) data = { warn_pct: 70, reserve_pct: 100, logins: [], holds: [] }
     else if (state.settingsNavigation) return route.fulfill({ status: 503, json: { detail: 'Settings data unavailable in navigation fixture' } })
@@ -81,9 +91,36 @@ for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for
       const refreshed = page.waitForResponse(response => response.url().includes('/hosts/subscription-usage'))
       await page.getByRole('button', { name: locale === 'en' ? 'Refresh quota' : '刷新额度', exact: true }).click()
       await refreshed
-      assert.equal(state.refreshes, 1)
+      assert.equal(state.refreshes, 2)
       await page.getByRole('link', { name: /Desk workstation · Claude Code · own/ }).click()
       await page.getByTestId('host-agent-desk-claude_code').waitFor()
+      assert.deepEqual(errors, [])
+    } finally { await context.close() }
+  })
+}
+for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
+  test(`a transient refresh failure keeps the card, its last reading and its retry ${locale}/${theme}/${width}`, async () => {
+    const context = await browser.newContext({ viewport: { width, height: 960 }, serviceWorkers: 'block' })
+    await context.addInitScript(({ locale }) => { localStorage.setItem('rainver:locale', locale) }, { locale })
+    const page = await context.newPage(), state = { refreshes: 0, probeFailure: 'This host did not answer in time.' }, errors = []
+    page.on('pageerror', error => errors.push(error.message))
+    page.setDefaultTimeout(10000)
+    await fixtures(page, state)
+    try {
+      await page.goto(`${baseUrl}/spaces/${space}/usage?tab=quotas`)
+      if (theme === 'light') await page.evaluate(() => document.documentElement.classList.add('theme-light'))
+      const card = page.locator(`#quota-${pool.id}`)
+      await card.getByRole('alert').waitFor()
+      assert.match(await card.getByRole('alert').textContent(), locale === 'en' ? /Could not refresh: This host did not answer in time\. Showing the last successful measurement/ : /刷新失败：This host did not answer in time\. 显示的是上次成功测量/)
+      assert.equal(await card.getByRole('progressbar').count(), 2)
+      const retry = card.getByRole('button', { name: locale === 'en' ? 'Refresh quota' : '刷新额度', exact: true })
+      await page.getByRole('button', { name: locale === 'en' ? 'Refresh all quotas' : '全部刷新', exact: true }).waitFor()
+      assert.equal(await retry.isEnabled(), true)
+      await capture(page, `transient-${locale}-${theme}-${width}`)
+      state.probeFailure = null
+      await retry.click()
+      await card.getByRole('alert').waitFor({ state: 'detached' })
+      assert.equal(state.refreshes, 2)
       assert.deepEqual(errors, [])
     } finally { await context.close() }
   })
@@ -99,9 +136,12 @@ test('unavailable quotas and permission failures stay distinct from zero usage',
     assert.equal(await page.getByRole('button', { name: 'Refresh quota', exact: true }).isDisabled(), true)
     await capture(page, 'unavailable-en-dark-390')
     state.denied = true
-    await page.getByRole('button', { name: 'Reload accounts' }).click()
+    await page.getByRole('button', { name: 'Refresh CLI quotas' }).click()
     await page.getByRole('alert').waitFor()
     assert.equal(await page.getByRole('heading', { name: pool.label }).count(), 0)
+    // A refused list ends the cycle: nothing stays busy, and both ways to retry are live.
+    await page.waitForFunction(() => ['Refresh CLI quotas', 'Try again'].every(name =>
+      [...document.querySelectorAll('button')].some(button => button.textContent?.trim() === name && !button.disabled)))
     await capture(page, 'denied-en-dark-390')
   } finally { await context.close() }
 })
@@ -167,3 +207,40 @@ for (const { locale, theme, width } of [
     assert.deepEqual(errors, [])
   } finally { await context.close() }
 })
+
+
+for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
+  test(`API plan automatic quota, refresh all and denied refresh ${locale}/${theme}/${width}`, async () => {
+    const context = await browser.newContext({ viewport: { width, height: 960 }, serviceWorkers: 'block' })
+    await context.addInitScript(({ locale }) => { localStorage.setItem('rainver:locale', locale) }, { locale })
+    const page = await context.newPage(), state = { apiPlans: true, apiRefreshes: 0, refreshes: 0 }
+    page.setDefaultTimeout(10000)
+    await fixtures(page, state)
+    try {
+      await page.goto(`${baseUrl}/spaces/${space}/usage`)
+      if (theme === 'light') await page.evaluate(() => document.documentElement.classList.add('theme-light'))
+      const panel = page.getByRole('region', { name: locale === 'en' ? 'API plan quota' : 'API 套餐额度', exact: true })
+      await panel.getByRole('heading', { name: 'My MiniMax Token Plan' }).waitFor()
+      await panel.getByRole('progressbar').first().waitFor()
+      const all = page.getByRole('button', { name: locale === 'en' ? 'Refresh all quotas' : '全部刷新', exact: true })
+      await all.waitFor()
+      assert.equal(state.apiRefreshes, 1)
+      assert.equal(state.refreshes, 1)
+      await panel.scrollIntoViewIfNeeded()
+      await capture(page, `api-entry-${locale}-${theme}-${width}`)
+      await all.click()
+      await all.waitFor({ state: 'visible' })
+      assert.equal(state.apiRefreshes, 2)
+      assert.equal(state.refreshes, 2)
+      assert.equal(await panel.getByRole('progressbar').count(), 2)
+      assert.equal(await panel.getByRole('progressbar').first().getAttribute('aria-valuenow'), '1')
+      await panel.evaluate(el => el.scrollIntoView({ block: 'center' }))
+      await capture(page, `api-quota-${locale}-${theme}-${width}`)
+      state.apiDenied = true
+      await panel.getByRole('button', { name: locale === 'en' ? 'Refresh quota' : '刷新额度', exact: true }).click()
+      await panel.getByRole('alert').waitFor()
+      assert.equal(await panel.getByRole('progressbar').count(), 0)
+      await capture(page, `api-denied-${locale}-${theme}-${width}`)
+    } finally { await context.close() }
+  })
+}

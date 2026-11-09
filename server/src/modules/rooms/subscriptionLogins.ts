@@ -2,7 +2,7 @@ import type { HostUsageQuota, SubscriptionQuotaWindow, SubscriptionUsageLine } f
 import type { Pool } from "../../db/pool.js";
 import { hasSubscriptionQuota } from "../hosts/capabilities.js";
 import { refreshHostUsage } from "../hosts/usageService.js";
-import type { Queryable } from "../routeUtils/common.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { SUBSCRIPTION_QUOTA_EXHAUSTED } from "../runs/retryPolicy.js";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/specs.js";
 
@@ -189,17 +189,21 @@ export function liveQuotaSource(pool: Pool | null, options: { probeDeadlineMs?: 
       let reading = quotaReading(cached);
       const age = reading.checked_at ? now.getTime() - Date.parse(reading.checked_at) : Number.POSITIVE_INFINITY;
       if (pool && age > QUOTA_READING_MAX_AGE_MS) {
-        const probe = refreshHostUsage(pool, login.host_id, login.runtime_key, login.installation, undefined, {
-          keepReadingWhenUnreadable: true,
-        })
-          .then((row) => ({ quota_json: row.quota, checked_at: row.checked_at }))
-          .catch(() => null);
+        // A transient failure comes back as the readable cached number with
+        // its original clock (`usageFailureEndsReading`); an unreadable row
+        // only comes back when the login really ended (or nothing was ever
+        // readable), and then the old number must not stand in for it. A
+        // login change during the probe (409) superseded this cache: read
+        // what is there now rather than the number from before it.
+        const probe = refreshHostUsage(pool, login.host_id, login.runtime_key, login.installation)
+          .then((row): CachedQuota | "superseded" => ({ quota_json: row.quota, checked_at: row.checked_at }))
+          .catch((error: unknown) => error instanceof HttpError && error.statusCode === 409 ? "superseded" as const : null);
         const probed = await Promise.race([probe, sleep(deadline).then(() => null)]);
-        // A host that could not answer says nothing about the window; the
-        // cached number stays the best one there is.
-        if (probed && fullerWindow(probed.quota_json)) {
-          cached = probed;
-          reading = quotaReading(probed);
+        // A probe past its deadline, or a host that failed outright, says
+        // nothing about the window; the cached number stays the best there is.
+        if (probed) {
+          cached = probed === "superseded" ? await cachedQuota(db, login) : probed;
+          reading = quotaReading(cached);
         }
       }
       // Refusals after a readable reading overrule it; with nothing readable, any within the week counts.

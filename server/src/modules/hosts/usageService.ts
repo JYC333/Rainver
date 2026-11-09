@@ -12,6 +12,18 @@ import { HttpError } from "../routeUtils/common.js";
 const loginGenerations = new Map<string, number>();
 const loginScope = (hostId: string, runtimeKey: string, installation: string) => JSON.stringify([hostId, runtimeKey, installation]);
 
+/**
+ * A revoked host's cache stays as it was: a probe that outlived the revoke does not write.
+ * FOR SHARE holds the host row until the cache write commits, so a revoke
+ * (an UPDATE of that row) either commits first and this check sees it, or
+ * waits for the write and then removes access. Lock order is always the
+ * scope's advisory lock, then the host row; revoke takes only the row.
+ */
+async function requireLiveHost(client: Queryable, hostId: string): Promise<void> {
+  const live = await client.query("SELECT 1 FROM hosts WHERE id = $1 AND status <> 'revoked' FOR SHARE", [hostId]);
+  if (live.rowCount === 0) throw new HttpError(404, "Host not found");
+}
+
 /** A login/logout supersedes cached and in-flight readings, never credentials. */
 export async function invalidateHostUsage(pool: Pool, hostId: string, runtimeKey: string, installation: string): Promise<void> {
   const key = loginScope(hostId, runtimeKey, installation);
@@ -94,6 +106,7 @@ async function writeHostUsage(pool: Pool, hostId: string, runtimeKey: string, in
     const key = loginScope(hostId, runtimeKey, installation);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`host-usage:${key}`]);
     if (generation !== undefined && generation !== (loginGenerations.get(key) ?? 0)) throw new HttpError(409, "The CLI login changed during this check. Refresh usage again.");
+    await requireLiveHost(client, hostId);
     await client.query(
     `INSERT INTO host_runtime_usage (host_id, runtime_key, installation, quota_json, checked_at)
      VALUES ($1, $2, $3, $4, $5)
@@ -106,25 +119,84 @@ async function writeHostUsage(pool: Pool, hostId: string, runtimeKey: string, in
 }
 
 /**
- * Asks one copy on one host, and caches whatever it says. An unreadable copy
- * is cached too — "not logged in" is a stable answer, and re-asking it every
- * few seconds only wastes a CLI launch.
+ * Does this unreadable answer end the cached reading?
+ *
+ * A login, entitlement or installation answer does: the copy logged out, its
+ * login expired or lost its scope, the vendor refused the credential, or the
+ * copy is gone. Its old account and numbers must not keep standing in for it.
+ * "Offline", "did not answer in time", "unreachable", an upgrade in progress
+ * or a vendor 429/5xx says nothing about the window, so a readable reading
+ * stays, keeps its original measurement clock and only gains the failure.
+ * An explicit `account: null` is the host saying the login changed under the
+ * probe; that always ends it. Unknown text keeps the reading: the admission
+ * gate must not lose a 90 % reading to a probe it could not interpret.
  */
-export async function refreshHostUsage(
+const TRANSIENT_USAGE_FAILURE = /offline|did not answer|in time|before the check ended|unreachable|being upgraded|retry in a moment|could not (?:start|be started)|HTTP (?:408|429|5\d\d)\b/i;
+const LOGIN_USAGE_FAILURE = /log ?in|logged|sign(?:ed)? ?in|expired|scope|unauthori[sz]ed|forbidden|authenticat|HTTP 40[13]\b|\b40[13]\b|not have .+ installed|reinstall|account changed|no subscription quota/i;
+export function usageFailureEndsReading(quota: Pick<HostUsageQuota, "account" | "error">): boolean {
+  if (quota.account === null) return true;
+  const error = quota.error ?? "";
+  return !TRANSIENT_USAGE_FAILURE.test(error) && LOGIN_USAGE_FAILURE.test(error);
+}
+
+/** Records a transient failure on a readable reading without making it look fresh. */
+async function markReadingUnrefreshed(pool: Pool, hostId: string, runtimeKey: string, installation: string, error: string | null, generation: number): Promise<HostUsageRow | null> {
+  return withTransaction(pool, async client => {
+    const key = loginScope(hostId, runtimeKey, installation);
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`host-usage:${key}`]);
+    if (generation !== (loginGenerations.get(key) ?? 0)) throw new HttpError(409, "The CLI login changed during this check. Refresh usage again.");
+    await requireLiveHost(client, hostId);
+    const result = await client.query<{ quota_json: unknown; checked_at: string }>(
+      `UPDATE host_runtime_usage SET quota_json = jsonb_set(quota_json, '{error}', to_jsonb($4::text))
+        WHERE host_id = $1 AND runtime_key = $2 AND installation = $3 AND quota_json->'available' = 'true'::jsonb
+        RETURNING quota_json, checked_at`,
+      [hostId, runtimeKey, installation, error ?? "This copy could not be read."],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const quota = quotaOf(row.quota_json);
+    return { pool_id: subscriptionPoolId(hostId, runtimeKey, installation, quota.account), host_id: hostId, runtime_key: runtimeKey, installation, quota, checked_at: new Date(row.checked_at).toISOString() };
+  });
+}
+
+/**
+ * One probe per copy and login at a time. The Usage page (mount, remount,
+ * Space switch, refresh-all), the per-pool button and the admission gate all
+ * join it rather than launching the CLI again. Every caller is authorized for
+ * the copy before it asks, and the row is the copy's own cache, so a joiner
+ * learns nothing its own read would not. A login change starts a new key.
+ */
+const inFlightProbes = new Map<string, Promise<HostUsageRow>>();
+
+/**
+ * Asks one copy on one host, and caches its answer. An unreadable answer
+ * replaces the cache when it ends the login's reading ("not logged in" is a
+ * stable answer); a transient one keeps a readable reading
+ * (`usageFailureEndsReading`).
+ */
+export function refreshHostUsage(
   pool: Pool,
   hostId: string,
   runtimeKey: string,
   installation: string,
   registry: HostConnectionRegistry = sharedHostConnectionRegistry,
-  options: {
-    /**
-     * Keep a readable cached number when this probe could not read one (the
-     * host is offline or slow). The admission gate asks for this: "did not
-     * answer in time" says nothing about the window, and overwriting 90 %
-     * with it would let the next admission through (`rooms/quotaGate.ts`).
-     */
-    keepReadingWhenUnreadable?: boolean;
-  } = {},
+): Promise<HostUsageRow> {
+  const scope = loginScope(hostId, runtimeKey, installation);
+  const key = JSON.stringify([scope, loginGenerations.get(scope) ?? 0]);
+  const existing = inFlightProbes.get(key);
+  if (existing) return existing;
+  const probe = probeAndCache(pool, hostId, runtimeKey, installation, registry)
+    .finally(() => { if (inFlightProbes.get(key) === probe) inFlightProbes.delete(key); });
+  inFlightProbes.set(key, probe);
+  return probe;
+}
+
+async function probeAndCache(
+  pool: Pool,
+  hostId: string,
+  runtimeKey: string,
+  installation: string,
+  registry: HostConnectionRegistry,
 ): Promise<HostUsageRow> {
   const generation = loginGenerations.get(loginScope(hostId, runtimeKey, installation)) ?? 0;
   const quota = hasSubscriptionQuota(runtimeKey)
@@ -145,11 +217,9 @@ export async function refreshHostUsage(
       week_resets: null,
       error: `${runtimeKey} reports no subscription quota.`,
     };
-  if (options.keepReadingWhenUnreadable && !quota.available) {
-    const cached = (await readHostUsage(pool, hostId))
-      .find((row) => row.runtime_key === runtimeKey && row.installation === installation);
-    if (cached?.quota.available && generation === (loginGenerations.get(loginScope(hostId, runtimeKey, installation)) ?? 0)
-      && (quota.account === undefined || JSON.stringify(quota.account) === JSON.stringify(cached.quota.account))) return cached;
+  if (!quota.available && !usageFailureEndsReading(quota)) {
+    const kept = await markReadingUnrefreshed(pool, hostId, runtimeKey, installation, quota.error, generation);
+    if (kept) return kept;
   }
   if (runtimeKey === "claude_code" && quota.available) {
     const cached = (await readHostUsage(pool, hostId)).find(row => row.runtime_key === runtimeKey && row.installation === installation);

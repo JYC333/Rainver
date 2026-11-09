@@ -1,3 +1,4 @@
+import type { ApiPlanUsageProvider, ApiPlanUsageSnapshot } from '@rainver/protocol'
 import {INQUIRY_OPERATION_SCHEMAS} from '@rainver/protocol';
 import type { RunLiveInputAvailability, RunLiveInputRequest, RunLiveInputResult } from "@rainver/protocol"
 import type {OperationId,OperationInput,OperationOutput,OperationOutcome} from "@rainver/protocol"
@@ -4059,6 +4060,8 @@ export type ManagedSubscriptionLoginEvent =
   | { type: 'error'; message: string }
 
 export const providersApi = {
+  planUsageProviders: () => get<{ items: ApiPlanUsageProvider[] }>('/providers/plan-usage'),
+  refreshPlanUsage: (id: string) => post<ApiPlanUsageSnapshot>(`/providers/${encodeURIComponent(id)}/plan-usage`, {}),
   /** Every Provider this person may see here, including the ones they own and disabled. For management. */
   list: () => get<ModelProviderOut[]>('/providers'),
   /** The Providers a run can use here: enabled, with an enabled grant. For pickers. */

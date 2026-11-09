@@ -1,5 +1,17 @@
 /** English is the source locale. Keep keys stable when display wording changes. */
 export const en = {
+  quota_refresh: { all: 'Refresh all quotas', refreshing: 'Refreshing quotas…', description: 'Quotas refresh automatically when you open this page. Offline CLI connections are skipped.', cli: 'Refresh CLI quotas' },
+  api_plan_usage: {
+    reload: 'Refresh API quotas',
+    "title": "API plan quota",
+    "description": "Query the subscription quota of your own API providers. Each provider uses its primary key; account identity is not inferred or merged.",
+    "empty": "No supported API plan providers. Add a MiniMax, Kimi Code or Z.ai Coding Plan connection in Providers.",
+    "unverified": "Implemented from official references; not verified with a live account.",
+    "not_queried": "No reading available. Refresh quota to retry.",
+    "query_failed": "Could not query quota. Check your subscription key, plan status, access and network, then retry.",
+    "load_failed": "Could not load API plan accounts. Reload to retry.",
+    "manage": "Manage providers"
+},
   subscription_usage: {
     title: 'Subscription quotas', history: 'Recorded consumption',
     description: 'Provider-wide quotas, grouped by account and shared quota pool. These include usage outside Rainver.',
@@ -13,6 +25,7 @@ export const en = {
     online: 'Online', offline: 'Offline', not_logged_in: 'This CLI copy is not logged in.',
     no_measurement: 'No current measured quota. Refresh an online connection to check.',
     exhausted: 'A quota window is full for account {{account}}. View quota for affected connections.',
+    refresh_failed: 'Could not refresh: {{error}}', showing_previous: 'Showing the last successful measurement with its original time.',
   },
   file_preview: { title: 'File preview', open_image: 'View image', loading: 'Loading preview…', retry: 'Try again', unavailable: 'This preview is unavailable, expired, or outside this conversation’s workspace. Ask the agent to share it again.', expired: 'This Run’s version of the file is no longer kept: its workspace was cleaned up after the work was merged and the history period ended{{date}}. The merged result is in the project files.', expired_date: ' ({{date}})' },
   fileTree: { openInNewTab: 'Open in new tab', loading: 'Loading…', empty: 'No files found', retry: 'Could not load directory · Retry', more: 'Load more' },

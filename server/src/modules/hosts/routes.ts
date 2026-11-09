@@ -697,7 +697,18 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!hostInstallationIds(host.rows[0]?.capabilities_json, runtimeKey).includes(installation)) {
       return reply.code(422).send({ detail: `Host does not report installation '${installation}' of '${runtimeKey}'` });
     }
-    return reply.send(await refreshHostUsage(resolved.pool, resolved.hostId, runtimeKey, installation));
+    const row = await refreshHostUsage(resolved.pool, resolved.hostId, runtimeKey, installation);
+    // The probe can take the host's full timeout and is shared with other
+    // callers. Authorize again after it, from the database rather than this
+    // request's first answer: a session, admin role, host or copy lost
+    // meanwhile gets the same refusal a new request would, not the account.
+    const again = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
+    if (!again) return reply;
+    const current = await again.pool.query<{ capabilities_json: unknown }>("SELECT capabilities_json FROM hosts WHERE id = $1", [again.hostId]);
+    if (!hostInstallationIds(current.rows[0]?.capabilities_json, runtimeKey).includes(installation)) {
+      return reply.code(404).send({ detail: `Host no longer reports installation '${installation}' of '${runtimeKey}'` });
+    }
+    return reply.send(row);
   });
 
   // An interactive login for one copy of a runtime on a host, as a terminal

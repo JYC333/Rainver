@@ -87,13 +87,34 @@ remain separate. A failed optional identity read does not discard measured quota
 Identity and per-window measurement clocks extend the existing cache's JSON
 contract; no physical schema migration is needed. Login/logout invalidates its
 cache and supersedes in-flight probes. New-account refreshes cannot retain the
-old account's model windows. Reads do not probe: manual refresh reuses the
-existing Host-owner / built-in-instance-admin endpoint and one online connection.
+old account's model windows. Reads do not probe: the quota page refreshes automatically on entry, and its shared refresh action
+updates both CLI and API sections. CLI refresh selects one authorized online
+connection per quota pool, skipping offline pools and copies the Host reports
+as logged out (a manual per-pool refresh can still ask such a copy, so a new
+login is detectable). At most three probes run at once; each pool's card
+updates when its own probe finishes, and the projection is re-read after each.
+Refresh state (busy, failure) follows the stable copy (host, runtime,
+installation), not the pool id: when a probe reports a logout or account switch
+and the re-read list moves that copy to another card, its failure moves with it
+and never lands on healthy copies left behind. A card stays busy until the list
+re-read after its probe is in — when two re-reads overlap, until the read that
+is actually adopted (the later one) is in — and automatic and manual per-pool
+refreshes share the same three slots. A 401/403 on the list itself ends the
+refresh cycle: queued probes are not sent and no card stays busy; a single
+copy's 404 removes only that copy and the queue continues.
+A refusal of access (401/403/404) removes that pool's readings; any other
+failure — network, 5xx, 409, 422, or a transient Host answer kept on the server
+— keeps the card with its last readings and original measurement times, shows
+the failure on that card, and leaves its per-pool refresh as the retry. A
+failed re-read of the list keeps the cards already shown unless access was
+refused. Other pools are unaffected. Per-pool refresh uses the existing
+Host-owner / built-in-instance-admin endpoint; the server joins concurrent
+probes of the same copy.
 Private Host names/readings are filtered before account grouping; the built-in
 quota remains instance-admin readable under the existing quota gate. Historical
-Token accounting and Room admission rules are unchanged. API-key Coding Plan
-collectors are not implemented by this CLI phase; managed OAuth Providers retain
-their separate existing quota path.
+Token accounting and Room admission rules are unchanged. API-key plan collectors now have an owner-only, in-process path in
+`providers/planUsage/`; see [Provider Policy](provider-policy.md#api-subscription-plan-quota).
+Managed OAuth Providers retain their separate existing quota path.
 
 ## Related
 

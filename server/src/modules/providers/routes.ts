@@ -28,11 +28,13 @@ import {
   listProviderConfigs,
   listProviderPresets,
 } from "./service.js";
+import { registerApiPlanUsageRoutes } from "./planUsage/routes.js";
 import { registerProviderCommandRoutes } from "./commands/routes.js";
 import { registerSubscriptionQuotaPolicyRoutes } from "./subscriptionQuotaPolicy.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   registerProviderCommandRoutes(app, context.config);
+  registerApiPlanUsageRoutes(app, context.config);
   registerSubscriptionQuotaPolicyRoutes(app, context.config);
   app.get("/api/v1/providers", async (request, reply) =>
     listProviderConfigs(context.config, request, reply),

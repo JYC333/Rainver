@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { Client } from "pg";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
-import type { HostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
+import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
 import {
   listHostRuntimeChanges,
   mergeRunQuota,
@@ -10,9 +11,12 @@ import {
   refreshAllHostUsage,
   refreshHostUsage,
   invalidateHostUsage,
+  usageFailureEndsReading,
 } from "../src/modules/hosts/usageService.js";
+import { liveQuotaSource } from "../src/modules/rooms/subscriptionLogins.js";
 import { readSubscriptionQuotaPools } from "../src/modules/hosts/subscriptionUsage.js";
 import { buildModuleServer } from "./support/moduleServer.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { hostsModule } from "../src/modules/hosts/index.js";
@@ -246,6 +250,9 @@ describe("subscription account projection (real Postgres)", () => {
     await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: quota(10) }));
     await refreshHostUsage(db.pool, "visible-host", "claude_code", "own", registry({ claude_code: quota(20) }));
     await refreshHostUsage(db.pool, "private-host", "claude_code", "own", registry({ claude_code: quota(99) }));
+    // Both probes can land in one millisecond; make "visible-host is newer" explicit.
+    const earlier = new Date(Date.now() - 60_000).toISOString();
+    await db.pool.query(`UPDATE host_runtime_usage SET checked_at=$1, quota_json=jsonb_set(quota_json,'{window_checked_at}',$2::jsonb) WHERE host_id='host-1'`, [earlier, JSON.stringify({ session: earlier })]);
     const admin = await readSubscriptionQuotaPools(db.pool, "user-1", true);
     expect(admin).toHaveLength(2); // The unchecked Codex installation stays independent.
     const shared = admin.find(pool => pool.account);
@@ -343,6 +350,97 @@ describe("subscription account projection (real Postgres)", () => {
   });
 });
 
+describe("an unreadable refresh against a readable reading (real Postgres)", () => {
+  const account = { provider: "anthropic" as const, product: "claude" as const, account_id: "a".repeat(64), organization_id: "b".repeat(64) };
+  const reading = { available: true, account, session_pct: 90, session_resets: null, week_pct: 40, week_resets: null, error: null };
+  const unreadable = (error: string, extra: Record<string, unknown> = {}) => ({ available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error, ...extra });
+  const measured = new Date(Date.now() - 10 * 60_000).toISOString();
+  async function seedReading() {
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: reading }));
+    await db.pool.query(`UPDATE host_runtime_usage SET checked_at=$1, quota_json=jsonb_set(quota_json,'{window_checked_at}',$2::jsonb) WHERE host_id='host-1'`, [measured, JSON.stringify({ session: measured, week: measured })]);
+  }
+  const claudePool = async () => (await readSubscriptionQuotaPools(db.pool, "user-1", true)).find(pool => pool.connections.some(c => c.runtime_key === "claude_code"));
+
+  it("keeps the high reading, its account pool and its measurement clock through offline and timeout probes", async ctx => {
+    if (!db.available) return ctx.skip();
+    await seedReading();
+    for (const error of ["This host is offline.", "This host did not answer in time.", "Claude usage API returned HTTP 503."]) {
+      const row = await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: unreadable(error) }));
+      expect(row.quota).toMatchObject({ available: true, session_pct: 90, account, error });
+      expect(row.checked_at).toBe(measured);
+      const pool = await claudePool();
+      expect(pool?.account).toEqual(account);
+      expect(pool?.windows.find(w => w.id === "session")).toMatchObject({ used_pct: 90, checked_at: measured });
+      expect(pool?.connections[0]?.error).toBe(error);
+    }
+    // A later readable probe clears the failure and advances the clock.
+    const fresh = await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: { ...reading, session_pct: 91 } }));
+    expect(fresh.quota.error).toBeNull();
+    expect(Date.parse(fresh.checked_at)).toBeGreaterThan(Date.parse(measured));
+  });
+
+  it("still lets the admission gate see the reading after a page refresh timed out", async ctx => {
+    if (!db.available) return ctx.skip();
+    await seedReading();
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: unreadable("This host did not answer in time.") }));
+    // The gate's own probe goes through the shared registry, where host-1 has no socket: "offline".
+    const gate = await liveQuotaSource(db.pool, { probeDeadlineMs: 2_000 }).read(db.pool, { host_id: "host-1", host_name: "Server", runtime_key: "claude_code", installation: "own" });
+    expect(gate.window).toMatchObject({ utilization: 90 });
+    expect(gate.checked_at).toBe(measured);
+  });
+
+  it("ends the reading on logout, expiry, lost permission, a removed copy or a login change", async ctx => {
+    if (!db.available) return ctx.skip();
+    for (const answer of [
+      unreadable("Log in to Claude Code on this host before reading usage."),
+      unreadable("This copy's Claude login has expired; log in again."),
+      unreadable("This copy's Claude login cannot read usage (missing user:profile scope)."),
+      unreadable("Claude usage API returned HTTP 403."),
+      unreadable("This host does not have claude_code own installed."),
+      unreadable("The Claude login changed during this check. Refresh usage again.", { account: null }),
+    ]) {
+      await seedReading();
+      const row = await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: answer }));
+      expect(row.quota).toMatchObject({ available: false, error: answer.error });
+      const pool = await claudePool();
+      expect(pool?.account).toBeNull();
+      expect(pool?.windows).toEqual([]);
+    }
+  });
+
+  it("classifies only login, entitlement and installation answers as ending a reading", () => {
+    expect(usageFailureEndsReading({ error: "Antigravity CLI did not report measured quota before the check ended. Login status does not establish remaining capacity." })).toBe(false);
+    expect(usageFailureEndsReading({ error: "x86_64 is being upgraded on this host; retry in a moment." })).toBe(false);
+    expect(usageFailureEndsReading({ error: "Claude usage API returned HTTP 429." })).toBe(false);
+    expect(usageFailureEndsReading({ error: "Log in to this Antigravity CLI copy before reading usage." })).toBe(true);
+    expect(usageFailureEndsReading({ error: "Claude usage API returned HTTP 401." })).toBe(true);
+    expect(usageFailureEndsReading({ error: "anything", account: null })).toBe(true);
+  });
+
+  it("joins concurrent refreshes of one copy into one probe, and starts a new one after a login change", async ctx => {
+    if (!db.available) return ctx.skip();
+    let probes = 0;
+    const answers: ((value: typeof reading) => void)[] = [];
+    const slow = { requestUsageProbe: () => { probes += 1; return new Promise(resolve => { answers.push(resolve); }); } } as unknown as HostConnectionRegistry;
+    const first = refreshHostUsage(db.pool, "host-1", "claude_code", "own", slow);
+    const second = refreshHostUsage(db.pool, "host-1", "claude_code", "own", slow);
+    expect(second).toBe(first);
+    expect(probes).toBe(1);
+    answers[0]!(reading);
+    expect((await second).quota.session_pct).toBe(90);
+    // Settled: the next refresh asks again.
+    const third = refreshHostUsage(db.pool, "host-1", "claude_code", "own", slow);
+    expect(probes).toBe(2);
+    await invalidateHostUsage(db.pool, "host-1", "claude_code", "own");
+    const afterLogin = refreshHostUsage(db.pool, "host-1", "claude_code", "own", slow);
+    expect(afterLogin).not.toBe(third);
+    expect(probes).toBe(3);
+    answers[1]!(reading); answers[2]!({ ...reading, session_pct: 12 });
+    await expect(third).rejects.toMatchObject({ statusCode: 409 });
+    expect((await afterLogin).quota.session_pct).toBe(12);
+  });
+});
+
 describe("host runtime change log (real Postgres)", () => {
   it("records what changed, newest first, with the host it changed on", async (ctx) => {
     if (!db.available) return ctx.skip();
@@ -389,5 +487,154 @@ describe("host runtime change log (real Postgres)", () => {
 
     expect(await listHostRuntimeChanges(db.pool, "user-1")).toEqual([]);
     expect(await readHostUsage(db.pool, "host-1")).toEqual([]);
+  });
+});
+
+describe("a probe that outlives its answer or its authority (real Postgres)", () => {
+  const account = { provider: "anthropic" as const, product: "claude" as const, account_id: "a".repeat(64), organization_id: "b".repeat(64) };
+  const reading = { available: true, account, account_display: { email: "owner@vendor.invalid" }, session_pct: 90, session_resets: null, week_pct: 40, week_resets: null, error: null };
+  const unreadable = (error: string) => ({ available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error });
+  const login = { host_id: "host-1", host_name: "Server", runtime_key: "claude_code", installation: "own" };
+  const stale = new Date(Date.now() - 10 * 60_000).toISOString();
+  async function seedStaleReading() {
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: reading }));
+    await db.pool.query(`UPDATE host_runtime_usage SET checked_at=$1 WHERE host_id='host-1'`, [stale]);
+  }
+  /** A probe through the shared registry (the gate's and the route's) that answers when told. */
+  function slowSharedProbe() {
+    let answer: ((value: unknown) => void) | undefined;
+    const spy = vi.spyOn(sharedHostConnectionRegistry, "requestUsageProbe").mockImplementation(() => new Promise(resolve => { answer = resolve as (value: unknown) => void; }) as never);
+    return { spy, answered: async (value: unknown) => { await vi.waitFor(() => expect(answer).toBeDefined()); answer!(value); } };
+  }
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("drops the old number when the gate's own stale probe finds the login gone", async ctx => {
+    if (!db.available) return ctx.skip();
+    for (const error of ["Log in to Claude Code on this host before reading usage.", "Claude usage API returned HTTP 403."]) {
+      await seedStaleReading();
+      vi.spyOn(sharedHostConnectionRegistry, "requestUsageProbe").mockResolvedValue(unreadable(error) as never);
+      const gate = await liveQuotaSource(db.pool, { probeDeadlineMs: 2_000 }).read(db.pool, login);
+      expect(gate.window, error).toBeNull();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("keeps the readable number when the gate's own probe fails transiently", async ctx => {
+    if (!db.available) return ctx.skip();
+    await seedStaleReading();
+    vi.spyOn(sharedHostConnectionRegistry, "requestUsageProbe").mockResolvedValue(unreadable("Claude usage API returned HTTP 503.") as never);
+    const gate = await liveQuotaSource(db.pool, { probeDeadlineMs: 2_000 }).read(db.pool, login);
+    expect(gate.window).toMatchObject({ utilization: 90 });
+    expect(gate.checked_at).toBe(stale);
+  });
+
+  it("reads the invalidated cache when a login change supersedes the gate's probe", async ctx => {
+    if (!db.available) return ctx.skip();
+    await seedStaleReading();
+    const probe = slowSharedProbe();
+    const gate = liveQuotaSource(db.pool, { probeDeadlineMs: 5_000 }).read(db.pool, login);
+    await vi.waitFor(() => expect(probe.spy).toHaveBeenCalled());
+    await invalidateHostUsage(db.pool, "host-1", "claude_code", "own");
+    await probe.answered({ ...reading, session_pct: 95 });
+    expect((await gate).window).toBeNull();
+  });
+
+  it("does not write a probe that finishes after its host was revoked", async ctx => {
+    if (!db.available) return ctx.skip();
+    await seedStaleReading();
+    const probe = slowSharedProbe();
+    const pending = refreshHostUsage(db.pool, "host-1", "claude_code", "own");
+    await vi.waitFor(() => expect(probe.spy).toHaveBeenCalled());
+    await db.pool.query("UPDATE hosts SET status='revoked' WHERE id='host-1'");
+    await probe.answered({ ...reading, session_pct: 12 });
+    await expect(pending).rejects.toMatchObject({ statusCode: 404 });
+    const [row] = await readHostUsage(db.pool, "host-1");
+    expect(row?.quota.session_pct).toBe(90);
+  });
+
+  // The two real interleavings around the cache write's host check: a revoke
+  // that is in flight when the check runs, and one that starts after it.
+  it("does not write when a revoke is uncommitted while the write checks the host", async ctx => {
+    if (!db.available) return ctx.skip();
+    await seedStaleReading();
+    // Outside the file's three-connection pool, which the write and the lock check need.
+    const revoker = new Client({ connectionString: db.connectionUri });
+    await revoker.connect();
+    try {
+      await revoker.query("BEGIN");
+      await revoker.query("UPDATE hosts SET status='revoked' WHERE id='host-1'");
+      let settled = false;
+      const pending = refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: { ...reading, session_pct: 12 } }));
+      pending.then(() => { settled = true; }, () => { settled = true; });
+      await waitForLockWaiter(db.pool, { settled: () => settled });
+      expect(settled, "the write waits on the revoking transaction").toBe(false);
+      await revoker.query("COMMIT");
+      await expect(pending).rejects.toMatchObject({ statusCode: 404 });
+    } finally { await revoker.query("ROLLBACK").catch(() => undefined); await revoker.end(); }
+    const [row] = await readHostUsage(db.pool, "host-1");
+    expect(row?.quota.session_pct).toBe(90);
+  });
+
+  it("makes a revoke wait until a write that passed the host check has committed", async ctx => {
+    if (!db.available) return ctx.skip();
+    await seedStaleReading();
+    // Hold the cache row so the write stops after its host check, inside its transaction.
+    const blocker = new Client({ connectionString: db.connectionUri });
+    await blocker.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT 1 FROM host_runtime_usage WHERE host_id='host-1' FOR UPDATE");
+      const write = refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: { ...reading, session_pct: 12 } }));
+      await waitForLockWaiter(db.pool);
+      let revoked = false;
+      const revoke = db.pool.query("UPDATE hosts SET status='revoked' WHERE id='host-1'").then(() => { revoked = true; });
+      await waitForLockWaiter(db.pool, { waiters: 2, settled: () => revoked });
+      expect(revoked, "the revoke waits for the checked write").toBe(false);
+      await blocker.query("COMMIT");
+      await expect(write).resolves.toMatchObject({ quota: { session_pct: 12 } });
+      await revoke;
+    } finally { await blocker.query("ROLLBACK").catch(() => undefined); await blocker.end(); }
+    expect((await db.pool.query("SELECT status FROM hosts WHERE id='host-1'")).rows[0].status).toBe("revoked");
+  });
+
+  describe("the refresh route authorizes again after the probe", () => {
+    async function withApp(run: (app: ReturnType<typeof buildModuleServer>) => Promise<void>) {
+      const email = (await db.pool.query<{ email: string }>("SELECT email FROM users WHERE id='user-1'")).rows[0]!.email;
+      const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, INSTANCE_ADMIN_EMAIL: email }), [hostsModule]);
+      __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+      try { await run(app); } finally { __setAuthIdentityForTests(null); await app.close(); }
+    }
+    const url = "/api/v1/hosts/host-1/installations/claude_code/own/usage";
+
+    it("returns the reading to a caller who still holds the host", async ctx => {
+      if (!db.available) return ctx.skip();
+      await withApp(async app => {
+        vi.spyOn(sharedHostConnectionRegistry, "requestUsageProbe").mockResolvedValue(reading as never);
+        const response = await app.inject({ method: "POST", url });
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json().quota.account_display.email).toBe("owner@vendor.invalid");
+      });
+    });
+
+    for (const [name, change, status] of [
+      ["the instance admin role", "UPDATE users SET email='demoted@test.invalid' WHERE id='user-1'", 403],
+      ["the account", "UPDATE users SET status='disabled' WHERE id='user-1'", 403],
+      ["the copy", `UPDATE hosts SET capabilities_json='{"installations":{}}'::jsonb WHERE id='host-1'`, 404],
+      ["the host", "UPDATE hosts SET status='revoked' WHERE id='host-1'", 404],
+    ] as const) {
+      it(`refuses, without the account, when ${name} is lost during the probe`, async ctx => {
+        if (!db.available) return ctx.skip();
+        await withApp(async app => {
+          const probe = slowSharedProbe();
+          const pending = app.inject({ method: "POST", url });
+          await vi.waitFor(() => expect(probe.spy).toHaveBeenCalled());
+          await db.pool.query(change);
+          await probe.answered(reading);
+          const response = await pending;
+          expect(response.statusCode, response.body).toBe(status);
+          expect(response.body).not.toContain("owner@vendor.invalid");
+        });
+      });
+    }
   });
 });

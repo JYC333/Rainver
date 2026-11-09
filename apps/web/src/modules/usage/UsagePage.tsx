@@ -1,7 +1,7 @@
+import QuotaOverview from './QuotaOverview'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/tabs'
-import SubscriptionQuotaPanel from './SubscriptionQuotaPanel'
 import {
   BarChart3,
   CheckCircle2,
@@ -355,7 +355,7 @@ export default function UsagePage() {
       <TabsTrigger value="quotas">{t('subscription_usage.title')}</TabsTrigger>
       <TabsTrigger value="history">{t('subscription_usage.history')}</TabsTrigger>
     </TabsList>
-    <TabsContent value="quotas" className="p-6"><SubscriptionQuotaPanel /></TabsContent>
+    <TabsContent value="quotas" className="space-y-8 p-6"><QuotaOverview /></TabsContent>
     <TabsContent value="history"><TokenUsageDashboard /></TabsContent>
   </Tabs>
 }

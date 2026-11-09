@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  ApiPlanUsageSnapshotSchema,
   CredentialChannelMetadataSchema,
   ModelProviderCreateRequestSchema,
   ModelProviderDTOSchema,
@@ -240,5 +241,16 @@ describe("provider contracts", () => {
       rotated: false,
       owner_bound: true,
     });
+  });
+});
+
+
+describe("API plan quota response contract", () => {
+  it("accepts measured zero/exhaustion and rejects secrets or invalid percentages", () => {
+    const snapshot = { provider_id: "mini", checked_at: "2026-11-07T12:00:00Z", windows: [{ id: "session", label: "5h", used_pct: 0, resets_at: null }] };
+    expect(ApiPlanUsageSnapshotSchema.safeParse(snapshot).success).toBe(true);
+    expect(ApiPlanUsageSnapshotSchema.safeParse({ ...snapshot, api_key: "secret" }).success).toBe(false);
+    for (const used_pct of [-1, 101, null]) expect(ApiPlanUsageSnapshotSchema.safeParse({ ...snapshot, windows: [{ ...snapshot.windows[0], used_pct }] }).success).toBe(false);
+    expect(ApiPlanUsageSnapshotSchema.safeParse({ ...snapshot, windows: [{ ...snapshot.windows[0], used_pct: 100 }] }).success).toBe(true);
   });
 });

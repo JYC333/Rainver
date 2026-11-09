@@ -1152,9 +1152,28 @@ windows for detail display; arbitrary unknown window types remain ignored.
 the cache: an Agent-triggered Room turn waits while its login is past the
 Space's `subscription_quota.reserve_pct` (`rooms/quotaGate.ts`, `modules/rooms.md`
 "Subscription quota gate"), probing first when the reading is older than a
-minute; that probe keeps a readable cached number rather than overwriting it
-with "offline" or "did not answer in time" (`keepReadingWhenUnreadable`; the
-one-minute freshness and that probe live in `rooms/subscriptionLogins.ts`). The
+minute (the one-minute freshness and that probe live in
+`rooms/subscriptionLogins.ts`). Every probe — page, per-pool button, sweep or
+gate — follows one rule (`usageFailureEndsReading` in `hosts/usageService.ts`):
+a transient answer ("offline", "did not answer in time", "unreachable", an
+upgrade in progress, vendor 429/5xx, or unrecognised text) keeps a readable
+cached reading, its account grouping and its original measurement clock, and
+only records the failure in `quota_json.error`; a login, entitlement or
+installation answer (not logged in, expired, missing scope, vendor 401/403,
+copy removed) or an explicit `account: null` (login changed under the probe)
+replaces it. The gate takes its own probe's answer either way: a transient one
+comes back as the kept reading, an ending one as no window; only a probe past
+the gate's five-second deadline or one that failed outright leaves the cached
+number deciding, and a probe superseded by a login change (409) makes the gate
+re-read the invalidated cache. Concurrent probes of one copy under one login
+generation share a single in-flight request; a login/logout starts a new one. A
+probe never writes the cache of a host revoked while it ran: the cache write
+holds the host row `FOR SHARE` (after the copy's advisory lock) until it
+commits, so a concurrent revoke either commits first and the write is refused,
+or waits for the write. The per-copy
+refresh route authorizes the caller, the host and the copy again after the
+probe returns, so a session, instance-admin role, host or copy lost meanwhile
+gets the refusal a new request would, not the account. The
 host's own usage endpoint is its owner's; a Room shows more widely only what
 its conversations run on: any member of the Room reads, for the logins its
 Agents run on in that conversation, the window's percentage and reset time

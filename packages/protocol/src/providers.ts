@@ -276,3 +276,17 @@ export const CredentialChannelMetadataSchema = z.discriminatedUnion("channel", [
     rotated: z.literal(false),
   }),
 ]);
+
+/** Owner-only API subscription meters; separate from Rainver's token/cost ledger. */
+export const ApiPlanUsageWindowSchema = z.object({
+  id: z.string(), label: z.string(), used_pct: z.number().min(0).max(100), resets_at: ISODateTimeSchema.nullable(),
+}).strict();
+export type ApiPlanUsageWindow = z.infer<typeof ApiPlanUsageWindowSchema>;
+export const ApiPlanUsageProviderSchema = z.object({
+  provider_id: IdSchema, name: z.string(), vendor: z.enum(["minimax", "kimi", "zai"]),
+}).strict();
+export type ApiPlanUsageProvider = z.infer<typeof ApiPlanUsageProviderSchema>;
+export const ApiPlanUsageSnapshotSchema = z.object({
+  provider_id: IdSchema, checked_at: ISODateTimeSchema, windows: z.array(ApiPlanUsageWindowSchema),
+}).strict();
+export type ApiPlanUsageSnapshot = z.infer<typeof ApiPlanUsageSnapshotSchema>;
