@@ -1,3 +1,10 @@
+import {registerProjectSourceOperationRoutes} from './projectSourceOperationRoutes.js';
+import { NO_STORE_CACHE_CONTROL } from '../../gateway/cacheControl.js';
+import { introspectIdentity } from '../auth/identity.js';
+import { resolveRequestId } from '../../gateway/requestContext.js';
+import { operationRuntime } from '../systemActions/operations/runtime.js';
+import { sessionActor } from '../systemActions/operations/actor.js';
+import { OperationError } from '../systemActions/operations/errors.js';
 import { registerMonitoringRoutes } from "./monitoring/routes.js";
 import type { FastifyInstance } from "fastify";
 import * as protocol from "@rainver/protocol";
@@ -48,6 +55,7 @@ import { enforceSources } from "../sources/enforceSources.js";
 import { ProjectOperationService } from "./projectOperationService.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerProjectSourceOperationRoutes(app,context);
   registerMonitoringRoutes(app, context);
   const repository = () => PgProjectRepository.fromConfig(context.config);
   const corpusRepository = () => new ProjectCorpusRepository(dbPool(context.config));
@@ -55,6 +63,33 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   const sourceBindings = () => new ProjectSourceBindingService(dbPool(context.config));
   const sourceProposals = () => new ProjectSourceProposalService(dbPool(context.config), context.config);
   const operations = () => new ProjectOperationService(dbPool(context.config));
+
+  for (const [url, id] of [
+    ['/api/v1/projects/:projectId/operations','project.operation.create'],
+    ['/api/v1/projects/:projectId/operations/:operationId/cancel','project.operation.cancel'],
+  ] as const) app.post(url, {config:{operation:id}}, async(request,reply)=>{
+    const requestId=resolveRequestId(request);
+    reply.header('cache-control',NO_STORE_CACHE_CONTROL);
+    const resolved=await introspectIdentity(context.config,request,reply);
+    if(!resolved.ok) {
+      const error=resolved.reason==='denied'
+        ? resolved.statusCode===401?new OperationError('authentication_required',401):new OperationError('operation_not_found',404)
+        : new OperationError('operation_temporarily_unavailable',503,true);
+      return reply.code(error.httpStatus).send(error.body(requestId));
+    }
+    let body:Record<string,unknown>;
+    try { body=jsonBody(request); }
+    catch { return reply.code(422).send(new OperationError('operation_invalid_input',422).body(requestId)); }
+    if(Object.hasOwn(body,'project_id') || Object.hasOwn(body,'operation_id'))
+      return reply.code(422).send(new OperationError('operation_invalid_input',422).body(requestId));
+    const p=params(request), input=id==='project.operation.create'
+      ? {...body,project_id:p.projectId}
+      : {...body,project_id:p.projectId,operation_id:p.operationId};
+    const key=request.headers['idempotency-key'];
+    const result=await(await operationRuntime(context.config)).execute(id,input,
+      sessionActor({spaceId:resolved.spaceId,userId:resolved.userId}),requestId,typeof key==='string'?key:undefined);
+    return reply.code(result.http_status).send(result.body);
+  });
 
   app.get("/api/v1/projects/:projectId/operations", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -70,38 +105,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/operations", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const gate = await enforceSources(context, identity, "project.operation.manage", "project_operation");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await operations().create(identity, requiredString(p.projectId, "project_id"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
   app.get("/api/v1/projects/:projectId/operations/:operationId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
       const p = params(request);
       return reply.send(await operations().get(identity, requiredString(p.projectId, "project_id"), requiredString(p.operationId, "operation_id")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/projects/:projectId/operations/:operationId/cancel", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const gate = await enforceSources(context, identity, "project.operation.manage", "project_operation", p.operationId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await operations().cancel(identity, requiredString(p.projectId, "project_id"), requiredString(p.operationId, "operation_id")));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -141,18 +150,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/sources/bindings", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "project.source.bind", "project_source");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      const p = params(request);
-      return reply.code(201).send(await sourceBindings().createBinding(identity, { ...jsonBody(request), project_id: requiredString(p.projectId, "project_id") }));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.post("/api/v1/projects/:projectId/sources/propose-bind", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -182,44 +179,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.patch("/api/v1/projects/:projectId/sources/bindings/:bindingId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "project.source.bind", "project_source");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      const p = params(request);
-      return reply.send(await sourceBindings().updateBinding(identity, requiredString(p.bindingId, "binding_id"), jsonBody(request), requiredString(p.projectId, "project_id")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.delete("/api/v1/projects/:projectId/sources/bindings/:bindingId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "project.source.bind", "project_source");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      const p = params(request);
-      return reply.send(await sourceBindings().deleteBinding(identity, requiredString(p.bindingId, "binding_id"), requiredString(p.projectId, "project_id")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/sources/bindings/:bindingId/backfill", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "project.source.bind", "project_source");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      const p = params(request);
-      return reply.send(await sourceBindings().backfillBinding(identity, requiredString(p.bindingId, "binding_id"), requiredString(p.projectId, "project_id")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.post("/api/v1/projects/:projectId/sources/bindings/:bindingId/propose-backfill", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);

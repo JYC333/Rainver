@@ -9,12 +9,15 @@ export interface ResolvedOperation {
   authority: string;
   targets: unknown;
   resourceType: string;
-  resourceId: string;
+  resourceId: string|null;
 }
 export interface OperationRegistration {
   definition: SystemActionDefinition;
   readKind?: 'metadata' | 'content';
-  successStatus?: 200 | 201;
+  /** Access-owned Personal/Project placement, for human new-content drafts and the named Monitor creation command.
+   * Never accepts a target Space from input and never moves existing content. */
+  userContentCreation?: true;
+  successStatus?: 200 | 201 | 202;
   resolve(db: Queryable, input: unknown, actor: OperationActor): Promise<ResolvedOperation>;
   /** Pure normalization after stable target binding; never includes observed mutable versions. */
   normalizeInput?(input: unknown, scope: ResolvedOperation): unknown;

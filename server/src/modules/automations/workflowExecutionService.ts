@@ -1,8 +1,9 @@
+import {researchGraphRunRefs,withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { lockActiveProjectForMutation } from "../projects/access.js";
-import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
+import { HttpError } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { canonicalRunOutput } from "../runs/orchestrationResults.js";
@@ -151,8 +152,15 @@ export class WorkflowExecutionService {
    * authority walks up to that same person.
    */
   async reconcile(client: Queryable, spaceId: string, executionId: string): Promise<Record<string, unknown>> {
-    return withQueryableTransaction(client, (transaction) =>
-      this.reconcileLocked(transaction, spaceId, executionId));
+    return withRunTerminalOwner(client,async db=>{
+      const execution=(await db.query<{id:string|null;space_id:string;project_id:string|null}>(
+        `SELECT e.root_run_id AS id,e.space_id,o.project_id FROM workflow_executions e
+          LEFT JOIN project_operations o ON o.id=e.research_operation_id AND o.space_id=e.space_id
+          WHERE e.space_id=$1 AND e.id=$2`,[spaceId,executionId])).rows[0];
+      if(!execution)return [];
+      if(execution.project_id)return researchGraphRunRefs(db,spaceId,execution.project_id);
+      return execution.id?[{id:execution.id,space_id:spaceId}]:[];
+    },transaction=>this.reconcileLocked(transaction,spaceId,executionId));
   }
 
   private async reconcileLocked(client: Queryable, spaceId: string, executionId: string): Promise<Record<string, unknown>> {

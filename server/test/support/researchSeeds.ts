@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import type { SpaceUserIdentity } from "../../src/modules/routeUtils/common.js";
 import { InquiryThreadService } from "../../src/modules/inquiry/threadService.js";
+import { createBoundResearchOperation } from "../../src/modules/projectResearch/researchProblemCalls.js";
 
 /**
  * Rows the Project Research files seed the same way: an arXiv source chain,
@@ -141,4 +142,56 @@ export async function createQuestionThreadScope(
     kind: "question",
     statement: String(thread.statement),
   };
+}
+
+/**
+ * A bound research Operation whose synthesis stage failed, ready for
+ * `retryFailedOperation` to queue a fresh synthesis Run. Returns its id.
+ */
+export async function seedFailedSynthesisOperation(
+  pool: Pool,
+  identity: SpaceUserIdentity,
+  input: {
+    project: string;
+    workflow: string;
+    researchQuestion: string;
+    threadScope: QuestionThreadScope[];
+    previousRunId: string | null;
+    agentId?: string;
+  },
+): Promise<string> {
+  const now = new Date().toISOString();
+  const progress = {
+    idempotency: { key: randomUUID(), fingerprint: "retry-bound-call" },
+    schema_version: "project_research_operation.v1",
+    projection_mode: "managed",
+    run_kind: "baseline",
+    workflow_id: input.workflow,
+    research_question: input.researchQuestion,
+    thread_scope: input.threadScope,
+    ...(input.agentId ? { agent_id: input.agentId } : {}),
+    source_backfill_plan_ids: [],
+    source_backfill_plan_id: null,
+    source_post_processing_rule_ids: [],
+    source_post_processing_rule_id: null,
+    current_stage: "failed",
+    failed_stage: "synthesis",
+    stage_state: "failed",
+    partial: false,
+    channel_ids: [],
+    source_item_ids: [],
+    checkpoint_ids: [],
+    artifact_ids: [],
+    synthesis_run_id: input.previousRunId,
+    error: { code: "synthesis_output_invalid", message: "previous failure", at: now },
+    watermark: { before: null, after: null, overlap_hours: 48 },
+  };
+  const created = await createBoundResearchOperation(pool, identity, input.project, {
+    title: "Initial literature intake",
+    intentText: "Retry original evidence gap",
+    status: "failed",
+    progress,
+    steps: [],
+  });
+  return String(created.id);
 }

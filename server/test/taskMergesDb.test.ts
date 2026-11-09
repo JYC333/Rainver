@@ -1,3 +1,11 @@
+import {waitForLockWaiter} from './support/lockWait.js';
+import {insertProposalRow} from '../src/modules/proposals/reviewPackets.js';
+import {linkProposalOperation} from './support/linkedProposalOperation.js';
+import {runActor} from '../src/modules/systemActions/operations/actor.js';
+import {seedRun} from './support/domainSeeds.js';
+import {readProjectColumns} from '../src/modules/tasks/boardColumns.js';
+import {operationRuntime} from '../src/modules/systemActions/operations/runtime.js';
+import {sessionActor} from '../src/modules/systemActions/operations/actor.js';
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -842,4 +850,106 @@ it('records remote Run admission flow once and atomically rolls back a failed fl
     expect((await db.pool.query(`SELECT status FROM tasks WHERE id=$1`,[TASK])).rows[0].status).toBe('ready');expect((await db.pool.query(`SELECT count(*)::int AS n FROM task_runs WHERE task_id=$1`,[TASK])).rows[0].n).toBe(before);
     expect(await flow()).toHaveLength(1);
   }finally{await db.pool.query(`DROP TRIGGER reject_remote_dispatch_flow ON project_work_events`);await db.pool.query(`DROP FUNCTION reject_remote_dispatch_flow()`);}
+});
+
+describe('Board core required merge Job transaction',()=>{
+ it.each(['configure','move','status','complete','agent_status','cancel','delete'] as const)('rolls back %s Task state, events, merge and receipt if the required Job fails',async kind=>{
+  const before=(await db.pool.query('SELECT status FROM tasks WHERE id=$1',[TASK])).rows[0].status;
+  const layout=await readProjectColumns(db.pool,SPACE,PROJECT),key=randomUUID();
+  const input=kind==='move'?{task_id:TASK,column_key:layout.columns.find(c=>c.status_key==='done')!.key,columns_revision:layout.revision}
+    :{project_id:PROJECT,revision:layout.revision,columns:layout.columns.map(c=>({key:c.key,label:c.label,status_key:c.status_key===before?'done':c.status_key,wip_limit:c.wip_limit})),moves:{}};
+  const id=kind==='move'?'task.move_to_column':kind==='status'||kind==='agent_status'||kind==='cancel'?'task.set_status':kind==='complete'?'task.complete':kind==='delete'?'task.delete':'board.configure';
+  const lifecycleInput=kind==='status'||kind==='agent_status'||kind==='cancel'?{task_id:TASK,status:kind==='cancel'?'cancelled':'done',reason:'Finish the work'}:kind==='complete'?{task_id:TASK,summary:'Completed'}:kind==='delete'?{task_id:TASK}:input;
+  let actor=sessionActor(owner);
+  if(kind==='complete'||kind==='agent_status'){
+    const runId=randomUUID();await seedRun(db.pool,{id:runId,space:SPACE,owner:OWNER,agent:AGENT,version:VERSION,existingAgent:true});
+    await db.pool.query("UPDATE runs SET project_id=$2,instructed_by_user_id=$3,status='running',permission_snapshot_json=$4::jsonb WHERE id=$1",[runId,PROJECT,OWNER,JSON.stringify({tool_grants:[{action_id:id}]})]);
+    actor=await runActor(db.pool,(await db.pool.query('SELECT * FROM runs WHERE id=$1',[runId])).rows[0]);
+  }
+  const eventsBefore=(await db.pool.query("SELECT id FROM project_work_events WHERE subject_id=$1 AND event_kind='task.flow_changed'",[TASK])).rows.length;
+  await db.pool.query('CREATE SEQUENCE board_merge_job_attempt');
+  await db.pool.query("CREATE FUNCTION refuse_board_merge_job() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.job_type IN ('task_merge','task_branch_delete') THEN PERFORM nextval('board_merge_job_attempt'); RAISE EXCEPTION 'private merge Job failure'; END IF; RETURN NEW; END $$");
+  await db.pool.query('CREATE TRIGGER refuse_board_merge_job BEFORE INSERT ON jobs FOR EACH ROW EXECUTE FUNCTION refuse_board_merge_job()');
+  try {
+   const requestId=randomUUID();
+   const response=await(await operationRuntime(config())).execute(id,lifecycleInput,actor,requestId,key);
+   expect(response.http_status,JSON.stringify(response.body)).toBe(500);expect(JSON.stringify(response.body)).not.toContain('private merge');
+   expect((await db.pool.query('SELECT is_called FROM board_merge_job_attempt')).rows[0].is_called).toBe(true);
+   const audits=(await db.pool.query("SELECT metadata_json FROM policy_decision_records WHERE metadata_json->>'operation_request_id'=$1",[requestId])).rows;
+   expect(audits).toHaveLength(1);expect(audits[0].metadata_json.operation_outcome).toBe('failed');
+   expect((await db.pool.query('SELECT status,deleted_at FROM tasks WHERE id=$1',[TASK])).rows[0]).toMatchObject({status:before,deleted_at:null});
+   expect((await db.pool.query('SELECT id FROM task_merges WHERE task_id=$1',[TASK])).rows).toHaveLength(0);
+   expect((await db.pool.query('SELECT id FROM operation_idempotency WHERE space_id=$1 AND idempotency_key=$2',[SPACE,key])).rows).toHaveLength(0);
+   expect((await db.pool.query("SELECT id FROM project_work_events WHERE subject_id=$1 AND event_kind='task.flow_changed'",[TASK])).rows).toHaveLength(eventsBefore);
+   expect((await readProjectColumns(db.pool,SPACE,PROJECT)).revision).toBe(layout.revision);
+  } finally {await db.pool.query('DROP TRIGGER refuse_board_merge_job ON jobs');await db.pool.query('DROP FUNCTION refuse_board_merge_job()');await db.pool.query('DROP SEQUENCE board_merge_job_attempt');}
+ });
+});
+
+describe('Task core cleanup intent receipt',()=>{
+ it.each(['task.set_status','task.delete'] as const)('commits one required Job intent and replays %s without duplicating cleanup',async id=>{
+  const engine=await operationRuntime(config()),key=randomUUID();
+  const input=id==='task.set_status'?{task_id:TASK,status:'done'}:{task_id:TASK};
+  const first=await engine.execute(id,input,sessionActor(owner),randomUUID(),key);
+  expect(first.http_status,JSON.stringify(first.body)).toBe(200);
+  const jobs=(await db.pool.query('SELECT id,job_type FROM jobs WHERE space_id=$1',[SPACE])).rows;
+  expect(jobs).toHaveLength(1);expect(jobs[0].job_type).toBe(id==='task.delete'?'task_branch_delete':'task_merge');
+  const replay=await engine.execute(id,input,sessionActor(owner),randomUUID(),key);
+  expect(replay.replayed).toBe(true);expect(replay.body).toEqual(first.body);
+  expect((await db.pool.query('SELECT id,job_type FROM jobs WHERE space_id=$1',[SPACE])).rows).toEqual(jobs);
+ });
+});
+
+describe('linked resolution Run give-back owner',()=>{
+ it('commits linked resolution cancellation before contacting Host and keeps the existing merge Job intent',async ctx=>{
+  if(!db.available)return ctx.skip();await markDone();
+  const host=scriptedHost({task_merge_prepare:[conflict(['src/parser.ts'])],task_merge_abort:[{ok:true,error:null}]});
+  const merges=worker(host.registry,{resolver:new TaskMergeResolutionDispatcher(config())});
+  await expect(merges.processOne()).resolves.toMatchObject({status:'deferred'});
+  const runId=(await mergeRow())!.resolution_run_id!;
+  const draft=await insertProposalRow(db.pool,{spaceId:SPACE,createdByRunId:runId,proposalType:'memory_create',title:'Resolution review',payload:{proposed_content:'Frozen'},rationale:'test',createdByUserId:OWNER,visibility:'private'});
+  await linkProposalOperation(db.pool,{spaceId:SPACE,userId:OWNER},draft.id);await db.pool.query("UPDATE proposals SET status='staged' WHERE id=$1",[draft.id]);
+  await new PgTaskRepository(db.pool).updateTask(owner,TASK,{status:'in_progress'});await dueNow();
+  await db.pool.query("CREATE FUNCTION refuse_resolution_request() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'resolution request refused'; END $$");
+  await db.pool.query('CREATE TRIGGER refuse_resolution_request BEFORE UPDATE ON operation_idempotency FOR EACH ROW EXECUTE FUNCTION refuse_resolution_request()');
+  try {
+   await expect(merges.processOne()).resolves.toMatchObject({status:'failed'});
+   expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[runId])).rows[0]!.status).toBe('queued');
+   expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[draft.id])).rows[0]!.status).toBe('staged');
+   expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[draft.id])).rows[0]!.state).toBe('pending_approval');
+   expect(host.sent.filter(frame=>frame.type==='task_merge_abort')).toHaveLength(0);
+  } finally {
+   await db.pool.query('DROP TRIGGER refuse_resolution_request ON operation_idempotency');
+   await db.pool.query('DROP FUNCTION refuse_resolution_request()');
+  }
+  // Existing durable merge Job retries only after the DB owner rolled back.
+  await dueNow();
+  await expect(merges.processOne()).resolves.toMatchObject({status:'completed'});
+  expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[runId])).rows[0]!.status).toBe('cancelled');
+  expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[draft.id])).rows[0]!.state).toBe('rejected');
+  expect((await mergeRow())!.status).toBe('superseded');
+ });
+});
+
+describe('stale resolution withdrawal',()=>{
+ it.each(['removed','replaced'] as const)('keeps stale giveBack a noop for the Run when resolution is %s',async mode=>{
+  if(!db.available)return;
+  await markDone();const host=scriptedHost({task_merge_prepare:[conflict(['src/parser.ts'])],task_merge_abort:[{ok:true,error:null}]});
+  const merges=worker(host.registry,{resolver:new TaskMergeResolutionDispatcher(config())});
+  await expect(merges.processOne()).resolves.toMatchObject({status:'deferred'});
+  const merge=(await mergeRow())!,oldRun=merge.resolution_run_id!,newRun=randomUUID();
+  await seedRun(db.pool,{id:newRun,space:SPACE,owner:OWNER,agent:AGENT,version:VERSION,existingAgent:true});
+  await db.pool.query("UPDATE runs SET status='queued',started_at=NULL,ended_at=NULL WHERE id=$1",[newRun]);
+  await new PgTaskRepository(db.pool).updateTask(owner,TASK,{status:'in_progress'});await dueNow();
+  const blocker=await db.pool.connect();let pending:Promise<unknown>|undefined;
+  try{
+   await blocker.query('BEGIN');await blocker.query('SELECT id FROM task_merges WHERE id=$1 FOR UPDATE',[merge.id]);
+   pending=merges.processOne();await waitForLockWaiter(db.pool);
+   await blocker.query('UPDATE task_merges SET resolution_run_id=$2 WHERE id=$1',[merge.id,mode==='removed'?null:newRun]);await blocker.query('COMMIT');
+   await expect(pending).resolves.toMatchObject({status:'completed'});
+   expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[oldRun])).rows[0]!.status).toBe('queued');
+   expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[newRun])).rows[0]!.status).toBe('queued');
+   expect((await mergeRow())!.status).toBe('superseded');
+  }finally{await blocker.query('ROLLBACK');blocker.release();await pending?.catch(()=>undefined);}
+ });
 });

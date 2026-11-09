@@ -1,6 +1,6 @@
 import { isPolicyAuditRecoveryActive } from '../../policy/auditWriter.js';
 import { randomUUID } from "node:crypto";
-import type { PoolClient } from '../../../db/pool.js';
+import type { Queryable } from '../../routeUtils/common.js';
 import { OperationActorSchema, type OperationActor, type OperationOutcome } from '@rainver/protocol';
 import type { ServerConfig } from '../../../config.js';
 import { operationTransaction, runOperationWork } from '../../../db/operationTransaction.js';
@@ -36,7 +36,7 @@ function scope(row: LinkedRequest): string[] {
  * No production family registers a mapping until its writer/effect inventory passes.
  */
 export function operationProposalService(config: ServerConfig, registry: ProposalApplierRegistry, registrations: ReadonlyMap<string, OperationRegistration>): PgProposalApplyService {
-  const linked = async (db: PoolClient, id: string) => (await db.query<LinkedRequest>('SELECT * FROM operation_idempotency WHERE proposal_id=$1', [id])).rows[0];
+  const linked = async (db: Queryable, id: string) => (await db.query<LinkedRequest>('SELECT * FROM operation_idempotency WHERE proposal_id=$1', [id])).rows[0];
   return new PgProposalApplyService(config, registry, {
     async usesAtomicAudit(db, id) {
       return !!(await linked(db, id));
@@ -164,7 +164,7 @@ export function operationProposalService(config: ServerConfig, registry: Proposa
     }
   });
 }
-async function supersede(db: PoolClient, proposalId: string, requestId: string) {
+async function supersede(db: Queryable, proposalId: string, requestId: string) {
   await db.query("UPDATE proposals SET status='superseded',updated_at=now() WHERE id=$1 AND status='pending'", [proposalId]);
   await db.query("UPDATE operation_idempotency SET state='superseded',terminal_at=now() WHERE id=$1 AND state='pending_approval'", [requestId]);
 }

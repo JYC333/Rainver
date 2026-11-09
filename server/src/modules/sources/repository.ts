@@ -510,6 +510,7 @@ export class PgSourcesRepository {
     return page(rows.rows.map(jobOut), countFromRow(total.rows[0]), filters.limit, filters.offset);
   }
 
+  /** Worker execution boundary; public dispatch only enqueues through core. */
   async runJob(identity: SpaceUserIdentity, jobId: string) {
     const admitted = await this.db.query<ExtractionJobRow>(
       `SELECT ${JOB_COLUMNS} FROM extraction_jobs WHERE space_id = $1 AND id = $2

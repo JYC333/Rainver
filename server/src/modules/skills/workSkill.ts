@@ -238,6 +238,11 @@ ${options.conversation
    unfinished work, and the person has to move it by hand.
 5. If you need a person to decide something, \`task.request_review\` and stop.
    Do not guess and continue.`}
+A frozen draft revision may return a new Proposal id. The original request key
+still replays its original (possibly superseded) evidence, never the new draft.
+Read the current proposal list and use the returned new id for a new decision;
+do not reuse the old key to execute a revision or copy its approvals.
+
 ## Task contracts
 
 ${TASK_CONTRACT_POLICY}
@@ -257,7 +262,7 @@ writes to at most five per turn by default. For an explicit user-requested Task
 batch, use task.create_batch instead: up to 100 requested Tasks per call, continuing
 with the remaining authorized items without another confirmation. Report created
 and existing counts; never use batches for unsolicited suggestions. Room delegation uses its shared server budget:
-five per delegatable Agent as soft limit, twice that as hard limit, depth one.
+ten per delegatable Agent as soft limit, twice that as hard limit, depth one.
 A soft warning does not stop work; a hard refusal does. Never raise a limit
 on your own initiative.
 Every \`agent.delegate\` call and structured delegation must explicitly declare

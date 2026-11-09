@@ -1,3 +1,4 @@
+import {lockProposalTransitions} from '../../systemActions/operations/proposalTransitions.js';
 import { SourceBackfillExecutionService } from '../../sources/sourceBackfillExecutionService.js';
 import { localMonitoringDate } from './budget.js';
 import { computeNextRunAt } from '../../automations/schedule.js';
@@ -13,7 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { ProposeProjectMonitoringSchema, MonitoringDetailsSchema, MonitoringRunRequestSchema, MonitoringSourceSetupSchema, type ProjectMonitoringState } from '@rainver/protocol';
 import type { ServerConfig } from '../../../config.js';
 import { HttpError, parseBody, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from '../../routeUtils/common.js';
-import { assertProjectWriter, assertProjectReadable, lockActiveProjectForMutation, canWriteProject } from '../access.js';
+import { assertProjectWriter, assertProjectWriterForMutation, assertProjectReadable, lockActiveProjectForMutation, canWriteProject } from '../access.js';
 import { ProjectSourceProposalService } from '../projectSourceProposalService.js';
 import { SourceBackfillPlanningService } from '../../sources/sourceBackfillService.js';
 import { assertSourceConnectionManageable } from '../../sources/sourceConnectionAccess.js';
@@ -62,8 +63,18 @@ export class ProjectMonitoringService {
   } = {}) {
     const body = parseBody(ProposeProjectMonitoringSchema, input);
     return withQueryableTransaction(this.db, async tx => {
-      await assertProjectWriter(tx, identity.spaceId, projectId, identity.userId);
+      await assertProjectWriter(tx,identity.spaceId,projectId,identity.userId);
+      const candidates=(await tx.query<{id:string}>(`SELECT id FROM proposals WHERE space_id=$1 AND project_id=$2 AND proposal_type IN ('project_information_monitoring_activation','project_information_monitoring_details') AND status='pending' ORDER BY id`,[identity.spaceId,projectId])).rows.map(row=>row.id);
+      const transitions=await lockProposalTransitions(tx,identity.spaceId,candidates);
+      const supersedePrevious=async(proposalId:string)=>{
+        const current=(await tx.query<{id:string}>(`SELECT id FROM proposals WHERE space_id=$1 AND project_id=$2 AND proposal_type IN ('project_information_monitoring_activation','project_information_monitoring_details') AND status='pending' AND id<>$3`,[identity.spaceId,projectId,proposalId])).rows.map(row=>row.id);
+        transitions.assertCovered(current);
+        await tx.query(`UPDATE proposals SET status='superseded',updated_at=now() WHERE space_id=$1 AND id=ANY($2::varchar[]) AND status='pending'`,[identity.spaceId,current]);
+        await transitions.finish();
+      };
+
       await lockActiveProjectForMutation(tx, identity.spaceId, projectId);
+      await assertProjectWriterForMutation(tx, identity.spaceId, projectId, identity.userId);
       await advisoryLock(tx, identity.spaceId, 'monitoring-config', `${projectId}:${body.idempotency_key}`);
       const previous = await tx.query<{
         id: string;
@@ -115,7 +126,7 @@ export class ProjectMonitoringService {
             inheritedAt: new Date().toISOString()
           });
           await tx.query(`UPDATE project_information_monitoring_versions SET proposal_id=$3 WHERE id=$1 AND space_id=$2`, [version.id, identity.spaceId, proposal.id]);
-          await tx.query(`UPDATE proposals SET status='superseded',updated_at=now() WHERE space_id=$1 AND project_id=$2 AND proposal_type IN ('project_information_monitoring_activation','project_information_monitoring_details') AND status='pending' AND id<>$3`, [identity.spaceId, projectId, proposal.id]);
+          await supersedePrevious(proposal.id);
           return {
             version: versionOut({
               ...version,
@@ -225,7 +236,7 @@ export class ProjectMonitoringService {
         inheritedAt: new Date().toISOString()
       });
       await tx.query(`UPDATE project_information_monitoring_versions SET proposal_id=$3 WHERE id=$1 AND space_id=$2`, [version.id, identity.spaceId, proposal.id]);
-      await tx.query(`UPDATE proposals SET status='superseded',updated_at=now() WHERE space_id=$1 AND project_id=$2 AND proposal_type IN ('project_information_monitoring_activation','project_information_monitoring_details') AND status='pending' AND id<>$3`, [identity.spaceId, projectId, proposal.id]);
+      await supersedePrevious(proposal.id);
       return {
         version: versionOut({
           ...version,

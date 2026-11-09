@@ -566,9 +566,10 @@ logins by Agents × Rooms. So the login stays where it was:
   `remote_eligible: false`. The boundary is independent of how the login is
   made: the builtins declare it beside their CLI login command, and a
   registry agent gets it from `acpAgents/stateBoundaries.ts` when its
-  product's state layout is known (Antigravity: `GEMINI_HOME`,
-  `.gemini/antigravity-acp/acp_token.json`), logging in through ACP Agent
-  Auth. The registry itself carries none of this, and nothing infers it;
+  product's state layout is known (Antigravity: the Host translates
+  `RAINVER_ANTIGRAVITY_STATE_DIR` to `agy acp --gemini-dir`; its credential is
+  `.gemini/antigravity-cli/antigravity-oauth-token`), logging in through ACP
+  Agent Auth. The registry itself carries none of this, and nothing infers it;
 - for runtimes without a separate credential-directory selector, a file link,
   never a copy and never a token in the environment. Passing the
   credential through `CLAUDE_CODE_OAUTH_TOKEN` or its equivalents would mean
@@ -1082,20 +1083,44 @@ copy's own login and answers `usage_probe_result { quota }` — percentages,
 reset text, and a reason when it could not read one. Never the credential, and
 never a path on the host: the reason passes `sanitizeFailure`, so vendor stderr
 or a spawn error names neither the copy nor its login file.
-Claude's is an OAuth call against `api.anthropic.com/api/oauth/usage`; Codex's
+Claude's is an OAuth call against `api.anthropic.com/api/oauth/usage`. Its
+`limits[]` rows supply the meter kind, measured percentage, reset and model or
+surface display name. Model-scoped weekly limits such as Fable stay independent
+from the account-wide week. Native rows take precedence over flat fields; the
+parser also accepts the SDK's `rate_limits.model_scoped` shape and flat OAuth
+windows. No additional Claude process or model request is needed. Codex's probe
 runs `codex -s read-only -a never app-server` and asks
 `account/rateLimits/read`, recovering the numbers from the refusal an
-over-limit account gets. Antigravity ACP refreshes only its copy's stored
-authorized-user credential against Google's fixed token endpoint, then reads
-quota summary / legacy measured quota buckets. It never starts onboarding,
-borrows an IDE/CLI account, or persists refreshed credentials. Missing credentials,
-denied quota access and unknown measurements remain unavailable.
+over-limit account gets. Antigravity uses a short-lived native CLI process on
+the selected installation’s HOME and the documented `--settings` /
+[`statusLine` JSON contract](https://antigravity.google/docs/cli/statusline/).
+The native CLI fetches quotas and owns credential refresh. A quota probe sends no prompt
+and launches no model request. Its temporary status-line collector persists only
+bounded quota buckets, discarding account and conversation fields. The Host
+normalizes the native `remaining_fraction` and `reset_time` measurements and
+removes the collector and native probe logs after process cleanup. A per-child
+`AGY_CLI_DISABLE_AUTO_UPDATE=true` prevents quota checks updating the managed CLI.
+Missing login, unavailable native measurements and an unsupported terminal
+utility remain explicit unavailable results; direct Cloud Code HTTP is not a
+fallback.
+
+Reuse / Dependency Check: reuse the login PTY builder, Host runtime hold,
+process-group cleanup and canonical quota parser. QuotaKit’s native CLI lifecycle
+was evaluated; the official status-line JSON avoids a private HTTPS protocol or
+TUI scraping. No new dependency is added.
+
 Named optional quota windows preserve model-family labels, measured used
-percentages and resets end to end (wire, cache and host card). Claude OAuth
+percentages and resets end to end (wire, cache and host card). Antigravity’s
+known native bucket IDs have display labels for Gemini, Claude / GPT and
+Gemini 4 Argon, with five-hour or weekly windows. The ordinary Gemini label
+represents the overall Gemini quota pool. The Argon weekly bucket stays separate
+from the ordinary Gemini weekly bucket. Display names never replace bucket
+identities or alter their measurements; unrecognized buckets remain
+visible with the supplied name. Claude OAuth
 includes independent windows such as Fable alongside account-wide windows;
 unknown model-window keys matching the vendor time-window convention are retained.
 Antigravity aggregate session/week fields take the highest measured usage only
-among explicit matching cadences; legacy model buckets stay named-only.
+among explicit matching cadences; model buckets without a cadence stay named-only.
 Other runtimes answer "no subscription quota" rather
 than launching a CLI to learn nothing. The control plane caches the answer in
 `host_runtime_usage`, refreshes every three hours, folds in the live reading a
@@ -2322,7 +2347,12 @@ not follow redirects. A transport error alone never proves Host liveness.
 The dev Vite proxy forwards that one WebSocket path rather than all of
 `/internal`, so dev exposes exactly what production does.
 
-A remote Run is also the only path where `artifact.submit` is granted. The
+A Task Run dispatched to a Workspace Location is granted `artifact.submit` on
+either kind of Host (`dispatchToolAllowance`). Collection is the same on both
+trust modes: the strict namespace binds the Run directory, which holds
+`$RAINVER_OUTPUT_DIR`, read-write, and the built-in Host's upload (no Host
+owner; artifacts take the Run's owner) goes through the same path
+(`test/strictHostTaskOutputsDb.test.ts`). The
 daemon uploads whatever the Run left in `$RAINVER_OUTPUT_DIR`, and
 `recordOutputArtifacts` applies the Run's declarations to those uploads —
 giving each file the declared `artifact_type` and linking it to its Task with
@@ -3286,31 +3316,29 @@ than the admission floor (`MIN_HOST_DAEMON_VERSION`, 0.4.4).
 
 ### Antigravity generated and delivered skills
 
-For `acp_antigravity_acp`, the Host uses the vendor-supported
-`ANTIGRAVITY_HARNESS_PATH` override to adapt only the harness initialization.
-`skillsConfig.materializedSkillsDir` points to
-`$GEMINI_HOME/antigravity-acp/materialized`; the session workspace is unchanged.
-The loopback bridge preserves the vendor's local handshake authentication and
-does not change models, policies, credential routing or tool permissions.
-Missing companion harness or managed absolute GEMINI_HOME refuses execution
-rather than silently writing system skills into a project. This currently
-requires a POSIX Host and an adjacent `localharness_external` binary.
+For `acp_antigravity_acp`, managed installation resolves Google’s official CLI
+platform manifests and verifies their SHA-512 digests. Personal-copy discovery
+looks for `agy acp`. The runtime key and stable managed HOME identify the
+installation independently of its CLI release.
 
-The Run's verified `RAINVER_SKILL_ROOT` is added to native `skillsPaths`, keeping
-the vendor/project skill search paths. Delivered Rainver skills stay Run-owned;
-vendor-generated built-ins stay profile-owned. Discovery grants no new file or
-execution authority. Install the updated Host before relying on this behavior;
-an already-running older Host can recreate project-local built-ins.
+The Host translates the profile selector `RAINVER_ANTIGRAVITY_STATE_DIR` into
+`--gemini-dir <profile>/.gemini`. The CLI keeps sessions, settings and built-in
+skills there; its OAuth token file is linked from the selected installation’s
+`.gemini/antigravity-cli/antigravity-oauth-token`. Authentication uses the
+advertised ACP methods, including terminal authentication (`--login`) when
+available. Credentials are neither rewritten nor imported from another store.
+An installation without a current native CLI login requires authentication.
 
-Reuse/Dependency Check: existing work-surface materialization and managed state
-remain authoritative. The ACP interface does not expose the tested harness
-field. A narrowly scoped loopback initialization bridge uses `ws` (also used in
-the workspace), avoiding a custom WebSocket implementation or modifying vendor
-archives. Tested with the installed ACP 1.4.3 harness: project skills absent,
-the identical run-workflow file materialized under managed state; synthetic
-delivered skill description discovered and its body read through native
-view_file. Local fake model responses exercised tools without vendor inference
-or real credentials; this is not a live model or deployed-Host acceptance test.
+The profile’s `config/skills.json` uses the official discovery manifest to
+reference the current Run’s verified `RAINVER_SKILL_ROOT`. Each launch replaces
+that Run reference, including an empty manifest when no skills are delivered.
+The Host does not modify the project’s skills, workspace, permissions or models.
+The client identifies itself as Rainver; the CLI controls model availability.
+
+Reuse / Dependency Check: reuse Registry installation, guarded artifact download,
+ACP health checks, native credential links and work-surface materialization.
+Google’s official CLI flags and customization manifest supply state and skill
+isolation; no additional dependency or private transport is required.
 
 Daemon 0.4.3 supports `skill_scan` and `skill_read` on the shared single-frame
 request transport. `globalSkills.ts` resolves fixed personal and managed CLI
@@ -3320,6 +3348,11 @@ There is no caller-supplied arbitrary root or server filesystem access. Paired
 Host state is owner-only; scanning built-in Host global state requires instance
 admin. The capabilities module owns API import, hash binding and review. The
 Skill import modal replaces the Project Folder picker with these discoveries.
+
+An ACP-advertised terminal authentication method is authoritative over managed
+CLI login inference. The Host does not probe or offer a top-level `login`
+fallback when terminal authentication is available; the advertised arguments
+(such as Antigravity’s `acp --login`) drive the existing PTY login path.
 
 The host Agent list keeps one login entry per copy. Multiple advertised ACP
 authentication methods are selected in the shared dialog before starting a
@@ -3498,3 +3531,22 @@ its actual physical worktree path, not the original Location/git-common root.
 Normal strict ServerHost writers retain writable git metadata. External owner processes editing files are outside
 this in-daemon scheduling contract. Same-Agent vendor-thread serialization,
 Host concurrency, quota, cancellation, kill and settlement remain independent.
+
+
+### Linked queued merge-resolution cancellation
+
+`cancelUnstartedResolutionRun` prepares the current resolution Run's linked
+requests before locking the merge/Run, rechecks the exact reference and retains
+the queued/not-started guard. Run/Proposal/request publication commits before
+`giveBack` requests `task_merge_abort` from the Host. A DB refusal leaves the
+existing durable merge Job retryable and sends no abort; it does not report a
+successful cancellation. No Host call is added to the core transaction, no
+merge-effect approval mapping is enabled, and the existing Job owns external
+retry/settlement.
+
+
+A stale give-back snapshot whose merge disappeared or resolution Run reference
+changed is a Run no-op. Admission is limited to the snapshot's exact old
+reference; the authoritative locked recheck never cancels a replacement Run or
+acquires its keys late. The original parent give-back continues its existing
+Host/merge withdrawal behavior.

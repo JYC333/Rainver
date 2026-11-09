@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { QueuedRoomMessage } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
-import type { Pool, PoolClient } from "../../db/pool.js";
+import type { Pool } from "../../db/pool.js";
 import { HttpError, withDbTransaction, type Queryable } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { isConversationTurnInProgressError } from "../sessions/conversationRuntimeSessionRepository.js";
@@ -137,7 +137,7 @@ export class RoomMessageQueue {
    * blocks the ones behind it.
    */
   async releaseNext(
-    client: PoolClient,
+    client: Queryable,
     spaceId: string,
     sessionId: string,
   ): Promise<"released" | "busy" | "empty"> {
@@ -173,7 +173,7 @@ export class RoomMessageQueue {
     }
   }
 
-  private async post(client: PoolClient, queued: QueuedRow): Promise<string> {
+  private async post(client: Queryable, queued: QueuedRow): Promise<string> {
     const request = queued.request_json as QueuedSendRequest;
     const identity = { spaceId: queued.space_id, userId: queued.user_id };
     const dispatched = await new RoomService(this.config, this.pool).sendMessageInTransaction(

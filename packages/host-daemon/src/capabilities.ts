@@ -194,7 +194,8 @@ function supportsManagedCliLogin(manifest: ToolManifest, entryArgs: string[]): P
  * the prefix. Do not guess a Node prefix.
  */
 async function withManagedCliLogin(manifest: ToolManifest, options: RuntimeOptions | null): Promise<RuntimeOptions | null> {
-  if (manifest.login || !options || options.cli_login_available || !terminalAuthAvailable()) return options;
+  if (manifest.login || !options || options.cli_login_available || !terminalAuthAvailable()
+    || options.auth_methods?.some(method => method.type === "terminal")) return options;
   // Only Agents that advertised ACP Agent Auth but cannot complete it until
   // their own CLI has credentials.
   if (!options.auth_methods?.some((method) => method.type === "agent")) return options;

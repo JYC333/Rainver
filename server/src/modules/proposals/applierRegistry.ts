@@ -44,6 +44,8 @@ export { ProposalPayloadValidationError } from "./payloadSchemas.js";
 
 export interface ProposalApplyContext {
   config: ServerConfig;
+  /** Pre-admitted Proposal/request closure, owned by the canonical apply transaction. */
+  proposalTransitions?:Awaited<ReturnType<typeof import('../systemActions/operations/proposalTransitions.js').lockProposalTransitions>>;
   db: Queryable;
   proposal: ApplyProposal;
   userId: string;

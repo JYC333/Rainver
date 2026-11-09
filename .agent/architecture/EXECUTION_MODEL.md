@@ -156,12 +156,19 @@ creates screening/idea checkpoints. A historical operation serializes workflow
 state changes while allowing Source ingestion to continue through a persisted
 pending-incremental queue.
 
-Project Research provisions a system research Agent and Runtime Profile, then
-executes its stages as ordinary Agent Runs pinned to that Profile over ACP.
-Bounded question refinement remains an incidental ProviderTask call. Research
-source post-processing and synthesis Agent Runs snapshot a JSON Schema output
-contract in the Run contract, and plain-text output is a terminal
-structured-output failure.
+Project Research provisions a system research Agent and Runtime Profile. Its
+screening (Source post-processing) Runs are ordinary Agent Runs pinned to that
+Profile over ACP, and its pass coordinator Runs and synthesis-only snapshot
+node use that Agent. Its queued stages — monitoring comparison, synthesis and
+critique — are bounded `provider_task` Runs performed by the
+`provider_task_run` worker: no Agent, AgentVersion or Profile, the provider and
+model frozen at admission, and the completion published through the same
+materialization, verification and finalization authorities an Agent Run uses
+(`runs/providerTaskRunPublication.ts`), so a WorkflowExecution node delegating
+to one settles from its evaluation. Bounded question refinement remains an
+incidental ProviderTask call. Every research stage snapshots a JSON Schema
+output contract in the Run contract; output that does not satisfy it is a
+terminal structured-output failure.
 
 **AgentRunGroup** — manager-owned multi-agent room for grouped runs. A group has
 members, messages, delegations, one root run, and optional child runs. Human
@@ -216,6 +223,13 @@ Quota, conversation-turn and Host workspace waits retain their owning codes.
 No parallelism is promised beyond dependency, FIFO, vendor-thread and Host
 capacity constraints. Older Run contracts are not rewritten; an absent access
 on an existing Run retains its write meaning.
+
+A successful CLI dependency-wait receipt triggers an attempt-owned ACP cancel
+after the response flushes, rather than waiting for the model to finish its
+turn voluntarily. A five-second grace precedes the existing Host stop protocol,
+bound to the launch nonce. Parent execution and workspace ownership remain held
+until the runtime returns and cleanup finishes; dependency parking never calls
+the logical Run cancellation path or admits children directly.
 
 Reuse / Dependency Check: extends the existing protocol Zod schemas,
 AgentGroup service/FIFO, Run/Room wait projection and Host reader/writer leases.
@@ -585,8 +599,8 @@ notice), `rooms/discussionService.ts` (`delegationBudget`,
 - **One container per person-originated turn.** The person's message opens a
   group, which is the shared container for its delegation and continuation
   chain. The default depth is one. With N active delegatable Room Agents
-  excluding the coordinator (at least one), its temporary soft limit is 5 × N
-  delegations and hard limit 10 × N. Turn limits are twice those counts: one
+  excluding the coordinator (at least one), its temporary soft limit is 10 × N
+  delegations and hard limit 20 × N. Turn limits are twice those counts: one
   child turn and one completion turn per delegation. Explicit
   `delegation_budget` passed internally by the server takes precedence (there
   is no user-facing Room budget parameter); an explicit `max_fanout` remains a
@@ -614,7 +628,18 @@ notice), `rooms/discussionService.ts` (`delegationBudget`,
 - **Explicit task collaboration.** A coordinator can declare one open Project
   Task, one or more fixed participants from the other active Room members and
   a hard `max_delegations` (1–128). There is no separate numeric participant cap.
-  Active bounds remain immutable (409 on changing Task, participants or cap).
+  Agent declarations cannot change active bounds (409 on changing Task,
+  participants or cap). An authenticated human manager can explicitly change
+  participants through `room.collaboration.update_participants`; this never
+  changes the Task, cap, coordinator, offsets or already charged usage. The
+  command compares the expected old participant set under the container lock,
+  validates both pinned group membership and the current Room roster, and
+  refuses removal while that member has an unfinished delegation. It requires
+  active Room membership and Project writer authority, records a mandatory
+  policy decision and visible before/after Room notice in the same transaction,
+  and is unavailable to Agent tools. Code deployment and a real authenticated
+  human request are required; conversational confirmation alone cannot mutate
+  the running collaboration.
   Once that Task is `done` or `cancelled`, the coordinator may explicitly
   declare another open Task and bounds in the same container, including on a
   completion turn. Either the original turn or its coordinator completion can

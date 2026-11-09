@@ -2,50 +2,32 @@ import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { HttpError, optionalString, requiredString } from "../routeUtils/common.js";
-import { loadActionRegistry } from "./actionRegistry.js";
-import { enforce } from "./service.js";
 
+export class ActionGrantConflict extends HttpError { constructor(){super(409,'An active grant already exists for this agent, action, and scope');} }
+export class ActionGrantInputError extends HttpError { constructor(message:string){super(422,message);} }
 export class ActionApprovalGrantService {
   constructor(private readonly db: Queryable,private readonly config?:ServerConfig) {}
 
-  async create(
-    config: Pick<ServerConfig, "databaseUrl">,
+  async createInTransaction(
     identity: { spaceId: string; userId: string },
     body: Record<string, unknown>,
-    auditContext: Record<string, unknown> = {},
   ) {
     await this.assertOwner(identity);
     const agentId = requiredString(body.agent_id, "agent_id");
     const actionId = requiredString(body.action_id, "action_id");
     const { loadSystemActionRegistry } = await import("../systemActions/registry.js");
-    const definition = (await loadSystemActionRegistry(config as ServerConfig)).get(actionId);
-    if (!definition) throw new HttpError(422, "Unknown system action");
-    if (!definition.grantable) throw new HttpError(422, "This action cannot be pre-authorized");
+    const definition = (await loadSystemActionRegistry(this.config)).get(actionId);
+    if (!definition) throw new ActionGrantInputError("Unknown system action");
+    if (!definition.grantable) throw new ActionGrantInputError("This action cannot be pre-authorized");
     const projectId = optionalString(body.project_id);
     const targetRunId = optionalString(body.target_run_id);
     const resourceKind = optionalString(body.resource_kind);
     const resourceId = optionalString(body.resource_id);
     await this.assertScopedResource(identity.spaceId, agentId, projectId, targetRunId);
     const maxUses = body.max_uses == null ? null : Number(body.max_uses);
-    if (maxUses !== null && (!Number.isInteger(maxUses) || maxUses <= 0)) throw new HttpError(422, "max_uses must be a positive integer");
+    if (maxUses !== null && (!Number.isInteger(maxUses) || maxUses <= 0)) throw new ActionGrantInputError("max_uses must be a positive integer");
     const expiresAt = optionalString(body.expires_at);
-    if (expiresAt && Number.isNaN(Date.parse(expiresAt))) throw new HttpError(422, "expires_at must be an ISO datetime");
-    const decision = await enforce(config, await loadActionRegistry(this.config), {
-      action: "policy.action_grant.create",
-      actor_type: "user",
-      actor_id: identity.userId,
-      space_id: identity.spaceId,
-      resource_type: "action_approval_grant",
-      resource_id: null,
-      force_record: true,
-      metadata_json: auditContext,
-    });
-    if (decision.status !== "allow") {
-      throw new HttpError(
-        decision.status === "blocked" ? 403 : 503,
-        decision.message ?? "Policy enforcement failed",
-      );
-    }
+    if (expiresAt && Number.isNaN(Date.parse(expiresAt))) throw new ActionGrantInputError("expires_at must be an ISO datetime");
     const now = new Date().toISOString();
     // A grant that has already expired or run out of uses is still 'active' until
     // something touches it (there is no background sweep). Self-heal the exact
@@ -63,8 +45,9 @@ export class ActionApprovalGrantService {
       );
       return result.rows[0];
     } catch (error) {
-      if ((error as { code?: string }).code === "23505") {
-        throw new HttpError(409, "An active grant already exists for this agent, action, and scope");
+      if ((error as { code?: string }).code === "23505"
+        && (error as { constraint?: string }).constraint === "uq_action_approval_grants_active_scope") {
+        throw new ActionGrantConflict();
       }
       throw error;
     }
@@ -98,7 +81,7 @@ export class ActionApprovalGrantService {
     );
   }
 
-  async revoke(identity: { spaceId: string; userId: string }, grantId: string) {
+  async revokeInTransaction(identity: { spaceId: string; userId: string }, grantId: string) {
     await this.assertOwner(identity);
     const result = await this.db.query(
       `UPDATE action_approval_grants SET status='revoked', revoked_at=$3
@@ -164,23 +147,23 @@ export class ActionApprovalGrantService {
     return Boolean(result.rows[0]);
   }
 
-  private async assertOwner(identity: { spaceId: string; userId: string }) {
-    const row = await this.db.query(`SELECT 1 FROM space_memberships WHERE space_id=$1 AND user_id=$2 AND status='active' AND role='owner'`, [identity.spaceId, identity.userId]);
+  async assertOwner(identity: { spaceId: string; userId: string }) {
+    const row = await this.db.query(`SELECT 1 FROM space_memberships WHERE space_id=$1 AND user_id=$2 AND status='active' AND role='owner' FOR SHARE`, [identity.spaceId, identity.userId]);
     if (!row.rows[0]) throw new HttpError(403, "Space owner access required");
   }
 
-  private async assertScopedResource(spaceId: string, agentId: string, projectId: string | null, targetRunId: string | null) {
-    const agent = await this.db.query(`SELECT 1 FROM agents WHERE id=$1 AND space_id=$2`, [agentId, spaceId]);
+  async assertScopedResource(spaceId: string, agentId: string, projectId: string | null, targetRunId: string | null) {
+    const agent = await this.db.query(`SELECT 1 FROM agents WHERE id=$1 AND space_id=$2 FOR SHARE`, [agentId, spaceId]);
     if (!agent.rows[0]) throw new HttpError(404, "Agent not found");
     if (projectId) {
-      const project = await this.db.query(`SELECT 1 FROM projects WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL`, [projectId, spaceId]);
+      const project = await this.db.query(`SELECT 1 FROM projects WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL FOR SHARE`, [projectId, spaceId]);
       if (!project.rows[0]) throw new HttpError(404, "Project not found");
     }
     if (targetRunId) {
       const run = await this.db.query(
         `SELECT 1 FROM runs
           WHERE id=$1 AND space_id=$2 AND agent_id=$3
-          LIMIT 1`,
+          LIMIT 1 FOR SHARE`,
         [targetRunId, spaceId, agentId],
       );
       if (!run.rows[0]) throw new HttpError(404, "Target Run not found for this Agent");

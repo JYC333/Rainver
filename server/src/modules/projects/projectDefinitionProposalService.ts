@@ -1,3 +1,4 @@
+import {lockProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
@@ -10,7 +11,7 @@ import {
   type Queryable,
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
-import { assertProjectWriter } from "./access.js";
+import { assertProjectWriter,assertProjectWriterForMutation,lockActiveProjectForMutation } from "./access.js";
 import { ProjectKernelService } from "./kernelService.js";
 
 interface ProjectDefinitionProposalActor {
@@ -89,6 +90,14 @@ export class ProjectDefinitionProposalService {
     };
     const visibility = actor.visibility ?? "space_shared";
     const proposal = await withQueryableTransaction(this.db, async (db) => {
+      await assertProjectWriter(db,identity.spaceId,projectId,identity.userId);
+      const candidates=actor.agentId
+        ? (await db.query<{id:string}>("SELECT id FROM proposals WHERE space_id=$1 AND project_id=$2 AND proposal_type='project_brief_publish' AND status='pending' AND created_by_agent_id=$3",[identity.spaceId,projectId,actor.agentId])).rows.map(row=>row.id)
+        : [];
+      const transitions=await lockProposalTransitions(db,identity.spaceId,candidates);
+      await lockActiveProjectForMutation(db,identity.spaceId,projectId);
+      await assertProjectWriterForMutation(db,identity.spaceId,projectId,identity.userId);
+
       if (actor.agentId) {
         // A Project has one current definition in flight at a time; a
         // retried or re-planned run must reuse it, not spawn a sibling.
@@ -120,12 +129,14 @@ export class ProjectDefinitionProposalService {
             (field) => (optionalString(pendingPayload[field]) ?? null) === (optionalString(definition[field]) ?? null),
           );
           if (sameRun || sameDefinition) return pending;
+          transitions.assertCovered([pending.id]);
           await db.query(
             `UPDATE proposals SET status='superseded', updated_at=$3 WHERE space_id=$1 AND id=$2 AND status='pending'`,
             [identity.spaceId, pending.id, new Date().toISOString()],
           );
         }
       }
+      await transitions.finish();
       const inserted = await insertProposalRow(db, {
         spaceId: identity.spaceId,
         proposalType: "project_brief_publish",

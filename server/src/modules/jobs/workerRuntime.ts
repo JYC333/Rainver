@@ -1,3 +1,5 @@
+import {registerBundleDecisionHandler,recoverBundleDecisionJobs} from '../evolution/bundleDecisionJob.js';
+import {registerRunProposalPublication} from '../runs/proposalPublicationJob.js';
 import {registerProjectReadingJobs} from '../informationDigest/index.js';
 import {registerRevisionProviderRuns,registerReadingProviderReconciliation} from "../prompts/index.js";
 import {registerSourceGoalJob} from '../sources/goals/worker.js';
@@ -100,6 +102,7 @@ export function buildJobHandlerRegistry(
   registerSourceGoalJob(registry,config);
   registerProjectReadingJobs(registry,config);
   registerAgentRunHandler(registry, config);
+  registerRunProposalPublication(registry,config);
   registerReadingProviderReconciliation(registry,config);
   registerRevisionProviderRuns();
   registerProviderTaskRunHandler(registry, config);
@@ -111,6 +114,7 @@ export function buildJobHandlerRegistry(
   registerSourceAnnotationHandler(registry, config);
   registerRetrievalEmbeddingHandler(registry, config);
   registerEvaluationHarnessHandler(registry, config);
+  registerBundleDecisionHandler(registry,config);
   registerProjectResearchHandler(registry, config);
   registerKnowledgeExtractionHandler(registry, config);
   registerExperimentReconcileHandler(registry, config);
@@ -159,6 +163,7 @@ export function startJobsWorker(
     } catch (error) {
       log?.error(`[jobs-worker] stuck job reclaim failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+    await recoverBundleDecisionJobs(config).catch(error=>log?.error(`[jobs-worker] bundle decision recovery failed: ${error instanceof Error?error.message:String(error)}`));
     await lifecycle.recover(log);
   }, RECLAIM_INTERVAL_MS, error => log?.error(`[jobs-worker] recovery failed: ${error instanceof Error ? error.message : String(error)}`), {
     afterMs: RECOVERY_STALL_MS,

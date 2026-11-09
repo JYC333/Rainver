@@ -90,6 +90,13 @@
       "when": 1793916729676,
       "tag": "0012_plugin_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793971941204,
+      "tag": "0013_evolution_bundle_decision_intent",
+      "breakpoints": true
     }
   ],
   "version": "7",

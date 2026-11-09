@@ -8,6 +8,7 @@ export interface SnapshotFile {
   path: string;
   existed: boolean;
   content: string | null;
+  encoding?: "base64";
 }
 
 interface SnapshotRow {

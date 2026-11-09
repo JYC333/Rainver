@@ -23,7 +23,7 @@ import { applyRunOrdinaryToolsEnv, prepareRunOrdinaryTools, type RunOrdinaryTool
 import { managedNativeExecutable, managedToolTree, OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { ensureManagedWorkspace, runtimeProfileContainerPath, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
 import { isPackagedAdapter, resolvePackagedAdapter } from "./adapterInstallation.js";
-import { prepareAntigravityHarness } from "./antigravityHarness.js";
+import { prepareAntigravityProfile } from "./antigravity.js";
 import { ownLaunchFor } from "./ownCopies.js";
 import { probeVersion } from "./capabilities.js";
 import { egressProxyEnv, proxyBypassHosts, type EgressProfile, type EgressProxyHandle } from "./egressProxy.js";
@@ -1574,10 +1574,10 @@ async function launchRun(
   const derivedEnv: Record<string, string> = { RAINVER_OUTPUT_DIR: outputsDir, ...attachedWorkspaceEnv, ...acpAdapterEnv, ...bindingEnv, ...workSurfaceEnv };
   if (frame.runtime_key === "acp_antigravity_acp") {
     try {
-      Object.assign(derivedEnv, await prepareAntigravityHarness(command, runDir(frame.run_id)));
+      spawnArgs.push(...await prepareAntigravityProfile(bindingEnv.RAINVER_ANTIGRAVITY_STATE_DIR, workSurfaceEnv.RAINVER_SKILL_ROOT));
     } catch (error) {
       send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false,
-        error: `Could not isolate Antigravity generated skills: ${error instanceof Error ? error.message : String(error)}` });
+        error: `Could not prepare the Antigravity profile: ${error instanceof Error ? error.message : String(error)}` });
       return;
     }
   }

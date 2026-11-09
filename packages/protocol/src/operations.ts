@@ -1,4 +1,16 @@
+import {SourceProcessingCreateSchema,SourceProcessingUpdateSchema,SourceProcessingDispatchSchema,SourceExtractionDispatchSchema,SourceProcessingRuleSchema,SourceDispatchReceiptSchema} from './sourceProcessingOperations.js';
+import {SourceChannelCreateInputSchema,SourceChannelCreateOutputSchema} from './sourceChannelCreateOperation.js';
+import {SourceMonitorTargetSchema,SourceMonitorUpdateSchema,SourceMonitorOutputSchema,SourceMonitorScanOutputSchema} from './sourceMonitorOperations.js';
+import {SourceRecipeCreateInputSchema,SourceRecipeCreateOutputSchema} from './sourceRecipeOperations.js';
+import {SourceSubscriptionInputSchema,SourceRecommendationInputSchema,SourceSubscriptionOutputSchema} from './sourceSubscriptionOperations.js';
+import {ProjectSourceBindInputSchema,ProjectSourceTargetSchema,ProjectSourceUpdateInputSchema,ProjectSourceBackfillOutputSchema,ProjectSourceBindingOutputSchema,ProjectSourceUnbindOutputSchema} from './projectSourceOperations.js';
+import {InquiryThreadCreateInputSchema,InquiryThreadCreateReceiptSchema,NoteQuestionInputSchema,NoteQuestionReceiptSchema} from './inquiryCreationOperations.js';
+import {TaskReportInputSchema,TaskCompleteInputSchema,TaskReviewInputSchema,TaskHandoffInputSchema,TaskStatusInputSchema,TaskDeleteInputSchema,TaskStatusOutputSchema,TaskReportOutputSchema,TaskCompleteOutputSchema,TaskHandoffOutputSchema,TaskDeleteOutputSchema} from './taskLifecycle.js';
+import {BoardConfigurationInputSchema, BoardColumnSelectionSchema, TaskCompletionOverrideSchema, ProjectBoardColumnSchema, TASK_STATUSES} from './projectWork.js';
+import { IdSchema } from './common.js';
 import { z } from 'zod';
+import {TaskSpacePlacementInputSchema,TaskSpacePlacementOutputSchema} from './taskSpacePlacement.js';
+import {SourceBackfillPreviewInputSchema,SourceBackfillCreateInputSchema,SourceBackfillControlInputSchema,SourceBackfillPreviewOutputSchema,SourceBackfillReceiptSchema} from './sourceBackfillOperations.js';
 export const OperationActorSchema = z.object({
   principal: z.object({
     kind: z.enum(['user', 'agent', 'automation', 'system']),
@@ -51,7 +63,117 @@ export const ActionCatalogOutputSchema = z.object({
     kind: z.enum(['command', 'query'])
   }).strict())
 }).strict();
+const grantId = z.string().min(1).max(36);
+export const ActionGrantCreateInputSchema = z.object({
+  agent_id: grantId,
+  action_id: z.string().min(1).max(128),
+  project_id: grantId.nullable().default(null),
+  target_run_id: grantId.nullable().default(null),
+  resource_kind: z.string().min(1).max(64).nullable().default(null),
+  resource_id: z.string().min(1).max(256).nullable().default(null),
+  max_uses: z.number().int().positive().max(2147483647).nullable().default(null),
+  expires_at: z.string().datetime({offset: true}).nullable().default(null),
+}).strict();
+export const ActionGrantRevokeInputSchema = z.object({grant_id: grantId}).strict();
+export const ActionGrantOutputSchema = z.object({
+  id: grantId,
+  space_id: grantId,
+  agent_id: grantId,
+  action_id: z.string(),
+  target_run_id: grantId.nullable(),
+  project_id: grantId.nullable(),
+  resource_kind: z.string().nullable(),
+  resource_id: z.string().nullable(),
+  granted_by_user_id: grantId,
+  status: z.enum(['active', 'revoked', 'expired']),
+  expires_at: z.string().datetime().nullable(),
+  max_uses: z.number().int().positive().nullable(),
+  use_count: z.number().int().nonnegative(),
+  last_used_at: z.string().datetime().nullable(),
+  created_at: z.string().datetime(),
+  revoked_at: z.string().datetime().nullable(),
+}).strict();
+export const BoardConfigureOperationInputSchema = BoardConfigurationInputSchema.extend({
+  project_id: IdSchema.max(36).optional(), reason:z.string().trim().min(1).max(2000).nullable().default(null),
+}).strict();
+export const BoardConfigureOperationOutputSchema = z.object({
+  project_id:IdSchema.max(36), columns_revision:z.string().min(1),
+  columns:z.array(ProjectBoardColumnSchema.omit({count:true})),
+}).strict();
+export const TaskMoveOperationInputSchema = BoardColumnSelectionSchema.extend({
+  task_id:IdSchema.max(36), project_id:IdSchema.max(36).optional(),
+  reason:z.string().trim().min(1).max(2000).nullable().default(null),
+  override_completion:TaskCompletionOverrideSchema.nullable().default(null),
+}).strict();
+export const TaskMoveOperationOutputSchema = z.object({
+  task_id:IdSchema.max(36), project_id:IdSchema.max(36),status:z.enum(TASK_STATUSES),column_id:IdSchema.max(36).nullable(),
+}).strict();
+// Draft labels and references do not confer orchestrator execution authority.
+export const ProjectOperationCreateInputSchema = z.object({
+  project_id: IdSchema.max(36),
+  kind: z.enum(['custom','source_setup','source_backfill']),
+  title: z.string().trim().min(1).max(256),
+  intent_text: z.string().trim().nullable().default(null),
+  initiating_run_id: IdSchema.max(36).nullable().default(null),
+  plan_artifact_id: IdSchema.max(36).nullable().default(null),
+  steps: z.array(z.object({title:z.string().trim().min(1).max(256), detail:z.record(z.unknown()).default({})}).strict()).default([]),
+}).strict();
+export const ProjectOperationCancelInputSchema = z.object({
+  project_id: IdSchema.max(36), operation_id: IdSchema.max(36),
+}).strict();
+export const ProjectOperationCommandOutputSchema = z.object({
+  id: IdSchema.max(36), project_id: IdSchema.max(36),
+  kind: z.enum(['custom','source_setup','source_backfill','research']),
+  status: z.enum(['draft','active','waiting_review','completed','failed','cancelled']),
+  version: z.number().int().positive(),
+}).strict();
+const collaborationParticipants = z.array(IdSchema.max(36)).min(1)
+  .refine(ids => new Set(ids).size === ids.length, 'Participants must be distinct');
+export const CollaborationParticipantsInputSchema = z.object({
+  group_id: IdSchema.max(36),
+  expected_participant_agent_ids: collaborationParticipants,
+  participant_agent_ids: collaborationParticipants,
+  reason: z.string().trim().min(1).max(2000),
+}).strict();
+export const CollaborationParticipantsOutputSchema = z.object({
+  group_id: IdSchema.max(36), task_id: IdSchema.max(36), participant_agent_ids: collaborationParticipants,
+  max_delegations: z.number().int().positive(),
+}).strict();
 export const OPERATION_SCHEMA_TABLE = {
+  'source.processing.rule.create':{input:SourceProcessingCreateSchema,output:SourceProcessingRuleSchema},
+  'source.processing.rule.update':{input:SourceProcessingUpdateSchema,output:SourceProcessingRuleSchema},
+  'source.processing.rule.dispatch':{input:SourceProcessingDispatchSchema,output:SourceDispatchReceiptSchema},
+  'source.extraction.dispatch':{input:SourceExtractionDispatchSchema,output:SourceDispatchReceiptSchema},
+  'source.channel.create':{input:SourceChannelCreateInputSchema,output:SourceChannelCreateOutputSchema},
+  'source.channel.update':{input:SourceMonitorUpdateSchema,output:SourceMonitorOutputSchema},
+  'source.channel.scan':{input:SourceMonitorTargetSchema,output:SourceMonitorScanOutputSchema},
+  'source.recipe.create':{input:SourceRecipeCreateInputSchema,output:SourceRecipeCreateOutputSchema},
+  'source.channel.set_subscription':{input:SourceSubscriptionInputSchema,output:SourceSubscriptionOutputSchema},
+  'source.recommendation.decide':{input:SourceRecommendationInputSchema,output:SourceSubscriptionOutputSchema},
+  'project.source.bind':{input:ProjectSourceBindInputSchema,output:ProjectSourceBindingOutputSchema},
+  'project.source.update':{input:ProjectSourceUpdateInputSchema,output:ProjectSourceBindingOutputSchema},
+  'project.source.unbind':{input:ProjectSourceTargetSchema,output:ProjectSourceUnbindOutputSchema},
+  'project.source.backfill':{input:ProjectSourceTargetSchema,output:ProjectSourceBackfillOutputSchema},
+  'inquiry.thread.create':{input:InquiryThreadCreateInputSchema,output:InquiryThreadCreateReceiptSchema},
+  'note.raise_as_question':{input:NoteQuestionInputSchema,output:NoteQuestionReceiptSchema},
+  'task.report':{input:TaskReportInputSchema,output:TaskReportOutputSchema},
+  'task.complete':{input:TaskCompleteInputSchema,output:TaskCompleteOutputSchema},
+  'task.request_review':{input:TaskReviewInputSchema,output:TaskStatusOutputSchema},
+  'task.handoff':{input:TaskHandoffInputSchema,output:TaskHandoffOutputSchema},
+  'task.set_status':{input:TaskStatusInputSchema,output:TaskStatusOutputSchema},
+  'task.delete':{input:TaskDeleteInputSchema,output:TaskDeleteOutputSchema},
+  'board.configure':{input:BoardConfigureOperationInputSchema,output:BoardConfigureOperationOutputSchema},
+  'task.move_to_column':{input:TaskMoveOperationInputSchema,output:TaskMoveOperationOutputSchema},
+  'task.place_in_space_board':{input:TaskSpacePlacementInputSchema,output:TaskSpacePlacementOutputSchema},
+  'source.backfill.preview':{input:SourceBackfillPreviewInputSchema,output:SourceBackfillPreviewOutputSchema},
+  'source.backfill.create_plan':{input:SourceBackfillCreateInputSchema,output:SourceBackfillReceiptSchema},
+  'source.backfill.pause':{input:SourceBackfillControlInputSchema,output:SourceBackfillReceiptSchema},
+  'source.backfill.resume':{input:SourceBackfillControlInputSchema,output:SourceBackfillReceiptSchema},
+  'project.operation.create': {input:ProjectOperationCreateInputSchema, output:ProjectOperationCommandOutputSchema},
+  'project.operation.cancel': {input:ProjectOperationCancelInputSchema, output:ProjectOperationCommandOutputSchema},
+  'room.collaboration.update_participants': {input: CollaborationParticipantsInputSchema, output: CollaborationParticipantsOutputSchema},
+  'policy.action_grant.create':{input:ActionGrantCreateInputSchema,output:ActionGrantOutputSchema},
+  'policy.action_grant.revoke':{input:ActionGrantRevokeInputSchema,output:ActionGrantOutputSchema},
   'system.actions.list': {
     input: ActionCatalogInputSchema,
     output: ActionCatalogOutputSchema

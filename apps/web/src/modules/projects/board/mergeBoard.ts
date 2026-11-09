@@ -91,10 +91,13 @@ export function applyCardMove(board: ProjectBoard, cardId: string, toStatus: str
   const target = board.columns.find(c=>c.key===toStatus)
   if(!target?.status_key)return board
   const from = moving.column_key
+  const completedAt = target.status_key === 'done'
+    ? moving.status === 'done' ? moving.completed_at : new Date().toISOString()
+    : null
   return {
     ...board,
     cards: board.cards.map(card =>
-      card.id === cardId ? { ...card, status: card.status==='blocked'&&target.status_key==='in_progress'?'blocked':target.status_key, column_key: toStatus } : card),
+      card.id === cardId ? { ...card, status: card.status==='blocked'&&target.status_key==='in_progress'?'blocked':target.status_key, column_key: toStatus, completed_at: completedAt } : card),
     columns: board.columns.map(column => {
       if (column.key === from) return { ...column, count: Math.max(0, column.count - 1) }
       if (column.key === toStatus) return { ...column, count: column.count + 1 }

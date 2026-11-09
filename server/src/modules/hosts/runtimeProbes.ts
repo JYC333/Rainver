@@ -82,7 +82,8 @@ export function acpRuntimeProbes(hostKind: ProbeHostKind = "remote"): RuntimePro
       runtime: remoteHostOnly ? null : (spec.invocation!.remote_capability_probe ?? spec.executable!.command!),
       // A builtin names its PATH binary above; a registry agent has none, so
       // the daemon is told where such a copy might be and verifies by handshake.
-      ...(remoteHostOnly && resolved.distribution ? { own_candidates: ownCopyCandidates(resolved.distribution) } : {}),
+      ...(remoteHostOnly && resolved.distribution ? { own_candidates: spec.runtime_key === "acp_antigravity_acp"
+        ? [{ kind: "binary" as const, command: "agy", args: ["acp"] }] : ownCopyCandidates(resolved.distribution) } : {}),
       argv: renderCommandTemplate(spec.invocation!.headless_command_template, {
         executable: spec.executable!.command!,
         sandbox_cwd: REMOTE_HOST_ACP_CWD_PLACEHOLDER,

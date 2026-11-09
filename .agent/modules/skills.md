@@ -70,3 +70,16 @@ English/Chinese source labels, absent import/review controls and binding request
 - Approach: extend the existing Skill library and startup/Space seed hooks.
 - Reason: preserve immutable original bytes and the existing Space foreign keys
   without a second delivery path or schema change.
+
+## P5-4 review closure
+
+Canonical apply pre-admits the whole pending package review set and every linked
+request before taking the package lock. It supersedes all obsolete siblings in
+the same transaction, including requests; SKIP LOCKED is no longer used. Shared
+creation admission preserves the existing per-person pending-operation unique
+constraint and rechecks package reviewability. Exclusive decision admission
+conflicts without waiting when another writer holds that set; callers may reread,
+but the server never retries a write automatically. A linked sibling also makes
+the root's mandatory audit transactional, with the existing failure recovery.
+Import bytes, scope authority and human review gates are unchanged. This writer
+evidence alone enables no production approval mapping.

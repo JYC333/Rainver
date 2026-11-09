@@ -1,3 +1,5 @@
+import {revisePendingPayload} from '../proposals/payloadRevision.js';
+import {lockProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
 /**
  * Turning imported CLI history into something a Project can act on.
  *
@@ -28,7 +30,7 @@ import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIden
 import { completeProviderText } from "../providers/invocation/invocation.js";
 import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
 import { resolveProviderCommandStore } from "../providers/commands/store.js";
-import { assertProjectWriter } from "../projects/access.js";
+import { assertProjectWriter,assertProjectWriterForMutation,lockActiveProjectForMutation } from "../projects/access.js";
 import { ProjectDefinitionProposalService } from "../projects/projectDefinitionProposalService.js";
 import { ProjectKernelService } from "../projects/kernelService.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
@@ -179,9 +181,14 @@ export class ImportedHistoryExtractionService {
     let written: { briefProposalId: string | null; packetProposalId: string | null };
     try {
       written = await withQueryableTransaction(this.db, async (tx) => {
+        await assertProjectWriter(tx,identity.spaceId,projectId,identity.userId);
+        const candidates=(await tx.query<{id:string}>("SELECT id FROM proposals WHERE space_id=$1 AND project_id=$2 AND proposal_type='project_brief_publish' AND status='pending'",[identity.spaceId,projectId])).rows.map(row=>row.id);
+        const transitions=await lockProposalTransitions(tx,identity.spaceId,candidates);
+        await lockActiveProjectForMutation(tx,identity.spaceId,projectId);
+        await assertProjectWriterForMutation(tx,identity.spaceId,projectId,identity.userId);
         const briefProposalId = decisions.length + constraints.length === 0
           ? null
-          : await this.proposeBrief(tx, identity, projectId, { goals: extraction.goals, decisions, constraints });
+          : await this.proposeBrief(tx, identity, projectId, { goals: extraction.goals, decisions, constraints },transitions);
         // Everything that could not become a Brief — no goal on either side —
         // is kept as memory candidates rather than discarded. The records have
         // been read and paid for; losing what was found in them is the one
@@ -197,6 +204,7 @@ export class ImportedHistoryExtractionService {
           `UPDATE imported_session_records SET extracted_in = $2 WHERE extracted_in = $1`,
           [`claim:${checkpointId}`, checkpointId],
         );
+        await transitions.finish();
         return { briefProposalId, packetProposalId };
       });
     } catch (error) {
@@ -406,6 +414,7 @@ export class ImportedHistoryExtractionService {
       decisions: SemanticCheckpointExtraction["decisions"];
       constraints: SemanticCheckpointExtraction["constraints"];
     },
+    transitions:Awaited<ReturnType<typeof lockProposalTransitions>>,
   ): Promise<string | null> {
     const active = await new ProjectKernelService(db).getActiveBriefVersion(identity, projectId);
     // A Project with no goal gets one proposed, from what the extraction
@@ -456,6 +465,7 @@ export class ImportedHistoryExtractionService {
       [identity.spaceId, projectId],
     );
     const waiting = pending.rows[0];
+    if(waiting)transitions.assertCovered([waiting.id]);
     if (waiting) {
       const payload = waiting.payload_json ?? {};
       const priorDecisions = Array.isArray(payload.confirmed_decisions) ? payload.confirmed_decisions as string[] : [];
@@ -473,11 +483,7 @@ export class ImportedHistoryExtractionService {
           input.constraints,
         ),
       };
-      await db.query(
-        `UPDATE proposals SET payload_json = $2::jsonb, updated_at = now() WHERE id = $1`,
-        [waiting.id, JSON.stringify(merged)],
-      );
-      return waiting.id;
+      return revisePendingPayload(db,transitions,identity.spaceId,waiting.id,merged);
     }
 
     const body: Record<string, unknown> = {

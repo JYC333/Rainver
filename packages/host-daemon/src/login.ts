@@ -1,12 +1,12 @@
 import type { HostDaemonFrame, HostServerFrameOf } from "@rainver/protocol";
 import { LOGIN_TERMINAL_COLS, LOGIN_TERMINAL_ROWS } from "@rainver/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
-import { homedir, platform } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { managedNativeCommand, loggedIn, OWN_INSTALLATION, readToolManifestSync, renderManagedLoginCommand, toolsDir, type ToolLoginSpec, type ToolStateBoundary, renderManagedCommand } from "./tools.js";
 import { parseAcpAuthMethods } from "./acpProbe.js";
 import { holdRuntimeKey, resolveAcpLaunch, substituteCwd } from "./execution.js";
-import { terminalAuthAvailable } from "./terminalAuth.js";
+import { terminalAuthAvailable, ptyArgv } from "./terminalAuth.js";
 import { get as httpGet } from "node:http";
 import { LOGIN_CALLBACK_URL_MAX_CHARS, parseLoopbackCallbackUrl } from "@rainver/protocol";
 import { clearVendorCredentialEnv } from "./providerBinding.js";
@@ -393,17 +393,6 @@ export function createLoginInputGovernor(now: () => number = Date.now): (data: s
     }
     return null;
   };
-}
-
-/** `script(1)` differs between util-linux and BSD; both give the command a PTY and relay stdin. */
-function ptyArgv(command: string[]): { command: string; args: string[] } {
-  const shellLine = command.map((part) => `'${part.replace(/'/g, "'\\''")}'`).join(" ");
-  // Size the terminal first: nothing else in the chain will, and a 0×0
-  // terminal makes TUIs misbehave and wrap auth URLs.
-  const sized = `stty cols ${LOGIN_TERMINAL_COLS} rows ${LOGIN_TERMINAL_ROWS} 2>/dev/null; exec ${shellLine}`;
-  if (platform() === "darwin") return { command: "script", args: ["-q", "/dev/null", "sh", "-c", sized] };
-  // util-linux runs `-c` through the shell itself.
-  return { command: "script", args: ["-qfec", sized, "/dev/null"] };
 }
 
 export function openLoginSession(

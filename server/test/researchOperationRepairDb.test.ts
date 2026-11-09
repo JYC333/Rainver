@@ -1,3 +1,5 @@
+import {systemActionsModule} from '../src/modules/systemActions/index.js';
+import {assertThreadReadable} from '../src/modules/inquiry/threadAccess.js';
 import {randomUUID} from 'node:crypto';
 import {beforeEach,afterAll,describe,it,expect} from 'vitest';
 import type {FastifyInstance} from 'fastify';
@@ -89,6 +91,34 @@ describe('Research metadata and invocation repair (real PostgreSQL)',()=>{
   await db.pool.query(`UPDATE space_objects SET visibility='private' WHERE id=$1`,[thread]);
   expect((await app.inject({method:'GET',url})).json()).toEqual([]);
   expect((await app.inject({method:'GET',url:`${url}/${first.operation_id}`})).statusCode).toBe(404);
+ });
+ it('refuses generic stop without Run reach or Thread change authority and creates no stop Job',async()=>{
+  const run=randomUUID();await seedRun(db.pool,{id:run,space,owner,agent:randomUUID(),version:randomUUID()});
+  const call=await start('stop-gates',{originRunId:run});
+  const peer=randomUUID();await seedSpaceMember(db.pool,{space,user:peer,role:'admin'});
+  const person={spaceId:space,userId:peer};
+  await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),space,project,peer]);
+  app=buildModuleServer(config(),[projectsModule,systemActionsModule]);
+  __setAuthIdentityForTests(person);
+  const refused=async()=>{
+    for(const generic of [false,true]) {
+      const result=await app!.inject({method:'POST',
+        url:generic?'/api/v1/actions/project.operation.cancel':`/api/v1/projects/${project}/operations/${call.operation_id}/cancel`,
+        payload:generic?{project_id:project,operation_id:call.operation_id}:{},headers:{'idempotency-key':randomUUID()}});
+      expect(result.statusCode,result.body).toBe(404);expect(result.json().error.code).toBe('operation_not_found');
+      expect(result.body).not.toContain('Private problem body');
+    }
+    expect((await db.pool.query('SELECT status FROM project_operations WHERE id=$1',[call.operation_id])).rows[0].status).toBe('active');
+    expect((await db.pool.query("SELECT id FROM jobs WHERE job_type='research_operation_cancel' AND payload_json->>'operation_id'=$1",[call.operation_id])).rows).toHaveLength(0);
+  };
+  await db.pool.query("UPDATE runs SET visibility='private' WHERE id=$1",[run]);
+  await refused();
+  await db.pool.query("UPDATE runs SET visibility='space_shared' WHERE id=$1",[run]);
+  await db.pool.query("UPDATE spaces SET oversight_mode='content' WHERE id=$1",[space]);
+  await db.pool.query("UPDATE space_objects SET visibility='private' WHERE id=$1",[thread]);
+  await expect(assertThreadReadable(db.pool,person,project,thread,'read_content')).resolves.toBeUndefined();
+  await expect(assertThreadReadable(db.pool,person,project,thread,'change')).rejects.toMatchObject({statusCode:404});
+  await refused();
  });
  it('paginates authorized metadata and preserves the old unbound operation content',async()=>{
   const a=await start('a');await db.pool.query(`UPDATE project_operations SET status='completed' WHERE id=$1`,[a.operation_id]);await start('b');

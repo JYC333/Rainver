@@ -28,7 +28,7 @@ const BoardCard = memo(function BoardCard({ card, projectId, canMove, onAction }
   canMove: boolean
   onAction: (card: ProjectBoardCard, mode: 'edit' | 'delete') => void
 }) {
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, isDragging } = useDraggable({
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, isDragging } = useDraggable({
     id: card.id,
     disabled: !canMove,
   })
@@ -40,9 +40,6 @@ const BoardCard = memo(function BoardCard({ card, projectId, canMove, onAction }
   const dragged=useRef(false)
   useEffect(()=>{if(isDragging){dragged.current=true;setMenuOpen(false);setContextPoint(null)}},[isDragging])
   const blocked = card.status === 'blocked'
-  const style = transform
-    ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
-    : undefined
 
   const actions=<>
     <DropdownMenuItem asChild><Link to={projectTaskHref(projectId,card.id)}>{t('board_ui.open')}</Link></DropdownMenuItem>
@@ -57,7 +54,6 @@ const BoardCard = memo(function BoardCard({ card, projectId, canMove, onAction }
     <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
     <div
       ref={setNodeRef}
-      style={style}
       onPointerDown={event=>{
         if(event.button!==0||!canMove)return
         dragged.current=false
@@ -71,7 +67,7 @@ const BoardCard = memo(function BoardCard({ card, projectId, canMove, onAction }
         setContextPoint({x:event.clientX,y:event.clientY})
       }}
       className={[
-        'rounded-lg border bg-card p-3 text-left shadow-sm transition-shadow',
+        'shrink-0 rounded-lg border bg-card p-3 text-left shadow-sm transition-shadow',
         canMove?'cursor-grab select-none active:cursor-grabbing':'',
         isDragging ? 'opacity-60 shadow-md' : 'hover:shadow',
         blocked ? 'border-destructive/60' : 'border-border',

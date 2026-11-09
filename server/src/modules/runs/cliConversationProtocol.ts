@@ -211,6 +211,7 @@ export class AcpController implements CliStdioController {
    * the turn is being cancelled: whatever the prompt ends with completes it.
    */
   private askedUser: AskedUser | null = null;
+  private yieldRequested = false;
 
   constructor(private readonly input: {
     runtime_key: ConversationProtocolAdapter;
@@ -293,10 +294,10 @@ export class AcpController implements CliStdioController {
     }
     if (message.error) {
       if (this.completed) return;
-      if (this.askedUser && this.phase === "prompt" && message.id === 4 + this.promptIndex) {
+      if ((this.askedUser || this.yieldRequested) && this.phase === "prompt" && message.id === 4 + this.promptIndex) {
         // A runtime may answer a cancelled prompt with an error rather than
         // `stopReason: "cancelled"`; either way the cancel was ours.
-        this.completeAskedTurn(closeStdin);
+        this.completeInterruptedTurn(closeStdin);
         return;
       }
       if (
@@ -480,7 +481,7 @@ export class AcpController implements CliStdioController {
     if (message.id === 4 + this.promptIndex && this.phase === "prompt") {
       const result = record(message.result);
       const stopReason = stringField(result, "stopReason");
-      if (stopReason !== "end_turn" && !this.askedUser) {
+      if (stopReason !== "end_turn" && !this.askedUser && !this.yieldRequested) {
         this.fail(
           `${this.label()} ACP turn ended with stop reason '${stopReason ?? "unknown"}'`,
           closeStdin,
@@ -489,7 +490,7 @@ export class AcpController implements CliStdioController {
       }
       const hasUsage = result.usage !== undefined && result.usage !== null;
       const rawUsage = recordOrNull(result.usage);
-      const usage = rawUsage ? usageFromAcp(rawUsage, this.input.runtime_key === "acp_antigravity_acp") : null;
+      const usage = rawUsage ? usageFromAcp(rawUsage) : null;
       if (hasUsage && !usage) {
         this.fail(`${this.label()} ACP returned invalid token usage`, closeStdin);
         return;
@@ -503,8 +504,8 @@ export class AcpController implements CliStdioController {
         const model = this.input.attributed_model ?? this.reportedUsageModel ?? this.selectedModel;
         if (model && model !== "default" && usage) this.modelUsage = addModelUsage(this.modelUsage, model, usage);
       }
-      if (this.askedUser) {
-        this.completeAskedTurn(closeStdin);
+      if (this.askedUser || this.yieldRequested) {
+        this.completeInterruptedTurn(closeStdin);
       } else if (this.promptIndex + 1 < this.promptCount()) {
         this.promptIndex += 1;
         this.text = "";
@@ -666,8 +667,18 @@ export class AcpController implements CliStdioController {
 
   canSteer(): boolean {
     return Boolean(this.sendLive && this.sessionId && this.phase === "prompt" && !this.completed && !this.error
-      && !this.askedUser && !this.pendingSteer && !this.finishAfterSteer
+      && !this.askedUser && !this.yieldRequested && !this.pendingSteer && !this.finishAfterSteer
       && this.promptIndex === this.promptCount() - 1 && this.acp?.capabilities.steering_idle_prompt_required);
+  }
+
+  requestYield(): boolean {
+    if (!this.sendLive || !this.sessionId || this.phase !== "prompt" || this.completed || this.error) return false;
+    if (this.yieldRequested) return true;
+    this.yieldRequested = true;
+    this.pendingSteer?.settle(new Error("Run is yielding to its delegated Agents"));
+    this.pendingSteer = null;
+    this.sendLive({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.sessionId } });
+    return true;
   }
 
   /** Content has already crossed Runtime Context authorization at the caller. */
@@ -875,7 +886,7 @@ export class AcpController implements CliStdioController {
     send(answer);
   }
 
-  private completeAskedTurn(closeStdin: () => void): void {
+  private completeInterruptedTurn(closeStdin: () => void): void {
     this.completed = true;
     this.enterPhase("terminal");
     closeStdin();

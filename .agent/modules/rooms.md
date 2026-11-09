@@ -304,6 +304,9 @@ runtime-context tails and both conversation surfaces therefore agree that the
 replaced error is not history the person must read. Drafts are kept in
 destination-scoped sessionStorage as validated logical references;
 they never contain image bytes, absolute Host paths, or credentials.
+What a Room turn, its retry, a delegated child and a summary handoff actually
+send the runtime — matched against their Delivery and Invocation Snapshot — is
+accepted end to end in [Runtime Context](runtime-context.md#joined-acceptance).
 
 A message addressed to several Agents creates one Run per recipient in one
 transaction, but they execute one at a time: the Conversation has one
@@ -871,10 +874,12 @@ memory and conversation actions, in
 idempotency-guarded `agent.delegate` / `agent.wait_for_results` and
 `research.start_acquisition` / `research.cancel_acquisition`. Delegation
 is bounded to one level. Temporary Room delegation shares a container soft
-limit of 5 × max(1, active delegatable roster Agents excluding the coordinator),
+limit of 10 × max(1, active delegatable roster Agents excluding the coordinator),
 and a hard limit twice that. Every delegation budgets two Agent turns. An explicit
 `delegation_budget` passed internally by the server overrides the default; the
-Room API exposes no user-facing budget parameter. A subgroup's hard bound and
+Room API exposes no user-facing budget parameter. New default containers use
+these limits; existing stored budgets and explicit task collaboration bounds are
+not rewritten by a default change. A subgroup's hard bound and
 the container's bound apply together, taking the smaller value (zero stops
 delegation). Crossing soft admits with one visible
 Room system notice per container; crossing hard is refused by the policy layer
@@ -1588,3 +1593,31 @@ continuation opens is named after the event, not after the instruction text.
 The group timeline is gated per message by the Run that produced it: a group is
 reached through its root Run, and a child Run inside it can be private or belong
 to a Room the viewer left.
+
+
+### Held closing-turn terminal owner
+
+Discussion open/stop/extend discover the session's closing Runs before any
+session/discussion lock. Nonlocking Room/Project writer/member preflight retains
+the locked authoritative checks. Held-group cancellation goes through the same
+canonical Run terminal writer, preserving other output fields while removing
+quota/turn markers; discussion state, Run, Proposal/request publication and Host
+thread lock release commit or roll back together. New Run membership conflicts
+without late key acquisition. No Host IO or new approval authority is introduced.
+
+
+Review correction: open/extend discovery calls `requireWriter(..., false)`;
+`getVisibleRoom`'s fourth parameter really controls `FOR UPDATE`. Only the work
+phase takes the default Room lock and repeats authority. PG tests hold both the
+Room row and a linked request key, proving key refusal occurs without waiting
+for that Room row; revoked membership/foreign scope remains hidden and unchanged.
+
+A held closing Run may still own an execution lock (dependency parking precedes
+orchestration's finally release). Canonical terminal refusal is not treated as
+success: the same transaction records `markRunCancelling` with the requesting
+person, retains the execution lock and relies on the existing cancellation-intent
+recovery to enqueue the Agent job and stop/settle through the existing protocol.
+It does not release another execution owner's lock or claim cancellation already
+completed. The no-lock path still publishes terminal/request state atomically.
+Query-only Room/Agent dispatch/managed-assistant helper signatures accept Queryable;
+no prepared port is cast to a PoolClient and no lifecycle methods are granted.

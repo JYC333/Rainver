@@ -652,6 +652,39 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     )).rows[0]?.count).toBe("0");
   });
 
+  it("never requeues a bounded ProviderTask Run as Agent work, whatever its failure", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgRunRepository(db.pool);
+    // Attended and failed with a retryable code: an Agent Run here would be
+    // requeued on `agent_run`. A ProviderTask Run's retries are its own job's.
+    const run = await repository.createQueuedProviderTaskRun({
+      space_id: SPACE, user_id: USER, trigger_origin: "manual", run_type: "agent",
+      task: "test_bounded_task", prompt: "Bounded task", project_id: null,
+      contract_snapshot: { source: { kind: "direct", id: SPACE } },
+    });
+    await repository.markRunTerminal({
+      run_id: run.id,
+      space_id: SPACE,
+      status: "failed",
+      error_json: { error_code: "provider_rate_limit", error_text: "rate limited" },
+      completed_at: new Date().toISOString(),
+    });
+    const finalizer = new PostRunFinalizationService(
+      repository, undefined, undefined, undefined, undefined, new PgRunSupervisor(db.pool),
+    );
+    await finalizer.finalize(run.id, SPACE);
+
+    expect((await repository.getRun(SPACE, run.id))?.status).toBe("failed");
+    expect((await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM run_supervisor_decisions WHERE space_id = $1 AND run_id = $2`,
+      [SPACE, run.id],
+    )).rows[0]?.count).toBe("0");
+    expect((await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM jobs WHERE job_type = 'agent_run' AND payload_json->>'run_id' = $1`,
+      [run.id],
+    )).rows[0]?.count).toBe("0");
+  });
+
   it("automatically retries transient managed failures before returning final failure to the owning operation", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({

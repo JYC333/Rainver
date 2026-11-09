@@ -383,7 +383,9 @@ describe("Research Area (real Postgres)", () => {
     );
     await seedCorpusSourceProvenance(corpusItemId, item, now);
     const result = await new ProjectResearchMonitorComparisonService(db.pool).queue({
-      spaceId: SPACE, userId: USER, projectId: PROJECT, agentId: randomUUID(), runtimeProfileId: null,
+      spaceId: SPACE, userId: USER, projectId: PROJECT,
+      // Nothing is eligible, so no provider is ever asked for.
+      resolveProvider: () => { throw new Error("no eligible material needs no provider"); },
       researchQuestion: "Does the effect replicate?", sourceItemIds: [item],
       workflowId: randomUUID(), operationId: randomUUID(),
     });

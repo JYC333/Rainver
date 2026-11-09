@@ -1,3 +1,4 @@
+import {SourceProcessingInputError} from './commandErrors.js';
 import { randomUUID, createHash } from "node:crypto";
 import { insertProposalRow } from "../../proposals/reviewPackets.js";
 import { HttpError, bestEffortStep, page, countFromRow, type Queryable, withQueryableTransaction } from "../../routeUtils/common.js";
@@ -2361,7 +2362,7 @@ export function normalizeInputConfig(value: unknown): SourcePostProcessingInputC
   const structuredOutputSchemaId = stringValue(record.structured_output_schema_id);
   if (structuredOutputSchemaId) {
     if (structuredOutputSchemaId !== "source_post_processing.result.v1") {
-      throw new HttpError(422, "input_config_json.structured_output_schema_id is not supported");
+      throw new SourceProcessingInputError(422, "input_config_json.structured_output_schema_id is not supported");
     }
     config.structured_output_schema_id = "source_post_processing.result.v1";
   }
@@ -2380,7 +2381,7 @@ function normalizeCandidatePrefilter(value: unknown): SourcePostProcessingCandid
     ? null
     : numberValue(record.min_score, "input_config_json.candidate_prefilter.min_score");
   if (minScore !== null && minScore < 0) {
-    throw new HttpError(422, "input_config_json.candidate_prefilter.min_score must be at least 0");
+    throw new SourceProcessingInputError(422, "input_config_json.candidate_prefilter.min_score must be at least 0");
   }
   const config: SourcePostProcessingCandidatePrefilterConfig = {
     enabled: booleanValue(record.enabled, false),
@@ -2412,7 +2413,7 @@ function normalizeDeepAnalysis(value: unknown): SourcePostProcessingDeepAnalysis
     ? 0.7
     : numberValue(record.min_confidence, "input_config_json.deep_analysis.min_confidence");
   if (minConfidence < 0 || minConfidence > 1) {
-    throw new HttpError(422, "input_config_json.deep_analysis.min_confidence must be between 0 and 1");
+    throw new SourceProcessingInputError(422, "input_config_json.deep_analysis.min_confidence must be between 0 and 1");
   }
   return {
     enabled: booleanValue(record.enabled, false),
@@ -2452,7 +2453,7 @@ function normalizeRelevanceProfile(value: unknown): SourcePostProcessingRelevanc
   const decisionPolicy = normalizeDecisionPolicy(record.decision_policy);
   const projectCriteria = normalizeProjectCriteria(record.project_criteria);
   if (enabled && !objective && includeCriteria.length === 0) {
-    throw new HttpError(
+    throw new SourceProcessingInputError(
       422,
       "input_config_json.relevance_profile requires an objective or include_criteria when enabled",
     );
@@ -2477,7 +2478,7 @@ function normalizeProjectCriteria(value: unknown): SourcePostProcessingProjectCr
   const domainCriteria: Record<string, string[]> = {};
   for (const [key, raw] of Object.entries(rawDomain)) {
     if (!/^[a-z][a-z0-9_]*$/.test(key)) {
-      throw new HttpError(422, `input_config_json.relevance_profile.project_criteria.domain_criteria contains invalid key ${key}`);
+      throw new SourceProcessingInputError(422, `input_config_json.relevance_profile.project_criteria.domain_criteria contains invalid key ${key}`);
     }
     domainCriteria[key] = boundedStringArray(
       raw,
@@ -2488,11 +2489,11 @@ function normalizeProjectCriteria(value: unknown): SourcePostProcessingProjectCr
   const dateRangeEnd = boundedString(record.date_range_end, "input_config_json.relevance_profile.project_criteria.date_range_end", 10);
   for (const [field, date] of [["date_range_start", dateRangeStart], ["date_range_end", dateRangeEnd]] as const) {
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      throw new HttpError(422, `input_config_json.relevance_profile.project_criteria.${field} must be YYYY-MM-DD`);
+      throw new SourceProcessingInputError(422, `input_config_json.relevance_profile.project_criteria.${field} must be YYYY-MM-DD`);
     }
   }
   if (dateRangeStart && dateRangeEnd && dateRangeStart > dateRangeEnd) {
-    throw new HttpError(
+    throw new SourceProcessingInputError(
       422,
       "input_config_json.relevance_profile.project_criteria.date_range_start must be before date_range_end",
     );
@@ -2533,12 +2534,12 @@ function normalizeDecisionPolicy(value: unknown): SourcePostProcessingRelevanceD
 
 function boundedStringArray(value: unknown, field: string, maxCount = 20, maxLength = 200): string[] {
   if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) throw new HttpError(422, `${field} must be an array of strings`);
+  if (!Array.isArray(value)) throw new SourceProcessingInputError(422, `${field} must be an array of strings`);
   const items = uniqueStrings(value);
   for (const item of items) {
-    if (item.length > maxLength) throw new HttpError(422, `${field} entries must be at most ${maxLength} characters`);
+    if (item.length > maxLength) throw new SourceProcessingInputError(422, `${field} entries must be at most ${maxLength} characters`);
   }
-  if (items.length > maxCount) throw new HttpError(422, `${field} must contain at most ${maxCount} entries`);
+  if (items.length > maxCount) throw new SourceProcessingInputError(422, `${field} must contain at most ${maxCount} entries`);
   return items;
 }
 
@@ -2586,7 +2587,7 @@ export function normalizeTriggerConfig(
     try {
       computeNextRunAt({ cron: config.cron, timezone: config.timezone });
     } catch (error) {
-      if (error instanceof InvalidScheduleError) throw new HttpError(422, error.message);
+      if (error instanceof InvalidScheduleError) throw new SourceProcessingInputError(422, error.message);
       throw error;
     }
   }
@@ -2688,7 +2689,7 @@ function timeZoneValue(value: unknown, field: string): string {
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: raw });
   } catch {
-    throw new HttpError(422, `${field} must be a valid IANA time zone`);
+    throw new SourceProcessingInputError(422, `${field} must be a valid IANA time zone`);
   }
   return raw;
 }
@@ -2700,7 +2701,7 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
 function boundedInt(value: unknown, field: string, fallback: number, min: number, max: number): number {
   if (value === undefined || value === null || value === "") return fallback;
   if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
-    throw new HttpError(422, `${field} must be an integer between ${min} and ${max}`);
+    throw new SourceProcessingInputError(422, `${field} must be an integer between ${min} and ${max}`);
   }
   return value;
 }
@@ -2711,7 +2712,7 @@ function numberValue(value: unknown, field: string): number {
     : typeof value === "string" && value.trim()
       ? Number(value)
       : Number.NaN;
-  if (!Number.isFinite(parsed)) throw new HttpError(422, `${field} must be a number`);
+  if (!Number.isFinite(parsed)) throw new SourceProcessingInputError(422, `${field} must be a number`);
   return parsed;
 }
 
@@ -2719,7 +2720,7 @@ function boundedString(value: unknown, field: string, maxLength: number): string
   const text = stringValue(value);
   if (!text) return undefined;
   if (text.length > maxLength) {
-    throw new HttpError(422, `${field} must be at most ${maxLength} characters`);
+    throw new SourceProcessingInputError(422, `${field} must be at most ${maxLength} characters`);
   }
   return text;
 }
@@ -2733,7 +2734,7 @@ function enumValue<const Values extends readonly string[]>(
   const raw = stringValue(value);
   if (!raw) return fallback;
   if ((allowed as readonly string[]).includes(raw)) return raw as Values[number];
-  throw new HttpError(422, `${field} must be one of: ${allowed.join(", ")}`);
+  throw new SourceProcessingInputError(422, `${field} must be one of: ${allowed.join(", ")}`);
 }
 
 function itemWindowWhere(input: {
@@ -2868,4 +2869,9 @@ function zonedParts(date: Date, timezone: string): { year: number; month: number
   }).formatToParts(date);
   const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((item) => item.type === type)?.value ?? 0);
   return { year: part("year"), month: part("month"), day: part("day"), hour: part("hour"), minute: part("minute") };
+}
+
+/** Configuration admission excludes mutable cursor/fire progress. */
+export function sourceProcessingRuleFingerprint(rule:SourcePostProcessingRuleRow):string{
+ return createHash('sha256').update(JSON.stringify([rule.agent_id,rule.project_id,rule.status,rule.trigger_type,rule.trigger_config_json,rule.input_config_json,rule.actions_json])).digest('hex');
 }

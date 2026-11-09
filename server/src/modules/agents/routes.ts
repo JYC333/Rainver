@@ -1237,7 +1237,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         if (!transaction.runs.getVisibleRun || !transaction.sessions.messageById || !transaction.sessions.appendRetryRunToUserMessage) {
           throw new ChatContextError("Conversation retry is temporarily unavailable", 503);
         }
-        const appendRetryRunToUserMessage = transaction.sessions.appendRetryRunToUserMessage;
+        // Bound: the repository method reads `this.db`.
+        const appendRetryRunToUserMessage = transaction.sessions.appendRetryRunToUserMessage.bind(transaction.sessions);
         const original = await transaction.runs.getVisibleRun(identity.spaceId, identity.userId, req.run_id);
         if (!original || original.agent_id !== agent.id || !original.session_id || original.run_group_id) {
           throw new ChatContextError("The failed Run is not available in this direct conversation", 404);

@@ -333,3 +333,23 @@ The stage-4 existence-equivalence regression is part of
 [Operation core acceptance](OPERATION_CORE_ACCEPTANCE.md): a missing-id hint
 consults no row outside the actor Space. The same guide records real executor/
 worker death, actual HTTP/file-bridge response loss, and old/new source cutover.
+
+
+## Nested graph transaction ownership
+
+Research pass start, operation reconciliation, checkpoint decision/resumption,
+initial/history/report/incremental starts and post-processing reconciliation
+prepare existing Project graph Run request sets before their Project/operation/
+checkpoint/graph locks. Workflow reconciliation recognizes Research binding and
+prepares the same Project set, including when entered by background settlement.
+Pure draft/item-limit/pending-item updates retain their existing ordinary owners;
+they do not acquire unrelated graph request keys.
+
+The prepared transaction scope follows nested action handlers. New immutable Run
+rows can be registered only by canonical Run insertion on that same scope; their
+terminal writer verifies no linked request exists instead of taking a late key.
+The existing active-pass branch settles its graph through the same Run writer.
+Checkpoint state and resume/failure effects now share their true root transaction.
+Existing human gates, actor/Thread responsibilities, provenance and Job writers
+remain unchanged. No production approval mapping is enabled by these internal
+changes; Evolution and full qualification evidence remain pending.

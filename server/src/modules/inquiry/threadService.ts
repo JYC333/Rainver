@@ -1,3 +1,4 @@
+import {assertLinkableNote,InquiryCreationConflict} from './threadCreationAccess.js';
 import { problemThreadPage, problemSummaries } from "./problemReadModel.js";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { assertLinkTypeAllowed } from "../ontology/validation.js";
@@ -137,7 +138,7 @@ export class InquiryThreadService {
         );
         if (existing.rows[0]) {
           if (existing.rows[0].kind !== kind || existing.rows[0].statement !== statement) {
-            throw new HttpError(409, "producer_idempotency_key was already used for a different Inquiry Thread");
+            throw new InquiryCreationConflict();
           }
           return threadToOut(existing.rows[0]);
         }
@@ -517,14 +518,7 @@ export class InquiryThreadService {
       // A private Note is only linkable by its own owner — Project write
       // access to the Thread does not imply read access to another member's
       // private Note.
-      const note = await db.query<{ object_id: string }>(
-        `SELECT n.object_id FROM notes n
-           JOIN space_objects o ON o.id = n.object_id AND o.space_id = n.space_id
-          WHERE n.object_id = $1 AND n.space_id = $2
-            AND ${contentReadSql("space_object", "o", "$3")}`,
-        [noteObjectId, identity.spaceId, identity.userId],
-      );
-      if (!note.rows[0]) throw new HttpError(422, "Note not found in this Space");
+      await assertLinkableNote(db, identity, noteObjectId);
       // Thread-to-Note is an ontology edge. Both endpoints are ontology
       // objects. Do not keep a half-edge table for it.
       assertLinkTypeAllowed({

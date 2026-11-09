@@ -13,7 +13,11 @@ import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { checkInternalToken } from "../../gateway/internalAuth.js";
 import { loadActionRegistry } from "./actionRegistry.js";
 import { enforce, enforceProposalApply } from "./service.js";
-import { ActionApprovalGrantService } from "./actionApprovalGrantService.js";
+import { introspectIdentity } from '../auth/identity.js';
+import { operationRuntime } from '../systemActions/operations/runtime.js';
+import { OperationError } from '../systemActions/operations/errors.js';
+import { sessionActor } from '../systemActions/operations/actor.js';
+import { resolveRequestId } from '../../gateway/requestContext.js';
 import { AuthorizationRequestService } from "./authorizationRequestService.js";
 import { RuntimeContextPolicyRepository } from "./runtimeContextPolicyRepository.js";
 import { dbPool, jsonBody as publicJsonBody, params, requiredString, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common.js";
@@ -29,7 +33,6 @@ function sendDomainError(reply: FastifyReply, error: unknown): FastifyReply {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
-  const grants = () => new ActionApprovalGrantService(dbPool(context.config),context.config);
   const authorizationRequests = () => new AuthorizationRequestService(
     dbPool(context.config),
     context.config,
@@ -97,20 +100,31 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.send(await authorizationRequests().decide(identity, requestId, "rejected"));
     } catch (error) { return sendRouteError(reply, error); }
   });
-  app.post("/api/v1/policy/action-grants", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
-    try {
-      return reply.code(201).send(await grants().create(context.config, identity, publicJsonBody(request)));
-    } catch (error) { return sendRouteError(reply, error); }
-  });
-  app.post("/api/v1/policy/action-grants/:grantId/revoke", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
-    try {
-      const grantId = requiredString(params(request).grantId, "grant_id");
-      const result = await enforce(context.config, await loadActionRegistry(context.config), { action: "policy.action_grant.revoke", actor_type: "user", actor_id: identity.userId, space_id: identity.spaceId, resource_type: "action_approval_grant", resource_id: grantId, force_record: true });
-      if (result.status !== "allow") return reply.code(result.status === "blocked" ? 403 : 503).send({ detail: result.message ?? "Policy enforcement failed" });
-      return reply.send(await grants().revoke(identity, grantId));
-    } catch (error) { return sendRouteError(reply, error); }
+  for (const [url,id] of [
+    ['/api/v1/policy/action-grants','policy.action_grant.create'],
+    ['/api/v1/policy/action-grants/:grantId/revoke','policy.action_grant.revoke'],
+  ] as const) app.post(url,{config:{operation:id}},async(request,reply)=>{
+    const resolved = await introspectIdentity(context.config, request, reply);
+    if (!resolved.ok) {
+      const error = resolved.reason === 'denied'
+        ? resolved.statusCode === 401 ? new OperationError('authentication_required', 401) : new OperationError('operation_not_found', 404)
+        : new OperationError('operation_temporarily_unavailable', 503, true);
+      return reply.code(error.httpStatus).send(error.body(resolveRequestId(request)));
+    }
+    const identity = {spaceId: resolved.spaceId, userId: resolved.userId};
+    let body: Record<string, unknown>;
+    try { body = publicJsonBody(request); }
+    catch {
+      return reply.code(422).send(new OperationError('operation_invalid_input', 422).body(resolveRequestId(request)));
+    }
+    // The URL owns the revoke target; body fields still pass strict validation.
+    if (id === 'policy.action_grant.revoke' && Object.hasOwn(body, 'grant_id')) {
+      return reply.code(422).send(new OperationError('operation_invalid_input', 422).body(resolveRequestId(request)));
+    }
+    const input = id === 'policy.action_grant.create' ? body : {...body, grant_id: params(request).grantId};
+    const key=request.headers['idempotency-key'];
+    const result=await(await operationRuntime(context.config)).execute(id,input,sessionActor(identity),resolveRequestId(request),typeof key==='string'?key:undefined);
+    return reply.code(result.http_status).send(result.body);
   });
 
   app.post("/internal/policy/enforce", async (request, reply) => {

@@ -1,3 +1,4 @@
+import {CliAgentToolTransport} from '../src/modules/runs/cliToolTransport.js';
 import { randomUUID } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -185,11 +186,13 @@ describe("asking for a plan in conversation", () => {
     ) as ExecutorResult;
     const siblingTask = await new PgTaskRepository(db.pool).createTask(identity(), { project_id: sibling.id, title: "Not yours to move" });
 
-    await expect(executors.get("task.report" as SystemActionId)!(
-      { task_id: siblingTask.id, summary: "reaching across" }, { idempotency_key: "call-2" } as never,
-    )).rejects.toMatchObject({ statusCode: 404, message: expect.stringContaining(String(created.summary.task_id)) });
-    await expect(executors.get("task.report" as SystemActionId)!(
-      { task_id: created.summary.task_id, summary: "own Task" }, { idempotency_key: "call-3" } as never,
-    )).resolves.toMatchObject({ summary: { ok: true } });
+    await db.pool.query("UPDATE runs SET project_id=$2,instructed_by_user_id=$3,status='running',permission_snapshot_json=$4::jsonb WHERE id=$1",
+      [run.id,mine.id,OWNER,JSON.stringify({tool_grants:[{action_id:'task.report'}]})]);
+    const stored=(await db.pool.query('SELECT * FROM runs WHERE id=$1',[run.id])).rows[0];
+    const transport=new CliAgentToolTransport(config);
+    const denied:any=await transport.call(stored,{id:'call-2',name:'task.report',arguments:{task_id:siblingTask.id,summary:'reaching across'}});
+    expect(denied.httpStatus).toBe(404);expect(JSON.stringify(denied.body)).not.toContain('Not yours to move');
+    const allowed:any=await transport.call(stored,{id:'call-3',name:'task.report',arguments:{task_id:created.summary.task_id,summary:'own Task'}});
+    expect(allowed.httpStatus).toBe(200);expect(allowed.body.data.task_id).toBe(created.summary.task_id);
   });
 });

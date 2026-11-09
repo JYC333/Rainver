@@ -13,6 +13,12 @@ import { taskCompletionState } from "./completion.js";
  * is the authority for is worse than no stream.
  */
 
+export class CompletionRequirementsUnmet extends HttpError {
+  constructor(readonly missing:string[],readonly unacknowledged:string[],message="Task completion requirements are not met") {
+    super(422,message,{code:'completion_requirements_unmet',missing,unacknowledged});
+  }
+}
+
 interface UserTaskEventContext {
   spaceId: string;
   userId: string;
@@ -107,11 +113,7 @@ export async function assertCompletionForClose(
     .filter((reason) => reason !== EVALUATION_REASON)
     .filter((reason) => !acknowledged.has(reason));
   if (unacknowledged.length > 0) {
-    throw new HttpError(422, "Task completion requirements are not met", {
-      code: "completion_requirements_unmet",
-      missing: completion.missing,
-      unacknowledged,
-    });
+    throw new CompletionRequirementsUnmet(completion.missing,unacknowledged);
   }
   return { overridden: completion.missing };
 }

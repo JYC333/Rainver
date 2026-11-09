@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { redactEvidenceText } from "../runs/evidenceRedaction.js";
 import { isHardTerminalRunStatus } from "../runs/orchestrationResults.js";
 import { runFinalizationReconcilerRegistry } from "../runs/finalizationReconcilerRegistry.js";
-import { withQueryableTransaction } from "../routeUtils/common.js";
+import {withRunTerminalOwner} from "../systemActions/operations/proposalTransitions.js";
+import {PgRunRepository} from "../runs/repository.js";
 import type { Queryable, RunRecord } from "../runs/runRepositoryTypes.js";
 import { autonomyDiscovererRegistry, type AutonomyCandidateKind } from "./registry.js";
 
@@ -24,7 +25,8 @@ export async function reconcileAutonomyRun(db: Queryable, run: RunRecord): Promi
   // requeued or held for review can still finish; it is settled when it ends
   // (its next finalization, or the review-timeout cancellation), not now.
   if (!isHardTerminalRunStatus(run.status)) return;
-  await withQueryableTransaction(db, (tx) => reconcileAutonomyRunInTransaction(tx, run));
+  await withRunTerminalOwner(db,tx=>autonomyCoordinatorRefs(tx,run.space_id,{childRunId:run.id}),
+    tx=>reconcileAutonomyRunInTransaction(tx,run));
 }
 
 async function reconcileAutonomyRunInTransaction(db: Queryable, run: RunRecord): Promise<void> {
@@ -142,29 +144,14 @@ export async function settleAutonomyCoordinator(db: Queryable, spaceId: string, 
   if ((pending.rows[0]?.total ?? 0) > 0) return;
   const failed = (pending.rows[0]?.failed ?? 0) > 0;
   const status = tickFailed ? "failed" : failed ? "degraded" : "succeeded";
-  await db.query(
-    `UPDATE runs
-        SET status = $3, output_json = $4::jsonb, ended_at = $5, updated_at = $5
-      WHERE space_id = $1 AND id = $2
-        AND status = 'waiting_for_dependency'`,
-    [
-      spaceId,
-      coordinatorRunId,
-      status,
-      JSON.stringify({
-        schema_version: "run_output.v1",
-        status: status === "succeeded" ? "succeeded" : "failed",
-        summary: tickFailed
-          ? "Autonomous tick failed before every candidate was admitted."
-          : failed
-            ? "Autonomous tick completed with one or more failed candidates."
-            : "Autonomous tick completed.",
-        result: { autonomy_tick_id: tickId },
-        output_manifest: [],
-      }),
-      now,
-    ],
-  );
+  const coordinator=(await db.query<{status:string}>('SELECT status FROM runs WHERE space_id=$1 AND id=$2 FOR UPDATE',[spaceId,coordinatorRunId])).rows[0];
+  if(coordinator?.status!=='waiting_for_dependency')return;
+  await new PgRunRepository(db).markRunTerminal({
+    space_id:spaceId,run_id:coordinatorRunId,status,completed_at:now,
+    output_json:{schema_version:'run_output.v1',status:status==='succeeded'?'succeeded':'failed',
+      summary:tickFailed?'Autonomous tick failed before every candidate was admitted.':failed?'Autonomous tick completed with one or more failed candidates.':'Autonomous tick completed.',
+      result:{autonomy_tick_id:tickId},output_manifest:[]},
+  });
 }
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -175,4 +162,11 @@ function recordValue(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** Nonlocking root discovery; the locked tick/candidate paths retain authority. */
+export async function autonomyCoordinatorRefs(db:Queryable,spaceId:string,scope:{tickId?:string;childRunId?:string}){
+ return (await db.query<{id:string;space_id:string}>(`SELECT t.coordinator_run_id AS id,t.space_id FROM autonomy_ticks t
+  WHERE t.space_id=$1 AND t.coordinator_run_id IS NOT NULL AND
+    (t.id=$2 OR EXISTS(SELECT 1 FROM autonomy_candidates c WHERE c.space_id=t.space_id AND c.launch_tick_id=t.id AND c.run_id=$3))`,[spaceId,scope.tickId??null,scope.childRunId??null])).rows;
 }

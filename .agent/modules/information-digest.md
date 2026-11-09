@@ -48,7 +48,7 @@ reached it themselves (not through the serendipity section,
 `source_item_user_states.read_origin`) and still follows or owns its source
 (`modules/library.md`, "Interest evidence"); items explicitly marked
 `ignored` contribute neither coverage nor topic candidates. Leaving a source
-resets the derived facts so the next pass rebuilds them from current sources. An observation ledger makes repeated passes
+resets the derived facts so the next pass rebuilds them from current sources. The Source subscription core command commits the subscription/window change and this cleanup together; the canonical service also joins cleanup for direct transaction/Pool callers. An observation ledger makes repeated passes
 idempotent.
 
 Fine-grained topics are owner data. Recurring normalized phrases become

@@ -179,18 +179,23 @@ const DISPATCH_BASE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
 ];
 
 /**
- * What a dispatched Run may call, given where it executes.
+ * What a dispatched Task Run may call, on either kind of Host.
  *
- * `artifact.submit` is offered only for `trusted_host`. The paired host
- * uploads its output directory and `recordOutputArtifacts` applies the
- * declared type and Task link. Do not grant it on a `sandboxed` Run.
+ * Host kind is intentionally absent, as it is from
+ * `conversationToolGrantInput`: a Project conversation on the built-in Host
+ * already carries the broader `ROOM_CONVERSATION_TOOL_ALLOWANCE`, and this set
+ * is narrower than that (no delegation, no memory, read-only retrieval, every
+ * call executed under `instructed_by_user_id`). The tools reach the control
+ * plane over the Run's tool surface; they add nothing to what the strict
+ * namespace binds.
+ *
+ * `artifact.submit` is included on both. Every Host daemon uploads the Run's
+ * `$RAINVER_OUTPUT_DIR` — the strict namespace binds the Run directory that
+ * holds it read-write — and `recordOutputArtifacts` applies the declared type
+ * and Task link whatever the trust mode.
  */
-export function dispatchToolAllowance(
-  trustMode: "sandboxed" | "trusted_host",
-): readonly SystemActionId[] {
-  return trustMode === "trusted_host"
-    ? [...DISPATCH_BASE_TOOL_ALLOWANCE, "artifact.submit"]
-    : DISPATCH_BASE_TOOL_ALLOWANCE;
+export function dispatchToolAllowance(): readonly SystemActionId[] {
+  return [...DISPATCH_BASE_TOOL_ALLOWANCE, "artifact.submit"];
 }
 
 export const ROOM_CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [

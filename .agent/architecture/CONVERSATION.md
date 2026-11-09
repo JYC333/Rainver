@@ -215,6 +215,11 @@ Two clients need a settled turn from a saved reply, and both go through
 `modules/streaming/turnStream.ts` serves one snapshot followed by a frame per
 change: `turn.part_appended`, `turn.part_updated`, `turn.state_changed`.
 
+Queued delegation snapshots may carry `queue_wait_reason` for parent execution
+or delegation admission. The same scheduling reader supplies `agent.list_runs`.
+State frames update or clear this reason even while `state` remains `working`;
+the transcript and activity strip share the localized waiting label.
+
 Text arrives two ways. A managed Run streams prose as deltas that are never
 persisted, folded here into a trailing `text` part at `STREAMED_TEXT_INDEX`
 (past any index the projection can produce) and republished as updates; a host

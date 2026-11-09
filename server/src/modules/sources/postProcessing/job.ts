@@ -1,3 +1,4 @@
+import {executeSourceDispatch} from '../sourceDispatchExecution.js';
 import type { ServerConfig } from "../../../config.js";
 import { getDbPool } from "../../../db/pool.js";
 import type { JobEnvelopeForHandler, JobHandlerRegistry } from "../../jobs/handlerRegistry.js";
@@ -9,6 +10,7 @@ import {
   sourcePostProcessingFailureCode,
 } from "./recoveryService.js";
 import {
+  sourceProcessingRuleFingerprint,
   PgSourcePostProcessingRepository,
   SOURCE_POST_PROCESSING_EVENT_JOB_TYPE,
   type SourcePostProcessingTriggerType,
@@ -30,6 +32,17 @@ async function handleSourcePostProcessingJob(
 ): Promise<JobHandlerResult> {
   const db = getDbPool(config.databaseUrl!);
   const service = new SourcePostProcessingService(db, config);
+  if(job.payload.phase==='manual_dispatch'){
+    const channel=stringValue(job.payload.source_channel_id),rule=stringValue(job.payload.rule_id),user=stringValue(job.payload.user_id);
+    if(!channel||!rule||!user||user!==job.user_id)throw new Error('Invalid processing dispatch identity');
+    return executeSourceDispatch(db,job,async()=>{
+    const current=await new PgSourcePostProcessingRepository(db).getRule(job.space_id,rule);
+    if(!current||current.source_channel_id!==channel||sourceProcessingRuleFingerprint(current)!==job.payload.expected_config_sha256)throw new Error('Source processing rule changed after dispatch');
+    const identity={spaceId:job.space_id,userId:user};
+    if(job.payload.mode==='drain'){const result=await service.drainRuleNow(identity,channel,rule,String(job.payload.expected_config_sha256));return {source_post_processing_run_ids:result.runs.map(r=>r.id),statuses:result.runs.map(r=>r.status),stopped_reason:result.stopped_reason,pending_item_count:result.pending_item_count,rule_id:rule};}
+    const result=await service.runRuleNow(identity,channel,rule,String(job.payload.expected_config_sha256));return {source_post_processing_run_id:result.id,status:result.status,rule_id:rule};
+    });
+  }
   const phase = stringValue(job.payload.phase);
   const triggerType = stringValue(job.payload.trigger_type) as SourcePostProcessingTriggerType | null;
   const ruleId = stringValue(job.payload.rule_id);

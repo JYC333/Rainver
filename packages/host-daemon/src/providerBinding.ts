@@ -81,6 +81,9 @@ const ALL_VENDOR_CREDENTIAL_PREFIXES = [
   "OPENCODE_",
   "GEMINI_",
   "GOOGLE_",
+  "AGY_",
+  "ANTIGRAVITY_",
+  "RAINVER_ANTIGRAVITY_",
 ];
 
 /**
@@ -99,6 +102,7 @@ const HOST_LOGIN_DROPPED_PREFIXES_BY_RUNTIME: Record<string, readonly string[]> 
   claude_code: ["ANTHROPIC_", "CLAUDE_"],
   codex_cli: ["OPENAI_", "CODEX_"],
   gemini_cli: ["GEMINI_", "GOOGLE_"],
+  acp_antigravity_acp: ["GEMINI_", "GOOGLE_", "AGY_", "ANTIGRAVITY_", "RAINVER_ANTIGRAVITY_"],
   opencode: ALL_VENDOR_CREDENTIAL_PREFIXES,
 };
 
@@ -190,6 +194,7 @@ const VENDOR_STATE_ROOT_KEYS = [
   "CODEX_HOME",
   "OPENCODE_CONFIG",
   "GEMINI_CONFIG_DIR",
+  "RAINVER_ANTIGRAVITY_STATE_DIR",
 ] as const;
 
 export function filterAmbientEnv(ambient: NodeJS.ProcessEnv): Record<string, string> {

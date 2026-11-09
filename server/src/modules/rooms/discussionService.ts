@@ -1,3 +1,5 @@
+import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
+import {PgRunRepository} from '../runs/repository.js';
 import {
   parseAgentMentions,
   ROOM_DISCUSSION_DEFAULT_ROUND_CAP,
@@ -9,10 +11,10 @@ import {
   type RoomDiscussionNotice,
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
-import type { Pool, PoolClient } from "../../db/pool.js";
+import type { Pool } from "../../db/pool.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { assertProjectWriter } from "../projects/access.js";
-import { HttpError, withDbTransaction } from "../routeUtils/common.js";
+import { HttpError, type Queryable, withDbTransaction } from "../routeUtils/common.js";
 import { conversationTurnTaken, ConversationTurnInProgressError, isConversationTurnInProgressError } from "../sessions/conversationRuntimeSessionRepository.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { discussionOut, PgRoomDiscussionRepository, type DiscussionRecord } from "./discussionRepository.js";
@@ -64,7 +66,7 @@ export class RoomDiscussionService {
   // -------------------------------------------------------------------------
 
   async open(identity: RoomIdentity, roomId: string, sessionId: string, request: OpenRoomDiscussionRequest) {
-    return withDbTransaction(this.pool, async (client) => {
+    return withRunTerminalOwner(this.pool,async db=>{await this.requireWriter(db,identity,roomId,false);await this.requireMember(db,identity,roomId,sessionId);return heldClosingRunRefs(db,identity.spaceId,sessionId);}, async client => {
       const room = await this.requireWriter(client, identity, roomId);
       // The conversation must belong to this Room before anything is read by
       // its session id: the active-discussion check below would otherwise
@@ -87,7 +89,7 @@ export class RoomDiscussionService {
       if (current) {
         await discussions.update(identity.spaceId, current.id, { status: "closed" });
         // Nor would the closed one's closing turn, still waiting for the window, once the new one runs.
-        await cancelHeldClosing(client, identity.spaceId, current.id);
+        await cancelHeldClosing(client, identity.spaceId, current.id,identity.userId);
       }
       const roster = await new PgRoomRepository(client).listAgentMembers(identity.spaceId, room.id, identity.userId);
       const participants = request.participant_agent_ids === "all"
@@ -200,7 +202,7 @@ export class RoomDiscussionService {
    * nothing.
    */
   async stop(identity: RoomIdentity, roomId: string, sessionId: string, discussionId: string) {
-    const stopped = await withDbTransaction(this.pool, async (client) => {
+    const stopped = await withRunTerminalOwner(this.pool,async db=>{await this.requireMember(db,identity,roomId,sessionId);return heldClosingRunRefs(db,identity.spaceId,sessionId);}, async client => {
       await this.requireMember(client, identity, roomId, sessionId);
       const discussions = new PgRoomDiscussionRepository(client);
       await lockSession(client, identity.spaceId, sessionId);
@@ -210,7 +212,7 @@ export class RoomDiscussionService {
         // the rounds on offer and ends it for good: a closing still waiting
         // for the subscription window is cancelled rather than concluding it
         // hours later. A person who wants a conclusion asks for one.
-        await cancelHeldClosing(client, identity.spaceId, discussion.id);
+        await cancelHeldClosing(client, identity.spaceId, discussion.id,identity.userId);
         return { discussion: await discussions.update(identity.spaceId, discussion.id, { status: "closed", heldMentions: [] }), close: false };
       }
       if (discussion.status !== "active") return { discussion, close: false };
@@ -235,7 +237,7 @@ export class RoomDiscussionService {
    * for. The Agents it held back are dispatched as the next wave.
    */
   async extend(identity: RoomIdentity, roomId: string, sessionId: string, discussionId: string, rounds: number) {
-    return withDbTransaction(this.pool, async (client) => {
+    return withRunTerminalOwner(this.pool,async db=>{await this.requireWriter(db,identity,roomId,false);await this.requireMember(db,identity,roomId,sessionId);return heldClosingRunRefs(db,identity.spaceId,sessionId);}, async client => {
       await this.requireWriter(client, identity, roomId);
       const discussions = new PgRoomDiscussionRepository(client);
       await lockSession(client, identity.spaceId, sessionId);
@@ -259,7 +261,7 @@ export class RoomDiscussionService {
       // The closing turn dispatched at the cap and still waiting for the
       // subscription window concludes nothing now: it would run first once
       // the window resets, mid-discussion, and spend it.
-      await cancelHeldClosing(client, identity.spaceId, discussion.id);
+      await cancelHeldClosing(client, identity.spaceId, discussion.id,identity.userId);
       // Adding rounds is a new decision to spend, so what follows runs for
       // the person who made it (B8A): their authority, their subscription,
       // their spend bound — another budget of the same size on top of what
@@ -403,7 +405,7 @@ export class RoomDiscussionService {
     }
   }
 
-  async advanceInTransaction(client: PoolClient, spaceId: string, groupId: string): Promise<void> {
+  async advanceInTransaction(client: Queryable, spaceId: string, groupId: string): Promise<void> {
     const sessionRow = (await client.query<{ session_id: string | null }>(
       `SELECT session_id FROM agent_run_groups WHERE space_id = $1 AND id = $2`,
       [spaceId, groupId],
@@ -626,7 +628,7 @@ export class RoomDiscussionService {
    * failure came before a discussion existed, the notice alone says what the
    * Agent's reply asked for and why it did not happen.
    */
-  private async failAdvance(client: PoolClient, spaceId: string, groupId: string, error: unknown): Promise<void> {
+  private async failAdvance(client: Queryable, spaceId: string, groupId: string, error: unknown): Promise<void> {
     // The session lock first, then the group, as `advanceInTransaction` takes them.
     const sessionRow = (await client.query<{ session_id: string | null }>(
       `SELECT session_id FROM agent_run_groups WHERE space_id = $1 AND id = $2`,
@@ -662,7 +664,7 @@ export class RoomDiscussionService {
    * emergent discussion. The rest are named in a notice.
    */
   private async admissible(
-    client: PoolClient,
+    client: Queryable,
     discussion: DiscussionRecord,
     roster: RoomAgentMemberRecord[],
     targets: RoomDiscussionHeldMention[],
@@ -689,7 +691,7 @@ export class RoomDiscussionService {
   }
 
   private async dispatchWave(
-    client: PoolClient,
+    client: Queryable,
     discussion: DiscussionRecord,
     roster: RoomAgentMemberRecord[],
     input: { wave: number; targets: RoomDiscussionHeldMention[]; debateCritique: boolean },
@@ -748,7 +750,7 @@ export class RoomDiscussionService {
   }
 
   private async end(
-    client: PoolClient,
+    client: Queryable,
     discussion: DiscussionRecord,
     status: "converged" | "cap_reached",
     reason: string | null,
@@ -789,7 +791,7 @@ export class RoomDiscussionService {
    * ordinary message took that wave boundary, so no wave is left to end it —
    * still gets the closing turn, and the Agents it held are named.
    */
-  private async closeStoppedAfterAdvance(client: PoolClient, spaceId: string, discussionId: string, wave: number): Promise<void> {
+  private async closeStoppedAfterAdvance(client: Queryable, spaceId: string, discussionId: string, wave: number): Promise<void> {
     const discussions = new PgRoomDiscussionRepository(client);
     const discussion = await discussions.get(spaceId, discussionId, { forUpdate: true });
     // Only the newest wave stands for the discussion; an older one was
@@ -803,7 +805,7 @@ export class RoomDiscussionService {
     }
   }
 
-  private async dispatchClosing(client: PoolClient, discussion: DiscussionRecord, wave: number): Promise<void> {
+  private async dispatchClosing(client: Queryable, discussion: DiscussionRecord, wave: number): Promise<void> {
     const roster = await this.roster(client, discussion);
     const silent = await listNonResponders(client, discussion, roster);
     await new RoomService(this.config, this.pool).continueAfterDomainEventInTransaction(
@@ -831,7 +833,7 @@ export class RoomDiscussionService {
   }
 
   private async notice(
-    client: PoolClient,
+    client: Queryable,
     discussion: DiscussionRecord,
     wave: number,
     notice: Omit<RoomDiscussionNotice, "discussion_id">,
@@ -862,7 +864,7 @@ export class RoomDiscussionService {
 
   /** Agents a reply addressed that will not be set working, and why — never silently. */
   private async unheard(
-    client: PoolClient,
+    client: Queryable,
     discussion: DiscussionRecord,
     roster: RoomAgentMemberRecord[],
     targets: RoomDiscussionHeldMention[],
@@ -882,7 +884,7 @@ export class RoomDiscussionService {
   // Helpers
   // -------------------------------------------------------------------------
 
-  private async roster(client: PoolClient, discussion: DiscussionRecord): Promise<RoomAgentMemberRecord[]> {
+  private async roster(client: Queryable, discussion: DiscussionRecord): Promise<RoomAgentMemberRecord[]> {
     return new PgRoomRepository(client).listAgentMembers(discussion.space_id, discussion.room_id, discussion.opened_by_user_id);
   }
 
@@ -892,7 +894,7 @@ export class RoomDiscussionService {
   }
 
   /** The newest group of a discussion when every Run in it is done; null while a wave runs. */
-  private async latestGroupIdle(client: PoolClient, discussion: DiscussionRecord): Promise<string | null> {
+  private async latestGroupIdle(client: Queryable, discussion: DiscussionRecord): Promise<string | null> {
     const latest = (await client.query<{ id: string }>(
       `SELECT id FROM agent_run_groups WHERE space_id = $1 AND discussion_id = $2 ORDER BY created_at DESC, id DESC LIMIT 1`,
       [discussion.space_id, discussion.id],
@@ -901,14 +903,14 @@ export class RoomDiscussionService {
     return await waveComplete(client, discussion.space_id, latest.id) ? latest.id : null;
   }
 
-  private async requireWriter(client: PoolClient, identity: RoomIdentity, roomId: string) {
-    const room = await new PgRoomRepository(client).getVisibleRoom(identity.spaceId, identity.userId, roomId, true);
+  private async requireWriter(client: Queryable, identity: RoomIdentity, roomId: string, lock=true) {
+    const room = await new PgRoomRepository(client).getVisibleRoom(identity.spaceId, identity.userId, roomId, lock);
     if (!room) throw new HttpError(404, "Room not found in this space");
     await assertProjectWriter(client, identity.spaceId, room.project_id, identity.userId);
     return room;
   }
 
-  private async requireMember(client: PoolClient, identity: RoomIdentity, roomId: string, sessionId: string) {
+  private async requireMember(client: Queryable, identity: RoomIdentity, roomId: string, sessionId: string) {
     const rooms = new PgRoomRepository(client);
     const room = await rooms.getVisibleRoom(identity.spaceId, identity.userId, roomId, false);
     if (!room) throw new HttpError(404, "Room not found in this space");
@@ -930,7 +932,7 @@ export function delegationBudget(turnsUsed: number, budget: RoomDelegationBudget
     max_fanout: turnsUsed >= limits.hardTurns ? 0 : budget.max_fanout };
 }
 
-async function discussionDelegationBudget(db: PoolClient, discussion: DiscussionRecord): Promise<RoomDelegationBudget> {
+async function discussionDelegationBudget(db: Queryable, discussion: DiscussionRecord): Promise<RoomDelegationBudget> {
   const group = (await db.query<{ id: string }>(`SELECT id FROM agent_run_groups
     WHERE space_id=$1 AND trigger_message_id=$2 ORDER BY created_at,id LIMIT 1`,
   [discussion.space_id, discussion.origin_message_id])).rows[0];
@@ -950,7 +952,7 @@ async function discussionDelegationBudget(db: PoolClient, discussion: Discussion
  * and nothing past a discussion's spend cap.
  */
 export async function agentOriginContinuation(
-  client: PoolClient,
+  client: Queryable,
   spaceId: string,
   sourceGroupId: string,
   sourceDelegationId?: string,
@@ -1037,7 +1039,7 @@ export async function agentOriginContinuation(
  * person's opening message for an explicit one, the Agent reply that opened
  * an emergent one, then each wave in turn).
  */
-async function discussionCauseRunId(client: PoolClient, discussion: Pick<DiscussionRecord, "space_id" | "id">): Promise<string | null> {
+async function discussionCauseRunId(client: Queryable, discussion: Pick<DiscussionRecord, "space_id" | "id">): Promise<string | null> {
   const result = await client.query<{ root_run_id: string }>(
     `SELECT root_run_id FROM agent_run_groups
       WHERE space_id = $1 AND discussion_id = $2 AND root_run_id IS NOT NULL
@@ -1055,7 +1057,7 @@ export function containerGroupOf(groupId: string, budgetJson: unknown): string {
 }
 
 /** Charge one Agent-triggered turn to a container group; the new count. */
-export async function chargeContainer(client: Pick<PoolClient, "query">, spaceId: string, containerGroupId: string): Promise<number> {
+export async function chargeContainer(client: Queryable, spaceId: string, containerGroupId: string): Promise<number> {
   const result = await client.query<{ turns: number }>(
     `UPDATE agent_run_groups
         SET budget_json = COALESCE(budget_json, '{}'::jsonb) || jsonb_build_object(
@@ -1069,7 +1071,7 @@ export async function chargeContainer(client: Pick<PoolClient, "query">, spaceId
   return result.rows[0]?.turns ?? Number.MAX_SAFE_INTEGER;
 }
 
-async function containerTurns(client: PoolClient, spaceId: string, groupId: string, budgetJson: unknown): Promise<number> {
+async function containerTurns(client: Queryable, spaceId: string, groupId: string, budgetJson: unknown): Promise<number> {
   const containerGroupId = containerGroupOf(groupId, budgetJson);
   if (containerGroupId === groupId) return containerTurnsUsed(budgetJson);
   const row = (await client.query<{ budget_json: unknown }>(
@@ -1096,7 +1098,7 @@ interface QuotaExhaustion {
  * resets. A refusal whose window has reset since — the wave's later turns
  * waited it out — ends nothing.
  */
-async function quotaExhaustion(client: PoolClient, spaceId: string, groupIds: readonly string[]): Promise<QuotaExhaustion | null> {
+async function quotaExhaustion(client: Queryable, spaceId: string, groupIds: readonly string[]): Promise<QuotaExhaustion | null> {
   const run = (await client.query<{ id: string; refused_at: unknown }>(
     `SELECT id, updated_at AS refused_at FROM runs
       WHERE space_id = $1 AND run_group_id = ANY($2::varchar[])
@@ -1115,7 +1117,7 @@ async function quotaExhaustion(client: PoolClient, spaceId: string, groupIds: re
 }
 
 /** A wave's recipients the vendor CLI refused for an exhausted subscription, to be set working again when rounds are added. */
-async function refusedRecipients(client: PoolClient, spaceId: string, groupIds: readonly string[]): Promise<RoomDiscussionHeldMention[]> {
+async function refusedRecipients(client: Queryable, spaceId: string, groupIds: readonly string[]): Promise<RoomDiscussionHeldMention[]> {
   const rows = (await client.query<{ agent_id: string }>(
     `SELECT DISTINCT agent_id FROM runs
       WHERE space_id = $1 AND run_group_id = ANY($2::varchar[])
@@ -1142,7 +1144,7 @@ function isTurnBusyHttpError(error: unknown): boolean {
     && /turn|already handling/i.test(error.message);
 }
 
-async function lockSession(client: PoolClient, spaceId: string, sessionId: string): Promise<void> {
+async function lockSession(client: Queryable, spaceId: string, sessionId: string): Promise<void> {
   await lockRoomConversationQueue(client, spaceId, sessionId);
 }
 
@@ -1161,7 +1163,7 @@ async function requireDiscussion(
 }
 
 /** Every Run of the group has finished and completed its chat turn. */
-async function waveComplete(client: PoolClient, spaceId: string, groupId: string): Promise<boolean> {
+async function waveComplete(client: Queryable, spaceId: string, groupId: string): Promise<boolean> {
   const result = await client.query<{ pending: string }>(
     `SELECT count(*)::text AS pending
        FROM runs run
@@ -1186,7 +1188,7 @@ interface WaveReply {
   failed: boolean;
 }
 
-async function waveReplies(client: PoolClient, spaceId: string, groupIds: readonly string[]): Promise<WaveReply[]> {
+async function waveReplies(client: Queryable, spaceId: string, groupIds: readonly string[]): Promise<WaveReply[]> {
   const result = await client.query<WaveReply>(
     `SELECT message.id, message.role, message.sender_agent_id, message.content,
             (message.metadata_json ? 'error_code') AS failed
@@ -1213,7 +1215,7 @@ interface WaveGroup {
   event_key: string | null;
 }
 
-async function loadWaveGroup(client: PoolClient, spaceId: string, groupId: string): Promise<WaveGroup | null> {
+async function loadWaveGroup(client: Queryable, spaceId: string, groupId: string): Promise<WaveGroup | null> {
   const row = (await client.query<Omit<WaveGroup, "wave" | "closing" | "event_key"> & { metadata_json: unknown }>(
     `SELECT grp.id, grp.advanced_at, grp.room_id, grp.session_id, grp.trigger_message_id, grp.discussion_id,
             grp.manager_user_id, grp.budget_json, message.metadata_json
@@ -1235,7 +1237,7 @@ async function loadWaveGroup(client: PoolClient, spaceId: string, groupId: strin
 }
 
 /** The groups of one wave of a discussion, the dispatching one first; closing turns excluded. */
-async function waveGroupIdsOf(client: PoolClient, spaceId: string, discussionId: string, wave: number): Promise<string[]> {
+async function waveGroupIdsOf(client: Queryable, spaceId: string, discussionId: string, wave: number): Promise<string[]> {
   const result = await client.query<{ id: string }>(
     `SELECT grp.id
        FROM agent_run_groups grp
@@ -1249,7 +1251,7 @@ async function waveGroupIdsOf(client: PoolClient, spaceId: string, discussionId:
   return result.rows.map((row) => row.id);
 }
 
-async function waveDispatchGroupId(client: PoolClient, spaceId: string, discussionId: string, wave: number): Promise<string | null> {
+async function waveDispatchGroupId(client: Queryable, spaceId: string, discussionId: string, wave: number): Promise<string | null> {
   return (await waveGroupIdsOf(client, spaceId, discussionId, wave))[0] ?? null;
 }
 
@@ -1268,12 +1270,10 @@ function roundOf(discussion: Pick<DiscussionRecord, "round_base">, wave: number)
  * left holding the conversation — and let go of their host threads (the
  * reconciler finalizes the cancelled Runs).
  */
-async function cancelHeldClosing(client: PoolClient, spaceId: string, discussionId: string): Promise<void> {
-  const cancelled = await client.query<{ id: string }>(
-    `UPDATE runs run
-        SET status = 'cancelled', output_json = run.output_json - 'waiting_for_quota' - 'waiting_for_turn',
-            ended_at = now(), updated_at = now()
-       FROM agent_run_groups grp
+async function cancelHeldClosing(client: Queryable, spaceId: string, discussionId: string, requestedBy:string): Promise<void> {
+  const candidates = await client.query<{id:string;output_json:Record<string,unknown>}>(
+    `SELECT run.id,run.output_json
+       FROM runs run, agent_run_groups grp
        JOIN messages trigger ON trigger.space_id = grp.space_id AND trigger.id = grp.trigger_message_id
       WHERE run.space_id = $1 AND run.run_group_id = grp.id AND grp.discussion_id = $2
         AND trigger.metadata_json->>'discussion_closing' = 'true'
@@ -1283,9 +1283,20 @@ async function cancelHeldClosing(client: PoolClient, spaceId: string, discussion
            WHERE held.space_id = grp.space_id AND held.run_group_id = grp.id AND held.status = 'queued'
              AND (held.output_json ? 'waiting_for_quota' OR held.output_json ? 'waiting_for_turn')
         )
-      RETURNING run.id, run.host_task_thread_id`,
-    [spaceId, discussionId],
-  );
+      ORDER BY run.id FOR UPDATE OF run`,[spaceId,discussionId]);
+  const cancelled:{rows:{id:string}[]}={rows:[]};
+  for(const run of candidates.rows){
+    const {waiting_for_quota:_quota,waiting_for_turn:_turn,...output}=run.output_json;
+    const ended=await new PgRunRepository(client).markRunTerminal({space_id:spaceId,run_id:run.id,status:'cancelled',output_json:output,completed_at:new Date().toISOString()});
+    if(ended)cancelled.rows.push({id:run.id});
+    else {
+      // A parked attempt can still own its execution lock until orchestration
+      // finally releases it. Persist cancellation for the existing recovery loop;
+      // do not claim terminal success or remove another worker's lock.
+      const requested=await new PgRunRepository(client).markRunCancelling({space_id:spaceId,run_id:run.id,requested_at:new Date().toISOString(),reason:'Discussion closing turn withdrawn',requested_by_user_id:requestedBy});
+      if(!requested)throw new HttpError(409,'Closing Run could not be cancelled');
+    }
+  }
   if (cancelled.rows.length === 0) return;
   await client.query(
     `UPDATE host_threads SET dispatch_lock_id = NULL, updated_at = now()
@@ -1299,7 +1310,7 @@ function closingKey(discussion: Pick<DiscussionRecord, "id" | "rounds_used">): s
   return `${discussion.id}:closing:${discussion.rounds_used}`;
 }
 
-async function hasClosingTurn(client: PoolClient, spaceId: string, discussion: DiscussionRecord): Promise<boolean> {
+async function hasClosingTurn(client: Queryable, spaceId: string, discussion: DiscussionRecord): Promise<boolean> {
   const result = await client.query(
     `SELECT 1 FROM messages
       WHERE space_id = $1 AND discussion_id = $2
@@ -1359,7 +1370,7 @@ function critiqueTargets(
  * shared with them in this Room. Such an Agent gets a notice, never a Run.
  */
 async function triggerRefusal(
-  client: PoolClient,
+  client: Queryable,
   discussion: DiscussionRecord,
   roster: RoomAgentMemberRecord[],
   agentId: string,
@@ -1389,7 +1400,7 @@ async function triggerRefusal(
 }
 
 async function listNonResponders(
-  client: PoolClient,
+  client: Queryable,
   discussion: DiscussionRecord,
   roster: RoomAgentMemberRecord[],
 ): Promise<Array<{ agent_name: string; reason: string }>> {
@@ -1484,4 +1495,13 @@ function agentName(roster: RoomAgentMemberRecord[], agentId: string | undefined)
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+async function heldClosingRunRefs(db:import('../routeUtils/common.js').Queryable,spaceId:string,sessionId:string){
+ return (await db.query<{id:string;space_id:string}>(`SELECT run.id,run.space_id FROM runs run
+ JOIN agent_run_groups grp ON grp.id=run.run_group_id AND grp.space_id=run.space_id
+ JOIN room_discussions d ON d.id=grp.discussion_id AND d.space_id=grp.space_id
+ JOIN messages trigger ON trigger.id=grp.trigger_message_id AND trigger.space_id=grp.space_id
+ WHERE run.space_id=$1 AND d.session_id=$2 AND trigger.metadata_json->>'discussion_closing'='true'
+ AND run.status IN ('queued','waiting_for_dependency') ORDER BY run.id`,[spaceId,sessionId])).rows;
 }

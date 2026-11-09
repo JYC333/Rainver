@@ -1,3 +1,4 @@
+import type {OperationInput} from '@rainver/protocol'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ListTodo, Plus } from 'lucide-react'
@@ -165,9 +166,9 @@ export default function TasksPage() {
     }
   }
 
-  async function quickStatus(task: Task, status: string) {
+  async function quickStatus(task: Task, status: OperationInput<'task.set_status'>['status']) {
     try {
-      await tasksApi.update(task.id, { status })
+      await tasksApi.setStatus(task.id, { status },crypto.randomUUID())
       toast.success('Updated')
       await loadTasks()
     } catch (e) {

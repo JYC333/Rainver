@@ -1,3 +1,6 @@
+import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
+import {insertProposalRow} from '../proposals/reviewPackets.js';
+import {lockProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
 import {
   HttpError,
@@ -322,6 +325,12 @@ export class PgPlanRepository {
     }
     const declaredPlanCap = input.budgetCap ?? declaredBudgetCap(graph.definition.metadata_json);
     return withQueryableTransaction(this.db, async (client) => {
+      await this.assertPlanningRun(client, identity, input, false);
+      const reviewCandidates=(await client.query<{id:string}>(
+        `SELECT v.approval_proposal_id AS id FROM plan_versions v JOIN plans p ON p.id=v.plan_id AND p.space_id=v.space_id
+          WHERE p.space_id=$1 AND p.source_task_id=$2 AND v.approval_proposal_id IS NOT NULL`,
+        [identity.spaceId,input.sourceTaskId])).rows.map(row=>row.id);
+      const transitions=await lockProposalTransitions(client,identity.spaceId,reviewCandidates);
       await this.assertPlanningRun(client, identity, input);
       const taskResult = await client.query<{ id: string; task_role: string; title: string; description: string | null; project_folder_id: string | null; project_id: string | null }>(
         `SELECT id, task_role, title, description, project_folder_id, project_id
@@ -445,6 +454,7 @@ export class PgPlanRepository {
           .map((row) => row.approval_proposal_id)
           .filter((id): id is string => typeof id === "string" && id.length > 0);
         if (staleProposalIds.length > 0) {
+          transitions.assertCovered(staleProposalIds);
           await client.query(
             `UPDATE proposals SET status = 'superseded', updated_at = $3
                WHERE space_id = $1 AND id = ANY($2::varchar[]) AND proposal_type = 'plan_review' AND status = 'pending'`,
@@ -452,19 +462,19 @@ export class PgPlanRepository {
           );
         }
       }
+      await transitions.finish();
       let proposalId: string | null = null;
       if (approval.mode === "proposal_required") {
         proposalId = randomUUID();
-        await client.query(
-          `INSERT INTO proposals (
-             id, space_id, proposal_type, status, risk_level, urgency, title, summary,
-             payload_json, created_at, updated_at, created_by_user_id, owner_user_id,
-             project_id, project_folder_id, created_by_run_id
-           ) VALUES ($1, $2, $12, 'pending', $3, 'normal', $4, $5, $6::jsonb,
-                    $7, $7, $8, $8, $9, $10, $11)`,
-          [proposalId, identity.spaceId, highestRisk(graph), `Review Agent plan: ${graph.definition.name}`,
-            "Agent-generated Plan requires review before execution.", JSON.stringify({ plan_id: planId, plan_version_id: versionId, source_task_id: input.sourceTaskId, reasons: approval.reasons }), now, identity.userId, task.project_id, task.project_folder_id, input.planningRunId, PLAN_REVIEW_PROPOSAL_TYPE],
-        );
+        await insertProposalRow(client,{
+          id:proposalId,spaceId:identity.spaceId,proposalType:PLAN_REVIEW_PROPOSAL_TYPE,
+          title:`Review Agent plan: ${graph.definition.name}`,
+          summary:'Agent-generated Plan requires review before execution.',
+          payload:{plan_id:planId,plan_version_id:versionId,source_task_id:input.sourceTaskId,reasons:approval.reasons},
+          rationale:'Agent-generated Plan requires review before execution.',
+          riskLevel:highestRisk(graph),visibility:'space_shared',createdByUserId:identity.userId,
+          projectId:task.project_id,projectFolderId:task.project_folder_id,createdByRunId:input.planningRunId,createdAt:now,
+        });
         await client.query(`UPDATE plan_versions SET approval_proposal_id = $3, updated_at = $4 WHERE id = $2 AND space_id = $1`, [identity.spaceId, versionId, proposalId, now]);
         await client.query(`UPDATE plan_nodes SET status = 'blocked', blocked_reason = 'Plan version requires approval', approval_proposal_id = $3, updated_at = $4 WHERE space_id = $1 AND plan_version_id = $2`, [identity.spaceId, versionId, proposalId, now]);
       }
@@ -543,7 +553,9 @@ export class PgPlanRepository {
   }
 
   async reconcilePlan(identity: SpaceUserIdentity, planId: string) {
-    return withQueryableTransaction(this.db, async (client) => {
+    return withRunTerminalOwner(this.db,async db=>(await db.query<{id:string;space_id:string}>(
+      `SELECT p.root_run_id AS id,p.space_id FROM plans p JOIN tasks t ON t.id=p.source_task_id AND t.space_id=p.space_id
+        WHERE p.space_id=$1 AND p.id=$2 AND p.root_run_id IS NOT NULL AND ${contentReadSql("task","t","$3")}`,[identity.spaceId,planId,identity.userId])).rows,async client=>{
       // Later layers are scheduled as `executePlan` scheduled the first: on the
       // Agent the coordinator runs on (not necessarily the planner), with the
       // caller's workflow input, and with their prompt only if they gave one —
@@ -651,13 +663,13 @@ export class PgPlanRepository {
     for (const row of result.rows) await this.reconcilePlan({ spaceId, userId: userId ?? row.owner_user_id ?? "system" }, row.plan_id);
   }
 
-  private async assertPlanningRun(client: Queryable, identity: SpaceUserIdentity, input: AgentPlanProposalInput): Promise<void> {
+  private async assertPlanningRun(client: Queryable, identity: SpaceUserIdentity, input: AgentPlanProposalInput, lock=true): Promise<void> {
     const result = await client.query<{ id: string }>(
       `SELECT r.id
          FROM runs r JOIN task_runs tr ON tr.run_id = r.id AND tr.space_id = r.space_id
         WHERE r.id = $1 AND r.space_id = $2 AND r.agent_id = $3 AND r.run_type = 'planning'
           AND r.instructed_by_user_id = $4 AND tr.task_id = $5 AND tr.role = 'planning'
-        FOR SHARE`,
+        ${lock?'FOR SHARE':''}`,
       [input.planningRunId, identity.spaceId, input.agentId, identity.userId, input.sourceTaskId],
     );
     if (!result.rows[0]) throw new HttpError(403, "Plan proposal must originate from the Agent planning Run for this Task");

@@ -9,4 +9,5 @@ export const boardUiZhCN = { board_ui: {
   new_task:'新建任务', new_in:'在{{name}}中新建任务', unassigned:'未分列', saved:'列设置已保存', deleted:'任务已删除', updated:'任务已更新',
   drag_help:'单击打开操作菜单，拖动以移动。键盘可按空格并用方向键拖动，按回车打开菜单。',
   inbox:'收件箱', ready:'待办', in_progress:'进行中', waiting_for_review:'待审核', blocked:'受阻', done:'完成',
+  completed_visible:'已显示 {{visible}} / {{total}} 条已完成任务', show_more:'展开更多（{{count}} 条）', collapse_completed:'收起',
 } }

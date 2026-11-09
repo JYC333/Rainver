@@ -1,8 +1,10 @@
+import {HttpError} from '../routeUtils/common.js';
+import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import type { Queryable } from "../routeUtils/common.js";
-import { withQueryableTransaction } from "../routeUtils/common.js";
+
 import {
   redactEvidenceText,
   sanitizeEvidenceJson,
@@ -475,7 +477,10 @@ export class PgJobQueueRepository {
     now: Date = new Date(),
     fromStatuses: readonly string[] = ["pending", "claimed", "running"],
   ): Promise<boolean> {
-    return withQueryableTransaction(this.db, async (db) => {
+    return withRunTerminalOwner(this.db,async db=>(await db.query<{id:string;space_id:string}>(
+      `SELECT payload_json->>'run_id' AS id,space_id FROM jobs WHERE id=$1
+        AND job_type=ANY($2::text[]) AND payload_json->>'run_id' IS NOT NULL
+        AND status=ANY($3::text[]) AND ($4::text IS NULL OR claimed_by=$4)`,[jobId,[...RUN_BACKED_JOB_TYPES],[...fromStatuses],workerId])).rows,async db=>{
       const result = await db.query<{ id: string; job_type: string; space_id: string; run_id: string | null }>(
         `UPDATE jobs
             SET status = 'cancelled',
@@ -551,10 +556,38 @@ export class PgJobQueueRepository {
     stuckAfterSeconds = 600,
     now: Date = new Date(),
   ): Promise<JobReclaimResult> {
+    const host=this.db as Queryable&{connect?:unknown;release?:unknown};
+    if(typeof host.connect!=='function'||typeof host.release==='function')throw new HttpError(503,'Independent maintenance requires a Pool owner');
     const cutoff = new Date(now.getTime() - stuckAfterSeconds * 1000).toISOString();
-    await this.deleteOrphanRunExecutionLocks(cutoff);
 
-    const result = await withQueryableTransaction(this.db, async (db) => {
+    // Maintenance candidates are independent. A busy Run never aborts another
+    // Job/Space, and orphan lock cleanup does not depend on request admission.
+    await this.deleteOrphanRunExecutionLocks(cutoff);
+    const candidates=(await this.db.query<{id:string}>(`SELECT id FROM jobs WHERE status IN ('claimed','running')
+      AND COALESCE(heartbeat_at,updated_at)<$1 ORDER BY id`,[cutoff])).rows;
+    const total:JobReclaimResult={reclaimed_count:0,exhausted_jobs:[]};
+    for(const candidate of candidates){
+      try{
+        const result=await this.reclaimStuckJob(candidate.id,cutoff,now);
+        total.reclaimed_count+=result.reclaimed_count;total.exhausted_jobs.push(...result.exhausted_jobs);
+      }catch(error){
+        const code=(error as {code?:string}).code;
+        if(code==='55P03'||code==='idempotency_in_progress'||code==='operation_conflict')continue;
+        throw error;
+      }
+    }
+    return total;
+  }
+
+  private async reclaimStuckJob(jobId:string,cutoff:string,now:Date):Promise<JobReclaimResult>{
+    const result = await withRunTerminalOwner(this.db,async db=>(await db.query<{id:string;space_id:string}>(
+      `SELECT DISTINCT payload_json->>'run_id' AS id,space_id FROM jobs
+        WHERE id=$3 AND status IN ('claimed','running') AND COALESCE(heartbeat_at,updated_at)<$1
+          AND job_type=ANY($2::text[]) AND payload_json->>'run_id' IS NOT NULL AND attempts>=max_attempts
+          AND NOT(job_type='agent_run' AND EXISTS(SELECT 1 FROM runs r WHERE r.id=jobs.payload_json->>'run_id' AND r.space_id=jobs.space_id
+            AND r.status IN ('running','cancelling') AND EXISTS(SELECT 1 FROM run_attempts a WHERE a.run_id=r.id AND a.space_id=r.space_id AND a.launch_id IS NOT NULL
+              AND a.attempt_number=(SELECT max(latest.attempt_number) FROM run_attempts latest WHERE latest.run_id=r.id AND latest.space_id=r.space_id))))`,[cutoff,[...RUN_BACKED_JOB_TYPES],jobId])).rows,async db=>{
+      if(!(await db.query('SELECT id FROM jobs WHERE id=$1 FOR UPDATE SKIP LOCKED',[jobId])).rows.length)return {rows:[]};
       const result = await db.query<{
       reclaimed_count: string | number;
       exhausted_jobs: JobReclaimResult["exhausted_jobs"] | null;
@@ -582,7 +615,7 @@ export class PgJobQueueRepository {
                 started_at = NULL,
                 heartbeat_at = NULL,
                 updated_at = $1::timestamptz
-          WHERE status IN ('claimed', 'running')
+          WHERE id=$4 AND status IN ('claimed', 'running')
             AND COALESCE(heartbeat_at, updated_at) < $2::timestamptz
             AND (attempts < max_attempts OR id IN (SELECT id FROM interrupted_agent_jobs))
           RETURNING id, space_id, user_id, job_type, attempts, max_attempts
@@ -596,7 +629,7 @@ export class PgJobQueueRepository {
                 completed_at = $1::timestamptz,
                 error = 'job stuck and retry attempts exhausted',
                 updated_at = $1::timestamptz
-          WHERE status IN ('claimed', 'running')
+          WHERE id=$4 AND status IN ('claimed', 'running')
             AND COALESCE(heartbeat_at, updated_at) < $2::timestamptz
             AND attempts >= max_attempts
             AND id NOT IN (SELECT id FROM interrupted_agent_jobs)
@@ -623,10 +656,10 @@ export class PgJobQueueRepository {
          COALESCE(
            (SELECT jsonb_agg(jsonb_build_object('space_id', space_id, 'run_id', payload_json->>'run_id'))
               FROM failed
-             WHERE job_type = ANY($3::text[]) AND payload_json ? 'run_id'),
+             WHERE job_type = ANY($3::text[]) AND payload_json->>'run_id' IS NOT NULL),
            '[]'::jsonb
          ) AS abandoned_runs`,
-      [now.toISOString(), cutoff, [...RUN_BACKED_JOB_TYPES]],
+      [now.toISOString(), cutoff, [...RUN_BACKED_JOB_TYPES],jobId],
       );
       for (const run of result.rows[0]?.abandoned_runs ?? []) {
         await endRunBehindJob(db, run.space_id, run.run_id, {
@@ -637,7 +670,7 @@ export class PgJobQueueRepository {
         });
       }
       return result;
-    });
+    },{nonWaiting:true});
     const count = result.rows[0]?.reclaimed_count ?? 0;
     return {
       reclaimed_count: Number(count),

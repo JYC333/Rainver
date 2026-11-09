@@ -78,7 +78,7 @@ describe("a registry ACP agent is a runtime adapter everywhere", () => {
     const binary = {
       ...CURSOR,
       id: "antigravity-acp",
-      version: "1.4.3",
+      version: "1.5.1",
       distribution: {
         kind: "binary",
         platforms: { "linux-x86_64": { archive: "https://x/agy.zip", cmd: "./agy", args: [], sha256: null, env: {} } },
@@ -90,14 +90,14 @@ describe("a registry ACP agent is a runtime adapter everywhere", () => {
     setResolvedRegistryEntries([binary, uvx, npx]);
     const probes = acpRuntimeProbes();
     const probe = (key: string) => probes.find((candidate) => candidate.runtime_key === key);
-    expect(probe("acp_antigravity_acp")).toMatchObject({ version: "1.4.3", distribution: { kind: "binary" } });
+    expect(probe("acp_antigravity_acp")).toMatchObject({ version: "1.5.1", distribution: { kind: "binary" } });
     expect(probe("acp_pyagent")).toMatchObject({ version: "0.9.0", distribution: { kind: "uvx" } });
     // The resolved entry's version wins over the package string's.
     expect(probe("acp_cursor")).toMatchObject({ version: "2026.09.02" });
     // Release refreshes update probes without re-enabling the adapter.
-    setResolvedRegistryEntries([{ ...binary, version: "1.4.5" }, uvx, npx]);
+    setResolvedRegistryEntries([{ ...binary, version: "1.5.2" }, uvx, npx]);
     expect(acpRuntimeProbes().find(candidate => candidate.runtime_key === "acp_antigravity_acp"))
-      .toMatchObject({ version: "1.4.5", distribution: { kind: "binary" } });
+      .toMatchObject({ version: "1.5.2", distribution: { kind: "binary" } });
   });
 
   it("tells the daemon where a registry agent's own copy might be, from its distribution", () => {
@@ -142,20 +142,20 @@ describe("a registry ACP agent is a runtime adapter everywhere", () => {
     const scope = { agent_id: "agent-1", container_kind: "conversation" as const, container_id: "conv-1" };
 
     expect(getRuntimeAdapterSpec("acp_antigravity_acp")?.credentials.state).toEqual({
-      env: { GEMINI_HOME: ".gemini" },
-      home_subdir: ".gemini/antigravity-acp",
-      credential_file: "acp_token.json",
+      env: { RAINVER_ANTIGRAVITY_STATE_DIR: ".gemini" },
+      home_subdir: ".gemini/antigravity-cli",
+      credential_file: "antigravity-oauth-token",
     });
     expect(getRuntimeAdapterSpec("acp_antigravity_acp")?.credentials.login).toBeUndefined();
     expect(buildUnboundRuntimeProfile("acp_antigravity_acp", scope)).toMatchObject({
-      profile_env: { GEMINI_HOME: ".gemini" },
+      profile_env: { RAINVER_ANTIGRAVITY_STATE_DIR: ".gemini" },
       credential_source: "host_login",
-      login_link: { home_subdir: ".gemini/antigravity-acp", credential_file: "acp_token.json" },
+      login_link: { home_subdir: ".gemini/antigravity-cli", credential_file: "antigravity-oauth-token" },
     });
     // Login is ACP Agent Auth here, so the probe carries the boundary without a CLI command.
     expect(acpRuntimeProbes().find((probe) => probe.runtime_key === "acp_antigravity_acp")).toMatchObject({
       login: null,
-      state: { env: { GEMINI_HOME: ".gemini" }, home_subdir: ".gemini/antigravity-acp", credential_file: "acp_token.json" },
+      state: { env: { RAINVER_ANTIGRAVITY_STATE_DIR: ".gemini" }, home_subdir: ".gemini/antigravity-cli", credential_file: "antigravity-oauth-token" },
     });
 
     // An agent nobody has described keeps failing closed rather than sharing one home across Agents.

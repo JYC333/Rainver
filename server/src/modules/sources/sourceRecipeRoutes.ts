@@ -6,13 +6,16 @@ import {
   parsePage,
   params,
   query,
-  optionalString,
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
 import { enforceSources } from "./enforceSources.js";
 import { SourceRecipeService } from "./sourceRecipeService.js";
-import { applyContentCreationContext, resolveContentCreationContext } from "../access/creationContext.js";
+import {introspectIdentity} from '../auth/identity.js';
+import {resolveRequestId} from '../../gateway/requestContext.js';
+import {sessionActor} from '../systemActions/operations/actor.js';
+import {OperationError} from '../systemActions/operations/errors.js';
+import {operationRuntime} from '../systemActions/operations/runtime.js';
 
 /** Level 2 Source recipe routes: plan/create, dry-run preview, activation, and the recipe-version read model. */
 export function registerSourceRecipeRoutes(app: FastifyInstance, context: ModuleContext): void {
@@ -36,26 +39,15 @@ export function registerSourceRecipeRoutes(app: FastifyInstance, context: Module
     }
   });
 
-  app.post("/api/v1/sources/source-recipes", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const creation = await resolveContentCreationContext(dbPool(context.config), {
-        userId: identity.userId,
-        requestSpaceId: identity.spaceId,
-        projectId: optionalString(body.project_id),
-      });
-      const creationIdentity = { spaceId: creation.spaceId, userId: identity.userId };
-      const gate = await enforceSources(context, creationIdentity, "source.recipe.create", "source_connection");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await recipeService().createSource(
-        creationIdentity,
-        applyContentCreationContext(body, creation),
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
+  app.post("/api/v1/sources/source-recipes", {config:{operation:'source.recipe.create'}}, async (request, reply) => {
+    const requestId=resolveRequestId(request);reply.header('cache-control','private, no-store');
+    const auth=await introspectIdentity(context.config,request,reply);
+    if(!auth.ok){const error=auth.reason==='denied'?new OperationError(auth.statusCode===401?'authentication_required':'operation_not_found',auth.statusCode===401?401:404):new OperationError('operation_temporarily_unavailable',503,true);return reply.code(error.httpStatus).send(error.body(requestId));}
+    let body:Record<string,unknown>;
+    try{body=jsonBody(request);}catch{return reply.code(422).send(new OperationError('operation_invalid_input',422).body(requestId));}
+    const key=request.headers['idempotency-key'];
+    const result=await(await operationRuntime(context.config)).execute('source.recipe.create',body,sessionActor({spaceId:auth.spaceId,userId:auth.userId}),requestId,typeof key==='string'?key:undefined);
+    return reply.code(result.http_status).send(result.body);
   });
 
   app.post("/api/v1/sources/source-recipes/:connectionId/activate", async (request, reply) => {

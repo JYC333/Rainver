@@ -3,6 +3,7 @@ import type { RunTurn } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { loadProjectChatActionPreviews } from "../agents/projectChatActionPreviews.js";
 import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
+import { readDelegationQueueWait } from "../agentGroups/delegationScheduling.js";
 import {
   appendActionPreviewParts,
   projectHostThreadTurn,
@@ -39,19 +40,25 @@ export async function loadRunTurn(
     authorization_request_id: string | null;
     supervisor_review: boolean | null;
     quota_wait: boolean | null;
+    turn_wait: boolean | null;
+    parent_run_id: string | null;
+    delegation_id: string | null;
     updated_at: string | Date | null;
   }>(
-    `SELECT id, host_task_thread_id, status, updated_at, error_message, model_override_json,
+    `SELECT id, host_task_thread_id, status, updated_at, error_message, model_override_json, parent_run_id, delegation_id,
             error_json->>'error_code' AS error_code,
             error_json->>'authorization_request_id' AS authorization_request_id,
             (error_json->>'supervisor_review' = 'true') AS supervisor_review,
             (status = 'queued' AND output_json ? 'waiting_for_quota') AS quota_wait,
+            (status = 'queued' AND output_json ? 'waiting_for_turn') AS turn_wait,
             (model_override_json->'chat_turn'->>'schema_version' = 'chat_turn.v1') AS is_chat_turn
        FROM runs WHERE id = $1 AND space_id = $2`,
     [input.runId, input.spaceId],
   );
   const row = run.rows[0];
   if (!row) return null;
+  const queueWait = row.quota_wait || row.turn_wait ? null
+    : await readDelegationQueueWait(db, { ...row, space_id: input.spaceId });
 
   // Always the whole turn. A partial read cannot be applied to what a client
   // already holds — part indices restart at 0, the reply and the Proposals
@@ -143,6 +150,7 @@ export async function loadRunTurn(
     source: withPreviews.source,
     parts: withPreviews.parts,
     blocked_on: blockedOn,
+    ...(queueWait ? { queue_wait_reason: queueWait } : {}),
     cursor: withPreviews.cursor,
     updated_at: isoDate(row.updated_at),
   };

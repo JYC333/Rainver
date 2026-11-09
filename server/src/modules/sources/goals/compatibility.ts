@@ -88,8 +88,9 @@ export async function setLegacyGoalPaused(db:Queryable,identity:SpaceUserIdentit
 async function hasGoalSchedulingOwner(db:Queryable,spaceId:string,channelId:string,exceptGoalId?:string){
  const owner=await db.query(`SELECT 1 FROM source_goal_bindings b JOIN source_goals g ON g.id=b.goal_id AND g.space_id=b.space_id WHERE g.space_id=$1 AND b.spec_json->>'source_channel_id'=$2 AND g.active_version_id IS NOT NULL AND g.status<>'deleted' AND ($3::varchar IS NULL OR g.id<>$3)`,[spaceId,channelId,exceptGoalId??null]);return owner.rows.length>0;
 }
+export class SourceGoalSchedulingConflict extends HttpError {}
 export async function assertLegacySourceOwner(db:Queryable,spaceId:string,channelId:string,exceptGoalId?:string){
- if(await hasGoalSchedulingOwner(db,spaceId,channelId,exceptGoalId))throw new HttpError(409,'source_goal_owns_schedule');
+ if(await hasGoalSchedulingOwner(db,spaceId,channelId,exceptGoalId))throw new SourceGoalSchedulingConflict(409,'source_goal_owns_schedule');
 }
 
 /** Read projection only; the original task/cursor remains authoritative until transfer. */

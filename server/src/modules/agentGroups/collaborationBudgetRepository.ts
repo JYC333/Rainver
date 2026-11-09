@@ -43,7 +43,7 @@ export async function collaborationContainer(db: Queryable, group: AgentRunGroup
     turns_offset: typeof turns_offset === "number" ? turns_offset : 0 } };
 }
 
-async function taskOpen(db: Queryable, container: Container, taskId: string): Promise<boolean> {
+export async function taskOpen(db: Queryable, container: Container, taskId: string): Promise<boolean> {
   const result = await db.query(
     `SELECT t.id FROM tasks t WHERE t.space_id = $1 AND t.id = $2 AND t.project_id = $3
        AND t.deleted_at IS NULL AND t.status NOT IN ('done', 'cancelled', 'blocked', 'waiting_for_review')
@@ -96,7 +96,9 @@ export async function collaborationLimits(db: Queryable, group: AgentRunGroupRec
     let same = false;
     if (previous) {
       const { coordinator_agent_id: _, delegations_offset: _d, turns_offset: _t, ...settings } = previous;
-      same = JSON.stringify(settings) === JSON.stringify(parsed.data);
+      same = settings.task_id === parsed.data.task_id
+        && settings.max_delegations === parsed.data.max_delegations
+        && JSON.stringify([...settings.participant_agent_ids].sort()) === JSON.stringify([...parsed.data.participant_agent_ids].sort());
       if (!same) {
         const closed = (await db.query<{ status: string }>(`SELECT status FROM tasks t
           WHERE t.space_id=$1 AND t.id=$2 AND t.project_id=$3 AND t.deleted_at IS NULL

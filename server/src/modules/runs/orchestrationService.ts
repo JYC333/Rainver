@@ -79,7 +79,7 @@ import {
   isHardTerminalRunStatus,
   isTerminalRunStatus,
   materializationEventStatus,
-  outputJsonWithMaterialization,
+  outputJsonWithVerification,
   protocolRunStatus,
   recordValue,
   summarizeOutput,
@@ -3106,27 +3106,6 @@ function taskWorktreeOf(result: RunAdapterResultEnvelope): { branch: string; sta
   return typeof record.branch === "string" && typeof record.start_commit === "string"
     ? { branch: record.branch, start_commit: record.start_commit }
     : null;
-}
-
-function outputJsonWithVerification(
-  outputJson: unknown,
-  items: RunMaterializationItemSummary[],
-  errors: string[],
-  results: VerificationResultRecord[],
-): unknown {
-  const output = recordValue(outputJsonWithMaterialization(outputJson, items, errors));
-  if (results.length > 0) {
-    output.verification_results = results.map((result) => ({
-      id: result.id,
-      verifier_type: result.verifier_type,
-      verifier_version: result.verifier_version,
-      status: result.status,
-      summary: result.summary,
-      evidence_refs_json: result.evidence_refs_json,
-      completed_at: result.completed_at,
-    }));
-  }
-  return output;
 }
 
 function outputJsonWithRuntimeUsage(

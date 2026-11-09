@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { SpaceLink as Link } from '../../core/spaceNav'
+import { SpaceLink as Link, useSpaceNavigate } from '../../core/spaceNav'
 import { ArrowLeft } from 'lucide-react'
 import { toast } from 'sonner'
 import { proposalsApi } from '../../api/client'
@@ -28,6 +28,7 @@ function fmt(dt: string | null | undefined) {
 
 export default function ProposalDetailPage() {
   const { proposalId = '' } = useParams()
+  const navigate = useSpaceNavigate()
   const { activeSpaceId, activeSpaceName, userId } = useSpace()
   const [p, setP] = useState<Proposal | null>(null)
   const [loading, setLoading] = useState(true)
@@ -205,7 +206,10 @@ export default function ProposalDetailPage() {
             review_deadline {fmt(p.review_deadline)} · expires {fmt(p.expires_at)}
           </p>
           {p.operator_revision
-            ? <MemoryRevisionEditor proposal={p} onRevised={setP} />
+            ? <MemoryRevisionEditor proposal={p} onRevised={(revised) => {
+              setP(revised)
+              if (revised.id !== p.id) navigate(`/proposals/${revised.id}`, { replace: true })
+            }} />
             : <p className="text-sm whitespace-pre-wrap">{p.proposed_content}</p>}
           {p.proposal_type === 'retrieval_maintenance_packet' && (
             <div className="rounded-md border border-border bg-muted/30 p-3 text-sm">

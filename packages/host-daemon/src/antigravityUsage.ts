@@ -1,10 +1,14 @@
-import { readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import type { HostUsageQuota, RuntimeStateBoundary } from "@rainver/protocol";
+import { helperProcessEnv } from "./providerBinding.js";
+import { killProcessGroup, settleProcessGroup } from "./processGroup.js";
+import { terminalAuthAvailable, ptyArgv, terminalShellCommand } from "./terminalAuth.js";
 
-// Data-source and grouped-window design reference: steipete/CodexBar,
-// AntigravityRemoteUsageFetcher.swift and AntigravityQuotaSummaryParser.swift.
-// Independent implementation; credentials remain on this execution host.
+// Native quota input: https://antigravity.google/docs/cli/statusline/
 const record = (v: unknown): Record<string, unknown> | null =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : null;
 const text = (v: unknown): string | null => typeof v === "string" && v.trim() ? v.trim() : null;
@@ -18,6 +22,14 @@ function reset(v: unknown): string | null {
   const value = text(v);
   return value && Number.isFinite(Date.parse(value)) ? `Resets ${new Date(value).toISOString()}` : null;
 }
+
+const NATIVE_QUOTA_LABELS: ReadonlyMap<string, string> = new Map([
+  ["3p-5h", "Claude / GPT · 5 hours"],
+  ["3p-weekly", "Claude / GPT · Weekly"],
+  ["gemini-5h", "Gemini · 5 hours"],
+  ["gemini-weekly", "Gemini · Weekly"],
+  ["gemini-argon-wtu-weekly", "Gemini 4 Argon · Weekly"],
+]);
 
 export function parseAntigravityQuota(value: unknown): HostUsageQuota {
   const root = record(value);
@@ -36,22 +48,11 @@ export function parseAntigravityQuota(value: unknown): HostUsageQuota {
         const used = remaining(bucket.remainingFraction ?? record(bucket.remaining)?.remainingFraction);
         windows.push({
           id: id.slice(0, 256),
-          label: `${text(group.displayName) ?? text(group.name) ?? "Quota"} · ${(text(bucket.displayName) ?? text(bucket.name) ?? id).replace(/\s+remaining$/i, "")}`.slice(0, 256),
+          label: NATIVE_QUOTA_LABELS.get(id) ?? `${text(group.displayName) ?? text(group.name) ?? "Quota"} · ${(text(bucket.displayName) ?? text(bucket.name) ?? id).replace(/\s+remaining$/i, "")}`.slice(0, 256),
           used_pct: used, resets: reset(bucket.resetTime),
         });
         cadences.set(id.slice(0, 256), text(bucket.window) ?? id);
       }
-    }
-  } else if (Array.isArray(payload?.buckets)) {
-    // Legacy endpoint explicitly reports measured quota buckets, not model availability.
-    for (const value of payload.buckets) {
-      const bucket = record(value);
-      const id = text(bucket?.modelId);
-      if (!id) continue;
-      const next = { id: id.slice(0, 256), label: id.slice(0, 256), used_pct: remaining(bucket?.remainingFraction), resets: reset(bucket?.resetTime) };
-      const prior = windows.find(w => w.id === next.id);
-      if (!prior) windows.push(next);
-      else if (next.used_pct !== null && (prior.used_pct === null || next.used_pct > prior.used_pct)) Object.assign(prior, next);
     }
   }
   const result = empty(null);
@@ -70,51 +71,78 @@ export function parseAntigravityQuota(value: unknown): HostUsageQuota {
   return result;
 }
 
-export async function probeAntigravity(home: string, state: RuntimeStateBoundary | null, seconds: number): Promise<HostUsageQuota> {
-  let credential: Record<string, unknown> | null;
+/** Read the selected CLI's documented statusLine JSON without a prompt or model request. */
+export async function probeAntigravity(
+  home: string,
+  state: RuntimeStateBoundary | null,
+  seconds: number,
+  executable = "agy",
+  entryArgs: string[] = [],
+): Promise<HostUsageQuota> {
   try {
-    credential = record(JSON.parse(await readFile(join(home, state?.home_subdir ?? ".gemini/antigravity-acp", state?.credential_file ?? "acp_token.json"), "utf8")));
+    await access(join(home, state?.home_subdir ?? ".gemini/antigravity-cli", state?.credential_file ?? "antigravity-oauth-token"));
   } catch {
-    return empty("Log in to this Antigravity ACP copy before reading usage.");
+    return empty("Log in to this Antigravity CLI copy before reading usage.");
   }
-  // ACP stores authorized-user refresh credentials. Never discover another CLI's account,
-  // trust a token_uri from disk, persist refreshed secrets, or start interactive onboarding.
-  const refreshToken = text(credential?.refresh_token);
-  const clientId = text(credential?.client_id);
-  const clientSecret = text(credential?.client_secret);
-  if (!refreshToken || !clientId || !clientSecret) return empty("This Antigravity login cannot read quota; log in again.");
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), Math.max(1, seconds) * 1000);
-  timer.unref?.();
+  if (!terminalAuthAvailable()) return empty("Antigravity native quota inspection requires the script(1) terminal utility on this Host.");
+  const scratch = await mkdtemp(join(tmpdir(), "rainver-antigravity-quota-"));
+  const destination = join(scratch, "quota.json");
+  const capture = join(scratch, "capture.mjs");
+  await writeFile(capture, STATUSLINE_CAPTURE, { mode: 0o600, flag: "wx" });
+  const settings = { statusLine: { type: "command", command: terminalShellCommand([process.execPath, capture, destination]) } };
+  const pty = ptyArgv([executable, ...entryArgs, "--settings", JSON.stringify(settings), "--log-file", join(scratch, "native.log")]);
+  const child = spawn(pty.command, pty.args, {
+    cwd: scratch,
+    env: { ...helperProcessEnv(process.env, "acp_antigravity_acp"), HOME: home, TERM: "xterm-256color", AGY_CLI_DISABLE_AUTO_UPDATE: "true" },
+    stdio: ["pipe", "ignore", "ignore"], detached: true,
+  });
+  let closed = false;
+  let failed = false;
+  const drained = new Promise<void>(resolve => {
+    child.once("error", () => { failed = true; });
+    child.once("close", () => { closed = true; resolve(); });
+  });
+  child.stdin?.on("error", () => {});
+  const deadline = Date.now() + Math.max(1, seconds) * 1000;
   try {
-    const auth = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST", redirect: "error", signal: abort.signal,
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: clientId, client_secret: clientSecret }),
-    });
-    if (!auth.ok) return empty(`Antigravity token refresh failed (HTTP ${auth.status}); log in again.`);
-    const token = text(record(await auth.json())?.access_token);
-    if (!token) return empty("Antigravity returned no access token.");
-    const body = JSON.stringify(text(credential?.project_id) ? { project: text(credential?.project_id) } : {});
-    for (const [index, endpoint] of [
-      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-      "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
-    ].entries()) {
-      const response = await fetch(endpoint, {
-        method: "POST", redirect: "error", signal: abort.signal,
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "User-Agent": `antigravity/hub/2.9.1 ${process.platform}/${process.arch === "x64" ? "amd64" : process.arch}` },
-        body,
-      });
-      if (response.status === 401) return empty("Antigravity rejected this login; log in again.");
-      if (!response.ok) {
-        if (index === 0) continue;
-        return empty(response.status === 403 ? "Antigravity does not permit quota inspection for this account." : `Antigravity quota API returned HTTP ${response.status}.`);
-      }
-      const quota = parseAntigravityQuota(await response.json());
-      if (quota.available) return quota;
+    while (Date.now() < deadline) {
+      try {
+        const buckets: unknown = JSON.parse(await readFile(destination, "utf8"));
+        const quota = parseAntigravityQuota({ groups: [{ displayName: "Antigravity", buckets }] });
+        if (quota.available) return quota;
+      } catch { /* The native CLI has not published a measured quota yet. */ }
+      if (closed) break;
+      await delay(100);
     }
-    return empty("Antigravity returned no measured quota. Login status does not establish remaining capacity.");
-  } catch {
-    return empty(abort.signal.aborted ? "Antigravity quota check timed out." : "Antigravity quota service could not be read.");
-  } finally { clearTimeout(timer); }
+    return empty(failed ? "Antigravity native quota inspection could not start." : "Antigravity CLI did not report measured quota before the check ended. Login status does not establish remaining capacity.");
+  } finally {
+    if (!closed) killProcessGroup(child, "SIGTERM");
+    await Promise.race([drained, delay(3000)]);
+    if (!closed) killProcessGroup(child, "SIGKILL");
+    await drained;
+    await settleProcessGroup(child.pid, () => {}, { graceMs: 1000 });
+    await rm(scratch, { recursive: true, force: true });
+  }
 }
+
+/** Only quota measurements leave the native status line; account and session fields are discarded. */
+const STATUSLINE_CAPTURE = String.raw`
+import { writeFile, rename } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+let input = "";
+for await (const chunk of process.stdin) {
+  input += chunk;
+  if (Buffer.byteLength(input) > 1024 * 1024) throw new Error("Native status line input exceeds its limit");
+}
+const payload = JSON.parse(input);
+const buckets = Object.entries(payload.quota ?? {}).filter(([id]) => /^[a-z0-9_.-]{1,128}$/i.test(id)).slice(0, 64).map(([id, value]) => ({
+  bucketId: id, window: id,
+  remainingFraction: typeof value?.remaining_fraction === "number" ? value.remaining_fraction : undefined,
+  resetTime: typeof value?.reset_time === "string" && Number.isFinite(Date.parse(value.reset_time)) ? new Date(value.reset_time).toISOString() : undefined,
+  disabled: value?.disabled === true,
+}));
+const destination = process.argv[2];
+const temporary = destination + "." + randomUUID() + ".tmp";
+await writeFile(temporary, JSON.stringify(buckets), { mode: 0o600, flag: "wx" });
+await rename(temporary, destination);
+`;

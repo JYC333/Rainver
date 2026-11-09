@@ -1,3 +1,4 @@
+import {lockMonitorCreation} from '../sourceMonitorParent.js';
 import type {
   CustomSourcePolicyEnvelope,
   SourcePolicyEnvelope,
@@ -11,8 +12,8 @@ import {
   objectValue,
   optionalString,
   requiredString,
-  withDbTransaction,
-  type Pool,
+  withQueryableTransaction,
+  type Queryable,
   type SpaceUserIdentity,
 } from "../../routeUtils/common.js";
 import { insertProposalRow } from "../../proposals/reviewPackets.js";
@@ -42,6 +43,8 @@ import {
   type RecipeVersionRow,
 } from "./recipeVersionStore.js";
 
+export class SourceRecipeCreateError extends HttpError {}
+
 /**
  * Conversation-first Source creation (Level 2 main path): plan -> create ->
  * dry-run (recipeDryRunService) -> activate. Planning is deterministic —
@@ -58,7 +61,7 @@ import {
  */
 export class SourceRecipeCreateService {
   constructor(
-    private readonly pool: Pool,
+    private readonly pool: Queryable,
     private readonly config: ServerConfig,
     /**
      * The outbound boundary live fetches go through. Production leaves it out
@@ -134,6 +137,10 @@ export class SourceRecipeCreateService {
     };
   }
 
+  async authorizeCreation(identity: SpaceUserIdentity, body: Record<string, unknown>) {
+    await this.requireCreatorAndDomain(identity, requiredString(body.endpoint_url, "endpoint_url"), body);
+  }
+
   async createSource(identity: SpaceUserIdentity, body: Record<string, unknown>) {
     const endpointUrl = requiredString(body.endpoint_url, "endpoint_url");
     const name = requiredString(body.name, "name");
@@ -151,7 +158,7 @@ export class SourceRecipeCreateService {
     if (body.recipe !== undefined) {
       const parsed = protocol.SourceRecipeDefinitionSchema.safeParse(body.recipe);
       if (!parsed.success) {
-        throw new HttpError(422, "recipe does not validate against the source recipe schema");
+        throw new SourceRecipeCreateError(422, "recipe does not validate against the source recipe schema");
       }
       recipe = parsed.data;
     } else {
@@ -160,11 +167,12 @@ export class SourceRecipeCreateService {
     const analysis = analyzeSourceRecipe(recipe);
     for (const liveUrl of analysis.live_fetch_urls) {
       if (!originOf(liveUrl) || originOf(liveUrl) !== endpointOrigin) {
-        throw new HttpError(422, `recipe fetches an origin outside the source endpoint: ${liveUrl}`);
+        throw new SourceRecipeCreateError(422, `recipe fetches an origin outside the source endpoint: ${liveUrl}`);
       }
     }
 
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
+      await lockMonitorCreation(client,identity,typeof (this.pool as {connect?:unknown}).connect==='function'&&typeof (this.pool as {release?:unknown}).release!=='function');
       const channels = new SourceChannelService(client, this.config);
       const channel = await channels.create(
         identity,
@@ -273,7 +281,7 @@ export class SourceRecipeCreateService {
         existingNextCheckAt: (await getSourceChannelScanTask(this.pool, connection.channel_id))?.next_run_at,
         existingScheduleRule: connection.schedule_rule_json,
       });
-      const created = await withDbTransaction(this.pool, async (client) => {
+      const created = await withQueryableTransaction(this.pool, async (client) => {
         const payload: Record<string, unknown> = {
           proposal_type: "source_recipe_activation",
           source_connection_id: connectionId,
@@ -317,7 +325,7 @@ export class SourceRecipeCreateService {
       };
     }
 
-    await withDbTransaction(this.pool, (client) =>
+    await withQueryableTransaction(this.pool, (client) =>
       activateSourceRecipeVersionTx(client, {
         spaceId: identity.spaceId,
         connectionId,
@@ -346,7 +354,7 @@ export class SourceRecipeCreateService {
     body: Record<string, unknown>,
   ) {
     const endpointOrigin = originOf(endpointUrl);
-    if (!endpointOrigin) throw new HttpError(422, "endpoint_url must be a valid HTTP(S) URL");
+    if (!endpointOrigin) throw new SourceRecipeCreateError(422, "endpoint_url must be a valid HTTP(S) URL");
     const settingsRepo = new PgCustomSourceHandlerRepository(this.pool, this.config);
     const settings = await settingsRepo.getEffectiveSettings(identity);
     await settingsRepo.requireCustomSourceCreator(identity, settings.space.creator_roles);
@@ -355,7 +363,7 @@ export class SourceRecipeCreateService {
       settings.space.allowed_domains.length > 0 &&
       !settings.space.allowed_domains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`))
     ) {
-      throw new HttpError(422, `Domain not allowed by Space Custom Source policy: ${hostname}`);
+      throw new SourceRecipeCreateError(422, `Domain not allowed by Space Custom Source policy: ${hostname}`);
     }
     const credentialId = optionalString(body.credential_id);
     if (credentialId) {
@@ -392,7 +400,7 @@ export class SourceRecipeCreateService {
     try {
       return buildRecipeForSourceType(sourceType, { listSelector });
     } catch (error) {
-      throw new HttpError(422, error instanceof Error ? error.message : String(error));
+      throw new SourceRecipeCreateError(422, error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -433,13 +441,13 @@ function originOf(url: string): string | null {
 
 function requireCapturePolicy(value: string): SourceCapturePolicy {
   const parsed = parseSourceCapturePolicy(value);
-  if (!parsed) throw new HttpError(422, "Unsupported Source Recipe capture policy");
+  if (!parsed) throw new SourceRecipeCreateError(422, "Unsupported Source Recipe capture policy");
   return parsed;
 }
 
 function requireRetentionPolicy(value: string): SourceRetentionPolicy {
   const parsed = parseSourceRetentionPolicy(value);
-  if (!parsed) throw new HttpError(422, "Unsupported Source Recipe retention policy");
+  if (!parsed) throw new SourceRecipeCreateError(422, "Unsupported Source Recipe retention policy");
   return parsed;
 }
 

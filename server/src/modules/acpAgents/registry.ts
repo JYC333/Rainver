@@ -7,6 +7,7 @@
  */
 
 import type { RuntimeBinaryTarget, RuntimeDistribution } from "../runtimeAdapters/specs.js";
+import { fetchAntigravityRelease } from "./antigravityRelease.js";
 
 const ACP_REGISTRY_URL = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 
@@ -72,17 +73,28 @@ export async function fetchAcpRegistry(): Promise<AcpRegistryEntry[]> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REGISTRY_TIMEOUT_MS);
   let body: unknown;
+  let antigravity: AcpRegistryEntry | null = null;
   try {
     const response = await fetch(ACP_REGISTRY_URL, { signal: controller.signal, headers: { accept: "application/json" } });
     if (!response.ok) throw new AcpRegistryError("acp_registry_unavailable", `ACP registry returned ${response.status}.`);
-    body = await response.json();
+    const [registryBody, official] = await Promise.allSettled([response.json(), fetchAntigravityRelease(controller.signal)]);
+    if (registryBody.status === "rejected") throw registryBody.reason;
+    body = registryBody.value;
+    if (official.status === "fulfilled") antigravity = official.value;
+    else {
+      const stored = resolvedEntries.get("antigravity-acp");
+      if (stored?.distribution.kind === "binary" && Object.values(stored.distribution.platforms).every(target =>
+        target.sha512 && target.args.length === 1 && target.args[0] === "acp"
+        && target.archive.startsWith("https://storage.googleapis.com/antigravity-public/antigravity-cli/"))) antigravity = stored;
+    }
   } catch (error) {
     if (error instanceof AcpRegistryError) throw error;
     throw new AcpRegistryError("acp_registry_unavailable", `ACP registry could not be fetched: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     clearTimeout(timer);
   }
-  const entries = parseRegistry(body);
+  const entries = parseRegistry(body).filter(entry => entry.id !== "antigravity-acp");
+  if (antigravity) entries.push(antigravity);
   cache = { at: Date.now(), entries };
   return entries;
 }
@@ -147,8 +159,9 @@ function parseBinary(raw: unknown): AcpDistribution | null {
     const target = record(value);
     const archive = str(target.archive);
     const cmd = str(target.cmd);
-    if (!archive || !cmd) continue;
-    platforms[platform] = { archive, cmd, args: strArray(target.args), sha256: str(target.sha256), env: strRecord(target.env) };
+    const sha512 = str(target.sha512);
+    if (!archive || !cmd || (sha512 && !/^[a-f0-9]{128}$/i.test(sha512))) continue;
+    platforms[platform] = { archive, cmd, args: strArray(target.args), sha256: str(target.sha256), ...(sha512 ? { sha512 } : {}), env: strRecord(target.env) };
   }
   return Object.keys(platforms).length > 0 ? { kind: "binary", platforms } : null;
 }

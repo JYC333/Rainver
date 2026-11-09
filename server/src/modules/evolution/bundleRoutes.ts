@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
@@ -42,6 +42,11 @@ function decisionsFromBody(body: Record<string, unknown>): EvolutionBundleDecisi
     ...approvals.map((proposalId) => ({ proposalId, decision: "approve" as const })),
     ...rejections.map((proposalId) => ({ proposalId, decision: "reject" as const })),
   ];
+}
+
+function sendDecision(reply:FastifyReply,result:Record<string,unknown>){
+ const decision=result.decision as {status?:string}|null|undefined;
+ return reply.code(decision && ['pending','applying','compensating'].includes(decision.status??'')?202:200).send(result);
 }
 
 export function registerEvolutionBundleRoutes(app: FastifyInstance, context: ModuleContext): void {
@@ -97,7 +102,7 @@ export function registerEvolutionBundleRoutes(app: FastifyInstance, context: Mod
         decisions,
         PgProposalApplyService.fromConfig(context.config),
       );
-      return reply.send(result);
+      return sendDecision(reply,result);
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -110,7 +115,7 @@ export function registerEvolutionBundleRoutes(app: FastifyInstance, context: Mod
       const body = jsonBody(request);
       const proposalIds = stringArray(body.proposal_ids ?? body.approved_proposal_ids);
       const decisions = proposalIds.map((proposalId) => ({ proposalId, decision: "approve" as const }));
-      return reply.send(await repository().decide(
+      return sendDecision(reply,await repository().decide(
         identity,
         params(request).bundleId ?? "",
         decisions,
@@ -128,7 +133,7 @@ export function registerEvolutionBundleRoutes(app: FastifyInstance, context: Mod
       const body = jsonBody(request);
       const proposalIds = stringArray(body.proposal_ids ?? body.rejected_proposal_ids);
       const decisions = proposalIds.map((proposalId) => ({ proposalId, decision: "reject" as const }));
-      return reply.send(await repository().decide(
+      return sendDecision(reply,await repository().decide(
         identity,
         params(request).bundleId ?? "",
         decisions,

@@ -1,9 +1,8 @@
 import { RESEARCH_STAGES } from "./researchStages.js";
+import type { ProviderStructuredOutput } from "../providers/invocation/invocation.js";
 import { randomUUID } from "node:crypto";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common.js";
-import { PgRunRepository } from "../runs/repository.js";
-import { PgJobQueueRepository } from "../jobs/repository.js";
 import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy.js";
 import { resolveNotebookNote } from "./notebookNotes.js";
 import type { NoteProjectRole } from "../knowledge/noteProjectRoles.js";
@@ -13,8 +12,10 @@ import {
   PROJECT_RESEARCH_MONITOR_COMPARE_PROMPT_KEY,
   resolveProjectResearchMonitorComparePrompt,
 } from "./promptRegistry.js";
+import type { ResolvedResearchProvider } from "./executionProfileService.js";
+import { queueResearchStageTask } from "./researchStageTasks.js";
 
-const MONITOR_COMPARISON_OUTPUT_CONTRACT = {
+const MONITOR_COMPARISON_OUTPUT_CONTRACT: ProviderStructuredOutput = {
   type: "json_schema",
   schema_id: "project_research.monitor_compare.v1",
   strict: true,
@@ -44,7 +45,7 @@ const MONITOR_COMPARISON_OUTPUT_CONTRACT = {
     required: ["comparisons"],
     additionalProperties: false,
   },
-} as const;
+};
 
 export type MonitorComparison = {
   source_item_id: string;
@@ -79,8 +80,12 @@ export class ProjectResearchMonitorComparisonService {
     spaceId: string;
     userId: string;
     projectId: string;
-    agentId: string;
-    runtimeProfileId: string | null;
+    /**
+     * The provider/model to freeze into the Run, asked for only once a batch
+     * is really queued: a batch with nothing eligible, or a project with no
+     * baseline, needs no provider.
+     */
+    resolveProvider: () => Promise<ResolvedResearchProvider>;
     researchQuestion: string;
     sourceItemIds: string[];
   } & (
@@ -97,33 +102,28 @@ export class ProjectResearchMonitorComparisonService {
       spaceId: input.spaceId,
       userId: input.userId,
       projectId: input.projectId,
-      agentId: input.agentId,
       researchQuestion: input.researchQuestion,
       currentUnderstanding: understanding.note.plain_text ?? "",
       newMaterial: material,
     });
-    const run = await new PgRunRepository(this.db).createQueuedRunWithBudgetAdmission({
-      execution_kind: "agent",
-      agent_id: input.agentId,
-      space_id: input.spaceId,
-      user_id: input.userId,
-      project_id: input.projectId,
-      mode: "live",
-      run_type: "agent",
-      trigger_origin: "system",
-      runtime_profile_id: input.runtimeProfileId,
+    const standing = "standingBatchId" in input && Boolean(input.standingBatchId);
+    const queued = await queueResearchStageTask(this.db, {
+      stage: RESEARCH_STAGES.monitor_compare,
+      stageKey: standing ? "standing_monitor_compare" : "monitor_compare",
+      spaceId: input.spaceId,
+      userId: input.userId,
+      projectId: input.projectId,
+      provider: await input.resolveProvider(),
       prompt: `Compare ${material.length} newly screened material item${material.length === 1 ? "" : "s"} with the current project understanding`,
       instruction: resolved.instruction,
-      capability_id: RESEARCH_STAGES.monitor_compare,
-      capabilities_json: [],
-      contract_snapshot: {
-        source: "standingBatchId" in input
+      contract: {
+        source: standing
           ? { kind: "direct", id: input.projectId }
-          : { kind: "workflow", id: input.workflowId },
+          : { kind: "workflow", id: input.workflowId! },
         project_id: input.projectId,
         required_outputs_json: { materializations: ["research_scan_summary", "research_evidence_card"] },
         structured_output_json: MONITOR_COMPARISON_OUTPUT_CONTRACT,
-        workflow_input_json: "standingBatchId" in input
+        workflow_input_json: standing
           ? {
               project_research_standing: {
                 batch_id: input.standingBatchId,
@@ -148,14 +148,7 @@ export class ProjectResearchMonitorComparisonService {
         risk_level: "low",
       },
     });
-    const job = await new PgJobQueueRepository(this.db).enqueue({
-      job_type: "agent_run",
-      space_id: input.spaceId,
-      user_id: input.userId,
-      agent_id: input.agentId,
-      payload: { run_id: run.id },
-    });
-    return { outcome: "queued", runId: run.id, jobId: job.id, sourceItemIds: material.map((item) => item.source_item_id) };
+    return { outcome: "queued", runId: queued.runId, jobId: queued.jobId, sourceItemIds: material.map((item) => item.source_item_id) };
   }
 
   /**

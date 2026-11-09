@@ -1,6 +1,7 @@
 /** UI copy: the Sources pages' followed-sources list and source loading states. */
 export const sourcesUiZhCN = {
   sources_ui: {
+    dispatch: {"queued":'监测扫描已入队',"ended":'监测扫描已结束',"queued_help": "已入队表示请求已接受，不代表处理完成。状态和结果请查看", "results_link": "任务队列", "unknown_help": "任务开始后失败，结果可能未知，且不会自动重试。请先核对任务及来源历史，再发起新操作。", "unknown_result": "结果可能未知：外部效果可能已经发生。此任务不会自动再次执行。请先查看日志和来源结果，再提交新操作。"},
     followed: {
       region: '已关注的来源',
       title: '你关注的来源',

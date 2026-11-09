@@ -734,3 +734,12 @@ metadata-only mapping remain available; executing migrated code requires the
 new Goal's own exact-preview authorization and isolated Host path. Standard
 container acceptance remains subject to the separate
 [deployment enablement gate](../tasks/deferred-register.md#sources--deployment-enablement).
+
+
+Human Recipe draft creation now enters `source.recipe.create` with a core-owned
+transaction and an explicit request key, through generic POST or the retained
+formal URL. Access-owned Personal/Project placement and current creator/domain/
+credential checks precede the existing paused Source/Monitor and draft-version
+writer. Scheduler intent/audit/receipt commit atomically; no planning fetch,
+recipe execution, activation or approval is implied. Existing planning, dry-run,
+activation and bridge interfaces remain separate.

@@ -447,11 +447,11 @@ export async function materializeRuntimeDistribution(
   const target = distribution.platforms[key];
   if (!target) throw new Error(`No binary for this platform (${key}); available: ${Object.keys(distribution.platforms).join(", ")}`);
   const archive = join(dir, "archive");
-  await downloadRuntimeArtifact(target.archive, archive, target.sha256, log, downloadDependencies, transport);
-  await extract(archive, target.archive, dir, log);
-  await rm(archive, { force: true });
+  await downloadRuntimeArtifact(target.archive, archive, target.sha512 ?? target.sha256, log, downloadDependencies, transport, target.sha512 ? "sha512" : "sha256");
   const command = resolve(dir, target.cmd);
   if (!command.startsWith(`${dir}/`) && !command.startsWith(`${dir}\\`)) throw new Error(`Binary cmd escapes the tool directory: ${target.cmd}`);
+  await extract(archive, target.archive, dir, log, target.cmd);
+  await rm(archive, { force: true });
   if (!existsSync(command)) throw new Error(`Archive did not contain ${target.cmd}`);
   return { command, args: target.args, entry_args: [], env: target.env };
 }
@@ -476,7 +476,7 @@ export function platformKey(): string {
 }
 
 /** Unpacks a verified artifact by its URL suffix; shared with ordinary CLI tools. */
-export async function extract(archive: string, url: string, dir: string, log: (line: string) => void): Promise<void> {
+export async function extract(archive: string, url: string, dir: string, log: (line: string) => void, binaryName = "bin"): Promise<void> {
   if (/\.(tar\.gz|tgz|tar\.xz|tar\.bz2|tar)(\?.*)?$/i.test(url)) {
     await run("tar", ["-xf", archive, "-C", dir], dir, log);
     return;
@@ -489,7 +489,7 @@ export async function extract(archive: string, url: string, dir: string, log: (l
     return;
   }
   // Not an archive: the download is the executable itself.
-  await rename(archive, join(dir, "bin"));
+  await rename(archive, join(dir, binaryName));
 }
 
 function run(command: string, args: string[], cwd: string, log: (line: string) => void, env: Record<string, string> = {}): Promise<void> {

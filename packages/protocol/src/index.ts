@@ -1,3 +1,5 @@
+export * from './sourceMonitorOperations.js';
+export * from './sourceRecipeOperations.js';
 /**
  * @rainver/protocol — shared, framework-free wire contracts.
  *
@@ -186,3 +188,19 @@ export * from './operations.js';
 
 export * from "./pluginOperations.js";
 export * from './runtimeFailures.js';
+
+export * from './taskLifecycle.js';
+export * from './taskSpacePlacement.js';
+export * from './sourceBackfillOperations.js';
+
+export * from "./evolutionBundle.js";
+
+export * from './inquiryCreationOperations.js';
+
+export * from './projectSourceOperations.js';
+
+export * from './sourceSubscriptionOperations.js';
+
+export * from './sourceChannelCreateOperation.js';
+
+export * from './sourceProcessingOperations.js';

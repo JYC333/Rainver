@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "node:net";
 import { pathToFileURL } from "node:url";
-import { configureAntigravitySkills, prepareAntigravityHarness } from "../src/antigravityHarness.js";
+import { prepareAntigravityProfile } from "../src/antigravity.js";
 import { saveConfig } from "../src/config.js";
 import { startEgressProxy } from "../src/egressProxy.js";
 import { existsSync } from "node:fs";
@@ -35,22 +35,19 @@ let workspaceDir: string;
 let attachedWorkspaceDir: string;
 
 describe("Antigravity skill isolation", () => {
-  it("keeps workspace and authority intact while discovering delivered skills outside the project", () => {
-    const original = { config: { workspaces: [{ filesystemWorkspace: { directory: "/project" } }],
-      skillsPaths: ["/user/skills"], skillsConfig: { enabled: true, presentationMode: "FILE_SYSTEM" },
-      policyConfig: { workspaceContainment: "WORKSPACE_CONTAINMENT_ENABLED" },
-      models: [{ name: "selected-model" }] } };
-    const result = JSON.parse(configureAntigravitySkills(JSON.stringify(original), "/profile/materialized", "/run/rainver/skills"));
-    expect(result.config.workspaces).toEqual(original.config.workspaces);
-    expect(result.config.policyConfig).toEqual(original.config.policyConfig);
-    expect(result.config.models).toEqual(original.config.models);
-    expect(result.config.skillsPaths).toEqual(["/user/skills", "/run/rainver/skills"]);
-    expect(result.config.skillsConfig).toEqual({ ...original.config.skillsConfig, materializedSkillsDir: "/profile/materialized" });
-    expect(() => configureAntigravitySkills('{"userInput":{}}', "/profile/materialized")).toThrow();
+  it("discovers delivered skills through the official profile manifest outside the project", async () => {
+    const state = join(workspaceDir, "profile", ".gemini");
+    expect(await prepareAntigravityProfile(state, "/run/rainver/skills")).toEqual(["--gemini-dir", state]);
+    expect(JSON.parse(await readFile(join(state, "config", "skills.json"), "utf8")))
+      .toEqual({ entries: [{ path: "/run/rainver/skills" }] });
+    expect(existsSync(join(workspaceDir, ".agents"))).toBe(false);
+    await prepareAntigravityProfile(state);
+    expect(JSON.parse(await readFile(join(state, "config", "skills.json"), "utf8"))).toEqual({ entries: [] });
   });
 
-  it("refuses an installation without its matching harness instead of falling back to project writes", async () => {
-    await expect(prepareAntigravityHarness(process.execPath, workspaceDir)).rejects.toThrow();
+  it("refuses a missing or relative profile instead of writing into the project", async () => {
+    await expect(prepareAntigravityProfile(undefined)).rejects.toThrow();
+    await expect(prepareAntigravityProfile("relative")).rejects.toThrow();
   });
 });
 

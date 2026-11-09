@@ -1,3 +1,6 @@
+import {withTransaction} from '../src/db/tx.js';
+import {sessionActor} from '../src/modules/systemActions/operations/actor.js';
+import {reserve,record,requestScope,fingerprint} from '../src/modules/systemActions/operations/repository.js';
 import { PgSchedulerTaskStore } from '../src/modules/scheduler/taskStore.js';
 import { monitoringFixture } from './support/monitoringFixture.js';
 import { buildSourceSchedulerTasks } from '../src/modules/scheduler/sourceTasks.js';
@@ -1485,4 +1488,40 @@ describe('Project confirmed daily monitoring', () => {
     // A newer empty window cannot erase the older exact-offset backlog.
     expect(await monitoringRecentCoverage(db.pool, space, channel)).toBe('coverage_partial');
   });
+});
+
+
+describe('P5 monitoring Proposal replacement transitions',()=>{
+ async function linkPending(id:string){
+  const payload=(await db.pool.query('SELECT payload_json,proposal_type FROM proposals WHERE id=$1',[id])).rows[0];
+  const actor=sessionActor(identity),input={proposal_id:id},targets={project_id:project};
+  const scope=requestScope(actor,`project:${project}`,'fixture.monitoring',randomUUID());
+  await withTransaction(db.pool,async tx=>{
+   await reserve(tx,scope);
+   await record(tx,scope,1,fingerprint(1,input,targets),'pending_approval',{status:'pending_approval',proposal_id:id},202,id,
+    {actor,input,targets,payload:payload.payload_json,preconditions:{},gate_rule:null,
+      mapping:{mode:'proposal_submission',gate:{kind:'hard_gate',gate_class:'direction'},proposal_type:payload.proposal_type,requires_live_run:false}});
+  });
+ }
+ it.each([['scope',false],['scope',true],['details',false],['details',true]] as const)('terminalizes linked monitoring %s replacement atomically (rollback=%s)',async(kind,fail)=>{
+  const active=kind==='details'?await accept():null;
+  const create=(key:string,language:string)=>service().propose(identity,project,{config:{...(active?.config??scope()),language},
+   expected_active_version_id:active?.id??null,idempotency_key:key},kind==='details'?{proposalKind:'details'}:{proposalKind:'scope'});
+  const old=await create('p5-monitoring-first','English');await linkPending(String(old.proposal.id));
+  const before=(await db.pool.query('SELECT id FROM project_information_monitoring_versions WHERE space_id=$1',[space])).rows;
+  if(fail){
+   await db.pool.query("CREATE FUNCTION reject_monitoring_transition() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.state='superseded' THEN RAISE EXCEPTION 'monitoring transition rejected'; END IF; RETURN NEW; END $$");
+   await db.pool.query('CREATE TRIGGER reject_monitoring_transition BEFORE UPDATE ON operation_idempotency FOR EACH ROW EXECUTE FUNCTION reject_monitoring_transition()');
+   try{
+    await expect(create('p5-monitoring-next','中文')).rejects.toThrow('monitoring transition rejected');
+    expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[old.proposal.id])).rows[0].state).toBe('pending_approval');
+    expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[old.proposal.id])).rows[0].status).toBe('pending');
+    expect((await db.pool.query('SELECT id FROM project_information_monitoring_versions WHERE space_id=$1',[space])).rows).toEqual(before);
+   }finally{await db.pool.query('DROP TRIGGER reject_monitoring_transition ON operation_idempotency');await db.pool.query('DROP FUNCTION reject_monitoring_transition()');}
+  }else{
+   const next=await create('p5-monitoring-next','中文');expect(next.proposal.id).not.toBe(old.proposal.id);
+   expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[old.proposal.id])).rows[0].state).toBe('superseded');
+   expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[old.proposal.id])).rows[0].status).toBe('superseded');
+  }
+ });
 });

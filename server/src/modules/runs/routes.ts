@@ -262,6 +262,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     // swallowed by the event writer's `ON CONFLICT DO NOTHING`, losing a report
     // while answering `ok: true`.
     const idempotencyKey = stringValue(request.headers["idempotency-key"]) ?? randomUUID();
+    const executionChannel = liveInputChannel(scope.run.id);
     try {
       const result = await scope.transport.call(scope.run, {
         id: idempotencyKey,
@@ -269,6 +270,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         arguments: jsonBody(request),
       });
       if(result instanceof OperationToolResponse)return reply.code(result.httpStatus).send(result.body);
+      const receipt = result as { ok?: boolean; status?: string } | null;
+      if (actionId === "agent.wait_for_results" && receipt?.ok === true && receipt.status === "waiting") {
+        // Deliver the durable wait receipt before cancelling its enclosing runtime tool call.
+        reply.raw.once("finish", () => {
+          try { executionChannel?.yield(); }
+          catch (error) { request.log.warn({ err: error, run_id: scope.run.id }, "Dependency yield request failed"); }
+        });
+      }
       return reply.send(result);
     } catch (error) {
       // A failing action is a result the agent must be able to read and act

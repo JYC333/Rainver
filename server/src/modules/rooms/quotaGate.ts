@@ -1,7 +1,7 @@
 import type { QuotaRecovery, RoomConversationQuota, SubscriptionQuotaHold, SubscriptionQuotaWindow } from "@rainver/protocol";
 import type { RunRecord } from "../runs/repository.js";
 import { nextQuotaRecoveryCheck, quotaRecoveryAccountFree, quotaRecoveryPauseReason, quotaRecoveryReady } from "./quotaRecovery.js";
-import type { Pool, PoolClient } from "../../db/pool.js";
+import type { Pool } from "../../db/pool.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { readSubscriptionQuotaPolicy } from "../providers/subscriptionQuotaPolicy.js";
 import { withDbTransaction, type Queryable } from "../routeUtils/common.js";
@@ -100,7 +100,7 @@ export function quotaVerdict(input: {
  * line. Call it at the enqueue site, inside the admission's transaction.
  */
 export async function admitAgentOriginRun(
-  client: PoolClient,
+  client: Queryable,
   input: { spaceId: string; runId: string; job: AgentRunJob; source: QuotaSource; now?: Date },
 ): Promise<"admitted" | "held"> {
   // A failed physical attempt can still have its old job in flight. Neither
@@ -176,7 +176,7 @@ export async function admitAgentOriginRun(
  * the turn, and is admitted once that turn is over (`admitTurnParkedRuns`).
  */
 export async function enqueueWhenTurnFree(
-  client: PoolClient,
+  client: Queryable,
   input: { spaceId: string; runId: string; job: AgentRunJob },
 ): Promise<"admitted" | "held"> {
   const row = (await client.query<{ session_id: string | null; run_group_id: string | null; recovering: boolean }>(
@@ -379,7 +379,7 @@ export async function releaseHeldRuns(
 
 /** A Run still held on a different window, or one resetting at a different time: its marker and notice follow. */
 async function refreshHold(
-  client: PoolClient,
+  client: Queryable,
   spaceId: string,
   runId: string,
   context: RunContext | null,
@@ -408,7 +408,7 @@ async function refreshHold(
  * and its later Agent-triggered turns on that person's logins are not held
  * again.
  */
-export async function continueHeldRuns(client: PoolClient, input: { spaceId: string; sessionId: string; userId: string }): Promise<number> {
+export async function continueHeldRuns(client: Queryable, input: { spaceId: string; sessionId: string; userId: string }): Promise<number> {
   await lockRoomConversationQueue(client, input.spaceId, input.sessionId);
   await new PgConversationRuntimeSessionRepository(client).lockConversation(input.spaceId, input.sessionId);
   const candidates = (await client.query<{ id: string; discussion_id: string | null; marker: WaitingForQuota }>(
@@ -538,7 +538,7 @@ async function holdsOf(
  * when it was not held, or another turn holds the conversation now (a
  * person spoke while it waited): it stays held until that turn is over.
  */
-async function admitHeldRun(client: PoolClient, spaceId: string, runId: string, recoveryReady = false): Promise<boolean> {
+async function admitHeldRun(client: Queryable, spaceId: string, runId: string, recoveryReady = false): Promise<boolean> {
   // The conversation's lock first, as a turn claim takes it.
   const sessionId = (await client.query<{ session_id: string | null }>(
     `SELECT session_id FROM runs WHERE space_id = $1 AND id = $2`,
@@ -703,7 +703,7 @@ async function runContext(db: Queryable, spaceId: string, runId: string): Promis
  * Say so once per window: in the discussion (a card with the reset time and
  * "continue anyway" on its header), or as a line in the conversation.
  */
-async function postHoldNotice(client: PoolClient, spaceId: string, context: RunContext, marker: WaitingForQuota): Promise<void> {
+async function postHoldNotice(client: Queryable, spaceId: string, context: RunContext, marker: WaitingForQuota): Promise<void> {
   const text = holdNoticeText(marker);
   if (context.discussion_id) {
     const posted = await client.query(

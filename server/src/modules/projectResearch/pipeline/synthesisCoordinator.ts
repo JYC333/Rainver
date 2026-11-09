@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import type { Queryable } from "../../routeUtils/common.js";
 import { dateIso, HttpError, objectValue, optionalString, withQueryableTransaction } from "../../routeUtils/common.js";
 import { lockActiveProjectForMutation } from "../../projects/access.js";
-import { PgJobQueueRepository } from "../../jobs/repository.js";
 import { PgRunRepository } from "../../runs/repository.js";
 import { runOutputResult } from "../../runs/orchestrationResults.js";
 import { createManagedExecutionPolicy } from "../../policy/managedExecutionPolicy.js";
@@ -27,6 +26,11 @@ import type { ResearchOperationState, ResearchStage, ResearchMutationResult } fr
 import { researchStage, researchState, advanceOperation as advanceResearchOperation } from "../operationProjection.js";
 import { deriveStepStates } from "../operationProjection.js";
 import { setResearchOperationState } from "./operationProjectionWriter.js";
+import { resolveResearchStageProvider } from "../executionProfileService.js";
+import { queueResearchStageTask } from "../researchStageTasks.js";
+
+const RUNNING_SYNTHESIS_MESSAGE = "The synthesis task is writing the structured research report from the approved corpus.";
+const QUEUED_SYNTHESIS_MESSAGE = "The synthesis run is queued and waiting for a worker to pick it up.";
 
 interface SynthesisOperationRow {
   id: string;
@@ -103,7 +107,6 @@ export class ProjectResearchSynthesisCoordinator {
           spaceId,
           userId,
           projectId,
-          agentId: current.agent_id,
           researchQuestion: researchQueryText(current),
           researchScope: current.research_scope,
           reportDepth: current.report_depth,
@@ -123,21 +126,16 @@ export class ProjectResearchSynthesisCoordinator {
           emptyMatrix = true;
           return false;
         }
-        const run = await new PgRunRepository(db).createQueuedRunWithBudgetAdmission({
-          execution_kind: "agent",
-          agent_id: current.agent_id,
-          space_id: spaceId,
-          user_id: userId,
-          mode: "live",
-          run_type: "agent",
-          trigger_origin: "system",
-          project_id: projectId,
-          runtime_profile_id: current.runtime_profile_id || null,
+        const queued = await queueResearchStageTask(db, {
+          stage: RESEARCH_STAGES.brief_synthesize,
+          stageKey: input.stageKey ?? "synthesis",
+          spaceId,
+          userId,
+          projectId,
+          provider: await resolveResearchStageProvider(db, { spaceId, userId }, current.runtime_profile_id || null),
           prompt: `${input.stageKey === "synthesis_revision" ? "Revise" : "Synthesize"} the approved project research corpus for: ${researchQueryText(current)}`,
           instruction: resolvedPrompt.instruction,
-          capability_id: RESEARCH_STAGES.brief_synthesize,
-          capabilities_json: [],
-          contract_snapshot: {
+          contract: {
             source: { kind: "workflow", id: workflowId },
             project_id: projectId,
             required_outputs_json: { artifact_types: ["research_report.archive.v1"] },
@@ -159,36 +157,27 @@ export class ProjectResearchSynthesisCoordinator {
             risk_level: "low",
           },
         });
-        const job = await new PgJobQueueRepository(db).enqueue({
-          job_type: "agent_run",
-          space_id: spaceId,
-          user_id: userId,
-          agent_id: current.agent_id,
-          payload: { run_id: run.id },
-        });
         const now = new Date().toISOString();
-        current.synthesis_run_id = run.id;
+        current.synthesis_run_id = queued.runId;
         current.synthesis_progress = {
-          run_id: run.id,
-          run_status: run.status,
-          job_id: job.id,
-          job_status: job.status,
-          job_attempts: job.attempts,
-          job_heartbeat_at: dateIso(job.heartbeat_at),
-          job_updated_at: dateIso(job.updated_at),
-          run_updated_at: dateIso(run.updated_at),
+          run_id: queued.runId,
+          run_status: queued.runStatus,
+          job_id: queued.jobId,
+          job_status: queued.jobStatus,
+          job_attempts: 0,
+          job_heartbeat_at: null,
+          job_updated_at: now,
+          run_updated_at: now,
           last_event_at: null,
           last_event_type: null,
-          queued_at: run.created_at ?? now,
-          started_at: run.started_at ?? null,
+          queued_at: now,
+          started_at: null,
           updated_at: now,
-          message: run.status === "running"
-            ? "The synthesis agent is writing the structured research report from the approved corpus."
-            : "The synthesis run is queued and waiting for an agent worker to pick it up.",
+          message: QUEUED_SYNTHESIS_MESSAGE,
         };
         if (input.stageKey === "synthesis_revision" && current.synthesis_critique) {
           current.synthesis_critique.status = "queued";
-          current.synthesis_critique.run_id = run.id;
+          current.synthesis_critique.run_id = queued.runId;
         }
       },
       stepOverrides: (current) => [
@@ -228,7 +217,6 @@ export class ProjectResearchSynthesisCoordinator {
           spaceId: input.spaceId,
           userId: input.userId,
           projectId: input.projectId,
-          agentId: state.agent_id,
           researchQuestion: researchQueryText(state),
           researchScope: state.research_scope,
           reportDepth: state.report_depth,
@@ -236,21 +224,20 @@ export class ProjectResearchSynthesisCoordinator {
           corpusSummary: critiqueCorpusSummary(report),
         });
         if (!resolved) throw new HttpError(500, "Project Research synthesis critique prompt is not resolvable");
-        const run = await new PgRunRepository(db).createQueuedRunWithBudgetAdmission({
-          execution_kind: "agent",
-          agent_id: state.agent_id,
-          space_id: input.spaceId,
-          user_id: input.userId,
-          mode: "live",
-          run_type: "agent",
-          trigger_origin: "system",
-          project_id: input.projectId,
-          runtime_profile_id: state.runtime_profile_id || null,
+        const queued = await queueResearchStageTask(db, {
+          stage: RESEARCH_STAGES.brief_synthesize,
+          stageKey: "synthesis_critique",
+          spaceId: input.spaceId,
+          userId: input.userId,
+          projectId: input.projectId,
+          provider: await resolveResearchStageProvider(
+            db,
+            { spaceId: input.spaceId, userId: input.userId },
+            state.runtime_profile_id || null,
+          ),
           prompt: `Critique the Project Research report for: ${researchQueryText(state)}`,
           instruction: resolved.instruction,
-          capability_id: RESEARCH_STAGES.brief_synthesize,
-          capabilities_json: [],
-          contract_snapshot: {
+          contract: {
             source: { kind: "workflow", id: input.workflowId },
             project_id: input.projectId,
             required_outputs_json: { artifact_types: [] },
@@ -272,25 +259,18 @@ export class ProjectResearchSynthesisCoordinator {
             risk_level: "low",
           },
         });
-        const job = await new PgJobQueueRepository(db).enqueue({
-          job_type: "agent_run",
-          space_id: input.spaceId,
-          user_id: input.userId,
-          agent_id: state.agent_id,
-          payload: { run_id: run.id },
-        });
         critique.status = "queued";
-        critique.run_id = run.id;
-        state.synthesis_run_id = run.id;
+        critique.run_id = queued.runId;
+        state.synthesis_run_id = queued.runId;
         const now = new Date().toISOString();
         state.synthesis_progress = {
-          run_id: run.id,
-          run_status: run.status,
-          job_id: job.id,
-          job_status: job.status,
-          job_attempts: job.attempts,
-          queued_at: run.created_at ?? now,
-          started_at: run.started_at ?? null,
+          run_id: queued.runId,
+          run_status: queued.runStatus,
+          job_id: queued.jobId,
+          job_status: queued.jobStatus,
+          job_attempts: 0,
+          queued_at: now,
+          started_at: null,
           updated_at: now,
           message: "The synthesis draft is undergoing an adversarial evidence critique.",
         };
@@ -369,9 +349,11 @@ export class ProjectResearchSynthesisCoordinator {
       `SELECT status, created_at, started_at, updated_at FROM runs WHERE id=$1 AND space_id=$2`,
       [runId, spaceId],
     );
+    // `agent_run` still names a synthesis Run admitted before the stages
+    // became bounded ProviderTask Runs; it finishes on that path.
     const job = await this.db.query<{ id: string; status: string; attempts: number; heartbeat_at: unknown; updated_at: unknown }>(
       `SELECT id, status, attempts, heartbeat_at, updated_at FROM jobs
-        WHERE space_id=$1 AND job_type='agent_run' AND payload_json->>'run_id'=$2
+        WHERE space_id=$1 AND job_type IN ('provider_task_run','agent_run') AND payload_json->>'run_id'=$2
         ORDER BY created_at DESC LIMIT 1`,
       [spaceId, runId],
     );
@@ -411,9 +393,7 @@ export class ProjectResearchSynthesisCoordinator {
       queued_at: dateIso(value.created_at),
       started_at: dateIso(value.started_at),
       updated_at: now,
-      message: value.status === "running"
-        ? "The synthesis agent is writing the structured research report from the approved corpus."
-        : "The synthesis run is queued and waiting for an agent worker to pick it up.",
+      message: value.status === "running" ? RUNNING_SYNTHESIS_MESSAGE : QUEUED_SYNTHESIS_MESSAGE,
     };
     state.heartbeat_at = now;
     await setResearchOperationState(this.db, row, state, deriveStepStates(state));

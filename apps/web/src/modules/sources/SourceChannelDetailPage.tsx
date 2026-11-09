@@ -1,3 +1,4 @@
+import {SourceDispatchNotice} from './SourceDispatchNotice'
 import {readingGoalPath} from './sourceGoalNavigation'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
@@ -88,8 +89,8 @@ function ScopedSourceChannelDetail() {
     setBusyMonitorId(monitor.id)
     try {
       const job = await sourcesApi.scanChannel(monitor.id)
-      await sourcesApi.runJob(job.id)
-      toast.success('Monitor scan completed')
+      const dispatch=await sourcesApi.runJob(job.id)
+      toast.success(t(dispatch.status==='pending'?'sources_ui.dispatch.queued':'sources_ui.dispatch.ended'))
       await load()
     } catch (error) {
       toast.error(errMsg(error))
@@ -135,6 +136,7 @@ function ScopedSourceChannelDetail() {
   return (
     <div className="p-6 space-y-6 max-w-4xl">
       <Button variant="ghost" asChild><Link to=".."><ArrowLeft className="size-4 mr-2" />Back to sources</Link></Button>
+      <SourceDispatchNotice />
       {loadError && (
         // A later refresh failed while the source is on screen: say so, keep what is shown.
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm" role="alert">

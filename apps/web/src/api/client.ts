@@ -270,7 +270,6 @@ import type {
   FocusAreaContents,
   ProjectResearchWorkflow,
   ProjectSourceBinding,
-  ProjectSourceBindingBackfillResult,
   ProjectSourceItem,
   ProjectSourceSummary,
   ProjectUpdate,
@@ -374,7 +373,6 @@ import type {
   SourceBackfillPreview,
   SourceBackfillQuotaPolicy,
   SourceBackfillStrategy,
-  SourceCapturePolicy,
   SourceCatalog,
   SourceCatalogMapping,
   SourceCatalogProvider,
@@ -387,7 +385,6 @@ import type {
   SourcePostProcessingBriefingDetail,
   SourcePostProcessingDecisionActionResult,
   SourcePostProcessingDecisionReviewStatus,
-  SourcePostProcessingDrainResult,
   SourcePostProcessingItemDecision,
   SourcePostProcessingItemRelevance,
   SourcePostProcessingRule,
@@ -740,7 +737,8 @@ function applyTurnFrame(turn: RunTurn | null, frame: TurnStreamFrame): RunTurn |
     return { ...turn, model_selection: frame.model_selection }
   }
   if (frame.type === 'turn.state_changed') {
-    return { ...turn, state: frame.state, blocked_on: frame.blocked_on }
+    return { ...turn, state: frame.state, blocked_on: frame.blocked_on,
+      ...(frame.queue_wait_reason !== undefined ? {queue_wait_reason:frame.queue_wait_reason} : {}) }
   }
 
   const projected = turn.parts.filter(part => !(part.type === 'text' && part.streamed))
@@ -1345,7 +1343,11 @@ export const boardsApi = {
 
 // ── Tasks (product work items) ─────────────────────────────────────────────
 export const tasksApi = {
-  delete: (id: string) => del<{task_id:string;deleted:boolean}>(`/tasks/${encodeURIComponent(id)}`),
+  moveToColumn: (id:string, body:Omit<OperationInput<'task.move_to_column'>,'task_id'>, key:string) =>
+    callOperation('task.move_to_column',{...body,task_id:id},key),
+  delete: (id:string, key:string) => callOperation('task.delete',{task_id:id},key),
+  setStatus: (id:string, body:Omit<OperationInput<'task.set_status'>,'task_id'>, key:string) =>
+    callOperation('task.set_status',{...body,task_id:id},key),
   linkedThreads:(id:string,after?:string)=>get<TaskInquiryThreadsPage>(`/tasks/${encodeURIComponent(id)}/inquiry-threads${after?`?after_thread_id=${encodeURIComponent(after)}`:''}`),
   workHistory:(id:string,before?:string)=>get<TaskWorkHistoryPage>(`/tasks/${encodeURIComponent(id)}/work-history${before?`?before_seq=${encodeURIComponent(before)}`:''}`),
   work:  (id: string) => get<TaskWorkView>(`/tasks/${id}/work`),
@@ -1354,8 +1356,14 @@ export const tasksApi = {
   create: (data: Record<string, unknown>, options: { spaceId?: string } = {}) =>
     post<Task>('/tasks', data, { spaceId: options.spaceId }),
   get:    (id: string) => get<Task>(`/tasks/${id}`),
-  update: (id: string, data: Record<string, unknown>) =>
-    patch<Task>(`/tasks/${id}`, data),
+  update: async (id: string, data: Record<string, unknown>, key?:string) => {
+    if(Object.prototype.hasOwnProperty.call(data,'board_id')||Object.prototype.hasOwnProperty.call(data,'column_id')){
+      // Placement and the accompanying contract edits commit together.
+      await callOperation('task.place_in_space_board',{task_id:id,changes:data as OperationInput<'task.place_in_space_board'>['changes']},key??crypto.randomUUID());
+      return get<Task>(`/tasks/${id}`);
+    }
+    return patch<Task>(`/tasks/${id}`, data);
+  },
   createRun: (taskId: string, body: TaskRunCreateBody = {}) =>
     // One Run, whichever branch admits it: the remote path creates its Run
     // synchronously now, exactly as the server path does.
@@ -2728,33 +2736,46 @@ export const sourcesApi = {
   },
   recommendations: () => get<SourceRecommendation[]>('/sources/recommendations'),
   followed: (options?: RequestOptions) => get<FollowedSourceChannel[]>('/sources/followed', options),
-  decideRecommendation: (channelId: string, decision: 'subscribed' | 'dismissed' | 'muted') =>
-    post<{ source_channel_id: string; status: string; updated_at: string }>(`/sources/recommendations/${encodeURIComponent(channelId)}/decision`, { decision }),
+  decideRecommendation: async (channelId:string,decision:'subscribed'|'dismissed'|'muted',key:string=crypto.randomUUID()) => {
+    const result=await callOperation('source.recommendation.decide',{source_channel_id:channelId,decision},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source recommendation decision did not complete');
+    return result.data;
+  },
   /** Leave (`muted`) or rejoin (`subscribed`) a channel; what was delivered while subscribed stays readable. */
-  setChannelSubscription: (channelId: string, status: 'subscribed' | 'muted') =>
-    post<{ source_channel_id: string; status: string; updated_at: string }>(`/sources/channels/${encodeURIComponent(channelId)}/subscription`, { status }),
+  setChannelSubscription: async (channelId:string,status:'subscribed'|'muted',key:string=crypto.randomUUID()) => {
+    const result=await callOperation('source.channel.set_subscription',{source_channel_id:channelId,status},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source subscription did not complete');
+    return result.data;
+  },
   customSourceCredentials: () => get<CustomSourceCredentialDTO[]>('/sources/custom-source-credentials'),
   getChannel: (id: string) => get<SourceChannel>(`/sources/channels/${id}`),
-  createChannel: (body: {
-    provider_key: string
-    source_name?: string
-    name?: string
-    query: Record<string, unknown>
-    endpoint_url?: string
-    fetch_frequency?: 'manual' | 'hourly' | 'daily' | 'weekly'
-    schedule_rule?: Record<string, unknown>
-    capture_policy?: SourceCapturePolicy
-    source_connection_id?: string
-  }, options?: RequestOptions) => post<SourceChannel>('/sources/channels', body, options),
+  createChannel: async (body:OperationInput<'source.channel.create'>,options:RequestOptions={},key:string=crypto.randomUUID()):Promise<SourceChannel> => {
+    const result=await callOperation('source.channel.create',body,key,options);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source Monitor creation did not complete');
+    return result.data;
+  },
   previewQuery: (body: { provider_key: string; query: Record<string, unknown>; source_channel_id?: string }) =>
     post<SourceQueryPreview>('/sources/query-preview', body),
-  updateChannel: (id: string, body: Partial<Pick<SourceChannel, 'source_name' | 'name' | 'status' | 'fetch_frequency' | 'schedule_rule'>> & { query?: Record<string, unknown>; endpoint_url?: string | null }) =>
-    patch<SourceChannel>(`/sources/channels/${id}`, body),
-  scanChannel: (id: string, options?: RequestOptions) => post<ExtractionJob>(`/sources/channels/${id}/scan`, undefined, options),
-  previewChannelBackfill: (channelId: string, body: { strategy: Partial<SourceBackfillStrategy>; quota_policy?: Partial<SourceBackfillQuotaPolicy> }) =>
-    post<SourceBackfillPreview>(`/sources/channels/${channelId}/backfill/plans/preview`, body),
-  createChannelBackfillPlan: (channelId: string, body: { idempotency_key: string; strategy: Partial<SourceBackfillStrategy>; quota_policy?: Partial<SourceBackfillQuotaPolicy>; project_source_binding_id?: string; project_operation_id?: string }) =>
-    post<SourceBackfillPlan>(`/sources/channels/${channelId}/backfill/plans`, body),
+  updateChannel: async (id:string,body:OperationInput<'source.channel.update'>['changes'],key:string=crypto.randomUUID()) => {
+    const result=await callOperation('source.channel.update',{source_channel_id:id,changes:body},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source Monitor update did not complete');
+    return result.data;
+  },
+  scanChannel: async (id:string,options:RequestOptions={},key:string=crypto.randomUUID()) => {
+    const result=await callOperation('source.channel.scan',{source_channel_id:id},key,options);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source Monitor scan was not queued');
+    return result.data;
+  },
+  previewChannelBackfill: async (channelId: string, body: { strategy: Partial<SourceBackfillStrategy>; quota_policy?: Partial<SourceBackfillQuotaPolicy> }):Promise<SourceBackfillPreview> => {
+    const result=await queryOperation('source.backfill.preview',{...body,source_channel_id:channelId});
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Backfill preview unavailable');
+    return result.data;
+  },
+  createChannelBackfillPlan: async (channelId: string, body: { idempotency_key: string; strategy: Partial<SourceBackfillStrategy>; quota_policy?: Partial<SourceBackfillQuotaPolicy>; project_source_binding_id?: string; project_operation_id?: string },key:string=crypto.randomUUID()) => {
+    const result=await callOperation('source.backfill.create_plan',{...body,source_channel_id:channelId},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Backfill plan unavailable');
+    return get<SourceBackfillPlan>(`/sources/channels/${encodeURIComponent(channelId)}/backfill/plans/${encodeURIComponent(result.data.plan_id)}`);
+  },
   channelBackfillPlans: (channelId: string) => get<SourceBackfillPlan[]>(`/sources/channels/${channelId}/backfill/plans`),
   createCustomSourceDraft: (body: CustomSourceCreateDraftRequest) =>
     post<SourceChannel>('/sources/custom-sources/drafts', body),
@@ -2786,8 +2807,11 @@ export const sourcesApi = {
     put<CustomSourceSpacePolicy>('/sources/custom-source-settings/space', body),
   planSourceRecipe: (body: SourceRecipePlanRequest) =>
     post<SourceRecipePlanResponse>('/sources/source-recipes/plan', body),
-  createSourceRecipe: (body: SourceRecipeCreateRequest) =>
-    post<SourceRecipeCreateResponse>('/sources/source-recipes', body),
+  createSourceRecipe: async (body: SourceRecipeCreateRequest,key:string=crypto.randomUUID()):Promise<SourceRecipeCreateResponse> => {
+    const result=await callOperation('source.recipe.create',body,key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source recipe draft did not complete');
+    return result.data;
+  },
   dryRunSourceRecipe: (connectionId: string, body: { recipe_version_id: string; fixture_content?: string }) =>
     post<SourceRecipeDryRunResponse>(`/sources/source-recipes/${connectionId}/dry-run`, body),
   activateSourceRecipe: (connectionId: string, body: { recipe_version_id: string; next_check_at?: string | null; schedule_rule?: SourceScheduleRule | null }) =>
@@ -2849,8 +2873,10 @@ export const sourcesApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<ExtractionJob>>('/sources/jobs?' + new URLSearchParams(q), options)
   },
-  runJob: (id: string, options?: RequestOptions) =>
-    post<ExtractionJob>(`/sources/jobs/${id}/run`, undefined, options),
+  runJob: async(id:string,options:RequestOptions={},key:string=crypto.randomUUID()) => {
+    const result=await callOperation('source.extraction.dispatch',{extraction_job_id:id},key,options);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source dispatch did not enqueue');return result.data;
+  },
 
   evidence: (params: { status?: string; evidence_type?: string; source_item_id?: string; project_id?: string; connection_id?: string; limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
@@ -2888,34 +2914,26 @@ export const sourcesApi = {
     if (params.source_channel_id !== undefined) q.source_channel_id = params.source_channel_id
     return get<ProjectSourceBinding[]>(`/projects/${params.project_id}/sources/bindings?` + new URLSearchParams(q))
   },
-  createProjectSourceBinding: (body: {
-    source_channel_id: string
-    project_id: string
-    backfill_history?: boolean
-    binding_key?: string
-    priority?: number
-    delivery_scope?: 'project_members' | 'source_subscribers'
-    collection_notifications_enabled?: boolean
-    standing_comparison_enabled?: boolean
-    filters?: Record<string, unknown>
-    routing_policy?: Record<string, unknown>
-    extraction_policy?: Record<string, unknown>
-  }) => post<ProjectSourceBinding>(`/projects/${body.project_id}/sources/bindings`, body),
-  updateProjectSourceBinding: (projectId: string, bindingId: string, body: Partial<{
-    status: string
-    binding_key: string
-    priority: number
-    delivery_scope: 'project_members' | 'source_subscribers'
-    collection_notifications_enabled: boolean
-    standing_comparison_enabled: boolean
-    filters: Record<string, unknown>
-    routing_policy: Record<string, unknown>
-    extraction_policy: Record<string, unknown>
-  }>) => patch<ProjectSourceBinding>(`/projects/${projectId}/sources/bindings/${bindingId}`, body),
-  deleteProjectSourceBinding: (projectId: string, bindingId: string) =>
-    del<{ id: string; status: string }>(`/projects/${projectId}/sources/bindings/${bindingId}`),
-  backfillProjectSourceBinding: (projectId: string, bindingId: string) =>
-    post<ProjectSourceBindingBackfillResult>(`/projects/${projectId}/sources/bindings/${bindingId}/backfill`),
+  createProjectSourceBinding: async (body: OperationInput<'project.source.bind'>,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('project.source.bind',body,key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source binding did not complete');
+    return result.data;
+  },
+  updateProjectSourceBinding: async (projectId:string,bindingId:string,changes:OperationInput<'project.source.update'>['changes'],key:string=crypto.randomUUID()) => {
+    const result=await callOperation('project.source.update',{project_id:projectId,binding_id:bindingId,changes},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source binding update did not complete');
+    return result.data;
+  },
+  deleteProjectSourceBinding: async (projectId:string,bindingId:string,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('project.source.unbind',{project_id:projectId,binding_id:bindingId},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source unbinding did not complete');
+    return result.data;
+  },
+  backfillProjectSourceBinding: async (projectId:string,bindingId:string,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('project.source.backfill',{project_id:projectId,binding_id:bindingId},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source material routing did not complete');
+    return result.data;
+  },
   projectItems: (params: {
     project_id: string
     source_channel_id?: string
@@ -2954,14 +2972,22 @@ export const sourcesApi = {
     post<SummaryRunOut>('/sources/post-processing/run-once', body),
   postProcessingRules: (channelId: string) =>
     get<SourcePostProcessingRule[]>(`/sources/channels/${channelId}/post-processing/rules`),
-  createPostProcessingRule: (channelId: string, body: SourcePostProcessingRuleCreate) =>
-    post<SourcePostProcessingRule>(`/sources/channels/${channelId}/post-processing/rules`, body),
-  updatePostProcessingRule: (channelId: string, ruleId: string, body: SourcePostProcessingRuleUpdate) =>
-    patch<SourcePostProcessingRule>(`/sources/channels/${channelId}/post-processing/rules/${ruleId}`, body),
-  runPostProcessingRule: (channelId: string, ruleId: string) =>
-    post<SourcePostProcessingRun>(`/sources/channels/${channelId}/post-processing/rules/${ruleId}/run`),
-  drainPostProcessingRule: (channelId: string, ruleId: string) =>
-    post<SourcePostProcessingDrainResult>(`/sources/channels/${channelId}/post-processing/rules/${ruleId}/drain`),
+  createPostProcessingRule: async(channelId:string,body:SourcePostProcessingRuleCreate,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('source.processing.rule.create',{source_channel_id:channelId,rule:body},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source rule configuration did not complete');return result.data;
+  },
+  updatePostProcessingRule: async(channelId:string,ruleId:string,body:SourcePostProcessingRuleUpdate,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('source.processing.rule.update',{source_channel_id:channelId,rule_id:ruleId,changes:body},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source rule configuration did not complete');return result.data;
+  },
+  runPostProcessingRule: async(channelId:string,ruleId:string,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('source.processing.rule.dispatch',{source_channel_id:channelId,rule_id:ruleId,mode:'run'},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source dispatch did not enqueue');return result.data;
+  },
+  drainPostProcessingRule: async(channelId:string,ruleId:string,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('source.processing.rule.dispatch',{source_channel_id:channelId,rule_id:ruleId,mode:'drain'},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source dispatch did not enqueue');return result.data;
+  },
   postProcessingRuns: (channelId: string, params: { limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
     if (params.limit !== undefined) q.limit = String(params.limit)
@@ -3122,7 +3148,11 @@ export const projectsApi = {
   hostExecutionTargets: (id: string) =>
     get<HostExecutionTargetsResponse>(`/projects/${encodeURIComponent(id)}/host-execution-targets`),
   getBoard: (id: string) => get<ProjectBoard>(`/projects/${id}/board`),
-  configureBoard: (id: string, body: unknown) => put<ProjectBoard>(`/projects/${id}/board/columns`, body),
+  configureBoard: async (id: string, body: Omit<OperationInput<'board.configure'>,'project_id'>, key: string) => {
+    const result=await callOperation('board.configure',{...body,project_id:id},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Board command did not complete');
+    return get<ProjectBoard>(`/projects/${id}/board`);
+  },
   mainlineRoom: (id: string, options: RequestOptions = {}) => get<ProjectMainlineRoomResponse>(`/projects/${id}/mainline-room`, options),
   /**
    * Everyone who can read this Project.
@@ -3150,26 +3180,27 @@ export const projectsApi = {
   undoUpdate: (projectId: string, eventId: string) =>
     post<{ undone_event_id: string; action: string }>(`/projects/${encodeURIComponent(projectId)}/updates/${encodeURIComponent(eventId)}/undo`, {}),
   getOperation: (id: string, operationId: string) => get<ProjectOperation>(`/projects/${id}/operations/${operationId}`),
-  createOperation: (id: string, body: { kind: ProjectOperation['kind']; title: string; intent_text?: string; steps?: Array<{ title: string; detail?: Record<string, unknown> }> }) =>
-    post<ProjectOperation>(`/projects/${id}/operations`, body),
-  cancelOperation: (id: string, operationId: string) => post<ProjectOperation>(`/projects/${id}/operations/${operationId}/cancel`, {}),
+  createOperation: (id: string, body: Omit<OperationInput<'project.operation.create'>,'project_id'>, key: string) =>
+    callOperation('project.operation.create', {...body, project_id:id}, key),
+  cancelOperation: (id: string, operationId: string, key: string) =>
+    callOperation('project.operation.cancel', {project_id:id, operation_id:operationId}, key),
   sourceBindings: (id: string, sourceChannelId?: string) => {
     const q = sourceChannelId ? `?source_channel_id=${encodeURIComponent(sourceChannelId)}` : ''
     return get<ProjectSourceBinding[]>(`/projects/${id}/sources/bindings${q}`)
   },
   sourceExtractionProfiles: (id: string) => get<ProjectExtractionProfile[]>(`/projects/${id}/sources/extraction-profiles`),
   sourceHealth: (id: string) => get<SourceHealth[]>(`/projects/${id}/sources/health`),
-  createSourceBinding: (id: string, body: Omit<Parameters<typeof sourcesApi.createProjectSourceBinding>[0], 'project_id'>) =>
-    post<ProjectSourceBinding>(`/projects/${id}/sources/bindings`, body),
+  createSourceBinding: (id:string,body:Omit<OperationInput<'project.source.bind'>,'project_id'>,key?:string) =>
+    sourcesApi.createProjectSourceBinding({...body,project_id:id},key),
   proposeSourceBinding: (id: string, body: Record<string, unknown>) =>
     post<{ proposal: Proposal; auto_applied: boolean }>(`/projects/${id}/sources/propose-bind`, body),
   proposeSourceSetup: (id:string,body:Record<string,unknown>) => post<{operation:ProjectOperation;channel_draft:SourceChannel;source_proposal:Proposal;binding_proposal:Proposal}>(`/projects/${id}/sources/propose-setup`,body),
-  updateSourceBinding: (id: string, bindingId: string, body: Record<string, unknown>) =>
-    patch<ProjectSourceBinding>(`/projects/${id}/sources/bindings/${bindingId}`, body),
-  deleteSourceBinding: (id: string, bindingId: string) =>
-    del<{ id: string; status: string }>(`/projects/${id}/sources/bindings/${bindingId}`),
-  backfillSourceBinding: (id: string, bindingId: string) =>
-    post<ProjectSourceBindingBackfillResult>(`/projects/${id}/sources/bindings/${bindingId}/backfill`, {}),
+  updateSourceBinding: (id:string,bindingId:string,body:OperationInput<'project.source.update'>['changes'],key?:string) =>
+    sourcesApi.updateProjectSourceBinding(id,bindingId,body,key),
+  deleteSourceBinding: (id:string,bindingId:string,key?:string) =>
+    sourcesApi.deleteProjectSourceBinding(id,bindingId,key),
+  backfillSourceBinding: (id:string,bindingId:string,key?:string) =>
+    sourcesApi.backfillProjectSourceBinding(id,bindingId,key),
   proposeBindingBackfill:(id:string,bindingId:string,body:Record<string,unknown>)=>post<{operation:ProjectOperation;plan:SourceBackfillPlan;proposal:Proposal}>(`/projects/${id}/sources/bindings/${bindingId}/propose-backfill`,body),
   corpus: (id: string, params: {
     status?: string
@@ -3241,14 +3272,20 @@ export const inquiryApi = {
     get<InquiryThread[]>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads`),
   getThread: (projectId: string, threadId: string) =>
     get<InquiryThreadDetail>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}`),
-  createThread: (projectId: string, data: Record<string, unknown>) =>
-    post<InquiryThread>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads`, data),
+  createThread: async (projectId: string, data: Omit<import('@rainver/protocol').OperationInput<'inquiry.thread.create'>,'project_id'>,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('inquiry.thread.create',{...data,project_id:projectId},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Thread creation did not complete');
+    return get<InquiryThread>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(result.data.thread_id)}`);
+  },
   /**
    * Raise a note passage as a Question. Creates the Thread and the link
    * back to the note, so the Question keeps a route to its reasoning.
    */
-  raiseFromNote: (projectId: string, data: { note_object_id: string; statement: string; kind?: 'question' | 'hypothesis' }) =>
-    post<InquiryThread>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/from-note`, data),
+  raiseFromNote: async (projectId: string, data: { note_object_id: string; statement: string; kind?: 'question' | 'hypothesis' },key:string=crypto.randomUUID()) => {
+    const result=await callOperation('note.raise_as_question',{...data,project_id:projectId},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Question creation did not complete');
+    return get<InquiryThread>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(result.data.thread_id)}`);
+  },
   recordIteration: (projectId: string, threadId: string, data: Record<string, unknown>) =>
     post<InquiryIteration & { thread: InquiryThread }>(
       `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/iterations`, data,

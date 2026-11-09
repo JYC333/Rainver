@@ -10,13 +10,15 @@ vi.mock('../../../contexts/SpaceContext', () => ({
 
 const mocked = vi.hoisted(() => ({
   listTasks: vi.fn(),
+  setStatus:vi.fn(),
+  updateTask:vi.fn(),
   createTask: vi.fn(),
   listBoards: vi.fn(),
   listAgents: vi.fn(),
 }))
 
 vi.mock('../../../api/client', () => ({
-  tasksApi: { list: mocked.listTasks, create: mocked.createTask, update: vi.fn() },
+  tasksApi: { list: mocked.listTasks, create: mocked.createTask, update: mocked.updateTask, setStatus: mocked.setStatus },
   boardsApi: { list: mocked.listBoards },
   agentsApi: { list: mocked.listAgents },
 }))
@@ -88,6 +90,16 @@ describe('TasksPage', () => {
       { spaceId: 'personal-1' },
     ))
     expect(await screen.findByTestId('where')).toHaveTextContent('/spaces/personal-1/tasks/task-2')
+  })
+
+  it('uses an explicit core key for quick status and reloads the parent list',async()=>{
+    mocked.listTasks.mockResolvedValue({items:[{...TASK,status:'ready'}]})
+    mocked.setStatus.mockResolvedValue({status:'succeeded',data:{task_id:'task-1',status:'in_progress'}})
+    renderPage()
+    fireEvent.click(await screen.findByRole('button',{name:'In progress'}))
+    await waitFor(()=>expect(mocked.setStatus).toHaveBeenCalledWith('task-1',{status:'in_progress'},expect.any(String)))
+    await waitFor(()=>expect(mocked.listTasks).toHaveBeenCalledTimes(2))
+    expect(mocked.updateTask).not.toHaveBeenCalled()
   })
 
   it('ignores a slower answer for a filter that is no longer selected', async () => {

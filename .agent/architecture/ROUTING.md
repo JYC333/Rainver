@@ -14,7 +14,10 @@ Profile that names a complete execution target — Host, workspace mode and
 installed copy — whether that Host is the built-in Server Runtime or a paired
 Host. The Conversation HostThread is not on this path. A paired Host still is.
 A Conversation or Task with a pinned Host thread is limited to
-that thread's Host, workspace mode/location and runtime key. A Conversation
+that thread's Host, workspace mode/location and runtime key. The pinned thread
+must belong to the Run: a Room Conversation thread by its Space and session, a
+direct-chat thread by its person and its Agent's Space (direct threads carry no
+`space_id`), a Task thread by the Run's Task. A Conversation
 uses its persisted backend snapshot rather than rebinding to later Profile or
 Provider edits, so `credential_available` is recomputed from that snapshot's own
 backend mode and Provider instead of being inherited from the Profile's, and a

@@ -4,6 +4,8 @@ import type { ProjectBoardColumn } from "@rainver/protocol";
 import { DEFAULT_COLUMNS } from "./taskRepositoryRows.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 
+export class BoardMutationError extends HttpError {}
+
 export type BoardColumn = Omit<ProjectBoardColumn, "count">;
 export const UNASSIGNED_COLUMN = "unassigned";
 
@@ -28,26 +30,26 @@ export function columnForTask(task:{status:string;column_id:string|null}, column
 
 export async function selectBoardColumn(db:Queryable,spaceId:string,projectId:string|null,input:unknown){
   const parsed=BoardColumnSelectionSchema.safeParse(input);
-  if(!parsed.success)throw new HttpError(422,"Invalid Board column selection");
-  if(!projectId)throw new HttpError(422,"A Board column requires a Project");
+  if(!parsed.success)throw new BoardMutationError(422,"Invalid Board column selection");
+  if(!projectId)throw new BoardMutationError(422,"A Board column requires a Project");
   const board=await readProjectColumns(db,spaceId,projectId);
-  if(board.revision!==parsed.data.columns_revision)throw new HttpError(409,"Board columns changed; read board.read again");
+  if(board.revision!==parsed.data.columns_revision)throw new BoardMutationError(409,"Board columns changed; read board.read again");
   const column=board.columns.find(c=>c.key===parsed.data.column_key);
-  if(!column)throw new HttpError(404,"Board column not found");
+  if(!column)throw new BoardMutationError(404,"Board column not found");
   return column;
 }
 
 /** Validate placement in the Task's Project; never infer authority from a column ID. */
 export async function taskColumnPlacement(db:Queryable,spaceId:string,projectId:string|null,body:Record<string,unknown>) {
   if (!body.column_id) return body;
-  if(typeof body.column_id!=="string")throw new HttpError(422,"Invalid column ID");
+  if(typeof body.column_id!=="string")throw new BoardMutationError(422,"Invalid column ID");
   const row = (await db.query<{board_id:string;status_key:string}>(`SELECT c.board_id,c.status_key FROM board_columns c
     JOIN boards b ON b.id=c.board_id AND b.space_id=c.space_id WHERE c.space_id=$1 AND c.id=$2
     AND c.deleted_at IS NULL AND b.deleted_at IS NULL AND b.status='active' AND b.project_id IS NOT DISTINCT FROM $3::varchar`,
     [spaceId,body.column_id,projectId])).rows[0];
-  if (!row || body.board_id && body.board_id!==row.board_id) throw new HttpError(404,'Board column not found');
+  if (!row || body.board_id && body.board_id!==row.board_id) throw new BoardMutationError(404,'Board column not found');
   const blockedOverlay=body.status==='blocked' && row.status_key==='in_progress';
-  if (body.status && body.status!==row.status_key && !blockedOverlay) throw new HttpError(422,'Task status must match the destination column');
+  if (body.status && body.status!==row.status_key && !blockedOverlay) throw new BoardMutationError(422,'Task status must match the destination column');
   return {...body,board_id:row.board_id,status:blockedOverlay?'blocked':row.status_key};
 }
 

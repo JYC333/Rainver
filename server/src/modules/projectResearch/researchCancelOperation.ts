@@ -40,7 +40,7 @@ async function target(db:Queryable,input:Input,actor:OperationActor,lock=false) 
   }
   return row;
 }
-async function authorize(db:Queryable,input:Input,actor:OperationActor) {
+export async function authorizeResearchCancellation(db:Queryable,input:Input,actor:OperationActor) {
   const row=await target(db,input,actor),identity={spaceId:actor.space_id,userId:actor.on_behalf_of_user_id!};
   await assertProjectWriter(db,identity.spaceId,row.project_id,identity.userId,{allowArchived:true});
   // Serialize Project archive and authority changes with the mutation/replay.
@@ -63,8 +63,8 @@ export function researchCancelRegistration(definitions:ReadonlyMap<string,System
     normalizeInput(raw,scope) {
       return {...raw as Input,project_id:(scope.targets as {project_id:string}).project_id};
     },
-    authorize:(db,input,actor)=>authorize(db,input as Input,actor),
-    authorizeResult:(db,output,actor)=>authorize(db,output as Input,actor),
+    authorize:(db,input,actor)=>authorizeResearchCancellation(db,input as Input,actor),
+    authorizeResult:(db,output,actor)=>authorizeResearchCancellation(db,output as Input,actor),
     async execute(db,raw,actor) {
       const input=raw as Input,row=await target(db,input,actor);
       return new ResearchOperationCancelService(db).cancelOperation({spaceId:actor.space_id,userId:actor.on_behalf_of_user_id!},row.project_id,input.operation_id,input.reason);

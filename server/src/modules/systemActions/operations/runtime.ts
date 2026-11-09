@@ -1,3 +1,17 @@
+import {sourceProcessingRegistrations} from '../../sources/sourceProcessingOperations.js';
+import {sourceChannelCreateRegistration} from '../../sources/sourceChannelCreateOperation.js';
+import {sourceMonitorRegistrations} from '../../sources/sourceMonitorOperations.js';
+import {sourceRecipeCreateRegistration} from '../../sources/sourceRecipeCreateOperation.js';
+import {sourceSubscriptionRegistrations} from '../../sources/sourceSubscriptionOperations.js';
+import {projectSourceRegistrations} from '../../projects/projectSourceOperations.js';
+import {threadCreationRegistrations} from '../../inquiry/threadCreationOperations.js';
+import {taskLifecycleRegistrations} from '../../projectWork/taskLifecycleOperations.js';
+import {taskSpacePlacementRegistration} from '../../projectWork/taskSpacePlacementOperation.js';
+import {sourceBackfillRegistrations} from '../../sources/sourceBackfillOperations.js';
+import { boardOperationRegistrations } from '../../projectWork/boardOperations.js';
+import { projectOperationRegistrations } from '../../projects/projectOperationOperations.js';
+import { collaborationParticipantsRegistration } from '../../agentGroups/collaborationParticipantsOperation.js';
+import { actionGrantRegistrations } from '../../policy/actionGrantOperations.js';
 import { pluginOperations } from "../../plugins/operationRegistry.js";
 import { researchCancelRegistration } from '../../projectResearch/researchCancelOperation.js';
 import type { ServerConfig } from '../../../config.js';
@@ -10,7 +24,7 @@ const runtimes = new WeakMap<ServerConfig, Promise<OperationExecutor>>();
 export function operationRuntime(config: ServerConfig): Promise<OperationExecutor> {
   let runtime = runtimes.get(config);
   if (!runtime) {
-    runtime = loadSystemActionRegistry(config).then(definitions => new OperationExecutor(dbPool(config), config, [catalogRegistration(config,definitions), researchCancelRegistration(definitions),...pluginOperations(config)]));
+    runtime = loadSystemActionRegistry(config).then(definitions => new OperationExecutor(dbPool(config), config, [collaborationParticipantsRegistration(definitions),catalogRegistration(config,definitions),...threadCreationRegistrations(definitions), researchCancelRegistration(definitions),...actionGrantRegistrations(config,definitions),...projectOperationRegistrations(definitions),...projectSourceRegistrations(definitions),...boardOperationRegistrations(config,definitions),...taskLifecycleRegistrations(config,definitions),taskSpacePlacementRegistration(config,definitions),...sourceBackfillRegistrations(definitions),...sourceSubscriptionRegistrations(config,definitions),...sourceMonitorRegistrations(config,definitions),sourceRecipeCreateRegistration(config,definitions),sourceChannelCreateRegistration(config,definitions),...sourceProcessingRegistrations(config,definitions),...pluginOperations(config)]));
     runtimes.set(config, runtime);
   }
   return runtime;

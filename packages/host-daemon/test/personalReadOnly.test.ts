@@ -225,10 +225,10 @@ read gate || true
       const layouts=[
         {key:'codex_cli',state:'CODEX_HOME',sub:'.codex',file:'auth.json',shared:undefined},
         {key:'claude_code',state:'CLAUDE_CONFIG_DIR',sub:'.claude',file:'.credentials.json',shared:'CLAUDE_SECURESTORAGE_CONFIG_DIR'},
-        {key:'acp_antigravity_acp',state:'GEMINI_HOME',sub:'.gemini',file:'antigravity-acp/acp_token.json',shared:undefined}
+        {key:'acp_antigravity_acp',state:'RAINVER_ANTIGRAVITY_STATE_DIR',sub:'.gemini',file:'antigravity-cli/antigravity-oauth-token',shared:undefined}
       ];
       for(const layout of layouts){
-        await mkdir(join(loginHome,layout.sub,'antigravity-acp'),{recursive:true});
+        await mkdir(join(loginHome,layout.sub,'antigravity-cli'),{recursive:true});
         await writeFile(join(loginHome,layout.sub,layout.file),'synthetic-login');
         await writeFile(join(loginHome,layout.sub,'private-unrelated'),'not-exposed');
         const credentialEnv=layout.shared??layout.state;

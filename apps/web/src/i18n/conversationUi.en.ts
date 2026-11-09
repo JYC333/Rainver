@@ -334,6 +334,8 @@ export const conversationUiEn = {
       delegated_result: 'Delegated result · expand to read',
       current_activity: 'Current activity',
       waiting_agents: 'Waiting for other Agents…',
+      waiting_parent: 'Waiting for the delegating Agent to yield…',
+      waiting_admission: 'Waiting for delegated work to be scheduled…',
       destination: 'Message destination',
       drop_pick: 'Do not carry this in',
       execution: 'Execution',

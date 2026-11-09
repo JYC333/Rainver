@@ -259,7 +259,17 @@ implementation of that rule for both `text` and `structured` completions; a
 domain contributes the request and, optionally, a `finalize` step that turns
 the accepted completion into the Run's durable result. `finalize` runs *before*
 the Run is marked terminal, so a terminal bounded Run always has its output
-applied.
+applied. A bounded Run whose contract declares outputs (artifacts, proposals,
+verification) uses `runs/providerTaskRunPublication.ts` as that step: the
+canonical `RunMaterializationService` persists them behind their policy gates,
+`PgVerificationEngine` runs the declared checks, the terminal output carries
+`materialization` and `verification_results` exactly as an Agent Run's does
+(`degraded` when a declared output failed to persist, `failed` when
+verification failed), and `finalizeRun` then records the evaluation and runs
+settlement. Output materialization, verification and the terminal write hold
+the Run row lock and commit together. A Run cancelled before publication
+publishes nothing. The Run Supervisor never redispatches a `provider_task` Run; its
+retries are its job's attempts and key pool.
 
 A `provider_task` Run has two database shapes, mirroring the Agent shape's
 "snapshot required before dispatch". A **queued** row has no ModelProvider and
@@ -770,3 +780,69 @@ cost/consent admission, deadline/cancellation and Source authority are rechecked
 accepted results use the existing materializer and cursor transaction. See
 [SOURCE_GOALS](SOURCE_GOALS.md#selected-agent-assisted-search) for provenance,
 reference-only retention, manual Reading and ongoing collection semantics.
+
+## P5-4 Proposal lifecycle admission
+
+Recovery discovers its eligible Run set before locking and processes one Run
+transaction at a time, sorting its complete linked request key set. Run closure gates, Proposal/request rows and
+Run rows follow that admission; the existing terminal CTE retains Run output,
+Attempt, execution-lock and Proposal transitions in one transaction. It only
+recovers that snapshot's still-eligible Runs; later candidates await another
+sweep. Request attachment shares the Run fence. Proposal insertion rechecks late staged status:
+succeeded/degraded output becomes pending, failed/cancelled/orphaned output
+becomes rejected. Proposal materialization performs policy audit, insertion and
+audience/provenance grants in a short DB transaction after external IO, recovering
+failed audits through the canonical audit writer.
+
+Standalone Run terminal calls use the same transition port. Pool-owned Plan and
+Workflow reconciliation, Project archive (including status update), backing Job
+cancellation/exhaustion, stale autonomous child cancellation, queued Host merge
+resolution cancellation and Reading provider generation/trial finalization now
+use `withRunTerminalOwner`. The true root discovers all affected Runs without
+locking, admits their globally sorted request keys/fences and Proposal/request
+rows, then calls the original domain writers through an expiring transaction
+port. A nested caller can only use the exact Run set prepared by that owner;
+new membership conflicts instead of taking late keys. The root finishes request
+transitions once, after all domain/required Job writes. Canonical audit recovery
+surrounds rollback and release. Host/model IO remains outside the DB owner.
+
+An already checked-out client must have BEGIN. It cannot prepare linked keys
+late or claim readiness through a boolean. Canonical checkpoint Proposal apply
+and Research-owned graph callbacks still need combined Proposal/Run admission
+at their true outer owner. Autonomous coordinator settlement and held Room closing-turn cancellation now
+use the canonical terminal writer. Tick/candidate and Room discussion root owners
+prepare coordinator/closing Run sets before domain locks, so publication and
+linked request outcomes join those same transactions. Independent cancellation and
+provider execution still use their existing root Run writers. Daily Report
+creates and ends a fresh unlinked Run in one transaction, not an existing linked
+Run. Full Run and Evolution closure still blocks approval mapping qualification;
+no production mapping is enabled.
+
+Review correction: ordinary Proposal insertion no longer acquires the Run
+advisory gate. P1 request attachment takes the exclusive try fence. Unlinked
+terminal owners share try admission, recheck that no linked request
+appeared, and retains the original terminal CTE without additional Proposal or
+Skill/package admission locks. Linked owners retain full sorted-key admission and
+unprepared composed owners still refuse linked work before late keys.
+
+Every staged insertion now writes a required `run_proposal_publication` Job in
+its own DB transaction. Existing CTE publication remains authoritative; the Job
+is idempotent and closes an insertion that committed after that CTE's snapshot.
+The worker waits for a terminal Run using the existing JobDeferred/lease mechanism,
+then resolves only still-staged output through the transition port. No Host IO,
+network wait, in-process retry loop or fake terminal success is added. Failed
+Job intent persistence rolls back the insertion. Recovery is a sequence of
+independent per-Run transactions, not a cross-Space all-or-nothing batch: busy
+request admission or locked Run rows leave that Run eligible for a later sweep,
+while other Runs/Spaces progress. Each transaction sorts its entire request set;
+no locks survive into the next candidate's transaction.
+
+
+R1 concurrency correction: concurrent unlinked mark/publish callers share
+admission and serialize only at the existing Run row lock. The first committed
+terminal result wins; a later caller returns the original terminal writer's null
+noop without rewriting output/timestamps. Attachment's exclusive try fence
+excludes these shared admissions in both directions; a committed link appearing
+before shared admission is still caught by the post-fence recheck, never by
+late key acquisition. Linked transitions retain exclusive admission after all
+sorted request keys. No advisory wait, write retry or synthetic success is added.

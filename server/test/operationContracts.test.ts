@@ -61,3 +61,10 @@ describe('operation Agent adapter',()=>{
   expect(error.summary).toMatchObject({error_code:'idempotency_in_progress',http_status:409});
  });
 });
+
+it('formats only classified completion refusals with fixed guidance without reflecting private domain text',()=>{
+ const result=formatOperationForAgent({http_status:422,request_id:'r',replayed:false,policy_decision_record_id:'d',
+  body:{error:{code:'operation_invalid_input',domain:'tasks',message:'private SQL/domain message',metadata:{code:'completion_requirements_unmet',missing:['required_output:report'],unacknowledged:['required_output:report']},retryable:false,request_id:'r'}}},'task.complete');
+ expect(result.modelResult).toMatchObject({error:{message:expect.stringContaining('artifact.submit'),metadata:{missing:['required_output:report']}}});
+ expect(JSON.stringify(result)).not.toContain('private SQL/domain message');
+});

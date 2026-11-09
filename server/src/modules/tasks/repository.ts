@@ -1,3 +1,4 @@
+import {TaskControlError} from './controlErrors.js';
 import { selectBoardColumn, taskColumnPlacement } from "./boardColumns.js";
 import { TASK_STATUSES as PROTOCOL_TASK_STATUSES } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
@@ -180,6 +181,14 @@ async function assertNotRoomConversationSession(
   if (row.rows[0]?.room_id) {
     throw new HttpError(422, "session_id must not name a Room conversation");
   }
+}
+
+/** Public placement must carry the core Board revision and audit contract. */
+export class TaskStatusRequiresCore extends HttpError {
+  constructor() { super(422, "Use task.set_status instead of editing status"); }
+}
+export class ProjectTaskPlacementRequiresCore extends HttpError {
+  constructor() { super(422, "Use task.move_to_column for Project placement or task.place_in_space_board for standalone placement"); }
 }
 
 export class PgTaskRepository {
@@ -528,9 +537,13 @@ export class PgTaskRepository {
     return taskOut(row);
   }
 
-  async updateTask(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>, agentContext?: { actorId: string; runId: string; projectId: string; reason?: string }, db?: Queryable) {
+  async updateTaskFromPublicPatch(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
+    return this.updateTask(identity, taskId, body, undefined, undefined, {publicPatch:true});
+  }
+
+  async updateTask(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>, agentContext?: { actorId: string; runId: string; projectId: string; reason?: string }, db?: Queryable, options: {publicPatch?:boolean} = {}) {
     const now = new Date().toISOString();
-    if (Object.hasOwn(body, "deleted_at")) throw new HttpError(422, "Use the Task delete action instead of editing deleted_at");
+    if (Object.hasOwn(body, "deleted_at")) throw new TaskControlError(422, "Use the Task delete action instead of editing deleted_at");
     const write = async (client: Queryable) => {
       // Discover scope first, then lock Projects before the Task, matching
       // problem association and Task Run admission. Re-read under the Task
@@ -538,7 +551,7 @@ export class PgTaskRepository {
       const observedTask = await getVisibleTaskRow(client, identity, taskId, { full: true });
       if (!observedTask) throw new HttpError(404, "Task not found");
       if (agentContext && observedTask.project_id !== agentContext.projectId) {
-        throw new HttpError(422, "A Task can only be changed in this Run's Project");
+        throw new TaskControlError(422, "A Task can only be changed in this Run's Project");
       }
 
       // Reading a Task is not licence to change it. A Project `viewer` can see
@@ -557,14 +570,18 @@ export class PgTaskRepository {
       }
       const currentTask=await getVisibleTaskRow(client,identity,taskId,{lock:true,full:true});
       if(!currentTask)throw new HttpError(404,"Task not found");
-      if(currentTask.project_id!==observedTask.project_id)throw new HttpError(409,"Task Project changed; reload before editing");
+      if(currentTask.project_id!==observedTask.project_id)throw new TaskControlError(409,"Task Project changed; reload before editing");
+      // Checked against the locked row and destination, including concurrent reparenting.
+      // Internal configure/core writers retain the explicit transaction port.
+      if(options.publicPatch && Object.hasOwn(body,'status'))throw new TaskStatusRequiresCore();
+      if(options.publicPatch && (Object.hasOwn(body,'board_id') || Object.hasOwn(body,'column_id'))) throw new ProjectTaskPlacementRequiresCore();
       if(targetProjectId!==currentTask.project_id){
         const invalid=await client.query(`SELECT l.id FROM task_entity_links l JOIN inquiry_threads q ON q.object_id=l.entity_id AND q.space_id=l.space_id WHERE l.space_id=$1 AND l.task_id=$2 AND l.entity_type='inquiry_thread' AND q.project_id IS DISTINCT FROM $3::varchar LIMIT 1`,[identity.spaceId,taskId,targetProjectId]);
-        if(invalid.rowCount)throw new HttpError(409,"A Task linked to problems in this Project cannot move to another Project");
+        if(invalid.rowCount)throw new TaskControlError(409,"A Task linked to problems in this Project cannot move to another Project");
       }
       if (Object.hasOwn(body, "parent_task_id")) {
         const parentTaskId = optionalString(body.parent_task_id);
-        if (parentTaskId && parentTaskId === taskId) throw new HttpError(422, "A task cannot be its own parent");
+        if (parentTaskId && parentTaskId === taskId) throw new TaskControlError(422, "A task cannot be its own parent");
         if (parentTaskId) {
           const parent = await client.query<{ id: string }>(
             `SELECT id FROM tasks WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
@@ -572,7 +589,7 @@ export class PgTaskRepository {
           );
           if (!parent.rows[0]) throw new HttpError(404, "Parent task not found");
         }
-        if (currentTask.task_role === "source" && parentTaskId) throw new HttpError(422, "Source tasks cannot have a parent task");
+        if (currentTask.task_role === "source" && parentTaskId) throw new TaskControlError(422, "Source tasks cannot have a parent task");
       }
       body = await taskColumnPlacement(client, identity.spaceId, targetProjectId, body);
       const requestedStatus = taskStatus(body.status);
@@ -878,6 +895,11 @@ export class PgTaskRepository {
         && runtimeProfile.workspace_location_id !== target.location_id) {
         throw new HttpError(409, "Task Workspace Location does not match the selected Runtime Profile");
       }
+      // A built-in Host Location: the same dispatch allowance a paired Host's
+      // Task Run carries (`prepareRemoteTaskRun`). Without it the Run has no
+      // grants, so no work surface, and cannot report or declare its output.
+      // A Task with no Location keeps the Agent's own permissions.
+      const allowance = target ? dispatchToolAllowance() : null;
       const run = await new PgRunRepository(client).createQueuedRun({
         execution_kind: "agent",
         agent_id: agentId,
@@ -894,6 +916,7 @@ export class PgTaskRepository {
         project_folder_id: task.project_folder_id,
         workspace_location_id: target?.location_id ?? null,
         trust_mode: target ? "sandboxed" : null,
+        ...(allowance ? { scenario_tool_allowance: [...allowance], capabilities_json: [...allowance] } : {}),
         project_id: task.project_id,
         prompt: optionalString(body.prompt),
         instruction: optionalString(body.instruction) ?? defaultTaskInstruction(task),
@@ -1133,7 +1156,7 @@ export class PgTaskRepository {
     // the dispatch scenario rather than to whichever Agent the thread names.
     // Without it a dispatched Run carries no grants at all and is offered no
     // way to say what it did.
-    const allowance = dispatchToolAllowance(trustMode);
+    const allowance = dispatchToolAllowance();
 
     const run = await new PgRunRepository(client).createQueuedRun({
       execution_kind: "agent",

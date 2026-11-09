@@ -1,3 +1,4 @@
+import {SourceDispatchNotice} from './SourceDispatchNotice'
 import {readingGoalPath} from './sourceGoalNavigation'
 import { SpaceLink as ReadingLink } from '../../core/spaceNav'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -151,8 +152,8 @@ function ScopedSourceChannels() {
     setBusyMonitorId(monitor.id)
     try {
       const job = await sourcesApi.scanChannel(monitor.id)
-      await sourcesApi.runJob(job.id)
-      toast.success('Monitor scan completed')
+      const dispatch=await sourcesApi.runJob(job.id)
+      toast.success(t(dispatch.status==='pending'?'sources_ui.dispatch.queued':'sources_ui.dispatch.ended'))
       await load()
     } catch (error) {
       toast.error(errMsg(error))
@@ -236,6 +237,7 @@ function ScopedSourceChannels() {
           <h1 className="text-2xl font-semibold">{t('monitoring.sourceManagement')}</h1>
           <p className="mt-1 text-sm text-muted-foreground">{t('monitoring.sourceManagementIntro')} <ReadingLink className="text-primary hover:underline" to="/library">{t('monitoring.backToReading')}</ReadingLink></p>
           <p className="text-sm text-muted-foreground">Manage external origins and the monitors that collect content from them.</p>
+          <SourceDispatchNotice />
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => void load()} disabled={loading}><RefreshCw className="size-4 mr-2" />Refresh</Button>

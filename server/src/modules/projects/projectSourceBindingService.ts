@@ -1,3 +1,4 @@
+import {ProjectSourceMutationError} from './projectSourceMutationError.js';
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common.js";
 import { ProjectSourceBindingRepository } from "./projectSourceBindingRepository.js";
@@ -92,15 +93,15 @@ export class ProjectSourceBindingService {
 
 function normalizedExtractionPolicy(value: unknown): Record<string, unknown> {
   if (value !== undefined && value !== null && (typeof value !== "object" || Array.isArray(value))) {
-    throw new HttpError(422, "extraction_policy must be an object");
+    throw new ProjectSourceMutationError(422, "extraction_policy must be an object");
   }
   const policy = value ? { ...(value as Record<string, unknown>) } : {};
   if (Object.hasOwn(policy, "profile_key") && !optionalString(policy.profile_key)) {
-    throw new HttpError(422, "extraction_policy.profile_key must be a non-empty string");
+    throw new ProjectSourceMutationError(422, "extraction_policy.profile_key must be a non-empty string");
   }
   const profileKey = optionalString(policy.profile_key) ?? defaultExtractionProfileRegistry.defaultKey();
   if (!defaultExtractionProfileRegistry.get(profileKey)) {
-    throw new HttpError(422, `unknown extraction profile: ${profileKey}`);
+    throw new ProjectSourceMutationError(422, `unknown extraction profile: ${profileKey}`);
   }
   return { ...policy, profile_key: profileKey };
 }
@@ -108,13 +109,13 @@ function normalizedExtractionPolicy(value: unknown): Record<string, unknown> {
 function validateBindingStatus(value: unknown): void {
   const status = optionalString(value);
   if (status && !["active", "paused", "archived"].includes(status)) {
-    throw new HttpError(422, "invalid project source binding status");
+    throw new ProjectSourceMutationError(422, "invalid project source binding status");
   }
 }
 
 function validateDeliveryScope(value: unknown): void {
   const scope = optionalString(value);
   if (scope && !["project_members", "source_subscribers"].includes(scope)) {
-    throw new HttpError(422, "delivery_scope must be project_members or source_subscribers");
+    throw new ProjectSourceMutationError(422, "delivery_scope must be project_members or source_subscribers");
   }
 }

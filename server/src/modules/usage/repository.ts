@@ -11,6 +11,7 @@ import {
 import { countFromRow, type Queryable } from "../routeUtils/common.js";
 import { IMPORTED_USAGE_SOURCE_TYPES, type NormalizedUsageObservation } from "./types.js";
 import { accuracyMixZero } from "./normalizer.js";
+import { usageProviderEventLabelSql, usageProviderSourceSql } from "./providerSource.js";
 
 export interface UsageEventRecord {
   id: string;
@@ -28,6 +29,7 @@ export interface UsageEventRecord {
   provider_id: string | null;
   provider_type: string | null;
   provider_name_snapshot: string | null;
+  provider_display_name?: string;
   vendor: string | null;
   model: string | null;
   task: string | null;
@@ -685,6 +687,7 @@ export class PgUsageRepository {
         event_type, source_type, source_resource_type, source_resource_id,
         execution_channel, meter_subject_type,
         meter_subject_id, provider_id, provider_type, provider_name_snapshot, vendor,
+        ${usageProviderEventLabelSql} AS provider_display_name,
         model, task, run_id, session_id, external_session_id, session_path,
         session_name, agent_id, project_id, project_folder_id, occurred_at, recorded_at,
         input_tokens, output_tokens, total_tokens, cache_creation_input_tokens,
@@ -717,12 +720,12 @@ export class PgUsageRepository {
     const params = where.params;
     const totalExpr = effectiveTotalSql();
     const providers = await this.db.query<{ id: string | null; label: string; total_tokens: string | number }>(
-      `SELECT provider_id AS id,
-              COALESCE(provider_name_snapshot, provider_type, provider_id, 'Unknown provider') AS label,
+      `SELECT ${usageProviderSourceSql.keySql} AS id,
+              ${usageProviderSourceSql.labelSql} AS label,
               COALESCE(sum(${totalExpr}), 0)::bigint AS total_tokens
          FROM token_usage_events e
          ${where.sql}
-        GROUP BY provider_id, provider_name_snapshot, provider_type
+        GROUP BY 1, 2
         ORDER BY total_tokens DESC
         LIMIT 100`,
       params,
@@ -988,7 +991,7 @@ function buildWhere(
   }
   if (filters.providerId) {
     params.push(filters.providerId);
-    clauses.push(`e.provider_id = $${params.length}`);
+    clauses.push(`(${usageProviderSourceSql.keySql}) = $${params.length}`);
   }
   if (filters.model) {
     params.push(filters.model);
@@ -1100,10 +1103,7 @@ function rawGroupExpression(groupBy: string): { keySql: string; labelSql: string
       return { keySql: "COALESCE(e.task, 'unknown')", labelSql: "COALESCE(e.task, 'Unknown task')" };
     case "provider":
     default:
-      return {
-        keySql: "COALESCE(e.provider_id, e.provider_type, 'unknown')",
-        labelSql: "COALESCE(e.provider_name_snapshot, e.provider_type, e.provider_id, 'Unknown provider')",
-      };
+      return usageProviderSourceSql;
   }
 }
 
@@ -1209,6 +1209,7 @@ export function eventToOut(row: UsageEventRecord): Record<string, unknown> {
     provider_id: row.provider_id,
     provider_type: row.provider_type,
     provider_name_snapshot: row.provider_name_snapshot,
+    provider_display_name: row.provider_display_name,
     vendor: row.vendor,
     model: row.model,
     task: row.task,

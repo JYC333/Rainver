@@ -12,6 +12,7 @@ import {
 } from "./evidenceRedaction.js";
 import { RunPreparationError } from "./orchestrationErrors.js";
 import type { RunRecord } from "./repository.js";
+import type { VerificationResultRecord } from "./verification/types.js";
 
 interface PreparedRuntimeInput {
   prompt: string | null;
@@ -111,6 +112,34 @@ export function outputJsonWithMaterialization(
   if (items.length > 0) output.materialization = sanitizeEvidenceJson(items);
   if (errors.length > 0) output.materialization_errors = errors.map((error) => redactEvidenceText(error));
   return sanitizeEvidenceJson(output);
+}
+
+/**
+ * The output a Run publishes once its declared outputs are materialized and
+ * verified: what was persisted, what failed, and every verification result.
+ * One shape for an Agent Run and a bounded ProviderTask Run, so a domain
+ * reader (`runOutputResult(...).materialization`) does not care which
+ * execution kind produced it.
+ */
+export function outputJsonWithVerification(
+  outputJson: unknown,
+  items: RunMaterializationItemSummary[],
+  errors: string[],
+  results: VerificationResultRecord[],
+): unknown {
+  const output = recordValue(outputJsonWithMaterialization(outputJson, items, errors));
+  if (results.length > 0) {
+    output.verification_results = results.map((result) => ({
+      id: result.id,
+      verifier_type: result.verifier_type,
+      verifier_version: result.verifier_version,
+      status: result.status,
+      summary: result.summary,
+      evidence_refs_json: result.evidence_refs_json,
+      completed_at: result.completed_at,
+    }));
+  }
+  return output;
 }
 
 export function canonicalRunOutput(input: {

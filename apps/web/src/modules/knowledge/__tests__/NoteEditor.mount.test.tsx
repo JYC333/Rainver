@@ -60,7 +60,7 @@ vi.mock('../../../components/editor', async () => {
 })
 
 import NoteEditor from '../NoteEditor'
-import { focusAreasApi, notesApi } from '../../../api/client'
+import { inquiryApi, focusAreasApi, notesApi } from '../../../api/client'
 import { publishNoteChanged } from '../../../core/noteEvents'
 import type { Note } from '../../../types/api'
 
@@ -287,3 +287,16 @@ describe('NoteEditor keeps one save and one note in flight', () => {
     expect(notesApi.links).not.toHaveBeenCalledWith('note-a')
   })
 })
+
+it('routes a Project Note selection through the Inquiry action from its parent editor',async()=>{
+  vi.mocked(notesApi.get).mockResolvedValue(makeNote({primary_project_id:'project-1'}));
+  vi.mocked(inquiryApi.raiseFromNote).mockResolvedValue({id:'thread-1'} as never);
+  const selection=vi.spyOn(window,'getSelection').mockReturnValue({toString:()=> 'A selected question?'} as Selection);
+  try{
+    render(<MemoryRouter future={{v7_relativeSplatPath:true,v7_startTransition:true}}><NoteEditor noteId="note-1" onNoteResolved={vi.fn()} /></MemoryRouter>);
+    await screen.findByDisplayValue('Portable note');fireEvent(document,new Event('selectionchange'));
+    fireEvent.click(await screen.findByRole('button',{name:'Raise as a question'}));
+    await waitFor(()=>expect(inquiryApi.raiseFromNote).toHaveBeenCalledWith('project-1',{note_object_id:'note-1',statement:'A selected question?'}));
+    expect(notesApi.update).not.toHaveBeenCalled();expect(notesApi.promote).not.toHaveBeenCalled();
+  }finally{selection.mockRestore();}
+});

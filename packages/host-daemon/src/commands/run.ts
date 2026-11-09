@@ -692,6 +692,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
                 runtime_key: frame.runtime_key,
                 installation: frame.installation,
                 login: frame.login,
+                state: frame.state ?? null,
                 timeout_seconds: frame.timeout_seconds,
               }));
               sink.send({ type: "usage_probe_result", request_id: frame.request_id, quota });

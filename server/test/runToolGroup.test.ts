@@ -107,6 +107,89 @@ describe("runToolGrantProvisioningDb", () => {
     return result.rows[0]?.permission_snapshot_json ?? null;
   }
 
+  async function createDeniedRunForAuthorization() {
+    const repository = new PgRunRepository(db.pool);
+    const created = await repository.createQueuedRun({
+      execution_kind: "agent",
+      agent_id: AGENT,
+      space_id: SPACE,
+      user_id: USER,
+      mode: "live",
+      run_type: "agent",
+      trigger_origin: "manual",
+      prompt: "Request a bounded authorization",
+      capabilities_json: ["agent.delegate"],
+    });
+    const now = new Date().toISOString();
+    await new PgRouteDecisionRepository(db.pool).routeRun(created);
+    await repository.markRunRunning({ run_id: created.id, space_id: SPACE, started_at: now });
+    const policyResult = await enforce(
+      { databaseUrl: db.connectionUri },
+      await loadActionRegistry(),
+      {
+        action: "project.source.bind",
+        actor_type: "agent",
+        actor_id: AGENT,
+        space_id: SPACE,
+        resource_space_id: SPACE,
+        resource_type: "projects",
+        resource_id: created.id,
+        run_id: created.id,
+        force_record: true,
+        context: {
+          action_id: "project.source.propose_bind",
+          surface: "managed_run_system_action_gateway",
+          has_action_approval_grant: false,
+        },
+        metadata_json: {
+          surface: "managed_run_system_action_gateway",
+          action_id: "project.source.propose_bind",
+        },
+      },
+    );
+    expect(policyResult).toMatchObject({
+      status: "blocked",
+      decision: {
+        decision: "deny",
+        policy_rule_id: "managed_system_action_grant_required",
+      },
+    });
+    const policyDecisionRecordId = policyResult.policy_decision_record_id!;
+
+    const service = new AuthorizationRequestService(db.pool, {
+      databaseUrl: db.connectionUri,
+    });
+    return {repository, created, now, policyDecisionRecordId, service};
+  }
+
+  async function createPendingAuthorizationRequest() {
+    const fixture = await createDeniedRunForAuthorization();
+    const request = await fixture.service.createFromDeniedDecision({
+      spaceId: SPACE, runId: fixture.created.id, agentId: AGENT,
+      policyDecisionRecordId: fixture.policyDecisionRecordId,
+      reason: "Request bounded owner authorization.",
+    });
+    return {...fixture, request};
+  }
+
+  async function readGrantAudits(requestId: string) {
+    return (await db.pool.query(
+      `SELECT id, decision, metadata_json FROM policy_decision_records
+       WHERE space_id=$1 AND action='policy.action_grant.create'
+         AND metadata_json->>'authorization_request_id'=$2`, [SPACE, requestId],
+    )).rows;
+  }
+
+  async function expectPendingWithoutEffects(requestId: string) {
+    expect((await db.pool.query(
+      'SELECT status,resulting_action_grant_id,decided_by_user_id,decided_at FROM authorization_requests WHERE id=$1', [requestId],
+    )).rows[0]).toEqual({status:'pending', resulting_action_grant_id:null, decided_by_user_id:null, decided_at:null});
+    expect((await db.pool.query('SELECT id FROM action_approval_grants WHERE space_id=$1', [SPACE])).rows).toHaveLength(0);
+    expect((await db.pool.query(
+      "SELECT id FROM jobs WHERE job_type='authorization_request_reconcile' AND payload_json->>'authorization_request_id'=$1", [requestId],
+    )).rows).toHaveLength(0);
+  }
+
   describe("run tool grant provisioning", () => {
     it("persists declared and permitted agent-tool grants when a run is created", async (ctx) => {
       if (!db.available || !db.pool) return ctx.skip();
@@ -290,59 +373,89 @@ describe("runToolGrantProvisioningDb", () => {
       });
     });
 
+    it.each(['deny', 'require_approval'] as const)(
+      'retains the %s grant policy audit after refusing authorization approval', async decision => {
+        const {service, request} = await createPendingAuthorizationRequest();
+        // Change only the pure policy fixture; admission, audit and rollback use real PG.
+        const definition = (await loadActionRegistry()).get('policy.action_grant.create')!;
+        const previous = definition.default_decision;
+        try {
+          definition.default_decision = decision;
+          await expect(service.decide({spaceId:SPACE, userId:USER}, request.id, 'approved'))
+            .rejects.toMatchObject({statusCode:403});
+        } finally {
+          definition.default_decision = previous;
+        }
+        await expectPendingWithoutEffects(request.id);
+        expect(await readGrantAudits(request.id)).toEqual([
+          expect.objectContaining({decision, metadata_json:expect.objectContaining({
+            authorization_request_id:request.id, operation_outcome:'failed',
+          })}),
+        ]);
+      },
+    );
+
+    it.each(['grant', 'Job'] as const)(
+      'rolls back a failed %s write and restores the original policy audit id', async target => {
+        const {service, request, created} = await createPendingAuthorizationRequest();
+        const table = target === 'grant' ? 'action_approval_grants' : 'jobs';
+        const guard = target === 'grant' ? "NEW.action_id='project.source.propose_bind'" : "NEW.job_type='authorization_request_reconcile'";
+        await db.pool.query(`CREATE FUNCTION reject_authorization_effect() RETURNS trigger LANGUAGE plpgsql AS $$
+          DECLARE audit_id text;
+          BEGIN
+            IF ${guard} THEN
+              SELECT id INTO STRICT audit_id FROM policy_decision_records
+                WHERE action='policy.action_grant.create' AND metadata_json->>'authorization_request_id'='${request.id}';
+              RAISE EXCEPTION 'injected authorization effect failure' USING DETAIL=audit_id;
+            END IF;
+            RETURN NEW;
+          END $$`);
+        await db.pool.query(`CREATE TRIGGER reject_authorization_effect BEFORE INSERT ON ${table}
+          FOR EACH ROW EXECUTE FUNCTION reject_authorization_effect()`);
+        let failure: unknown;
+        try {
+          await service.decide({spaceId:SPACE, userId:USER}, request.id, 'approved').catch(error => { failure=error; });
+          expect(failure).toMatchObject({message:'injected authorization effect failure', detail:expect.any(String)});
+          await expectPendingWithoutEffects(request.id);
+          const audits = await readGrantAudits(request.id);
+          expect(audits).toEqual([expect.objectContaining({
+            id:(failure as {detail:string}).detail, decision:'allow',
+            metadata_json:expect.objectContaining({authorization_request_id:request.id, run_id:created.id, operation_outcome:'failed'}),
+          })]);
+        } finally {
+          await db.pool.query(`DROP TRIGGER reject_authorization_effect ON ${table}`);
+          await db.pool.query('DROP FUNCTION reject_authorization_effect()');
+        }
+      },
+    );
+
+    it('fails closed when both transactional and recovery audit storage are unavailable', async()=>{
+      const {service, request} = await createPendingAuthorizationRequest();
+      await db.pool.query(`CREATE FUNCTION reject_authorization_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.action='policy.action_grant.create' THEN RAISE EXCEPTION 'audit unavailable'; END IF; RETURN NEW; END $$`);
+      await db.pool.query(`CREATE TRIGGER reject_authorization_audit BEFORE INSERT ON policy_decision_records
+        FOR EACH ROW EXECUTE FUNCTION reject_authorization_audit()`);
+      try {
+        await expect(service.decide({spaceId:SPACE, userId:USER}, request.id, 'approved'))
+          .rejects.toMatchObject({statusCode:503});
+        await expectPendingWithoutEffects(request.id);
+        expect(await readGrantAudits(request.id)).toEqual([]);
+      } finally {
+        await db.pool.query('DROP TRIGGER reject_authorization_audit ON policy_decision_records');
+        await db.pool.query('DROP FUNCTION reject_authorization_audit()');
+      }
+      // Restored storage admits one successful transaction, without a duplicate audit.
+      await expect(service.decide({spaceId:SPACE, userId:USER}, request.id, 'approved'))
+        .resolves.toMatchObject({status:'approved'});
+      const audits = await readGrantAudits(request.id);
+      expect(audits).toHaveLength(1);
+      expect(audits[0].decision).toBe('allow');
+      expect(audits[0].metadata_json.operation_outcome).toBeUndefined();
+    });
+
     it("creates and approves a request bound to an audited same-Run denial", async (ctx) => {
       if (!db.available) return ctx.skip();
-      const repository = new PgRunRepository(db.pool);
-      const created = await repository.createQueuedRun({
-        execution_kind: "agent",
-        agent_id: AGENT,
-        space_id: SPACE,
-        user_id: USER,
-        mode: "live",
-        run_type: "agent",
-        trigger_origin: "manual",
-        prompt: "Request a bounded authorization",
-        capabilities_json: ["agent.delegate"],
-      });
-      const now = new Date().toISOString();
-      await new PgRouteDecisionRepository(db.pool).routeRun(created);
-      await repository.markRunRunning({ run_id: created.id, space_id: SPACE, started_at: now });
-      const policyResult = await enforce(
-        { databaseUrl: db.connectionUri },
-        await loadActionRegistry(),
-        {
-          action: "project.source.bind",
-          actor_type: "agent",
-          actor_id: AGENT,
-          space_id: SPACE,
-          resource_space_id: SPACE,
-          resource_type: "projects",
-          resource_id: created.id,
-          run_id: created.id,
-          force_record: true,
-          context: {
-            action_id: "project.source.propose_bind",
-            surface: "managed_run_system_action_gateway",
-            has_action_approval_grant: false,
-          },
-          metadata_json: {
-            surface: "managed_run_system_action_gateway",
-            action_id: "project.source.propose_bind",
-          },
-        },
-      );
-      expect(policyResult).toMatchObject({
-        status: "blocked",
-        decision: {
-          decision: "deny",
-          policy_rule_id: "managed_system_action_grant_required",
-        },
-      });
-      const policyDecisionRecordId = policyResult.policy_decision_record_id!;
-
-      const service = new AuthorizationRequestService(db.pool, {
-        databaseUrl: db.connectionUri,
-      });
+      const {repository, created, now, policyDecisionRecordId, service} = await createDeniedRunForAuthorization();
       const wrongActorDecision = await enforce(
         { databaseUrl: db.connectionUri },
         await loadActionRegistry(),
@@ -404,6 +517,13 @@ describe("runToolGrantProvisioningDb", () => {
       );
       expect(approved.status).toBe("approved");
       expect(approved.resulting_action_grant_id).toBeTruthy();
+      const grantAudits = await readGrantAudits(request.id);
+      expect(grantAudits).toHaveLength(1);
+      expect(grantAudits[0].decision).toBe('allow');
+      expect(grantAudits[0].metadata_json.operation_outcome).toBeUndefined();
+      await expect(service.decide({spaceId:SPACE, userId:USER}, request.id, 'approved'))
+        .rejects.toMatchObject({statusCode:409});
+      expect(await readGrantAudits(request.id)).toEqual(grantAudits);
       const grant = await db.pool.query(
         `SELECT action_id, target_run_id, project_id, resource_kind, resource_id,
                 max_uses, status

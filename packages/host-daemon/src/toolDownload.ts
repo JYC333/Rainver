@@ -28,15 +28,16 @@ export interface RuntimeArtifactDownloadDependencies {
 export async function downloadRuntimeArtifact(
   url: string,
   destination: string,
-  sha256: string | null,
+  checksum: string | null,
   log: (line: string) => void,
   dependencies: RuntimeArtifactDownloadDependencies = {},
   transport: HostEgressTransport = { mode: "direct" },
+  algorithm: "sha256" | "sha512" = "sha256",
 ): Promise<void> {
   const safeUrl = safeArtifactUrl(url);
   log(`downloading ${safeUrl}`);
-  if (transport.mode !== "direct" && !sha256) {
-    throw new Error("A non-direct runtime artifact download requires a pinned SHA-256");
+  if (transport.mode !== "direct" && !checksum) {
+    throw new Error("A non-direct runtime artifact download requires a pinned checksum");
   }
   const useProxy = (hop: URL): boolean => transport.mode === "http_proxy"
     && !shouldBypassUpstreamProxy(hop.hostname, Number(hop.port || "443"), transport.no_proxy);
@@ -52,7 +53,7 @@ export async function downloadRuntimeArtifact(
       ? proxy!.fetch(hop, init, pinned)
       : undiciPinnedFetch(hop, init, pinned));
   try {
-    await transferArtifact(url, destination, sha256, safeUrl, log, { guard, fetch });
+    await transferArtifact(url, destination, checksum, safeUrl, log, { guard, fetch }, algorithm);
   } finally {
     await proxy?.close();
   }
@@ -70,10 +71,11 @@ function safeArtifactUrl(value: string): string {
 async function transferArtifact(
   url: string,
   destination: string,
-  sha256: string | null,
+  checksum: string | null,
   safeUrl: string,
   log: (line: string) => void,
   dependencies: { guard: OutboundGuard; fetch: PinnedFetch },
+  algorithm: "sha256" | "sha512",
 ): Promise<void> {
   await mkdir(dirname(destination), { recursive: true });
   const partialPath = `${destination}.${randomUUID()}.partial`;
@@ -82,18 +84,18 @@ async function transferArtifact(
   let downloaded = 0;
   let total: number | null = null;
   let validator: string | null = null;
-  let hash = createHash("sha256");
+  let hash = createHash(algorithm);
   const deadlineAt = Date.now() + RUNTIME_ARTIFACT_DOWNLOAD_DEADLINE_MS;
 
   try {
     for (let retry = 0; ; retry += 1) {
       // Without a checksum or validator, bytes from separate connections
       // cannot be safely joined. Retry that response from the beginning.
-      if (downloaded > 0 && !sha256 && !validator) {
+      if (downloaded > 0 && !checksum && !validator) {
         await file.truncate(0);
         downloaded = 0;
         total = null;
-        hash = createHash("sha256");
+        hash = createHash(algorithm);
       }
       const resumeAt = downloaded;
       let responseEnd: number | null = null;
@@ -126,7 +128,7 @@ async function transferArtifact(
               if (resumeAt > 0) {
                 await file.truncate(0);
                 downloaded = 0;
-                hash = createHash("sha256");
+                hash = createHash(algorithm);
               }
               total = length;
               validator = responseValidator(headers);
@@ -147,7 +149,7 @@ async function transferArtifact(
               if (validator && currentValidator && currentValidator !== validator) {
                 throw new Error("Runtime artifact changed during download");
               }
-              if (!sha256 && validator && currentValidator !== validator) {
+              if (!checksum && validator && currentValidator !== validator) {
                 throw new Error("Runtime artifact resume response lost its validator");
               }
               total = size;
@@ -187,10 +189,10 @@ async function transferArtifact(
       }
     }
 
-    if (sha256) {
+    if (checksum) {
       const actual = hash.digest("hex");
-      if (actual !== sha256.toLowerCase()) {
-        throw new Error(`sha256 mismatch for ${safeUrl}: expected ${sha256}, got ${actual}`);
+      if (actual !== checksum.toLowerCase()) {
+        throw new Error(`${algorithm} mismatch for ${safeUrl}: expected ${checksum}, got ${actual}`);
       }
     }
     await file.truncate(downloaded);

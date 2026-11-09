@@ -11,13 +11,14 @@ export interface RunLiveInputChannel {
   available(): boolean;
   during<T>(work: () => Promise<T>): Promise<T>;
   inject: NonNullable<CliStdioController["steer"]>;
+  yield(): boolean;
   onClose(work: () => Promise<void>): void;
   close(): Promise<void>;
 }
 
 export function liveInputChannel(runId: string): RunLiveInputChannel | undefined { return channels.get(runId); }
 
-export function registerRunLiveInput(runId: string, delivery: InvocationDelivery, controller: CliStdioController): RunLiveInputChannel {
+export function registerRunLiveInput(runId: string, delivery: InvocationDelivery, controller: CliStdioController, yieldAttempt?: () => boolean): RunLiveInputChannel {
   if (channels.has(runId)) throw new Error("An execution already owns this Run's live input");
   let active = true;
   const pending = new Set<Promise<unknown>>(), finalizers: Array<() => Promise<void>> = [];
@@ -32,6 +33,7 @@ export function registerRunLiveInput(runId: string, delivery: InvocationDelivery
     },
     inject: prompt => active && channels.get(runId) === channel && controller.steer
       ? controller.steer(prompt) : Promise.resolve("promptRequired"),
+    yield: () => active && channels.get(runId) === channel && yieldAttempt?.() === true,
     onClose: work => { finalizers.push(work); },
     async close() {
       active = false;

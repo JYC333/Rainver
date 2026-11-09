@@ -60,9 +60,9 @@ Two paths, for two kinds of credential:
 
 The host path answers a `usage_probe` frame: Claude's OAuth usage endpoint for
 `claude_code`, Codex's `app-server` `account/rateLimits/read` for `codex_cli`,
-Google's Cloud Code quota endpoint for `acp_antigravity_acp`
-(`packages/host-daemon/src/antigravityUsage.ts`), and "no subscription quota"
-for everything else rather than a CLI launch that
+Antigravity’s documented native CLI status-line quota JSON for
+`acp_antigravity_acp` (`packages/host-daemon/src/antigravityUsage.ts`), and
+"no subscription quota" for everything else rather than a CLI launch that
 learns nothing. Only numbers, reset times and a reason come back. The control
 plane caches them (`hosts/usageService.ts`), refreshes on a schedule, folds in
 the live reading a finished Run carries, and shows the result beside the copy

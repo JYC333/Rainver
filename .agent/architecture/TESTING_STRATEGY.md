@@ -175,6 +175,8 @@ before writing setup.
 | `baselineSql` | Reads `0000_baseline.sql` with normalized identifiers for schema-decision assertions |
 | `briefingFixture`, `briefingQualityCorpus` | Project briefing world (team Space, writer/viewer, consenting Source, Agent) and a synthetic briefing-quality corpus |
 | `briefingWorkerHarness`, `briefingWorkerProcess`, `briefingWorkerProtocol` | A real jobs-worker OS process from the built server with a synthetic Host, for restart/stop tests; `await buildServerDist()` builds `dist` once per run |
+| `syntheticAcpHost` | `SyntheticAcpHost` — an in-process daemon on a `HostConnectionRegistry` that speaks the launch/stdin/complete frames and a minimal ACP agent, records every `session/prompt` it receives, and answers or fails each turn as the test says |
+| `promptProvenance` | `joinedInvocation(pool, host, runId)` — matches one Run's canonical current input, persisted Delivery and Invocation Snapshot, and the ACP prompt the synthetic Host received |
 | `testPartition` | `partitionTests(part, parts, routes)` — deals one long `<name>.suite.ts` across `<name>.N.test.ts` entry files |
 | `builtinSkillFixture` | The sample built-in Skill package (test data only) |
 | `lockWait` | Waits until a backend in the file's own database is blocked on a lock, for race tests |

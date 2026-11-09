@@ -8,6 +8,8 @@ import {
 } from "./capturePolicy.js";
 import type { SourceConnectionRow } from "./sourceRepositoryRows.js";
 
+export class SourceGovernanceInputError extends HttpError {}
+
 const TRUST_LEVELS = ["trusted", "normal", "untrusted"] as const;
 const SOURCE_EGRESS_CLASSES = ["internal_only", "local_provider_allowed", "external_provider_allowed"] as const;
 const DERIVED_WRITE_POLICIES = ["proposal_required", "disabled"] as const;
@@ -261,7 +263,7 @@ function normalizePolicy(input: {
     minimumRetention,
   );
   if (retentionRank(retentionPolicy) < retentionRank(minimumRetention)) {
-    throw new HttpError(422, "policy.retention_policy cannot be narrower than capture_policy");
+    throw new SourceGovernanceInputError(422, "policy.retention_policy cannot be narrower than capture_policy");
   }
 
   const sourceEgressClass = enumValue(
@@ -341,10 +343,10 @@ function normalizePolicyForRead(input: {
 
 function validateEgressConsent(sourceEgressClass: SourceEgressClass, consent: SourceConnectionConsent): void {
   if (sourceEgressClass === "external_provider_allowed" && !consent.allow_external_model_egress) {
-    throw new HttpError(422, "policy.source_egress_class requires consent.allow_external_model_egress");
+    throw new SourceGovernanceInputError(422, "policy.source_egress_class requires consent.allow_external_model_egress");
   }
   if (sourceEgressClass === "local_provider_allowed" && !egressAllowedByConsent(sourceEgressClass, consent)) {
-    throw new HttpError(422, "policy.source_egress_class requires consent.allow_local_provider_egress");
+    throw new SourceGovernanceInputError(422, "policy.source_egress_class requires consent.allow_local_provider_egress");
   }
 }
 
@@ -396,7 +398,7 @@ function enumValue<const Values extends readonly string[]>(
   const normalized = optionalString(value);
   if (!normalized) return fallback;
   if ((allowed as readonly string[]).includes(normalized)) return normalized as Values[number];
-  throw new HttpError(422, `${field} must be one of: ${allowed.join(", ")}`);
+  throw new SourceGovernanceInputError(422, `${field} must be one of: ${allowed.join(", ")}`);
 }
 
 function safeEnumValue<const Values extends readonly string[]>(
@@ -419,13 +421,13 @@ function boundedEnumList<const Values extends readonly string[]>(
   max: number,
 ): Values[number][] {
   if (value === null || value === undefined) return [...fallback];
-  if (!Array.isArray(value)) throw new HttpError(422, `${field} must be an array`);
-  if (value.length > max) throw new HttpError(422, `${field} must contain at most ${max} entries`);
+  if (!Array.isArray(value)) throw new SourceGovernanceInputError(422, `${field} must be an array`);
+  if (value.length > max) throw new SourceGovernanceInputError(422, `${field} must contain at most ${max} entries`);
   const out: Values[number][] = [];
   for (const item of value) {
     const normalized = optionalString(item);
     if (!normalized || !(allowed as readonly string[]).includes(normalized)) {
-      throw new HttpError(422, `${field} contains an unsupported value`);
+      throw new SourceGovernanceInputError(422, `${field} contains an unsupported value`);
     }
     if (!out.includes(normalized as Values[number])) out.push(normalized as Values[number]);
   }
@@ -450,12 +452,12 @@ function safeBoundedEnumList<const Values extends readonly string[]>(
 
 function boundedStrings(value: unknown, field: string, fallback: string[], max: number): string[] {
   if (value === null || value === undefined) return [...fallback];
-  if (!Array.isArray(value)) throw new HttpError(422, `${field} must be an array`);
-  if (value.length > max) throw new HttpError(422, `${field} must contain at most ${max} entries`);
+  if (!Array.isArray(value)) throw new SourceGovernanceInputError(422, `${field} must be an array`);
+  if (value.length > max) throw new SourceGovernanceInputError(422, `${field} must contain at most ${max} entries`);
   const out: string[] = [];
   for (const item of value) {
     const normalized = optionalString(item);
-    if (!normalized) throw new HttpError(422, `${field} must contain only non-empty strings`);
+    if (!normalized) throw new SourceGovernanceInputError(422, `${field} must contain only non-empty strings`);
     if (!out.includes(normalized)) out.push(normalized);
   }
   return out;

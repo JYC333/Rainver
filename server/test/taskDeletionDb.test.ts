@@ -1,3 +1,4 @@
+import {CliAgentToolTransport} from '../src/modules/runs/cliToolTransport.js';
 import {randomUUID} from 'node:crypto';
 import {afterEach,beforeEach,expect,it} from 'vitest';
 import type {FastifyInstance} from 'fastify';
@@ -28,9 +29,9 @@ beforeEach(async()=>{
 afterEach(async()=>{if(app){await app.close();app=undefined;}__setAuthIdentityForTests(null);});
 it('HTTP deletes without completing, retains audit and is safely repeatable',async()=>{
  app=await buildModuleServer(config(),[tasksModule]);
- const results=await Promise.all([app.inject({method:'DELETE',url:`/api/v1/tasks/${task}`}),app.inject({method:'DELETE',url:`/api/v1/tasks/${task}`})]);
+ const results=await Promise.all([app.inject({method:'DELETE',url:`/api/v1/tasks/${task}`,headers:{'idempotency-key':randomUUID()}}),app.inject({method:'DELETE',url:`/api/v1/tasks/${task}`,headers:{'idempotency-key':randomUUID()}})]);
  expect(results.map(r=>r.statusCode)).toEqual([200,200]);
- expect((await app.inject({method:'GET',url:`/api/v1/tasks/${task}`})).statusCode).toBe(404);
+ expect((await app.inject({method:'GET',url:`/api/v1/tasks/${task}`,headers:{'idempotency-key':randomUUID()}})).statusCode).toBe(404);
  const row=(await db.pool.query('SELECT status,deleted_at FROM tasks WHERE id=$1',[task])).rows[0];
  expect(row.status).toBe('inbox');expect(row.deleted_at).toBeTruthy();
  expect((await db.pool.query("SELECT * FROM project_work_events WHERE subject_id=$1 AND event_kind='task.deleted'",[task])).rows).toHaveLength(1);
@@ -65,14 +66,15 @@ it('makes event failures atomic with soft deletion',async()=>{
 });
 it('exposes the CLI action and its real executor with Run provenance',async()=>{
  const run=randomUUID();await seedRun(db.pool,{id:run,space,owner,agent:randomUUID(),version:randomUUID()});
- await db.pool.query('UPDATE runs SET project_id=$2,instructed_by_user_id=$3 WHERE id=$1',[run,project,owner]);
+ await db.pool.query("UPDATE runs SET project_id=$2,instructed_by_user_id=$3,status='running',permission_snapshot_json=$4::jsonb WHERE id=$1",[run,project,owner,JSON.stringify({tool_grants:[{action_id:'task.delete'}]})]);
  const record=(await db.pool.query('SELECT * FROM runs WHERE id=$1',[run])).rows[0];
  const executors=new Map();registerProjectWorkSystemActionExecutors(executors,config(),record);
  const def=SYSTEM_ACTION_REGISTRY.find(a=>a.id==='task.delete')!;
  expect(def.input_schema.safeParse({task_id:task,reason:'User removed duplicate'}).success).toBe(true);
  expect(ROOM_CONVERSATION_TOOL_ALLOWANCE).toContain('task.delete');
- const result=await executors.get('task.delete')({task_id:task,reason:'User removed duplicate'},{idempotency_key:'delete-1'});
- expect(result.modelResult).toMatchObject({ok:true,task_id:task,deleted:true});
+ expect(executors.has('task.delete')).toBe(false);
+ const result:any=await new CliAgentToolTransport(config()).call(record,{id:randomUUID(),name:'task.delete',arguments:{task_id:task,reason:'User removed duplicate'}});
+ expect(result.httpStatus).toBe(200);expect(result.body.data).toMatchObject({task_id:task,deleted:true});
  expect((await db.pool.query("SELECT data_json FROM project_work_events WHERE subject_id=$1 AND event_kind='task.deleted'",[task])).rows[0].data_json).toMatchObject({run_id:run,reason:'User removed duplicate'});
 });
 

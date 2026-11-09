@@ -1,3 +1,5 @@
+import {withPolicyAuditRecovery} from '../policy/auditWriter.js';
+import {withQueryableTransaction} from '../routeUtils/common.js';
 import {generationOf} from '../prompts/reading/generationContract.js';
 import { createHash, randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
@@ -44,6 +46,7 @@ interface RunMaterializationResult {
 
 type MaterializationPolicyEnforcer = (
   request: Parameters<typeof enforce>[2],
+  transaction?:Queryable,
 ) => Promise<EnforceResult>;
 
 interface RunFinalizer {
@@ -92,7 +95,7 @@ export class RunMaterializationService {
   ) {
     this.policyEnforcer =
       policyEnforcer ??
-      (async (request) => enforce(this.config, await loadActionRegistry(), request));
+      (async (request,transaction) => enforce(transaction?{...this.config,auditTransaction:transaction}:this.config, await loadActionRegistry(), request));
   }
 
   private readonly policyEnforcer: MaterializationPolicyEnforcer;
@@ -444,57 +447,60 @@ export class RunMaterializationService {
       await assertProjectInSpace(this.db, input.run.space_id, projectId);
       if (projectId) payload.project_id = projectId;
       else delete payload.project_id;
-      const policy = await this.policyEnforcer({
-        action: "proposal.create",
-        actor_type: "run",
-        actor_id: input.run.id,
-        space_id: input.run.space_id,
-        resource_type: "proposal",
-        resource_space_id: input.run.space_id,
-        run_id: input.run.id,
-        context: {
-          proposal_type: proposalType,
-          project_folder_id: stringValue(spec.project_folder_id) ?? input.run.project_folder_id,
-          runtime_key: input.runtimeKey,
-        },
-        metadata_json: {
-          proposal_type: proposalType,
-          runtime_key: input.runtimeKey,
-          label: input.label,
-        },
-        force_record: true,
-      });
-      if (policy.status !== "allow") {
-        throw new Error(policy.message ?? policy.error_code ?? "proposal.create denied by policy");
-      }
-      const proposalId = await this.insertProposal({
-        run: input.run,
-        proposalType,
-        title: stringValue(spec.title) ?? stringValue(spec.proposed_title) ?? titleForProposal(proposalType),
-        summary: stringValue(spec.summary),
-        payload,
-        rationale: stringValue(spec.rationale) ?? `Proposed by run output (${input.runtimeKey}).`,
-        riskLevel: normalizeRisk(stringValue(spec.risk_level), proposalType),
-        urgency: normalizeUrgency(stringValue(spec.urgency)),
-        preview: booleanValue(spec.preview) ?? input.run.mode === "dry_run",
-        visibility: proposalVisibility,
-        requestedVisibility,
-        projectFolderId: proposalType.startsWith("memory_")
-          ? null
-          : stringValue(spec.project_folder_id) ?? input.run.project_folder_id,
-        projectId,
-        status: input.proposalStatus,
-      });
-      return {
-        kind: "proposal",
-        status: "succeeded",
-        proposal_id: proposalId,
-        metadata_json: {
-          label: input.label,
-          operation: "proposal.create",
-          proposal_type: proposalType,
-        },
-      };
+      return await withPolicyAuditRecovery(this.config.databaseUrl,()=>withQueryableTransaction(this.db,async tx=>{
+        await assertProjectInSpace(tx,input.run.space_id,projectId);
+        const policy = await this.policyEnforcer({
+          action: "proposal.create",
+          actor_type: "run",
+          actor_id: input.run.id,
+          space_id: input.run.space_id,
+          resource_type: "proposal",
+          resource_space_id: input.run.space_id,
+          run_id: input.run.id,
+          context: {
+            proposal_type: proposalType,
+            project_folder_id: stringValue(spec.project_folder_id) ?? input.run.project_folder_id,
+            runtime_key: input.runtimeKey,
+          },
+          metadata_json: {
+            proposal_type: proposalType,
+            runtime_key: input.runtimeKey,
+            label: input.label,
+          },
+          force_record: true,
+        },tx);
+        if (policy.status !== "allow") {
+          throw new Error(policy.message ?? policy.error_code ?? "proposal.create denied by policy");
+        }
+        const proposalId = await this.insertProposal({
+          run: input.run,
+          proposalType,
+          title: stringValue(spec.title) ?? stringValue(spec.proposed_title) ?? titleForProposal(proposalType),
+          summary: stringValue(spec.summary),
+          payload,
+          rationale: stringValue(spec.rationale) ?? `Proposed by run output (${input.runtimeKey}).`,
+          riskLevel: normalizeRisk(stringValue(spec.risk_level), proposalType),
+          urgency: normalizeUrgency(stringValue(spec.urgency)),
+          preview: booleanValue(spec.preview) ?? input.run.mode === "dry_run",
+          visibility: proposalVisibility,
+          requestedVisibility,
+          projectFolderId: proposalType.startsWith("memory_")
+            ? null
+            : stringValue(spec.project_folder_id) ?? input.run.project_folder_id,
+          projectId,
+          status: input.proposalStatus,
+        },tx);
+        return {
+          kind: "proposal",
+          status: "succeeded",
+          proposal_id: proposalId,
+          metadata_json: {
+            label: input.label,
+            operation: "proposal.create",
+            proposal_type: proposalType,
+          },
+        };
+      }));
     } catch (error) {
       return materializationError("proposal", input.label, "output_proposal_materialization_error", error);
     }
@@ -614,14 +620,14 @@ export class RunMaterializationService {
     projectFolderId: string | null;
     projectId: string | null;
     status: "pending" | "staged";
-  }): Promise<string> {
+  },db:Queryable): Promise<string> {
     const taint = contextTaintForRun(input.run);
     const visibility = derivedOutputVisibility(
       input.run,
       input.visibility,
       false,
     );
-    const row = await insertProposalRow(this.db, {
+    const row = await insertProposalRow(db, {
       spaceId: input.run.space_id,
       createdByRunId: input.run.id,
       proposalType: input.proposalType,
@@ -650,7 +656,7 @@ export class RunMaterializationService {
       createdByUserId: input.run.instructed_by_user_id ?? null,
     });
     if (visibility === "selected_users") {
-      await inheritContentAccessGrants(this.db, {
+      await inheritContentAccessGrants(db, {
         spaceId: input.run.space_id,
         sourceResourceType: "run",
         sourceResourceId: input.run.id,
@@ -658,7 +664,7 @@ export class RunMaterializationService {
         targetResourceId: row.id,
         inheritedAt: new Date().toISOString(),
       });
-      await this.grantTaintOwners(input.run, "proposal", row.id, new Date().toISOString());
+      await this.grantTaintOwners(input.run, "proposal", row.id, new Date().toISOString(),db);
     }
     return row.id;
   }
@@ -668,11 +674,12 @@ export class RunMaterializationService {
     resourceType: "artifact" | "proposal",
     resourceId: string,
     now: string,
+    db:Queryable=this.db,
   ): Promise<void> {
     const taint = contextTaintForRun(run);
     const users = taint?.non_instructing_owner_user_ids ?? [];
     if (users.length === 0) return;
-    await this.db.query(
+    await db.query(
       `INSERT INTO content_access_grants (
          id, space_id, resource_type, resource_id, grantee_user_id,
          granted_by_user_id, access_level, created_at, updated_at

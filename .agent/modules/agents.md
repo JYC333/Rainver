@@ -39,10 +39,14 @@ resources and keep their explicitly declared scope.
 ### Project Research execution defaults
 
 Project Research provisions or reuses a space-scoped
-`agent_kind="system_research"` Agent and pins its selected AgentRuntimeProfile
-for stage Runs. Those are ordinary ACP Agent Runs; the ModelProvider-selected
-bounded question-refinement call remains incidental ProviderTask work. Research
-does not introduce a server-managed Agent loop.
+`agent_kind="system_research"` Agent and its selected AgentRuntimeProfile.
+The Profile is pinned by the screening rules' Source post-processing Runs and
+names the provider/model the queued stages run on; the Agent backs every
+research pass's WorkflowExecution coordinator Run and the synthesis-only
+snapshot's Agent node. Those are ordinary ACP Agent Runs. Monitoring
+comparison, synthesis and critique are bounded `provider_task` Runs that select
+no Agent or Profile, and question refinement remains incidental ProviderTask
+work. Research does not introduce a server-managed Agent loop.
 
 OpenCode supports either the login held on its execution Host or a
 ModelProvider-backed Profile. Provider mode materializes a Run-scoped
@@ -519,6 +523,18 @@ Room agents can explicitly wait for other room results through
 the worker is released, and the lifecycle projector requeues the same run with
 dependency summaries once all declared dependency runs are terminal. Delegation
 completion alone does not create an inferred follow-up run.
+
+The CLI tool route flushes a successful `waiting` receipt before asking that
+execution's live channel to yield through ACP `session/cancel`. Its cancelled
+prompt completes as a dependency pause and preserves the vendor session. A
+runtime still alive after five seconds is stopped through the Host's existing
+nonce-scoped stop/force protocol. The worker still waits for runtime completion
+and cleanup before admitting children; the request never releases execution
+or directory ownership itself. Closed channels cannot target a resumed attempt.
+Queued delegation turns expose `queue_wait_reason` from the same scheduling
+reader used by `agent.list_runs`; the activity companion distinguishes waiting
+for the parent to yield from waiting for delegation admission. State stream
+frames update and clear this reason even when the turn state stays unchanged.
 
 Each result in that continuation carries its `run_id`, the result summary
 (2,000 characters at most) and the task the waiter assigned it, clipped to

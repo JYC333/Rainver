@@ -1,3 +1,5 @@
+import {TaskControlError} from '../tasks/controlErrors.js';
+import {CompletionRequirementsUnmet} from './taskWriteEvents.js';
 import {linkTaskToProblem} from "../inquiry/taskLinkFacts.js";
 import type { Pool } from "../../db/pool.js";
 import { randomUUID } from "node:crypto";
@@ -81,7 +83,7 @@ export async function requireProjectTask(
   // the executor then replies with the ids this Project actually has.
   if (!task || task.project_id !== projectId) throw new HttpError(404, "Task not found");
   if (!task.project_id) {
-    throw new HttpError(422, "This Task is not in a Project, so it has no work stream to write to");
+    throw new TaskControlError(422, "This Task is not in a Project, so it has no work stream to write to");
   }
   // An Agent's reach is the instructing person's, and that person's reach
   // over a Project's work is bounded by their Project role: a viewer can read
@@ -121,14 +123,14 @@ export async function linkTaskEntities(
 async function linkTaskEntitiesIn(db:Queryable,context:Pick<AgentActionContext,"spaceId"|"actorId"|"instructedByUserId"> & {runId?:string|null;reason?:string},taskId:string,links:readonly TaskLinkInput[]):Promise<void>{
   for (const link of links) {
     if (!entityDefinition(link.entity_type)) {
-      throw new HttpError(422, `${link.entity_type} is not a registered entity`);
+      throw new TaskControlError(422, `${link.entity_type} is not a registered entity`);
     }
     // The agent path is schema-checked before it gets here; the HTTP path is
     // not, and an unknown role would reach the CHECK constraint and abort the
     // caller's whole transaction as a 500 rather than telling them what was
     // wrong.
     if (!TASK_LINK_ROLES.has(link.role)) {
-      throw new HttpError(422, `${link.role} is not a Task link role`);
+      throw new TaskControlError(422, `${link.role} is not a Task link role`);
     }
     // The row carries no FK on `entity_id` — it is polymorphic — so the
     // binding's truth is checked here or nowhere. An unchecked id asserts a
@@ -138,13 +140,13 @@ async function linkTaskEntitiesIn(db:Queryable,context:Pick<AgentActionContext,"
     const declaration = resolveContentAccessible(link.entity_type);
     const resourceType = resolveContentResourceType(link.entity_type);
     if (!declaration || !resourceType) {
-      throw new HttpError(422, `${link.entity_type} cannot be linked: it declares no content access`);
+      throw new TaskControlError(422, `${link.entity_type} cannot be linked: it declares no content access`);
     }
     // The ontology root is registered but nothing is stored *as* one, so the
     // subtype check below could only ever fail. Saying so beats a "not found"
     // that sends the caller looking for a row.
     if (link.entity_type === "space_object") {
-      throw new HttpError(422, "Link the object's own type, not the ontology root");
+      throw new TaskControlError(422, "Link the object's own type, not the ontology root");
     }
     assertSqlIdentifier(declaration.tableName, "tableName");
     // Ontology subtypes all live in one table, so an id alone proves only that
@@ -227,7 +229,7 @@ async function handoffTaskIn(
 ): Promise<{ task_id: string }> {
   const task = await requireProjectTask(db, context.spaceId, input.task_id, context.instructedByUserId, context.projectId, { lock: true });
   if (task.status === "done" || task.status === "cancelled") {
-    throw new HttpError(409, `Task is ${task.status}; there is no work left to hand off`);
+    throw new TaskControlError(409, `Task is ${task.status}; there is no work left to hand off`);
   }
 
   if (input.to?.kind === "user") {
@@ -250,7 +252,7 @@ async function handoffTaskIn(
       [context.spaceId, task.project_id, input.to.id, task.id],
     );
     if (member.rowCount === 0) {
-      throw new HttpError(422, "That person cannot take this Task on in this Project");
+      throw new TaskControlError(422, "That person cannot take this Task on in this Project");
     }
   }
   if (input.to?.kind === "agent") {
@@ -264,7 +266,7 @@ async function handoffTaskIn(
           AND (project_id IS NULL OR project_id = $3)`,
       [context.spaceId, input.to.id, task.project_id],
     );
-    if (agent.rowCount === 0) throw new HttpError(422, "That Agent is not available to this Task's Project");
+    if (agent.rowCount === 0) throw new TaskControlError(422, "That Agent is not available to this Task's Project");
   }
 
   const handed = await db.query(
@@ -278,7 +280,7 @@ async function handoffTaskIn(
       input.to?.kind === "agent" ? input.to.id : null,
     ],
   );
-  if (handed.rowCount === 0) throw new HttpError(409, "Task was closed while it was being handed off");
+  if (handed.rowCount === 0) throw new TaskControlError(409, "Task was closed while it was being handed off");
   await appendProjectWorkEvent(db, {
     spaceId: context.spaceId,
     projectId: task.project_id,
@@ -301,10 +303,12 @@ async function handoffTaskIn(
 
 /** Changes the same status the Board uses; completion and review keep their dedicated behavior. */
 export async function setTaskStatus(
-  db: Pool,
+  pool: Pool,
   context: AgentActionContext,
   input: { task_id: string; status: string; reason: string },
+  transaction?:Queryable,
 ): Promise<{ task_id: string; status: string }> {
+  return withQueryableTransaction(transaction??pool,async db=>{
   const task = await requireProjectTask(db, context.spaceId, input.task_id, context.instructedByUserId, context.projectId);
   if (task.status === input.status && input.status!=="blocked") return { task_id: task.id, status: task.status };
   if (input.status === "done") return completeTask(db, context, { task_id: task.id, summary: input.reason });
@@ -312,11 +316,12 @@ export async function setTaskStatus(
     await requestTaskReview(db, context, { task_id: task.id, reason: input.reason });
     return { task_id: task.id, status: "waiting_for_review" };
   }
-  const updated = await new PgTaskRepository(db).updateTask(
+  const updated = await new PgTaskRepository(pool).updateTask(
     { spaceId: context.spaceId, userId: context.instructedByUserId }, task.id,
-    { status: input.status,...(input.status==="blocked"?{blocked_reason:input.reason}:{}) }, { actorId: context.actorId, runId: context.runId, projectId: context.projectId, reason: input.reason },
+    { status: input.status,...(input.status==="blocked"?{blocked_reason:input.reason}:{}) }, { actorId: context.actorId, runId: context.runId, projectId: context.projectId, reason: input.reason }, db,
   );
   return { task_id: updated.id, status: updated.status };
+  });
 }
 
 /**
@@ -350,8 +355,8 @@ export async function completeTask(
 ): Promise<{ task_id: string; status: string; event_id: string }> {
   return withQueryableTransaction(db, async (tx) => {
     const task = await requireProjectTask(tx, context.spaceId, input.task_id, context.instructedByUserId, context.projectId, { lock: true });
-    if (task.status === "done") throw new HttpError(409, "Task is already done");
-    if (task.status === "cancelled") throw new HttpError(409, "Task is cancelled and cannot be completed");
+    if (task.status === "done") throw new TaskControlError(409, "Task is already done");
+    if (task.status === "cancelled") throw new TaskControlError(409, "Task is cancelled and cannot be completed");
     const outputs = await tx.query<{ required_outputs_json: unknown }>(
       `SELECT required_outputs_json FROM tasks WHERE space_id = $1 AND id = $2`,
       [context.spaceId, task.id],
@@ -365,14 +370,9 @@ export async function completeTask(
     );
     const missingOutputs = completion.missing.filter((reason) => reason.startsWith("required_output:"));
     if (missingOutputs.length > 0) {
-      const outputTypes = missingOutputs
-        .map((reason) => reason.slice("required_output:".length))
-        .join(", ");
-      throw new HttpError(422, `This Task cannot be completed because these required file outputs are missing: ${outputTypes}. Required outputs are Artifact type labels, not reports or workspace edits; use artifact.submit when this Run can deliver a file, or ask for review.`, {
-        code: "completion_requirements_unmet",
-        missing: completion.missing,
-        unacknowledged: missingOutputs,
-      });
+      const outputTypes=missingOutputs.map(reason=>reason.slice("required_output:".length)).join(", ");
+      throw new CompletionRequirementsUnmet(completion.missing,missingOutputs,
+        `This Task cannot be completed because these required file outputs are missing: ${outputTypes}. Required outputs are Artifact type labels, not reports or workspace edits; use artifact.submit when this Run can deliver a file, or ask for review.`);
     }
     const overridden = completion.missing;
     const closed = await tx.query(
@@ -381,7 +381,7 @@ export async function completeTask(
         WHERE space_id = $1 AND id = $2 AND status = $3`,
       [context.spaceId, task.id, task.status],
     );
-    if (closed.rowCount === 0) throw new HttpError(409, "Task changed while it was being completed");
+    if (closed.rowCount === 0) throw new TaskControlError(409, "Task changed while it was being completed");
     const event = await appendProjectWorkEvent(tx, {
       spaceId: context.spaceId,
       projectId: task.project_id,
@@ -432,20 +432,20 @@ export async function requestTaskReview(
   return withQueryableTransaction(db, async (tx) => {
     const task = await requireProjectTask(tx, context.spaceId, input.task_id, context.instructedByUserId, context.projectId, { lock: true });
     if (task.status === "done" || task.status === "cancelled") {
-      throw new HttpError(409, `Task is ${task.status} and cannot be sent for review`);
+      throw new TaskControlError(409, `Task is ${task.status} and cannot be sent for review`);
     }
     // Asking twice is one ask. A second request while the first is pending
     // would write a `waiting_for_review → waiting_for_review` flow event and
     // a second report, and re-issue a decision the person already has.
     if (task.status === "waiting_for_review") {
-      throw new HttpError(409, "Task is already waiting for a decision");
+      throw new TaskControlError(409, "Task is already waiting for a decision");
     }
     const held = await tx.query(
       `UPDATE tasks SET status = 'waiting_for_review', blocked_reason=NULL, updated_at = now()
         WHERE space_id = $1 AND id = $2 AND status = $3`,
       [context.spaceId, task.id, task.status],
     );
-    if (held.rowCount === 0) throw new HttpError(409, "Task changed while it was being sent for review");
+    if (held.rowCount === 0) throw new TaskControlError(409, "Task changed while it was being sent for review");
 
     const event = await appendProjectWorkEvent(tx, {
       spaceId: context.spaceId,

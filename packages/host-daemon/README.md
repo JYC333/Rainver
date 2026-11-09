@@ -317,3 +317,19 @@ are not writing the same workspace. Such edits can change the observed basis.
 Do not restart a Host during active work: drain it and upgrade via the existing
 Host update flow after review/approval. Building this checkout does not update an
 installed service automatically.
+
+### Antigravity CLI
+
+The Antigravity Registry Agent installs Google’s official CLI and launches it
+with `acp`; an owner-installed copy is discovered as `agy acp`. Managed updates
+use Google’s platform manifests and SHA-512 integrity checks. Use the Host’s
+login dialog to authenticate the selected copy through its advertised methods.
+
+Each Agent/container gets its own `--gemini-dir` state root. The installation’s
+`.gemini/antigravity-cli/antigravity-oauth-token` is linked into that profile;
+sessions, settings and built-in skills remain isolated. Delivered skills are
+listed in the profile’s official `config/skills.json` manifest. The Host does
+not import credentials from other Antigravity applications. Quota inspection
+uses the official CLI status-line JSON with temporary session settings. It sends
+no prompt, reads no token itself, and leaves refresh to the CLI. The existing
+`script(1)` terminal utility is required; no native settings are overwritten.

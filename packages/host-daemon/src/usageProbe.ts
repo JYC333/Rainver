@@ -1,5 +1,6 @@
 import { probeAntigravity } from "./antigravityUsage.js";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { helperProcessEnv } from "./providerBinding.js";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -83,28 +84,69 @@ function oauthResetText(window: OAuthWindow | null): string | null {
   return `Resets ${Number.isFinite(parsed) ? new Date(parsed).toISOString() : window.resetsAt}`;
 }
 
-/** Exported for testing: the vendor's response body never leaves this process. */
+function claudeScopeKey(name: string): string {
+  const key = name.toLowerCase();
+  return /^[a-z0-9_]{1,96}$/.test(key) ? key : createHash("sha256").update(key).digest("hex").slice(0, 24);
+}
+
+/** Only measured quota windows leave the Host, never the vendor response body. */
 export function parseClaudeOAuthUsage(value: unknown): HostUsageQuota {
   const root = asRecord(value);
   const result = emptyQuota();
-  if (!root) return result;
-  const session = parseOAuthWindow(root.five_hour);
-  const week = parseOAuthWindow(root.seven_day ?? root.seven_day_oauth_apps);
+  if (!root || root.rate_limits_available === false) return result;
+  const payload = asRecord(root.rate_limits) ?? root;
+  // SDKUsageReport documents limits[] as the server's authoritative meter rows.
+  const nativeRows = Array.isArray(payload.limits) ? payload.limits : null;
+  const windows: NonNullable<HostUsageQuota["windows"]> = nativeRows
+    ? nativeRows.slice(0, 64).flatMap(value => {
+      const row = asRecord(value);
+      const used = num(row?.percent);
+      const kind = typeof row?.kind === "string" ? row.kind.trim() : "";
+      if (used === null || used < 0 || !kind) return [];
+      const scope = asRecord(row?.scope);
+      const model = asRecord(scope?.model);
+      const surface = asRecord(scope?.surface);
+      const rawName = model?.display_name ?? surface?.display_name;
+      const name = typeof rawName === "string" ? rawName.trim() : "";
+      if (kind === "weekly_scoped" && !name) return [];
+      const scopeKey = name ? `${model ? "" : "surface_"}${claudeScopeKey(name)}` : "";
+      const id = kind === "session" ? "five_hour" : kind === "weekly_all" ? "seven_day"
+        : kind === "weekly_scoped" ? `seven_day_${scopeKey}`
+        : `native_${claudeScopeKey(kind)}${scopeKey ? `_${scopeKey}` : ""}`;
+      const label = kind === "session" ? "Session" : kind === "weekly_all" ? "Weekly"
+        : kind === "weekly_scoped" ? `${name} weekly`
+        : `${name ? `${name} · ` : ""}${kind.replaceAll("_", " ")}`;
+      return [{ id, label: label.slice(0, 256), used_pct: pct(used), resets: oauthResetText({
+        utilization: used, resetsAt: typeof row?.resets_at === "string" ? row.resets_at : null,
+      }) }];
+    })
+    : Object.entries(payload).filter(([key]) => /^(five_hour|seven_day)(_|$)/.test(key))
+      .flatMap(([key, value]) => {
+        const window = parseOAuthWindow(value);
+        return window ? [{ id: key, label: key === "five_hour" ? "Session" : key === "seven_day" ? "Weekly" : key.startsWith("seven_day_") ? `${key.slice(10).replaceAll("_", " ")} weekly` : key.replaceAll("_", " "), used_pct: pct(window.utilization), resets: oauthResetText(window) }] : [];
+      });
+  if (!nativeRows && Array.isArray(payload.model_scoped)) {
+    for (const value of payload.model_scoped.slice(0, 64)) {
+      const model = asRecord(value);
+      const name = typeof model?.display_name === "string" ? model.display_name.trim() : "";
+      const window = parseOAuthWindow(model);
+      if (!name || !window || window.utilization < 0) continue;
+      windows.push({ id: `seven_day_${claudeScopeKey(name)}`, label: `${name} weekly`.slice(0, 256), used_pct: pct(window.utilization), resets: oauthResetText(window) });
+    }
+  }
+  const measured = [...new Map(windows.map(window => [window.id, window])).values()].slice(0, 64);
+  const session = measured.find(window => window.id === "five_hour");
+  const week = measured.find(window => window.id === "seven_day") ?? measured.find(window => window.id === "seven_day_oauth_apps");
   if (session) {
-    result.session_pct = pct(session.utilization);
-    result.session_resets = oauthResetText(session);
+    result.session_pct = session.used_pct;
+    result.session_resets = session.resets;
   }
   if (week) {
-    result.week_pct = pct(week.utilization);
-    result.week_resets = oauthResetText(week);
+    result.week_pct = week.used_pct;
+    result.week_resets = week.resets;
   }
-  const windows = Object.entries(root).filter(([key]) => /^(five_hour|seven_day)(_|$)/.test(key))
-    .flatMap(([key, value]) => {
-      const window = parseOAuthWindow(value);
-      return window ? [{ id: key, label: key === "five_hour" ? "Session" : key === "seven_day" ? "Weekly" : key.startsWith("seven_day_") ? `${key.slice(10).replaceAll("_", " ")} weekly` : key.replaceAll("_", " "), used_pct: pct(window.utilization), resets: oauthResetText(window) }] : [];
-    }).slice(0, 64);
-  if (windows.length) result.windows = windows;
-  result.available = result.session_pct !== null || result.week_pct !== null || windows.length > 0;
+  if (measured.length) result.windows = measured;
+  result.available = measured.length > 0;
   return result;
 }
 
@@ -434,7 +476,7 @@ type UsageProbeFrame = {
 export async function probeUsage(frame: UsageProbeFrame): Promise<HostUsageQuota> {
   const copy = copyHome(frame.runtime_key, frame.installation);
   if (!copy) return failed(`This host does not have ${frame.runtime_key} ${frame.installation} installed.`);
-  if (frame.runtime_key === "acp_antigravity_acp") return probeAntigravity(copy.home, frame.state ?? null, frame.timeout_seconds);
+  if (frame.runtime_key === "acp_antigravity_acp") return probeAntigravity(copy.home, frame.state ?? null, frame.timeout_seconds, copy.manifest?.command ?? "agy", copy.manifest?.entry_args ?? []);
   if (frame.runtime_key === "claude_code") return probeClaude(copy.home, frame.state ?? null, frame.timeout_seconds);
   if (frame.runtime_key === "codex_cli") return probeCodex(copy.home, copy.manifest, frame.timeout_seconds);
   // OpenCode bills through whichever provider it is pointed at, and a registry

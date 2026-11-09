@@ -1,3 +1,4 @@
+import { resolveUserCreationActor } from './userContentCreation.js';
 import { getOperationAuditPool } from "../../../db/pool.js";
 import { ContentAccessAuditService } from "../../contentAccess/audit.js";
 import type { Pool } from '../../../db/pool.js';
@@ -22,6 +23,7 @@ export class OperationExecutor {
       const d = item.definition;
       if (map.has(d.id) || !d.execution || d.execution.tx !== 'core_owned' || d.execution.kind === 'query' && (d.side_effects !== 'none' || d.idempotency_required || d.gate_class !== null || d.proposal_type !== null || !item.readKind || item.readKind === 'content' && !item.readAudit || !!item.afterCommit) || item.approval?.gate.kind === 'hard_gate' && item.approval.gate.gate_class !== d.gate_class) throw new Error('Invalid migrated operation registration');
       if (item.approval && (d.execution.kind !== 'command' || item.approval.atomicStatusWritersVerified !== true || !item.approval.proposalType || item.approval.mode === 'blocked_command' && !item.approval.gate.policy_rule_id)) throw new Error('Approval mapping has not passed canonical transition enablement');
+      if (item.userContentCreation && (d.execution.kind !== 'command' || (d.side_effects !== 'draft' && !(d.id === 'source.channel.create' && d.side_effects === 'durable')) || d.allowed_actor_types.length !== 1 || d.allowed_actor_types[0] !== 'user' || d.grantable || d.gate_class !== null || d.proposal_type !== null || item.approval || [...d.visibility].some(surface => surface !== 'public_api'))) throw new Error('Human content creation requires an ungrantable user-only draft or canonical Monitor creation command');
       map.set(d.id, item);
     }
     this.registrations = map;
@@ -55,10 +57,12 @@ export class OperationExecutor {
       let input = parsed.data;
       const command = d.execution!.kind === 'command';
       if (command && (!key || key.length > 256 || !/^[\x21-\x7e]+$/.test(key))) throw new OperationError('idempotency_key_required', 422);
+      const requestActor = actor;
       const committed = await withTransaction(this.pool, async client => {
         if (!command) await client.query('SET TRANSACTION READ ONLY');
         const tx = operationTransaction(client);
         try {
+          if (item.userContentCreation) actor = await resolveUserCreationActor(tx.db, input, requestActor,id);
           const scope = await runOperationWork(()=>item.resolve(tx.db, input, actor));
           if (item.normalizeInput) {
             const normalized = d.input_schema.safeParse(item.normalizeInput(input, scope));
@@ -67,6 +71,11 @@ export class OperationExecutor {
           }
           const identity = command ? requestScope(actor, scope.authority, id, key!) : null;
           let previous = identity ? await reserve(client, identity) : null;
+          if (item.userContentCreation) {
+            await assertCurrentActor(tx.db, requestActor, true);
+            const current = await resolveUserCreationActor(tx.db, input, requestActor,id);
+            if (current.space_id !== actor.space_id) throw new OperationError('operation_conflict', 409);
+          }
           await assertCurrentActor(tx.db, actor, command);
           await assertOperationGrant(tx.db, actor, id);
           await runOperationWork(()=>item.authorize(tx.db, input, actor, scope));
@@ -87,7 +96,8 @@ export class OperationExecutor {
               instructed_by_user_id: actor.on_behalf_of_user_id
             },
             metadata_json: {
-              operation_request_id: requestId
+              operation_request_id: requestId,
+              ...(item.userContentCreation ? {request_space_id:requestActor.space_id} : {})
             }
           };
           if (command) failureAudit = policyRequest;

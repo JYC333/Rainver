@@ -1,3 +1,4 @@
+import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
 import { createHash, randomUUID } from "node:crypto";
 import type { HostTaskWorkspace, TaskMergeBlockedOutcome, TaskMergeOutcome } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
@@ -759,8 +760,12 @@ async function giveBack(
  */
 async function cancelUnstartedResolutionRun(db: Queryable, merge: TaskMergeRow): Promise<void> {
   if (!merge.resolution_run_id) return;
-  const runs = new PgRunRepository(db);
-  const run = await runs.getRun(merge.space_id, merge.resolution_run_id);
+  await withRunTerminalOwner(db,async tx=>(await tx.query<{id:string;space_id:string}>(
+    'SELECT resolution_run_id AS id,space_id FROM task_merges WHERE id=$1 AND space_id=$2 AND resolution_run_id=$3',[merge.id,merge.space_id,merge.resolution_run_id])).rows,async tx=>{
+  const current=(await tx.query<{resolution_run_id:string|null}>('SELECT resolution_run_id FROM task_merges WHERE id=$1 AND space_id=$2 FOR UPDATE',[merge.id,merge.space_id])).rows[0];
+  if(current?.resolution_run_id!==merge.resolution_run_id)return;
+  const runs = new PgRunRepository(tx);
+  const run = (await tx.query<{id:string;status:string;started_at:string|null}>('SELECT id,status,started_at FROM runs WHERE id=$1 AND space_id=$2 FOR UPDATE',[merge.resolution_run_id,merge.space_id])).rows[0];
   if (run?.status !== "queued" || run.started_at) return;
   await runs.markRunTerminal({
     run_id: run.id,
@@ -770,6 +775,7 @@ async function cancelUnstartedResolutionRun(db: Queryable, merge: TaskMergeRow):
     error_json: { error_code: "task_merge_withdrawn", error_text: "The Task left done before this merge's conflict was resolved." },
     exit_code: 1,
     completed_at: new Date().toISOString(),
+  });
   });
 }
 

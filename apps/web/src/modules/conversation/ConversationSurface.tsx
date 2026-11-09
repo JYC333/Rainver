@@ -54,6 +54,7 @@ import { clearConversationDraft } from './conversationDraft'
 import { useConversationDraft } from './useConversationDraft'
 import { ConversationRunControls } from './ConversationRunControls'
 import { ConversationActivity } from './ConversationActivity'
+import { queuedRunLabel } from './queuedRunLabel'
 import { notifyProjectFolderContentChanged } from '../../core/projectFolderEvents'
 import {
   DiscussionGroup,
@@ -1454,7 +1455,7 @@ function RoomAgentTurn({ runId, turn, agentName, delegatedBy, run, projectId, on
           {delegatedBy && <span className="shrink-0 font-normal">{t('conversation_ui.surface.delegated_by', { name: delegatedBy })}</span>}
         </div>
         {waiting
-          ? <p className="text-sm text-muted-foreground">{run?.status === 'waiting_for_dependency' ? t('conversation_ui.surface.waiting_previous') : run?.status === 'queued' ? t('conversation_ui.surface.queued') : t('conversation_ui.surface.checking')}</p>
+          ? <p className="text-sm text-muted-foreground">{run?.status === 'waiting_for_dependency' ? t('conversation_ui.surface.waiting_previous') : run?.status === 'queued' ? t(queuedRunLabel(turn)) : t('conversation_ui.surface.checking')}</p>
           : turn
             ? <ConversationTurn turn={turn} runHref={`/runs/${runId}`} className="max-w-none" />
             : <p className="text-sm text-muted-foreground">{run && ['failed', 'succeeded', 'degraded', 'cancelled', 'orphaned'].includes(run.status) ? t('conversation_ui.surface.loading_result') : t('conversation_ui.surface.starting')}</p>}

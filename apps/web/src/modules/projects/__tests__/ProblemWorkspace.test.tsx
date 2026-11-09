@@ -104,3 +104,13 @@ it('old standing links reach the real monitoring panel with budget, inflow and a
 it('standing overview remains readable but disables writes for read-only Project access',async()=>{
  vi.mocked(inquiryApi.workspaceAccess).mockResolvedValue({can_write:false});vi.mocked(projectResearchApi.standing).mockResolvedValue({enabled:true,enabled_binding_count:1,budget:{daily_limit:20,daily_used:3},batches:[{id:'batch',status:'failed'}],advice:[],recent_inflow:[]} as never);page('/projects/project/inquiry?section=standing');expect(await screen.findByRole('button',{name:'Retry comparison'})).toBeDisabled();expect(inquiryApi.createThread).not.toHaveBeenCalled();
 });
+
+it('creates a typed human hypothesis from the Project problem workspace',async()=>{
+ vi.mocked(inquiryApi.createThread).mockResolvedValue({id:'created'} as never);
+ page('/projects/project/inquiry');
+ fireEvent.change(await screen.findByLabelText('Problem statement'),{target:{value:'Depth explains the result'}});
+ await userEvent.click(screen.getByLabelText('Problem type'));await userEvent.click(screen.getByRole('option',{name:'Hypothesis'}));
+ fireEvent.click(screen.getByRole('button',{name:'Create problem'}));
+ await waitFor(()=>expect(inquiryApi.createThread).toHaveBeenCalledWith('project',{kind:'hypothesis',statement:'Depth explains the result'}));
+ await waitFor(()=>expect(screen.getByLabelText('Location')).toHaveTextContent('thread=created'));
+});

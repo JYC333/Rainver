@@ -1,3 +1,4 @@
+import {lockSourceChannelReference} from './sourceMonitorParent.js';
 import {canWriteProject} from '../projects/access.js';
 import {materialSourcePolicyHash} from './materialProcessing/consent.js';
 import type {SourceConnectionRow} from './sourceRepositoryRows.js';
@@ -17,13 +18,14 @@ export function registerSourceChannelProposalAppliers(registry: ProposalApplierR
     const { db, proposal } = context;
     const channelId = requiredString(proposal.payload_json?.source_channel_id, "source_channel_id");
     const expectedUpdatedAt = requiredString(proposal.payload_json?.draft_updated_at, "draft_updated_at");
+    if(!await lockSourceChannelReference(db,proposal.space_id,channelId,true))throw new Error("Source Channel draft changed after proposal creation");
     const current = await db.query<{ channel_updated_at: unknown; connection_id: string }>(
       `SELECT ch.updated_at AS channel_updated_at, ch.source_connection_id AS connection_id
          FROM source_channels ch
          JOIN source_connections sc ON sc.id = ch.source_connection_id
         WHERE ch.id=$1 AND ch.space_id=$2 AND ch.status='paused'
           AND sc.status='paused' AND sc.deleted_at IS NULL
-        FOR UPDATE OF ch, sc`,
+`,
       [channelId, proposal.space_id],
     );
     const updatedAt = current.rows[0]?.channel_updated_at;

@@ -11,7 +11,7 @@ beforeAll(() => setDynamicRuntimeAdapterSpecs([{
 }]));
 afterAll(() => setDynamicRuntimeAdapterSpecs([]));
 
-const googleUsage = { inputTokens: 100, cachedReadTokens: 80, cachedWriteTokens: 0,
+const googleUsage = { inputTokens: 20, cachedReadTokens: 80, cachedWriteTokens: 0,
   outputTokens: 10, thoughtTokens: 5, totalTokens: 115 };
 
 function finish(usage: unknown) {
@@ -79,6 +79,6 @@ describe("ACP token measurement", () => {
     expect(usageFromAcp({ inputTokens: 24620, cachedReadTokens: 87808,
       outputTokens: 1312, thoughtTokens: 946, totalTokens: 113740 }))
       .toMatchObject({ input_tokens: 24620, total_tokens: 113740 });
-    expect(usageFromAcp(googleUsage)).toBeNull();
+    expect(usageFromAcp(googleUsage)?.input_tokens).toBe(20);
   });
 });

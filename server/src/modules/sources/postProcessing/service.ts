@@ -1,3 +1,5 @@
+import {SourceDispatchBusyError} from '../sourceDispatchExecution.js';
+import {SourceProcessingInputError} from './commandErrors.js';
 import { assertMonitoringProcessingContract, monitoringChannel, consumeMonitoringBudget } from "../../projects/monitoringControl.js";
 import type { ServerConfig } from "../../../config.js";
 import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
@@ -63,6 +65,7 @@ import {
   normalizeTriggerConfig,
   normalizeTriggerType,
   timestampString,
+  sourceProcessingRuleFingerprint,
   type SourcePostProcessingActions,
   type SourcePostProcessingBacklogOut,
   type SourcePostProcessingBriefingDaySummaryOut,
@@ -96,6 +99,8 @@ import { joinText, stringList } from "./textUtils.js";
 import { SOURCE_POST_PROCESSING_LIMITS } from "./config.js";
 import { resolveModelWindow } from "../../usage/modelCatalog.js";
 import { SOURCE_POST_PROCESSING_OUTPUT_CONTRACT } from "../../projectResearch/outputSchemas.js";
+
+export type SourceManagedAgentWriter=Pick<PgAgentRepository,'createInTransaction'|'publishSystemManagedPromptInTransaction'>;
 
 interface RetrievalContextDomainConfig {
   registry: RetrievalRegistry;
@@ -147,6 +152,7 @@ export class SourcePostProcessingService {
   constructor(
     private readonly db: Queryable,
     private readonly config: ServerConfig,
+    private readonly commandAgents?: SourceManagedAgentWriter,
   ) {}
 
   async listRules(identity: SpaceUserIdentity, connectionId: string): Promise<SourcePostProcessingRuleOut[]> {
@@ -191,6 +197,7 @@ export class SourcePostProcessingService {
     ruleId: string,
     body: Record<string, unknown>,
   ): Promise<SourcePostProcessingRuleOut> {
+    if(Object.hasOwn(body,'name')&&(typeof body.name!=='string'||!body.name.trim()))throw new SourceProcessingInputError(422,'Rule name is required');
     const repo = new PgSourcePostProcessingRepository(this.db);
     const existing = await repo.getRule(identity.spaceId, ruleId);
     if (!existing || existing.source_channel_id !== connectionId) {
@@ -239,6 +246,7 @@ export class SourcePostProcessingService {
     identity: SpaceUserIdentity,
     connectionId: string,
     ruleId: string,
+    expectedConfigFingerprint?:string,
   ): Promise<SourcePostProcessingRunOut> {
     const repo = new PgSourcePostProcessingRepository(this.db);
     const rule = await repo.getRule(identity.spaceId, ruleId);
@@ -246,10 +254,13 @@ export class SourcePostProcessingService {
       throw new HttpError(404, "Post-processing rule not found");
     }
     await this.requireManagedConnection(identity, connectionId);
+    if(rule.project_id)await assertProjectWriter(this.db,identity.spaceId,rule.project_id,identity.userId);
+    await this.assertAgentUsable(identity,rule.agent_id);
     return this.claimForManualRun(identity.spaceId, ruleId, async () => {
       // Re-read under the claim: a run that just finished moved the cursor.
       const current = await repo.getRule(identity.spaceId, ruleId);
       if (!current || current.source_channel_id !== connectionId) throw new HttpError(404, "Post-processing rule not found");
+      if(expectedConfigFingerprint&&sourceProcessingRuleFingerprint(current)!==expectedConfigFingerprint)throw new Error('Source processing rule changed after dispatch');
       return this.executeRule(current, {
         triggerType: "manual",
         actorUserId: identity.userId,
@@ -373,12 +384,16 @@ export class SourcePostProcessingService {
     identity: SpaceUserIdentity,
     connectionId: string,
     ruleId: string,
+    expectedConfigFingerprint?:string,
   ): Promise<{ runs: SourcePostProcessingRunOut[]; stopped_reason: string; pending_item_count: number }> {
     const repo = new PgSourcePostProcessingRepository(this.db);
     const firstRule = await repo.getRule(identity.spaceId, ruleId);
     if (!firstRule || firstRule.source_channel_id !== connectionId) {
       throw new HttpError(404, "Post-processing rule not found");
     }
+    await this.requireManagedConnection(identity,connectionId);
+    if(firstRule.project_id)await assertProjectWriter(this.db,identity.spaceId,firstRule.project_id,identity.userId);
+    await this.assertAgentUsable(identity,firstRule.agent_id);
     const maxBatches = normalizeInputConfig(firstRule.input_config_json).max_batches_per_event;
     const { runs, stoppedReason: drainedReason } = await this.claimForManualRun(identity.spaceId, ruleId, async () => {
       const runs: SourcePostProcessingRunOut[] = [];
@@ -389,6 +404,7 @@ export class SourcePostProcessingService {
           stoppedReason = "rule_missing";
           break;
         }
+        if(index===0&&expectedConfigFingerprint&&sourceProcessingRuleFingerprint(rule)!==expectedConfigFingerprint)throw new Error('Source processing rule changed after dispatch');
         const run = await this.executeRule(rule, {
           triggerType: "manual",
           actorUserId: identity.userId,
@@ -861,7 +877,7 @@ export class SourcePostProcessingService {
    */
   private async claimForManualRun<T>(spaceId: string, ruleId: string, fn: () => Promise<T>): Promise<T> {
     const claimed = await tryWithDedicatedSessionAdvisoryLock(this.db, ruleClaimKey(spaceId, ruleId), fn);
-    if (!claimed.acquired) throw new HttpError(409, "This post-processing rule is already running; wait for that run to finish.");
+    if (!claimed.acquired) throw new SourceDispatchBusyError("This post-processing rule is already running; wait for that run to finish.",ruleId);
     return claimed.value;
   }
 
@@ -1878,8 +1894,10 @@ export class SourcePostProcessingService {
       await this.assertAgentUsable(identity, requestedAgentId);
       return requestedAgentId;
     }
-    const pool = this.requirePool();
-    const agent = await ensureSourcePostProcessingAgent(pool, identity.spaceId);
+    const pool = this.commandAgents ? null : this.requirePool();
+    const agent = this.commandAgents
+      ? await ensureSourcePostProcessingAgent(this.db,identity.spaceId,this.commandAgents)
+      : await withQueryableTransaction(pool!,db=>ensureSourcePostProcessingAgent(db,identity.spaceId,new PgAgentRepository(pool!)));
     return agent.id;
   }
 
@@ -1911,6 +1929,7 @@ export class SourcePostProcessingService {
   private async requireManagedConnection(identity: SpaceUserIdentity, channelId: string): Promise<SourceConnectionRow> {
     const connection = await this.requireConnection(identity.spaceId, channelId);
     await assertSourceConnectionManageable(this.db, identity, connection.id);
+    if(connection.project_id)await assertProjectWriter(this.db,identity.spaceId,connection.project_id,identity.userId);
     return connection;
   }
 
@@ -1964,7 +1983,7 @@ export class SourcePostProcessingService {
       !actions.create_proposals &&
       !actions.mark_items
     ) {
-      throw new HttpError(422, "At least one post-processing action is required");
+      throw new SourceProcessingInputError(422, "At least one post-processing action is required");
     }
   }
 
@@ -2019,10 +2038,10 @@ export function validateSourcePostProcessingInputContextBinding(
   actions: SourcePostProcessingActions,
 ): void {
   if (inputConfig.retrieval_context.enabled && inputConfig.retrieval_context.domains.includes("project") && !projectId) {
-    throw new HttpError(422, "Project context requires selecting a project for this post-processing rule.");
+    throw new SourceProcessingInputError(422, "Project context requires selecting a project for this post-processing rule.");
   }
   if (!projectId && isRelevanceScreeningEnabled(actions, inputConfig) && inputConfig.relevance_profile?.enabled !== true) {
-    throw new HttpError(
+    throw new SourceProcessingInputError(
       422,
       "Relevance screening without a project requires a source-level relevance profile.",
     );
@@ -2047,7 +2066,7 @@ function sourcePostProcessingRuntimePrompt(instruction: string): string {
   return instruction;
 }
 
-async function ensureSourcePostProcessingAgent(pool: Pool, spaceId: string): Promise<{ id: string }> {
+async function ensureSourcePostProcessingAgent(pool: Queryable, spaceId: string, agents: SourceManagedAgentWriter): Promise<{ id: string }> {
   const existing = await pool.query<{ id: string }>(
     `SELECT id
        FROM agents
@@ -2059,11 +2078,10 @@ async function ensureSourcePostProcessingAgent(pool: Pool, spaceId: string): Pro
     [spaceId],
   );
   if (existing.rows[0]) {
-    await refreshSourcePostProcessingAgentPrompt(pool, spaceId, existing.rows[0].id);
+    await refreshManagedPrompt(pool,agents,spaceId,existing.rows[0].id);
     return existing.rows[0];
   }
-  const agents = new PgAgentRepository(pool);
-  const created = await agents.create({
+  const created = await agents.createInTransaction(pool,{
     spaceId,
     userId: await firstSpaceUserId(pool, spaceId),
     name: "Source post-processing",
@@ -2087,6 +2105,9 @@ export async function refreshSourcePostProcessingAgentPrompt(
   spaceId: string,
   agentId: string,
 ): Promise<void> {
+  await withQueryableTransaction(pool,db=>refreshManagedPrompt(db,new PgAgentRepository(pool),spaceId,agentId));
+}
+async function refreshManagedPrompt(pool:Queryable,agents:SourceManagedAgentWriter,spaceId:string,agentId:string){
   const managed = await pool.query<{ agent_kind: string }>(
     `SELECT agent_kind
        FROM agents
@@ -2095,7 +2116,7 @@ export async function refreshSourcePostProcessingAgentPrompt(
     [spaceId, agentId],
   );
   if (managed.rows[0]?.agent_kind !== "system_source_post_processor") return;
-  await new PgAgentRepository(pool).publishSystemManagedPrompt({
+  await agents.publishSystemManagedPromptInTransaction(pool,{
     spaceId,
     agentId,
     agentKind: "system_source_post_processor",
@@ -2114,7 +2135,7 @@ function sourcePostProcessingAgentSystemPrompt(): string {
   ].join("\n");
 }
 
-async function firstSpaceUserId(pool: Pool, spaceId: string): Promise<string> {
+async function firstSpaceUserId(pool: Queryable, spaceId: string): Promise<string> {
   const membership = await pool.query<{ user_id: string }>(
     `SELECT user_id
        FROM space_memberships

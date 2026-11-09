@@ -1,8 +1,10 @@
 import type { Queryable } from "../routeUtils/common.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 
+const DEFAULT_DELEGATIONS_PER_AGENT = 10;
+
 export function defaultRoomDelegationBudget(delegatableAgents: number) {
-  const soft = 5 * Math.max(1, delegatableAgents);
+  const soft = DEFAULT_DELEGATIONS_PER_AGENT * Math.max(1, delegatableAgents);
   return { max_depth: 1, max_fanout: soft, soft_max_fanout: soft, hard_max_fanout: soft * 2 };
 }
 
@@ -12,8 +14,8 @@ export function roomBudgetLimits(budget: Record<string, unknown> | null) {
     return typeof n === "number" && Number.isInteger(n) && n >= 0 ? n : fallback;
   };
   // An explicit max_fanout is a hard bound, unless a soft/hard pair was declared.
-  const soft = value("soft_max_fanout", value("max_fanout", 5));
-  const hard = budget?.max_fanout === 0 ? 0 : value("hard_max_fanout", value("max_fanout", 5));
+  const soft = value("soft_max_fanout", value("max_fanout", DEFAULT_DELEGATIONS_PER_AGENT));
+  const hard = budget?.max_fanout === 0 ? 0 : value("hard_max_fanout", value("max_fanout", DEFAULT_DELEGATIONS_PER_AGENT));
   return { soft, hard, softTurns: soft * 2, hardTurns: hard * 2 };
 }
 

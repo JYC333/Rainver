@@ -182,6 +182,7 @@ export const ProjectBoardCardSchema = z
     risk_level: z.string(),
     due_at: ISODateTimeSchema.nullable(),
     updated_at: ISODateTimeSchema,
+    completed_at: ISODateTimeSchema.nullable().optional(),
     /**
      * Which lane draws this card. Not always its status: `blocked` is an
      * overlay rather than a column, so a held-up card keeps its own status and

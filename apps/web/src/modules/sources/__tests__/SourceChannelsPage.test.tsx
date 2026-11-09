@@ -216,4 +216,13 @@ describe('Sources page', () => {
     await waitFor(() => expect(sourcesApi.setChannelSubscription).toHaveBeenCalledWith('channel-shared', 'muted'))
     expect(await screen.findByRole('button', { name: 'Follow again' })).toBeInTheDocument()
   })
+  it('reports queued dispatch on the parent Source surface without claiming completion',async()=>{
+    renderPage();await screen.findByText('Agent memory');
+    vi.mocked(sourcesApi.scanChannel).mockResolvedValue({id:'job-1'} as never);
+    vi.mocked(sourcesApi.runJob).mockResolvedValue({job_id:'dispatch-1',status:'pending',source_channel_id:null,extraction_job_id:'job-1',extraction_status:'pending'});
+    fireEvent.click(screen.getByRole('button', {name:/Scan now/}));
+    await waitFor(()=>expect(toast.success).toHaveBeenCalledWith('Monitor scan queued'));
+    expect(toast.success).not.toHaveBeenCalledWith('Monitor scan completed');
+  });
+
 })

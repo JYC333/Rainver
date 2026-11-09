@@ -11,21 +11,23 @@ import { ApiRequestError, tasksApi } from '../../../api/client'
  */
 export async function moveCardStatus(
   taskId: string,
-  toStatus: string,
+  selection: {column_key:string;columns_revision:string},
+  key: string,
   acknowledged?: readonly string[],
-  placement?: {column_id:string;board_id:string},
 ): Promise<void> {
-  // An empty acknowledgement is not an override — the server reads it as none
-  // at all and refuses again, which would make "Close anyway" a loop.
-  await tasksApi.update(taskId, acknowledged && acknowledged.length > 0
-    ? { ...placement, status: toStatus, override_completion: { acknowledged: [...acknowledged] } }
-    : { ...placement, status: toStatus })
+  const result=await tasksApi.moveToColumn(taskId,{
+    ...selection,
+    ...(acknowledged?.length?{override_completion:{acknowledged:[...acknowledged]}}:{}),
+  },key);
+  if(!('status' in result)||result.status!=='succeeded')throw new Error('Task move did not complete');
 }
 
 /** The reasons a close was refused, or null when the failure was something else. */
 export function blockedCompletion(error: unknown): string[] | null {
-  if (!(error instanceof ApiRequestError) || error.code !== 'completion_requirements_unmet') return null
-  const missing = error.payload?.missing
+  if (!(error instanceof ApiRequestError)) return null
+  const nested=error.payload?.error as {metadata?:{code?:string;missing?:unknown}}|undefined
+  if(error.code!=='completion_requirements_unmet'&&nested?.metadata?.code!=='completion_requirements_unmet')return null
+  const missing = nested?.metadata?.missing??error.payload?.missing
   const reasons = Array.isArray(missing)
     ? missing.filter((value): value is string => typeof value === 'string')
     : []

@@ -304,7 +304,7 @@ beforeEach(() => {
   vi.mocked(projectsApi.backfillSourceBinding).mockResolvedValue({
     binding_id: 'binding-1',
     project_id: 'project-1',
-    source_connection_id: 'conn-1',
+    source_channel_id: 'conn-1',
     created_links: 1,
     reactivated_links: 0,
     archived_links: 0,

@@ -154,11 +154,12 @@ own directory under its config root and removes them with the Run
 (`packages/host-daemon/src/execution.ts`). Do not write them into the
 workspace. On a paired machine that directory is the user's checkout.
 
-`artifact.submit` is granted only for `trusted_host`. It declares that a
-file the Run leaves behind is a Task's output. The paired host uploads its
-output directory and `hosts/repository.ts` gives those files the declared type
-and Task link, which is what lets settlement match
-`tasks.required_outputs_json`. Do not grant it on a `sandboxed` Run.
+`artifact.submit` is granted to a dispatched Task Run on either kind of Host.
+It declares that a file the Run leaves behind is a Task's output. Every Host
+daemon uploads the Run's output directory — the strict namespace binds it
+read-write — and `hosts/repository.ts` gives those files the declared type
+and Task link whatever the trust mode, which is what lets settlement match
+`tasks.required_outputs_json`.
 
 The `task.create.required_outputs` field therefore carries only concrete file
 Artifact type labels. Replies, reports, inspections, and edits to an existing
@@ -279,11 +280,14 @@ owns text resources; and `dispatchToolAllowance()`, what a Run Rainver
 dispatched to work on a Task may call (the Task write surface including
 `task.create_batch` and `task.delete`, the reads `inquiry.list_threads`,
 `inquiry.read_problem` and `research.list_operations`, read-only
-`retrieval.brief`/`retrieval.search`, and `artifact.submit` only on a
-`trusted_host`). `RunCreateInput.scenario_tool_allowance` supplies the
+`retrieval.brief`/`retrieval.search`, and `artifact.submit`; one set for a
+paired and a built-in Host, because host kind decides how the tool surface is
+delivered, not what a Task Run may do — as for `conversationToolGrantInput`).
+`RunCreateInput.scenario_tool_allowance` supplies the
 applicable one in place of the AgentVersion's for every conversation Run (via
-`conversationToolGrantInput`) and every Task-dispatched Run
-(`tasks/repository.ts`); the conversation-summary turn carries
+`conversationToolGrantInput`) and every Task Run dispatched to a Workspace
+Location, paired or built-in (`tasks/repository.ts`). A Task with no Location
+keeps the AgentVersion's permissions; the conversation-summary turn carries
 `HANDOFF_TOOL_ALLOWANCE` (`agentGroups/sessionHandoff.ts`). A
 delegated child spawned inside a group carries the same conversation allowance
 as its Room's turns — `createDelegatedChildRun` expands
@@ -1088,8 +1092,8 @@ These legacy writers are not silently rewritten. Enabling one of their mappings
 before adapting all affected writers is disallowed. Replay/cleanup defensively
 reconciles rejected/superseded/expired Proposals; accepted-without-atomic-result
 fails closed and retains evidence. Ineligible compensation/required-postCommit
-appliers cannot claim atomic execution. No production Source/Memory/approval
-operation has generic user or Agent reach in the current core.
+appliers cannot claim atomic execution. No production Source/Memory proposal operation or approval mapping has generic
+reach in the current core. User-only action-grant commands are documented below.
 
 The CLI supports `call <action> --idempotency-key <key> [input]`. A new call gets
 a new key unless explicitly supplied; no write is automatically retried.
@@ -1104,10 +1108,13 @@ families retain their existing domain-specific semantics.
 pairs, distinguishing unmigrated business routes from existing auth/internal/
 binary transport exemptions and the generic command adapter. `operationRoutes`
 captures onRoute registrations from real modules and activated bundled plugins and fails on additions or drift;
-an annotation or `/internal*` prefix cannot add an unlisted route. The initial
-inventory has 631 method/path pairs (598 unmigrated business, 31 exact transport
-exemptions and two core adapter entries). Plugin operation migration remains
-program plan 2 work; activation grants no exemption for new plugin bypasses.
+an annotation or `/internal*` prefix cannot add an unlisted route. The corrected baseline and bounded P5 progress are recorded in
+[Plan 5](../plans/operation-core/05-core-module-operation-migration.md). Current
+inventory has 635 method/path pairs (594 legacy business, 31 exact transport
+exemptions and ten core adapter entries). Two grant, two Project operation,
+one existing Board URL and the Task delete URL have migrated; named move and
+status URLs were added. The remaining 579 baseline core legacy entries and 15 plugin entries are not
+completed by this family. Activation grants no exemption for plugin bypasses.
 
 The cancellation pilot and process-death/COMMIT-loss, worker recovery and local
 historical-source cutover checks are implemented; executable evidence and limits
@@ -1178,8 +1185,11 @@ Agent resolver (pinned to the Agent id), including non-collection legacy calls.
 Previously an absent Actor FK silently lost those events. Proposal previews
 therefore deduplicate by actual proposal_id as well as call key, preserving one
 private decision card rather than exposing a second completed card.
-The route inventory now has 598 legacy business, 31 transport exemptions and two
-core adapters (generic POST and the existing cancellation URL).
+The Plan 1 historical inventory snapshot contained 631 entries: 598 legacy
+business, 31 transport exemptions and two core adapters (generic POST and the
+existing cancellation URL). The corrected baseline and subsequent grant-family
+migration are recorded above and in Plan 5; the current inventory is 635 entries
+(594 legacy business, 31 transport exemptions and ten core adapters).
 
 
 REST compatibility exception: the legacy writer preflight keeps its 403 error
@@ -1229,3 +1239,234 @@ Manifest views use the same action/query HTTP adapters, with explicit command
 keys, manifest IO validation and no automatic write retry. Their minimal scoped
 UI port is not a new actor or grant. Current UI/cross-layer evidence is in
 [Operation platform acceptance](OFFICIAL_OPTIONAL_MODULES.md#operation-platform-acceptance).
+
+## Human changes to task collaboration participants
+
+`POST /api/v1/actions/room.collaboration.update_participants` is a user-only,
+core-owned command. Supply `Idempotency-Key` and a strict body containing
+`group_id` (the root task container), `expected_participant_agent_ids`,
+`participant_agent_ids`, and `reason`. It requires the container's human manager
+to remain an active Room user and Project writer. New participants must already
+be active in both the group snapshot and Room roster. A stale expected set or
+removing a member with unfinished delegated work returns 409. Invalid members
+return 422; inaccessible groups are hidden. No Agent-tool exposure or
+`user_confirmed` flag exists. Policy action `room.collaboration.manage` is audited
+fail closed; the Room also records the old/new sets, reason and person.
+
+Only the participant leaf changes. Task, coordinator, hard cap, offsets, charged
+turns, prior failures and delegation history retain their values. A replay
+reauthorizes the person and does not append another notice. This endpoint does
+not activate code in a running instance or itself authorize deployment.
+
+Reuse / Dependency Check: reuse the operation executor, session authentication,
+Project access checks, container row lock, pinned membership tables and Room
+system notices. This is application authority and accounting logic; an external
+package would not replace it. No dependency or parallel budget mechanism added.
+
+## Human action approval grant commands
+
+`policy.action_grant.create/revoke` join the operation core alongside the
+human collaboration participant command, metadata catalog and research
+cancellation. Their authenticated public REST URLs are thin adapters to the
+same registrations as generic POST. They require explicit keys, strict DTOs,
+current Space owner authority and canonical operation envelopes; create returns
+201 and revoke 200. Agent surfaces remain disabled and never grantable. See the
+[policy guide](../modules/policy.md#action-approval-grant-commands) for inputs,
+replay, locking, errors and the internal authorization-request writer boundary.
+No production approval mapping is enabled. Registration alone is not migration:
+[the bounded evidence](OPERATION_CORE_ACCEPTANCE.md#p5-action-grant-family)
+covers the writer, transports, races, authority and rollback together.
+
+## Human Project operation commands
+
+`project.operation.create/cancel` are user-only core-owned commands. The formal
+POST URLs `/projects/:projectId/operations` and
+`/projects/:projectId/operations/:operationId/cancel` (under `/api/v1`) adapt to
+the same registrations as generic POST, with explicit Idempotency-Key and strict
+schemas/envelopes (201 create, 200 cancel). The URL owns target ids; body target
+overrides and malformed/nonobject JSON return canonical 422. Browser helpers
+use typed generic commands and never synthesize/retry keys.
+
+Create accepts custom/source_setup/source_backfill draft labels and nullable
+Run/Artifact references under current read and same-Space/Project scope gates.
+Research creation and caller-provided progress/step status remain internal.
+Labels and references do not grant execution authority. Intent/detail and step
+count retain the shared 32 MiB HTTP whole-body bound, without new per-field
+quotas. Both entries preserve the gateway cache-control and request-id headers. Cancel preserves the generic terminal 409 contract, including for
+Research targets, while `research.cancel_acquisition` retains already_terminal
+success. Research stop authorization and the atomic cancellation/Job writer are
+shared, without a second policy gate or in-transaction process IO. Neither new
+command is Agent-callable or approval-mapped. See
+[Projects](PROJECTS.md#project-operations) for caller closure and
+[acceptance](OPERATION_CORE_ACCEPTANCE.md#p5-project-operation-commands) for evidence.
+
+## Project Board configure and exact Task column move
+
+`board.configure` and `task.move_to_column` are core-owned user/Agent commands.
+The existing PUT Board configuration URL and new POST Task move-to-column URL
+are thin adapters to the generic/Run-tool registrations. Explicit keys, strict
+schema/receipts, revision checks, live Project/full Task permissions and
+canonical errors are shared. No old Agent executor or Project PATCH column_id
+writer remains. Standalone Space Board placement uses the user-only
+`task.place_in_space_board` core command; ordinary metadata edits remain an
+unmigrated scope. The named Space command preserves atomic contract-plus-Board
+saves through strict changes and the same Task writer. Raw PATCH placement is
+retired for all Tasks. It adds no Agent surface and shares the existing
+task.column.move policy with human Project movement.
+
+Agent Run/Project, immutable grants, instructing identity, actual Agent actor
+and unattended-origin policy remain authoritative. Configuration/relocation
+join canonical domain/event/merge Job writers through the core transaction
+port; no in-transaction external work or production approval mapping is added.
+See [Task Board](TASK_BOARD_MODEL.md#core-project-board-configuration-and-exact-placement)
+and [acceptance](OPERATION_CORE_ACCEPTANCE.md#p5-project-board-subfamily).
+
+
+## Task lifecycle commands
+
+The six core commands are task.set_status, task.delete, task.report,
+task.complete, task.request_review and task.handoff. Existing human status and
+delete authority is preserved through typed generic commands and formal
+POST /api/v1/tasks/:id/status and DELETE /api/v1/tasks/:id adapters.
+The other four remain Agent-only tools; registration does not add human
+authority. All require explicit keys at the core entry. PATCH no longer accepts
+status, including mixed edits, under the locked Task writer. Space-only human
+status/delete remain available; standalone Board placement uses its dedicated
+user-only core command.
+
+Agent status delegates done/review to the existing ProjectWork writers; human
+status uses the existing completion acknowledgement gate. Reports never close
+Tasks. Review preserves the Agent claim while responsibility returns to a
+person. Every Agent uses its actual principal, live Run/grants/on-behalf person,
+Run Project and full Task access. Existing generated tool projections hide human
+override fields and require Agent reasons. Unattended complete/status/delete
+remain require_approval; absent production mapping returns nonretryable 503
+with the existing safe Agent explanation. Report/handoff/review stay ungated by
+origin. No production approval mapping is enabled.
+
+Deletion refuses unfinished execution and active Plans. It records soft deletion,
+work event, branch-delete/merge-withdrawal Job intents and receipt atomically.
+The existing workers own Host requests and retries; no Host call occurs in core.
+Internal settlement, undo and Task/Run writers retain their transaction ports.
+See [Project Work lifecycle](PROJECT_WORK.md#core-task-lifecycle-boundary).
+
+
+## Source history planning/control operations
+
+`source.backfill.preview` is a core-owned metadata query. `create_plan`, `pause`
+and `resume` under the same prefix are core-owned user-only commands. The four
+existing Source POST URLs and the generic query/action gateway share strict
+protocol schemas, current Source/Project authorization, policy admission and
+one transaction-bound domain writer. Command transport keys are explicit and
+separate from create's retained domain uniqueness key. Receipt replay rechecks
+current authority; the typed browser create helper reloads full authorized
+plan details. No Agent permission, start approval, provider IO or production
+approval mapping is added. `source.backfill.propose_start` remains its existing
+legacy gated/Agent-preauthorization capability. See [Sources](../modules/sources.md#history-import--backfill).
+
+
+## Note selection to Inquiry Question
+
+`note.raise_as_question` is a user-only core command under the existing
+inquiry.thread.create policy, with strict input and a bounded Thread/Note receipt.
+Its retained from-note URL and typed NoteEditor API share core admission,
+current Project/Note/Thread authority and one canonical domain transaction.
+Receipt replay never substitutes for current permission. Ordinary Thread
+structure remains a human direct write; no Wiki approval or Agent surface is
+added. The separate note.link.create reserved/default-deny conflict has not
+been changed as part of this command.
+
+
+The same creation group also registers human-only `inquiry.thread.create`.
+The existing POST Threads URL and typed Project workspace/dialog caller share
+core policy/receipts and the canonical Thread writer. `inquiry.create_thread`
+remains its independent Agent-only origin-gated tool; the new human command does
+not confer Agent grants or bypass that path's approval conditions.
+
+
+## Project Source consumption
+
+project.source.bind/update/unbind/backfill are user-only core commands under
+the existing project.source.bind policy. Retained formal URLs and Sources/
+Projects typed browser facades share strict protocol contracts, explicit keys,
+current Project and Source delivery authority and the canonical binding/routing
+transaction. No Agent visibility, provider IO, approval mapping or Source
+management permission is added. Proposal-first setup/bind and history execution
+remain separate; these commands configure Project consumption and route already
+retained material.
+
+
+## Personal Source subscription decisions
+
+source.channel.set_subscription and source.recommendation.decide are core-owned
+user-only commands under source.subscription.manage. Formal URLs and typed
+browser calls share strict own-row authority, explicit keys, policy audit and
+one canonical transaction. State, delivery windows and deterministic interest
+fact cleanup commit with the receipt. No new Source management, read/consent,
+Agent or semantic-topic activation authority is created. Source withdrawal and
+membership changes still gate replay; new recommendation decisions require a
+pending recommendation even though a resolved original receipt can replay.
+
+
+## Source recipe draft creation
+
+`source.recipe.create` is a strict human-only draft command. Generic POST and
+the retained POST `/sources/source-recipes` share explicit keys, canonical
+creation placement, policy and a core-owned transaction. Context-free drafts
+are private in the person's unique Personal Space; Project drafts require
+current Project read/write and remain shared in that Project. Input Space and
+owner fields are refused; visibility is always access-owned.
+
+The existing Recipe/Channel writer creates the paused connection, channel,
+draft version and scheduler intent together with the audit and receipt. No
+fetch, dry-run, activation or approval is performed. Creator role, permitted
+domains, credential scope, recipe origin and schedule validation remain
+canonical; name conflicts and schedule/input failures have sanitized typed
+responses. Cached content is withheld after current read authority is lost.
+The browser uses the same typed command. Planning/dry-run/activation/bridge
+retain their existing owners and are not enabled as generic commands here.
+
+
+## Monitor management and manual scan enqueue
+
+`source.channel.update` and `source.channel.scan` are user-only, ungrantable
+core commands under the existing source.connection.manage policy. Retained
+PATCH `/sources/channels/:channelId` and POST of its `/scan` subpath are thin
+adapters; typed Sources browser APIs use the same core contracts and keys.
+The current Monitor creator boundary is retained: admin/read authority does
+not substitute for creator authority. Replays recheck that creator/membership
+and, for scans, the Job/Monitor reference before releasing a receipt.
+
+Update joins the existing canonical Channel writer: Monitor configuration,
+optional parent Source label, scheduler, audit and receipt are atomic. Search
+query versions cannot be silently edited in place. Goal-owned scheduling still
+refuses legacy Monitor controls. Only explicit typed validation/ownership
+conflicts and named existing Source-name constraints are cached safely.
+Scan enqueues one existing extraction_jobs.connection_scan in the same tx and
+returns a202 succeeded enqueue receipt; the unchanged worker performs IO later.
+This enables no Agent, activation/proposal bypass or alternate scan executor.
+
+
+P5-2 Source Monitor creation: `source.channel.create` is user-only, ungrantable,
+core-owned and uses strict public input/output DTOs. Retained POST
+`/api/v1/sources/channels` and the typed browser call share the generic command,
+explicit keys, current authority, audit and receipt. Existing human placement
+and domain fingerprint reuse remain; no Agent or approval mapping is enabled.
+
+Source review correction: `source.channel.create` retains the old REST policy
+resource scope `source_channel` with null id. Existing-parent Monitor creation
+inherits that parent's current request-Space context; it does not require a
+redundant Project input. Root creation retains canonical placement. Source web
+helpers accept a caller key and retain it verbatim on an explicit repeated call;
+there is no automatic retry. The Project-operation helper key rule is not a
+blanket prohibition on all Source helper defaults. Current production UI has no
+`createChannel` caller that retries this operation; the typed API remains callable
+without inventing a new UI event/retry engine or breaking its existing signature.
+
+The Source DB-only continuation exposes user-only `source.processing.rule.create`,
+`source.processing.rule.update`, `source.processing.rule.dispatch` (run/drain),
+and `source.extraction.dispatch`. Retained REST and typed browser entries share
+core policy/audit/receipt ownership. Dispatch success means durable enqueue;
+finished extraction returns a noop receipt, running extraction conflicts.
+The existing workers own external execution/results. No new Agent grant or
+production approval mapping is enabled.

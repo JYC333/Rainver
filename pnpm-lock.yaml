@@ -288,9 +288,6 @@ importers:
       cheerio:
         specifier: 1.2.0
         version: 1.2.0
-      ws:
-        specifier: 8.18.3
-        version: 8.18.3
       yauzl:
         specifier: 3.4.0
         version: 3.4.0
@@ -304,9 +301,6 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.20
-      '@types/ws':
-        specifier: 8.18.1
-        version: 8.18.1
       '@types/yauzl':
         specifier: 3.4.0
         version: 3.4.0
@@ -3753,9 +3747,6 @@ packages:
 
   '@types/use-sync-external-store@0.0.6':
     resolution: {integrity: sha512-zFDAD+tlpf2r4asuHEj0XH6pY6i0g5NeAHPn+15wk3BV6JA69eERFXC1gyGThDkVa1zCyKr5jox1+2LbV/AMLg==}
-
-  '@types/ws@8.18.1':
-    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   '@types/yauzl@3.4.0':
     resolution: {integrity: sha512-NRPn5w6h8dhcnmx3YIRQcqMywY/+nND/uOkJessedcrowO3C0AssHp3tMJpxKAwOhFOo0OV1y9VtsC5hbKKBAw==}
@@ -11203,10 +11194,6 @@ snapshots:
   '@types/unist@3.0.3': {}
 
   '@types/use-sync-external-store@0.0.6': {}
-
-  '@types/ws@8.18.1':
-    dependencies:
-      '@types/node': 22.19.20
 
   '@types/yauzl@3.4.0':
     dependencies:

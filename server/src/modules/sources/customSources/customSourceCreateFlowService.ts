@@ -704,17 +704,6 @@ export async function activateCustomSourceHandlerVersion(
     );
     if (!target.rows[0]) throw new HttpError(404, "Handler version not found");
     assertDeclarativeHandlerVersion(target.rows[0]);
-    const channelResult = await client.query<{ id: string; space_id: string; owner_user_id: string; fetch_frequency: string; schedule_rule_json: unknown }>(
-      `SELECT ch.id, ch.space_id, sc.owner_user_id, ch.fetch_frequency, ch.schedule_rule_json
-         FROM source_channels ch
-         JOIN source_connections sc ON sc.id = ch.source_connection_id
-        WHERE ch.source_connection_id = $1 AND ch.space_id = $2 AND ch.status <> 'archived'
-        ORDER BY ch.updated_at DESC LIMIT 1
-        FOR UPDATE OF ch`,
-      [connectionId, identity.spaceId],
-    );
-    const channel = channelResult.rows[0];
-    const existingScheduleTask = channel ? await getSourceChannelScanTask(client, channel.id) : null;
     const currentConnection = await client.query<{
       id: string;
       space_id: string;
@@ -728,6 +717,17 @@ export async function activateCustomSourceHandlerVersion(
       [connectionId, identity.spaceId],
     );
     const current = currentConnection.rows[0];
+    const channelResult = await client.query<{ id: string; space_id: string; owner_user_id: string; fetch_frequency: string; schedule_rule_json: unknown }>(
+      `SELECT ch.id, ch.space_id, sc.owner_user_id, ch.fetch_frequency, ch.schedule_rule_json
+         FROM source_channels ch
+         JOIN source_connections sc ON sc.id = ch.source_connection_id
+        WHERE ch.source_connection_id = $1 AND ch.space_id = $2 AND ch.status <> 'archived'
+        ORDER BY ch.updated_at DESC LIMIT 1
+        FOR UPDATE OF ch`,
+      [connectionId, identity.spaceId],
+    );
+    const channel = channelResult.rows[0];
+    const existingScheduleTask = channel ? await getSourceChannelScanTask(client, channel.id) : null;
     // The caller's checks ran outside this transaction. Under the lock, the
     // active version must still be the one it checked against; superseding
     // a stale pointer would leave the version activated meanwhile `active`

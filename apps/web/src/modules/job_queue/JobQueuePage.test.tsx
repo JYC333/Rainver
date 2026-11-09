@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import {jobsApi} from '../../api/client'
 import JobQueuePage from './JobQueuePage'
 import i18n from '../../i18n'
 import { formatDateTime } from '../../i18n/format'
@@ -45,4 +46,9 @@ describe('Job queue', () => {
     expect(screen.getByRole('button', { name: '已完成' })).toBeInTheDocument()
     expect(screen.getByText(formatDateTime('2026-07-25T08:00:00.000Z'))).toBeInTheDocument()
   })
+  it('shows possible external effects and no automatic retry for an unresolved Source dispatch',async()=>{
+    vi.mocked(jobsApi.list).mockResolvedValueOnce({total:1,items:[{id:'unknown',job_type:'source_extraction_manual',status:'failed',error:'connection closed',attempts:1,max_attempts:1,result:{source_dispatch:'started'},created_at:'2026-07-25T08:00:00.000Z',started_at:null,completed_at:null}]} as never);
+    render(<JobQueuePage/>);expect(await screen.findByRole('alert')).toHaveTextContent('external effects may have occurred');expect(screen.getByRole('alert')).toHaveTextContent('will not automatically run again');
+  });
+
 })

@@ -6,6 +6,8 @@ import type { SpaceUserIdentity } from "../../routeUtils/common.js";
 import { HttpError } from "../../routeUtils/common.js";
 import { syncProjectCorpusDecisionForSourceItem } from "../../projects/corpusRepository.js";
 import { ResearchMonitoringCoordinator } from "../../research/queryPlanning/monitoringCoordinator.js";
+import { runOutputResult } from "../../runs/orchestrationResults.js";
+import { resolveResearchStageProvider, type ResolvedResearchProvider } from "../executionProfileService.js";
 import {
   COMPARISON_BATCH_SIZE,
   ProjectResearchMonitorComparisonService,
@@ -492,6 +494,12 @@ export class ProjectResearchMonitoringCoordinator {
         if (state.comparison_results_json === undefined) state.comparison_results_json = [];
         let degraded = state.comparison_degraded === true;
         const service = new ProjectResearchMonitorComparisonService(db);
+        let provider: Promise<ResolvedResearchProvider> | null = null;
+        const resolveProvider = () => provider ??= resolveResearchStageProvider(
+          db,
+          { spaceId: input.spaceId, userId: input.userId },
+          state.runtime_profile_id || null,
+        );
         while (true) {
           // The pending pool batches normally (BATCH_SIZE at a time, or 1 at
           // a time once degraded); the failed pool — items a batch already
@@ -510,8 +518,7 @@ export class ProjectResearchMonitoringCoordinator {
             projectId: input.projectId,
             workflowId: input.workflowId,
             operationId: input.operationId,
-            agentId: state.agent_id,
-            runtimeProfileId: state.runtime_profile_id || null,
+            resolveProvider,
             researchQuestion: state.research_question || "approved research corpus",
             sourceItemIds: batch,
           });
@@ -666,7 +673,9 @@ export class ProjectResearchMonitoringCoordinator {
       // returns whatever subset of expectedSourceItemIds actually got a
       // valid, matching entry. Anything left over gets routed below rather
       // than discarding the whole batch or failing the operation over it.
-      const matched: MonitorComparison[] = parseMonitorComparisons(input.output, input.expectedSourceItemIds);
+      // input.output is the canonical run-output envelope; the comparisons
+      // are its `.result`, whichever execution kind produced it.
+      const matched: MonitorComparison[] = parseMonitorComparisons(runOutputResult(input.output), input.expectedSourceItemIds);
       const matchedIds = new Set(matched.map((item) => item.source_item_id));
       const unmatched = input.expectedSourceItemIds.filter((id) => !matchedIds.has(id));
       const wasBatch = input.expectedSourceItemIds.length > 1;

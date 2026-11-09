@@ -1,3 +1,5 @@
+import {insertProposalRow} from '../src/modules/proposals/reviewPackets.js';
+import {linkProposalOperation} from './support/linkedProposalOperation.js';
 import { beforeEach, describe, expect, inject, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -156,6 +158,7 @@ async function seedBudgetAutomation(): Promise<void> {
 
 async function createApprovedPlanWithBudget(
   budgetSources: RunBudgetSource[],
+  definition:unknown=agentPlanDefinition(),
 ): Promise<{ plans: PgPlanRepository; planId: string; versionId: string }> {
   const now = new Date().toISOString();
   await db.pool.query(
@@ -188,7 +191,7 @@ async function createApprovedPlanWithBudget(
     planningRunId: planningRun.id,
     planningToolCallId: `tool-call-budget-${randomUUID()}`,
     agentId: AGENT,
-    definitionJson: agentPlanDefinition(),
+    definitionJson: definition,
     budgetCap: 100,
   });
   const version = created.current_version as { id: string; approval_proposal_id: string };
@@ -201,6 +204,41 @@ async function createApprovedPlanWithBudget(
 }
 
 describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
+  it('prepares a linked Plan root before checkpoint apply and rolls required Job failure back',async()=>{
+    if(!db.available)return;
+    const definition=agentPlanDefinition('low');
+    const {plans,planId,versionId}=await createApprovedPlanWithBudget([],{...definition,nodes:[
+      {...definition.nodes[0],id:'source'},
+      {id:'review',title:'Human checkpoint',depends_on:['source'],approval_checkpoint:{required:true,proposal_type:'plan_checkpoint'},contract_json:{},metadata_json:{}},
+      {...definition.nodes[0],depends_on:['review']},
+    ]});
+    const executed=await plans.executePlan(identity,planId,{agentId:AGENT});
+    const source=(await db.pool.query('SELECT link.run_id FROM plan_node_runs link JOIN plan_nodes n ON n.id=link.plan_node_id AND n.space_id=link.space_id WHERE n.plan_version_id=$1',[versionId])).rows[0]!.run_id;
+    await dispatchAgentRun(source,new Date().toISOString());
+    const runRepo=new PgRunRepository(db.pool);
+    await runRepo.markRunTerminal({space_id:SPACE,run_id:source,status:'succeeded',output_json:canonicalRunOutput({success:true,outputText:'source done',outputJson:{result:'ready'}}),completed_at:new Date().toISOString()});
+    await runRepo.insertRunEvaluation({space_id:SPACE,run_id:source,outcome_status:'passed',trajectory_status:'acceptable',evaluated_at:new Date().toISOString()});
+    await plans.reconcilePlan(identity,planId);
+    const checkpoint=(await db.pool.query("SELECT approval_proposal_id AS id FROM plan_nodes WHERE plan_version_id=$1 AND node_kind='approval_checkpoint'",[versionId])).rows[0]!.id;
+    const draft=await insertProposalRow(db.pool,{spaceId:SPACE,createdByRunId:String(executed.root_run_id),proposalType:'memory_create',title:'Linked Plan output',payload:{proposed_content:'Frozen'},rationale:'test',createdByUserId:USER,visibility:'private'});
+    const request=await linkProposalOperation(db.pool,identity,draft.id);
+    const apply=PgProposalApplyService.fromConfig(loadConfig({SERVER_DATABASE_URL:db.connectionUri,SERVER_INTERNAL_TOKEN:'test-internal-token'}));
+    const before=(await db.pool.query('SELECT id FROM jobs ORDER BY id')).rows;
+    await db.pool.query("CREATE FUNCTION refuse_nested_job() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.job_type='agent_run' THEN RAISE EXCEPTION 'nested job refused'; END IF; RETURN NEW; END $$");
+    await db.pool.query('CREATE TRIGGER refuse_nested_job BEFORE INSERT ON jobs FOR EACH ROW EXECUTE FUNCTION refuse_nested_job()');
+    try{
+      await expect(apply.accept(checkpoint,identity)).rejects.toThrow('nested job refused');
+      expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[checkpoint])).rows[0]!.status).toBe('pending');
+      expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE id=$1',[request])).rows[0]!.state).toBe('pending_approval');
+      expect((await db.pool.query('SELECT id FROM jobs ORDER BY id')).rows).toEqual(before);
+      const audits=(await db.pool.query("SELECT metadata_json FROM policy_decision_records WHERE proposal_id=$1 AND action='proposal.apply'",[checkpoint])).rows;
+      expect(audits).toHaveLength(1);expect(audits[0]!.metadata_json.operation_outcome).toBe('failed');
+    }finally{await db.pool.query('DROP TRIGGER refuse_nested_job ON jobs');await db.pool.query('DROP FUNCTION refuse_nested_job()');}
+    expect((await apply.accept(checkpoint,identity))?.proposal.status).toBe('accepted');
+    expect((await db.pool.query('SELECT link.run_id FROM plan_node_runs link JOIN plan_nodes n ON n.id=link.plan_node_id AND n.space_id=link.space_id WHERE n.plan_version_id=$1',[versionId])).rows).toHaveLength(2);
+    expect(await apply.accept(checkpoint,identity)).toBeNull();
+  });
+
   it("does not create a Plan for a source Task until an Agent planning Run proposes it", async () => {
     if (!db.available) return;
     const now = new Date().toISOString();
@@ -299,7 +337,25 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       trajectory_status: "acceptable",
       evaluated_at: new Date().toISOString(),
     });
+    const draft=await insertProposalRow(db.pool,{spaceId:SPACE,createdByRunId:String(executed.root_run_id),proposalType:'memory_create',title:'Root review',payload:{proposed_content:'Frozen'},rationale:'test',createdByUserId:USER,visibility:'private'});
+    await linkProposalOperation(db.pool,identity,draft.id);
+    await db.pool.query("UPDATE proposals SET status='staged' WHERE id=$1",[draft.id]);
+    const before = (await db.pool.query('SELECT status FROM plans WHERE id=$1',[first.id])).rows[0]!.status;
+    await db.pool.query("CREATE FUNCTION refuse_plan_root_review() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.title='Root review' THEN RAISE EXCEPTION 'root publication refused'; END IF; RETURN NEW; END $$");
+    await db.pool.query('CREATE TRIGGER refuse_plan_root_review BEFORE UPDATE ON proposals FOR EACH ROW EXECUTE FUNCTION refuse_plan_root_review()');
+    try {
+      await expect(plans.reconcilePlan(identity,String(first.id))).rejects.toThrow('root publication refused');
+      expect((await db.pool.query('SELECT status FROM plans WHERE id=$1',[first.id])).rows[0]!.status).toBe(before);
+      expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[executed.root_run_id])).rows[0]!.status).toBe('waiting_for_dependency');
+      expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[draft.id])).rows[0]!.status).toBe('staged');
+      expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[draft.id])).rows[0]!.state).toBe('pending_approval');
+    } finally {
+      await db.pool.query('DROP TRIGGER refuse_plan_root_review ON proposals');
+      await db.pool.query('DROP FUNCTION refuse_plan_root_review()');
+    }
     const reconciled = await plans.reconcilePlan(identity, String(first.id));
+    expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[draft.id])).rows[0]!.status).toBe('pending');
+    expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[draft.id])).rows[0]!.state).toBe('pending_approval');
     expect(reconciled.status).toBe("completed");
     expect((await db.pool.query<{ status: string }>(`SELECT status FROM plan_nodes WHERE id = $1`, [nodeRun!.node_id])).rows[0]?.status).toBe("done");
   });
@@ -395,7 +451,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect(write?.contract_snapshot_json.workflow_input_json).toEqual({ topic: "tides" });
   });
 
-  it("supersedes the review proposal of a version that a newer version replaced", async () => {
+  it.each([false,true])("supersedes the linked review of the replaced version atomically (rollback=%s)", async fail => {
     if (!db.available) return;
     const now = new Date().toISOString();
     await db.pool.query(
@@ -424,6 +480,19 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect(firstVersion.status).toBe("pending_review");
     expect(firstVersion.approval_proposal_id).toBeTruthy();
 
+    const request=await linkProposalOperation(db.pool,identity,firstVersion.approval_proposal_id!);
+    if(fail){
+      await db.pool.query("CREATE FUNCTION refuse_plan_review() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.state='superseded' THEN RAISE EXCEPTION 'review refused'; END IF; RETURN NEW; END $$");
+      await db.pool.query('CREATE TRIGGER refuse_plan_review BEFORE UPDATE ON operation_idempotency FOR EACH ROW EXECUTE FUNCTION refuse_plan_review()');
+      try{
+        await expect(plans.createPlanFromAgent(identity,{sourceTaskId:TASK,planId:String(first.id),planningRunId:planningRun.id,planningToolCallId:'tool-call-review-fail',agentId:AGENT,definitionJson:agentPlanDefinition(),budgetCap:100})).rejects.toThrow('review refused');
+        expect((await db.pool.query('SELECT current_plan_version_id FROM plans WHERE id=$1',[first.id])).rows[0]!.current_plan_version_id).toBe(firstVersion.id);
+        expect((await db.pool.query('SELECT id,status FROM plan_versions')).rows).toEqual([{id:firstVersion.id,status:'pending_review'}]);
+        expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE id=$1',[request])).rows[0]!.state).toBe('pending_approval');
+        expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[firstVersion.approval_proposal_id])).rows[0]!.status).toBe('pending');
+      }finally{await db.pool.query('DROP TRIGGER refuse_plan_review ON operation_idempotency');await db.pool.query('DROP FUNCTION refuse_plan_review()');}
+      return;
+    }
     // The planner revises before anyone reviewed: the first review is moot.
     const second = await plans.createPlanFromAgent(identity, {
       sourceTaskId: TASK,
@@ -436,6 +505,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     });
     const secondVersion = second.current_version as { id: string; approval_proposal_id: string | null };
     expect(secondVersion.id).not.toBe(firstVersion.id);
+    expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE id=$1',[request])).rows[0]!.state).toBe('superseded');
 
     const proposals = await db.pool.query<{ id: string; status: string }>(
       `SELECT id, status FROM proposals WHERE space_id = $1 AND proposal_type = 'plan_review' ORDER BY created_at ASC`,
@@ -974,7 +1044,23 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     )).rows[0];
     expect(checkpoint?.proposal_id).toBeTruthy();
     const apply = PgProposalApplyService.fromConfig(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test-internal-token" }));
+    const root=(await db.pool.query('SELECT root_run_id FROM workflow_executions WHERE id=$1',[execution.workflowExecutionId])).rows[0]!.root_run_id;
+    const draft=await insertProposalRow(db.pool,{spaceId:SPACE,createdByRunId:root,proposalType:'memory_create',title:'Nested checkpoint output',payload:{proposed_content:'Frozen nested output'},rationale:'test',createdByUserId:USER,visibility:'private'});
+    const request=await linkProposalOperation(db.pool,identity,draft.id);
+    await db.pool.query("UPDATE proposals SET status='staged' WHERE id=$1",[draft.id]);
+    await db.pool.query("CREATE FUNCTION refuse_nested_publication() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.title='Nested checkpoint output' THEN RAISE EXCEPTION 'nested publication refused'; END IF; RETURN NEW; END $$");
+    await db.pool.query('CREATE TRIGGER refuse_nested_publication BEFORE UPDATE ON proposals FOR EACH ROW EXECUTE FUNCTION refuse_nested_publication()');
+    try{
+      await expect(apply.accept(checkpoint!.proposal_id,identity)).rejects.toThrow('nested publication refused');
+      expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[checkpoint!.proposal_id])).rows[0]!.status).toBe('pending');
+      expect((await db.pool.query('SELECT status FROM workflow_executions WHERE id=$1',[execution.workflowExecutionId])).rows[0]!.status).toBe('running');
+      const failedAudits=(await db.pool.query("SELECT metadata_json FROM policy_decision_records WHERE proposal_id=$1 AND action='proposal.apply'",[checkpoint!.proposal_id])).rows;
+      expect(failedAudits).toHaveLength(1);expect(failedAudits[0]!.metadata_json.operation_outcome).toBe('failed');
+      expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE id=$1',[request])).rows[0]!.state).toBe('pending_approval');
+    }finally{await db.pool.query('DROP TRIGGER refuse_nested_publication ON proposals');await db.pool.query('DROP FUNCTION refuse_nested_publication()');}
     const accepted = await apply.accept(checkpoint!.proposal_id, identity);
+    expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[draft.id])).rows[0]!.status).toBe('pending');
+    expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE id=$1',[request])).rows[0]!.state).toBe('pending_approval');
     expect(accepted?.proposal.status).toBe("accepted");
     const finalState = (await db.pool.query<{ execution_status: string; root_status: string; linked_execution_id: string }>(
       `SELECT e.status AS execution_status, root.status AS root_status, ar.workflow_execution_id AS linked_execution_id
@@ -1212,7 +1298,26 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     await dispatchAgentRun(sourceRun, now);
     await runs.markRunTerminal({ run_id: sourceRun, space_id: SPACE, status: "succeeded", output_json: canonicalRunOutput({ success: true, outputText: "", outputJson: { value: "world" } }), completed_at: now });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: sourceRun, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: now });
+    const draft=await insertProposalRow(db.pool,{spaceId:SPACE,createdByRunId:execution.rootRunId,proposalType:'memory_create',title:'Workflow review',payload:{proposed_content:'Frozen'},rationale:'test',createdByUserId:USER,visibility:'private'});
+    await linkProposalOperation(db.pool,identity,draft.id);
     await service.reconcileForRun(db.pool, SPACE, sourceRun);
+    // Scheduling actions is one pass; the next pass settles their failed graph.
+    await db.pool.query("UPDATE proposals SET status='staged' WHERE id=$1",[draft.id]);
+    await db.pool.query("CREATE FUNCTION refuse_workflow_root_request() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'workflow request refused'; END $$");
+    await db.pool.query('CREATE TRIGGER refuse_workflow_root_request BEFORE UPDATE ON operation_idempotency FOR EACH ROW EXECUTE FUNCTION refuse_workflow_root_request()');
+    try {
+      await expect(service.reconcileForRun(db.pool,SPACE,sourceRun)).rejects.toThrow('workflow request refused');
+      expect((await db.pool.query('SELECT status FROM workflow_executions WHERE id=$1',[execution.workflowExecutionId])).rows[0]!.status).toBe('running');
+      expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[execution.rootRunId])).rows[0]!.status).toBe('waiting_for_dependency');
+      expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[draft.id])).rows[0]!.status).toBe('staged');
+      expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[draft.id])).rows[0]!.state).toBe('pending_approval');
+    } finally {
+      await db.pool.query('DROP TRIGGER refuse_workflow_root_request ON operation_idempotency');
+      await db.pool.query('DROP FUNCTION refuse_workflow_root_request()');
+    }
+    await service.reconcileForRun(db.pool,SPACE,sourceRun);
+    expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[draft.id])).rows[0]!.state).toBe('rejected');
+    expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[draft.id])).rows[0]!.status).toBe('rejected');
 
     const nodes = (await db.pool.query<{ node_key: string; status: string; blocked_reason: string | null }>(
       `SELECT node_key, status, blocked_reason FROM workflow_execution_nodes

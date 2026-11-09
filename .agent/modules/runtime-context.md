@@ -66,7 +66,11 @@ message. Acquisition includes that message's text and immutable
 `input_resource` descriptors in Delivery. Planning and transaction-time authorization
 use the same message renderer; authorization reloads the message-owned descriptors
 in the source Space and compares the complete text, including attachment metadata.
-Conversation continuity excludes
+A direct-chat message authorizes the Run it started and each retry of that
+turn: the retry route reuses the message and records the new Run in its
+`retry_run_ids`, which `loadAuthorizedCurrentContextMessage` and the
+Gateway's message check both accept. A Room retry reuses its message the same
+way. Conversation continuity excludes
 the same current message. At ACP dispatch, conversation-input hydration adds
 images and resource links, but does not add a second descriptor text block when
 Delivery already contains it. The adapter sends Delivery instead of the raw
@@ -150,7 +154,10 @@ Room identity instead of its per-Run audit ref. It compares with
 `host_threads.standing_digest` for the very session being resumed and records its decision on the Run
 (`model_override_json.host_thread.standing_digest` / `standing_sent`); the
 thread learns the digest only from a Run that carried them and landed
-(`recordRunOutcome`), exactly as the Room identity digest does. No
+(`recordRunOutcome`), exactly as the Room identity digest does, so a retry
+after a failed turn sends them again into the session that turn opened. A
+direct chat's thread has no `space_id` (`ck_host_threads_owner`); this lookup
+and Run routing scope it through its Agent's Space instead. No
 history, checkpoint or event delta is delivered into a resumed session (the
 continuity acquisition returns nothing for a vendor CLI Run,
 `productionAcquisition.ts`): the
@@ -194,6 +201,26 @@ when they change; none of them rotates the vendor session. The session is
 replaced only by the person (a reset, or a restart from a summary), a runtime that refuses
 to resume it (`runtime_session_invalid`), or a changed host or working
 directory.
+
+### Joined acceptance
+
+`server/test/promptProvenanceAcceptanceDb.test.ts` drives each conversation
+path through production on real PostgreSQL — the direct chat and retry routes,
+`RoomService` send/retry/summary, and a manager's mid-turn `agent.delegate` —
+with the `agent_run` job handler executing every Run. A synthetic daemon on the
+Host connection registry (`test/support/syntheticAcpHost.ts`) records the ACP
+prompt it is actually sent. For one invocation, `test/support/promptProvenance.ts`
+checks that the Invocation Snapshot names the persisted Delivery and exactly
+one canonical current input (`currentRuntimeContextInputRef`), that the
+prompt's text sections reproduce every Delivery block hash once and in order
+with the current input last and present exactly once, and returns the
+attachments and continuity facts each path asserts: fresh and resumed direct
+and Room turns, an image and a draft `input_resource` (descriptor once, link at
+the edge, no body), direct and Room retries, a delegated child and a summary
+handoff (own Run request; no parent message, descriptor or image). Component
+contracts remain in `acpRuntimeContextPrompt.test.ts`,
+`remoteHostCliAdapter.test.ts`, `conversationInputService.test.ts` and
+`runtimeContextDeliveryDb.test.ts`.
 
 ## Knowledge retrieval switch
 

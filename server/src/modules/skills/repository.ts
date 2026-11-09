@@ -1,3 +1,4 @@
+import {lockSkillReviewProposals} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
@@ -568,7 +569,15 @@ export class PgSkillsRepository {
     requiredApproverRole = "owner",
   ): Promise<ProposalOut> {
     const now = new Date();
-    const row = await insertProposalRow(this.db, {
+    return withTransaction(this.db,async db=>{
+    const packageId=optionalString(input.payload_json.skill_package_id);
+    if(input.proposal_type==='skill_import_approve' && packageId){
+      await lockSkillReviewProposals(db,identity.spaceId,[packageId],true);
+      const current=(await db.query<{status:string}>('SELECT status FROM skill_packages WHERE id=$1 AND space_id=$2',[packageId,identity.spaceId])).rows[0];
+      if(!current)throw new HttpError(404,'Skill package not found');
+      if(current.status!=='imported')throw new HttpError(409,'Skill package is not awaiting import review');
+    }
+    const row = await insertProposalRow(db, {
       spaceId: identity.spaceId,
       proposalType: input.proposal_type,
       title: input.title,
@@ -584,6 +593,7 @@ export class PgSkillsRepository {
       pendingOperationKey,
     });
     return proposalToOut(row, now);
+    });
   }
 
   private async requireSkillPackage(identity: SpaceUserIdentity, skillPackageId: string): Promise<void> {

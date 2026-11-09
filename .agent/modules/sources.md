@@ -152,6 +152,28 @@ scope.
 
 ### History import / backfill
 
+The four public planning/control operations are core-owned:
+`source.backfill.preview` is a metadata query; `source.backfill.create_plan`,
+`source.backfill.pause` and `source.backfill.resume` are user-only commands.
+Their existing POST URLs are thin adapters to the same registrations as the
+query/action gateway. Commands require an explicit `Idempotency-Key` header.
+The create body still requires its separate domain `idempotency_key`, used by
+Research/monitoring orchestration too; transport replay does not replace it.
+Responses use the core outcome envelope with a small plan receipt; the typed
+browser create helper rereads the authorized plan detail after success.
+
+All paths reload current Source manage/read authority, including receipt replay.
+Project-linked writes pin the active Project and revalidate writer access before
+binding/operation, channel/connection and plan locks. References must resolve in
+the current Space and channel, with matching Project scope. Domain-key reuse
+cannot change the scope authorized for a new command. Plan, segments, operation
+link, mandatory policy audit and transport receipt commit or roll back together.
+Preview writes no business rows or command receipt. These operations perform no
+network work, approve no plan and add no Agent grant. `propose_start`, its
+existing Agent preauthorized grant path and the canonical start applier remain
+separate, unmigrated capabilities; consent, provider egress and execution quotas
+are unchanged.
+
 Sources owns durable `source_backfill_plans`, ordered segments, and quota
 buckets. Preview is deterministic and non-durable; creating a plan is
 idempotent per space. Starting a plan is proposal-gated, and segment execution
@@ -1245,3 +1267,223 @@ is only a private user-state boolean; the report remains an independent private
 analysis Snapshot with exact supplied-original lineage, never a body rewrite.
 Public route/list/cancel contracts are documented in [Library](library.md#project-favorites-and-private-deep-reading-api-r4-ui-in-r5)
 and [material processing](../architecture/SOURCE_MATERIAL_PROCESSING.md#project-private-deep-reading-r4).
+
+
+### Project consumption core adapters
+
+Project Source binding create/update/unbind and retained-material backfill are
+user-only core commands under project.source.bind policy, owned by Projects.
+The four existing URLs and both typed browser API facades use the same
+transaction-bound ProjectSourceBindingService and canonical routing. Project
+writer/active scope, Source metadata and restricted delivery gates survive;
+pausing an existing consumption binding does not require Source ownership.
+Receipt replay rechecks current authority. Source consent, egress, extraction,
+new history-start approval and proposal-first binding remain independent.
+See [Projects](../architecture/PROJECTS.md#core-source-consumption-commands).
+
+
+### Retired connection transport
+
+Ten exact legacy connection URLs (eight mutating-method entries and two GETs)
+are declared in retiredConnectionRoutes.ts and return only their existing fixed
+410 response. They invoke no identity lookup, database, policy, domain writer
+or fallback. The inventory exempts only these exact method/path pairs. Live
+Channel subscription, recipe/handler reads and other connection-scoped routes
+keep their own authorization and lifecycle. operationRoutes verifies every
+refusal with database configuration absent and keeps nearby live paths outside
+the manifest.
+
+
+### Personal subscription core commands
+
+source.channel.set_subscription and source.recommendation.decide are user-only
+core commands behind the retained Channel subscription/recommendation URLs.
+The typed Sources browser API supplies explicit request keys. The audited
+source.subscription.manage action governs only the current person's existing
+subscription row; it grants no Source configuration, content, egress or Agent
+permission. Recommendation decisions require a currently active, shared Source;
+resolved decisions can replay their own receipt, while a new decision still
+requires pending status. Leaving/rejoining an existing subscription does not
+require Source ownership or bypass its current read/consent gates.
+
+Subscription state, opening/closing delivery windows, automatic interest-fact
+cleanup, policy audit and receipt share one transaction. The canonical service
+also performs cleanup inside its own transaction for direct Pool callers.
+Accepted topics and dismissed candidate decisions remain; previously delivered
+material keeps historical eligibility subject to current Source access. No
+provider IO or automatic write retry is introduced.
+
+
+### Core-owned recipe draft creation
+
+Human recipe draft creation uses `source.recipe.create` (generic command and
+retained formal POST) with a required explicit idempotency key. Canonical
+Personal/Project creation context is resolved before key admission and checked
+again inside the core transaction. The existing RecipeCreate/Channel writer
+joins the scoped Queryable transaction: paused Source/Monitor, draft version,
+scheduler intent, policy audit and receipt are atomic. The browser returns the
+shared protocol creation DTO; it never substitutes its browsed Space as the
+content destination. No external IO or auto-activation occurs. Role/domain/
+credential/read checks and explicit name/schedule failures remain in the owning
+services. Planning, dry-run, activation and pipeline bridge stay separate.
+
+
+### Monitor controls through core
+
+Monitor update and manual scan enqueue now use source.channel.update/scan for
+formal and generic APIs, with explicit keys and the existing creator-only
+service boundary. Save includes Source label/scheduler/audit/receipt in one tx.
+The Channel writer keeps versioned-query conflicts, canonical schedule parsing
+and Goal scheduling ownership. Its DTO serializes pg Date timestamps before
+shared protocol validation, preserving the existing JSON wire representation.
+Recipe draft creation uses those same typed Channel validation failures, with
+no duplicate schedule pre-validation. Scan writes the canonical extraction Job
+and returns202 as a completed enqueue command, not a completed scan. Replaying
+a key does not repeat Job creation; current creator/membership/Job references
+are checked before receipt release. Existing workers and UI surfaces remain
+authoritative; no new Agent calls or automatic retries.
+
+### P5-2 public Monitor creation
+
+`source.channel.create` now joins update/scan as a user-only core command.
+POST `/api/v1/sources/channels` is a thin adapter with explicit Idempotency-Key;
+`createChannel` uses the same generic operation and retains its SourceChannel
+return contract. One transaction owns channel/connection/search spec/subscription/
+scheduler writes, policy audit and receipt. Domain fingerprint reuse is retained.
+The existing creation-context owner chooses Personal/private or Project/shared
+placement, with live Project writer authorization. Exactly this named durable
+creation may use the existing human creation port; arbitrary durable/Agent/grantable
+commands remain refused. The public schema rejects internal force/draft/actor
+fields, preserving existing consent/policy/config and legitimate provider inputs.
+This creates/schedules a Monitor, not a completed scan or approved Source effect.
+Recipe activation, backfill approval and external execution are unchanged.
+
+### P5-2 Source review repair: Monitor parent and domain admission
+
+An explicit `source_connection_id` makes Monitor creation a child operation.
+It is discovered only in the authenticated request Space, with current canonical
+Source manage/read authority and the existing Project writer predicate. It never
+finds a different Space from that id, rewrites a principal, widens parent reach,
+or requires the UI to repeat the parent's Project. An explicit mismatching
+Project conflicts. Only new-root creation retains the existing Personal/private
+or explicit Project/shared placement. This exception is purpose-bound to the
+named human-only Monitor command; Agent and other durable guards are unchanged.
+
+Create and control resolve the real parent without row locks before key admission.
+After keys, authoritative locking is Project -> parent Source -> Monitor, with a
+parent owner/visibility/Project recheck; changed scope conflicts without late keys.
+The parent uses an update lock before child locks, since a Monitor control can
+rename it; independent child saves must not upgrade shared parent locks later.
+Creator remains required for update/scan: canonical Source management is additional,
+not an admin replacement for creator. Deleted parents are hidden for reads, writes
+and retained receipts. Subscription opt-out is independent and remains available.
+A create receipt does not redirect after its parent's Project changes.
+
+Domain creation admission uses one owner/Space transaction advisory gate, shared
+by ordinary Monitor creation and Recipe's existing canonical channel writer.
+Public roots acquire it before Project/Source rows; joined writers only try the
+gate (or reenter their already admitted root), never wait behind it after domain
+locks. This serializes implicit-parent and explicit-parent fingerprint lookup /
+creation without converting fingerprint semantics to request keys or adding an
+incorrect cross-parent unique index. Different explicit parents and Recipe's
+intentional fresh-owned-Source creation remain distinct domain identities.
+Research selected-attempt materialization retains its separate attempt-id identity
+and provenance; this repair does not collapse it into a public Monitor by fingerprint.
+
+Create caches only explicit SourceChannelMutationError, ResearchQueryInputError,
+SourceGovernanceInputError and known creation/scope conflicts. These types are
+raised at their actual validation/conflict sites; no blanket helper-422 wrapper
+exists. Unknown HttpError422/409 causes internal failure, full rollback and failed
+audit recovery, with no terminal cached request or reflected domain message.
+The public creation policy request retains source_channel/null-id, as the old
+REST enforceSources call did, with one core policy decision per invocation.
+
+### Source reference locks (P5-2 bounded N1 correction)
+
+Source reference readers that pin both rows (Project bind/update, backfill and
+recommendation decisions) explicitly lock the parent Source, then the exact
+channel still attached to that parent. They do not rely on JOIN/RTE rowmark
+order. Activation's canonical applier uses the same order with update locks;
+the Custom Source handler activation helper takes its existing parent update
+lock before selecting/locking a channel. Predicates, approval and delivery-scope
+checks remain in their existing owners. A changed channel parent is refused;
+no different parent is locked late. Subscription opt-out remains channel-only.
+
+Monitor creator status does not override current Project write authority: after
+that authority is revoked, update/scan and receipt replay are refused. Parent
+update locks intentionally serialize controls for the same Source, including
+scans and retained receipt authorization, and wait against reference share locks.
+This costs concurrency within one parent but prevents lock upgrades after child
+locks. It adds no global gate/retry and does not serialize unrelated Sources.
+
+### P5-2 rules and manual dispatch
+
+Rule create/update and manual run/drain, plus extraction `/jobs/:id/run`, now
+use strict user-only core operations: `source.processing.rule.create/update/dispatch`
+and `source.extraction.dispatch`. Five retained URLs are thin adapters; typed
+browser calls use the same commands with caller keys. No Agent visibility/grant
+or production approval mapping is enabled. Existing JSON configuration defaults,
+canonical normalizers, derived-import consent and managed Agent writers remain
+owners. The managed Agent prompt writer has an explicit transaction port so
+Agent/version, rule/schedule, policy audit and receipt commit together.
+
+Dispatch returns a required Job receipt (`pending`), not a completed processing
+Run/extraction. Rule run/drain execute through the existing post-processing worker;
+manual extraction uses the same existing repository/Recipe/Custom Source/worker
+implementation. Extraction running conflicts, finished Jobs return `noop`; pending
+intents for the same user/extraction are reused under the domain Job row lock.
+This preserves domain state/history independently of transport request keys.
+The Source list and detail toast say queued, not completed.
+
+Request keys precede sorted Project admission and parent Source -> channel/item
+-> rule/extraction row locks. Discover actual Source/Project scope before keys,
+recheck under locks and reject drift instead of locking a new parent late. Full
+content Job ACLs and the existing scan management gate remain distinct. Rules
+require current Source management and actual Project writer authority; configured
+Project and Agent references retain their own live checks. Replay reauthorizes;
+soft deletion/foreign Space/revoked Project authority remain hidden.
+
+External execution has no open core DB transaction. Manual Jobs have one attempt;
+the existing `jobs.result_json` records a start fence before external I/O and its
+result receipt before worker acknowledgement. Completed delivery replays that
+receipt. A crash/failure after starting without a durable result is indeterminate:
+it fails rather than repeating possibly irreversible effects or claiming success.
+An operator may inspect the existing Job/Run result and issue a new explicit
+command; there is no automatic mutation retry or cross-I/O atomicity claim.
+Dispatch freezes the selected rule revision; a changed revision is refused before
+execution, with a second check inside the existing rule claim. Original event /
+scheduled worker paths remain unchanged. run-once/decision actions that derive
+content or invoke external work are outside this DB-only family; approval /
+activation and Note policy remain in their later checkpoints.
+Worker Job receipts contain only IDs/status/counts, not Source text, decisions or
+content-bearing extraction metadata. Those remain in their existing Source
+history tables behind current Source ACLs; the general Jobs reader does not gain
+a second content channel.
+Configuration admission uses the canonical rule configuration fingerprint, not
+`updated_at`: cursor/fire progress from a preceding run must not invalidate the
+next queued manual intent. A changed Agent/Project/status/trigger/input/actions
+configuration still refuses stale dispatch before effects.
+
+P5-2 bounded review follow-up: manual intents remain isolated by user, policy
+record and Job receipt. They are not merged across users. An exact canonical
+claim-busy error for this dispatch resource is pre-effect admission: clear only
+its start marker and use existing JobDeferredError/deferJob (which restores the
+attempt). Never reset an unknown-effect marker or treat an unrelated child claim
+as permission to repeat. Cross-user/manual/automatic overlap is tested against
+real PG canonical claim and terminal/noop writers. Distinct manual rule intents
+still run in sequence; event/scheduled in-flight skips keep their existing meaning.
+
+The rule configuration fingerprint intentionally does not pin the Agent prompt /
+version: execution continues to use its current available version, as before,
+with live Agent permission checks. This is not frozen approval or additional
+Agent authority. PgAgentRepository's general constructor requires a Pool; Source
+commands receive only its two bound InTransaction writer methods, not the full
+repository/Pool. No checked-out client is cast to Pool. The writer implementations
+continue to use their explicit query port and the default-Agent rollback tests.
+
+Source list/detail now explain enqueue vs completion and link through the existing
+SpaceLink to Job Queue. The existing failed Job/result view warns when a Source
+start fence has no receipt: external effects may already have occurred and the
+task will not automatically execute again. Check Source history and Job logs;
+a known pre-I/O rejection can be resubmitted explicitly with a new key after its
+cause is corrected. No new monitor/dashboard or approval copy is introduced.

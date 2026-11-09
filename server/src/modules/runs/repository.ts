@@ -1,3 +1,5 @@
+import {OperationError} from '../systemActions/operations/errors.js';
+import {recordPreparedRunCreation,assertPreparedFreshRunUnlinked,preparedRunTerminalOwner,lockRunProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
@@ -167,7 +169,18 @@ export class PgRunRepository {
       error_code: "cancelled",
       error_text: "Cancel did not complete before the execution registry was lost",
     });
-    return withQueryableTransaction(this.db, async (db) => {
+    const candidates=(await this.db.query<{id:string;space_id:string}>(`SELECT id,space_id FROM runs
+      WHERE status IN ('running','cancelling') AND started_at IS NOT NULL AND started_at<$1
+        AND NOT EXISTS(SELECT 1 FROM run_attempts a WHERE a.run_id=runs.id AND a.space_id=runs.space_id
+          AND a.launch_id IS NOT NULL AND a.attempt_number=(SELECT max(b.attempt_number) FROM run_attempts b WHERE b.run_id=runs.id AND b.space_id=runs.space_id))
+      ORDER BY id`,[cutoff])).rows;
+    let recovered=0;
+    for(const candidate of candidates){
+      try{recovered+=await withQueryableTransaction(this.db,async db=>{
+    const transitions=await lockRunProposalTransitions(db,[candidate],false,true);
+    await db.query("SELECT id FROM proposals WHERE space_id=$1 AND created_by_run_id=$2 AND status IN ('pending','staged') ORDER BY id FOR UPDATE NOWAIT",[candidate.space_id,candidate.id]);
+    const candidateIds=[candidate.id];
+    if(candidateIds.length && !(await db.query('SELECT id FROM runs WHERE id=ANY($1::varchar[]) ORDER BY id FOR NO KEY UPDATE SKIP LOCKED',[candidateIds])).rows.length)return 0;
     const result = await db.query<{ id: string; space_id: string }>(
       `WITH recovered_runs AS (
          UPDATE runs
@@ -176,7 +189,7 @@ export class PgRunRepository {
               error_json = CASE WHEN status = 'cancelling' THEN $6::jsonb ELSE $4::jsonb END,
               ended_at = $2,
               updated_at = $2
-          WHERE status IN ('running', 'cancelling')
+          WHERE id=ANY($7::varchar[]) AND status IN ('running', 'cancelling')
           AND started_at IS NOT NULL
           AND started_at < $1
           -- A dispatched process may outlive this server. Its reclaimed job
@@ -226,10 +239,18 @@ export class PgRunRepository {
         JSON.stringify(orphanedJson),
         redactEvidenceText(cancelledMessage),
         JSON.stringify(cancelledJson),
+        candidateIds,
       ],
     );
+    await transitions.finish();
     return result.rowCount ?? result.rows.length;
-    });
+      });}catch(error){
+        if((error as {code?:string}).code==='55P03')continue;
+        if(error instanceof OperationError && ['idempotency_in_progress','operation_conflict','operation_approval_mapping_unavailable'].includes(error.code))continue;
+        throw error;
+      }
+    }
+    return recovered;
   }
 
   /**
@@ -419,6 +440,7 @@ export class PgRunRepository {
     );
     const row = result.rows[0];
     if (!row) throw new Error("ProviderTask Run insert returned no row");
+    recordPreparedRunCreation(this.db,row.space_id,row.id);
     return row;
   }
 
@@ -489,6 +511,7 @@ export class PgRunRepository {
       );
       const row = result.rows[0];
       if (!row) throw new Error("Queued ProviderTask Run insert returned no row");
+      recordPreparedRunCreation(db,row.space_id,row.id);
       return row;
     });
   }
@@ -904,6 +927,7 @@ export class PgRunRepository {
     );
     const row = result.rows[0];
     if (!row) throw new Error("Run insert returned no row");
+    recordPreparedRunCreation(this.db,row.space_id,row.id);
     if (input.visibility === "selected_users") {
       const granteeUserIds = [...new Set(input.grantee_user_ids ?? [])];
       if (granteeUserIds.length === 0) {
@@ -2070,6 +2094,14 @@ export class PgRunRepository {
       ? recordValue(errorJson).error_code as string
       : null;
     return withQueryableTransaction(this.db, async (db) => {
+    // Legacy composition owners can already hold Plan/Host/Project rows. They
+    // must not acquire a linked request key late. Until those owners pre-admit
+    // the complete set, refuse the linked transition rather than invert locks.
+    const host=this.db as Queryable&{connect?:unknown;release?:unknown};
+    const callerOwns=typeof host.connect!=='function'||typeof host.release==='function';
+    const prepared=preparedRunTerminalOwner(db,input.space_id,input.run_id);
+    if(prepared)await assertPreparedFreshRunUnlinked(db,input.space_id,input.run_id);
+    const transitions=prepared?null:await lockRunProposalTransitions(db,[{id:input.run_id,space_id:input.space_id}],callerOwns);
     const result = await db.query<RunRecord>(
       `WITH candidate AS (
          SELECT id
@@ -2175,6 +2207,7 @@ export class PgRunRepository {
         input.expected_attempt_number ?? null,
       ],
     );
+    if(transitions)await transitions.finish();
     return result.rows[0] ?? null;
     });
   }

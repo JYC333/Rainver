@@ -22,7 +22,7 @@ interface ResolvedResearchExecution {
 
 /** What a bounded ProviderTask stage needs: a provider and a model, and no
  * Agent or Runtime Profile at all. */
-interface ResolvedResearchProvider {
+export interface ResolvedResearchProvider {
   modelProviderId: string;
   modelName: string | null;
 }
@@ -31,6 +31,14 @@ interface ResolvedResearchProvider {
  * Project Research owns a managed execution profile. Users choose the model
  * provider and optional model; they do not choose a runtime implementation or
  * a CLI credential profile for this workflow.
+ *
+ * The queued research stages (monitoring comparison, synthesis and its
+ * critique) are bounded ProviderTask Runs and need only `resolveProvider` /
+ * `resolveResearchStageProvider`. `resolve` still manufactures the managed
+ * Agent and its Profile for what remains Agent-shaped: the Source screening
+ * rules an intake creates (their Agent Runs pin this Profile), the
+ * WorkflowExecution coordinator Run of every research pass (its Automation
+ * names this Agent) and the synthesis-only snapshot's Agent node.
  */
 export class ProjectResearchExecutionProfileService {
   constructor(
@@ -57,21 +65,7 @@ export class ProjectResearchExecutionProfileService {
     identity: SpaceUserIdentity,
     selection: ResearchExecutionSelection,
   ): Promise<ResolvedResearchProvider> {
-    const provider = selection.modelProviderId
-      ? await this.getProvider(identity.spaceId, selection.modelProviderId)
-      : await this.getDefaultProvider(identity.spaceId);
-    if (!provider) {
-      throw new HttpError(422, "Select a model provider or configure a space default provider for Auto Research");
-    }
-    if (!providerSupportsStructuredOutput(provider.provider_type)) {
-      throw new HttpError(422, `Model provider type '${provider.provider_type}' does not support Auto Research structured output`);
-    }
-    return {
-      modelProviderId: provider.id,
-      modelName: optionalString(selection.modelName)
-        ?? provider.default_model
-        ?? firstModel(provider.capabilities_json),
-    };
+    return resolveResearchProvider(this.db, identity.spaceId, selection);
   }
 
   private async ensureManagedAgent(
@@ -202,31 +196,85 @@ export class ProjectResearchExecutionProfileService {
       modelName,
     };
   }
+}
 
-  private async getProvider(spaceId: string, providerId: string): Promise<ProviderRow | null> {
-    const result = await this.db.query<ProviderRow>(
-      `SELECT p.id, p.provider_type, p.default_model, p.capabilities_json
-         FROM model_provider_space_grants g
-         JOIN model_providers p ON p.id=g.provider_id
-        WHERE g.space_id=$1 AND g.provider_id=$2 AND g.enabled=true AND p.enabled=true LIMIT 1`,
-      [spaceId, providerId],
-    );
-    if (!result.rows[0]) throw new HttpError(422, "Model provider is not selectable in this space");
-    return result.rows[0];
+/**
+ * The provider and model a workflow's queued research stages run on.
+ *
+ * A workflow records its execution selection once, at intake, on the
+ * managed Research Runtime Profile its screening rules run on
+ * (`state.runtime_profile_id`); the stages take the same provider and model
+ * from it, so screening and synthesis cannot drift apart. The grant and
+ * structured-output checks run again now, because a queued stage is admitted
+ * long after intake. Only a state without an explicit profile resolves the
+ * Space default, which is what a standing comparison uses.
+ */
+export async function resolveResearchStageProvider(
+  db: Queryable,
+  identity: SpaceUserIdentity,
+  runtimeProfileId: string | null,
+): Promise<ResolvedResearchProvider> {
+  const profile = runtimeProfileId
+    ? (await db.query<{ model_provider_id: string | null; model_name: string | null }>(
+        `SELECT model_provider_id, model_name FROM agent_runtime_profiles
+          WHERE space_id=$1 AND id=$2 AND backend_mode='model_provider' LIMIT 1`,
+        [identity.spaceId, runtimeProfileId],
+      )).rows[0]
+    : undefined;
+  if (runtimeProfileId && !profile?.model_provider_id) {
+    throw new HttpError(409, "The selected research Runtime Profile is unavailable or no longer provider-bound");
   }
+  return resolveResearchProvider(db, identity.spaceId, {
+    modelProviderId: profile?.model_provider_id ?? null,
+    modelName: profile?.model_name ?? null,
+  });
+}
 
-  private async getDefaultProvider(spaceId: string): Promise<ProviderRow | null> {
-    const result = await this.db.query<ProviderRow>(
-      `SELECT p.id, p.provider_type, p.default_model, p.capabilities_json
-         FROM model_provider_space_grants g
-         JOIN model_providers p ON p.id=g.provider_id
-        WHERE g.space_id=$1 AND g.enabled=true AND p.enabled=true
-        ORDER BY g.is_default DESC, p.updated_at DESC, p.id ASC
-        LIMIT 1`,
-      [spaceId],
-    );
-    return result.rows[0] ?? null;
+async function resolveResearchProvider(
+  db: Queryable,
+  spaceId: string,
+  selection: ResearchExecutionSelection,
+): Promise<ResolvedResearchProvider> {
+  const provider = selection.modelProviderId
+    ? await getProvider(db, spaceId, selection.modelProviderId)
+    : await getDefaultProvider(db, spaceId);
+  if (!provider) {
+    throw new HttpError(422, "Select a model provider or configure a space default provider for Auto Research");
   }
+  if (!providerSupportsStructuredOutput(provider.provider_type)) {
+    throw new HttpError(422, `Model provider type '${provider.provider_type}' does not support Auto Research structured output`);
+  }
+  return {
+    modelProviderId: provider.id,
+    modelName: optionalString(selection.modelName)
+      ?? provider.default_model
+      ?? firstModel(provider.capabilities_json),
+  };
+}
+
+async function getProvider(db: Queryable, spaceId: string, providerId: string): Promise<ProviderRow | null> {
+  const result = await db.query<ProviderRow>(
+    `SELECT p.id, p.provider_type, p.default_model, p.capabilities_json
+       FROM model_provider_space_grants g
+       JOIN model_providers p ON p.id=g.provider_id
+      WHERE g.space_id=$1 AND g.provider_id=$2 AND g.enabled=true AND p.enabled=true LIMIT 1`,
+    [spaceId, providerId],
+  );
+  if (!result.rows[0]) throw new HttpError(422, "Model provider is not selectable in this space");
+  return result.rows[0];
+}
+
+async function getDefaultProvider(db: Queryable, spaceId: string): Promise<ProviderRow | null> {
+  const result = await db.query<ProviderRow>(
+    `SELECT p.id, p.provider_type, p.default_model, p.capabilities_json
+       FROM model_provider_space_grants g
+       JOIN model_providers p ON p.id=g.provider_id
+      WHERE g.space_id=$1 AND g.enabled=true AND p.enabled=true
+      ORDER BY g.is_default DESC, p.updated_at DESC, p.id ASC
+      LIMIT 1`,
+    [spaceId],
+  );
+  return result.rows[0] ?? null;
 }
 
 interface ProviderRow {

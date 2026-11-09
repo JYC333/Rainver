@@ -1,3 +1,4 @@
+import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
 import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import type { AutomationRow } from "../automations/repository.js";
@@ -17,7 +18,7 @@ import {
 } from "../runs/autonomousAdmission.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { canReadProject } from "../projects/access.js";
-import { settleAutonomyCoordinator } from "./finalizationReconciler.js";
+import { autonomyCoordinatorRefs, settleAutonomyCoordinator } from "./finalizationReconciler.js";
 import {
   autonomyDiscovererRegistry,
   type AutonomyCandidateKind,
@@ -511,7 +512,7 @@ export class AutonomyService {
       // reason other than a budget (the Agent archived meanwhile, a database
       // error) must still end both, or the tick shows running and the
       // coordinator waits forever with no child left to settle it.
-      await withQueryableTransaction(this.db, async (db) => {
+      await withRunTerminalOwner(this.db,db=>autonomyCoordinatorRefs(db,input.automation.space_id,{tickId:initialized.observed.tick_id}), async (db) => {
         await db.query(
           `UPDATE autonomy_ticks
               SET status = 'failed',
@@ -534,7 +535,7 @@ export class AutonomyService {
       throw error;
     }
 
-    await withQueryableTransaction(this.db, async (db) => {
+    await withRunTerminalOwner(this.db,db=>autonomyCoordinatorRefs(db,input.automation.space_id,{tickId:initialized.observed.tick_id}), async (db) => {
       await db.query(
         `UPDATE autonomy_ticks
             SET status = 'succeeded',

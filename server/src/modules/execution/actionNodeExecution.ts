@@ -1,3 +1,4 @@
+import {isOperationTransaction} from '../../db/operationTransaction.js';
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
@@ -126,7 +127,7 @@ export async function executeActionNode(input: ActionNodeExecutionInput): Promis
   // error aborts that transaction until rollback; the failure recorder below
   // must therefore have a savepoint to roll back to, otherwise it masks the
   // actionable error with 25P02 and records nothing.
-  const transactional = typeof (input.db as Queryable & { release?: unknown }).release === "function";
+  const transactional = isOperationTransaction(input.db) || typeof (input.db as Queryable & { release?: unknown }).release === "function";
   const savepoint = "action_node_handler";
   if (transactional) await input.db.query(`SAVEPOINT ${savepoint}`);
   try {

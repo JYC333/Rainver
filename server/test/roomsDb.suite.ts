@@ -1,3 +1,8 @@
+import {lockRequestKey} from '../src/modules/systemActions/operations/repository.js';
+import {linkProposalOperation} from './support/linkedProposalOperation.js';
+import {insertProposalRow} from '../src/modules/proposals/reviewPackets.js';
+import { operationRuntime } from '../src/modules/systemActions/operations/runtime.js';
+import { sessionActor } from '../src/modules/systemActions/operations/actor.js';
 import { previewSkillFiles } from "../src/modules/skills/skillImporter.js";
 import { PgSkillsRepository, approveSkillImportInTransaction } from "../src/modules/skills/repository.js";
 import { applySkillPackageBinding } from "../src/modules/skills/skillBindings.js";
@@ -3769,7 +3774,7 @@ describe("Room workflow (real Postgres)", () => {
       const conversation = await seedConversation(owner, created.room.id, "Budget");
       const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Work with the specialists." });
       const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
-      const soft = 5 * Math.max(1, agents), hard = soft * 2;
+      const soft = 10 * Math.max(1, agents), hard = soft * 2;
       expect(group.budget_json).toMatchObject({ max_depth: 1, max_fanout: soft, soft_max_fanout: soft, hard_max_fanout: hard });
       if (agents === 5) {
         for (let i = 0; i < agents; i += 1) {
@@ -3860,7 +3865,7 @@ describe("Room workflow (real Postgres)", () => {
         current = { id: completed.task_group_ids[0]!, root_run_id: completed.run_ids[0]! };
         if (result === 0) await publishBudgetTurn(current.root_run_id);
       }
-      for (let delegation = 0; delegation < 9; delegation += 1) {
+      for (let delegation = 0; delegation < 19; delegation += 1) {
         const child = await groupService.spawnChildRun(owner, { workspace_access: "write" as const, space_id: "space-1", group_id: current.id,
           parent_run_id: current.root_run_id, root_run_id: current.root_run_id, requesting_agent_id: "agent-1",
           target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review the next item." });
@@ -3873,11 +3878,11 @@ describe("Room workflow (real Postgres)", () => {
           ORDER BY g.created_at DESC LIMIT 1`, [containerId])).rows[0]!;
       }
       const before = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", containerId))!.budget_json!;
-      expect(before).toMatchObject({ hard_max_fanout: 10, container_turns_used: 20 });
+      expect(before).toMatchObject({ hard_max_fanout: 20, container_turns_used: 40 });
       const accepted = (await db.pool.query(`SELECT count(*)::int AS count FROM run_delegations d JOIN agent_run_groups g ON g.id=d.group_id
         WHERE (g.id=$1 OR g.budget_json->>'container_group_id'=$1) AND d.status<>'policy_denied'`, [containerId])).rows[0]!.count;
-      expect(accepted).toBe(9); // The tenth delegation fits fanout but would cost turn 21.
-      // Probe the original group, whose fanout bound is still ten, so a zero
+      expect(accepted).toBe(19); // The twentieth delegation fits fanout but would cost turn 41.
+      // Probe the original group, whose fanout bound is still twenty, so a zero
       // completion-subgroup bound cannot be the reason for this refusal.
       const denied = await groupService.spawnChildRun(owner, { workspace_access: "write" as const, space_id: "space-1", group_id: containerId,
         parent_run_id: sent.run_ids[0]!, root_run_id: sent.run_ids[0]!, requesting_agent_id: "agent-1",
@@ -3886,6 +3891,87 @@ describe("Room workflow (real Postgres)", () => {
       expect((await db.pool.query("SELECT action,decision,audit_code FROM policy_decision_records WHERE id=$1",
         [denied.policy_decision_record_id])).rows[0]).toMatchObject({ action: "run.spawn_child", decision: "deny", audit_code: "run_spawn_child_capacity_limit" });
       expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", containerId))!.budget_json).toEqual(before);
+    });
+
+    it("lets only the authenticated human change collaboration participants without refilling its budget", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Human collaboration amendment", "Reviewer", ["agent-3", "agent-4"]);
+      const task = await new PgTaskRepository(db.pool).createTask(owner, {title:"Clean migration",project_id:"project-1"});
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, {content:"Implement and review."});
+      const repo = new PgAgentGroupRepository(db.pool);
+      const group = (await repo.getGroup("space-1", sent.task_group_ids[0]!))!;
+      const spawn = (target:string, budget?:Record<string,unknown>) => groupService!.spawnChildRun(owner, {
+        workspace_access:"write",space_id:"space-1",group_id:group.id,parent_run_id:sent.run_ids[0]!,root_run_id:group.root_run_id!,
+        requesting_agent_id:"agent-1",target_agent_id:target,manager_user_id:"user-1",instruction:"Implement or review.",budget_json:budget,
+      });
+      const bounds = {task_id:task.id,participant_agent_ids:["agent-2"],max_delegations:2};
+      expect((await spawn("agent-4")).child_run_id).toBeTruthy();
+      expect((await spawn("agent-2",{collaboration:bounds})).child_run_id).toBeTruthy();
+      const before = (await repo.getGroup("space-1",group.id))!.budget_json!;
+      const config = loadConfig({SERVER_DATABASE_URL:db.connectionUri,RAINVER_HOME:testRoot});
+      const runtime = await operationRuntime(config), actor = sessionActor(owner);
+      const input = {group_id:group.id,expected_participant_agent_ids:["agent-2"],participant_agent_ids:["agent-2","agent-3"],reason:"Add the requested implementer."};
+      const invoke = (body:object=input,key=randomUUID(),who=actor) => runtime.execute('room.collaboration.update_participants',body,who,randomUUID(),key);
+      const agentActor = {...actor,principal:{kind:'agent' as const,id:'agent-1'},agent_id:'agent-1',surface:'agent_tool' as const};
+      await addRoomMember(created.room.id,'user-2');
+      expect((await invoke(input,randomUUID(),sessionActor({spaceId:'space-1',userId:'user-2'}))).http_status).toBe(404);
+      await db.pool.query("UPDATE projects SET owner_user_id='user-2' WHERE id='project-1'");
+      await db.pool.query("UPDATE space_memberships SET role='member' WHERE id='membership-1'");
+      expect((await invoke()).http_status).toBe(404);
+      await db.pool.query("UPDATE projects SET owner_user_id='user-1' WHERE id='project-1'");
+      await db.pool.query("UPDATE space_memberships SET role='owner' WHERE id='membership-1'");
+      await db.pool.query("UPDATE tasks SET status='done' WHERE id=$1",[task.id]);
+      expect((await invoke()).http_status).toBe(409);
+      await db.pool.query("UPDATE tasks SET status='inbox' WHERE id=$1",[task.id]);
+
+      expect((await invoke(input,randomUUID(),agentActor)).http_status).toBe(404);
+      expect((await invoke({...input,max_delegations:40})).http_status).toBe(422);
+      expect((await invoke({...input,participant_agent_ids:['agent-1']})).http_status).toBe(422);
+      expect((await invoke({...input,participant_agent_ids:['missing-agent']})).http_status).toBe(422);
+      // Neither an Agent declaration nor a conversational confirmation can amend the stored bounds.
+      await expect(spawn('agent-3',{collaboration:{...bounds,participant_agent_ids:input.participant_agent_ids}})).rejects.toMatchObject({statusCode:409});
+      await db.pool.query("CREATE FUNCTION public.reject_collaboration_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='room.collaboration.manage' THEN RAISE EXCEPTION 'audit unavailable'; END IF; RETURN NEW; END $$");
+      await db.pool.query('CREATE TRIGGER reject_collaboration_audit BEFORE INSERT ON policy_decision_records FOR EACH ROW EXECUTE FUNCTION public.reject_collaboration_audit()');
+      try {
+        expect((await invoke()).http_status).toBe(503);
+        expect((await repo.getGroup('space-1',group.id))!.budget_json).toEqual(before);
+      } finally {
+        await db.pool.query('DROP TRIGGER reject_collaboration_audit ON policy_decision_records');
+        await db.pool.query('DROP FUNCTION public.reject_collaboration_audit()');
+      }
+      // A missing visible audit destination must not leave the new participants behind.
+      await db.pool.query("UPDATE sessions SET status='archived' WHERE id=$1",[conversation.id]);
+      expect((await invoke()).http_status).toBe(409);
+      expect((await repo.getGroup('space-1',group.id))!.budget_json).toEqual(before);
+      await db.pool.query("UPDATE sessions SET status='active' WHERE id=$1",[conversation.id]);
+      const key = randomUUID(), result = await invoke(input,key);
+      expect(result.http_status,JSON.stringify(result.body)).toBe(200);
+      expect((await invoke(input,key)).replayed).toBe(true);
+      const after = (await repo.getGroup('space-1',group.id))!.budget_json!;
+      expect(after).toEqual({...before,collaboration:{...(before.collaboration as object),participant_agent_ids:input.participant_agent_ids}});
+      expect((await invoke()).http_status).toBe(409); // stale compare-and-swap
+      const notices = await db.pool.query(`SELECT id,content FROM messages WHERE space_id='space-1' AND session_id=$1 AND metadata_json->>'execution_event'='collaboration_participants_changed'`,[conversation.id]);
+      expect(notices.rows).toHaveLength(1);
+      expect(notices.rows[0].content).toContain(input.reason);
+      expect(notices.rows[0].content).toContain('agent-3');
+      // Set-equivalent declarations remain valid; order is not a budget amendment.
+      const client = await db.pool.connect();
+      try {
+        await client.query('BEGIN');
+        const {collaborationLimits} = await import('../src/modules/agentGroups/collaborationBudgetRepository.js');
+        expect(await collaborationLimits(client,(await repo.getGroup('space-1',group.id))!,{
+          parent_run_id:sent.run_ids[0]!,requesting_agent_id:'agent-1',target_agent_id:'agent-3',manager_user_id:'user-1',
+          budget_json:{collaboration:{...bounds,participant_agent_ids:['agent-3','agent-2']}},
+        })).toMatchObject({max_fanout:2});
+        await client.query('ROLLBACK');
+      } finally {client.release();}
+
+      // Adding a participant admits that participant, but does not replenish the two-call allowance.
+      expect((await spawn('agent-3')).child_run_id).toBeTruthy();
+      expect(await spawn('agent-3')).toMatchObject({child_run_id:null,delegation:{status:'policy_denied'}});
+      expect((await invoke({...input,expected_participant_agent_ids:input.participant_agent_ids,participant_agent_ids:['agent-2']})).http_status).toBe(409); // running child
+      await db.pool.query("UPDATE room_user_members SET status='removed' WHERE room_id=$1 AND user_id='user-1'",[created.room.id]);
+      expect((await invoke(input,key)).http_status).toBe(404); // replay still checks current authority
     });
 
     it.for(["all_members", "outsider", "removed", "duplicate", "coordinator"])("validates a larger collaboration against Room membership: %s", async (mode, ctx) => {
@@ -4111,7 +4197,7 @@ describe("Room workflow (real Postgres)", () => {
       const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Research this." });
       const groupId = sent.task_group_ids[0]!;
       const budgets = [];
-      for (let branch = 0; branch < 21; branch += 1) {
+      for (let branch = 0; branch < 41; branch += 1) {
         const client = await db.pool.connect();
         try {
           budgets.push((await agentOriginContinuation(client, "space-1", groupId)).delegation_budget);
@@ -4119,7 +4205,7 @@ describe("Room workflow (real Postgres)", () => {
           client.release();
         }
       }
-      expect(budgets.map((budget) => budget.max_fanout)).toEqual([...Array(19).fill(5), 0, 0]);
+      expect(budgets.map((budget) => budget.max_fanout)).toEqual([...Array(39).fill(10), 0, 0]);
       expect(budgets.every((budget) => budget.container_group_id === groupId)).toBe(true);
     });
 
@@ -4830,6 +4916,60 @@ describe("Room workflow (real Postgres)", () => {
       expect(await quotaMarker(critiqueSecond)).toBeNull();
     });
 
+    it.each(['open','extend'] as const)('admits %s linked keys before a contended Room row and hides revoked/foreign scope',async action=>{
+      if(!db.available || !service)return;
+      const {owner,created,conversation}=await roomWithSpecialist('Admission ordering');
+      const discussions=new RoomDiscussionService(loadConfig({SERVER_DATABASE_URL:db.connectionUri,RAINVER_HOME:testRoot}),db.pool);
+      const input={topic:'Migration owner?',participant_agent_ids:['agent-2'],shape:'open' as const};
+      const opened=await discussions.open(owner,created.room.id,conversation.id,input);
+      await seedQuota(40,new Date(Date.now()+3600_000).toISOString());
+      await failTurn(opened.run_ids[0]!,'subscription_quota_exhausted','Claude AI usage limit reached|1790000000');
+      const [closing]=await queuedRunsFor(conversation.id,'agent-1');
+      const draft=await insertProposalRow(db.pool,{spaceId:owner.spaceId,createdByRunId:closing!.id,proposalType:'memory_create',title:'Ordering review',payload:{proposed_content:'Frozen'},rationale:'test',createdByUserId:owner.userId,visibility:'private'});
+      const request=await linkProposalOperation(db.pool,owner,draft.id);
+      const blocker=await db.pool.connect();let pending:Promise<unknown>|undefined;let timer:ReturnType<typeof setTimeout>|undefined;
+      const invoke=(actor=owner)=>action==='open'?discussions.open(actor,created.room.id,conversation.id,input):discussions.extend(actor,created.room.id,conversation.id,opened.discussion.id,1);
+      try{
+        await blocker.query('BEGIN');
+        await blocker.query('SELECT id FROM rooms WHERE id=$1 FOR UPDATE',[created.room.id]);
+        const row=(await blocker.query('SELECT * FROM operation_idempotency WHERE id=$1',[request])).rows[0]!;
+        await lockRequestKey(blocker,[row.space_id,row.principal_kind,row.principal_id,row.on_behalf,row.authority_scope_id,row.operation_id,row.idempotency_key]);
+        pending=invoke();
+        await expect(Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('waited for Room before key refusal')),2000);})])).rejects.toMatchObject({code:'idempotency_in_progress'});
+      }finally{if(timer)clearTimeout(timer);await blocker.query('ROLLBACK');blocker.release();await pending?.catch(()=>undefined);}
+      expect(await discussionFor(conversation.id)).toMatchObject({status:'cap_reached'});
+      expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[closing!.id])).rows[0]!.status).toBe('queued');
+      expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE id=$1',[request])).rows[0]!.state).toBe('pending_approval');
+      await expect(invoke({...owner,spaceId:randomUUID()})).rejects.toMatchObject({statusCode:404});
+      await db.pool.query("UPDATE room_user_members SET status='removed' WHERE room_id=$1 AND user_id=$2",[created.room.id,owner.userId]);
+      await expect(invoke()).rejects.toMatchObject({statusCode:404});
+      expect(await discussionFor(conversation.id)).toMatchObject({status:'cap_reached'});
+    });
+
+    it('withdraws a held closing with an execution owner through durable cancellation then canonical settlement',async()=>{
+      if(!db.available||!service)return;
+      const {owner,created,conversation}=await roomWithSpecialist('Held execution lock');
+      const config=loadConfig({SERVER_DATABASE_URL:db.connectionUri,RAINVER_HOME:testRoot});
+      const discussions=new RoomDiscussionService(config,db.pool);
+      const opened=await discussions.open(owner,created.room.id,conversation.id,{topic:'Migration owner?',participant_agent_ids:['agent-2'],shape:'open'});
+      await seedQuota(40,new Date(Date.now()+3600_000).toISOString());
+      await failTurn(opened.run_ids[0]!,'subscription_quota_exhausted','Claude AI usage limit reached|1790000000');
+      const [closing]=await queuedRunsFor(conversation.id,'agent-1');const runs=new PgRunRepository(db.pool);
+      expect(await runs.tryAcquireExecutionLock({run_id:closing!.id,worker_id:'held-owner'})).toBe(true);
+      await discussions.stop(owner,created.room.id,conversation.id,opened.discussion.id);
+      expect(await discussionFor(conversation.id)).toMatchObject({status:'closed'});
+      expect(await runs.getRun(owner.spaceId,closing!.id)).toMatchObject({status:'cancelling',error_json:{requested_by_user_id:owner.userId}});
+      expect((await db.pool.query('SELECT worker_id FROM run_execution_locks WHERE run_id=$1',[closing!.id])).rows).toEqual([{worker_id:'held-owner'}]);
+      const {RunRecoveryService}=await import('../src/modules/runs/recovery.js');
+      await new RunRecoveryService(config).recover();expect(await hasRunJob(closing!.id)).toBe(true);
+      // The actual execution owner releases in orchestration finally; the existing
+      // cancellation protocol then settles without inventing execution ownership.
+      await runs.releaseExecutionLock(closing!.id,'held-owner');
+      const {buildRunOrchestration}=await import('../src/modules/runs/orchestrationFactory.js');
+      await buildRunOrchestration(config).orchestration.cancelRun({space_id:owner.spaceId,run_id:closing!.id,requested_by_user_id:owner.userId});
+      expect((await runs.getRun(owner.spaceId,closing!.id))!.status).toBe('cancelled');
+    });
+
     it("ends a discussion stopped at its cap for good, its closing still waiting for the window included", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Stop at the cap");
@@ -4842,9 +4982,21 @@ describe("Room workflow (real Postgres)", () => {
       const [closing] = await queuedRunsFor(conversation.id, "agent-1");
       expect(await quotaMarker(closing!.id)).not.toBeNull();
 
+      const draft=await insertProposalRow(db.pool,{spaceId:owner.spaceId,createdByRunId:closing!.id,proposalType:'memory_create',title:'Closing review',payload:{proposed_content:'Frozen'},rationale:'test',createdByUserId:owner.userId,visibility:'private'});
+      await linkProposalOperation(db.pool,owner,draft.id);
+      await db.pool.query("UPDATE proposals SET status='staged' WHERE id=$1",[draft.id]);
+      await db.pool.query("CREATE FUNCTION refuse_closing_request() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'closing request refused'; END $$");
+      await db.pool.query('CREATE TRIGGER refuse_closing_request BEFORE UPDATE ON operation_idempotency FOR EACH ROW EXECUTE FUNCTION refuse_closing_request()');
+      try{
+       await expect(discussions.stop(owner,created.room.id,conversation.id,opened.discussion.id)).rejects.toThrow('closing request refused');
+       expect(await discussionFor(conversation.id)).toMatchObject({status:'cap_reached'});
+       expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[draft.id])).rows[0]!.status).toBe('staged');
+       expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[closing!.id])).rows[0]!.status).toBe('queued');
+      }finally{await db.pool.query('DROP TRIGGER refuse_closing_request ON operation_idempotency');await db.pool.query('DROP FUNCTION refuse_closing_request()');}
       await discussions.stop(owner, created.room.id, conversation.id, opened.discussion.id);
       expect(await discussionFor(conversation.id)).toMatchObject({ status: "closed" });
       const status = (await db.pool.query<{ status: string }>(`SELECT status FROM runs WHERE id = $1`, [closing!.id])).rows[0]!.status;
+      expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[draft.id])).rows[0]!.state).toBe('rejected');
       expect(status).toBe("cancelled");
       expect(await hasRunJob(closing!.id)).toBe(false);
     });
@@ -5892,7 +6044,7 @@ describe("Room workflow (real Postgres)", () => {
     const managerRunId = sent.run_ids[0]!;
     const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
     if (!group?.root_run_id) throw new Error("group or its root_run_id not found");
-    expect(group.budget_json).toEqual({ max_depth: 1, max_fanout: 10, soft_max_fanout: 10, hard_max_fanout: 20 });
+    expect(group.budget_json).toEqual({ max_depth: 1, max_fanout: 20, soft_max_fanout: 20, hard_max_fanout: 40 });
     // Explicit bounds override the roster-scaled default.
     await db.pool.query("UPDATE agent_run_groups SET budget_json=$2::jsonb WHERE id=$1",
       [group.id, JSON.stringify({ max_depth: 1, max_fanout: 2 })]);

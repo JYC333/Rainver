@@ -206,6 +206,14 @@ export const evolutionEn = {
   "activate": "Activate",
   "deactivate": "Deactivate",
   "inbox_page": {
+    "decision_pending": "Decision queued; members remain pending.",
+    "decision_applying": "Applying approved effects; the bundle is not complete.",
+    "decision_compensating": "Restoring this decision’s external effects after failure.",
+    "decision_compensation_failed": "Restoration needs attention. The bundle was not approved as a whole.",
+    "decision_failed": "Decision failed; no member approval was committed.",
+    "decision_succeeded": "Decision completed.",
+    "refresh_decision": "Refresh decision",
+
     "bundle_created": "Evolution bundle created",
     "granting_user_required": "Granting-user approval is required for this proposal.",
     "incomplete_patch_skipped_one": "This code patch is incomplete. {{count}} skipped change will not be applied. Apply it anyway?",

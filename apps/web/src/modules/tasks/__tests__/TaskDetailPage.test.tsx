@@ -164,7 +164,7 @@ describe('TaskDetailPage — runtime profile on the default path', () => {
   fireEvent.click(screen.getByRole('button',{name:'Delete task'}));
   const buttons=screen.getAllByRole('button',{name:'Delete task'});
   fireEvent.click(buttons[buttons.length-1]!);
-  await waitFor(()=>expect(mocked.delete).toHaveBeenCalledWith('task-1'));
+  await waitFor(()=>expect(mocked.delete).toHaveBeenCalledWith('task-1',expect.any(String)));
   expect(mocked.navigate).toHaveBeenCalledWith('/tasks',{replace:true});
  });
 
@@ -173,7 +173,7 @@ it('keeps the Task and confirmation open when deletion is refused',async()=>{
  renderPage();
  fireEvent.click(await screen.findByRole('button',{name:'Delete task'}));
  const buttons=screen.getAllByRole('button',{name:'Delete task'});fireEvent.click(buttons[buttons.length-1]!);
- await waitFor(()=>expect(mocked.delete).toHaveBeenCalledWith('task-1'));
+ await waitFor(()=>expect(mocked.delete).toHaveBeenCalledWith('task-1',expect.any(String)));
  expect(mocked.navigate).not.toHaveBeenCalled();
  expect(screen.getByRole('dialog')).toBeInTheDocument();
 });

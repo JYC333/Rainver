@@ -8,6 +8,7 @@ import { HttpError, dateIso, withQueryableTransaction } from "../routeUtils/comm
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
 import { ProjectResearchExecutionProfileService } from "./executionProfileService.js";
+import { runOutputResult } from "../runs/orchestrationResults.js";
 import {
   COMPARISON_BATCH_SIZE,
   ProjectResearchMonitorComparisonService,
@@ -155,17 +156,15 @@ export class ProjectResearchStandingComparisonService {
         await markBatch(db, row, "failed", now, { error: "Standing comparison execution is not configured" });
         return { batch_id: row.id, status: "failed" };
       }
-      const execution = await new ProjectResearchExecutionProfileService(db, config).resolve(
-        { spaceId, userId: actor },
-        {},
-      );
+      // A standing comparison has no workflow selection: it runs on the
+      // Space default, resolved now and frozen into the Run.
       const queued = await new ProjectResearchMonitorComparisonService(db).queue({
         spaceId,
         userId: actor,
         projectId: row.project_id,
         standingBatchId: row.id,
-        agentId: execution.agentId,
-        runtimeProfileId: execution.runtimeProfileId,
+        resolveProvider: () => new ProjectResearchExecutionProfileService(db, config)
+          .resolveProvider({ spaceId, userId: actor }, {}),
         researchQuestion: "Identify how new material changes the project's current understanding and possible directions.",
         sourceItemIds: selectedIds,
       });
@@ -225,7 +224,7 @@ export class ProjectResearchStandingComparisonService {
       return { batch_id: batch.id, status: "failed" };
     }
     const expected = stringIds(batch.source_item_ids_json);
-    const comparisons = parseMonitorComparisons(terminal.output_json, expected);
+    const comparisons = parseMonitorComparisons(runOutputResult(terminal.output_json), expected);
     await this.persistResults(db, batch, runId, comparisons, now);
     await markBatch(db, batch, "completed", now);
     return { batch_id: batch.id, status: "completed", comparison_count: comparisons.length };

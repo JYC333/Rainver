@@ -66,7 +66,7 @@ it('serializes competing editors and refuses to relocate another member private 
   await db.pool.query("UPDATE project_members SET role='member' WHERE project_id=$1 AND user_id=$2",[project,other]);
   await repo().createTask(identity,{title:'Private',project_id:project,status:'ready',visibility:'private'});
   const deletion={...body,columns:body.columns.filter(c=>c.key!=='ready'),moves:{ready:'in_progress'}};
-  await expect(configureProjectBoard(db.pool,{spaceId:space,userId:other},project,deletion)).rejects.toMatchObject({statusCode:403});
+  await expect(configureProjectBoard(db.pool,{spaceId:space,userId:other},project,deletion)).rejects.toMatchObject({statusCode:404});
   expect((await read()).columns_revision).toBe(initial.columns_revision);
   const [a,b]=await Promise.allSettled([configureProjectBoard(db.pool,identity,project,{...body,columns:body.columns.map(c=>({...c,label:'Editor A '+c.label}))}),configureProjectBoard(db.pool,identity,project,{...body,columns:body.columns.map(c=>({...c,label:'Editor B '+c.label}))})]);
   expect([a,b].filter(x=>x.status==='fulfilled')).toHaveLength(1);

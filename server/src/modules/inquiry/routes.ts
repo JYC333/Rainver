@@ -1,3 +1,4 @@
+import {registerThreadCreationOperationRoutes} from './threadCreationOperationRoutes.js';
 import {threadReadableSql} from "./threadAccess.js";
 import {assertProjectReadable,canWriteProject} from "../projects/access.js";
 import { InquiryTaskAssociationService } from "./taskAssociations.js";
@@ -84,30 +85,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/inquiry/threads", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      return reply.code(201).send(await threads().createThread(identity, projectId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  // Raise a passage of a note as a Question — creates the Thread and the
-  // link back to the note in one call, so the Question keeps a route to the
-  // reasoning it came from.
-  app.post("/api/v1/projects/:projectId/inquiry/threads/from-note", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      return reply.code(201).send(await threads().raiseNoteAsQuestion(identity, projectId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+  registerThreadCreationOperationRoutes(app,context);
 
   app.get("/api/v1/projects/:projectId/inquiry/threads/:threadId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);

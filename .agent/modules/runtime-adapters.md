@@ -32,6 +32,14 @@ Beside these builtins, each ACP registry agent an instance admin enables in
 `credential_mode: cli_profile`, so it is a selectable runtime with Host-native
 login only.
 
+Antigravity (`acp_antigravity_acp`) uses the official Google CLI’s `agy acp`
+entrypoint over ACP v1. Its install/update catalog comes from Google’s CLI
+platform manifests, including SHA-512 verification. The Host translates its
+Rainver profile selector to `--gemini-dir`, links only the native OAuth token
+file, and delivers skills through the official discovery manifest. Models and
+configuration options remain runtime-reported; Rainver does not impersonate
+another editor to unlock model access.
+
 Gemini CLI, generic `custom`, and `capability` entries are not selectable ACP
 Agent runtimes. In particular, `model_api` and `ts_agent_host` are not runtime
 definitions.
@@ -69,6 +77,13 @@ concrete selection. `default` remains unknown, never a model name. Claude model
 IDs retain release suffixes; a changed suffix is a distinct ledger model.
 Codex quota input is already uncached and must not be reduced a second time.
 Claude subagent model rows need not sum to parent prompt usage.
+
+Usage Provider groups distinguish native CLI sources by `runtime_key` and keep
+actual ModelProvider bindings as their Provider group. Source selectors such as
+`cli:codex_cli` work in the Provider filter without creating Provider records.
+Event `provider_display_name` includes the CLI name for native usage and the
+actual Provider plus the CLI name for proxy usage. These are read projections
+over the existing ledger, including historical events; token data is unchanged.
 
 Current Claude/Codex wrappers advertise `_meta.steering.supported` on the
 initialize result. Rainver enables active-turn input only for a verified
@@ -408,9 +423,9 @@ the final pass). Hosts materialize accepted Delivery files with their original
 hashes and source/planned-item references. There are no normalized Skill
 renderers. The Work Skill remains a separate required code contract.
 
-Antigravity ACP includes cached reads inside its input token count. The shared
-measurement parser subtracts that subset before canonical accounting, while
-retaining strict nonnegative counts and total consistency checks. An absent or
+Antigravity CLI reports uncached input and cached reads as separate ACP buckets.
+The shared measurement parser preserves those counts with strict nonnegative
+values and total consistency checks. An absent or
 null optional prompt usage is unknown, not an execution failure. Successful
 preauthorization notices remain in the audit trail but are omitted from ordinary
 conversation parts; cancellations and errors remain visible.

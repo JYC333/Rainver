@@ -1,3 +1,4 @@
+import {SourceBackfillMutationError} from './sourceBackfillErrors.js';
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
@@ -107,7 +108,7 @@ export class SourceBackfillPlanningService {
         RETURNING *`,
       [planId, identity.spaceId, connectionId, status, new Date().toISOString()],
     );
-    if (!row.rows[0]) throw new HttpError(409, "Plan cannot change pause state");
+    if (!row.rows[0]) throw new SourceBackfillMutationError(409, "Plan cannot change pause state");
     return row.rows[0];
   }
 
@@ -196,7 +197,7 @@ export class SourceBackfillPlanningService {
       const existing = await db.query<ProposalRow>(`SELECT * FROM proposals WHERE id=$1 AND space_id=$2`, [plan.proposal_id, identity.spaceId]);
       if (existing.rows[0]) return existing.rows[0];
     }
-    if (plan.status !== "draft") throw new HttpError(409, "Only draft plans can be proposed");
+    if (plan.status !== "draft") throw new SourceBackfillMutationError(409, "Only draft plans can be proposed");
 
     const created = await insertProposalRow(db, {
       spaceId: identity.spaceId,
@@ -318,17 +319,17 @@ export class SourceBackfillPlanningService {
       operationKind = operation.rows[0].kind;
       operationMaxItems = operation.rows[0].max_items;
       if (bindingProjectId && bindingProjectId !== operationProjectId) {
-        throw new HttpError(422, "Project operation and source binding must belong to the same project");
+        throw new SourceBackfillMutationError(422, "Project operation and source binding must belong to the same project");
       }
       if (!bindingId) {
         const projectBinding = await this.db.query(
           `SELECT 1 FROM project_source_bindings WHERE project_id=$1 AND space_id=$2 AND source_channel_id=$3 AND status='active'`,
           [operationProjectId, identity.spaceId, connectionId],
         );
-        if (!projectBinding.rows[0]) throw new HttpError(422, "Project operation requires an active binding to this source connection");
+        if (!projectBinding.rows[0]) throw new SourceBackfillMutationError(422, "Project operation requires an active binding to this source connection");
       }
       if (operationKind === "research" && (!operationMaxItems || operationMaxItems < 1)) {
-        throw new HttpError(409, "Project Research operation has no valid item budget");
+        throw new SourceBackfillMutationError(409, "Project Research operation has no valid item budget");
       }
     }
 
@@ -342,7 +343,7 @@ export class SourceBackfillPlanningService {
     );
     if (!existing.rows[0]) throw new Error("Backfill plan idempotency conflict could not be resolved");
     if (existing.rows[0].source_channel_id !== connectionId) {
-      throw new HttpError(409, "idempotency_key is already used by another source connection");
+      throw new SourceBackfillMutationError(409, "idempotency_key is already used by another source connection");
     }
     return this.details(spaceId, connectionId, existing.rows[0].id);
   }

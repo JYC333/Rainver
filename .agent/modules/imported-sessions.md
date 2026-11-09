@@ -262,3 +262,15 @@ being present, and attended consent does not stand in for unattended spending
 
 Server-host Locations show none of this: server-side CLIs run under managed
 profiles and have no ambient history.
+
+## Frozen Brief revision transaction
+
+After extraction IO, the writer rechecks Project authority, pre-admits every
+pending Brief request key, then locks the Project and definition mutex. A waiting
+unlinked Brief still merges in place. A linked Brief retains its frozen payload
+and is superseded with its request while a fresh pending review carries the
+merged evidence. Proposal creation, old request invalidation and record read
+marks commit together; failure releases the claim for a later explicit attempt.
+A newly observed pending draft outside admission conflicts rather than taking
+late keys. No model/Host call runs in that transaction and no active Memory is
+written by extraction.

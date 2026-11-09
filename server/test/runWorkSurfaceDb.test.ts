@@ -435,14 +435,16 @@ describe("declared paths", () => {
 });
 
 describe("the dispatched Run's tool surface", () => {
-  async function grantedActionIds(trustMode: "sandboxed" | "trusted_host"): Promise<string[]> {
-    const allowance = dispatchToolAllowance(trustMode);
+  async function grantedActionIds(): Promise<string[]> {
+    const allowance = dispatchToolAllowance();
     const grants = await buildRunToolGrants([...allowance], { allowed_tools: [...allowance] });
     return grants.map((grant) => grant.action_id);
   }
 
-  it("grants the Project write surface and no memory write", async () => {
-    const granted = await grantedActionIds("trusted_host");
+  it("grants the Project write surface and output declaration, and no memory write", async () => {
+    // One set for a paired and a built-in Host: both collect the Run's
+    // output directory, so both can apply a declaration.
+    const granted = await grantedActionIds();
 
     expect(granted).toEqual(expect.arrayContaining(["task.report", "task.list", "artifact.submit"]));
     // A dispatched Run is not a conversation, so nobody is telling it anything
@@ -451,15 +453,6 @@ describe("the dispatched Run's tool surface", () => {
     expect(granted).not.toContain("memory.revise");
     // The companion an Agent needs to reference a denial it actually hit.
     expect(granted).toContain("authorization.request");
-  });
-
-  it("withholds artifact.submit where no path applies a declaration", async () => {
-    // `sandboxed` does not include `artifact.submit`. Do not grant it on
-    // that trust mode.
-    const granted = await grantedActionIds("sandboxed");
-
-    expect(granted).not.toContain("artifact.submit");
-    expect(granted).toContain("task.report");
   });
 });
 

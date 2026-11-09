@@ -1,7 +1,5 @@
-import { configureProjectBoard } from "./boardConfiguration.js";
 import { getProjectBoard } from "./boardReadModel.js";
-import { columnForTask, readProjectColumns, selectBoardColumn } from "../tasks/boardColumns.js";
-import { deleteTask } from "../tasks/deleteTask.js";
+import { columnForTask, readProjectColumns } from "../tasks/boardColumns.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { z } from "zod";
 import { effectiveRunTrigger } from "../systemActions/effectiveRunTrigger.js";
@@ -17,12 +15,7 @@ import { PgTaskRepository } from "../tasks/repository.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 import {
-  setTaskStatus,
-  completeTask,
-  handoffTask,
   linkTaskEntities,
-  reportOnTask,
-  requestTaskReview,
   requireProjectTask,
   type AgentActionContext,
 } from "./taskActions.js";
@@ -246,26 +239,6 @@ export function registerProjectWorkSystemActionExecutors(
     };
   });
 
-  executors.set("task.report" as SystemActionId, async (input, dispatch) => {
-    const body = input as { task_id: string; summary: string; outcome?: string; refs?: { type: string; id: string }[] };
-    const result = await withTaskIdHelp(body.task_id, () => withQueryableTransaction(pool, async (tx) =>
-      reportOnTask(tx, await contextFor(tx, dispatch.idempotency_key ?? null), body)));
-    return {
-      modelResult: { ok: true, ...result },
-      summary: { tool_name: "task.report", ok: true, task_id: result.task_id },
-    };
-  });
-
-  executors.set("task.complete" as SystemActionId, async (input, dispatch) => {
-    const body = input as { task_id: string; summary: string };
-    const context = await contextFor(pool, dispatch.idempotency_key ?? null);
-    const result = await withTaskIdHelp(body.task_id, () => completeTask(pool, context, body));
-    return {
-      modelResult: { ok: true, ...result },
-      summary: { tool_name: "task.complete", ok: true, task_id: result.task_id, status: result.status },
-    };
-  });
-
   executors.set("artifact.submit" as SystemActionId, async (input, dispatch) => {
     const body = input as {
       task_id: string; path: string; artifact_type: string;
@@ -298,62 +271,10 @@ export function registerProjectWorkSystemActionExecutors(
     };
   });
 
-  executors.set("task.handoff" as SystemActionId, async (input, dispatch) => {
-    const body = input as { task_id: string; to: { kind: "user" | "agent"; id: string } | null; note?: string | null };
-    const result = await withTaskIdHelp(body.task_id, () => withQueryableTransaction(pool, async (tx) =>
-      handoffTask(tx, await contextFor(tx, dispatch.idempotency_key ?? null), body)));
-    return {
-      modelResult: { ok: true, ...result, released: body.to === null },
-      summary: { tool_name: "task.handoff", ok: true, task_id: result.task_id },
-    };
-  });
-
   executors.set("board.read" as SystemActionId,async()=>{
     if(!run.project_id)throw new HttpError(422,"This Run requires a Project");
     const board=await getProjectBoard(pool,identity,run.project_id);
     return {modelResult:{ok:true,project:board.project,columns:board.columns,columns_revision:board.columns_revision},summary:{tool_name:"board.read",ok:true}};
   });
-  executors.set("board.configure" as SystemActionId,async(input,dispatch)=>{
-    const {reason,...configuration}=input as {reason:string;[key:string]:unknown};
-    const context=await contextFor(pool,dispatch.idempotency_key??null);
-    await configureProjectBoard(pool,identity,context.projectId,configuration,{actorId:context.actorId,runId:context.runId,projectId:context.projectId,reason});
-    const board=await getProjectBoard(pool,identity,context.projectId);
-    return {modelResult:{ok:true,columns:board.columns,columns_revision:board.columns_revision},summary:{tool_name:"board.configure",ok:true}};
-  });
-  executors.set("task.move_to_column" as SystemActionId,async(input,dispatch)=>{
-    const body=input as {task_id:string;column_key:string;columns_revision:string;reason:string};
-    const context=await contextFor(pool,dispatch.idempotency_key??null);
-    const task=await withQueryableTransaction(pool,async tx=>{
-      await lockActiveProjectForMutation(tx,identity.spaceId,context.projectId);
-      await assertProjectWriterForMutation(tx,identity.spaceId,context.projectId,identity.userId);
-      const column=await selectBoardColumn(tx,identity.spaceId,context.projectId,{column_key:body.column_key,columns_revision:body.columns_revision});
-      const current=await requireProjectTask(tx,context.spaceId,body.task_id,context.instructedByUserId,context.projectId,{lock:true});
-      return new PgTaskRepository(pool).updateTask(identity,body.task_id,{status:current.status==='blocked'&&column.status_key==='in_progress'?'blocked':column.status_key,board_id:column.board_id,column_id:column.board_id?column.key:null},{actorId:context.actorId,runId:context.runId,projectId:context.projectId,reason:body.reason},tx);
-    });
-    return {modelResult:{ok:true,task_id:task.id,status:task.status,column_id:task.column_id},summary:{tool_name:"task.move_to_column",ok:true,task_id:task.id}};
-  });
 
-  executors.set("task.delete" as SystemActionId, async (input, dispatch) => {
-    const body = input as { task_id: string; reason: string };
-    const context = await contextFor(pool, dispatch.idempotency_key ?? null);
-    const result = await deleteTask(pool, identity, body.task_id, { actorId: context.actorId, runId: context.runId, projectId: context.projectId, reason: body.reason });
-    return { modelResult: { ok: true, ...result }, summary: { tool_name: "task.delete", ok: true, task_id: result.task_id } };
-  });
-
-  executors.set("task.set_status" as SystemActionId, async (input, dispatch) => {
-    const body = input as { task_id: string; status: string; reason: string };
-    const context = await contextFor(pool, dispatch.idempotency_key ?? null);
-    const result = await withTaskIdHelp(body.task_id, () => setTaskStatus(pool, context, body));
-    return { modelResult: { ok: true, ...result }, summary: { tool_name: "task.set_status", ok: true, task_id: result.task_id, status: result.status } };
-  });
-
-  executors.set("task.request_review" as SystemActionId, async (input, dispatch) => {
-    const body = input as { task_id: string; reason: string; options?: string[] };
-    const result = await withTaskIdHelp(body.task_id, async () =>
-      requestTaskReview(pool, await contextFor(pool, dispatch.idempotency_key ?? null), body));
-    return {
-      modelResult: { ok: true, ...result },
-      summary: { tool_name: "task.request_review", ok: true, task_id: result.task_id },
-    };
-  });
 }

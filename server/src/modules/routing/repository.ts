@@ -108,9 +108,14 @@ export class PgRouteDecisionRepository {
              FROM host_threads
             WHERE id = $1
               AND (
-                (task_id IS NULL AND space_id = $2 AND (
-                  (container_kind = 'conversation' AND session_id = $3)
-                  OR (container_kind = 'direct' AND container_user_id = $4)
+                -- A direct thread has no space_id (ck_host_threads_owner):
+                -- it is one Agent x person, so its Space is its Agent's.
+                (task_id IS NULL AND (
+                  (container_kind = 'conversation' AND space_id = $2 AND session_id = $3)
+                  OR (container_kind = 'direct' AND container_user_id = $4 AND EXISTS (
+                    SELECT 1 FROM agents thread_agent
+                     WHERE thread_agent.id = host_threads.agent_id AND thread_agent.space_id = $2
+                  ))
                 ))
                 OR (task_id IS NOT NULL AND EXISTS (
                   SELECT 1

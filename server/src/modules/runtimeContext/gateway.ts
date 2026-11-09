@@ -811,7 +811,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     const skills = await loadConversationSkillDescriptors(db, { spaceId: input.spaceId, messageId: item.source_ref.id });
     if (!row || (canonicalMessageId !== item.source_ref.id && !liveInput) || contextItemText(item) !== renderConversationInputMessage(row.content, descriptors, skills)
       || item.trust !== (row.role === "system" ? "system_approved" : "user_confirmed")
-      || (session.roomId === null && row.metadata_run_id !== input.invocationId)) {
+      || (session.roomId === null && row.linked_run_id !== input.invocationId)) {
       throw new HttpError(409, "Invocation Delivery Message changed or is no longer authoritative");
     }
   }

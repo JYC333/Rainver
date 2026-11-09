@@ -145,7 +145,7 @@ describe("usage repository", () => {
 
   it("aliases lateral dimension keys safely for dimensions read model queries", async () => {
     const db = new RecordingDb((sql) => {
-      if (sql.includes("provider_id AS id")) {
+      if (sql.includes(" AS id,") && sql.includes(" AS label,")) {
         return { rows: [{ id: "provider-1", label: "OpenAI", total_tokens: 15 }], rowCount: 1 };
       }
       if (sql.includes("COALESCE(model, 'unknown') AS model")) {

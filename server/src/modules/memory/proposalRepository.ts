@@ -1,3 +1,5 @@
+import {revisePendingPayload} from '../proposals/payloadRevision.js';
+import {lockProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
@@ -478,6 +480,7 @@ export class PgMemoryProposalRepository {
       if (!(await new PgProposalRepository(tx as never).getVisible(spaceId, userId, proposalId))) {
         throw new MemoryProposalNotFoundError("Proposal not found");
       }
+      const transitions=await lockProposalTransitions(tx,spaceId,[proposalId]);
       const locked = await tx.query<{ status: string; proposal_type: string; payload_json: Record<string, unknown> | null }>(
         `SELECT status, proposal_type, payload_json FROM proposals WHERE id = $1 AND space_id = $2 FOR UPDATE`,
         [proposalId, spaceId],
@@ -512,11 +515,8 @@ export class PgMemoryProposalRepository {
           userConfirmationEntry(userId, { method: "POST", path: `/memory/proposals/${proposalId}/revision` }),
         ]),
       };
-      await tx.query(
-        `UPDATE proposals SET payload_json = $3::jsonb, updated_at = $4 WHERE id = $1 AND space_id = $2`,
-        [proposalId, spaceId, JSON.stringify(revised), editedAt],
-      );
-      const out = await new PgProposalRepository(tx as never).getVisible(spaceId, userId, proposalId);
+      const revisedId=await revisePendingPayload(tx,transitions,spaceId,proposalId,revised);
+      const out = await new PgProposalRepository(tx as never).getVisible(spaceId, userId, revisedId);
       if (!out) throw new MemoryProposalNotFoundError("Proposal not found");
       return out;
     });

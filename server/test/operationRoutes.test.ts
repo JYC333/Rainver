@@ -1,3 +1,6 @@
+import {sourcesModule} from '../src/modules/sources/index.js';
+import {buildModuleServer} from './support/moduleServer.js';
+import {RETIRED_SOURCE_CONNECTION_ROUTES} from '../src/modules/sources/retiredConnectionRoutes.js';
 import {PluginHost} from '../src/modules/plugins/host/index.js';
 import {BUILT_IN_PLUGINS} from '../src/modules/plugins/builtInPlugins.js';
 import { SYSTEM_ACTION_REGISTRY } from "@rainver/protocol";
@@ -15,6 +18,11 @@ interface InventoryRow {
 const path = new URL('../src/modules/systemActions/operations/routeInventory.json', import.meta.url);
 // Inventory compares exact current method/path pairs; annotations alone never admit a route.
 function classification(method: string, path: string): InventoryRow {
+  if(RETIRED_SOURCE_CONNECTION_ROUTES.some(route=>route.method===method&&route.path===path))return {
+    method,path,classification:'transport_exempt',
+    reason:'Exact retired Source connection URL; fixed 410 refusal only, no auth lookup, domain writer or fallback'
+  };
+
   if (path === '/api/v1/actions/:opId' || path === '/api/v1/projects/:projectId/research/operations/:operationId/cancel') return {
     method,
     path,
@@ -85,5 +93,26 @@ describe('operation route migration contract', () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+
+describe('retired Source connection transport',()=>{
+  it.each(RETIRED_SOURCE_CONNECTION_ROUTES)('$method $path stays a fixed refusal without database or authenticated work',async route=>{
+    const config=loadConfig({});expect(config.databaseUrl).toBeNull();
+    const app=buildModuleServer(config,[sourcesModule]);
+    try{
+      const response=await app.inject({method:route.method,url:route.path.replace(':connectionId','known-or-absent'),...(route.method==='GET'?{}:{payload:{status:'active',credential_id:'untrusted-body'}})});
+      expect(response.statusCode,response.body).toBe(410);expect(response.json()).toEqual({detail:route.detail});expect(response.headers['set-cookie']).toBeUndefined();
+    }finally{await app.close();}
+  });
+  it('keeps live Channel subscription and connection Recipe reads outside prefix exemptions',async()=>{
+    const app=buildModuleServer(loadConfig({}),[sourcesModule]);
+    try{
+      const live=await app.inject({method:'POST',url:'/api/v1/sources/channels/channel/subscription',payload:{status:'subscribed'}});
+      expect(live.statusCode).not.toBe(410);expect(live.statusCode).toBeGreaterThanOrEqual(400);
+      const recipe=await app.inject({method:'GET',url:'/api/v1/sources/connections/connection/recipe-versions'});expect(recipe.statusCode).not.toBe(410);
+      expect(RETIRED_SOURCE_CONNECTION_ROUTES.filter(r=>r.method!=='GET')).toHaveLength(8);
+    }finally{await app.close();}
   });
 });

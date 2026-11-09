@@ -830,8 +830,28 @@ async function runRemoteHostCliAdapter(
       }]);
     },
   });
+  let dependencyYieldRequested = false;
   if (input.invocation_delivery && stdioController && input.run.session_id) {
-    const liveInput = registerRunLiveInput(input.run.id, input.invocation_delivery, stdioController);
+    let yieldTimer: ReturnType<typeof setTimeout> | undefined;
+    const liveInput = registerRunLiveInput(input.run.id, input.invocation_delivery, stdioController, () => {
+      if (!stdioController.requestYield?.()) return false;
+      dependencyYieldRequested = true;
+      if (!yieldTimer) {
+        // A runtime may ignore ACP cancellation while compacting. Stop only this launch;
+        // a late timer must never reach the resumed attempt of the same logical Run.
+        yieldTimer = setTimeout(() => {
+          void registry.stopAttempt(hostId, input.run.id, launchId, 5_000, false)
+            .then(confirmed => confirmed || registry.stopAttempt(hostId, input.run.id, launchId, 2_000, true))
+            .then(confirmed => {
+              if (!confirmed) process.stderr.write(`[runs] dependency yield could not confirm exit for ${input.run.id}\n`);
+            })
+            .catch(error => process.stderr.write(`[runs] dependency yield stop failed for ${input.run.id}: ${String(error)}\n`));
+        }, 5_000);
+        yieldTimer.unref?.();
+      }
+      return true;
+    });
+    leases.push(() => { clearTimeout(yieldTimer); });
     leases.push(() => liveInput.close());
   }
   void input.thread_event_sink?.([{ event_type: "status", status: "run_started" }]);
@@ -1010,7 +1030,7 @@ async function runRemoteHostCliAdapter(
     );
   }
   const success = result.returncode === 0 && (!protocolResult || (protocolResult.completed && !protocolResult.error));
-  await input.thread_event_sink?.([{ event_type: "status", status: success ? "run_succeeded" : "run_failed" }]);
+  await input.thread_event_sink?.([{ event_type: "status", status: dependencyYieldRequested ? "waiting_for_dependency" : success ? "run_succeeded" : "run_failed" }]);
   return {
     runtime_key: spec.runtime_key,
     adapter_kind: "local_cli",

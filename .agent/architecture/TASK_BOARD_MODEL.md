@@ -117,6 +117,14 @@ inside the Project shell at `/projects/:projectId/tasks/:taskId`. See
 [`PROJECT_WORK.md`](PROJECT_WORK.md) and
 [`FRONTEND_INFORMATION_ARCHITECTURE.md`](FRONTEND_INFORMATION_ARCHITECTURE.md).
 
+The Board read model includes the Task's nullable `completed_at`. Each lane
+initially shows at most 20 Done Tasks completed within the last seven days;
+Tasks without a known completion time remain eligible for that initial set.
+Older and excess Done Tasks can be expanded 20 at a time and collapsed again.
+This is local presentation state, preserves full lane counts, and never hides
+non-Done Tasks or changes Task status. Lane card lists scroll independently
+within the visible Board height; drag previews use an overlay outside the clips.
+
 ## Obsolete patterns (do not reintroduce)
 
 - `POST /api/v1/tasks/{id}/run` (singular **`/run`**) that returned a `Job` and enqueued worker execution.
@@ -165,7 +173,8 @@ introduced. Before configuration, the normal five default lanes are read-only
 projections; the first explicit save materializes them without changing Task
 status or ownership.
 
-`PUT /api/v1/projects/:id/board/columns` saves a complete ordered configuration
+`PUT /api/v1/projects/:id/board/columns` is a thin adapter to the core
+`board.configure` command. An explicit Idempotency-Key is required; it saves a complete ordered configuration
 with the read model's `columns_revision`. The Project must be active and the
 caller a writer. A stale revision returns409. Existing columns can be renamed, reordered or assigned a different lifecycle
 meaning. A meaning change migrates the column's current Tasks through the same
@@ -229,3 +238,96 @@ trusted Run/Agent provenance even when a column change moves many Tasks.
 Normal completion requirements still apply, and column remapping/deletion is
 atomic. Internal Task/Run status semantics remain fixed; Project column labels
 and their mappings customize the workflow presentation.
+
+## Core Project Board configuration and exact placement
+
+`board.configure` and `task.move_to_column` are core-owned commands enabled for
+session users and existing Agent Run tools. They use one strict schema table,
+one policy admission and the existing domain writers under the core transaction.
+The public move URL is `POST /api/v1/tasks/:id/move-to-column`; configuration
+retains its PUT URL. Generic POST and CLI calls share the same registrations.
+Human API callers supply explicit keys; the Board UI creates a key for each
+explicit save/move and never automatically retries writes or stale revisions.
+
+Configure returns a strict receipt containing project_id, columns (no Task
+content/counts) and columns_revision. The browser then reads the full Board
+through its existing authorized GET. Move returns task_id, project_id, status
+and nullable column_id. Both commands recheck live Project writer authority;
+move also locks the full-readable Task. Cross-Space/private/Run-Project denial is
+hidden as canonical 404. Replaying a committed configure does not reapply its old
+revision: it reauthorizes and returns the original receipt. A new command with
+stale revision conflicts. Changed input on the same key is 422; concurrent keys
+for the same invocation return retryable 409. No current revision is guessed.
+
+Agent scope is derived from the current stored Run, with immutable grants,
+current Agent/person authority and effective origin checked by the core. An
+input Project cannot replace that scope. Reasons remain required for Agents;
+Actor identity is resolved from the actual Agent, never the instructing user.
+Agents cannot send human completion overrides. The origin-gated unattended
+policy remains in force; production approval mappings are not enabled. An
+unattended source requiring approval returns operation_approval_mapping_unavailable
+(503, nonretryable), with no business effect or approval request and one failed
+policy audit. The Agent adapter explains the human initiation/approval boundary
+and forbids automatic retry or origin substitution. Generated Agent tool schemas
+require reason and omit override_completion; canonical human schemas retain
+optional/default-null reason and completion acknowledgement.
+
+`configureProjectBoard` joins the explicit core query port via
+withQueryableTransaction, while Task relocations call updateTask with that same
+port. Columns, Tasks, work events, merge Job intents and receipt commit or roll
+back together. Host process work remains in the worker. Domain revision checks,
+flow-event identities and merge uniqueness remain separate from command keys.
+WIP limits remain the existing stored/display hints, not new hard admission
+quotas. Unassigned cannot be configured or selected; duplicate-status columns
+keep distinct keys, and blocked overlays are preserved between in-progress
+columns. Completion failures are canonical operation_invalid_input with allowlisted
+metadata code completion_requirements_unmet and the owning gate's missing/
+unacknowledged list. Human acknowledgement uses the existing completion gate.
+
+The Project Board UI uses exact key/revision movement even for virtual default
+columns, keeping optimistic rollback and its completion confirmation dialog.
+Project Task PATCH rejects raw board_id and column_id (including mixed edits
+and Project reassignment) against the locked Task and target Project inside the
+writer transaction; concurrent reparenting conflicts rather than bypassing it.
+This retired placement entry returns the canonical operation_invalid_input
+envelope; other unmigrated PATCH failures retain their existing route errors.
+A hidden Task blocking configuration returns canonical hidden 404, without
+identifying the Task or committing partial columns/placement.
+Use the named move command so metadata edits cannot bypass column revision.
+Task creation and ordinary metadata/edit commands remain explicit legacy scopes;
+standalone Space Board placement now uses the dedicated core command below.
+Internal legitimate updateTask writers
+retain their transaction port. The subsequent
+[Task lifecycle family](PROJECT_WORK.md#core-task-lifecycle-boundary) now migrates
+set_status's complete/review dispatch and delete's Run/Plan/Host cleanup intents;
+the workers retain the actual external cleanup. No status/complete/handoff/
+report/review semantics or Task owner is substituted by this migration.
+
+Project Task contract dialogs omit placement fields and the standalone Board
+selector; exact placement remains on the Project Board. Standalone Task contract
+dialogs retain their existing Board selection. taskLifecycleOperationsDb (Task contract browser case) exercises
+both from the real Task Detail parent through the real locked writers.
+
+### Standalone Space Board placement
+
+`task.place_in_space_board` is a user-only core command. Its formal entry is
+`POST /tasks/:taskId/space-board-placement` with `{changes: {...}}` and an explicit
+Idempotency-Key. Generic callers include task_id. Changes require board_id or
+column_id and may include the existing accompanying contract fields, so a
+contract save and its placement remain one atomic write. Explicit status,
+deleted_at and a non-null Project destination are excluded: lifecycle commands
+and revision-bearing Project movement retain those responsibilities.
+
+The current full-readable Task must remain standalone under its lock. A supplied
+destination must be an active, undeleted Board in the same Space without a
+Project; it is pinned before the Task. Reparenting either object cannot turn
+this command into a Project write. Column placement reuses the canonical writer,
+including its stored completion gate and required Jobs. Changing Board without
+selecting a column clears the old column while preserving status. Replays check
+live authority and return the retained receipt without another edit.
+
+All raw PATCH board_id/column_id writes are now refused under the Task lock,
+including null clears and mixed edits. The browser sends placement-bearing
+contract saves through this core command and then refreshes the Task; metadata
+edits without placement retain their ordinary PATCH path. No Agent tool or
+permission, automatic retry, or production approval mapping is added.

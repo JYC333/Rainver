@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { roomBudgetLimits } from '../src/modules/rooms/delegationBudget.js';
 import { renderWorkSkill, workSkillPromptPointer } from "../src/modules/skills/workSkill.js";
 import { selectToolBridgeProtocol, workSkillOptionsForRun } from "../src/modules/runs/runWorkSurface.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
@@ -21,6 +22,7 @@ describe("the Skill a Run is given", () => {
     const options = workSkillOptionsForRun(run({ session_id: "session-1", permission_snapshot_json: grants("task.create") }));
     expect(options).toEqual({ conversation: true, deliverOutputs: false });
     const skill = renderWorkSkill(options);
+    expect(skill).toContain('ten per delegatable Agent as soft limit');
     expect(skill).toContain("Your reply is the message they read");
     expect(skill).toContain("project.propose_definition");
     expect(skill).toContain("Artifact type labels");
@@ -90,4 +92,13 @@ it('Following discovery reports ordinary progress without inheriting saved-item 
  expect(skill).toContain('coverage.discovery');expect(skill).toContain('ordinary progress updates');
  expect(skill).not.toContain('Prefer fewer readable items');expect(skill).not.toContain('ten-minute');
  expect(skill).toContain('Existing explicit owner budgets still apply');
+});
+
+describe('room delegation defaults and explicit bounds', () => {
+  it('uses the raised fallback while preserving stored and explicit stop budgets', () => {
+    expect(roomBudgetLimits(null)).toEqual({soft:10,hard:10,softTurns:20,hardTurns:20});
+    expect(roomBudgetLimits({max_fanout:3})).toEqual({soft:3,hard:3,softTurns:6,hardTurns:6});
+    expect(roomBudgetLimits({max_fanout:5,soft_max_fanout:5,hard_max_fanout:10})).toEqual({soft:5,hard:10,softTurns:10,hardTurns:20});
+    expect(roomBudgetLimits({max_fanout:0,hard_max_fanout:20}).hard).toBe(0);
+  });
 });

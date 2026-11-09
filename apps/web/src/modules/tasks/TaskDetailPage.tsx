@@ -79,7 +79,7 @@ export default function TaskDetailPage() {
   async function removeTask() {
     setDeleting(true)
     try {
-      await tasksApi.delete(taskId)
+      await tasksApi.delete(taskId,crypto.randomUUID())
       toast.success('Task deleted')
       navigate(backTo, { replace: true })
     } catch (error) { toast.error(errMsg(error)) }

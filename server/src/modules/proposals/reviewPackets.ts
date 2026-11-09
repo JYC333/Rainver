@@ -1,3 +1,7 @@
+import {PgJobQueueRepository} from '../jobs/repository.js';
+import {OperationError} from '../systemActions/operations/errors.js';
+import {recordPreparedProposalCreation,assertProposalTransaction,lockProposalDependencies,lockSkillReviewProposals} from '../systemActions/operations/proposalTransitions.js';
+import {withQueryableTransaction} from '../routeUtils/common.js';
 import { randomUUID } from "node:crypto";
 import type { ProposalAcceptResultType } from "@rainver/protocol";
 import { assertCanReviewContextOpsPacket } from "../contextOps/reviewPolicy.js";
@@ -50,13 +54,36 @@ export interface InsertProposalRowInput {
   projectFolderId?: string | null;
   projectId?: string | null;
   createdAt?: string;
+  reviewDeadline?:unknown;
+  expiresAt?:unknown;
   requiredApproverRole?: string | null;
   actionIdempotencyKey?:string|null;
   /** A person's pending request identity; unique among pending proposals of a type in a Space. */
   pendingOperationKey?: string | null;
 }
 
+/** Standalone insertion owns its short dependency-check transaction; composed writers join their caller port. */
 export async function insertProposalRow(db: Queryable, input: InsertProposalRowInput): Promise<ProposalRow> {
+  return withQueryableTransaction(db,async db=>{
+  await assertProposalTransaction(db);
+  let status=input.status??'pending';
+  if(input.createdByRunId){
+
+    if(status==='staged'){
+      const run=(await db.query<{status:string}>('SELECT status FROM runs WHERE id=$1 AND space_id=$2',[input.createdByRunId,input.spaceId])).rows[0];
+      if(!run)throw new OperationError('operation_not_found',404);
+      if(['succeeded','degraded'].includes(run.status))status='pending';
+      else if(['failed','cancelled','orphaned'].includes(run.status))status='rejected';
+    }
+  }
+  const skillPackage=(input.payload as {skill_package_id?:unknown}|null)?.skill_package_id;
+  if(input.proposalType==='skill_import_approve' && typeof skillPackage==='string')await lockSkillReviewProposals(db,input.spaceId,[skillPackage],true);
+  const dependency=(input.payload as {depends_on_proposal_id?:unknown}|null)?.depends_on_proposal_id;
+  if(typeof dependency==='string'){
+    await lockProposalDependencies(db,input.spaceId,[dependency]);
+    const parent=(await db.query<{status:string;expired:boolean}>(`SELECT status,(expires_at IS NOT NULL AND expires_at<=now()) AS expired FROM proposals WHERE id=$1 AND space_id=$2`,[dependency,input.spaceId])).rows[0];
+    if(!parent || !['pending','staged','accepted'].includes(parent.status) || parent.expired && parent.status!=='accepted')throw new OperationError('operation_conflict',409);
+  }
   const id = input.id ?? randomUUID();
   const now = input.createdAt ?? new Date().toISOString();
   const result = await db.query<ProposalRow>(
@@ -69,8 +96,8 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
        pending_operation_key
      ) VALUES (
        $1, $2, $3, $4, $5, $6,
-       $7, $8, $9, $10, $11::jsonb, NULL,
-       NULL, $12, $12, NULL, NULL,
+       $7, $8, $9, $10, $11::jsonb, $24,
+       $25, $12, $12, NULL, NULL,
        $13, $14, $18, $15, $22,
        $19, $16, $17, $20, $21,
        $23
@@ -87,7 +114,7 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
       input.spaceId,
       input.createdByRunId ?? null,
       input.proposalType,
-      input.status ?? "pending",
+      status,
       input.riskLevel ?? "low",
       input.urgency ?? "normal",
       input.preview ?? false,
@@ -106,9 +133,14 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
       input.actionIdempotencyKey??null,
       input.ownerUserId === undefined ? input.createdByUserId : input.ownerUserId,
       input.pendingOperationKey ?? null,
+      input.reviewDeadline ?? null,
+      input.expiresAt ?? null,
     ],
   );
+  if(input.status==='staged' && input.createdByRunId)await new PgJobQueueRepository(db).enqueue({job_type:'run_proposal_publication',space_id:input.spaceId,user_id:input.createdByUserId,payload:{run_id:input.createdByRunId,proposal_id:id}});
+  recordPreparedProposalCreation(db,result.rows[0]!.id);
   return result.rows[0]!;
+  });
 }
 
 /**

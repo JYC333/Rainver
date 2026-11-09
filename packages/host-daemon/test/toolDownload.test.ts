@@ -322,7 +322,7 @@ describe("runtime artifact downloads", () => {
     const destination = join(tempDir, "archive");
     await expect(downloadRuntimeArtifact(
       "https://github.com/release", destination, null, () => {}, { lookup, fetch }, { mode: "system_tun" },
-    )).rejects.toThrow("requires a pinned SHA-256");
+    )).rejects.toThrow("requires a pinned checksum");
     expect(fetch).not.toHaveBeenCalled();
     await expect(downloadRuntimeArtifact(
       "https://github.com/release", destination, "a".repeat(64), () => {}, { lookup, fetch }, { mode: "system_tun" },

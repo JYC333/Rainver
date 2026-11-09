@@ -97,6 +97,14 @@ draft saves, research-question changes, and incremental-trigger consumption use
 the same fence. The aggregate lock order is Project, then Operation/Automation,
 then Research Workflow.
 
+Before archive's Project lock, the root owner pre-discovers every affected
+Workflow coordinator/node Run and admits the full sorted linked-request set.
+The same transaction cancels Workflow/Job/Run state and publishes Proposal/request
+outcomes; storage failure rolls the Project archive back. The status-update entry
+uses the same owner. Nonlocking writer preflight does not replace the locked
+current-authority check. New Run membership after admission conflicts without
+late key acquisition; no automatic retry or approval mapping is enabled.
+
 ### ProjectFolder (logical, owned, not linked)
 
 A Project Folder is a registered logical repository identity owned by exactly
@@ -683,10 +691,12 @@ Once a Project Research operation exists, its
 project-owned Source backfill plans link to that operation and do not mirror
 the total in `strategy_json`. Standalone Source backfill plans retain their
 own plan-level budget. The research execution-profile service resolves the
-selected Model Provider/model; for the Agent stages (screening, synthesis,
-critique, monitoring comparison) it also reuses or provisions the
-system-managed research Agent and its Runtime Profile, and for bounded
-ProviderTask stages it resolves the provider and model alone. Research does not
+selected Model Provider/model. At intake it also reuses or provisions the
+system-managed research Agent and its Runtime Profile, which remain the
+authority for what is still Agent-shaped: the screening rules' Source
+post-processing Runs (pinned to that Profile), the WorkflowExecution
+coordinator Run of every research pass (its Automation names the Agent) and
+the synthesis-only snapshot's Agent node. Research does not
 expose runtime adapter, CLI credential, Agent, or profile overrides. It reuses or creates the selected monitor's project binding,
 post-processing rule, and history plan; a reused rule takes this start's Agent,
 Runtime Profile and research question, as a new one would. Research screening recovery batches
@@ -762,13 +772,14 @@ matrix, the operation transitions directly to the completed no-relevant-sources
 outcome instead of reporting a stale-state conflict.
 The workbench therefore does not have to wait for a
 later reconciliation tick before showing the new attempt's age. While the run
-is active, that read model also projects the linked `agent_run` job status,
-attempt count, worker heartbeat/update timestamps, and latest run-event type.
+is active, that read model also projects the linked `provider_task_run` job
+status, attempt count, worker heartbeat/update timestamps, and latest run-event
+type.
 The UI uses these fields to distinguish waiting for a worker, an active worker,
 an old heartbeat, and a completed worker whose result has not yet been
 reconciled. This is operational health/progress telemetry, not a model-generated
-percentage: the synthesis agent does not currently emit a reliable inner-step
-completion percentage. Project detail's Recent Runs list re-fetches canonical
+percentage: a bounded synthesis task emits no inner-step completion
+percentage. Project detail's Recent Runs list re-fetches canonical
 run status while a project run or research operation is active, so it does not
 retain a stale `running` badge after the run detail has reached a terminal
 state. If the scheduler projection is still stale, the workbench offers a
@@ -917,6 +928,33 @@ operation steps. A failed operation retains its failed stage in
 than falling back to the sentinel `current_stage = failed`. The progress bar,
 detail counters, and step indicator therefore remain consistent even when a
 screening batch fails part way through.
+
+The queued research stages — monitoring comparison (per workflow batch and
+standing), brief synthesis, its one revision and its critique — are bounded
+ProviderTask Runs (`researchStageTasks.ts`), not Agent Runs. Admission creates
+a `queued` `provider_task` Run carrying the stage identifier
+(`research.monitor_compare` or `research.brief_synthesize`) as `capability_id`,
+the rendered instruction, the frozen output contract and, in
+`route_hints_json`, the provider/model resolved now: a workflow's stages take
+them from its research Runtime Profile (`resolveResearchStageProvider`), so
+screening and synthesis stay on one selection. An unavailable explicit Profile
+fails admission; a standing comparison without a Profile takes the Space
+default. One `provider_task_run` job performs it; the preparer
+registered under the stage identifier rebuilds the request from the Run alone,
+and the Run spends for itself under its managed `project_research`
+pre-authorization. The accepted completion is published by
+`publishMaterializedProviderTaskRun`: the canonical materializer persists the
+declared `research_report.archive.v1` artifact, the verification engine runs
+what the contract declares, the terminal output names both in its
+`materialization` / `verification_results`. Publication holds the Run row lock
+and commits outputs and terminal status together; post-run finalization records
+the evaluation and settles the pass node delegating to the Run. The domain
+consumers (`reconcileCompletedDraft`, `reconcileCompletedCritique`,
+`reconcileCompletedComparison`, the standing batch) read only that canonical
+envelope, so they are indifferent to execution kind. Retry is the job's own
+attempts and the provider key pool; once the last attempt fails, the Run
+settles `failed` and the operation fails with that Run's error, and the
+operation's retry admits a fresh Run.
 
 Project Research has a level-triggered recovery invariant:
 every research stage must be recoverable by the periodic reconciler from the
@@ -1589,13 +1627,47 @@ It never executes or blocks those objects. Ordered optional steps provide a
 product progress view; status and `progress_json` are projected from validated,
 same-space links when an operation is read. `version` starts at 1 and increments
 on every operation projection/state mutation; managed research updates require
-the version read under the locked operation-projection row. Public routes live under
-`/api/v1/projects/{projectId}/operations`; the generic cancellation there
-changes only the operation grouping record and never cancels linked execution
-objects. Research operations are the exception: their dedicated cancel route
+the version read under the locked operation-projection row. Public create/cancel
+commands are `project.operation.create/cancel`, user-only operations over the
+shared execution core. Formal URLs remain under
+`/api/v1/projects/{projectId}/operations`; generic POST and typed browser helpers
+share explicit caller keys, canonical errors and strict success envelopes.
+Public drafts accept custom/source_setup/source_backfill labels, title, optional
+intent_text, ordered steps (title/detail), and nullable initiating_run_id and
+plan_artifact_id references. Intent and references default to null; steps default
+to an empty array. References retain the canonical writer's same-Space/Project
+checks and must pass current Run/Artifact content and inherited Room read gates
+before new execution or replay. Oversight alone cannot authorize attaching
+another person's private resource. Association stores metadata only and grants
+no execution or read authority. Research creation, arbitrary caller progress and
+step status remain internal to their owning orchestrators.
+
+Intent/detail and step count have no new migration-specific quota. Both formal
+REST and generic commands use createServerApp's existing 32 MiB whole-body
+limit before JSON parsing; body overflow returns the gateway's 413. The
+frontend nginx API proxy does not override its inherited/default body limit,
+which can be stricter; the test proves the server HTTP bound, not a live proxy
+configuration. Title/id bounds match existing database columns. Cache-control and request-id continuity
+use the gateway's existing conventions; no parallel transport mechanism exists.
+
+Command receipts contain only id, project_id, kind, status and version, so no
+Research binding or progress content escapes through cancellation/replay.
+Current Project writer authority is locked and rechecked before execution and
+replay; archived Projects conflict and cross-Space/lost authority is hidden.
+There is no public progress-update command and neither command is Agent-callable.
+Internal createManagedResearch/setManagedState, Source create/link and domain
+idempotency/provenance remain with their existing owners.
+
+Nonresearch generic cancellation changes the grouping record only: completed
+and cancelled conflict, failed can still cancel. For research targets, the
+same generic URL shares the Research stop/Thread/Run authorization closure and
+transaction-bound cancellation/reconciliation/Job writer; it returns 409 for
+completed, failed or cancelled targets. Its dedicated cancel route
 (`/research/operations/{operationId}/cancel`) is policy-enforced as
 `research.acquisition.cancel` and also terminates the operation's in-flight
-Runs, screening batches, backfill plans, and pass Execution — see
+Runs, screening batches, backfill plans, and pass Execution through the worker
+after commit. The dedicated command returns successful already_terminal receipts
+for terminal targets. No process IO occurs inside the core transaction — see
 `.agent/architecture/SYSTEM_ACTIONS.md`, `research.cancel_acquisition`.
 
 ## Bounded manual information monitoring (P1)
@@ -1823,7 +1895,7 @@ consumers. The retained production families are:
 | Operations, Jobs and Scheduler | `ResearchPipelineService`, acquisition/screening/synthesis coordinators, research Job handlers, execution nudger/integrity/standing dispatch; retries, cancellation and recovery still have producers |
 | Workflow executions | `researchPassExecution` reconcile_pass/apply_stage_run and `synthesisOnlyExecution`, execution registration and outcome handlers; active callers and reentry must not be left dangling |
 | Prompts and templates | synthesis/critique/refinement/evidence/monitor/query planning catalog assets and research_reader template; runtime/catalog selection and existing versions are consumers even without a static direct import |
-| Managed Agents and profiles | Research `executionProfileService` and area/refinement paths; system_research/opencode managed profiles remain on-demand execution dependencies |
+| Managed Agents and profiles | Research `executionProfileService`; the system_research Agent and its opencode managed Profile remain on-demand dependencies of screening, pass coordinators and synthesis-only snapshots, while queued stages and area/refinement paths resolve a provider only |
 | Shared Sources, audit and proposals | Source completion/post-processing hooks, deep_analysis evidence, Thread scope, output schemas, Run/profile snapshots, notes/report provenance, history-extension appliers; these are not duplicate monitoring pipelines |
 | Schema and protocol | Drizzle projectResearch/projectResearchContext/researchArea/research families and shared Source/Run/Job/profile/ontology data; protocol projectResearch/researchDiscovery/systemActions and historical wire formats retain readers/writers |
 
@@ -1911,3 +1983,26 @@ The fixture's rows are Space/person-owned, so shared Project placement is not a
 claim of per-Project data partitioning. See the
 [platform contract and acceptance](OFFICIAL_OPTIONAL_MODULES.md#operation-platform-acceptance).
 Stage-3 independent review and final overall P2 review are pending.
+
+
+## Core Source consumption commands
+
+The existing Project Source binding POST/PATCH/DELETE/backfill URLs now adapt
+four user-only core commands: project.source.bind/update/unbind/backfill.
+Strict shared contracts, explicit request keys, current active Project writer
+checks and original domain uniqueness share the canonical binding/routing
+transaction. Create rechecks Source metadata reach; explicit delivery to all
+Project members still requires the owner of a restricted Source. Updates keep
+the existing consumption authority: a Project writer can pause their existing
+binding after Source read access is withdrawn. This grants no Source management
+or egress authority. Proposal-first bind/setup/acquisition remain separate.
+
+Binding, item/evidence links, Corpus synchronization, collection notifications,
+optional Standing comparison initialization and required domain jobs remain
+inside the same transaction as the policy audit and receipt. Existing canonical
+routing remains the sole producer. No provider IO is introduced. Domain-key
+conflicts are typed, and receipt replay revalidates current Project/Source
+permissions before returning historical output. Sources and Projects browser
+facades share these core calls; they return the existing typed binding/backfill
+shapes. The backfill DTO correctly names its actual source_channel_id rather
+than the former stale source_connection_id field.

@@ -1,3 +1,9 @@
+import {waitForLockWaiter} from './support/lockWait.js';
+import {resetTables} from './support/resetTables.js';
+import {ProjectDefinitionProposalService} from '../src/modules/projects/projectDefinitionProposalService.js';
+import {PgProposalApplyService} from '../src/modules/proposals/applyService.js';
+import {lockProposalTransitions} from '../src/modules/systemActions/operations/proposalTransitions.js';
+import {canonical,lockRequestKey,record,requestScope,fingerprint} from '../src/modules/systemActions/operations/repository.js';
 import {assertProjectWriterForMutation} from '../src/modules/projects/access.js';
 import {assertSourceEgressAllowedForDestination} from '../src/modules/sources/sourcePromptEgress.js';
 import type {SourceConnectionRow} from '../src/modules/sources/sourceRepositoryRows.js';
@@ -36,10 +42,12 @@ import type { OperationRegistration } from '../src/modules/systemActions/operati
 import { buildModuleServer } from './support/moduleServer.js';
 import { systemActionsModule } from '../src/modules/systemActions/index.js';
 import { __setAuthIdentityForTests } from '../src/modules/auth/identity.js';
+const ENABLED_USER_OPERATIONS = ["board.configure", "inquiry.thread.create", "knowledge.note.delete", "knowledge.note.rollback", "note.raise_as_question", "policy.action_grant.create", "policy.action_grant.revoke", "project.operation.cancel", "project.operation.create", "project.source.backfill", "project.source.bind", "project.source.unbind", "project.source.update", "research.cancel_acquisition", "room.collaboration.update_participants", "source.backfill.create_plan", "source.backfill.pause", "source.backfill.preview", "source.backfill.resume", "source.channel.create", "source.channel.scan", "source.channel.set_subscription", "source.channel.update", "source.extraction.dispatch", "source.processing.rule.create", "source.processing.rule.dispatch", "source.processing.rule.update", "source.recipe.create", "source.recommendation.decide", "system.actions.list", "task.delete", "task.move_to_column", "task.place_in_space_board", "task.set_status"];
 const db = useTestDatabase(import.meta.filename);
 let space: string, owner: string, project: string, operation: string;
 beforeEach(async () => {
   if (!db.available) return;
+  await resetTables(db.pool,['spaces','users','source_connectors','source_providers'],{cascade:true});
   space = randomUUID();
   owner = randomUUID();
   project = randomUUID();
@@ -266,15 +274,9 @@ describe('transactional operation execution', () => {
       expect(res.statusCode).toBe(200);
       expect(res.headers['cache-control']).toContain('private');
       expect(res.headers['cache-control']).toContain('no-store');
-      expect(res.json()).toMatchObject({
-        status: 'succeeded',
-        data: {
-          actions: [{
-            id: 'system.actions.list',
-            kind: 'query'
-          },{id:'research.cancel_acquisition',kind:'command'}]
-        }
-      });
+      expect(res.json().status).toBe('succeeded');
+      expect(res.json().data.actions.map((a:{id:string})=>a.id).sort()).toEqual(ENABLED_USER_OPERATIONS);
+      expect(res.json().data.actions).toEqual(expect.arrayContaining([{id:'system.actions.list',kind:'query',version:1,title:expect.any(String)},{id:'source.backfill.preview',kind:'query',version:1,title:expect.any(String)}]));
       expect((await app.inject({
         method: 'POST',
         url: '/api/v1/actions/research.start_acquisition',
@@ -287,7 +289,7 @@ describe('transactional operation execution', () => {
     }
   });
 });
-function approvalFixture() {
+function approvalFixture(options:{dependency?:string;type?:string;channel?:string;agentId?:string;runId?:string}={}) {
   const r = registration(update);
   const base = SYSTEM_ACTION_REGISTRY.find(d => d.id === 'project.propose_definition')!;
   r.definition = {
@@ -295,11 +297,11 @@ function approvalFixture() {
     id: base.id,
     policy_action: base.policy_action,
     gate_class: base.gate_class,
-    proposal_type: base.proposal_type
+    proposal_type: options.type??base.proposal_type
   };
   r.approval = {
     mode: 'proposal_submission',
-    proposalType: 'project_brief_publish',
+    proposalType: options.type??'project_brief_publish',
     gate: {
       kind: 'hard_gate',
       gate_class: 'direction'
@@ -312,10 +314,12 @@ function approvalFixture() {
       const row = await insertProposalRow(tx, {
         spaceId: space,
         projectId: project,
-        proposalType: 'project_brief_publish',
+        proposalType: options.type??'project_brief_publish',
         title: 'Fixture approval',
         payload: {
-          proposal_type: 'project_brief_publish',
+          proposal_type: options.type??'project_brief_publish',
+          ...(options.dependency?{depends_on_proposal_id:options.dependency}:{}),
+          ...(options.channel?{source_channel_id:options.channel}:{}),
           action_id: 'project.propose_definition',
           project_id: project,
           goal: 'Fixture operation approval',
@@ -324,7 +328,8 @@ function approvalFixture() {
           }).name
         },
         rationale: 'Operation integration fixture',
-        createdByUserId: a.on_behalf_of_user_id,
+        createdByUserId: options.agentId?null:a.on_behalf_of_user_id,
+        createdByAgentId:options.agentId??null,createdByRunId:options.runId??null,
         ownerUserId: owner,
         requiredApproverRole: 'owner',
         visibility: 'private',
@@ -335,7 +340,7 @@ function approvalFixture() {
   };
   const engine = core(r),
     registry = new ProposalApplierRegistry();
-  registry.register('project_brief_publish', async ({
+  registry.register(options.type??'project_brief_publish', async ({
     db: tx,
     proposal
   }) => ({
@@ -1146,7 +1151,7 @@ it('production composition enables no approval mapping and legacy metadata canno
       expect(response.statusCode,definition.id).toBe(404);
     }
     const catalog=(await app.inject({method:'GET',url:'/api/v1/queries/system.actions.list'})).json();
-    expect(catalog.data.actions.map((a:{id:string})=>a.id).sort()).toEqual(['research.cancel_acquisition','system.actions.list']);
+    expect(catalog.data.actions.map((a:{id:string})=>a.id).sort()).toEqual(ENABLED_USER_OPERATIONS);
   } finally {await app.close();}
 });
 
@@ -1190,4 +1195,172 @@ it('isolates the same Agent/key by instructing person and reauthorizes a revoked
   expect((await engine.execute(r.definition.id,{name:'first-person'},first,'first-retry',key)).body).toMatchObject({data:{name:'first-person'}});
   await db.pool.query('DELETE FROM project_members WHERE project_id=$1 AND user_id=$2',[project,other]);
   expect((await engine.execute(r.definition.id,{name:'second-person'},second,'revoked',key)).http_status).toBe(404);
+});
+
+describe('P5 canonical Proposal writer transitions',()=>{
+ const pending=async(options:Parameters<typeof approvalFixture>[0]={},key:string=randomUUID())=>{
+  const fixture=approvalFixture(options),response=await fixture.engine.execute(fixture.r.definition.id,{name:'Frozen work'},actor(),randomUUID(),key);
+  expect(response.http_status,JSON.stringify(response.body)).toBe(202);
+  return {...fixture,id:(response.body as {proposal_id:string}).proposal_id,key};
+ };
+ const link=async(id:string)=>(await db.pool.query('SELECT * FROM operation_idempotency WHERE proposal_id=$1',[id])).rows[0];
+ const states=async(ids:string[])=>(await db.pool.query('SELECT id,status FROM proposals WHERE id=ANY($1::varchar[]) ORDER BY id',[ids])).rows;
+ const cascade=async()=>{
+  const channel=randomUUID();await seedArxivSourceChain(db.pool,{space,owner,connector:randomUUID(),connection:randomUUID(),channel,now:new Date().toISOString()});
+  await db.pool.query("UPDATE source_channels SET status='paused' WHERE id=$1",[channel]);
+  await db.pool.query("UPDATE source_connections SET status='paused' WHERE id=(SELECT source_connection_id FROM source_channels WHERE id=$1)",[channel]);
+  const root=await pending({type:'source_channel_activation',channel},'z-root');
+  const a=await pending({dependency:root.id},'a-child'),b=await pending({dependency:root.id},'b-child');
+  return {root,a,b,channel};
+ };
+ it('canonical Source rejection atomically terminalizes every linked dependent request',async()=>{
+  const {root,a,b,channel}=await cascade();
+  const descendant=await pending({dependency:a.id},'c-grandchild');
+  const service=new PgProposalApplyService(loadConfig({SERVER_DATABASE_URL:db.connectionUri}));
+  expect(await service.reject(root.id,{spaceId:space,userId:owner})).not.toBeNull();
+  expect(await states([root.id,a.id,b.id])).toEqual(expect.arrayContaining([{id:root.id,status:'rejected'},{id:a.id,status:'superseded'},{id:b.id,status:'superseded'}]));
+  expect((await link(root.id)).state).toBe('rejected');expect((await link(a.id)).state).toBe('superseded');expect((await link(b.id)).state).toBe('superseded');
+  expect((await link(descendant.id)).state).toBe('superseded');expect((await states([descendant.id]))[0].status).toBe('superseded');
+  expect((await db.pool.query('SELECT status FROM source_channels WHERE id=$1',[channel])).rows[0].status).toBe('archived');
+ });
+ it('rolls back Source cleanup and all Proposal/request cascade writes if one request transition fails',async()=>{
+  const {root,a,b,channel}=await cascade();
+  await db.pool.query("CREATE FUNCTION reject_transition() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.state='superseded' THEN RAISE EXCEPTION 'transition rejected'; END IF; RETURN NEW; END $$");
+  await db.pool.query('CREATE TRIGGER reject_transition BEFORE UPDATE ON operation_idempotency FOR EACH ROW EXECUTE FUNCTION reject_transition()');
+  try{
+   await expect(root.service.reject(root.id,{spaceId:space,userId:owner})).rejects.toThrow('transition rejected');
+   expect((await states([root.id,a.id,b.id])).every(row=>row.status==='pending')).toBe(true);
+   for(const id of [root.id,a.id,b.id])expect((await link(id)).state).toBe('pending_approval');
+   expect((await db.pool.query('SELECT status FROM source_channels WHERE id=$1',[channel])).rows[0].status).toBe('paused');
+  }finally{await db.pool.query('DROP TRIGGER reject_transition ON operation_idempotency');await db.pool.query('DROP FUNCTION reject_transition()');}
+ });
+ it('acquires every cascade key in sorted scope order before any Proposal row lock',async()=>{
+  const {root,a,b}=await cascade(),rows=await Promise.all([link(root.id),link(a.id),link(b.id)]);
+  const scope=(row:any)=>[row.space_id,row.principal_kind,row.principal_id,row.on_behalf,row.authority_scope_id,row.operation_id,row.idempotency_key];
+  rows.sort((x,y)=>canonical(scope(x))<canonical(scope(y))?-1:1);
+  const holder=await db.pool.connect(),writer=await db.pool.connect();
+  await holder.query('BEGIN');await lockRequestKey(holder,scope(rows.at(-1)));
+  await writer.query('BEGIN');
+  try{
+   await expect(lockProposalTransitions(writer,space,[root.id],true)).rejects.toMatchObject({code:'idempotency_in_progress'});
+   // Earlier keys remain held in this externally owned transaction until rollback.
+   await expect(withTransaction(db.pool,tx=>lockRequestKey(tx,scope(rows[0])))).rejects.toMatchObject({code:'idempotency_in_progress'});
+   // No Proposal row was taken before the unavailable last key.
+   await db.pool.query('SELECT id FROM proposals WHERE id=ANY($1::varchar[]) FOR UPDATE NOWAIT',[[root.id,a.id,b.id]]);
+  }finally{await writer.query('ROLLBACK');writer.release();await holder.query('ROLLBACK');holder.release();}
+  expect((await states([root.id,a.id,b.id])).every(row=>row.status==='pending')).toBe(true);
+ });
+ it('prevents new dependency edges during a cascade and refuses them after parent rejection',async()=>{
+  const {root}=await cascade(),holder=await db.pool.connect();
+  await holder.query('BEGIN');await lockProposalTransitions(holder,space,[root.id],true);
+  const create=()=>withTransaction(db.pool,tx=>insertProposalRow(tx,{spaceId:space,projectId:project,proposalType:'project_brief_publish',title:'Late dependency',payload:{depends_on_proposal_id:root.id},rationale:'Fixture',createdByUserId:owner,visibility:'private'}));
+  try{await expect(create()).rejects.toMatchObject({code:'idempotency_in_progress'});}
+  finally{await holder.query('ROLLBACK');holder.release();}
+  await root.service.reject(root.id,{spaceId:space,userId:owner});
+  await expect(create()).rejects.toMatchObject({code:'operation_conflict'});
+ });
+ it('detects graph growth during key-set discovery rather than taking late keys',async()=>{
+  const {root}=await cascade(),block=await db.pool.connect();
+  await block.query('BEGIN');await block.query('LOCK TABLE operation_idempotency IN ACCESS EXCLUSIVE MODE');
+  const transition=withTransaction(db.pool,tx=>lockProposalTransitions(tx,space,[root.id],true));
+  const outcome=expect(transition).rejects.toMatchObject({code:'operation_conflict'});
+  try{
+   await waitForLockWaiter(db.pool);
+   await insertProposalRow(db.pool,{spaceId:space,projectId:project,proposalType:'project_brief_publish',title:'Concurrent edge',payload:{depends_on_proposal_id:root.id},rationale:'Fixture',createdByUserId:owner,visibility:'private'});
+  }finally{await block.query('COMMIT');block.release();}
+  await outcome;
+  expect((await link(root.id)).state).toBe('pending_approval');
+ });
+
+ it('does not use bare canonical acceptance or advance grants as a backdoor for a linked mapping',async()=>{
+  const {id}=await pending(),plain=new PgProposalApplyService(loadConfig({SERVER_DATABASE_URL:db.connectionUri}));
+  await expect(plain.accept(id,{spaceId:space,userId:owner})).rejects.toMatchObject({code:'operation_approval_mapping_unavailable'});
+  await expect(plain.acceptAgentProposalIfGranted(id,{actionId:'project.propose_definition'})).rejects.toMatchObject({code:'operation_approval_mapping_unavailable'});
+  expect((await link(id)).state).toBe('pending_approval');
+  expect((await states([id]))[0].status).toBe('pending');
+ });
+ it('refuses external code-patch rollback when a descendant request is linked',async()=>{
+  const root=await insertProposalRow(db.pool,{spaceId:space,projectId:project,proposalType:'code_patch',status:'accepted',title:'Historical patch',payload:{file_count:0},rationale:'Fixture',createdByUserId:owner,visibility:'private'});
+  const child=await pending({dependency:root.id});
+  await expect(new PgProposalApplyService(loadConfig({SERVER_DATABASE_URL:db.connectionUri})).rollback(root.id,{spaceId:space,userId:owner})).rejects.toMatchObject({code:'operation_approval_mapping_unavailable'});
+  expect((await states([root.id]))[0].status).toBe('accepted');expect((await link(child.id)).state).toBe('pending_approval');
+ });
+ it('refuses an unprepared outer owner with a linked descendant before taking keys',async()=>{
+  const root=await insertProposalRow(db.pool,{spaceId:space,projectId:project,proposalType:'source_channel_activation',title:'Unlinked parent',payload:{source_channel_id:randomUUID()},rationale:'Fixture',createdByUserId:owner,visibility:'private'});
+  const child=await pending({dependency:root.id});
+  const holder=await db.pool.connect(),client=await db.pool.connect();
+  await holder.query('BEGIN');await lockProposalTransitions(holder,space,[child.id],true);
+  try{
+   await client.query('BEGIN');
+   const plain=new PgProposalApplyService(loadConfig({SERVER_DATABASE_URL:db.connectionUri}));
+   await expect(plain.rejectInTransaction(client,root.id,{spaceId:space,userId:owner})).rejects.toMatchObject({code:'operation_approval_mapping_unavailable',retryable:false});
+   await client.query('ROLLBACK');
+   expect((await link(child.id)).state).toBe('pending_approval');expect((await states([root.id]))[0].status).toBe('pending');
+  }finally{await client.query('ROLLBACK');client.release();await holder.query('ROLLBACK');holder.release();}
+ });
+ it('does not fabricate an atomic result for accepted-without-result requests',async()=>{
+  const {id}=await pending();
+  await db.pool.query("UPDATE proposals SET status='accepted' WHERE id=$1",[id]);
+  await expect(withTransaction(db.pool,async tx=>(await lockProposalTransitions(tx,space,[id])).finish())).rejects.toMatchObject({code:'operation_approval_state_inconsistent'});
+  expect((await link(id)).state).toBe('pending_approval');
+ });
+ it('coordinates expiry/retention cleanup with the same complete cascade key set',async()=>{
+  const {root,a}=await cascade();
+  await db.pool.query("UPDATE proposals SET expires_at=now()-interval '1 second' WHERE id=$1",[a.id]);
+  const holder=await db.pool.connect();await holder.query('BEGIN');await lockProposalTransitions(holder,space,[root.id],true);
+  try{
+   await pruneOperationRequests(db.pool);
+   expect((await link(a.id)).state).toBe('pending_approval');
+   await expect(root.service.reject(root.id,{spaceId:space,userId:owner})).rejects.toMatchObject({code:'idempotency_in_progress'});
+  }finally{await holder.query('ROLLBACK');holder.release();}
+  await pruneOperationRequests(db.pool);expect((await link(a.id)).state).toBe('expired');
+  await db.pool.query("UPDATE operation_idempotency SET terminal_at=now()-interval '8 days' WHERE proposal_id=$1",[a.id]);
+  const retentionHolder=await db.pool.connect();await retentionHolder.query('BEGIN');
+  await lockProposalTransitions(retentionHolder,space,[root.id],true);
+  try{await pruneOperationRequests(db.pool);expect((await link(a.id)).state).toBe('expired');}
+  finally{await retentionHolder.query('ROLLBACK');retentionHolder.release();}
+  await pruneOperationRequests(db.pool);expect(await link(a.id)).toBeUndefined();
+  await root.service.reject(root.id,{spaceId:space,userId:owner});
+  expect((await link(root.id)).state).toBe('rejected');
+ });
+ it('serializes canonical accept/reject without a second apply or mismatched request',async()=>{
+  const {id,service}=await pending();
+  const outcomes=await Promise.allSettled([service.accept(id,{spaceId:space,userId:owner}),service.reject(id,{spaceId:space,userId:owner})]);
+  expect(outcomes.some(r=>r.status==='fulfilled')).toBe(true);
+  const status=(await states([id]))[0].status;
+  expect((await link(id)).state).toBe(status==='accepted'?'succeeded':'rejected');
+ });
+ it.each([false,true])('Project definition replacement updates the linked request atomically (rollback=%s)',async fail=>{
+  const agentId=randomUUID(),oldRun=randomUUID(),newRun=randomUUID();
+  await seedRun(db.pool,{id:oldRun,space,owner,agent:agentId,version:randomUUID()});
+  const old=await pending({agentId,runId:oldRun});
+  const replace=()=>new ProjectDefinitionProposalService(db.pool).proposeDefinition({spaceId:space,userId:owner},project,{goal:'Replacement definition'},{agentId,runId:newRun});
+  // The replacement Run is a real same-Agent record.
+  const version=(await db.pool.query('SELECT agent_version_id FROM runs WHERE id=$1',[oldRun])).rows[0].agent_version_id;
+  await seedRun(db.pool,{id:newRun,space,owner,agent:agentId,version,existingAgent:true});
+  if(fail){
+   await db.pool.query("CREATE FUNCTION reject_definition_replacement() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.payload_json->>'goal'='Replacement definition' THEN RAISE EXCEPTION 'new definition rejected'; END IF; RETURN NEW; END $$");
+   await db.pool.query('CREATE TRIGGER reject_definition_replacement BEFORE INSERT ON proposals FOR EACH ROW EXECUTE FUNCTION reject_definition_replacement()');
+   try{await expect(replace()).rejects.toThrow('new definition rejected');expect((await states([old.id]))[0].status).toBe('pending');expect((await link(old.id)).state).toBe('pending_approval');}
+   finally{await db.pool.query('DROP TRIGGER reject_definition_replacement ON proposals');await db.pool.query('DROP FUNCTION reject_definition_replacement()');}
+  }else{
+   const replacement=await replace();expect(replacement.proposal.id).not.toBe(old.id);
+   expect((await states([old.id]))[0].status).toBe('superseded');expect((await link(old.id)).state).toBe('superseded');
+   expect(replacement.proposal.payload_json).toMatchObject({goal:'Replacement definition'});
+  }
+ });
+});
+
+
+it.each(['terminal','payload'] as const)('refuses stale pending-request attachment after Proposal %s drift',async drift=>{
+ const p=await insertProposalRow(db.pool,{spaceId:space,projectId:project,proposalType:'project_brief_publish',title:'Unlinked draft',
+  payload:{goal:'Original'},rationale:'Fixture',createdByUserId:owner,visibility:'private'});
+ const a=actor(),input={name:'Frozen'},targets={project_id:project},scope=requestScope(a,`project:${project}`,'fixture.stale-link',randomUUID());
+ if(drift==='terminal')await db.pool.query("UPDATE proposals SET status='superseded' WHERE id=$1",[p.id]);
+ await expect(withTransaction(db.pool,async tx=>{
+  await lockRequestKey(tx,scope);
+  await record(tx,scope,1,fingerprint(1,input,targets),'pending_approval',{status:'pending_approval',proposal_id:p.id},202,p.id,
+   {actor:a,input,targets,payload:{goal:drift==='payload'?'Different':'Original'}});
+ })).rejects.toMatchObject({code:drift==='terminal'?'operation_conflict':'operation_approval_state_inconsistent'});
+ expect((await db.pool.query('SELECT id FROM operation_idempotency WHERE proposal_id=$1',[p.id])).rows).toHaveLength(0);
 });

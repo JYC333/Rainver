@@ -165,3 +165,116 @@ path; `memoryApplyRepository.ts` fixes it to `explicit_user_accept`.
 
 ## Related Decisions
 - [0003-memory-proposal-flow.md](../decisions/0003-memory-proposal-flow.md)
+
+## P5 internal transition port (partial writer migration)
+
+Canonical DB decisions now enter operation-owned Proposal transition admission
+before row/domain locks. The port in
+`systemActions/operations/proposalTransitions.ts` discovers the affected set,
+acquires every linked request key nonblockingly in sorted full-scope order,
+then Proposal closure gates/rows in stable id order, request rows, and finally
+the owning domain locks. Dependency/link drift conflicts without late key
+acquisition or automatic retry. Source activation rejection supersedes pending
+recursive dependents and their linked requests in the same transaction.
+
+Canonical dependency insertion joins the parent closure gate and rechecks
+same-Space parent state. Accepted parents retain valid dependency authority after
+their old review deadline; rejected/superseded/missing parents cannot gain new
+pending dependents after rejection. Standalone insertion owns a short transaction;
+existing transaction clients and branded ports join the caller's transaction.
+Pending operation linking separately locks and rechecks Proposal status/expiry
+and exact frozen payload before persisting the request.
+
+Direct Project definition and monitoring scope/details replacement writers join
+the same transition port before their Project/advisory domain locks. Proposal,
+replacement draft/version and request terminal outcome roll back together.
+These are internal writer migrations, not new public operations or approvals.
+
+Linked canonical acceptance still requires the existing mapped integration and
+full policy-audit recovery owner. It validates/records the actual applier result;
+accepted-without-atomic-result remains inconsistent. Bare acceptance, advance-
+grant application and external code-patch rollback cannot substitute for the
+frozen requester mapping. Unlinked approvals retain their canonical role,
+owner, risk, Source consent, provenance and B10 applier rules.
+
+The next P5-4 subset extends this port to Memory/imported-history pending
+payload revision, Plan review supersession, complete Skill review sets and
+Run recovery/standalone terminal publication. Linked payload revision preserves
+the old Proposal and frozen payload, supersedes that Proposal/request together,
+and inserts a fresh pending Proposal with the same audience, provenance, role,
+deadlines and pending-domain identity. It copies active audience grants, never
+approvals or the old Run tool-call identity. Both callers return the new id;
+the Memory detail page follows it. Unlinked edits retain their id. Only the
+canonical applier may publish active Memory (B10).
+
+Skill review admission resolves pending package siblings and their linked
+requests before the package lock; all siblings supersede atomically. Review
+creation shares the package closure gate and rechecks that review is still open.
+Concurrent decisions conflict without SKIP LOCKED or automatic retry. A root
+without a linked request still uses transactional policy audit/recovery when
+its sibling closure contains linked requests.
+
+Run recovery admits keys per independent candidate transaction before
+Proposal/request/Run locks, then retains the existing Run/Attempt/Proposal/lock
+CTE. Request attachment shares the Run fence; late staged output derives its
+pending/rejected state from the current terminal Run. Materialization keeps
+model/filesystem IO outside the short audit/Proposal/audience DB transaction.
+Independent terminal calls join the same port. Pool-owned Plan/Workflow reconcile,
+Project archive, backing Job cancellation/exhaustion, stale autonomous child
+cancellation, queued Host merge resolution cancellation and Reading provider
+finalization now prepare their exact complete Run set before any domain lock.
+Nested calls reuse the parent's expiring purpose-bound port; set growth conflicts
+without a late key. Canonical user accept now prepares checkpoint/Research-history
+Proposal/cascade and graph Run request sets together immediately after BEGIN,
+following a nonlocking visible-decision preflight. Nested transition writers
+reuse the actual transaction's admitted closure. This is not production mapping
+qualification; unprepared outer callers still cannot take keys late. Evolution now admits all selected/cascade/checkpoint requests before its Bundle
+row lock. Pure DB selections commit once; mixed code-patch selections persist an
+intent plus required Job, execute IO outside transactions and feed private effect
+receipts back to the same canonical appliers for one final DB commit. See
+[the Evolution owner guide](../architecture/EVOLUTION_SIGNAL_SYSTEM.md#evolution-bundles)
+for crash recovery, compensation and the non-atomic external visibility boundary. No alternate
+DB-only decision dispatcher, direct Memory writer, production mapping or public
+proposal.decide authority is introduced.
+
+Project definition/monitoring preflight current writer authority without locks
+before admission and retain the locked authoritative check after it. A newly
+observed pending replacement outside the admitted set returns nonretryable 409
+operation_conflict; callers reread and explicitly initiate a new action. The
+writer never acquires late keys or automatically retries a changed decision.
+Project Source binding dependencies must be full-readable without oversight,
+same-Space/same-Project source_channel_activation Proposals for that channel.
+Creation checks full/no-oversight read; apply uses canonical review reach as
+clarified below. A dependency never grants Source execution,
+owner consent or egress permission.
+
+Review correction: binding **submission** still requires full-readable activation
+without oversight; binding **application** uses the existing canonical Proposal
+review view (including its established oversight/Room reach), not an invented
+full-read prerequisite. Same-Space/Project/type/channel checks apply in both
+cases. A parent hidden from that canonical view remains hidden; review adds no
+Source execution, owner-consent or egress grant.
+
+A revised frozen draft's old caller key remains bound to its original Proposal
+and receipt, even after supersession. It never redirects to the new review id or
+copies approvals. The caller follows the returned revision id, rereads current
+pending Proposals, and uses a new action/key for a new decision. This guidance is
+also supplied by the Agent work skill. Browser parent tests now exercise acceptance
+of the returned new id as well as navigation to it.
+
+Checkpoint/history and Bundle owners retain their private prepared scope across
+nested core transaction ports through the existing internal host bridge. Empty
+known checkpoint sets still prepare a scope so fresh canonical Runs/Proposals
+can register on that exact lifetime. Unknown existing Runs and fresh Runs linked
+in that transaction refuse terminal publication rather than taking late keys.
+An unrelated still-active Research Run may retain staged output/pending request;
+terminal staged output remains inconsistent. Immutable terminal graph histories
+without staged output are excluded from related discovery; explicit checkpoint
+roots and actual dependent cascades are retained. History-extension preflight
+uses the same Project writer gate as its canonical applier (including the payload
+Project fallback), not a new reviewer permission. Mandatory audits for these
+prepared owners join the real transaction and recover only after rollback/release.
+
+Bundle transaction Pools must expose `options.connectionString` for canonical
+audit recovery; missing configuration fails before writes. No production approval
+mapping or public proposal.decide expansion is enabled by writer closure alone.

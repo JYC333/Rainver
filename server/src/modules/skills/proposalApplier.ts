@@ -1,3 +1,4 @@
+import {OperationError} from '../systemActions/operations/errors.js';
 import { SkillReviewProposalRequestSchema, type SkillBinding } from "@rainver/protocol";
 import type {
   ProposalApplierRegistry,
@@ -34,11 +35,12 @@ async function applySkillImportApproveProposal(
   ensureOperation(payload, "skill_import_approve");
   assertSpaceEffectScope(context);
   const skillPackageId = requiredPayloadString(payload, "skill_package_id");
-  // Lock order: this proposal's row (taken by the apply entry), the package
-  // lock, the package row, then only those other reviews no one else holds.
-  // Two reviews of one package approved at once thus queue on the package
-  // instead of waiting on each other's proposal rows; the one that comes
-  // second finds the package reviewed and is superseded below.
+  if(!context.proposalTransitions)throw new OperationError('operation_approval_state_inconsistent',503);
+  const siblings=(await context.db.query<{id:string}>("SELECT id FROM proposals WHERE space_id=$1 AND proposal_type='skill_import_approve' AND status='pending' AND payload_json->>'skill_package_id'=$2",[context.proposal.space_id,skillPackageId])).rows.map(row=>row.id);
+  context.proposalTransitions.assertCovered(siblings);
+  // The canonical apply owner pre-admits every sibling request key and locks
+  // the complete review set before this package/domain lock. Review insertion
+  // shares the nonwaiting closure gate; no SKIP LOCKED partial set is allowed.
   await lockSkillPackage(context.db, context.proposal.space_id, skillPackageId);
   const current = (await context.db.query<{ status: string; reviewed_from_proposal_id: string | null }>(
     `SELECT status, manifest_json->'review'->>'reviewed_from_proposal_id' AS reviewed_from_proposal_id
@@ -65,19 +67,13 @@ async function applySkillImportApproveProposal(
     proposalId: context.proposal.id,
     skillPackageId,
   });
-  // Other people's pending reviews of this package can no longer apply (it is
-  // no longer awaiting review); supersede them rather than leave them to fail
-  // at apply. A review whose row another transaction holds (being approved or
-  // rejected right now) is skipped, not waited on: waiting would deadlock
-  // with its approver, who is queued on the package lock. Approving a skipped
-  // review later supersedes it through the branch above.
+  // All pending sibling reviews are obsolete together with their linked requests.
   await context.db.query(
     `UPDATE proposals SET status = 'superseded', updated_at = $4
       WHERE id IN (
         SELECT id FROM proposals
          WHERE space_id = $1 AND proposal_type = 'skill_import_approve' AND status = 'pending'
-           AND id <> $2 AND payload_json->>'skill_package_id' = $3
-         FOR UPDATE SKIP LOCKED)`,
+           AND id <> $2 AND payload_json->>'skill_package_id' = $3)`,
     [context.proposal.space_id, context.proposal.id, skillPackageId, new Date().toISOString()],
   );
   // A review filed with an enabling binding enables it in the same approval.

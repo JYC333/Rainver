@@ -1,3 +1,6 @@
+import {seedRun} from './support/domainSeeds.js';
+import {loadConfig} from '../src/config.js';
+import {CliAgentToolTransport} from '../src/modules/runs/cliToolTransport.js';
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { POLICY_ACTION_REGISTRY, SYSTEM_ACTION_REGISTRY } from "@rainver/protocol";
@@ -764,6 +767,17 @@ describe("the executor band", () => {
     return { executors, run };
   }
 
+  async function reportThroughCore(run:any,input:object,key:string){
+    if(!(await db.pool.query('SELECT id FROM runs WHERE id=$1',[run.id])).rowCount)
+      await seedRun(db.pool,{id:run.id,space:SPACE,owner:OWNER,agent:AGENT,version:VERSION,existingAgent:true});
+    await db.pool.query("UPDATE runs SET project_id=$2,instructed_by_user_id=$3,status='running',permission_snapshot_json=$4::jsonb WHERE id=$1",
+      [run.id,run.project_id,run.instructed_by_user_id,JSON.stringify({tool_grants:[{action_id:'task.report'}]})]);
+    const record=(await db.pool.query('SELECT * FROM runs WHERE id=$1',[run.id])).rows[0];
+    const result:any=await new CliAgentToolTransport(loadConfig({SERVER_DATABASE_URL:db.connectionUri})).call(record,{id:key,name:'task.report',arguments:input});
+    if(result.httpStatus>=400)throw new HttpError(result.httpStatus,result.body.error.message);
+    return result;
+  }
+
   const dispatch = (key: string) => ({
     actor: { type: "agent" as const, id: AGENT },
     visibility: "agent_tool" as const,
@@ -789,16 +803,15 @@ describe("the executor band", () => {
     expect((open.modelResult as { tasks: Array<{ task_id: string }> }).tasks.map((task) => task.task_id)).toEqual([mine]);
   });
 
-  it("answers an invented task_id with the ids that exist", async (ctx) => {
+  it("corrects an invented Task id with this authorized Project list through core", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // An invented task_id answers with the ids that exist. Do not say only
-    // "Task not found": the model then has no way to correct itself.
+    // Safe discovery uses only this authorized Run Project's visible Tasks.
     const real = randomUUID();
     await makeTask(real);
-    const { executors } = executorsFor();
-    await expect(executors.get("task.report" as SystemActionId)!(
+    const { run } = executorsFor();
+    await expect(reportThroughCore(run,
       { task_id: "memory-chapter", summary: "done" },
-      dispatch(randomUUID()),
+      randomUUID(),
     )).rejects.toMatchObject({
       statusCode: 404,
       message: `No Task in this Project has id 'memory-chapter'. Use one of these ids exactly: ${real} — Work item`,
@@ -922,23 +935,22 @@ describe("the executor band", () => {
     );
     // An Agent's reach is the instructing person's, never wider: without the
     // read predicate any Room's Agent could name a private Task's id.
-    const { executors } = executorsFor({ instructed_by_user_id: OUTSIDER });
-    await expect(executors.get("task.report" as SystemActionId)!(
+    const { run } = executorsFor({ instructed_by_user_id: OUTSIDER });
+    await expect(reportThroughCore(run,
       { task_id: task, summary: "peeking" },
-      dispatch(randomUUID()),
+      randomUUID(),
     )).rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it("keys events per attempt, so a Supervisor retry is not swallowed", async (ctx) => {
+  it("keeps distinct caller keys across Supervisor attempts", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // A retry re-executes the same run id in a fresh process whose tool-call
-    // counter restarts at 1. Do not key the event on the Run alone. Attempt
-    // 2's first report would resolve to attempt 1's event and answer ok.
+    // Separate logical reports use distinct explicit caller keys, including
+    // across physical attempts. The core owns replay/conflict for reused keys.
     const taskA = randomUUID();
     const taskB = randomUUID();
     await makeTask(taskA);
     await makeTask(taskB);
-    const { executors, run } = executorsFor();
+    const { run } = executorsFor();
     const runId = (run as { id: string }).id;
     await db.pool!.query(
       `INSERT INTO runs (id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type, trigger_origin, status, mode, owner_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, $5, 'sandboxed', 'agent', 'manual', 'running', 'live', $6, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
@@ -950,11 +962,10 @@ describe("the executor band", () => {
          VALUES ($1, $2, $3, $4, 'running', now(), now())`,
         [randomUUID(), SPACE, runId, n],
       );
-      // The same JSON-RPC call id each attempt, which is what a restarted
-      // counter produces.
-      await executors.get("task.report" as SystemActionId)!(
+      // The caller supplies a fresh explicit identity for the new report.
+      await reportThroughCore(run,
         { task_id: taskId, summary: `attempt ${n}` },
-        dispatch("1"),
+        `attempt:${n}:1`,
       );
     };
     await attempt(1, taskA);

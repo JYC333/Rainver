@@ -97,6 +97,16 @@ A creation with no Project context ignores the browsed Space and produces
 `(the user's unique Personal Space, null, private)`. Request-supplied
 `space_id` and `visibility` never override this result.
 
+The operation core's server-only `userContentCreation` option applies the above
+creation rule before key/policy admission for registered ungrantable human-only
+draft commands (currently Source Recipe creation), plus exactly the named
+user-only durable Source Monitor creation command `source.channel.create`.
+Monitor creation retains its existing active/paused scheduler semantics; it
+does not gain Agent authority or permission to run an external scan. It preserves principal and
+origin, checks request and effective memberships, and records the browsed Space
+only as audit metadata. It does not authorize cross-Space existing-content
+reads/transfers or allow Agent/Run/approval commands to change their Space.
+
 This rule applies across root resource types, including Agent/template
 creation, Runs and conversations, Activity, Tasks/Boards, Memory,
 Knowledge/Notes, Sources, and relation/academic objects. System materialization
@@ -1556,3 +1566,12 @@ test count as current.
 - `.agent/architecture/POLICY_ENFORCEMENT_INVENTORY.md` — per-domain enforcement status
   and PersonalMemoryGrant implementation detail
 - `docs/TARGET_VIEW_MODEL.md` — ExecutionContext and cross-space aggregation design
+
+Monitor child creation (`source_connection_id`) inherits only an authorized
+parent in the request Space. The named human creation port never searches a
+parent id globally to change Space. An input Project cannot substitute for the
+parent's actual Project; its current read/manage and Project writer gates,
+including authoritative locked rechecks, apply before a child write. A deleted
+parent is hidden even for the original receipt/Monitor creator. New-root private
+Personal placement is unchanged; this grants no Agent or arbitrary durable
+creation placement authority.

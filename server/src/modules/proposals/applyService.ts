@@ -1,7 +1,10 @@
+import {assertCurrentActor,sessionActor} from '../systemActions/operations/actor.js';
+import {hasPreparedProposalDecisionOwner,withCheckpointDecisionOwner,lockProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
+import {OperationError} from '../systemActions/operations/errors.js';
 import {pluginProposalContributor} from '../plugins/proposalContributions.js';
 import {operationProposalService} from "../systemActions/operations/approvals.js";
 import {pluginOperations} from "../plugins/operationRegistry.js";
-import { withPolicyAuditRecovery } from "../policy/auditWriter.js";
+import { isPolicyAuditRecoveryActive, withPolicyAuditRecovery } from "../policy/auditWriter.js";
 import type {ProposalDecisionHooks} from "./decisionHooks.js";
 import { isProjectOwnerLevel } from "../projects/access.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -32,7 +35,7 @@ import { proposalActivityAudience } from "./decisionActivity.js";
 import { PgSnapshotStore } from "../projectFolders/snapshotStore.js";
 import { resolveActiveServerHostLocation, locationAbsoluteRoot } from "../projectFolders/workspaceLocations.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
-import { assertCodePatchTargetInsideRoot, CodePatchFileTransaction } from "../projectFolders/codePatch.js";
+import { prepareCodePatchPlan, assertCodePatchTargetInsideRoot, CodePatchFileTransaction } from "../projectFolders/codePatch.js";
 import { withCodePatchTarget } from "../projectFolders/codePatchTarget.js";
 import { validatePath } from "@rainver/folder-read";
 import { HttpError,type Queryable } from "../routeUtils/common.js";
@@ -77,7 +80,7 @@ export class ProposalApplyHttpError extends Error {
 }
 
 async function roomRunReadableForUser(
-  client: PoolClient,
+  client: Queryable,
   proposal: Pick<ApplyProposalRow, "created_by_run_id" | "space_id">,
   userId: string,
 ): Promise<boolean> {
@@ -110,7 +113,7 @@ const DECISION_STATUS: Record<ProposalDecisionKind, string> = {
  * checks) stays with the decision.
  */
 async function authorizeProposalDecision(
-  client: PoolClient,
+  client: Queryable,
   proposal: ApplyProposalRow | null,
   identity: { spaceId: string; userId: string },
   kind: ProposalDecisionKind,
@@ -234,7 +237,8 @@ export class PgProposalApplyService {
     let transactionResult: ProposalTransactionResult<ProposalAcceptOut> | null = null;
     try {
       await client.query("BEGIN");
-      transactionResult = await this.acceptInTransaction(client, proposalId, identity, options);
+      if(!await this.visibleDecisionCandidate(client,proposalId,identity)){await client.query('COMMIT');return null;}
+      transactionResult = await withCheckpointDecisionOwner(client,identity.spaceId,[proposalId],()=>this.acceptInTransaction(client, proposalId, identity, options),identity.userId);
       await client.query("COMMIT");
       if (transactionResult?.postCommit) await transactionResult.postCommit().catch(() => undefined);
       return transactionResult?.outcome ?? null;
@@ -252,8 +256,31 @@ export class PgProposalApplyService {
    * callback to update a related domain row before this transaction commits.
    * This is the transaction boundary used by evolution bundles.
    */
+  /** Durable bundle intent preflight. Same canonical reach/role/risk/owner gates;
+   * no applier or status write, and all policy audits join the owner's tx. */
+  async prepareBundlePatchInTransaction(db:Queryable,proposalId:string,identity:{spaceId:string;userId:string}){
+    const proposal=await authorizeProposalDecision(db,await this.getProposalForUpdate(db,proposalId),identity,'accept');
+    if(!proposal)throw new ProposalApplyHttpError(404,'Proposal not found');
+    const config={...this.config,auditTransaction:db};
+    return prepareCodePatchPlan({config,db,proposal,userId:identity.userId},'bundle_prepare');
+  }
+
+  async prepareBundleDecisionInTransaction(client:Queryable,proposalId:string,identity:{spaceId:string;userId:string},decision:'approve'|'reject'){
+    const proposal=await authorizeProposalDecision(client,await this.getProposalForUpdate(client,proposalId),identity,decision==='approve'?'accept':'reject');
+    if(!proposal||proposal.preview)throw new ProposalApplyHttpError(404,'Proposal not found');
+    if(decision==='reject'){
+      if(!await canRejectProposal(client,proposal,identity.userId))throw new ProposalApplyHttpError(404,'Proposal not found');
+    }else{
+      if((await client.query('SELECT id FROM operation_idempotency WHERE space_id=$1 AND proposal_id=$2',[identity.spaceId,proposalId])).rows.length && !this.decisionHooks)throw new OperationError('operation_approval_mapping_unavailable',503);
+      assertIncompleteCodePatchConfirmation(proposal.proposal_type,proposal.payload_json,false);
+      await this.assertRequiredContextOwnerApprovals(client,proposal);
+      await this.enforceApplyPolicy(client,proposal,identity.userId,true,'bundle_prepare');
+    }
+    return proposal;
+  }
+
   async acceptInTransaction(
-    client: PoolClient,
+    client: Queryable,
     proposalId: string,
     identity: { spaceId: string; userId: string },
     options: ProposalAcceptOptions = {},
@@ -261,6 +288,12 @@ export class PgProposalApplyService {
   ): Promise<ProposalTransactionResult<ProposalAcceptOut> | null> {
     let rollbackOnFailure: (() => Promise<void>) | null = null;
     try {
+      if(!await this.visibleDecisionCandidate(client,proposalId,identity))return null;
+      if((!this.decisionHooks || !isPolicyAuditRecoveryActive()) &&
+        (await client.query('SELECT id FROM operation_idempotency WHERE proposal_id=$1 AND space_id=$2',[proposalId,identity.spaceId])).rowCount)
+        throw new OperationError('operation_approval_mapping_unavailable',503);
+      const transitions=await lockProposalTransitions(client,identity.spaceId,[proposalId],true,!isPolicyAuditRecoveryActive());
+      if(transitions.hasAnyLinked && !isPolicyAuditRecoveryActive())throw new OperationError('operation_approval_mapping_unavailable',503);
       if (this.decisionHooks && !await this.decisionHooks.beforeDecision(client,proposalId,identity,"accept")) return null;
       const proposal = await authorizeProposalDecision(
         client, await this.getProposalForUpdate(client, proposalId), identity, "accept",
@@ -274,11 +307,14 @@ export class PgProposalApplyService {
         options.confirmIncompletePatch === true,
       );
       await this.assertRequiredContextOwnerApprovals(client, proposal);
-      await this.enforceApplyPolicy(client, proposal, identity.userId);
+      await this.enforceApplyPolicy(client, proposal, identity.userId,transitions.hasAnyLinked||hasPreparedProposalDecisionOwner(client));
       if(await this.decisionHooks?.beforeApply?.(client,proposalId)===false)return null;
       let result:ProposalApplyResult;
-      const apply = (db:Queryable = client) => this.registry.apply({
-        config: this.config,
+      const apply = (db:Queryable = client) => {
+        const config=hasPreparedProposalDecisionOwner(client)?{...this.config,auditTransaction:db}:this.config;
+        return this.registry.apply({
+        proposalTransitions:transitions,
+        config,
         db,
         proposal: {
           id: proposal.id,
@@ -295,7 +331,7 @@ export class PgProposalApplyService {
           project_id: proposal.project_id,
         },
         userId: identity.userId,
-      });
+      });};
       try { result = this.decisionHooks?.runApply ? await this.decisionHooks.runApply(client,proposalId,apply) : await apply(); } catch(error) {
         if(!this.decisionHooks?.applyFailed)throw error;
         result=await this.decisionHooks.applyFailed(client,proposalId,error);
@@ -304,6 +340,7 @@ export class PgProposalApplyService {
       rollbackOnFailure = result.rollback ?? null;
       if (afterApply) await afterApply();
       await this.markProposalFinal(client, proposal, identity.userId, result.finalStatus ?? "accepted", result.proposalPayloadPatch);
+      await transitions.finish();
       const accepted = await new PgProposalRepository(client).getVisible(
         identity.spaceId,
         identity.userId,
@@ -329,6 +366,10 @@ export class PgProposalApplyService {
     let rollbackOnFailure: (() => Promise<void>) | null = null;
     try {
       await client.query("BEGIN");
+      const scope=(await client.query<{space_id:string}>('SELECT space_id FROM proposals WHERE id=$1',[proposalId])).rows[0];
+      if(!scope){await client.query('ROLLBACK');return null;}
+      const transitions=await lockProposalTransitions(client,scope.space_id,[proposalId],true);
+      if(transitions.hasAnyLinked)throw new OperationError('operation_approval_mapping_unavailable',503);
       const proposal = await this.getProposalForUpdate(client, proposalId);
       if (!proposal || proposal.status !== "pending" || proposal.preview || !proposal.created_by_agent_id) {
         await client.query("ROLLBACK");
@@ -377,6 +418,7 @@ export class PgProposalApplyService {
         [randomUUID(), proposal.id, grantingUserId, grantId, JSON.stringify({ approval_source: `action_grant:${grantId}`, action_id: action.actionId }), new Date().toISOString()],
       );
       await this.markProposalFinal(client, proposal, grantingUserId, result.finalStatus ?? "accepted", result.proposalPayloadPatch);
+      await transitions.finish();
       const accepted = await new PgProposalRepository(client).getVisible(proposal.space_id, grantingUserId, proposal.id);
       if (!accepted) throw new Error("accepted proposal is not visible after grant apply");
       await client.query("COMMIT");
@@ -420,7 +462,7 @@ export class PgProposalApplyService {
   }
 
   async rejectInTransaction(
-    client: PoolClient,
+    client: Queryable,
     proposalId: string,
     identity: { spaceId: string; userId: string },
     afterReject?: ProposalTransactionCallback,
@@ -430,12 +472,17 @@ export class PgProposalApplyService {
   }
 
   private async rejectTransaction(
-    client: PoolClient,
+    client: Queryable,
     proposalId: string,
     identity: { spaceId: string; userId: string },
     afterReject?: ProposalTransactionCallback,
     allowBundleMemberDecision = false,
   ): Promise<ProposalTransactionResult<ProposalOut> | null> {
+    if(!await this.visibleDecisionCandidate(client,proposalId,identity))return null;
+    if(!isPolicyAuditRecoveryActive() &&
+      (await client.query('SELECT id FROM operation_idempotency WHERE proposal_id=$1 AND space_id=$2',[proposalId,identity.spaceId])).rowCount)
+      throw new OperationError('operation_approval_mapping_unavailable',503);
+    const transitions=await lockProposalTransitions(client,identity.spaceId,[proposalId],true,!isPolicyAuditRecoveryActive());
     if(this.decisionHooks && !await this.decisionHooks.beforeDecision(client,proposalId,identity,"reject"))return null;
     const proposal = await authorizeProposalDecision(
       client, await this.getProposalForUpdate(client, proposalId), identity, "reject",
@@ -455,6 +502,7 @@ export class PgProposalApplyService {
     await releaseRejectedSourceBackfillPlan(client, proposal);
     await this.decisionHooks?.afterReject(client,proposalId);
     if (afterReject) await afterReject();
+    await transitions.finish();
     const out = await new PgProposalRepository(client).getVisible(identity.spaceId, identity.userId, proposalId);
     if (!out) throw new Error("rejected proposal is not visible after reject");
     return {
@@ -520,7 +568,7 @@ export class PgProposalApplyService {
   }
 
   private async upsertEgressApproval(
-    client: PoolClient,
+    client: Queryable,
     proposal: ApplyProposalRow,
     userId: string,
     grantId: string | null,
@@ -575,6 +623,9 @@ export class PgProposalApplyService {
     try {
       await client.query("BEGIN");
 
+      if(!await this.visibleDecisionCandidate(client,proposalId,identity)){await client.query("ROLLBACK");return null;}
+      const transitions=await lockProposalTransitions(client,identity.spaceId,[proposalId],true);
+      if(transitions.hasAnyLinked)throw new OperationError('operation_approval_mapping_unavailable',503);
       const p = await authorizeProposalDecision(
         client, await this.getProposalForUpdate(client, proposalId), identity, "rollback",
       );
@@ -709,9 +760,19 @@ export class PgProposalApplyService {
     }
   }
 
+  private async visibleDecisionCandidate(client:Queryable,id:string,identity:{spaceId:string;userId:string}):Promise<boolean>{
+    const proposal=await this.getProposalForUpdate(client,id,false);
+    if(!proposal || proposal.space_id!==identity.spaceId)return false;
+    if((await client.query('SELECT id FROM operation_idempotency WHERE proposal_id=$1 AND space_id=$2',[id,identity.spaceId])).rowCount)
+      await assertCurrentActor(client,sessionActor(identity));
+    return (await contentDecisionFromDb(client,identity,"proposal",id))!=="deny"
+      && await roomRunReadableForUser(client,proposal,identity.userId);
+  }
+
   private async getProposalForUpdate(
-    client: PoolClient,
+    client: Queryable,
     proposalId: string,
+    lock=true,
   ): Promise<ApplyProposalRow | null> {
     const result = await client.query<ApplyProposalRow>(
       `SELECT proposal.id, proposal.space_id, proposal.proposal_type,
@@ -723,14 +784,14 @@ export class PgProposalApplyService {
               proposal.required_approver_role
          FROM proposals proposal
         WHERE proposal.id = $1
-        FOR UPDATE`,
+        ${lock?"FOR UPDATE":""}`,
       [proposalId],
     );
     return result.rows[0] ?? null;
   }
 
   private async markProposalFinal(
-    client: PoolClient,
+    client: Queryable,
     proposal: ApplyProposalRow,
     userId: string,
     status: "accepted" | "superseded",
@@ -766,14 +827,16 @@ export class PgProposalApplyService {
   }
 
   private async enforceApplyPolicy(
-    client: PoolClient,
+    client: Queryable,
     proposal: ApplyProposalRow,
     userId: string,
+    linkedClosure=false,
+    phase='apply',
   ): Promise<void> {
     await assertRequiredOwnerMayDecide(client, proposal, userId);
     const role = await effectiveApproverRole(client, proposal, userId);
     const result = await enforceProposalApply(
-      await this.decisionHooks?.usesAtomicAudit?.(client,proposal.id) ? {...this.config,auditTransaction:client} : this.config,
+      (linkedClosure || await this.decisionHooks?.usesAtomicAudit?.(client,proposal.id)) ? {...this.config,auditTransaction:client} : this.config,
       {
         user_id: userId,
         space_id: proposal.space_id,
@@ -782,7 +845,7 @@ export class PgProposalApplyService {
         declared_risk: proposal.risk_level,
         required_approver_role: proposal.required_approver_role,
         proposal_payload: proposal.payload_json,
-        metadata_json: { server_apply: true },
+        metadata_json: { server_apply: true,decision_phase:phase },
       },
       role,
       this.registry.registeredTypes(),
@@ -830,7 +893,7 @@ export class PgProposalApplyService {
   }
 
   private async assertBundleMemberMayBeDecided(
-    client: PoolClient,
+    client: Queryable,
     proposalId: string,
     allowedByBundleCoordinator: boolean,
   ): Promise<void> {
@@ -855,7 +918,7 @@ export class PgProposalApplyService {
   }
 
   private async inferGrantId(
-    client: PoolClient,
+    client: Queryable,
     proposal: ApplyProposalRow,
   ): Promise<string | null> {
     const payload = proposal.payload_json ?? {};
@@ -877,7 +940,7 @@ export class PgProposalApplyService {
   }
 
   private async assertRequiredContextOwnerApprovals(
-    client: PoolClient,
+    client: Queryable,
     proposal: ApplyProposalRow,
   ): Promise<void> {
     const requiredOwners = requiredTaintOwnerApprovers(proposal.payload_json);
@@ -904,7 +967,7 @@ export class PgProposalApplyService {
     }
   }
 
-  private async getGrant(client: PoolClient, grantId: string): Promise<GrantRow | null> {
+  private async getGrant(client: Queryable, grantId: string): Promise<GrantRow | null> {
     const result = await client.query<GrantRow>(
       `SELECT id, granting_user_id, target_space_id, target_run_id, status,
               egress_review_expires_at
@@ -965,17 +1028,20 @@ export class PgProposalApplyService {
   }
 }
 
-async function releaseRejectedSourceChannelDraft(client: PoolClient, proposal: ApplyProposalRow): Promise<void> {
+async function releaseRejectedSourceChannelDraft(client: Queryable, proposal: ApplyProposalRow): Promise<void> {
   if (proposal.proposal_type !== "source_channel_activation") return;
   const channelId = stringValue(proposal.payload_json?.source_channel_id);
   if (!channelId) return;
   const now = new Date().toISOString();
   await client.query(`UPDATE source_channels SET status='archived', updated_at=$3 WHERE id=$1 AND space_id=$2 AND status='paused'`, [channelId, proposal.space_id, now]);
   await client.query(`UPDATE source_connections SET status='archived', updated_at=$3 WHERE id=(SELECT source_connection_id FROM source_channels WHERE id=$1 AND space_id=$2) AND space_id=$2 AND status='paused'`, [channelId, proposal.space_id, now]);
-  await client.query(`UPDATE proposals SET status='superseded',updated_at=$3 WHERE space_id=$1 AND status='pending' AND payload_json->>'depends_on_proposal_id'=$2`,[proposal.space_id,proposal.id,now]);
+  await client.query(`WITH RECURSIVE dependent AS (
+    SELECT id FROM proposals WHERE space_id=$1 AND payload_json->>'depends_on_proposal_id'=$2
+    UNION SELECT p.id FROM proposals p JOIN dependent d ON p.payload_json->>'depends_on_proposal_id'=d.id WHERE p.space_id=$1
+  ) UPDATE proposals SET status='superseded',updated_at=$3 WHERE space_id=$1 AND status='pending' AND id IN (SELECT id FROM dependent)`,[proposal.space_id,proposal.id,now]);
 }
 
-async function releaseRejectedSourceBackfillPlan(client: PoolClient,proposal:ApplyProposalRow):Promise<void>{
+async function releaseRejectedSourceBackfillPlan(client: Queryable,proposal:ApplyProposalRow):Promise<void>{
   if(proposal.proposal_type!=="source_backfill_start")return;
   const planId=stringValue(proposal.payload_json?.source_backfill_plan_id);
   if(!planId)return;
@@ -983,7 +1049,7 @@ async function releaseRejectedSourceBackfillPlan(client: PoolClient,proposal:App
 }
 
 async function releaseRejectedCustomSourceHandlerVersion(
-  client: PoolClient,
+  client: Queryable,
   proposalId: string,
   spaceId: string,
 ): Promise<void> {
@@ -1018,7 +1084,7 @@ async function releaseRejectedCustomSourceHandlerVersion(
 }
 
 async function releaseRejectedSourceRecipeVersion(
-  client: PoolClient,
+  client: Queryable,
   proposalId: string,
   spaceId: string,
 ): Promise<void> {
@@ -1077,14 +1143,14 @@ function recordValue(value: unknown): Record<string, unknown> {
  */
 /** See `memoryProposalDecider`: derived from the row or applier fields, never a payload scope claim. */
 function requiredOwnerUserId(
-  client: PoolClient,
+  client: Queryable,
   proposal: { space_id: string; proposal_type: string; payload_json: Record<string, unknown> | null; created_by_agent_id?: string | null },
 ): Promise<MemoryProposalDecider> {
   return memoryProposalDecider(client, proposal);
 }
 
 async function assertRequiredOwnerMayDecide(
-  client: PoolClient,
+  client: Queryable,
   proposal: { space_id: string; proposal_type: string; payload_json: Record<string, unknown> | null; created_by_agent_id?: string | null },
   userId: string,
 ): Promise<void> {
@@ -1121,7 +1187,7 @@ export function canRejectProposalWithRole(
 }
 
 async function canRejectProposal(
-  client: PoolClient,
+  client: Queryable,
   proposal: ApplyProposalRow,
   userId: string,
 ): Promise<boolean> {
@@ -1142,7 +1208,7 @@ async function canRejectProposal(
  * alone, could accept a proposal they are answered 404 for declining.
  */
 async function effectiveApproverRole(
-  client: PoolClient,
+  client: Queryable,
   proposal: Pick<ApplyProposalRow, "space_id" | "project_id">,
   userId: string,
 ): Promise<string | null> {
@@ -1174,7 +1240,7 @@ function roleRank(role: string): number {
 }
 
 async function getMembershipRole(
-  client: PoolClient,
+  client: Queryable,
   userId: string,
   spaceId: string,
 ): Promise<string | null> {

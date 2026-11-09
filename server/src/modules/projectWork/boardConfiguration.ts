@@ -1,30 +1,30 @@
 import { randomUUID } from 'node:crypto';
 import { BoardConfigurationInputSchema } from '@rainver/protocol';
 import type { Pool } from '../../db/pool.js';
-import { HttpError, withDbTransaction, type SpaceUserIdentity } from '../routeUtils/common.js';
+import { withQueryableTransaction, type Queryable, type SpaceUserIdentity } from '../routeUtils/common.js';
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from '../projects/access.js';
 import { contentReadSql, contentAccessLevelSql } from '../access/contentAccessSql.js';
 import { contentResourceDefinition } from '../access/contentAccessRegistry.js';
-import { columnForTask, insertProjectBoard, readProjectColumns } from '../tasks/boardColumns.js';
+import { BoardMutationError, columnForTask, insertProjectBoard, readProjectColumns } from '../tasks/boardColumns.js';
 import { PgTaskRepository } from '../tasks/repository.js';
 
 /** Project lock serializes configuration with Task creation, movement and Run
  * admission. A failed task relocation rolls back the complete configuration. */
-export async function configureProjectBoard(pool:Pool,identity:SpaceUserIdentity,projectId:string,input:unknown,origin?:{actorId:string;runId:string;projectId:string;reason:string}) {
+export async function configureProjectBoard(pool:Pool,identity:SpaceUserIdentity,projectId:string,input:unknown,origin?:{actorId:string;runId:string;projectId:string;reason:string}, transaction?:Queryable) {
   const parsed=BoardConfigurationInputSchema.safeParse(input);
-  if(origin&&origin.projectId!==projectId)throw new HttpError(404,"Project not found");
-  if(!parsed.success)throw new HttpError(422,'Invalid Board columns');
+  if(origin&&origin.projectId!==projectId)throw new BoardMutationError(404,"Project not found");
+  if(!parsed.success)throw new BoardMutationError(422,'Invalid Board columns');
   const body=parsed.data;
-  if(new Set(body.columns.map(c=>c.key)).size!==body.columns.length)throw new HttpError(422,'Column keys must be unique');
-  await withDbTransaction(pool,async db=>{
+  if(new Set(body.columns.map(c=>c.key)).size!==body.columns.length)throw new BoardMutationError(422,'Column keys must be unique');
+  await withQueryableTransaction(transaction??pool,async db=>{
     await lockActiveProjectForMutation(db,identity.spaceId,projectId);
     await assertProjectWriterForMutation(db,identity.spaceId,projectId,identity.userId);
     const before=await readProjectColumns(db,identity.spaceId,projectId);
-    if(before.revision!==body.revision)throw new HttpError(409,'Board columns changed; reload before saving');
+    if(before.revision!==body.revision)throw new BoardMutationError(409,'Board columns changed; reload before saving');
     const previous=new Map(before.columns.map(c=>[c.key,c]));
     for(const c of body.columns){
       const old=previous.get(c.key);
-      if(!old && !c.key.startsWith('new:'))throw new HttpError(422,'Unknown column key');
+      if(!old && !c.key.startsWith('new:'))throw new BoardMutationError(422,'Unknown column key');
     }
     const boardId=before.boardId??await insertProjectBoard(db,identity.spaceId,projectId,identity.userId);
     const ids=new Map<string,string>();
@@ -47,9 +47,9 @@ export async function configureProjectBoard(pool:Pool,identity:SpaceUserIdentity
     for(const removedColumn of [...removed,...remapped]){
       const affected=tasks.filter(t=>columnForTask(t,before.columns)===removedColumn.key);
       const destination=body.columns.find(c=>c.key===(ids.has(removedColumn.key)?removedColumn.key:body.moves[removedColumn.key]));
-      if(affected.length && !destination)throw new HttpError(409,'Choose a destination for tasks in the deleted column');
+      if(affected.length && !destination)throw new BoardMutationError(409,'Choose a destination for tasks in the deleted column');
       for(const task of affected){
-        if(!task.full)throw new HttpError(403,'The column contains Tasks you cannot move');
+        if(!task.full)throw new BoardMutationError(404,'Task not found');
         await repository.updateTask(identity,task.id,{column_id:ids.get(destination!.key),board_id:boardId,status:task.status==='blocked'&&removedColumn.status_key==='in_progress'&&destination!.status_key==='in_progress'?'blocked':destination!.status_key},origin,db);
       }
     }

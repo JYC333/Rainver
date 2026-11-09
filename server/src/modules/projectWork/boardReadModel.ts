@@ -37,6 +37,7 @@ interface BoardCardRow {
   risk_level: string;
   due_at: string | null;
   updated_at: string;
+  completed_at: string | null;
   blocked_reason: string | null;
   required_outputs_json: unknown;
   responsible_user_id: string | null;
@@ -63,7 +64,7 @@ export const ARCHIVED_CARD_STATUSES = ["cancelled"];
 export const COLUMN_FOR_STATUS: Record<string, string> = { blocked: "in_progress" };
 
 const CARD_SELECT = `
-  SELECT t.id, t.title, t.column_id, t.status, t.priority, t.risk_level, t.due_at, t.updated_at,
+  SELECT t.id, t.title, t.column_id, t.status, t.priority, t.risk_level, t.due_at, t.updated_at, t.completed_at,
          t.blocked_reason, t.required_outputs_json,
          ${responsibleUserSql("t", "p")} AS responsible_user_id,
          ${responsibleAgentSql("t")} AS responsible_agent_id,
@@ -150,6 +151,7 @@ export async function getProjectBoard(
       risk_level: row.risk_level,
       due_at: dateIso(row.due_at),
       updated_at: dateIso(row.updated_at)!,
+      completed_at: dateIso(row.completed_at),
       responsible: responsibleActorOf(row),
       active_run_count: Number(row.active_run_count) || 0,
       latest_run_status: row.latest_run_status,

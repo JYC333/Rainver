@@ -26,11 +26,12 @@ const RUN_TERMINAL_SQL_LIST = HARD_TERMINAL_RUN_STATUSES.map((status) => `'${sta
  * A research Operation owns four kinds of live work, and stopping only some
  * of them leaves the user's "stop" partly ignored:
  *
- * - **Runs** — synthesis, revision, critique, monitor comparison, and the pass
- *   root. None of them is a child of the others (`createQueuedRunWithBudgetAdmission`
- *   sets no `root_run_id`), so they are found by the operation id every research
- *   Run stamps into its contract snapshot — the same lookup key
- *   `SynthesisCoordinator` already uses to rebind a lost synthesis Run.
+ * - **Runs** — synthesis, revision, critique, monitor comparison (bounded
+ *   ProviderTask Runs, `queueResearchStageTask`), and the pass root. None of
+ *   them is a child of the others (neither admission sets a `root_run_id`), so
+ *   they are found by the operation id every research Run stamps into its
+ *   contract snapshot — the same lookup key `SynthesisCoordinator` already
+ *   uses to rebind a lost synthesis Run.
  * - **Screening batch jobs** — `source_post_processing_event` jobs carrying
  *   `recovery_for_operation_id`. Queued in bulk, so a cancel that ignored
  *   them would keep classifying items nobody is waiting for. (A batch a

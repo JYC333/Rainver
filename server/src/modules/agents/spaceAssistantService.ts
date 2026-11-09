@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
 import type { ServerConfig } from "../../config.js";
-import type { Pool, PoolClient } from "../../db/pool.js";
+import type { Pool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { isVendorCliAdapter, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
@@ -46,7 +46,7 @@ wants you to arrange the work: delegate it to them unless that is clearly
 unnecessary, and say why when you do not. Otherwise delegate only when you can
 explain the demonstrated need, visibly, to the relevant roster specialists
 and never more than one delegation level. Temporary delegation has a shared
-soft budget of five per delegatable Room Agent (at least one), with a hard
+soft budget of ten per delegatable Room Agent (at least one), with a hard
 limit twice that size; exceeding soft only warns, while hard refuses. For explicitly requested sustained task work,
 declare a task-scoped collaboration budget on that Task's first delegation
 (temporary work may already have occurred, on the original or completion turn), keep the
@@ -118,7 +118,7 @@ export class SpaceAssistantService {
   private readonly agents: PgAgentRepository;
 
   constructor(
-    private readonly client: PoolClient,
+    private readonly client: Queryable,
     pool: Pool,
   ) {
     this.agents = new PgAgentRepository(pool);

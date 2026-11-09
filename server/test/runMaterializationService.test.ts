@@ -1,4 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import {useTestDatabase} from './support/testDatabase.js';
+import {resetTables} from './support/resetTables.js';
+import {seedSpaceOwnerProject,seedRun} from './support/domainSeeds.js';
+import type {PoolClient} from '../src/db/pool.js';
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -42,72 +46,40 @@ function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
   };
 }
 
-class FakeDb implements Queryable {
-  calls: Array<{ sql: string; params: readonly unknown[] }> = [];
-  artifacts: unknown[][] = [];
-  proposals: unknown[][] = [];
-
-  constructor(private readonly projectIds = new Set(["project-1"])) {}
-
-  async query<Row = Record<string, unknown>>(
-    sql: string,
-    params: readonly unknown[] = [],
-  ): Promise<QueryResult<Row>> {
-    this.calls.push({ sql, params });
-    if (sql.includes("FROM projects")) {
-      const id = String(params[0] ?? "");
-      return {
-        rows: (this.projectIds.has(id) ? [{ id }] : []) as Row[],
-        rowCount: null,
-      };
-    }
-    if (sql.includes("INSERT INTO artifacts")) {
-      this.artifacts.push([...params]);
-      return { rows: [], rowCount: 1 };
-    }
-    if (sql.includes("INSERT INTO proposals")) {
-      this.proposals.push([...params]);
-      return {
-        rows: [{
-          id: params[0],
-          space_id: params[1],
-          created_by_run_id: params[2],
-          proposal_type: params[3],
-          status: params[4],
-          risk_level: params[5],
-          urgency: params[6],
-          preview: params[7],
-          title: params[8],
-          summary: params[9],
-          payload_json: JSON.parse(String(params[10] ?? "{}")),
-          created_at: params[11],
-          project_folder_id: params[12],
-          rationale: params[13],
-          created_by_user_id: params[14],
-          visibility: params[15],
-          project_id: params[16],
-        }] as Row[],
-        rowCount: 1,
-      };
-    }
-    if (sql.includes("INSERT INTO content_access_grants")) {
-      return { rows: [], rowCount: 1 };
-    }
-    if (sql.includes("UPDATE proposals SET status='superseded'")) {
-      return { rows: [], rowCount: 0 };
-    }
-    if (sql.includes("AND status = 'staged'")) {
-      return { rows: [], rowCount: 1 };
-    }
-    throw new Error(`Unexpected SQL: ${sql}`);
-  }
+const shared=useTestDatabase(import.meta.filename);
+beforeEach(async(ctx)=>{
+ if(!shared.available)return ctx.skip();
+ await resetTables(shared.pool,['spaces','users'],{cascade:true});
+ await seedSpaceOwnerProject(shared.pool,{space:'space-1',owner:'user-1',project:'project-1'});
+ await seedRun(shared.pool,{id:'run-1',space:'space-1',owner:'user-1',agent:'agent-1',version:'agent-version-1'});
+ await seedRun(shared.pool,{id:'run-personal',space:'space-1',owner:'user-1',agent:'agent-1',version:'agent-version-1',existingAgent:true});
+ await shared.pool.query("UPDATE runs SET status='running',started_at=now() WHERE space_id='space-1'");
+ await shared.pool.query("INSERT INTO project_folders(id,space_id,project_id,name,kind,status,protected,system_managed,created_at,updated_at) VALUES('workspace-1','space-1','project-1','workspace','code','active',false,false,now(),now())");
+});
+/** SQL observation only: all writes and transactions execute on shared real PG. */
+class ObservedDb implements Queryable {
+ calls:Array<{sql:string;params:readonly unknown[]}>=[];
+ artifacts:unknown[][]=[];
+ proposals:unknown[][]=[];
+ private async execute<Row>(db:Queryable,sql:string,params:readonly unknown[]=[]):Promise<QueryResult<Row>>{
+  this.calls.push({sql,params});
+  const result=await db.query<Row>(sql,params);
+  if(sql.includes('INSERT INTO artifacts'))this.artifacts.push([...params]);
+  if(sql.includes('INSERT INTO proposals'))this.proposals.push([...params]);
+  return result;
+ }
+ query<Row>(sql:string,params:readonly unknown[]=[]):Promise<QueryResult<Row>>{return this.execute<Row>(shared.pool,sql,params);}
+ async connect():Promise<PoolClient>{
+  const client=await shared.pool.connect();
+  return {query:<Row>(sql:string,params:readonly unknown[]=[])=>this.execute<Row>(client,sql,params),release:()=>client.release()} as PoolClient;
+ }
 }
 
-describe("RunMaterializationService", () => {
+describe("RunMaterializationService (real PG)", () => {
   it("derives Agent learning placement from the Run creation context", async () => {
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const service = new RunMaterializationService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" }),
+      loadConfig({ SERVER_DATABASE_URL: shared.connectionUri }),
       db,
       undefined,
       async () => ({ status: "allow" }),
@@ -150,9 +122,9 @@ describe("RunMaterializationService", () => {
   });
 
   it("fails closed when a Run claims taint but its summary is malformed", async () => {
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const service = new RunMaterializationService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" }),
+      loadConfig({ SERVER_DATABASE_URL: shared.connectionUri }),
       db,
       undefined,
       async () => ({ status: "allow" }),
@@ -174,11 +146,11 @@ describe("RunMaterializationService", () => {
   });
 
   it("stages proposals and reconciles delegation only from terminal output", async () => {
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const delegationCalls: unknown[] = [];
     const service = new RunMaterializationService(
       loadConfig({
-        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+        SERVER_DATABASE_URL: shared.connectionUri,
       }),
       db,
       {
@@ -249,9 +221,9 @@ describe("RunMaterializationService", () => {
   });
 
   it("serializes structured artifact content objects for the text-backed artifact store", async () => {
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+      SERVER_DATABASE_URL: shared.connectionUri,
     });
     const service = new RunMaterializationService(
       config,
@@ -306,9 +278,9 @@ describe("RunMaterializationService", () => {
   });
 
   it("materializes structured runtime delegations through the agent group materializer", async () => {
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+      SERVER_DATABASE_URL: shared.connectionUri,
     });
     const seen: unknown[] = [];
     const service = new RunMaterializationService(
@@ -381,9 +353,9 @@ describe("RunMaterializationService", () => {
     await mkdir(join(sandboxRoot, "logs"), { recursive: true });
     await writeFile(join(sandboxRoot, "logs", "out.txt"), "file artifact", "utf8");
 
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+      SERVER_DATABASE_URL: shared.connectionUri,
       ARTIFACT_STORAGE_ROOT: artifactRoot,
     });
     const service = new RunMaterializationService(
@@ -505,10 +477,10 @@ describe("RunMaterializationService", () => {
       }),
       "utf8",
     );
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const service = new RunMaterializationService(
       loadConfig({
-        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+        SERVER_DATABASE_URL: shared.connectionUri,
         ARTIFACT_STORAGE_ROOT: artifactRoot,
       }),
       db,
@@ -561,9 +533,9 @@ describe("RunMaterializationService", () => {
   });
 
   it("clamps artifacts and proposals to a private Run", async () => {
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const service = new RunMaterializationService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" }),
+      loadConfig({ SERVER_DATABASE_URL: shared.connectionUri }),
       db,
       undefined,
       async () => ({ status: "allow" }),
@@ -595,9 +567,9 @@ describe("RunMaterializationService", () => {
   });
 
   it("preserves an explicitly private proposal from a shared Run", async () => {
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const service = new RunMaterializationService(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" }),
+      loadConfig({ SERVER_DATABASE_URL: shared.connectionUri }),
       db,
       undefined,
       async () => ({ status: "allow" }),
@@ -635,10 +607,10 @@ describe("RunMaterializationService", () => {
       JSON.stringify({ proposed_changes: [{ proposal_type: "memory_create", content: "No." }] }),
       "utf8",
     );
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const service = new RunMaterializationService(
       loadConfig({
-        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+        SERVER_DATABASE_URL: shared.connectionUri,
         ARTIFACT_STORAGE_ROOT: artifactRoot,
       }),
       db,
@@ -674,9 +646,9 @@ describe("RunMaterializationService", () => {
   });
 
   it("keeps plain output_text as run display output instead of creating an artifact", async () => {
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+      SERVER_DATABASE_URL: shared.connectionUri,
     });
     const service = new RunMaterializationService(
       config,
@@ -707,8 +679,8 @@ describe("RunMaterializationService", () => {
   });
 
   it("rejects removed research proposal types instead of materializing them", async () => {
-    const db = new FakeDb();
-    const config = loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" });
+    const db = new ObservedDb();
+    const config = loadConfig({ SERVER_DATABASE_URL: shared.connectionUri });
     const service = new RunMaterializationService(config, db, undefined, async () => ({ status: "allow" }));
     const result = await service.materializeAdapterResult({
       run: run(),
@@ -726,9 +698,9 @@ describe("RunMaterializationService", () => {
   });
 
   it("ignores a model-supplied project for Agent learning", async () => {
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+      SERVER_DATABASE_URL: shared.connectionUri,
     });
     const service = new RunMaterializationService(
       config,
@@ -774,9 +746,9 @@ describe("RunMaterializationService", () => {
   });
 
   it("keeps Memory and Knowledge run outputs as pending proposals, not active writes", async () => {
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+      SERVER_DATABASE_URL: shared.connectionUri,
     });
     const service = new RunMaterializationService(
       config,
@@ -846,9 +818,9 @@ describe("RunMaterializationService", () => {
   it("enforces artifact.persist before inserting artifacts", async () => {
     const artifactRoot = await mkdtemp(join(tmpdir(), "rainver-artifacts-"));
     tempRoots.push(artifactRoot);
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+      SERVER_DATABASE_URL: shared.connectionUri,
       ARTIFACT_STORAGE_ROOT: artifactRoot,
     });
     const service = new RunMaterializationService(
@@ -896,10 +868,10 @@ describe("RunMaterializationService", () => {
     tempRoots.push(artifactRoot, sandboxRoot);
     await mkdir(join(sandboxRoot, "logs"), { recursive: true });
     await writeFile(join(sandboxRoot, "logs", "out.txt"), "file artifact", "utf8");
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const service = new RunMaterializationService(
       loadConfig({
-        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+        SERVER_DATABASE_URL: shared.connectionUri,
         ARTIFACT_STORAGE_ROOT: artifactRoot,
       }),
       db,
@@ -939,9 +911,9 @@ describe("RunMaterializationService", () => {
   });
 
   it("materializes claim/object packets only from structured proposal payloads", async () => {
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+      SERVER_DATABASE_URL: shared.connectionUri,
     });
     const service = new RunMaterializationService(
       config,
@@ -1017,7 +989,7 @@ describe("RunMaterializationService", () => {
   });
 
   it("defers completion on lock contention without treating it as a new model attempt", async () => {
-    const service = new RunMaterializationService(loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" }), new FakeDb(), {
+    const service = new RunMaterializationService(loadConfig({ SERVER_DATABASE_URL: shared.connectionUri }), new ObservedDb(), {
       async finalize(): Promise<RunFinalizationRecord> { throw new RunFinalizationBusyError(); },
     });
     const result = await service.finalizeRun(run({ status: "cancelled" }));
@@ -1027,9 +999,9 @@ describe("RunMaterializationService", () => {
   });
 
   it("returns a finalization materialization item for terminal runs", async () => {
-    const db = new FakeDb();
+    const db = new ObservedDb();
     const config = loadConfig({
-      SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+      SERVER_DATABASE_URL: shared.connectionUri,
     });
     const finalizer = {
       async finalize(runId: string, spaceId: string): Promise<RunFinalizationRecord> {

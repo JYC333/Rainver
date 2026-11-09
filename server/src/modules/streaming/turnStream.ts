@@ -81,6 +81,7 @@ export async function streamRunTurn(
   // place — a tool call finishing does not append a second one.
   let emitted = snapshot.parts.map(fingerprint);
   let state = snapshot.state;
+  let queueWait = snapshot.queue_wait_reason ?? null;
   let cursor = snapshot.cursor;
 
   // A managed Run's prose exists only here: its log never holds the text, so
@@ -160,11 +161,15 @@ export async function streamRunTurn(
         } satisfies TurnStreamFrame);
       }
 
-      if (turn.state !== state) {
+      const nextQueueWait = turn.queue_wait_reason ?? null;
+      if (turn.state !== state || nextQueueWait !== queueWait) {
+        const includeQueueWait = queueWait !== null || nextQueueWait !== null;
         state = turn.state;
+        queueWait = nextQueueWait;
         send(raw, STATE_EVENT, {
           type: "turn.state_changed", run_id: runId, state,
           blocked_on: turn.blocked_on,
+          ...(includeQueueWait ? { queue_wait_reason: queueWait } : {}),
         } satisfies TurnStreamFrame);
       }
       // A finished turn has nothing further to say. The client keeps the

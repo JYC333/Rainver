@@ -1,11 +1,14 @@
+import {BoardConfigurationInputSchema} from '@rainver/protocol'
 import BoardColumnLane from './BoardColumnLane'
 import { BoardColumnDraft, BoardColumnRemoval } from './BoardColumnControls'
 import BoardTaskEditor from './BoardTaskEditor'
 import { useAppTranslation } from '../../../i18n'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useParams } from 'react-router-dom'
-import { DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
+import { DndContext, DragOverlay, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core'
 import { laneKeyboardCoordinates } from './laneKeyboardCoordinates'
+import { laneCollisionDetection } from './laneCollisionDetection'
 import { applyCardMove, mergeBoard } from './mergeBoard'
 import { toast } from 'sonner'
 import { agentsApi, projectsApi, tasksApi } from '../../../api/client'
@@ -54,6 +57,7 @@ function ProjectBoardContent({projectId}:{projectId:string}) {
   const [board, setBoard] = useState<ProjectBoard | null>(null)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<BoardFilter>('all')
+  const [dragPreview,setDragPreview]=useState<{kind:'card'|'column';title:string}|null>(null)
   // A close the server refused. Holding the card and its reasons here is what
   // turns the 422 into a decision the person can act on rather than an error.
   const [blockedClose, setBlockedClose] = useState<{ card: ProjectBoardCard; missing: string[]; destination:string } | null>(null)
@@ -124,7 +128,7 @@ function ProjectBoardContent({projectId}:{projectId:string}) {
     // That replaces the whole Board with a skeleton on every drag.
     setBoard(current => (current ? applyCardMove(current, card.id, toStatus) : current))
     try {
-      await moveCardStatus(card.id, card.status==='blocked'&&destination.status_key==='in_progress'?'blocked':destination.status_key, acknowledged, destination.board_id?{column_id:destination.key,board_id:destination.board_id}:undefined)
+      await moveCardStatus(card.id,{column_key:destination.key,columns_revision:board!.columns_revision},crypto.randomUUID(),acknowledged)
       setBlockedClose(null)
       // Quiet: the optimistic move is already drawn, and `mergeBoard` touches
       // only what the server decided differently.
@@ -134,7 +138,7 @@ function ProjectBoardContent({projectId}:{projectId:string}) {
       // In Progress lane, and must come back blocked, not in progress.
       setBoard(current => {
         if (!current) return current
-        const cards=current.cards.map(item=>item.id===card.id?{...item,status:card.status,column_key:card.column_key}:item)
+        const cards=current.cards.map(item=>item.id===card.id?{...item,status:card.status,column_key:card.column_key,completed_at:card.completed_at}:item)
         return {...current,cards,columns:current.columns.map(column=>({...column,count:cards.filter(item=>item.column_key===column.key).length}))}
       })
       const missing = blockedCompletion(error)
@@ -152,11 +156,11 @@ function ProjectBoardContent({projectId}:{projectId:string}) {
     loadVersion.current++
     setColumnSaving(true)
     try {
-      const next=await projectsApi.configureBoard(projectId,{
+      const next=await projectsApi.configureBoard(projectId,BoardConfigurationInputSchema.parse({
         revision:board.columns_revision,
         columns:columns.filter(c=>c.status_key).map(({key,label,status_key,wip_limit})=>({key,label,status_key,wip_limit})),
         moves,
-      })
+      }),crypto.randomUUID())
       setBoard(next)
     } finally {
       loadVersion.current++
@@ -165,7 +169,18 @@ function ProjectBoardContent({projectId}:{projectId:string}) {
     }
   },[board,projectId,t])
 
+  const onDragStart = useCallback((event: DragStartEvent) => {
+    if(event.active.data.current?.type==='column'){
+      const column=board?.columns.find(item=>item.key===event.active.data.current?.key)
+      if(column)setDragPreview({kind:'column',title:column.label})
+    }else{
+      const card=board?.cards.find(item=>item.id===event.active.id)
+      if(card)setDragPreview({kind:'card',title:card.title})
+    }
+  },[board])
+
   const onDragEnd = useCallback((event: DragEndEvent) => {
+    setDragPreview(null)
     const toStatus = event.over?.id
     if (typeof toStatus !== 'string'||columnPending.current) return
     if(event.active.data?.current?.type==='column'){
@@ -215,8 +230,8 @@ function ProjectBoardContent({projectId}:{projectId:string}) {
   }
 
   return (
-    <div className="flex min-h-full flex-col gap-4 p-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-4 p-4 sm:p-6">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Board</h1>
           <p className="text-sm text-muted-foreground">{board.project.name}</p>
@@ -252,13 +267,14 @@ function ProjectBoardContent({projectId}:{projectId:string}) {
         </DialogContent>
       </Dialog>
 
-      <DndContext sensors={sensors} onDragEnd={onDragEnd}>
-        <div className="grid flex-1 auto-cols-[minmax(15rem,1fr)] grid-flow-col gap-3 overflow-x-auto pb-2">
+      <DndContext sensors={sensors} collisionDetection={laneCollisionDetection} onDragStart={onDragStart} onDragCancel={()=>setDragPreview(null)} onDragEnd={onDragEnd}>
+        <div data-board-viewport data-testid="board-lanes" className="grid min-h-0 flex-1 auto-cols-[minmax(15rem,1fr)] grid-flow-col grid-rows-[minmax(0,1fr)] gap-3 overflow-x-auto overflow-y-hidden pb-2">
           {board.columns.map(column => (
             <Fragment key={column.key}>
               <BoardColumnLane column={column}
                 cards={visibleCards.filter(card=>card.column_key===column.key)} projectId={projectId}
                 canWrite={board.viewer_can_write} busy={columnSaving}
+                draggingColumn={dragPreview?.kind==='column'}
                 canDelete={board.columns.filter(c=>c.status_key).length>1}
                 canAdd={board.columns.filter(c=>c.status_key).length<30}
                 onAction={onCardAction}
@@ -282,6 +298,9 @@ function ProjectBoardContent({projectId}:{projectId:string}) {
             }}/>
             :<Button variant="outline" className="self-start justify-start" disabled={columnSaving||board.columns.filter(c=>c.status_key).length>=30} onClick={()=>setAddingColumn({after:null})}>+ {t('board_ui.add')}</Button>)}
         </div>
+        {createPortal(<DragOverlay dropAnimation={null}>
+          {dragPreview&&<div aria-hidden="true" className="pointer-events-none rounded-lg border border-border bg-card p-3 text-sm font-medium shadow-lg">{dragPreview.title}</div>}
+        </DragOverlay>,document.body)}
       </DndContext>
 
       <Dialog open={blockedClose !== null} onOpenChange={open => { if (!open) setBlockedClose(null) }}>

@@ -1,3 +1,4 @@
+import {SourceDispatchBusyError} from './sourceDispatchExecution.js';
 import {storeSourceReaderArtifact,saveSourceReadingDocument} from './materialProcessing/documents.js';
 import { observePage } from './monitoring/pageObservation.js';
 import { MonitoringAdmissionError } from '../projects/monitoringControl.js';
@@ -186,7 +187,7 @@ export class SourceExtractionWorker {
     if (!job) {
       const current = await this.getJob(jobId, spaceId);
       if (!current) throw new HttpError(404, "Extraction job not found");
-      if (current.status === "running") throw new HttpError(409, `ExtractionJob ${jobId} is already running`);
+      if (current.status === "running") throw new SourceDispatchBusyError(`ExtractionJob ${jobId} is already running`,jobId);
       if (["succeeded", "failed", "skipped"].includes(current.status)) return current;
       throw new HttpError(409, `Unexpected or coordinator-owned ExtractionJob status ${current.status}`);
     }

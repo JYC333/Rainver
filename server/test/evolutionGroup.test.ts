@@ -30,20 +30,9 @@ describe("evolutionBundlesDb", () => {
 
   const identity: SpaceUserIdentity = { spaceId: SPACE, userId: USER };
 
-  async function waitForAdvisoryWait(expected: number): Promise<void> {
-    if (!db.pool) throw new Error("PostgreSQL pool is unavailable");
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const result = await db.pool.query<{ count: string }>(
-        `SELECT count(*)::text AS count
-           FROM pg_stat_activity
-          WHERE datname = current_database()
-            AND wait_event_type = 'Lock'
-            AND wait_event = 'advisory'`,
-      );
-      if (Number(result.rows[0]?.count ?? 0) >= expected) return;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    throw new Error(`Timed out waiting for ${expected} advisory-lock waiter(s)`);
+  async function waitForAdvisoryWait(expected:number):Promise<void>{
+    // Asset advisory wait plus the bundle's post-admission row wait.
+    await waitForLockWaiter(db.pool,{waiters:expected});
   }
 
   const db = useTestDatabase(`${import.meta.filename}#evolutionBundlesDb`, { max: 10 });

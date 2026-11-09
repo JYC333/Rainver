@@ -98,6 +98,8 @@ export interface CliRawStdioController {
 }
 
 export interface CliStdioController {
+  /** End the current prompt for a durable dependency wait, preserving its vendor session. */
+  requestYield?(): boolean;
   canSteer?(): boolean;
   steer?(prompt: import("./cliConversationProtocol.js").ContentBlock[]): Promise<"injected" | "promptRequired">;
   start(send: (message: Record<string, unknown>) => void): void;

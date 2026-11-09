@@ -12,7 +12,8 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
       expect(definition.id).toMatch(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/);
       expect(policyById.has(definition.policy_action)).toBe(true);
       expect(SystemActionDefinitionSchema.safeParse(definition).success).toBe(true);
-      if(!["project.reading.records","project.reading.read","source.material.submit","source.material.investigate","source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate","authorization.request","input_resource.read","input_resource.search","conversation.search","source.channel.propose_activation","project.source.propose_bind","project.monitoring.propose","project.monitoring.propose_details","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.record_work","inquiry.link_task","inquiry.list_tasks","inquiry.reference_task_result","inquiry.close_round","inquiry.read_problem","inquiry.promote_knowledge","research.read_result","research.adopt_result","research.start_acquisition","research.cancel_acquisition","agent.delegate","agent.cancel_run","task.create","task.create_batch","task.report","task.handoff","task.set_status","task.delete","board.configure","task.move_to_column","task.complete","task.request_review","proposal.decide","memory.remember","memory.revise","artifact.submit","handoff.write"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
+      // Migrated operations declare concrete required inputs; only legacy placeholder schemas accept an empty object.
+      if(!definition.execution && !["project.reading.records","project.reading.read","source.material.submit","source.material.investigate","source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate","authorization.request","input_resource.read","input_resource.search","conversation.search","source.channel.propose_activation","project.source.propose_bind","project.monitoring.propose","project.monitoring.propose_details","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.record_work","inquiry.link_task","inquiry.list_tasks","inquiry.reference_task_result","inquiry.close_round","inquiry.read_problem","inquiry.promote_knowledge","research.read_result","research.adopt_result","research.start_acquisition","research.cancel_acquisition","agent.delegate","agent.cancel_run","task.create","task.create_batch","task.report","task.handoff","task.set_status","task.delete","board.configure","task.move_to_column","task.complete","task.request_review","proposal.decide","memory.remember","memory.revise","artifact.submit","handoff.write"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
     }
   });
 
@@ -333,4 +334,32 @@ it('Reading reads require exact retained IDs and bounded pages without accepting
  expect(read.input_schema.safeParse({item_id:'item',snapshot_id:'snapshot',limit:12000}).success).toBe(true);
  for(const input of [{item_id:'item'},{item_id:'item',snapshot_id:'snapshot',limit:12001},{item_id:'item',snapshot_id:'snapshot',offset:-1},{item_id:'item',snapshot_id:'snapshot',project_id:'other'}])expect(read.input_schema.safeParse(input).success).toBe(false);
  expect(read.side_effects).toBe('none');expect(read.grantable).toBe(false);
+});
+
+it('projects Board Agent tool contracts without narrowing the canonical human operation input',()=>{
+ for(const id of ['board.configure','task.move_to_column']){
+  const definition=SYSTEM_ACTION_REGISTRY.find(a=>a.id===id)!;
+  const schema=systemActionInputJsonSchema(definition) as any;
+  expect(schema.required).toContain('reason');
+  expect(schema.properties.reason).toMatchObject({type:'string',minLength:1,maxLength:2000});
+  expect(schema.additionalProperties).toBe(false);
+  expect(schema.properties).not.toHaveProperty('override_completion');
+  const input=id==='board.configure'?{revision:'r',columns:[],moves:{}}:{task_id:'task',column_key:'ready',columns_revision:'r'};
+  // Human omission/default-null and explicit completion acknowledgement remain available.
+  const human=id==='board.configure'?{...input,columns:[{key:'ready',label:'Ready',status_key:'ready',wip_limit:null}]}:{...input,override_completion:{acknowledged:['required_output:report']}};
+  expect(definition.input_schema.safeParse(human).success).toBe(true);
+ }
+});
+
+it('keeps Agent Task controls reason-required without human completion overrides',()=>{
+ for(const id of ['task.set_status','task.delete']){
+  const d=SYSTEM_ACTION_REGISTRY.find(a=>a.id===id)!;
+  const schema=systemActionInputJsonSchema(d) as any;
+  expect(schema.required).toContain('reason');expect(schema.properties).not.toHaveProperty('override_completion');
+  expect(schema.properties).not.toHaveProperty('blocked_reason');expect(schema.additionalProperties).toBe(false);
+ }
+ for(const id of ['task.complete','task.report','task.request_review','task.handoff']){
+  const d=SYSTEM_ACTION_REGISTRY.find(a=>a.id===id)!;
+  expect(d.allowed_actor_types).toEqual(['agent']);expect(d.visibility.has('public_api')).toBe(false);
+ }
 });

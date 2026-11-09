@@ -1,3 +1,4 @@
+import {assertSourceBindingDependency} from './sourceBindingDependency.js';
 import type { ProposalApplierRegistry } from "../proposals/applierRegistry.js";
 import { ProjectSourceBindingService } from "./projectSourceBindingService.js";
 import { HttpError } from "../routeUtils/common.js";
@@ -7,6 +8,9 @@ export function registerProjectSourceProposalAppliers(registry: ProposalApplierR
     const payload = proposal.payload_json ?? {};
     const dependency=typeof payload.depends_on_proposal_id==="string"?payload.depends_on_proposal_id:null;
     if (dependency) {
+      const projectId=typeof payload.project_id==="string"?payload.project_id:proposal.project_id;
+      if(!projectId || proposal.project_id && proposal.project_id!==projectId)throw new HttpError(404,"Source activation dependency not found");
+      await assertSourceBindingDependency(db,{spaceId:proposal.space_id,userId},projectId,String(payload.source_channel_id),dependency,true);
       const ready = await db.query(
         `SELECT 1
            FROM proposals p

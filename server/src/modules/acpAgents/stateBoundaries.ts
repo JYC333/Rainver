@@ -14,13 +14,10 @@ import type { RuntimeStateBoundary } from "../runtimeAdapters/specs.js";
  * Retire an entry when the registry starts carrying this itself.
  */
 export const ACP_AGENT_STATE_BOUNDARIES: Readonly<Record<string, RuntimeStateBoundary>> = {
-  // `GEMINI_HOME` names the `.gemini` directory itself; the ACP server keeps
-  // its own credential apart from the Antigravity IDE's and CLI's under
-  // `antigravity-acp/` (acp_server/paths.py in the published archive).
   "antigravity-acp": {
-    env: { GEMINI_HOME: ".gemini" },
-    home_subdir: ".gemini/antigravity-acp",
-    credential_file: "acp_token.json",
+    env: { RAINVER_ANTIGRAVITY_STATE_DIR: ".gemini" },
+    home_subdir: ".gemini/antigravity-cli",
+    credential_file: "antigravity-oauth-token",
   },
 };
 

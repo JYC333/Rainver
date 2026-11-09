@@ -14,6 +14,8 @@ interface ResearchProviderCompileOptions {
   pageSize?: number;
 }
 
+export class ResearchQueryInputError extends HttpError {}
+
 export class ResearchProviderCompiler {
   compile(
     providerKey: ResearchProviderKey,
@@ -73,7 +75,7 @@ function normalizeNativeProviderQuery(providerKey: ResearchProviderKey, input: R
     const allPapers = query.mode === "all";
     const categories = Array.isArray(query.categories) ? [...new Set(query.categories.map(String).filter(Boolean))] : [];
     const raw = stringValue(query.search_query);
-    if (!allPapers && !raw && categories.length === 0) throw new HttpError(422, "arXiv query requires search_query, categories, or mode=all");
+    if (!allPapers && !raw && categories.length === 0) throw new ResearchQueryInputError(422, "arXiv query requires search_query, categories, or mode=all");
     const searchQuery = allPapers
       ? "all:*"
       : raw
@@ -92,7 +94,7 @@ function normalizeNativeProviderQuery(providerKey: ResearchProviderKey, input: R
   }
   if (providerKey === "openalex") {
     const search = stringValue(query.search);
-    if (!search) throw new HttpError(422, "OpenAlex query requires search");
+    if (!search) throw new ResearchQueryInputError(422, "OpenAlex query requires search");
     return {
       search,
       per_page: boundedInt(query.per_page, 100, 1, 100),
@@ -103,7 +105,7 @@ function normalizeNativeProviderQuery(providerKey: ResearchProviderKey, input: R
   }
   if (providerKey === "semantic_scholar") {
     const search = stringValue(query.query);
-    if (!search) throw new HttpError(422, "Semantic Scholar query requires query");
+    if (!search) throw new ResearchQueryInputError(422, "Semantic Scholar query requires query");
     return {
       query: search,
       limit: boundedInt(query.limit, 100, 1, 100),
@@ -111,7 +113,7 @@ function normalizeNativeProviderQuery(providerKey: ResearchProviderKey, input: R
     };
   }
   const q = stringValue(query.q);
-  if (!q) throw new HttpError(422, "Web search query requires q");
+  if (!q) throw new ResearchQueryInputError(422, "Web search query requires q");
   return { q, count: boundedInt(query.count, 20, 1, 20), freshness: stringValue(query.freshness) };
 }
 
@@ -140,7 +142,7 @@ function isoDate(value: unknown): string | null {
   const text = stringValue(value);
   if (!text) return null;
   const date = new Date(text);
-  if (Number.isNaN(date.getTime())) throw new HttpError(422, "Provider date filter must be a valid date");
+  if (Number.isNaN(date.getTime())) throw new ResearchQueryInputError(422, "Provider date filter must be a valid date");
   return date.toISOString().slice(0, 10);
 }
 

@@ -52,6 +52,7 @@ export default function ProjectAreaLayout() {
   const { t,locale } = useAppTranslation()
   const { projectId = '', spaceId = '' } = useParams()
   const { pathname } = useLocation()
+  const boardArea = pathname.replace(/\/$/, '').endsWith(`/projects/${projectId}/board`)
   const {userId}=useSpace()
   const scope=`${spaceId}:${userId}:${projectId}`
   const [loadedScope,setLoadedScope]=useState('')
@@ -132,8 +133,8 @@ export default function ProjectAreaLayout() {
   if (!visibleProject || visibleProject.current_user_can_read === false) return <ProjectDetailPage key={scope} onAccessChanged={() => setCleared(n => n + 1)} />
   return (
     <ProjectFolderConversationProvider key={projectId} projectId={projectId}>
-      <div className="min-h-full lg:h-full lg:min-h-0 lg:overflow-hidden lg:grid lg:grid-cols-[220px_minmax(0,1fr)]">
-      <aside data-project-navigation data-shell-chrome className="border-b border-border bg-muted/20 p-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain lg:border-b-0 lg:border-r">
+      <div className={cn('lg:grid lg:grid-cols-[220px_minmax(0,1fr)]',boardArea?'flex h-full min-h-0 flex-col overflow-hidden':'min-h-full lg:h-full lg:min-h-0 lg:overflow-hidden')}>
+      <aside data-project-navigation data-shell-chrome className={cn('border-b border-border bg-muted/20 p-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain lg:border-b-0 lg:border-r',boardArea&&'max-h-[40dvh] shrink-0 overflow-y-auto overscroll-y-contain lg:max-h-none')}>
         <div className="flex min-w-0 items-center justify-between gap-3 px-2 lg:mb-5">
           <p className="min-w-0 break-words font-semibold">{visibleProject?.name ?? 'Project'}</p>
           <button type="button" className="shrink-0 rounded border border-border px-3 py-1.5 text-xs lg:hidden" aria-expanded={navigationOpen} aria-controls="project-navigation-items" onClick={()=>setNavigationOpen(open=>!open)}>{t('monitoring.projectNavigation')} {navigationOpen ? '▴' : '▾'}</button>
@@ -219,8 +220,8 @@ export default function ProjectAreaLayout() {
       {/* The sidecar sits beside every Area, so discussing what you are looking
           at never means leaving it. It renders the Room's own conversation, not
           a private one. */}
-      <div className="flex min-w-0 lg:min-h-0 lg:overflow-hidden">
-        <main data-project-area-content className="min-w-0 flex-1 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain"><Outlet context={{ onAccessChanged: () => setCleared(n => n + 1) }} /></main>
+      <div className={cn('flex min-w-0',boardArea?'min-h-0 flex-1 overflow-hidden':'lg:min-h-0 lg:overflow-hidden')}>
+        <main data-project-area-content className={cn('min-w-0 flex-1',boardArea?'min-h-0 overflow-hidden':'lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain')}><Outlet context={{ onAccessChanged: () => setCleared(n => n + 1) }} /></main>
         <div data-shell-chrome className="contents"><ProjectChatSidecar /></div>
       </div>
       </div>

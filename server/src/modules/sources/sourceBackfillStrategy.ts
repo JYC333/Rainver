@@ -1,4 +1,5 @@
-import { HttpError, objectValue, optionalString } from "../routeUtils/common.js";
+import {SourceBackfillMutationError} from './sourceBackfillErrors.js';
+import { objectValue, optionalString } from "../routeUtils/common.js";
 
 const WINDOW_UNITS = ["date_window", "page_cursor", "id_cursor"] as const;
 const QUOTA_WINDOWS = ["minute", "hour", "day"] as const;
@@ -35,19 +36,19 @@ export function normalizeStrategy(body: Record<string, unknown>): BackfillStrate
   const raw = objectValue(body.strategy);
   const windowUnit = optionalString(raw.window_unit) ?? "date_window";
   if (!WINDOW_UNITS.includes(windowUnit as BackfillStrategy["window_unit"])) {
-    throw new HttpError(422, "invalid window_unit");
+    throw new SourceBackfillMutationError(422, "invalid window_unit");
   }
   const direction = optionalString(raw.direction) ?? "backward";
   if (direction !== "backward") {
-    throw new HttpError(422, "Only backward history import is currently supported");
+    throw new SourceBackfillMutationError(422, "Only backward history import is currently supported");
   }
   const historyMode = optionalString(raw.history_mode) ?? "bounded_range";
   if (!BACKFILL_HISTORY_MODES.includes(historyMode as BackfillHistoryMode)) {
-    throw new HttpError(422, "strategy.history_mode must be bounded_range, all_available or current_snapshot");
+    throw new SourceBackfillMutationError(422, "strategy.history_mode must be bounded_range, all_available or current_snapshot");
   }
   const monitoringField = optionalString(raw.monitoring_field) ?? "submittedDate";
   if (!["submittedDate", "lastUpdatedDate"].includes(monitoringField)) {
-    throw new HttpError(422, "strategy.monitoring_field must be submittedDate or lastUpdatedDate");
+    throw new SourceBackfillMutationError(422, "strategy.monitoring_field must be submittedDate or lastUpdatedDate");
   }
   return {
     window_unit: windowUnit as BackfillStrategy["window_unit"],
@@ -65,7 +66,7 @@ export function normalizeQuota(value: unknown): BackfillQuotaPolicy {
   const raw = objectValue(value);
   const window = optionalString(raw.window) ?? "minute";
   if (!QUOTA_WINDOWS.includes(window as BackfillQuotaPolicy["window"])) {
-    throw new HttpError(422, "invalid quota_policy.window");
+    throw new SourceBackfillMutationError(422, "invalid quota_policy.window");
   }
   return {
     window: window as BackfillQuotaPolicy["window"],
@@ -75,15 +76,15 @@ export function normalizeQuota(value: unknown): BackfillQuotaPolicy {
 
 export function assertSupportedStrategy(connectorKey: string, strategy: BackfillStrategy): void {
   if (strategy.history_mode === "current_snapshot" && ["rss", "atom", "web_page"].includes(connectorKey) && strategy.window_unit === "page_cursor") return;
-  if (strategy.history_mode === "current_snapshot") throw new HttpError(422, "Current snapshots require a feed or fixed page");
+  if (strategy.history_mode === "current_snapshot") throw new SourceBackfillMutationError(422, "Current snapshots require a feed or fixed page");
   if (!["arxiv_api", "openalex_api", "semantic_scholar_api"].includes(connectorKey)) {
-    throw new HttpError(422, "History import is not supported by this connector");
+    throw new SourceBackfillMutationError(422, "History import is not supported by this connector");
   }
   if (!["date_window", "page_cursor"].includes(strategy.window_unit)) {
-    throw new HttpError(422, "The connector does not support this history import strategy");
+    throw new SourceBackfillMutationError(422, "The connector does not support this history import strategy");
   }
   if (strategy.history_mode === "all_available" && strategy.window_unit !== "date_window") {
-    throw new HttpError(422, "All available history requires date_window pagination");
+    throw new SourceBackfillMutationError(422, "All available history requires date_window pagination");
   }
 }
 
@@ -102,7 +103,7 @@ export function planSegments(strategy: BackfillStrategy): BackfillSegmentWindow[
 export function resolveStrategyBounds(strategy: BackfillStrategy, now = new Date()): BackfillStrategy {
   if (strategy.history_mode === "all_available") {
     const to = strategy.to ? new Date(strategy.to) : now;
-    if (Number.isNaN(to.getTime())) throw new HttpError(422, "invalid strategy.to");
+    if (Number.isNaN(to.getTime())) throw new SourceBackfillMutationError(422, "invalid strategy.to");
     return {
       ...strategy,
       from: ARXIV_HISTORY_FLOOR,
@@ -125,7 +126,7 @@ function planDateWindowSegments(strategy: BackfillStrategy): BackfillSegmentWind
   const end = strategy.to ? new Date(strategy.to) : new Date();
   const start = strategy.from ? new Date(strategy.from) : new Date(end.getTime() - 90 * 86400000);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start >= end) {
-    throw new HttpError(422, "invalid date window");
+    throw new SourceBackfillMutationError(422, "invalid date window");
   }
 
   const windows: Array<{ from: string; to: string }> = [];
@@ -151,7 +152,7 @@ function planDateWindowSegments(strategy: BackfillStrategy): BackfillSegmentWind
 function boundedInteger(value: unknown, fallback: number, min: number, max: number, field: string): number {
   const parsed = value === undefined ? fallback : Number(value);
   if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
-    throw new HttpError(422, `${field} must be an integer between ${min} and ${max}`);
+    throw new SourceBackfillMutationError(422, `${field} must be an integer between ${min} and ${max}`);
   }
   return parsed;
 }

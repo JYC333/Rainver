@@ -117,31 +117,6 @@ Evidence: `projectResearch/pipeline/researchAcquisitionPipelineJob.ts`,
 `projectResearch/executionProfileService.ts`, and
 [System Actions](../architecture/SYSTEM_ACTIONS.md#researchstart_acquisition).
 
-## 6. Context Delivery Acceptance
-
-### H2 — Joined prompt-provenance acceptance
-
-Agent Host dispatch now uses `RuntimeContextInvocationGateway`; the ACP adapter
-projects its accepted Delivery and hydrates authorized image/resource blocks
-without repeating descriptor text. Delegated children and session handoffs use
-their own Run request rather than the parent's pending user message. The former
-server-managed Agent loop is gone; this is not a two-runtime-authority migration.
-
-Existing focused coverage includes `acpRuntimeContextPrompt.test.ts`,
-`remoteHostCliAdapter.test.ts`, `conversationInputService.test.ts`,
-`runtimeContextGroup.test.ts`, and `currentRuntimeContextInputRef` cases in
-`runOrchestrationService.test.ts`. These establish component contracts; do not
-re-list their implemented behavior as missing.
-
-- [ ] Close the joined acceptance record for Room/direct chat, resumed turns,
-  attachments, retry, handoff and delegation: match the canonical current input,
-  immutable Invocation Snapshot and actual ACP prompt for the same invocation,
-  showing no lost or duplicated message/descriptor and the correct continuity.
-
-Current authority: [Runtime Context](../modules/runtime-context.md) and
-[Rooms](../modules/rooms.md). Broader Research restructuring remains behind the
-[usage and retirement gates](../tasks/deferred-register.md#information-monitoring--usage-and-retirement-gates).
-
 ## 7. Execution Runtime
 
 ### One Host daemon cannot connect to multiple Rainver servers
@@ -167,23 +142,6 @@ to the singleton config.
 Constraint: one server's revoke, outage, or configuration cleanup must never
 stop another profile or expose its token or workspace mappings.
 
-### A strict-Host Task Run cannot declare its output
-
-All Agent CLI Runs now use the Host daemon; the old server-loop versus
-remote-loop explanation no longer applies. The gap remains in
-`systemActions/scenarioToolAllowance.ts:dispatchToolAllowance`: only
-`trusted_host` receives `artifact.submit`; a built-in strict-Host Task Run does
-not. `runWorkSurfaceDb.test.ts` asserts this restriction.
-
-- [ ] Verify and complete declaration-to-collected-output materialization for
-  strict-Host execution, including declared types, Task links, provenance and
-  missing-output failures.
-- [ ] Grant `artifact.submit` for that mode only when declarations are applied
-  end to end. Reuse the current Host collection/materialization path rather
-  than restoring a retired server execution path.
-
-Current behavior: [Hosts](../modules/hosts.md).
-
 ### Interactive permission gate for headless dispatch
 
 `runs/runPermissionPolicy.ts:decidePermission` selects `allow_once`, then
@@ -199,27 +157,42 @@ preauthorization decision; it has no durable wait for a person.
 This does not authorize changing current headless policy or adding a per-Run
 confirmation in place of the high-trust control below.
 
-### Queued research stages still run as Agent Runs
+### Project Research still manufactures a managed Agent and Profile
 
-Monitoring comparison, synthesis and critique still create Agent Runs through
-`ProjectResearchExecutionProfileService`. Their consumers use declared output
-materialization and the Run verification/reconcile/retry path. Ad-hoc analysis
-and notebook chat already use bounded provider tasks; that partial migration
-does not complete these stage callers.
+The queued research stages — monitoring comparison (workflow and standing),
+brief synthesis, its revision and its critique — are bounded `provider_task`
+Runs (`projectResearch/researchStageTasks.ts`), published through the shared
+materialization/verification/finalization step
+(`runs/providerTaskRunPublication.ts`). `ProjectResearchExecutionProfileService.resolve`
+still manufactures the `system_research` Agent and its `opencode`
+`model_provider` Profile at intake (`orchestrator.startInitialIntake`), because
+three consumers remain Agent-shaped:
 
-- [ ] Reuse the existing `runBoundedProviderTask` finalizer and canonical Run
-  materialization/verification mechanisms for declared artifacts and evidence.
-- [ ] Migrate `monitorComparisonService`, both `pipeline/synthesisCoordinator`
-  sites, and retained intake/standing callers together to queued provider-task
-  execution; register preparers by stage/capability identifier.
-- [ ] Preserve reconciliation and retry evidence. Remove Agent/Profile
-  manufacturing in `executionProfileService.ts` only after its remaining
-  consumers migrate; remove the `system_research` kind only if unused.
+- Source screening/extract: intake binds `source_post_processing_rules` to the
+  Agent and pins the Profile; `sources/postProcessing/service.ts`
+  (`createAndExecuteAgentRun`) runs each batch as an Agent Run. Sources owns
+  that path and shares it with rules outside Project Research.
+- The WorkflowExecution coordinator Run of every research pass
+  (`researchPassExecution.ts`, `synthesisOnlyExecution.ts`
+  `findOrCreateResearchAutomation`): the Automation and `createCoordinatorRun`
+  name an Agent.
+- The synthesis-only report snapshot's `synthesize` node, an Agent node of
+  that WorkflowExecution.
+
+The queued stages take their provider/model from the workflow's Profile
+(`resolveResearchStageProvider`), so screening and synthesis stay on one
+selection.
+
+- [ ] Move screening/extract to bounded ProviderTask execution, then record the
+  workflow's provider selection in its state instead of on the Profile.
+- [ ] Let a WorkflowExecution coordinate without naming an Agent, and give it a
+  ProviderTask node for the synthesis-only snapshot.
+- [ ] Then remove Agent/Profile manufacturing in `executionProfileService.ts`,
+  and the `system_research` kind only if unused.
 
 Constraint: each Run must satisfy `ck_runs_execution_shape`; do not leave a
-half-migrated producer/consumer pair. Stage identifiers already live in
-`projectResearch/researchStages.ts`; capability-layer removal is completed work.
-Evidence: `projectResearchSynthesisReconcileDb.test.ts` and
+half-migrated producer/consumer pair. Evidence:
+`projectResearchSynthesisReconcileDb.test.ts` and
 [Execution Model](../architecture/EXECUTION_MODEL.md).
 
 ### `high`-trust execution needs an enforced control, not a run-time confirmation

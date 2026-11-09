@@ -1,3 +1,4 @@
+import {withRunTerminalOwner,researchGraphRunRefs} from '../systemActions/operations/proposalTransitions.js';
 import { reconcileResearchCall } from "./researchProblemCalls.js";
 import { assertResearchCallReadable } from "./researchCallAccess.js";
 import { randomUUID } from "node:crypto";
@@ -8,7 +9,6 @@ import {
   HttpError,
   objectValue,
   optionalString,
-  withQueryableTransaction,
 } from "../routeUtils/common.js";
 import { lockActiveProjectForMutation } from "../projects/access.js";
 import { WorkflowExecutionService } from "../automations/workflowExecutionService.js";
@@ -67,7 +67,7 @@ export async function startResearchReconcilePass(
   reason: string,
   event: ResearchPassEvent = { kind: "reconcile" },
 ): Promise<string | null> {
-  return withQueryableTransaction(db, async (tx) => {
+  return withRunTerminalOwner(db,tx=>researchGraphRunRefs(tx,identity.spaceId,operation.project_id), async (tx) => {
     await lockActiveProjectForMutation(
       tx,
       identity.spaceId,

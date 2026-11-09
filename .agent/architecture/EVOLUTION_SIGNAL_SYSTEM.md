@@ -68,6 +68,56 @@ bundle can remain `partially_approved` while other members are still pending.
 An active bundle exclusively owns its pending members: the ordinary proposal
 accept/reject endpoints fail closed and direct reviewers to the bundle.
 
+A single decision request is now one transaction for all selected DB members,
+including their canonical applier results, Proposal/request transitions, member
+snapshots, required Jobs and mandatory policy audits. The outer owner discovers
+the entire selected/cascade/checkpoint Run set, takes sorted request keys and
+nonwaiting closure fences before the Bundle/asset/domain rows. The previous
+session gate around separately committed member decisions is retired. A request
+may still intentionally select only some members; `partially_approved` describes
+that explicit selection, never a failed subset of a multi-member decision.
+
+A selection approving `code_patch` creates `evolution_bundle_decisions` plus a
+required `evolution_bundle_decision` Job in one admission transaction. The
+existing endpoints return HTTP202 and a safe `decision` summary while pending;
+GET and the Inbox's Refresh decision show the retained status. Frozen payloads,
+file roots and binary preimages are private ledger data, not response fields or
+Job payloads. The original approver, member decisions and notes are frozen;
+worker preparation and final canonical application both recheck live authority,
+risk/owner/Source consent and the frozen inputs. No new human/Agent authority,
+Proposal approval copy, operation key redirection or production mapping is added.
+An identical retained decision replays its receipt; a changed frozen draft needs
+its new Proposal id and a new decision, never reuse of the old receipt.
+
+Only the existing worker performs file IO. Its DB-only preparation commits
+before file preimages are read; preimages are persisted before any content write.
+It reuses `CodePatchFileTransaction` path/protected-folder checks and atomic file
+replacement, with per-Folder nonwaiting session coordination also used by the
+standalone applier. Binary preimages and repeated-path sequential replacements
+are preserved. A crash after a file write resumes from exact known content
+boundaries without rewriting completed effects. The internal worker receipt
+feeds the canonical code-patch applier's existing activity/snapshot/result writer;
+that final DB transaction performs no filesystem IO. It commits the decision
+receipt with all selected DB members and linked request results, or rolls all of
+those DB changes back and recovers failed audits through the canonical helper.
+The Job's live claim is checked before IO and locked through final DB commit.
+
+This is **not** cross-filesystem/database atomic visibility: files may be changed
+while the receipt is `applying`. Failure starts durable `compensating`; recovery
+restores only this intent's known content, in reverse path/member order, and
+leaves independent edits untouched. A conflict becomes `compensation_failed`,
+blocks further Bundle decisions and requires operator repair; it never reports the Bundle applied. Empty parent directories created
+by the existing safe path helper can remain. Cancelled/exhausted/missing effect
+Jobs receive one bounded cleanup Job on the existing recovery sweep; a failed
+cleanup stays explicit, without an endless requeue. A compensated failed attempt
+can use the existing Job retry cap. After that Job is exhausted, an explicit
+resubmission rechecks canonical authority/frozen inputs and replaces only the
+backing Job on the original intent; lost-response/concurrent submissions do not
+create another live Job. A succeeded receipt is never re-executed. `failed` means no selected
+member approval committed, not that every external filesystem observation was
+reversible. Existing explicit Bundle rollback support remains limited to
+promotion snapshots; code-patch members do not gain a new rollback permission.
+
 For `evolvable_asset_version_promote` members, the bundle records a durable
 pre- and post-apply snapshot of the asset's version status/scope set, system
 version pointer, active pins, and active prompt deployment references. The
@@ -78,7 +128,7 @@ rollbacks remain subject to the normal owner/admin risk matrix. The API performs
 rollback preflight and returns `rollbackable` plus `rollback_blockers`; no
 rollback proposal is persisted when policy or preflight rejects the request.
 Pending rollback requests are idempotently reused. The applier takes the bundle
-advisory lock, then sorted asset-level transaction advisory locks shared with
+row lock after Proposal/request admission, then sorted asset-level transaction advisory locks shared with
 promotion apply, verifies that each asset is unchanged since the recorded
 post-apply snapshot, restores approved members in reverse approval order (one
 decision request approves its members in bundle order), and writes an

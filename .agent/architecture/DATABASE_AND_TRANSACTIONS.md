@@ -21,9 +21,29 @@ either a pool or an already checked-out `pg` `PoolClient`. It first recognizes a
 legacy checked-out client by its `release()` method; `pg` clients also expose `connect()`
 on their prototype, so `connect` alone is not a valid Pool discriminator.
 Existing clients join the caller's transaction without issuing a nested
-`BEGIN`/`COMMIT`. Code given a checked-out Client must await each query before
+`BEGIN`/`COMMIT`. A checked-out client must already own an explicit
+`BEGIN`; merely checking it out is not a transaction. Proposal insertion and
+transition ports recognize the existing core brand, and otherwise verify a
+stable real transaction id across two statements before using transaction
+advisory gates. They never start or commit a transaction on behalf of a raw
+client, cache a previous transaction lifetime, or nest a COMMIT. Pool callers
+retain the existing short-transaction owner. Code given a checked-out Client must await each query before
 starting the next; `Promise.all` of queries on that Client queues them concurrently
 and triggers the pg@9 deprecation warning.
+
+## Prepared Run terminal owners
+
+`withRunTerminalOwner` reuses `withQueryableTransaction`, the existing operation
+transaction brand, P1 transition admission and `withPolicyAuditRecovery`. For a
+Pool root it discovers the entire Run set before domain locks, admits every
+linked request key in canonical order and binds the exact admitted set to an
+expiring transaction object. Children assert membership through that object;
+there is no caller-supplied readiness flag, nested commit or late key acquisition.
+A newly observed Run conflicts and rolls back the owner. Request transitions
+finish only after the domain/required Job work; failed mandatory audits use the
+existing recovery after rollback/release. Raw or branded composed clients join
+their existing transaction and retain linked refusal unless their actual parent
+prepared that same port. This is not approval mapping authority.
 
 ## Transaction Ownership Rules
 
@@ -859,3 +879,28 @@ historical journal rewrite is required.
 A repair-required install retry is rejected under the install session lock before
 the journaled transaction starts; it preserves the original failure summary and
 events instead of relabeling an admission denial as another migration failure.
+
+The raw-client transaction check uses `txid_current()`, which **assigns a real
+XID** (it is not a content read without side effects). Two autocommit statements
+consume distinct XIDs and are refused; statements inside BEGIN see the same XID.
+The existing branded core port avoids this probe. The check does not cache client
+lifetime or silently turn a checked-out autocommit client into a transaction.
+
+
+Pool-owned `withRunTerminalOwner` requires the Pool's configured
+`options.connectionString`, the same database identity used by canonical failed
+audit recovery. Missing configuration refuses before BEGIN/business writes;
+there is no silent audit-less owner. Maintenance scans use independent candidate
+transactions with nonwaiting Proposal/request/Run admission and skip busy targets
+for the next existing sweep. This does not split atomic Project/graph actions:
+those still conflict and roll back as a whole. Orphan execution-lock maintenance
+remains its own safe step rather than depending on linked-request admission.
+
+
+Independent Job reclaim/autonomy timeout scans explicitly reject checked-out,
+composed and branded transaction ports before querying/writing. Their busy-skip
+rule is valid only with independent Pool-owned candidate transactions, never by
+catching a SQL error and continuing an aborted outer transaction. Real PG tests
+retain a caller BEGIN and verify rejection leaves it usable; normal Pool scans
+retain progress. JSON-null Job payload run_id is consistently excluded from both
+Run discovery and abandoned-Run projection; the Job itself still expires normally.

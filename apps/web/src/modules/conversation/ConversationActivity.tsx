@@ -1,6 +1,7 @@
 import { CirclePause, Loader2, Square } from 'lucide-react'
 import type { Run, RunTurn } from '../../types/api'
 import { useAppTranslation } from '../../i18n'
+import { queuedRunLabel } from './queuedRunLabel'
 import { useConversationScope } from './ConversationScope'
 import { RunQuotaRecoveryControls, runQuotaRecovery } from '../runs/RunQuotaRecoveryControls'
 
@@ -34,7 +35,7 @@ export function ConversationActivity({ runs, turns, agentName, onChanged, allowC
         const idle = blocked || run.status === 'queued' || run.status === 'waiting_for_dependency'
         const label = run.status === 'cancelling' ? t('conversation_ui.run.stopping')
           : turn?.blocked_on === 'quota' ? t('conversation_ui.turn.blocked_quota')
-          : run.status === 'queued' ? t('conversation_ui.surface.queued')
+          : run.status === 'queued' ? t(queuedRunLabel(turn))
           : run.status === 'waiting_for_dependency' ? t('conversation_ui.surface.waiting_agents')
           : blocked ? t(turn?.blocked_on === 'authorization' ? 'conversation_ui.turn.blocked_authorization'
             : turn?.blocked_on === 'workspace' ? 'conversation_ui.turn.blocked_workspace' : 'conversation_ui.turn.blocked_decision')

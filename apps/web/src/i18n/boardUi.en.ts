@@ -9,4 +9,5 @@ export const boardUiEn = { board_ui: {
   new_task:'New Task', new_in:'New Task in {{name}}', unassigned:'Unassigned', saved:'Columns saved', deleted:'Task deleted', updated:'Task updated',
   drag_help:'Click for actions. Drag to move. Press Space to drag with arrow keys, or Enter to open actions.',
   inbox:'Inbox', ready:'Ready', in_progress:'In progress', waiting_for_review:'Waiting for review', blocked:'Blocked', done:'Done',
+  completed_visible:'{{visible}} / {{total}} completed tasks shown', show_more:'Show {{count}} more', collapse_completed:'Collapse',
 } }

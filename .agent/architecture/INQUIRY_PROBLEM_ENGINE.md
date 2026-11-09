@@ -221,3 +221,27 @@ assessment into Verify. Read-only/closed Threads retain readable history;
 backend gates remain authoritative for stale clients.
 
 One-time offline cutover and static archives are documented in [the upgrade guide](PROBLEM_ENGINE_UPGRADE.md).
+
+
+## Core human Note-to-Question entry
+
+`note.raise_as_question` and the retained from-note POST URL share a strict
+core command contract and explicit transport key. Current Project writer, active
+Project fence and readable Note are revalidated before the existing composition
+of createThread and linkNote. Thread root/state, initial revision, domain-change
+outbox, canonical Project work event, reference edge, mandatory audit and receipt
+share one transaction. The source Note is not rewritten; its grant can allow
+this explicit human derivation without granting Note mutation. Human-only
+manual-origin admission uses inquiry.thread.create. Agent create_thread retains
+its independent origin/grant semantics and remains unmigrated. Wiki promotion
+and plain Note navigational links keep their separate policy/approval boundary.
+
+
+The ordinary human `inquiry.thread.create` command now uses the same core
+creation registration group and canonical domain writer as the selection
+entry. Its existing POST Threads URL is retained as an adapter; the browser
+helper supplies one explicit transport key and rereads the authorized Thread.
+Its strict schema requires the original kind and statement, preserves typed
+state/parent fields and retains independent producer uniqueness. It is distinct
+from `inquiry.create_thread`, the Agent-only origin/grant-bound legacy tool:
+no human/Agent authority is inferred across these entries.

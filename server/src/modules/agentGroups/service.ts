@@ -1,3 +1,4 @@
+import type {Queryable} from '../routeUtils/common.js';
 import {
   NO_SESSION_CONFIG,
   reconcileSavedSessionConfig,
@@ -7,7 +8,7 @@ import {
 } from "../sessions/sessionConfig.js";
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
-import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
+import { getDbPool, type Pool } from "../../db/pool.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { enforce, type EnforceResult } from "../policy/service.js";
 import { HttpError, withDbTransaction } from "../routeUtils/common.js";
@@ -228,7 +229,7 @@ export class AgentGroupRunService {
   }
 
   async createGroupInTransaction(
-    client: PoolClient,
+    client: Queryable,
     identity: AgentGroupIdentity,
     input: CreateAgentGroupInput,
     options: { allowSystemAssistant?: boolean } = {},
@@ -358,7 +359,7 @@ export class AgentGroupRunService {
   }
 
   async sendUserMessageInTransaction(
-    client: PoolClient,
+    client: Queryable,
     identity: AgentGroupIdentity,
     input: SendAgentGroupMessageInput,
   ): Promise<{ message: AgentRunMessageRecord }> {
@@ -366,7 +367,7 @@ export class AgentGroupRunService {
   }
 
   async sendRoomMessageInTransaction(
-    client: PoolClient,
+    client: Queryable,
     identity: AgentGroupIdentity,
     input: SendAgentGroupMessageInput,
   ): Promise<{ message: AgentRunMessageRecord }> {
@@ -374,7 +375,7 @@ export class AgentGroupRunService {
   }
 
   private async dispatchMessageInTransaction(
-    client: PoolClient,
+    client: Queryable,
     identity: AgentGroupIdentity,
     input: SendAgentGroupMessageInput,
     roomAuthority: boolean,
@@ -967,8 +968,8 @@ export class AgentGroupRunService {
     return updated;
   }
 
-  private repos(client: PoolClient): {
-    db: PoolClient;
+  private repos(client: Queryable): {
+    db: Queryable;
     groups: PgAgentGroupRepository;
     runs: PgRunRepository;
     jobs: PgJobQueueRepository;
@@ -1044,7 +1045,7 @@ export class AgentGroupRunService {
 
   private async spawnChildRunInTransaction(
     repos: {
-      db: PoolClient;
+      db: Queryable;
       groups: PgAgentGroupRepository;
       runs: PgRunRepository;
       jobs: PgJobQueueRepository;
@@ -1740,7 +1741,7 @@ async function recordHostDispatch(
 }
 
 export async function prepareHostConversationDispatch(input: {
-  db: Pool | PoolClient;
+  db: Queryable;
   backend: ResolvedConversationBackend;
   container: { kind: "conversation"; conversation_id: string } | { kind: "direct"; user_id: string };
   sessionId: string;
@@ -1907,7 +1908,7 @@ export async function prepareHostConversationDispatch(input: {
 
 async function prepareRoomConversationBackends(input: {
   config: ServerConfig;
-  db: PoolClient;
+  db: Queryable;
   identity: AgentGroupIdentity;
   roomId: string;
   sessionId: string;
@@ -2134,7 +2135,7 @@ async function containerTurnsUsed(repo: PgAgentGroupRepository, group: AgentRunG
   });
 }
 
-async function chargeDelegatedChild(db: PoolClient, group: AgentRunGroupRecord, childRunId: string): Promise<void> {
+async function chargeDelegatedChild(db: Queryable, group: AgentRunGroupRecord, childRunId: string): Promise<void> {
   if (group.discussion_id) {
     await db.query(
       `UPDATE room_discussions SET turns_used = turns_used + 1, updated_at = now() WHERE space_id = $1 AND id = $2`,
@@ -2313,7 +2314,7 @@ interface RoomContextRevision {
 }
 
 async function listRoomContextRevisions(
-  db: PoolClient,
+  db: Queryable,
   spaceId: string,
   projectId: string | null,
   agentIds: readonly string[],
@@ -2341,7 +2342,7 @@ interface RoomTurnSource {
 
 /** The turn's trigger message must still exist; the title orients a fresh session. */
 async function loadRoomTurnSource(
-  db: PoolClient,
+  db: Queryable,
   spaceId: string,
   sessionId: string,
   currentMessageId: string,
@@ -2367,7 +2368,7 @@ async function loadRoomTurnSource(
  * reset, has nothing to summarize.
  */
 async function prepareSummaryTurn(
-  db: PoolClient,
+  db: Queryable,
   input: { identity: AgentGroupIdentity; agentId: string; backend: PreparedRoomConversationBackend | undefined },
 ): Promise<{ agent_id: string; prompt: string; handoff: { thread_id: string; context_tokens: number; budget_tokens: number; manual_summary: true } }> {
   const thread = input.backend?.host_thread;
@@ -2396,7 +2397,7 @@ async function prepareSummaryTurn(
 }
 
 async function listRoomMessagesSinceAgentTurn(
-  db: PoolClient,
+  db: Queryable,
   spaceId: string,
   sessionId: string,
   currentMessageId: string,
@@ -2638,7 +2639,7 @@ function unavailableGitSnapshot(): RunGitSnapshot {
 }
 
 async function readRunGitSnapshot(
-  db: Pool | PoolClient,
+  db: Queryable,
   spaceId: string,
   workspaceLocationId: string | null,
   managed: boolean,

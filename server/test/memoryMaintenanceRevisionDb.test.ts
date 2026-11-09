@@ -1,3 +1,4 @@
+import {linkProposalOperation} from './support/linkedProposalOperation.js';
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
@@ -142,4 +143,41 @@ describe("memoryMaintenanceRevisionDb", () => {
     expect(resumed!.job).toMatchObject({ status: "pending", error_message: null, completed_at: null });
     expect(resumed!.report?.findings).toHaveLength(2);
   });
+});
+
+describe("linked Memory frozen revision",()=>{
+ it.each([false,true])("creates a fresh review without drifting the old frozen payload (rollback=%s)",async fail=>{
+  if(!db.available)return;
+  const memory=await ownMemory('Original memory');
+  const id=await pendingUpdate({target_memory_id:memory,requires_operator_edit:true,proposed_content:'Old draft',provenance_entries:[{source_type:'user_confirmation',source_id:OWNER}]});
+  const deadline=new Date(Date.now()+3600000).toISOString();
+  await db.pool.query("UPDATE proposals SET visibility='selected_users',owner_user_id=$2,review_deadline=$3,expires_at=$3 WHERE id=$1",[id,OWNER,deadline]);
+  await db.pool.query("INSERT INTO content_access_grants(id,space_id,resource_type,resource_id,grantee_user_id,granted_by_user_id,access_level,created_at,updated_at) VALUES($1,$2,'proposal',$3,$4,$5,'full',now(),now())",[randomUUID(),SPACE,id,ADMIN,OWNER]);
+  await db.pool.query("INSERT INTO proposal_approvals(id,proposal_id,approval_type,approver_user_id,status,created_at) VALUES($1,$2,'egress_granting_user',$3,'approved',now())",[randomUUID(),id,OWNER]);
+  const request=await linkProposalOperation(db.pool,{spaceId:SPACE,userId:OWNER},id);
+  const before=(await db.pool.query('SELECT payload_json FROM proposals WHERE id=$1',[id])).rows[0]!.payload_json;
+  if(fail){
+   await db.pool.query("CREATE FUNCTION refuse_revision() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.state='superseded' THEN RAISE EXCEPTION 'revision refused'; END IF; RETURN NEW; END $$");
+   await db.pool.query('CREATE TRIGGER refuse_revision BEFORE UPDATE ON operation_idempotency FOR EACH ROW EXECUTE FUNCTION refuse_revision()');
+  }
+  try{
+   const edit=new PgMemoryProposalRepository(db.pool,config()).reviseOperatorEditProposal(SPACE,OWNER,id,{content:'New draft'});
+   if(fail)await expect(edit).rejects.toThrow('revision refused');
+   else{
+    const next=await edit;expect(next.id).not.toBe(id);
+    expect(next).toMatchObject({status:'pending',proposed_content:'New draft',operator_revision:{edited_by_user_id:OWNER},visibility:'selected_users',review_deadline:deadline,expires_at:deadline});
+    expect((await db.pool.query("SELECT grantee_user_id,access_level FROM content_access_grants WHERE resource_type='proposal' AND resource_id=$1",[next.id])).rows).toEqual([{grantee_user_id:ADMIN,access_level:'full'}]);
+    expect((await db.pool.query('SELECT state,frozen_json,result_json,proposal_id FROM operation_idempotency WHERE id=$1',[request])).rows[0]).toMatchObject({state:'superseded',frozen_json:{payload:before},proposal_id:id,result_json:{proposal_id:id}});
+    expect((await db.pool.query('SELECT id FROM proposal_approvals WHERE proposal_id=$1',[next.id])).rows).toEqual([]);
+    await new PgProposalApplyService(config()).accept(next.id,{spaceId:SPACE,userId:ADMIN});
+    expect(await activeVersions(memory)).toEqual([{content:'New draft',source_trust:'user_confirmed'}]);
+   }
+   expect((await db.pool.query('SELECT status,payload_json FROM proposals WHERE id=$1',[id])).rows[0]).toEqual({status:fail?'pending':'superseded',payload_json:before});
+   if(fail){
+    expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE id=$1',[request])).rows[0]!.state).toBe('pending_approval');
+    expect((await db.pool.query('SELECT id FROM proposals')).rows).toEqual([{id}]);
+    expect(await activeVersions(memory)).toEqual([{content:'Original memory',source_trust:null}]);
+   }
+  }finally{if(fail){await db.pool.query('DROP TRIGGER refuse_revision ON operation_idempotency');await db.pool.query('DROP FUNCTION refuse_revision()');}}
+ });
 });

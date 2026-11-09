@@ -1,7 +1,8 @@
+import {withRunTerminalOwner} from '../../systemActions/operations/proposalTransitions.js';
 import {comparisonPrompt,assertRevisionSample} from './comparisonPrompt.js';
 import { ReadingMethodTrialSchema, PROMPT_REVISION_FIXTURE, ReadingMethodGeneratedOutputSchema } from '@rainver/protocol';
 import type { z } from 'zod';
-import { HttpError, withDbTransaction, withQueryableTransaction, type Pool, type SpaceUserIdentity } from '../../routeUtils/common.js';
+import { HttpError, withDbTransaction, type Pool, type SpaceUserIdentity } from '../../routeUtils/common.js';
 import type { ServerConfig } from '../../../config.js';
 import { readingItemContext } from '../../sources/index.js';
 import { readingAsset, readingCandidate } from './access.js';
@@ -181,7 +182,7 @@ export function registerRevisionProviderTrials() {
           text = `# Revised prompt\n${result.method}\n\n## Changes\n${result.summary}\n${result.changes.map(c => '- ' + c).join('\n')}`;
         }
         if (!text.trim()) throw new HttpError(422, 'Empty comparison output');
-        await withQueryableTransaction(db, async tx => {
+        await withRunTerminalOwner(db,async()=>[{id:run.id,space_id:run.space_id}],async tx => {
           await (await import('../../runtimeContext/index.js')).lockReadingRunAuthority(tx, run);
           await assertReadingTrialRun(tx, run);
           await tx.query(`SELECT id FROM runs WHERE id=$1 FOR UPDATE`, [run.id]);

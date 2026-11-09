@@ -197,3 +197,13 @@ become the canonical Memory store.
 
 - [0003-memory-proposal-flow.md](../decisions/0003-memory-proposal-flow.md)
 - [0014-unified-runtime-context-engine.md](../decisions/0014-unified-runtime-context-engine.md)
+
+## Pending revision and frozen requests
+
+Maintenance revision still requires the entry owner or Project writer and writes
+only a Proposal. A linked frozen request makes revision return a fresh pending
+Proposal id: the old draft/payload and request evidence remain, both superseded
+in the same transaction. Audience, provenance and review gates carry forward;
+no approval or operation receipt is copied. Unlinked drafts retain editing in
+place. The browser opens the returned draft, and acceptance still uses the
+canonical Memory applier; revision alone changes no active Memory.

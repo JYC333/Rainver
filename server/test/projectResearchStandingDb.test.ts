@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import { COMPARISON_BATCH_SIZE } from "../src/modules/projectResearch/monitorComparisonService.js";
@@ -17,6 +18,15 @@ import { ProjectResearchRepository } from "../src/modules/projectResearch/reposi
 import { ProjectResearchAreaService } from "../src/modules/projectResearch/areaService.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults.js";
+import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
+import {
+  performQueuedProviderTask,
+  providerTaskTestConfig,
+  replyWithStructuredOutput,
+  resetProviderReplies,
+  seedTestModelProvider,
+} from "./support/providerTaskFixture.js";
 
 // The standing service has no Workflow or Inquiry Thread
 // prerequisite. These tests keep PostgreSQL, Project ACLs, durable Jobs, Run
@@ -34,11 +44,14 @@ const identity = { spaceId: SPACE, userId: USER };
 
 const db = useTestDatabase(import.meta.filename);
 
+afterEach(() => { resetProviderReplies(); });
+
 beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["project_research_standing_advice", "project_research_standing_batches", "research_scan_summaries", "research_evidence_cards", "project_corpus_item_sources", "project_corpus_items", "source_items", "jobs", "runs", "note_revisions", "note_collection_items", "note_collections", "notes", "space_objects", "project_source_item_links", "project_source_bindings", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "agent_versions", "agents", "project_members", "projects", "space_memberships", "users", "spaces"],
+    ["provider_task_snapshots", "provider_task_deliveries", "provider_task_controls", "model_provider_space_grants", "model_providers",
+     "project_research_standing_advice", "project_research_standing_batches", "research_scan_summaries", "research_evidence_cards", "project_corpus_item_sources", "project_corpus_items", "source_items", "jobs", "runs", "note_revisions", "note_collection_items", "note_collections", "notes", "space_objects", "project_source_item_links", "project_source_bindings", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "agent_versions", "agents", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -131,7 +144,10 @@ async function seedRun(input: { status: string; output?: unknown; createdAt?: Da
     `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, instructed_by_user_id, owner_user_id, project_id, capability_id, contract_snapshot_json, output_json, created_at, updated_at, started_at, ended_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'system', $5, 'live', $6, $6, $7, 'research.monitor_compare', $8::jsonb, $9::jsonb, $10, $10, $10, $10, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [id, SPACE, AGENT, VERSION, input.status, USER, PROJECT,
       JSON.stringify({ workflow_input_json: { project_research_standing: { test: true } } }),
-      JSON.stringify(input.output ?? null), now],
+      // Every terminal Run stores the canonical envelope; the comparisons are its result.
+      JSON.stringify(input.output === undefined
+        ? null
+        : canonicalRunOutput({ success: true, outputText: "", outputJson: input.output })), now],
   );
   return id;
 }
@@ -438,6 +454,61 @@ describe("project research standing comparison (real Postgres)", () => {
       daily_used: STANDING_COMPARISON_DAILY_RUN_LIMIT,
       daily_limit: STANDING_COMPARISON_DAILY_RUN_LIMIT,
     });
+  });
+
+  it("dispatches a standing comparison as a bounded ProviderTask Run and settles the batch from its output", async () => {
+    if (!db.available) return;
+    const config = providerTaskTestConfig(db.connectionUri, "/tmp/rainver-standing-provider-task-test");
+    const provider = await seedTestModelProvider(db.pool, { space: SPACE, owner: USER, config });
+    await syncBuiltinPrompts(db.pool, join(process.cwd(), "..", "catalog"));
+    await seedBaseline();
+    const sourceItemId = await seedSourceInCorpus();
+    const service = new ProjectResearchStandingComparisonService(db.pool, config);
+    const batchId = await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId });
+
+    const dispatched = await service.dispatchBatch(SPACE, batchId) as { status: string; run_id: string; job_id: string };
+    expect(dispatched).toMatchObject({ status: "running" });
+    // Admission freezes the Space default into the Run and queues the shared
+    // worker job; it manufactures no Agent and no Runtime Profile.
+    const queued = (await db.pool.query<{
+      execution_kind: string; status: string; agent_id: string | null; runtime_profile_id: string | null;
+      capability_id: string; contract_snapshot_json: { route_hints_json?: { provider_id?: string; model?: string } };
+    }>(
+      `SELECT execution_kind,status,agent_id,runtime_profile_id,capability_id,contract_snapshot_json FROM runs WHERE id=$1`,
+      [dispatched.run_id],
+    )).rows[0]!;
+    expect(queued).toMatchObject({
+      execution_kind: "provider_task", status: "queued", agent_id: null, runtime_profile_id: null,
+      capability_id: "research.monitor_compare",
+      contract_snapshot_json: { route_hints_json: { provider_id: provider, model: "test-model" } },
+    });
+    expect((await db.pool.query(`SELECT job_type FROM jobs WHERE id=$1`, [dispatched.job_id])).rows[0])
+      .toEqual({ job_type: "provider_task_run" });
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM agents WHERE space_id=$1 AND agent_kind='system_research'`, [SPACE])).rows[0].n).toBe(0);
+
+    const detail = "Investigate whether the effect reverses in a new setting.";
+    replyWithStructuredOutput({ comparisons: [{ source_item_id: sourceItemId, stance: "new_direction", detail, affected_sections: ["questions"] }] });
+    await performQueuedProviderTask(config, { spaceId: SPACE, userId: USER, runId: dispatched.run_id });
+
+    const performed = (await db.pool.query<{ status: string; model_provider_id: string | null; provider_task_control_id: string | null; output_json: { result?: unknown } }>(
+      `SELECT status,model_provider_id,provider_task_control_id,output_json FROM runs WHERE id=$1`, [dispatched.run_id],
+    )).rows[0]!;
+    expect(performed).toMatchObject({ status: "succeeded", model_provider_id: provider });
+    expect(performed.provider_task_control_id).toBeTruthy();
+    expect(performed.output_json.result).toMatchObject({ comparisons: [expect.objectContaining({ source_item_id: sourceItemId })] });
+    // The terminal Run is finalized and its standing reconcile is queued.
+    expect((await db.pool.query(`SELECT outcome_status FROM run_evaluations WHERE run_id=$1`, [dispatched.run_id])).rows)
+      .toEqual([{ outcome_status: "passed" }]);
+    expect((await db.pool.query(
+      `SELECT count(*)::int AS n FROM jobs WHERE job_type='project_research_standing_reconcile' AND payload_json->>'run_id'=$1`,
+      [dispatched.run_id],
+    )).rows[0].n).toBe(1);
+
+    await expect(service.reconcileRun(SPACE, dispatched.run_id)).resolves.toMatchObject({ status: "completed", comparison_count: 1 });
+    expect((await db.pool.query(`SELECT stance,comparison_detail FROM research_evidence_cards WHERE source_item_id=$1`, [sourceItemId])).rows[0])
+      .toEqual({ stance: "new_direction", comparison_detail: detail });
+    expect((await db.pool.query(`SELECT created_by_run_id FROM project_research_standing_advice WHERE source_item_id=$1`, [sourceItemId])).rows[0])
+      .toEqual({ created_by_run_id: dispatched.run_id });
   });
 
   it("turns a new direction into advice that creates one Thread when actioned repeatedly", async () => {

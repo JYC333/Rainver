@@ -1,3 +1,4 @@
+import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import {
@@ -257,9 +258,11 @@ export class PgProjectRepository {
     projectId: string,
     body: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    return withQueryableTransaction(this.db, (db) =>
-      new PgProjectRepository(db).updateLocked(identity, projectId, body),
-    );
+    await assertProjectWriter(this.db,identity.spaceId,projectId,identity.userId,{allowArchived:true});
+    return withRunTerminalOwner(this.db,async db=>{
+      const current=(await db.query<{status:string}>('SELECT status FROM projects WHERE id=$1 AND space_id=$2',[projectId,identity.spaceId])).rows[0];
+      return (optionalString(body.status)??current?.status)==='archived'?projectArchiveRunRefs(db,identity.spaceId,projectId):[];
+    },db=>new PgProjectRepository(db).updateLocked(identity,projectId,body));
   }
 
   private async updateLocked(
@@ -312,9 +315,9 @@ export class PgProjectRepository {
   }
 
   async archive(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>> {
-    return withQueryableTransaction(this.db, (db) =>
-      new PgProjectRepository(db).archiveLocked(identity, projectId),
-    );
+    await assertProjectWriter(this.db,identity.spaceId,projectId,identity.userId,{allowArchived:true});
+    return withRunTerminalOwner(this.db,db=>projectArchiveRunRefs(db,identity.spaceId,projectId),
+      db=>new PgProjectRepository(db).archiveLocked(identity,projectId));
   }
 
   private async archiveLocked(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>> {
@@ -1143,4 +1146,14 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+/** Exact Workflow Run closure of Project archive, discovered before Project locks. */
+async function projectArchiveRunRefs(db:Queryable,spaceId:string,projectId:string){
+ return (await db.query<{id:string;space_id:string}>(`SELECT DISTINCT run_id AS id,$1::varchar AS space_id FROM (
+   SELECT e.root_run_id AS run_id FROM workflow_executions e JOIN automations a ON a.id=e.automation_id AND a.space_id=e.space_id WHERE e.space_id=$1 AND a.project_id=$2
+   UNION ALL SELECT link.run_id FROM workflow_execution_node_runs link JOIN workflow_execution_nodes n ON n.id=link.node_id AND n.space_id=link.space_id
+    JOIN workflow_executions e ON e.id=n.execution_id AND e.space_id=n.space_id JOIN automations a ON a.id=e.automation_id AND a.space_id=e.space_id
+    WHERE link.space_id=$1 AND a.project_id=$2
+  ) affected WHERE run_id IS NOT NULL`,[spaceId,projectId])).rows;
 }

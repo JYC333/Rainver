@@ -1,3 +1,5 @@
+import {assertSourceConnectionReadable} from '../sourceConnectionAccess.js';
+import {discoverMonitorParent,lockMonitorParent,lockMonitorCreation,SourceMonitorScopeConflict,type MonitorParent} from '../sourceMonitorParent.js';
 import {assertLegacySourceOwner} from '../goals/compatibility.js';
 import { createHash, randomUUID } from "node:crypto";
 import { InterestProfileService } from "../../interestProfile/index.js";
@@ -68,6 +70,9 @@ interface SelectedResearchAttemptChannelInput {
   credentialId?: string;
   name?: string;
 }
+
+export class SourceChannelCreateConflict extends HttpError {}
+export class SourceChannelMutationError extends HttpError {}
 
 export class SourceChannelService {
   private readonly catalog: SourceProviderCatalogService;
@@ -178,7 +183,7 @@ export class SourceChannelService {
     status: "subscribed" | "muted",
   ): Promise<{ source_channel_id: string; status: string; updated_at: string }> {
     const now = new Date().toISOString();
-    const row = await withQueryableTransaction(this.db, async (db) => {
+    return withQueryableTransaction(this.db, async (db) => {
       const result = await db.query<{ status: string; previous: string }>(
         `UPDATE source_channel_user_subscriptions sub
             SET status = $4::varchar(32), updated_at = $5::timestamptz
@@ -197,12 +202,11 @@ export class SourceChannelService {
       const ref = { spaceId: identity.spaceId, channelId, userId: identity.userId, at: now };
       if (status === "subscribed") await openSubscriptionWindow(db, ref);
       else await closeSubscriptionWindow(db, ref);
-      return updated;
+      if (updated.previous === "subscribed" && status === "muted") {
+        await new InterestProfileService(db).forgetAutomaticFacts(identity.spaceId, identity.userId);
+      }
+      return { source_channel_id: channelId, status: updated.status, updated_at: now };
     });
-    if (row.previous === "subscribed" && status === "muted") {
-      await new InterestProfileService(this.db).forgetAutomaticFacts(identity.spaceId, identity.userId);
-    }
-    return { source_channel_id: channelId, status: row.status, updated_at: now };
   }
 
   /**
@@ -224,16 +228,16 @@ export class SourceChannelService {
   }
 
   async get(identity: SpaceUserIdentity, channelId: string) {
-    const result = await this.db.query<SourceChannelRow>(
-      `${this.selectSql()} WHERE ch.space_id = $1 AND ch.id = $2 AND ch.created_by_user_id = $3 LIMIT 1`,
-      [identity.spaceId, channelId, identity.userId],
-    );
-    return result.rows[0] ? this.channelOut(result.rows[0]) : null;
+    const row=await this.getRaw(identity,channelId);
+    return row?this.channelOut(row):null;
   }
 
   async create(identity: SpaceUserIdentity, body: Record<string, unknown>, nativeDraft=false) {
-    return withQueryableTransaction(this.db, (db) =>
-      new SourceChannelService(db, this.config).createLocked(identity, body, nativeDraft));
+    return withQueryableTransaction(this.db, async db => {
+      const root=typeof (this.db as {connect?:unknown}).connect==='function'&&typeof (this.db as {release?:unknown}).release!=='function';
+      await lockMonitorCreation(db,identity,root);
+      return new SourceChannelService(db, this.config).createLocked(identity, body, nativeDraft);
+    });
   }
 
   private async createLocked(identity: SpaceUserIdentity, body: Record<string, unknown>, nativeDraft=false) {
@@ -259,12 +263,12 @@ export class SourceChannelService {
     const name = optionalString(body.name) ?? this.defaultName(providerKey, compiled.providerQuery);
     const frequency = optionalString(body.fetch_frequency) ?? "daily";
     if (!["manual", "hourly", "daily", "weekly"].includes(frequency)) {
-      throw new HttpError(422, "fetch_frequency must be manual, hourly, daily, or weekly");
+      throw new SourceChannelMutationError(422, "fetch_frequency must be manual, hourly, daily, or weekly");
     }
     if(nativeDraft&&provider.connector_key!=='agent_native_search')throw new HttpError(403,'Native draft only');
     const status = nativeDraft||body.status === "paused" ? "paused" : "active";
     const schedule = resolveChannelSchedule(body, frequency, status);
-    const projectId = optionalString(body.project_id);
+    let projectId = optionalString(body.project_id);
     // A monitor added from a Source's own page names that Source. Do not
     // guess the connection from the provider. The monitor could land on
     // another Source of the same provider.
@@ -272,13 +276,17 @@ export class SourceChannelService {
     const targetConnection = targetConnectionId
       ? await this.requireOwnConnection(identity, targetConnectionId, provider.mapping_id)
       : null;
+    if(targetConnection){
+      if(projectId&&projectId!==targetConnection.project_id)throw new SourceMonitorScopeConflict();
+      projectId=targetConnection.project_id;
+    }
     const existing = body._force_create === true
       ? { rows: [] as SourceChannelRow[] }
       : await this.db.query<SourceChannelRow>(
       `${this.selectSql()} WHERE ch.space_id = $1 AND ch.created_by_user_id = $2
          AND CASE WHEN ch.channel_type='search' THEN ss.query_fingerprint ELSE ch.query_fingerprint END = $3
          AND ${targetConnection ? "ch.source_connection_id = $4" : "sc.project_id IS NOT DISTINCT FROM $4"}
-         AND ch.status <> 'archived' LIMIT 1`,
+         AND ch.status <> 'archived' AND sc.deleted_at IS NULL LIMIT 1`,
       [identity.spaceId, identity.userId, fingerprint, targetConnection ? targetConnection.id : projectId],
     );
     if (existing.rows[0]) return this.channelOut(existing.rows[0]);
@@ -332,18 +340,11 @@ export class SourceChannelService {
       nextRunAt: schedule.nextRunAt,
       updatedAt: now,
     });
-    return this.channelOut({
-      ...channel,
-      source_name: sourceName,
-      provider_key: provider.provider_key,
-      provider_display_name: provider.provider_display_name,
-      connector_key: provider.connector_key,
-      connector_mapping_id: provider.mapping_id,
-      connection_status: connection.status,
-      capture_policy: governance.capturePolicy,
-      search_spec_provider_query_json: compiledResearch?.query,
-      search_spec_query_fingerprint: compiledResearch?.fingerprint,
-    });
+    // Read the actual parent metadata, not caller-supplied root defaults when
+    // this is a child of an existing Source (name, Project and capture policy).
+    const created=await this.getRaw(identity,channel.id);
+    if(!created)throw new HttpError(404,'Source channel not found');
+    return this.channelOut(created);
   }
 
   /** Materialize a selected research attempt without recompiling or rewriting its query. */
@@ -470,29 +471,41 @@ export class SourceChannelService {
     return { channel, proposal: autoApplied?.proposal ?? proposal, auto_applied: Boolean(autoApplied) };
   }
 
+  async discoverCreator(identity:SpaceUserIdentity,channelId:string){
+    const row=await this.getRaw(identity,channelId);if(!row)throw new HttpError(404,'Source channel not found');return row;
+  }
+  async requireCreator(identity: SpaceUserIdentity, channelId: string,expectedParent?:MonitorParent) {
+    const current=await this.getRaw(identity,channelId);if(!current)throw new HttpError(404,'Source channel not found');
+    if(expectedParent&&expectedParent.id!==current.source_connection_id)throw new SourceMonitorScopeConflict();
+    await lockMonitorParent(this.db,identity,expectedParent??await discoverMonitorParent(this.db,identity,current.source_connection_id));
+    const row=await this.db.query('SELECT id FROM source_channels WHERE id=$1 AND space_id=$2 AND created_by_user_id=$3 AND source_connection_id=$4 FOR UPDATE',[channelId,identity.spaceId,identity.userId,current.source_connection_id]);
+    if(!row.rows.length)throw new SourceMonitorScopeConflict();
+    return current;
+  }
+
   async update(identity: SpaceUserIdentity, channelId: string, body: Record<string, unknown>) {
     return withQueryableTransaction(this.db,db=>new SourceChannelService(db,this.config).updateLocked(identity,channelId,body));
   }
 
   private async updateLocked(identity: SpaceUserIdentity, channelId: string, body: Record<string, unknown>) {
-    await this.db.query('SELECT id FROM source_channels WHERE id=$1 AND space_id=$2 FOR UPDATE',[channelId,identity.spaceId]);
+    await this.requireCreator(identity,channelId);
     const current = await this.getRaw(identity, channelId);
     if (!current) throw new HttpError(404, "Source channel not found");
     await assertLegacySourceOwner(this.db,identity.spaceId,channelId);
     const frequency = optionalString(body.fetch_frequency) ?? current.fetch_frequency;
-    if (!["manual", "hourly", "daily", "weekly"].includes(frequency)) throw new HttpError(422, "Invalid fetch_frequency");
+    if (!["manual", "hourly", "daily", "weekly"].includes(frequency)) throw new SourceChannelMutationError(422, "Invalid fetch_frequency");
     const status = optionalString(body.status) ?? current.status;
-    if (!["active", "paused", "archived"].includes(status)) throw new HttpError(422, "Invalid channel status");
+    if (!["active", "paused", "archived"].includes(status)) throw new SourceChannelMutationError(422, "Invalid channel status");
     const schedule = resolveChannelSchedule(body, frequency, status, current.schedule_rule_json);
     if (current.search_spec_query_fingerprint && (body.query !== undefined || body.endpoint_url !== undefined)) {
-      throw new HttpError(409, "Search query configuration is versioned and cannot be edited in place; create a new monitor version");
+      throw new SourceChannelMutationError(409, "Search query configuration is versioned and cannot be edited in place; create a new monitor version");
     }
     let queryJson = current.query_json;
     let providerQueryJson = current.provider_query_json;
     let endpointUrl = current.endpoint_url;
     let fingerprint = current.query_fingerprint;
     if (body.query !== undefined || body.endpoint_url !== undefined) {
-      if (!current.connector_key || !current.provider_key) throw new HttpError(409, "Source channel provider mapping is unavailable");
+      if (!current.connector_key || !current.provider_key) throw new SourceChannelMutationError(409, "Source channel provider mapping is unavailable");
       const query = objectValue(body.query ?? current.query_json);
       const compiled = normalizeNonSearchChannel(current.connector_key, {
         ...query, endpoint_url: optionalString(body.endpoint_url) ?? current.endpoint_url ?? optionalString(query.endpoint_url), query,
@@ -524,7 +537,7 @@ export class SourceChannelService {
     return withQueryableTransaction(this.db,db=>new SourceChannelService(db,this.config).scanLocked(identity,channelId));
   }
   private async scanLocked(identity: SpaceUserIdentity, channelId: string) {
-    await this.db.query('SELECT id FROM source_channels WHERE id=$1 AND space_id=$2 FOR UPDATE',[channelId,identity.spaceId]);
+    await this.requireCreator(identity,channelId);
     const channel = await this.getRaw(identity, channelId);
     if (!channel) throw new HttpError(404, "Source channel not found");
     await assertLegacySourceOwner(this.db,identity.spaceId,channelId);
@@ -534,7 +547,8 @@ export class SourceChannelService {
        RETURNING id, space_id, connection_id, job_type, status, metadata_json, created_at`,
       [randomUUID(), identity.spaceId, channel.source_connection_id, JSON.stringify({ source_channel_id: channelId, created_by: "manual_scan" }), new Date().toISOString()],
     );
-    return result.rows[0];
+    const row=result.rows[0]!;
+    return {...row,created_at:row.created_at instanceof Date?row.created_at.toISOString():row.created_at};
   }
 
   private async requireOwnConnection(identity: SpaceUserIdentity, connectionId: string, providerMappingId: string) {
@@ -547,9 +561,11 @@ export class SourceChannelService {
     const connection = result.rows[0];
     if (!connection) throw new HttpError(404, "Source not found");
     if (connection.provider_connector_id !== providerMappingId) {
-      throw new HttpError(422, "The Source does not use this provider");
+      throw new SourceChannelMutationError(422, "The Source does not use this provider");
     }
-    return { id: connection.id, status: connection.status };
+    const parent=await discoverMonitorParent(this.db,identity,connection.id);
+    await lockMonitorParent(this.db,identity,parent);
+    return { id: connection.id, status: connection.status,project_id:parent.project_id };
   }
 
   private async ensureConnection(identity: SpaceUserIdentity, provider: ResolvedSourceProviderConnector, name: string, governance: ReturnType<typeof normalizeSourceConnectionCreateGovernance>, body: Record<string, unknown>) {
@@ -584,7 +600,7 @@ export class SourceChannelService {
     if (result.rows[0]) return result.rows[0];
     // A Source that owns its connection must never fall back to someone
     // else's: the only conflict left is its own name being taken.
-    if (body._force_create === true) throw new HttpError(409, `A source named "${name}" already exists`);
+    if (body._force_create === true) throw new SourceChannelCreateConflict(409, `A source named "${name}" already exists`);
     const concurrent = await this.db.query<{ id: string; status: string }>(
       `SELECT id, status FROM source_connections
         WHERE space_id=$1 AND owner_user_id=$2 AND provider_connector_id=$3
@@ -593,13 +609,15 @@ export class SourceChannelService {
         ORDER BY updated_at DESC LIMIT 1`,
       [identity.spaceId, identity.userId, provider.mapping_id, projectId],
     );
-    if (!concurrent.rows[0]) throw new HttpError(409, "Source connection could not be created");
+    if (!concurrent.rows[0]) throw new SourceChannelCreateConflict(409, "Source connection could not be created");
     return concurrent.rows[0];
   }
 
   private async getRaw(identity: SpaceUserIdentity, channelId: string) {
-    const result = await this.db.query<SourceChannelRow>(`${this.selectSql()} WHERE ch.space_id=$1 AND ch.id=$2 AND ch.created_by_user_id=$3 LIMIT 1`, [identity.spaceId, channelId, identity.userId]);
-    return result.rows[0] ?? null;
+    const result = await this.db.query<SourceChannelRow>(`${this.selectSql()} WHERE ch.space_id=$1 AND ch.id=$2 AND ch.created_by_user_id=$3 AND sc.space_id=ch.space_id AND sc.deleted_at IS NULL LIMIT 1`, [identity.spaceId, channelId, identity.userId]);
+    const row=result.rows[0]??null;
+    if(row)await assertSourceConnectionReadable(this.db,identity,row.source_connection_id);
+    return row;
   }
 
   private selectSql() {
@@ -651,15 +669,15 @@ export class SourceChannelService {
         status: row.scan_status ?? null,
         cursor: objectValue(objectValue(row.scan_metadata_json).cursor),
         watermark: objectValue(objectValue(row.scan_metadata_json).watermark),
-        next_run_at: row.scan_next_run_at ?? null,
-        last_run_at: row.scan_last_run_at ?? null,
+        next_run_at: row.scan_next_run_at instanceof Date?row.scan_next_run_at.toISOString():row.scan_next_run_at ?? null,
+        last_run_at: row.scan_last_run_at instanceof Date?row.scan_last_run_at.toISOString():row.scan_last_run_at ?? null,
       },
       goal_id: row.goal_id ?? null,
       project_id: row.project_id ?? null,
       source_owner_user_id: row.source_owner_user_id,
       created_by_user_id: row.created_by_user_id,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
+      created_at: row.created_at instanceof Date?row.created_at.toISOString():row.created_at,
+      updated_at: row.updated_at instanceof Date?row.updated_at.toISOString():row.updated_at,
     };
   }
 
@@ -695,10 +713,10 @@ function researchProviderForConnector(connectorKey: string): ResearchProviderKey
 }
 
 function normalizeNonSearchChannel(connectorKey: string, input: Record<string, unknown>) {
-  if(connectorKey==='agent_native_search'){const q=objectValue(input.query);if(typeof q.native_query!=='string'||q.native_query.length>1000||typeof q.goal_id!=='string')throw new HttpError(422,'Native search needs a bounded goal query');return {query:q,providerQuery:q,endpointUrl:null};}
+  if(connectorKey==='agent_native_search'){const q=objectValue(input.query);if(typeof q.native_query!=='string'||q.native_query.length>1000||typeof q.goal_id!=='string')throw new SourceChannelMutationError(422,'Native search needs a bounded goal query');return {query:q,providerQuery:q,endpointUrl:null};}
   const endpointUrl = optionalString(input.endpoint_url);
-  if (!endpointUrl) throw new HttpError(422, `${connectorKey} channel requires endpoint_url`);
-  try { new URL(endpointUrl); } catch { throw new HttpError(422, "endpoint_url must be a valid URL"); }
+  if (!endpointUrl) throw new SourceChannelMutationError(422, `${connectorKey} channel requires endpoint_url`);
+  try { new URL(endpointUrl); } catch { throw new SourceChannelMutationError(422, "endpoint_url must be a valid URL"); }
   return { query: {}, providerQuery: {}, endpointUrl };
 }
 
@@ -728,10 +746,10 @@ function resolveChannelSchedule(body: Record<string, unknown>, frequency: string
 }
 
 function normalizeRule(raw: Record<string, unknown>, frequency: string): SourceScheduleRule {
-  if (raw.frequency !== frequency) throw new HttpError(422, "schedule_rule.frequency must match fetch_frequency");
+  if (raw.frequency !== frequency) throw new SourceChannelMutationError(422, "schedule_rule.frequency must match fetch_frequency");
   const number = (key: string, min: number, max: number) => {
     const value = Number(raw[key]);
-    if (!Number.isInteger(value) || value < min || value > max) throw new HttpError(422, `schedule_rule.${key} is invalid`);
+    if (!Number.isInteger(value) || value < min || value > max) throw new SourceChannelMutationError(422, `schedule_rule.${key} is invalid`);
     return value;
   };
   if (frequency === "hourly") return { frequency: "hourly", minute: number("minute", 0, 59) };

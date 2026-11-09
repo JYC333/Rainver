@@ -53,6 +53,10 @@ export class PgRunSupervisor implements RunSupervisorPort {
     evaluation: Pick<RunEvaluationRecord, "failure_reason_code" | "outcome_status">;
   }): Promise<SupervisorDecision | null> {
     if (input.run.run_role === "coordinator") return null;
+    // A bounded ProviderTask Run is retried by its own `provider_task_run`
+    // job and key pool, and is never redispatched as an `agent_run`; the
+    // requeue below would hand it to the Agent executor.
+    if (input.run.execution_kind === "provider_task") return null;
     if (!isSupervisableStatus(input.run.status)) return null;
     const managedFailFast = isManagedFailFastRun(input.run);
     const interactiveChat = isInteractiveChatRun(input.run);

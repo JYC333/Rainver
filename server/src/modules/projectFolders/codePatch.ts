@@ -1,3 +1,6 @@
+import {tryWithDedicatedSessionAdvisoryLock} from '../../db/advisoryLock.js';
+import {sha256Json} from '../evolution/hash.js';
+import {codePatchEffectReceipt} from './codePatchEffectContext.js';
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
@@ -27,7 +30,7 @@ import { withCodePatchTarget } from "./codePatchTarget.js";
 
 const MAX_PATCH_FILE_BYTES = 2 * 1024 * 1024;
 
-interface CodePatchOperation {
+export interface CodePatchOperation {
   type: "replace_file";
   path: string;
   content: string;
@@ -325,59 +328,24 @@ async function preimageForPath(
 }
 
 async function applyCodePatchProposal(context: ProposalApplyContext): Promise<ProposalApplyResult> {
-  const proposal = context.proposal;
-  if (!proposal.project_folder_id) throw new HttpError(422, "code_patch proposal requires project_folder_id");
-  const folder = await new PgProjectFolderRepository(context.db, context.config)
-    .getFolder(proposal.space_id, proposal.project_folder_id, true);
-  if (!folder) throw new HttpError(404, "Project Folder not found");
-  const location = await resolveActiveServerHostLocation(context.db, proposal.space_id, proposal.project_folder_id);
-  const root = locationAbsoluteRoot(location, context.config.workspaceRoot);
-  const payload = recordValue(proposal.payload_json);
-  const patch = recordValue(payload.patch);
-  const operations = arrayValue(patch.operations).map(parseOperation);
-  if (operations.length === 0) throw new HttpError(422, "code_patch payload requires operations");
-
-  const policy = await enforce(context.config, await loadActionRegistry(), {
-    action: "project_folder.write_patch",
-    actor_type: "user",
-    actor_id: context.userId,
-    space_id: proposal.space_id,
-    resource_type: "project_folder",
-    resource_id: proposal.project_folder_id,
-    resource_space_id: proposal.space_id,
-    proposal_id: proposal.id,
-    context: {
-      proposal_type: "code_patch",
-      proposal_apply_allowed: true,
-      project_folder_id: proposal.project_folder_id,
-      file_count: operations.length,
-    },
-    metadata_json: {
-      proposal_type: "code_patch",
-      proposal_id: proposal.id,
-      project_folder_id: proposal.project_folder_id,
-      file_count: operations.length,
-    },
-    force_record: true,
-  });
-  if (policy.status !== "allow") {
-    throw new HttpError(
-      policy.status === "error" ? 500 : 403,
-      policy.message ?? "project_folder.write_patch denied by policy",
-    );
-  }
-
+  const {proposal,payload,operations,root,folder,folderId}=await prepareCodePatchPlan(context);
+  const receipt=codePatchEffectReceipt(proposal.id);
+  if(receipt && (receipt.payloadHash!==sha256Json(payload)||receipt.root!==root||receipt.protectedFolder!==folder.protected))throw new HttpError(409,'Code patch effect receipt does not match current proposal/target');
   const tx = new CodePatchFileTransaction(root, folder.protected);
   let applied: Array<{ path: string; sha256: string }> = [];
   let proposalPayloadPatch: Record<string, unknown>;
   try {
-    applied = await tx.apply(operations);
+    if(receipt)applied=receipt.applied;
+    else{
+      const lock=await tryWithDedicatedSessionAdvisoryLock(getDbPool(context.config.databaseUrl!),`code-patch-folder:${folderId}`,()=>tx.apply(operations));
+      if(!lock.acquired)throw new HttpError(409,'Code patch Folder is busy');applied=lock.value;
+    }
     const now = new Date().toISOString();
     proposalPayloadPatch = {
       ...payload,
       applied_paths: applied.map((file) => file.path),
       applied_files: applied,
-      applied_at: now,
+      applied_at: receipt?.completedAt??now,
     };
     const audience = proposalActivityAudience(proposal, context.userId);
     await context.db.query(
@@ -412,13 +380,13 @@ async function applyCodePatchProposal(context: ProposalApplyContext): Promise<Pr
     await new PgSnapshotStore(context.db).create({
       proposalId: proposal.id,
       spaceId: proposal.space_id,
-      projectFolderId: proposal.project_folder_id,
-      files: tx.capturedPreimages(),
+      projectFolderId: folderId,
+      files: receipt?.before??tx.capturedPreimages(),
       retentionDays: folder.snapshot_retention_days,
       maxCount: folder.snapshot_max_count,
     });
   } catch (error) {
-    await tx.rollback();
+    if(!receipt)await tx.rollback();
     throw error;
   }
   return {
@@ -427,9 +395,57 @@ async function applyCodePatchProposal(context: ProposalApplyContext): Promise<Pr
       updated_paths: applied.map((file) => file.path),
       code_patch_files: applied,
     },
-    rollback: () => tx.rollback(),
+    rollback: receipt?undefined:() => tx.rollback(),
     proposalPayloadPatch,
   };
+}
+
+/** DB-only target/policy preparation, shared with the durable bundle worker. */
+export async function prepareCodePatchPlan(context:ProposalApplyContext,phase='apply'){
+  const proposal = context.proposal;
+  if (!proposal.project_folder_id) throw new HttpError(422, "code_patch proposal requires project_folder_id");
+  const folder = await new PgProjectFolderRepository(context.db, context.config)
+    .getFolder(proposal.space_id, proposal.project_folder_id, true);
+  if (!folder) throw new HttpError(404, "Project Folder not found");
+  const location = await resolveActiveServerHostLocation(context.db, proposal.space_id, proposal.project_folder_id);
+  const root = locationAbsoluteRoot(location, context.config.workspaceRoot);
+  const payload = recordValue(proposal.payload_json);
+  const patch = recordValue(payload.patch);
+  const operations = arrayValue(patch.operations).map(parseOperation);
+  if (operations.length === 0) throw new HttpError(422, "code_patch payload requires operations");
+
+  const policy = await enforce(codePatchEffectReceipt(proposal.id)?{...context.config,auditTransaction:context.db}:context.config, await loadActionRegistry(), {
+    action: "project_folder.write_patch",
+    actor_type: "user",
+    actor_id: context.userId,
+    space_id: proposal.space_id,
+    resource_type: "project_folder",
+    resource_id: proposal.project_folder_id,
+    resource_space_id: proposal.space_id,
+    proposal_id: proposal.id,
+    context: {
+      proposal_type: "code_patch",
+      proposal_apply_allowed: true,
+      project_folder_id: proposal.project_folder_id,
+      file_count: operations.length,
+    },
+    metadata_json: {
+      proposal_type: "code_patch",
+      proposal_id: proposal.id,
+      decision_phase:codePatchEffectReceipt(proposal.id)?'bundle_commit':phase,
+      project_folder_id: proposal.project_folder_id,
+      file_count: operations.length,
+    },
+    force_record: true,
+  });
+  if (policy.status !== "allow") {
+    throw new HttpError(
+      policy.status === "error" ? 500 : 403,
+      policy.message ?? "project_folder.write_patch denied by policy",
+    );
+  }
+
+  return {proposal,payload,operations,root,folder,folderId:proposal.project_folder_id};
 }
 
 export class CodePatchFileTransaction {
@@ -476,6 +492,59 @@ export class CodePatchFileTransaction {
     return updated;
   }
 
+  /** Read/capture before any content write; caller persists this intent first.
+   * Repeated paths retain the existing sequential replace-file semantics. */
+  async prepare(operations:CodePatchOperation[]):Promise<SnapshotFile[]>{
+    const before:SnapshotFile[]=[],planned=new Map<string,Buffer|null>();
+    for(const op of operations){
+      const target=this.validateOperation(op);await assertCodePatchTargetInsideRoot(this.root,target,op.path);
+      if(!planned.has(op.path))await withCodePatchTarget(this.root,op.path,true,async file=>{planned.set(op.path,await file.read());});
+      const content=planned.get(op.path)!;
+      if((content!==null)!==op.preimage_exists || (content!==null && sha256(content)!==op.preimage_sha256))throw new HttpError(409,`stale_code_patch: ${op.path} preimage mismatch`);
+      before.push({path:op.path,existed:content!==null,content:content?.toString('base64')??null,encoding:'base64'});
+      planned.set(op.path,Buffer.from(op.content,'utf8'));
+    }
+    return before;
+  }
+
+  private preparedPaths(operations:CodePatchOperation[],before:SnapshotFile[]){
+    const paths=new Map<string,{original:SnapshotFile;steps:CodePatchOperation[]}>();
+    for(const [index,op] of operations.entries()){
+      const original=before[index];if(!original||original.path!==op.path)throw new HttpError(409,'Invalid code patch intent');
+      this.validateOperation(op);
+      const group=paths.get(op.path);if(group)group.steps.push(op);else paths.set(op.path,{original,steps:[op]});
+    }
+    return paths;
+  }
+
+  /** Retry after a lost receipt resumes at a known content boundary. */
+  async applyPrepared(operations:CodePatchOperation[],before:SnapshotFile[]){
+    for(const [path,group] of this.preparedPaths(operations,before)){
+      await assertCodePatchTargetInsideRoot(this.root,this.targetPath(path),path);
+      await withCodePatchTarget(this.root,path,true,async file=>{
+        const content=await file.read(),original=group.original;
+        let stage=content===null&&!original.existed || content!==null&&original.existed&&content.equals(Buffer.from(original.content??'',original.encoding==='base64'?'base64':'utf8'))?0:-1;
+        for(const [index,op] of group.steps.entries())if(content!==null&&sha256(content)===sha256(Buffer.from(op.content,'utf8')))stage=index+1;
+        if(stage<0)throw new HttpError(409,`stale_code_patch: ${path} changed during effect`);
+        for(const op of group.steps.slice(stage))await file.write(op.content);
+      });
+    }
+    return operations.map(op=>({path:op.path,sha256:sha256(Buffer.from(op.content,'utf8'))}));
+  }
+
+  /** Compensate only known writes; concurrent unrelated content is retained. */
+  async compensatePrepared(operations:CodePatchOperation[],before:SnapshotFile[]){
+    for(const [path,group] of [...this.preparedPaths(operations,before)].reverse()){
+      await assertCodePatchTargetInsideRoot(this.root,this.targetPath(path),path);
+      await withCodePatchTarget(this.root,path,true,async file=>{
+        const content=await file.read(),original=group.original;
+        if((content===null&&!original.existed)||(content!==null&&original.existed&&content.equals(Buffer.from(original.content??'',original.encoding==='base64'?'base64':'utf8'))))return;
+        if(content===null||!group.steps.some(op=>sha256(content)===sha256(Buffer.from(op.content,'utf8'))))throw new HttpError(409,`code_patch_compensation_conflict: ${path}`);
+        if(original.existed && original.content!==null)await file.write(Buffer.from(original.content,original.encoding==='base64'?'base64':'utf8'));else await file.remove();
+      });
+    }
+  }
+
   /**
    * Write a pre-apply snapshot back over the Folder, recording what each file
    * held first so `rollback()` can put the applied content back if a later
@@ -489,7 +558,7 @@ export class CodePatchFileTransaction {
       await withCodePatchTarget(this.root, file.path, true, async (targetFile) => {
         const existing = await targetFile.read();
         this.preimages.push({ path: file.path, existed: existing !== null, content: existing });
-        if (file.existed && file.content !== null) await targetFile.write(file.content);
+        if (file.existed && file.content !== null) await targetFile.write(Buffer.from(file.content,file.encoding==='base64'?'base64':'utf8'));
         else await targetFile.remove();
       });
       restored.push(file.path);

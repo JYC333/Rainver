@@ -1,4 +1,3 @@
-import { createBoundResearchOperation } from "../src/modules/projectResearch/researchProblemCalls.js";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -13,7 +12,8 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { seedAgentWithVersion, seedSpaceOwnerProject, seedMainlineRoomsForAllProjects, seedServerRuntimeProfile } from "./support/domainSeeds.js";
-import { createQuestionThreadScope, seedArxivSourceChain, seedPendingScreeningGate, seedRelevantCorpusItem, seedResearchOperation } from "./support/researchSeeds.js";
+import { createQuestionThreadScope, seedArxivSourceChain, seedFailedSynthesisOperation as seedFailedSynthesisOperationFixture, seedPendingScreeningGate, seedRelevantCorpusItem, seedResearchOperation } from "./support/researchSeeds.js";
+import { seedTestModelProvider } from "./support/providerTaskFixture.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -398,6 +398,7 @@ describe("projectResearchSynthesisRetryDb", () => {
   const AGENT = "99999999-9999-4999-8999-999999999999";
   const VERSION = "84444444-4444-4444-8444-444444444444";
   const PROMPT_KEY = "project_research.synthesis";
+  const PROVIDER = "98888888-8888-4888-8888-888888888888";
   const CONFIG = loadConfig({});
 
   let threadScope: Array<{ thread_id: string; version: number; kind: "question"; statement: string }> = [];
@@ -415,7 +416,7 @@ describe("projectResearchSynthesisRetryDb", () => {
     if (!db.available) return;
     await resetTables(
       db.pool,
-      ["jobs", "run_events", "runs", "artifacts", "project_research_reports", "prompt_deployment_refs", "evolvable_asset_versions", "evolvable_assets", "agent_versions", "agents", "project_research_checkpoints", "project_research_workflows", "project_operations", "project_members", "projects", "space_memberships", "users", "spaces"],
+      ["model_provider_space_grants", "model_providers", "jobs", "run_events", "runs", "artifacts", "project_research_reports", "prompt_deployment_refs", "evolvable_asset_versions", "evolvable_assets", "agent_versions", "agents", "project_research_checkpoints", "project_research_workflows", "project_operations", "project_members", "projects", "space_memberships", "users", "spaces"],
       { cascade: true },
     );
     const { now } = await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
@@ -459,6 +460,9 @@ describe("projectResearchSynthesisRetryDb", () => {
       [VERSION, AGENT, SPACE, now],
     );
     await db.pool.query(`UPDATE agents SET current_version_id=$1 WHERE id=$2`, [VERSION, AGENT]);
+    // A queued synthesis is a bounded ProviderTask Run: admission freezes the
+    // Space's default provider into it.
+    await seedTestModelProvider(db.pool, { space: SPACE, owner: OWNER, provider: PROVIDER, now });
   });
 
   async function seedSynthesisPrompt(): Promise<void> {
@@ -490,33 +494,14 @@ describe("projectResearchSynthesisRetryDb", () => {
   }
 
   async function seedFailedSynthesisOperation(previousRunId: string | null): Promise<void> {
-    const now = new Date().toISOString();
-    const progress = {
-      idempotency:{key:randomUUID(),fingerprint:"retry-bound-call"},
-      schema_version: "project_research_operation.v1",
-      projection_mode: "managed",
-      run_kind: "baseline",
-      workflow_id: WORKFLOW,
-      research_question: "Does agent memory improve synthesis?",
-      thread_scope: threadScope,
-      agent_id: AGENT,
-      source_backfill_plan_ids: [],
-      source_backfill_plan_id: null,
-      source_post_processing_rule_ids: [],
-      source_post_processing_rule_id: null,
-      current_stage: "failed",
-      failed_stage: "synthesis",
-      stage_state: "failed",
-      partial: false,
-      channel_ids: [],
-      source_item_ids: [],
-      checkpoint_ids: [],
-      artifact_ids: [],
-      synthesis_run_id: previousRunId,
-      error: { code: "synthesis_output_invalid", message: "previous failure", at: now },
-      watermark: { before: null, after: null, overlap_hours: 48 },
-    };
-    OPERATION=(await createBoundResearchOperation(db.pool,identity,PROJECT,{title:"Initial literature intake",intentText:"Retry original evidence gap",status:"failed",progress,steps:[]})).id;
+    OPERATION = await seedFailedSynthesisOperationFixture(db.pool, identity, {
+      project: PROJECT,
+      workflow: WORKFLOW,
+      researchQuestion: "Does agent memory improve synthesis?",
+      threadScope,
+      previousRunId,
+      agentId: AGENT,
+    });
   }
 
   describe("ProjectResearchOrchestrator.retryFailedOperation synthesis stage (real Postgres)", () => {
@@ -544,11 +529,12 @@ describe("projectResearchSynthesisRetryDb", () => {
       const runId = operation.rows[0]!.progress_json.synthesis_run_id;
       expect(runId).toBeTruthy();
       expect(runId).not.toBe("prior-failed-run-id");
-      const run = await db.pool.query<{ status: string; capability_id: string; contract_snapshot_json: { workflow_input_json?: { project_research?: { operation_id?: string; stage_key?: string; evidence_matrix_artifact_id?: string } } } }>(
-        `SELECT status, capability_id, contract_snapshot_json FROM runs WHERE id=$1 AND space_id=$2`,
+      const run = await db.pool.query<{ status: string; execution_kind: string; agent_id: string | null; capability_id: string; contract_snapshot_json: { route_hints_json?: unknown; workflow_input_json?: { project_research?: { operation_id?: string; stage_key?: string; evidence_matrix_artifact_id?: string } } } }>(
+        `SELECT status, execution_kind, agent_id, capability_id, contract_snapshot_json FROM runs WHERE id=$1 AND space_id=$2`,
         [runId, SPACE],
       );
-      expect(run.rows[0]).toMatchObject({ status: "queued", capability_id: "research.brief_synthesize" });
+      expect(run.rows[0]).toMatchObject({ status: "queued", execution_kind: "provider_task", agent_id: null, capability_id: "research.brief_synthesize" });
+      expect(run.rows[0]!.contract_snapshot_json.route_hints_json).toMatchObject({ provider_id: PROVIDER, model: "test-model", stage: "synthesis" });
       expect(run.rows[0]!.contract_snapshot_json.workflow_input_json?.project_research).toMatchObject({
         operation_id: OPERATION,
         stage_key: "synthesis",
@@ -556,7 +542,7 @@ describe("projectResearchSynthesisRetryDb", () => {
       });
 
       const job = await db.pool.query<{ status: string }>(
-        `SELECT status FROM jobs WHERE space_id=$1 AND job_type='agent_run' AND payload_json->>'run_id'=$2`,
+        `SELECT status FROM jobs WHERE space_id=$1 AND job_type='provider_task_run' AND payload_json->>'run_id'=$2`,
         [SPACE, runId],
       );
       expect(job.rows[0]?.status).toBe("pending");
@@ -596,7 +582,7 @@ describe("projectResearchSynthesisRetryDb", () => {
         [SPACE, OPERATION],
       );
       const jobs = await db.pool.query(
-        `SELECT id FROM jobs WHERE space_id=$1 AND job_type='agent_run'`,
+        `SELECT id FROM jobs WHERE space_id=$1 AND job_type='provider_task_run'`,
         [SPACE],
       );
       expect(runs.rows).toHaveLength(1);

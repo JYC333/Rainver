@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  CodePatchFileTransaction,
   __codePatchTestHooks,
   collectWorktreeChanges,
 } from "../src/modules/projectFolders/codePatch.js";
@@ -191,4 +192,33 @@ describe("code patch file transaction", () => {
     await tx.apply([newFile("src/new/dir/file.txt")]);
     await expect(readFile(join(root, "src/new/dir/file.txt"), "utf8")).resolves.toBe("planted\n");
   });
+});
+
+describe('durable code patch effects',()=>{
+ it('preserves binary preimages and replays/compensates without duplicate file writes',async()=>{
+  const root=await tmpRoot(),path=join(root,'binary.txt'),original=Buffer.from([0,255,10,128]);await writeFile(path,original);
+  const tx=new CodePatchFileTransaction(root,false),operations=[{type:'replace_file' as const,path:'binary.txt',content:'Approved text',preimage_exists:true,preimage_sha256:createHash('sha256').update(original).digest('hex')}];
+  const before=await tx.prepare(operations);expect(before[0]!.encoding).toBe('base64');
+  const first=await tx.applyPrepared(operations,before),inode=(await stat(path)).ino;
+  expect(await tx.applyPrepared(operations,before)).toEqual(first);expect((await stat(path)).ino).toBe(inode);
+  await tx.compensatePrepared(operations,before);expect(await readFile(path)).toEqual(original);
+  const restored=(await stat(path)).ino;await tx.compensatePrepared(operations,before);expect((await stat(path)).ino).toBe(restored);
+ });
+ it('keeps sequential replacements of the same path and recovers an intermediate crash boundary',async()=>{
+  const root=await tmpRoot(),path=join(root,'sequence.txt');await writeFile(path,'Original');
+  const tx=new CodePatchFileTransaction(root,false),operations=[
+   {type:'replace_file' as const,path:'sequence.txt',content:'Step one',preimage_exists:true,preimage_sha256:sha256('Original')},
+   {type:'replace_file' as const,path:'sequence.txt',content:'Step two',preimage_exists:true,preimage_sha256:sha256('Step one')},
+  ];
+  const before=await tx.prepare(operations);await writeFile(path,'Step one');
+  await tx.applyPrepared(operations,before);expect(await readFile(path,'utf8')).toBe('Step two');
+  const inode=(await stat(path)).ino;await tx.applyPrepared(operations,before);expect((await stat(path)).ino).toBe(inode);
+  await tx.compensatePrepared(operations,before);expect(await readFile(path,'utf8')).toBe('Original');
+ });
+ it('refuses compensation over an independent change',async()=>{
+  const root=await tmpRoot(),path=join(root,'one.txt');await writeFile(path,'Before');
+  const tx=new CodePatchFileTransaction(root,false),operations=[{type:'replace_file' as const,path:'one.txt',content:'After',preimage_exists:true,preimage_sha256:sha256('Before')}];
+  const before=await tx.prepare(operations);await tx.applyPrepared(operations,before);await writeFile(path,'Independent edit');
+  await expect(tx.compensatePrepared(operations,before)).rejects.toThrow('compensation_conflict');expect(await readFile(path,'utf8')).toBe('Independent edit');
+ });
 });

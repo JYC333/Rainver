@@ -77,10 +77,11 @@ remains independently reachable. Below `lg`, Project navigation starts as a comp
 Project navigation and Files & Code separators explicitly use `border-border`
 rather than inheriting the text color.
 
-The Project Board uses a minimum page height rather than a fixed `h-full`, so
-lanes grow to enclose their full card lists. Long Boards scroll in the Area
-content while Project navigation remains independent; horizontal lane overflow
-is retained and cards are not clipped by individual lane scroll containers.
+The Project Board fills the available Area height on desktop and mobile. Each
+lane scrolls its card list independently while its controls and completed-task
+expansion stay visible. Horizontal lane scrolling stays at the bottom of the
+visible Board. A portalled drag overlay keeps card and column previews outside
+the scroll clips. Mobile Project navigation has its own bounded expansion.
 
 
 ## Topic (goal) routes

@@ -311,3 +311,27 @@ export const runReflections = pgTable("run_reflections", {
 		}),
 	check("ck_run_reflections_source", sql`(source)::text = ANY (ARRAY[('native'::character varying)::text, ('external_import'::character varying)::text, ('manual'::character varying)::text, ('evaluator'::character varying)::text])`),
 ]);
+
+/** Human decision intent and external-effect receipts survive Job retention. */
+export const evolutionBundleDecisions = pgTable('evolution_bundle_decisions', {
+ id: varchar({length:36}).primaryKey().notNull(),
+ spaceId: varchar('space_id',{length:36}).notNull(),
+ bundleId: varchar('bundle_id',{length:36}).notNull(),
+ userId: varchar('user_id',{length:36}).notNull(),
+ fingerprint: varchar({length:64}).notNull(),
+ status: varchar({length:32}).notNull(),
+ jobId: varchar('job_id',{length:36}),
+ frozenJson: jsonb('frozen_json').notNull(),
+ effectsJson: jsonb('effects_json').notNull().default({}),
+ resultJson: jsonb('result_json'),
+ error: text(),
+ createdAt: timestamp('created_at',{withTimezone:true,mode:'string'}).notNull(),
+ updatedAt: timestamp('updated_at',{withTimezone:true,mode:'string'}).notNull(),
+}, t=>[
+ uniqueIndex('uq_evolution_bundle_decision_input').on(t.spaceId,t.bundleId,t.fingerprint),
+ uniqueIndex('uq_evolution_bundle_decision_active').on(t.spaceId,t.bundleId).where(sql`status IN ('pending','applying','compensating','compensation_failed')`),
+ foreignKey({columns:[t.spaceId],foreignColumns:[spaces.id]}),
+ foreignKey({columns:[t.bundleId],foreignColumns:[evolutionBundles.id]}),
+ foreignKey({columns:[t.userId],foreignColumns:[users.id]}),
+ check('ck_evolution_bundle_decision_status',sql`status IN ('pending','applying','succeeded','failed','compensating','compensation_failed')`),
+]);

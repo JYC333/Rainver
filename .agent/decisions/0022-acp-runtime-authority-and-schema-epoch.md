@@ -13,10 +13,12 @@ behavior is described by `architecture/AGENT_RUNTIME_AUTHORITY.md`,
 `modules/runtime-adapters.md` and `server/migrations/README.md`.
 
 Two consequences of this decision are still open work, recorded in
-`plans/backlog.md`: the queued research stages (monitoring comparison,
-brief synthesis and its critique) still run as `agent` Runs on a
-manufactured `model_provider` Profile until the bounded ProviderTask helper
-can materialize their artifacts; and `high` effective trust is undefined, so
+`plans/backlog.md`: Project Research still manufactures a managed Agent and
+`model_provider` Profile for the work that remains Agent-shaped (screening,
+pass coordinators, the synthesis-only snapshot), although its queued stages
+(monitoring comparison, brief synthesis and its critique) are now bounded
+`provider_task` Runs whose declared artifacts the shared publication step
+materializes; and `high` effective trust is undefined, so
 `high`/`critical`-risk Agents have no eligible execution target until a
 revocable Host-owner grant exists. Push, deployment, publication and the
 reset of running instance databases to the new epoch remain separate

@@ -103,6 +103,19 @@ alert plus evolution signal are emitted.
   one, reverted once the coordinator of the tick that launched it has
   settled. Only `'completed'` is final for that fact set.
 
+## Linked stale-child cancellation
+
+The stale review-timeout owner discovers all candidate child Runs before its
+Run/candidate row locks and prepares their linked request transitions. A request
+storage failure rolls cancellation back; the existing postcommit reconciliation,
+alerts and signal paths remain outside that transaction. Timeout recovery now processes independent candidates in separate nonwaiting
+transactions. Busy request/fence/row candidates remain eligible for the next
+existing sweep; other candidates still progress. Child and coordinator keys are
+admitted together before Run/candidate/tick locks. `settleAutonomyCoordinator`
+uses the canonical Run terminal writer, including staged Proposal publication.
+The final launch/tick success/failure owners pre-admit that coordinator before
+tick writes. This removes the old direct terminal SQL; it grants no new mapping.
+
 ## Related files
 
 - `server/src/modules/autonomy/`

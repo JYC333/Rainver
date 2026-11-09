@@ -1,3 +1,4 @@
+import {executeSourceDispatch} from './sourceDispatchExecution.js';
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import type { JobHandlerRegistry } from "../jobs/handlerRegistry.js";
@@ -8,6 +9,12 @@ export function registerSourceExtractionHandler(
   config: ServerConfig,
 ): void {
   if (!config.databaseUrl) return;
+  registry.register('source_extraction_manual',async job=>{
+    const id=stringValue(job.payload.extraction_job_id),user=stringValue(job.payload.user_id);
+    if(!id||!user||user!==job.user_id)throw new Error('Invalid extraction dispatch identity');
+    const {PgSourcesRepository}=await import('./repository.js');
+    const db=getDbPool(config.databaseUrl!);return executeSourceDispatch(db,job,async()=>{const result=await new PgSourcesRepository(db,config).runJob({spaceId:job.space_id,userId:user},id);return {extraction_job_id:result.id,status:result.status,job_type:result.job_type};});
+  });
   registry.register("source_extraction", async (job) => {
     const extractionJobId = stringValue(job.payload.extraction_job_id);
     if (!extractionJobId) {

@@ -1,3 +1,5 @@
+import {assertSourceBindingDependency} from './sourceBindingDependency.js';
+import {lockProposalDependencies} from '../systemActions/operations/proposalTransitions.js';
 import type { ServerConfig } from "../../config.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError, objectValue, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common.js";
@@ -6,7 +8,7 @@ import { PgProposalApplyService } from "../proposals/applyService.js";
 import { SourceChannelService } from "../sources/channels/sourceChannelService.js";
 import { SourceBackfillPlanningService } from "../sources/sourceBackfillService.js";
 import { ProjectOperationService } from "./projectOperationService.js";
-import { assertProjectWriter, lockActiveProjectForMutation } from "./access.js";
+import { assertProjectWriter, assertProjectWriterForMutation, lockActiveProjectForMutation } from "./access.js";
 import { advisoryLock, findIdempotentOperation, fingerprintOf } from "./projectOperationIdempotency.js";
 
 interface BindProposalActor {
@@ -28,14 +30,17 @@ export class ProjectSourceProposalService {
   ) {}
 
   async proposeBind(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>, actor: BindProposalActor = {}) {
-    requiredString(body.source_channel_id, "source_channel_id");
+    const channelId=requiredString(body.source_channel_id, "source_channel_id");
+    const dependencyId=body.depends_on_proposal_id==null?null:requiredString(body.depends_on_proposal_id,"depends_on_proposal_id");
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
 
+    if(dependencyId)await assertSourceBindingDependency(this.db,identity,projectId,channelId,dependencyId);
     const reused = await this.reuseBindProposal(identity.spaceId, projectId, actor);
     if (reused) return reused;
 
     const payload = {
       ...body,
+      ...(dependencyId?{depends_on_proposal_id:dependencyId}:{}),
       project_id: projectId,
       proposal_type: "project_source_bind",
       action_id: "project.source.propose_bind",
@@ -43,7 +48,14 @@ export class ProjectSourceProposalService {
     };
     let proposal;
     try {
-      proposal = await insertProposalRow(this.db, {
+      proposal = await withQueryableTransaction(this.db,async tx=>{
+        if(dependencyId){
+          await lockProposalDependencies(tx,identity.spaceId,[dependencyId]);
+          await lockActiveProjectForMutation(tx,identity.spaceId,projectId);
+          await assertProjectWriterForMutation(tx,identity.spaceId,projectId,identity.userId);
+          await assertSourceBindingDependency(tx,identity,projectId,channelId,dependencyId);
+        }
+        return insertProposalRow(tx, {
         spaceId: identity.spaceId,
         proposalType: "project_source_bind",
         title: "Bind Source to Project",
@@ -57,6 +69,7 @@ export class ProjectSourceProposalService {
         projectId,
         riskLevel: "medium",
         requiredApproverRole: "owner",
+      });
       });
     } catch (error) {
       if (actor.runId && actor.idempotencyKey && (error as { code?: string }).code === "23505") {

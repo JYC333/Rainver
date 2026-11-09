@@ -1,26 +1,35 @@
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createQuestionThreadScope, seedRelevantCorpusItem, seedResearchOperation } from "./support/researchSeeds.js";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { createQuestionThreadScope, seedFailedSynthesisOperation, seedRelevantCorpusItem, seedResearchOperation } from "./support/researchSeeds.js";
+import {
+  performQueuedProviderTask,
+  providerTaskTestConfig,
+  replyWithProviderFailure,
+  replyWithStructuredOutput,
+  seedTestModelProvider,
+} from "./support/providerTaskFixture.js";
+import { buildJobHandlerRegistry } from "../src/modules/jobs/workerRuntime.js";
+import { __setProviderHttpClientForTests } from "../src/modules/providers/invocation/invocation.js";
+import { openAiChatResponse } from "./support/piAiHttp.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { seedSpaceOwnerProject, seedAgentWithVersion, seedServerRuntimeProfile } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, type ServerConfig } from "../src/config.js";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator.js";
 import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration.js";
 import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults.js";
-import { PgRunRepository } from "../src/modules/runs/repository.js";
-import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
-import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService.js";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
-// Real-Postgres coverage for reconcileOperation's synthesis stage. The
-// synthesis run's terminal state is also projected by a one-shot hook in
-// the agent_run job handler. The periodic reconciler covers the synthesis
-// stage too. Do not leave it to the one-shot hook: the UI then has no live
-// run-status while synthesis executes, and a missed projection waits forever.
+// Real-Postgres coverage for reconcileOperation's synthesis and comparison
+// stages. A stage Run is a bounded ProviderTask Run performed by the
+// `provider_task_run` worker; its terminal state is also projected by the
+// `project_research_execution_nudge` the worker queues. The periodic
+// reconciler covers the stages too. Do not leave it to the one-shot hook: the
+// UI then has no live run-status while synthesis executes, and a missed
+// projection waits forever.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -30,10 +39,13 @@ const OPERATION = "77777777-7777-4777-8777-777777777777";
 const AGENT = "99999999-9999-4999-8999-999999999999";
 const VERSION = "84444444-4444-4444-8444-444444444444";
 const RUNTIME_PROFILE = "83333333-3333-4333-8333-333333333333";
+const PROVIDER = "81111111-1111-4111-8111-111111111111";
 const SERVER_HOST = "82222222-2222-4222-8222-222222222222";
 const CATALOG_ROOT = join(process.cwd(), "..", "catalog");
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
-const CONFIG = loadConfig({});
+// Replaced with a database-backed config once the test database exists: the
+// stage Runs encrypt and spend a pool key.
+let CONFIG: ServerConfig = loadConfig({});
 
 let threadScope: Array<{ thread_id: string; version: number; kind: "question"; statement: string }> = [];
 
@@ -41,18 +53,24 @@ const db = useTestDatabase(import.meta.filename);
 
 beforeAll(async () => {
   if (!db.available) return;
+  CONFIG = providerTaskTestConfig(db.connectionUri, "/tmp/rainver-research-stage-provider-task-test");
   registerProjectResearchExecutionHandlers();
   await syncBuiltinPrompts(db.pool, CATALOG_ROOT);
 });
+
+// The cancellation case installs its own provider client; reset it here.
+afterEach(() => { __setProviderHttpClientForTests(null); });
 
 beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["runs", "agent_versions", "agents", "project_research_checkpoints", "project_research_workflows", "project_operations", "project_members", "projects", "space_memberships", "users", "spaces"],
+    ["provider_task_snapshots", "provider_task_deliveries", "provider_task_controls", "model_provider_space_grants", "model_providers",
+     "jobs", "runs", "agent_versions", "agents", "project_research_checkpoints", "project_research_workflows", "project_operations", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const { now } = await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
+  await seedTestModelProvider(db.pool, { space: SPACE, owner: OWNER, provider: PROVIDER, config: CONFIG, now });
     threadScope = [await createQuestionThreadScope(db.pool, identity, PROJECT, "Does X improve Y?")];
   await insertResearchWorkflowFixture(db.pool, {
     id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
@@ -73,16 +91,38 @@ beforeEach(async () => {
     hostId: SERVER_HOST,
     now,
   });
+  await db.pool.query(
+    "UPDATE agent_runtime_profiles SET backend_mode='model_provider', model_provider_id=$2, model_name='test-model' WHERE id=$1",
+    [RUNTIME_PROFILE, PROVIDER],
+  );
   await syncBuiltinPrompts(db.pool, CATALOG_ROOT);
 });
 
-async function dispatchSynthesisRun(runId: string, startedAt: string): Promise<PgRunRepository> {
-  const runs = new PgRunRepository(db.pool);
-  const run = await runs.getAgentRun(SPACE, runId);
-  if (!run) throw new Error(`Synthesis Run '${runId}' disappeared before dispatch`);
-  await new PgRouteDecisionRepository(db.pool).routeRun(run);
-  await runs.markRunRunning({ run_id: runId, space_id: SPACE, started_at: startedAt });
-  return runs;
+/** Every terminal Run stores the canonical envelope; a stage's result is its `.result`. */
+function stageOutput(result: Record<string, unknown>): string {
+  return JSON.stringify(canonicalRunOutput({ success: true, outputText: "", outputJson: result }));
+}
+
+async function operationState(operationId: string): Promise<Record<string, unknown>> {
+  return (await db.pool.query<{ progress_json: Record<string, unknown> }>(
+    `SELECT progress_json FROM project_operations WHERE id=$1`, [operationId],
+  )).rows[0]!.progress_json;
+}
+
+/**
+ * The follow-up the `provider_task_run` worker queues for a terminal research
+ * Run, dispatched through the registered handler as the job worker would.
+ */
+async function nudgeTerminalRun(runId: string): Promise<void> {
+  const nudges = await db.pool.query<{ id: string }>(
+    `SELECT id FROM jobs WHERE space_id=$1 AND job_type='project_research_execution_nudge' AND payload_json->>'run_id'=$2`,
+    [SPACE, runId],
+  );
+  expect(nudges.rows).toHaveLength(1);
+  await buildJobHandlerRegistry(CONFIG).dispatch({
+    job_id: nudges.rows[0]!.id, space_id: SPACE, user_id: OWNER, job_type: "project_research_execution_nudge",
+    attempts: 1, max_attempts: 3, worker_id: "test-worker", payload: { run_id: runId, reason: "run_terminal" },
+  });
 }
 
 async function seedSynthesisRun(runId: string, status: string, contract: Record<string, unknown> | null, errorMessage: string | null = null): Promise<void> {
@@ -97,38 +137,6 @@ async function seedSynthesisRun(runId: string, status: string, contract: Record<
       status === "queued" ? null : now,
     ],
   );
-}
-
-async function settleDelegatedRun(runId: string): Promise<void> {
-  const now = new Date().toISOString();
-  await db.pool.query(
-    `INSERT INTO run_evaluations (
-       id,space_id,run_id,evaluator_type,evaluator_version,outcome_status,
-       trajectory_status,evidence_json,rule_trace_json,evaluated_at
-     ) VALUES ($1,$2,$3,'deterministic_harness','test','passed',
-       'acceptable','{}'::jsonb,'[]'::jsonb,$4)`,
-    [randomUUID(), SPACE, runId, now],
-  );
-  const executions = new WorkflowExecutionService(CONFIG);
-  // A terminal delegated Run completes its Action node. Two bounded apply
-  // nodes then advance one at a time, so drain one graph-length here just as
-  // production finalization/reconciliation does.
-  for (let index = 0; index < 6; index += 1) {
-    await executions.reconcileForRun(db.pool, SPACE, runId);
-  }
-  const stillActive = await db.pool.query<{ id: string }>(
-    `SELECT execution.id
-       FROM workflow_execution_node_runs link
-       JOIN workflow_execution_nodes node ON node.id=link.node_id AND node.space_id=link.space_id
-       JOIN workflow_executions execution ON execution.id=node.execution_id AND execution.space_id=node.space_id
-      WHERE link.space_id=$1 AND link.run_id=$2
-        AND execution.status IN ('queued','running')`,
-    [SPACE, runId],
-  );
-  expect(stillActive.rows).toHaveLength(0);
-  // Production terminal handling first reconciles WorkflowExecution and then
-  // dispatches exactly one domain-owned terminal hook. Exercise both halves.
-  await new ProjectResearchOrchestrator(db.pool, CONFIG).reconcileRun(SPACE, runId);
 }
 
 // A project's notebook is ordinary Notes (see notebookNotes.ts /
@@ -597,7 +605,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     await seedSynthesisRun(runId, "succeeded", { workflow_input_json: { project_research: {
       workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", source_item_ids: [sourceItem],
     } } });
-    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [runId, JSON.stringify({ comparisons: [
+    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [runId, stageOutput({ comparisons: [
       { source_item_id: sourceItem, stance: "contradicts", detail: "No effect under stronger controls.", affected_sections: ["understanding"] },
     ] })]);
     const progress = {
@@ -743,7 +751,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     await seedSynthesisRun(run1, "succeeded", { workflow_input_json: { project_research: {
       workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", source_item_ids: batch1,
     } } });
-    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [run1, JSON.stringify({
+    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [run1, stageOutput({
       comparisons: batch1.map((item) => ({ source_item_id: item, stance: "supports", detail: "Replicates the effect.", affected_sections: ["understanding"] })),
     })]);
     const progress = {
@@ -779,7 +787,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     await seedSynthesisRun(run2, "succeeded", { workflow_input_json: { project_research: {
       workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", source_item_ids: batch2,
     } } });
-    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [run2, JSON.stringify({
+    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [run2, stageOutput({
       comparisons: batch2.map((item) => ({ source_item_id: item, stance: "contradicts", detail: "No effect under stronger controls.", affected_sections: ["understanding"] })),
     })]);
     // Simulates queueComparison having dequeued batch 2: it is the run in
@@ -941,7 +949,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     // 4 valid matches; item[4] gets a structurally invalid entry (stance
     // outside the enum); item[5] is simply missing from the response —
     // both must be salvaged as "retry solo", not sunk with the whole batch.
-    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, ["run-1", JSON.stringify({
+    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, ["run-1", stageOutput({
       comparisons: [
         ...items.slice(0, 4).map((item) => ({ source_item_id: item, stance: "supports", detail: "Replicates the effect.", affected_sections: ["understanding"] })),
         { source_item_id: items[4], stance: "maybe", detail: "Invalid stance value.", affected_sections: ["understanding"] },
@@ -963,29 +971,36 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     expect(soloRunId).toBeTruthy();
     expect(soloQueued.comparison_source_item_ids).toEqual([items[4]]);
     expect(soloQueued.comparison_failed_source_item_ids).toEqual([items[5]]);
-    const soloRun = await dispatchSynthesisRun(soloRunId, new Date().toISOString());
-    await soloRun.markRunTerminal({
-      run_id: soloRunId,
-      space_id: SPACE,
-      status: "succeeded",
-      output_json: {
-        comparisons: [{ source_item_id: items[4], stance: "contradicts", detail: "Solo retry succeeded.", affected_sections: ["understanding"] }],
-      },
-      completed_at: new Date().toISOString(),
+    // The solo retry is a bounded ProviderTask Run the worker performs. Its
+    // finalization settles the pass node delegating to it; the nudge the
+    // worker queues is the terminal hook.
+    replyWithStructuredOutput({
+      comparisons: [{ source_item_id: items[4], stance: "contradicts", detail: "Solo retry succeeded.", affected_sections: ["understanding"] }],
     });
-    const soloContract = (await db.pool.query<{
+    await performQueuedProviderTask(CONFIG, { spaceId: SPACE, userId: OWNER, runId: soloRunId });
+    const soloRun = (await db.pool.query<{
+      execution_kind: string; status: string; agent_id: string | null; runtime_profile_id: string | null; model_provider_id: string | null;
       output_json: unknown;
       contract_snapshot_json: { workflow_input_json?: { project_research?: { source_item_ids?: string[] } } };
     }>(
-      `SELECT output_json,contract_snapshot_json FROM runs WHERE id=$1`,
+      `SELECT execution_kind,status,agent_id,runtime_profile_id,model_provider_id,output_json,contract_snapshot_json FROM runs WHERE id=$1`,
       [soloRunId],
     )).rows[0]!;
-    expect(soloContract.contract_snapshot_json.workflow_input_json?.project_research?.source_item_ids).toEqual([items[4]]);
-    expect(soloContract.output_json).toMatchObject({
-      comparisons: [expect.objectContaining({ source_item_id: items[4], stance: "contradicts" })],
+    expect(soloRun).toMatchObject({
+      execution_kind: "provider_task", status: "succeeded", agent_id: null, runtime_profile_id: null, model_provider_id: PROVIDER,
     });
-
-    await settleDelegatedRun(soloRunId);
+    expect(soloRun.contract_snapshot_json.workflow_input_json?.project_research?.source_item_ids).toEqual([items[4]]);
+    expect(soloRun.output_json).toMatchObject({
+      schema_version: "run_output.v1",
+      result: { comparisons: [expect.objectContaining({ source_item_id: items[4], stance: "contradicts" })] },
+    });
+    expect((await db.pool.query(`SELECT outcome_status FROM run_evaluations WHERE run_id=$1`, [soloRunId])).rows)
+      .toEqual([{ outcome_status: "passed" }]);
+    await nudgeTerminalRun(soloRunId);
+    // The nudge closes the pass that delegated to the solo Run; the next
+    // reconcile (the periodic nudger in production) opens the pass that
+    // dispatches the remaining paper.
+    await new ProjectResearchOrchestrator(db.pool, CONFIG).reconcileOperation(SPACE, OPERATION);
     const soloExecutions = await db.pool.query<{ status: string }>(
       `SELECT status FROM workflow_executions
         WHERE space_id=$1 AND research_operation_id=$2
@@ -1004,16 +1019,9 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     // retry is dropped for good, not requeued into another loop.
     const secondSoloRunId = afterSoloSuccess.comparison_run_id;
     expect(secondSoloRunId).toBeTruthy();
-    const secondSoloRun = await dispatchSynthesisRun(secondSoloRunId, new Date().toISOString());
-    await secondSoloRun.markRunTerminal({
-      run_id: secondSoloRunId,
-      space_id: SPACE,
-      status: "succeeded",
-      output_json: { comparisons: [] },
-      completed_at: new Date().toISOString(),
-    });
-
-    await settleDelegatedRun(secondSoloRunId);
+    replyWithStructuredOutput({ comparisons: [] });
+    await performQueuedProviderTask(CONFIG, { spaceId: SPACE, userId: OWNER, runId: secondSoloRunId });
+    await nudgeTerminalRun(secondSoloRunId);
     const final = (await db.pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
     expect(final).toMatchObject({ status: "completed", progress_json: { current_stage: "complete", monitoring_active: true } });
     expect(final.progress_json.comparison_pending_source_item_ids).toEqual([]);
@@ -1072,7 +1080,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     // Every entry is fabricated — none of batch1's real ids appear anywhere
     // in the response. The run returned comparisons for papers that were
     // never sent and do not exist.
-    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, ["run-1", JSON.stringify({
+    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, ["run-1", stageOutput({
       comparisons: [
         { source_item_id: randomUUID(), stance: "supports", detail: "Fabricated paper unrelated to this batch.", affected_sections: ["understanding"] },
       ],
@@ -1091,6 +1099,160 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     const nextDispatch = (await db.pool.query(`SELECT progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0].progress_json;
     expect(nextDispatch.comparison_source_item_ids).toEqual([rest[0]]);
     expect(nextDispatch.comparison_pending_source_item_ids).toEqual(rest.slice(1));
+  });
+
+  it("performs queued synthesis and critique as bounded ProviderTask Runs and builds the report from the materialized archive", async () => {
+    if (!db.available) return;
+    await seedRelevantCorpusItem(db.pool, { space: SPACE, project: PROJECT, owner: OWNER });
+    const operationId = await seedFailedSynthesisOperation(db.pool, identity, {
+      project: PROJECT, workflow: WORKFLOW, researchQuestion: "Does X improve Y?", threadScope, previousRunId: null,
+      // The pass coordinator Run still names the managed research Agent.
+      agentId: AGENT,
+    });
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, CONFIG);
+    await orchestrator.retryFailedOperation(identity, PROJECT, operationId);
+    const synthesisRunId = (await operationState(operationId)).synthesis_run_id as string;
+    expect((await db.pool.query(
+      `SELECT execution_kind,status,agent_id,runtime_profile_id,capability_id,contract_snapshot_json FROM runs WHERE id=$1`,
+      [synthesisRunId],
+    )).rows[0]).toMatchObject({
+      execution_kind: "provider_task", status: "queued", agent_id: null, runtime_profile_id: null,
+      capability_id: "research.brief_synthesize",
+      contract_snapshot_json: {
+        required_outputs_json: { artifact_types: ["research_report.archive.v1"] },
+        route_hints_json: { provider_id: PROVIDER, stage: "synthesis" },
+        workflow_input_json: { project_research: { operation_id: operationId, stage_key: "synthesis" } },
+      },
+    });
+
+    // Synthesis: the declared archive is materialized by the canonical
+    // materializer, named in the Run's output, and verified downstream.
+    replyWithStructuredOutput({
+      status: "succeeded",
+      artifacts: [{ title: "Research report", artifact_type: "research_report.archive.v1", mime_type: "application/json", content: report }],
+    });
+    await performQueuedProviderTask(CONFIG, { spaceId: SPACE, userId: OWNER, runId: synthesisRunId });
+    const synthesisRun = (await db.pool.query<{ status: string; output_json: { result?: { materialization?: Array<{ kind: string; status: string; artifact_id?: string }> } } }>(
+      `SELECT status,output_json FROM runs WHERE id=$1`, [synthesisRunId],
+    )).rows[0]!;
+    expect(synthesisRun.status).toBe("succeeded");
+    expect(synthesisRun.output_json.result?.materialization).toEqual([
+      expect.objectContaining({ kind: "artifact", status: "succeeded", artifact_id: expect.any(String) }),
+    ]);
+    const archiveId = synthesisRun.output_json.result!.materialization![0]!.artifact_id!;
+    expect((await db.pool.query(`SELECT run_id,project_id,artifact_type FROM artifacts WHERE id=$1`, [archiveId])).rows[0])
+      .toEqual({ run_id: synthesisRunId, project_id: PROJECT, artifact_type: "research_report.archive.v1" });
+    expect((await db.pool.query(
+      `SELECT status FROM run_events WHERE run_id=$1 AND event_type='artifact_ingested' AND artifact_id=$2`, [synthesisRunId, archiveId],
+    )).rows).toEqual([{ status: "succeeded" }]);
+    expect((await db.pool.query(`SELECT outcome_status FROM run_evaluations WHERE run_id=$1`, [synthesisRunId])).rows)
+      .toEqual([{ outcome_status: "passed" }]);
+    await nudgeTerminalRun(synthesisRunId);
+
+    // The validated draft is staged and the critique is admitted the same way.
+    const staged = await operationState(operationId);
+    expect(staged).toMatchObject({
+      current_stage: "synthesis",
+      synthesis_critique: { status: "queued", report_run_id: synthesisRunId, archive_artifact_id: archiveId },
+    });
+    const critiqueRunId = (staged.synthesis_critique as { run_id: string }).run_id;
+    expect((await db.pool.query(`SELECT execution_kind,status,capability_id,contract_snapshot_json FROM runs WHERE id=$1`, [critiqueRunId])).rows[0])
+      .toMatchObject({
+        execution_kind: "provider_task", status: "queued", capability_id: "research.brief_synthesize",
+        contract_snapshot_json: { workflow_input_json: { project_research: { stage_key: "synthesis_critique", report_run_id: synthesisRunId } } },
+      });
+    expect((await db.pool.query(`SELECT job_type FROM jobs WHERE payload_json->>'run_id'=$1`, [critiqueRunId])).rows)
+      .toEqual([{ job_type: "provider_task_run" }]);
+
+    replyWithStructuredOutput({ verdict: "pass", issues: [] });
+    await performQueuedProviderTask(CONFIG, { spaceId: SPACE, userId: OWNER, runId: critiqueRunId });
+    await nudgeTerminalRun(critiqueRunId);
+
+    expect(await operationState(operationId)).toMatchObject({ current_stage: "idea_review", synthesis_critique: { status: "completed" } });
+    expect((await db.pool.query(`SELECT synthesis_run_id FROM project_research_reports WHERE operation_id=$1`, [operationId])).rows)
+      .toEqual([{ synthesis_run_id: synthesisRunId }]);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM artifacts WHERE run_id=$1 AND artifact_type='research_critique'`, [critiqueRunId])).rows[0].n)
+      .toBe(1);
+    // No stage manufactured an Agent: every stage Run is a ProviderTask Run.
+    expect((await db.pool.query(
+      `SELECT DISTINCT execution_kind FROM runs WHERE capability_id='research.brief_synthesize'`,
+    )).rows).toEqual([{ execution_kind: "provider_task" }]);
+  });
+
+  it("retries a failing stage on its own job, then fails the operation with the Run's error, and an operation retry admits a fresh Run", async () => {
+    if (!db.available) return;
+    await seedRelevantCorpusItem(db.pool, { space: SPACE, project: PROJECT, owner: OWNER });
+    const operationId = await seedFailedSynthesisOperation(db.pool, identity, {
+      project: PROJECT, workflow: WORKFLOW, researchQuestion: "Does X improve Y?", threadScope, previousRunId: null,
+      // The pass coordinator Run still names the managed research Agent.
+      agentId: AGENT,
+    });
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, CONFIG);
+    await orchestrator.retryFailedOperation(identity, PROJECT, operationId);
+    const failingRunId = (await operationState(operationId)).synthesis_run_id as string;
+
+    replyWithProviderFailure();
+    // With attempts left the job throws for its next attempt; the Run stays
+    // live and the operation keeps waiting on it.
+    await expect(performQueuedProviderTask(CONFIG, { spaceId: SPACE, userId: OWNER, runId: failingRunId, attempts: 1, maxAttempts: 2 }))
+      .rejects.toThrow();
+    expect((await db.pool.query(`SELECT status FROM runs WHERE id=$1`, [failingRunId])).rows[0]).toEqual({ status: "running" });
+    await orchestrator.reconcileOperation(SPACE, operationId);
+    expect((await db.pool.query(`SELECT status FROM project_operations WHERE id=$1`, [operationId])).rows[0]).toEqual({ status: "active" });
+    expect(await operationState(operationId)).toMatchObject({ current_stage: "synthesis", synthesis_run_id: failingRunId });
+
+    // The last attempt settles the Run failed, and the operation fails with
+    // the Run's own error as its retryable cause.
+    await performQueuedProviderTask(CONFIG, { spaceId: SPACE, userId: OWNER, runId: failingRunId, attempts: 2, maxAttempts: 2 });
+    const failedRun = (await db.pool.query<{ status: string; error_json: { error_code?: string } }>(
+      `SELECT status,error_json FROM runs WHERE id=$1`, [failingRunId],
+    )).rows[0]!;
+    expect(failedRun.status).toBe("failed");
+    expect(failedRun.error_json.error_code).toBeTruthy();
+    await nudgeTerminalRun(failingRunId);
+    const failed = (await db.pool.query<{ status: string; progress_json: { failed_stage?: string; error?: { code?: string; diagnostics?: { run_id?: string } } } }>(
+      `SELECT status,progress_json FROM project_operations WHERE id=$1`, [operationId],
+    )).rows[0]!;
+    expect(failed.status).toBe("failed");
+    expect(failed.progress_json.failed_stage).toBe("synthesis");
+    expect(failed.progress_json.error).toMatchObject({ code: failedRun.error_json.error_code, diagnostics: { run_id: failingRunId } });
+
+    await orchestrator.retryFailedOperation(identity, PROJECT, operationId);
+    const retriedRunId = (await operationState(operationId)).synthesis_run_id as string;
+    expect(retriedRunId).not.toBe(failingRunId);
+    expect((await db.pool.query(`SELECT id,status,execution_kind FROM runs WHERE id=ANY($1::varchar[]) ORDER BY created_at`, [[failingRunId, retriedRunId]])).rows)
+      .toEqual([
+        { id: failingRunId, status: "failed", execution_kind: "provider_task" },
+        { id: retriedRunId, status: "queued", execution_kind: "provider_task" },
+      ]);
+  });
+
+  it("publishes nothing for a stage Run cancelled while its provider was answering", async () => {
+    if (!db.available) return;
+    await seedRelevantCorpusItem(db.pool, { space: SPACE, project: PROJECT, owner: OWNER });
+    const operationId = await seedFailedSynthesisOperation(db.pool, identity, {
+      project: PROJECT, workflow: WORKFLOW, researchQuestion: "Does X improve Y?", threadScope, previousRunId: null,
+      agentId: AGENT,
+    });
+    await new ProjectResearchOrchestrator(db.pool, CONFIG).retryFailedOperation(identity, PROJECT, operationId);
+    const runId = (await operationState(operationId)).synthesis_run_id as string;
+    __setProviderHttpClientForTests({
+      fetch: async () => {
+        // The person stops the operation while the provider is answering.
+        await db.pool.query(`UPDATE runs SET status='cancelled', ended_at=now(), updated_at=now() WHERE id=$1`, [runId]);
+        return openAiChatResponse({
+          choices: [{ message: { content: JSON.stringify({
+            status: "succeeded",
+            artifacts: [{ title: "Research report", artifact_type: "research_report.archive.v1", mime_type: "application/json", content: report }],
+          }) } }],
+          model: "test-model",
+          usage: {},
+        });
+      },
+    });
+    await performQueuedProviderTask(CONFIG, { spaceId: SPACE, userId: OWNER, runId });
+    expect((await db.pool.query(`SELECT status FROM runs WHERE id=$1`, [runId])).rows[0]).toEqual({ status: "cancelled" });
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM artifacts WHERE run_id=$1`, [runId])).rows[0].n).toBe(0);
   });
 
   it("applies ad-hoc notebook ops on run completion and degrades to a labeled append after a conflict", async () => {

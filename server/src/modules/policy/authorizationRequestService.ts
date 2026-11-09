@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { enforce } from "./service.js";
+import { withPolicyAuditRecovery } from "./auditWriter.js";
+import { loadActionRegistry } from "./actionRegistry.js";
 import { ActionApprovalGrantService } from "./actionApprovalGrantService.js";
 import { redactEvidenceText } from "../runs/evidenceRedaction.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
@@ -216,6 +219,15 @@ export class AuthorizationRequestService {
     requestId: string,
     decision: "approved" | "rejected",
   ): Promise<AuthorizationRequestOut> {
+    // Recovery owns the whole transaction, including rollback and connection release.
+    return withPolicyAuditRecovery(this.config.databaseUrl, () => this.decideTransaction(identity, requestId, decision));
+  }
+
+  private async decideTransaction(
+    identity: { spaceId: string; userId: string },
+    requestId: string,
+    decision: "approved" | "rejected",
+  ): Promise<AuthorizationRequestOut> {
     const client = await this.db.connect();
     try {
       await client.query("BEGIN");
@@ -279,13 +291,19 @@ export class AuthorizationRequestService {
     request: AuthorizationRequestOut,
   ): Promise<string> {
     await this.assertMayReview(client, identity, request);
-    const grant = await new ActionApprovalGrantService(client,this.config as ServerConfig).create(this.config, identity, {
+    const decision = await enforce({...this.config, auditTransaction: client},await loadActionRegistry(this.config as ServerConfig),{
+      action:'policy.action_grant.create',actor_type:'user',actor_id:identity.userId,space_id:identity.spaceId,
+      resource_type:'action_approval_grant',resource_id:null,force_record:true,
+      metadata_json:{authorization_request_id:request.id,run_id:request.run_id},
+    });
+    if(decision.status!=='allow') throw new HttpError(decision.status==='blocked'?403:503,'Action grant policy refused');
+    const grant = await new ActionApprovalGrantService(client,this.config as ServerConfig).createInTransaction(identity, {
       agent_id: request.agent_id,
       action_id: request.action_id,
       target_run_id: request.run_id,
       max_uses: 1,
       expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    }, { authorization_request_id: request.id, run_id: request.run_id });
+    });
     return String((grant as { id: unknown }).id);
   }
 

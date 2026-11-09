@@ -15,11 +15,29 @@ business-family migration from this specification. TypeScript shapes below are
 specification notation, not exports. This document replaces the retired Plan 1
 contract location and remains the permanent owner specification.
 
-The current production composition enables only the metadata query and
-cancellation command, for their registered user/Agent surfaces. Automation,
-system-job and MCP adapters are not enabled here. Approval behavior below is
+The accepted Plan 1 baseline enabled the metadata query and cancellation
+command, for their registered user/Agent surfaces. Subsequent core registrations
+are documented in SYSTEM_ACTIONS; the human-only collaboration participant
+command and user-only action-grant create/revoke commands do not add any Agent
+authority. Their formal REST adapters share core keys, policy decisions and
+transactions with generic POST; internal authorization-request approval retains
+its own admission and joins the same domain writer without recursive dispatch.
+No production approval mapping is enabled by the grant family. Automation,
+system-job and MCP adapters are not enabled here. Subsequent user-only
+Project operation create/cancel commands also share the core; their internal
+orchestrator progress writers and dedicated Research cancellation semantics
+remain separately owned as documented in PROJECTS and SYSTEM_ACTIONS.
+Project Board configure/exact-column movement additionally retain their existing
+Agent surfaces, verified Run/person/Project identity and grants; the migrated
+user adapters use the same domain transaction and revision gates.
+Task status/delete and Agent-only report/complete/review/handoff now join those
+same core-owned transaction and receipt rules. Human completion acknowledgement
+and Agent complete/review semantics remain distinct. Task cleanup writes durable
+Job intents; workers alone contact Hosts. Their internal writers join the branded
+query port without recursive dispatch. Approval behavior below is
 implemented through canonical services and exercised by test registrations;
-production approval mappings and the eight legacy writer migrations remain off.
+production approval mappings remain off. P5 internal transition progress and
+remaining writer migrations are recorded in the acceptance matrix.
 
 ## Registration and actor context
 
@@ -378,7 +396,8 @@ Business migration inventory (no production approval mappings are enabled):
 | Operation | Current payload/applier | Core migration decision |
 |---|---|---|
 | `research.cancel_acquisition` | none; direct `ResearchOperationCancelService.cancelOperation` | enabled production pilot; no approval mapping. `research.acquisition.cancel` is outside the current origin-gated set; do not add a stop approval. An unexpected require_approval fails with mapping unavailable |
-| `source.backfill.pause` / `resume` | none; metadata points to `SourceBackfillPlanningService.setPaused` | unmigrated legacy family; later enablement requires real schema/policy/access equivalence; no invented approval mapping or user authority from metadata |
+| `source.backfill.preview` / `create_plan` / `pause` / `resume` | existing SourceBackfillPlanningService through the transaction port | enabled user-only ordinary family; preview metadata query, explicit-key commands with live Source/Project authority, separate domain uniqueness and atomic audit/receipt. No approval mapping or execution/egress permission |
+| `project.source.bind` / `update` / `unbind` / `backfill` | canonical ProjectSourceBindingService and routing | enabled user-only ordinary consumption family; active Project/current Source delivery checks and atomic derived writes/audit/receipt, with no activation approval or Agent authority |
 | `source.backfill.propose_start` | `source_backfill_start`, payloadSchemas + registerSourceBackfillProposalAppliers → SourceBackfillExecutionService.start | existing money gate and canonical apply; remain legacy until request linking/output/authority revalidation are migrated. Approving must start that frozen plan, not file a second proposal |
 | `project.propose_definition` | `project_brief_publish` → registerProjectDefinitionProposalAppliers → ProjectKernelService | direction gate; preserve existing domain applier and requester/approver provenance. Unmigrated legacy family; not enabled by Plan 1 |
 | other require_approval operations | only the currently registered domain payload/applier is eligible | unsupported origin/checkpoint resumption remains fail-closed until an operation-specific schema and canonical applier are registered; no catch-all resume-any-id proposal |
@@ -608,8 +627,10 @@ cutover checks are local additive-schema evidence, not deployed old-image proof.
 | Adapters | legacy source.material.submit invalid/limited/duplicate/corrected/unauthorized cases preserve attempt counters, errors and failure events; new core invalid schema never executes domain work; migrated adapters really call core; one operation policy record per invocation; separate apply/content logs; old URL/body/status/UI consumers stay compatible; non-migrated families get no generic entry |
 | Cutover | old/new immutable Run grants still valid without widening; additive schema works with previous server; unsupported versions explicit; no legacy table deletion or schema-epoch reset |
 
-The production registry enables only `system.actions.list` and
-`research.cancel_acquisition`, neither with an approval mapping. Real-PG fixture
+The Plan 1 production baseline enabled `system.actions.list` and
+`research.cancel_acquisition`, neither with an approval mapping. Subsequent
+registrations, including the user-only collaboration participant command, are
+documented in SYSTEM_ACTIONS. Real-PG fixture
 registrations exercise canonical approval integration; they prove the mechanism,
 not migration of any listed legacy business operation. Future production mapping
 enablement additionally requires its own payload/role/policy/precondition tests
@@ -638,3 +659,142 @@ cached only after rolling back the domain savepoint. Arbitrary HttpError status,
 message and responseBody are not an allowlist. Unknown errors remain generic.
 Agent adapter lifecycle/refusal RunEvents use the existing writer and evidence
 shape; mandatory operation audit remains the transactional policy seam.
+
+
+## P5 internal Proposal transition progress
+
+The canonical DB decision and dependent Source rejection paths, direct Project
+definition replacement, and monitoring scope/details replacement now join the
+purpose-bound Proposal transition port. It reuses the P1 request-key lock
+primitive and transaction ownership, not a second decision/apply engine.
+Preflight reads freeze a candidate set; all nonwaiting request keys precede
+Proposal closure gates/row locks, then request rows and domain locks.
+Dependency/key-link growth conflicts instead of acquiring new keys late.
+Canonical dependency creation uses the same closure gate, and pending request
+attachment rechecks exact frozen payload/status/expiry under the Proposal lock.
+
+Terminalization reads actual Proposal states in the same transaction. Acceptance
+requires the mapped applier's validated atomic result, never a synthetic success
+from accepted status. Existing result/audit recovery and expiry/retention key
+ordering remain. Advance-grant and external code-patch rollback paths refuse a
+linked request rather than bypassing its frozen mapping. Unlinked domain
+semantics and authority remain canonical.
+
+The port does not authorize mapping enablement. Frozen Memory/import payload
+revision, Plan, Run and Skills status owners and the Evolution outer transaction
+owner still need their complete lock/effect closure. Retry/cleanup reconciliation
+continues as a defensive backstop and is not their atomicity evidence.
+
+## Current P5-4 writer extension (not additional mapping authority)
+
+Proposal transition admission is owned by
+`systemActions/operations/proposalTransitions.ts`. A cascade or package review
+admits its complete sorted request scope set before Proposal/request/domain locks;
+Run recovery sorts that set globally across its candidate Spaces. Creation and
+replacement join the corresponding closure gates and recheck membership after
+admission. A newly observed replacement outside admission is nonretryable
+`operation_conflict` (409): the caller rereads and explicitly starts a new action.
+It never triggers a server write retry or late key acquisition.
+
+Frozen pending edits preserve the old draft and request evidence: supersede both
+and return a fresh review Proposal, retaining audience/provenance/deadlines but
+copying no approvals or operation success. Accepted requests still require an
+actual validated atomic result/receipt. Recognition of a core transaction brand
+or verification of an existing BEGIN is a precondition for transaction gates;
+a raw checked-out client is not itself a transaction owner.
+
+Prepared Run terminal roots bind the exact pre-discovered Run set to the existing
+expiring transaction port, admit all keys/fences before domain locks and finish
+linked transitions once after domain/required Job work. Pool-owned Project
+archive, Plan/Workflow reconcile, Job cancellation/exhaustion, stale autonomous
+child cancellation, queued Host merge resolution cancellation and Reading provider
+finalization use this boundary. A nested call cannot forge readiness or add a Run
+late. Subsequent owner extensions close canonical checkpoint/Research admission,
+coordinator/Room direct terminal writers and Evolution selected-member DB owners;
+Evolution code-patch effects use a durable Job/receipt boundary described below. An unprepared owner must refuse linked requests before trying keys,
+including linked descendants of an unlinked root.
+A later reconciliation is not atomicity evidence. No production mapping or public
+proposal-decision permission is enabled by these internal changes; current
+qualification and exclusions are in OPERATION_CORE_ACCEPTANCE.
+
+
+Current nested-owner extension (basis33466aee): canonical user acceptance admits
+checkpoint/Research-history cascade and related Run Proposal requests in one
+sorted set before domain locks. Nested appliers reuse the prepared transaction
+closure; Research graph root entry points similarly prepare before their first
+locks. Canonical fresh Run insertion records transaction-local membership and
+its terminal writer requires it still unlinked. This does not authorize late
+key admission, copying a receipt/approval, production mapping or public decision
+permission. Evolution now reuses the same complete sorted admission for its Bundle DB owner.
+An approved code-patch selection first commits a frozen intent and required Job,
+executes effects without a DB transaction and commits all canonical member results
+plus the receipt atomically. The private receipt is not caller input. Applying/
+compensating/compensation_failed remain explicit; external visibility cannot be
+rolled back atomically with PostgreSQL. Existing worker recovery performs one
+bounded cleanup handoff and refuses to overwrite independent edits. See
+EVOLUTION_SIGNAL_SYSTEM for the exact lifecycle. Writer tests and test-only P1
+mappings do not enable any production mapping or new public decision authority.
+
+
+## Human new-content placement before admission
+
+`userContentCreation` is a server-only registration option for an ungrantable,
+public-API-only, user-only draft command with no approval mapping or hard gate.
+Startup rejects other definitions. It delegates placement to the access-owned
+`resolveContentCreationContext`, never a registration-supplied Space resolver.
+Only the authenticated manual person's Space changes: without `project_id`,
+their unique active Personal Space receives private new content; with a Project,
+canonical current Project read/write and active-same-Space checks apply. Caller
+Space/user/Run/origin/grants never select a different principal or destination.
+This creates new content; it cannot transfer existing content across Spaces.
+
+The request actor is checked first. Inside the core transaction, placement is
+resolved without domain locks before key binding. The key, policy, audit, domain
+writes and receipt all belong to the effective creation Space. After reserving
+the key, both original membership and destination authority are rechecked; a
+changed destination conflicts instead of taking a second key. Project mutation
+fences and result visibility checks still run. Audit metadata records the
+browsed request Space separately. Replaying from another currently accessible
+page for the same person/target shares the original target receipt. The first
+registration is `source.recipe.create`; Agent/Run/system/approval paths do not
+use this option.
+
+
+A successful command may return HTTP202 when its canonical effect is durable
+enqueue rather than completion of external work (`source.channel.scan`). The
+core request is terminal `succeeded`, with a typed pending Job receipt; it is
+not `pending_approval` and does not imply a completed scan. Job/receipt/audit
+are committed together. Replaying that key returns its original enqueue
+receipt even if the Job later advances, without creating another Job.
+
+P5-2 Monitor creation preserves the already authenticated REST human placement:
+`source.channel.create` is the only named durable exception to the human content
+creation port's draft-only restriction. It stays ungrantable, user-only,
+public_api-only, without approval mapping; channel/scheduler creation is DB-only.
+Other durable registrations still fail that port's constructor guard. This does
+not grant Agent creation, Source owner consent, activation or external execution.
+
+P5-2 review repair: the named Monitor creation port treats an existing Source
+as a same-request-Space child parent, not a request to relocate a new root. It
+keeps the authenticated actor unchanged and discovers no foreign Space. Only
+this named child case bypasses new-root Personal/Project placement. Parent and
+Project authority are authoritatively checked after keys and before child writes;
+changed parent scope conflicts. Nullable `ResolvedOperation.resourceId` carries
+the existing creation policy's null resource id instead of inventing `new`.
+Known create input failures use explicit owner validation types; generic helper
+HTTP statuses never establish cacheable business-failure authority.
+
+P5-2 Source rule/manual dispatch adds no external work to core transactions.
+Create/update use canonical rule and managed Agent transaction writers. Run/drain
+and extraction run return required Job intent receipts; worker results are read
+from the existing Jobs/Source history, not fabricated in the command response.
+Manual Source delivery persists its start fence and receipt in existing Job result
+storage. An unknown external outcome never authorizes replay of the effect.
+Production approval mappings and Agent reach are unchanged.
+A Source manual dispatch may defer through the existing Jobs mechanism only for
+its exact canonical pre-effect resource-claim busy error. Release only that start
+marker; unrelated child errors/unknown outcomes cannot enable effect replay.
+The existing Job result UI distinguishes a failed started-without-receipt Source
+intent from a claim that nothing happened. User/audit/receipt isolation remains
+per request principal even when another principal or automatic worker owns the
+same domain extraction claim.

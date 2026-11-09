@@ -39,6 +39,19 @@
     "record_failure_mode": "best_effort"
   },
   {
+    "action": "room.collaboration.manage",
+    "resource_type": "agent_run_group",
+    "default_risk_level": "high",
+    "default_decision": "allow",
+    "audit_required": true,
+    "approval_capability": null,
+    "default_required_approver_role": null,
+    "current_enforcement_point": "server/src/modules/agentGroups/collaborationParticipantsOperation.ts",
+    "description": "Authenticated human coordinator changes participants without changing or replenishing the task budget.",
+    "lifecycle_status": "wired_direct",
+    "record_failure_mode": "fail_closed"
+  },
+  {
     "action": "run.spawn_child",
     "resource_type": "run",
     "default_risk_level": "medium",
@@ -904,7 +917,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/projects/routes.ts",
+    "current_enforcement_point": "server/src/modules/projects/projectSourceOperations.ts; server/src/modules/projects/routes.ts for proposal-first setup",
     "description": "Create or update a Project-owned Source binding (project consumption configuration over a Sources-owned connection).",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "best_effort"
@@ -917,7 +930,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
+    "current_enforcement_point": "server/src/modules/inquiry/threadCreationOperations.ts; server/src/modules/systemActions/systemActionDispatcher.ts for Agent create_thread",
     "description": "Open an Inquiry Thread in a Project the actor can write to. Allowed when a person asked for it in the turn; an autonomous origin requires approval, because a question nobody asked for is a commitment made on the Project's behalf. Bounded per turn, and every Thread an Agent opens is archivable from the Project's updates.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -956,7 +969,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/projects/routes.ts",
+    "current_enforcement_point": "server/src/modules/projects/projectOperationOperations.ts; server/src/modules/systemActions/systemActionDispatcher.ts for monitoring read",
     "description": "Create or cancel a Project operation progress record. Project operations are a grouping/read model over runs, jobs, proposals, and plans; they carry no execution authority of their own.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "best_effort"
@@ -1164,7 +1177,7 @@
     "audit_required": true,
     "approval_capability": "manage_action_grants",
     "default_required_approver_role": "owner",
-    "current_enforcement_point": "server/src/modules/policy/actionApprovalGrantService.ts",
+    "current_enforcement_point": "server/src/modules/policy/actionGrantOperations.ts; server/src/modules/policy/authorizationRequestService.ts",
     "description": "Create a bounded pre-authorization grant for one agent and system action.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1190,8 +1203,21 @@
     "audit_required": true,
     "approval_capability": "manage_action_grants",
     "default_required_approver_role": "owner",
-    "current_enforcement_point": "server/src/modules/policy/actionApprovalGrantService.ts",
+    "current_enforcement_point": "server/src/modules/policy/actionGrantOperations.ts",
     "description": "Revoke an active action pre-authorization grant.",
+    "lifecycle_status": "wired_direct",
+    "record_failure_mode": "fail_closed"
+  },
+  {
+    "action": "source.subscription.manage",
+    "resource_type": "source_channel",
+    "default_risk_level": "low",
+    "default_decision": "allow",
+    "audit_required": true,
+    "approval_capability": null,
+    "default_required_approver_role": null,
+    "current_enforcement_point": "server/src/modules/sources/sourceSubscriptionOperations.ts",
+    "description": "Authenticated people decide their own existing Source recommendations or subscription preferences; no Source configuration, content-access grant or Agent authority is conferred.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
   },
@@ -1203,7 +1229,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/sources/sourceBackfillService.ts",
+    "current_enforcement_point": "server/src/modules/sources/sourceBackfillOperations.ts",
     "description": "Preview or create a bounded Source history import plan.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1229,7 +1255,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/sources/routes.ts",
+    "current_enforcement_point": "server/src/modules/sources/sourceBackfillOperations.ts",
     "description": "Pause or resume a Source history import plan.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1424,7 +1450,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
+    "current_enforcement_point": "server/src/modules/projectWork/taskLifecycleOperations.ts",
     "description": "Append a readable account of what was done and concluded. Append-only, and the only way an Agent advancing work outside a conversation can say anything at all.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1437,7 +1463,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
+    "current_enforcement_point": "server/src/modules/projectWork/taskLifecycleOperations.ts",
     "description": "Transfer responsibility for a Task, or release it. Self-limiting: it can only give work away.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1463,7 +1489,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
+    "current_enforcement_point": "server/src/modules/projectWork/boardOperations.ts",
     "description": "Configure Project columns; unattended changes require approval.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1476,7 +1502,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
+    "current_enforcement_point": "server/src/modules/projectWork/boardOperations.ts",
     "description": "Move a Task to a column; unattended moves require approval and completion gates remain.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1489,7 +1515,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
+    "current_enforcement_point": "server/src/modules/projectWork/taskLifecycleOperations.ts",
     "description": "Delete a Task on the instructing person’s behalf, retaining execution and audit evidence. Unattended deletion requires approval.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1502,7 +1528,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
+    "current_enforcement_point": "server/src/modules/projectWork/taskLifecycleOperations.ts",
     "description": "Change a Task's board status. Unattended status changes require approval; completion and review retain their existing gates.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1528,7 +1554,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
+    "current_enforcement_point": "server/src/modules/projectWork/taskLifecycleOperations.ts",
     "description": "Say a Task's work is finished. An autonomous origin requires approval: closing is a commitment about the work, not a report of it. It passes the same completion contract a manual close does and cannot override one.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"
@@ -1554,7 +1580,7 @@
     "audit_required": true,
     "approval_capability": null,
     "default_required_approver_role": null,
-    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
+    "current_enforcement_point": "server/src/modules/projectWork/taskLifecycleOperations.ts",
     "description": "Stop work and ask a person to decide. Self-limiting: it can only halt, never proceed.",
     "lifecycle_status": "wired_direct",
     "record_failure_mode": "fail_closed"

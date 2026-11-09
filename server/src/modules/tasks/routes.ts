@@ -1,3 +1,5 @@
+import {OperationError} from '../systemActions/operations/errors.js';
+import {resolveRequestId} from '../../gateway/requestContext.js';
 import { InquiryTaskAssociationService } from "../inquiry/taskAssociations.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import * as protocol from "@rainver/protocol";
@@ -15,8 +17,10 @@ import {
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
-import { deleteTask } from "./deleteTask.js";
-import { PgTaskRepository } from "./repository.js";
+import {introspectIdentity} from '../auth/identity.js';
+import {sessionActor} from '../systemActions/operations/actor.js';
+import {operationRuntime} from '../systemActions/operations/runtime.js';
+import { PgTaskRepository, ProjectTaskPlacementRequiresCore, TaskStatusRequiresCore } from "./repository.js";
 import { PgPlanRepository } from "../plans/repository.js";
 import {
   applyContentCreationContext,
@@ -141,12 +145,29 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.delete("/api/v1/tasks/:taskId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try { return reply.send(await deleteTask(dbPool(context.config), identity, params(request).taskId ?? "")); }
-    catch (error) { return sendRouteError(reply, error); }
-  });
+  for(const [method,url,id] of [
+    ['DELETE','/api/v1/tasks/:taskId','task.delete'],
+    ['POST','/api/v1/tasks/:taskId/status','task.set_status'],
+    ['POST','/api/v1/tasks/:taskId/space-board-placement','task.place_in_space_board'],
+  ] as const) app.route({method,url,config:{operation:id},handler:async(request,reply)=>{
+    const requestId=resolveRequestId(request);
+    reply.header('cache-control','private, no-store');
+    const resolved=await introspectIdentity(context.config,request,reply);
+    if(!resolved.ok){
+      const error=resolved.reason==='denied'
+        ?new OperationError(resolved.statusCode===401?'authentication_required':'operation_not_found',resolved.statusCode===401?401:404)
+        :new OperationError('operation_temporarily_unavailable',503,true);
+      return reply.code(error.httpStatus).send(error.body(requestId));
+    }
+    let body:Record<string,unknown>;
+    try{body=request.body===undefined?{}:jsonBody(request);}
+    catch{return reply.code(422).send(new OperationError('operation_invalid_input',422).body(requestId));}
+    if(Object.hasOwn(body,'task_id'))return reply.code(422).send(new OperationError('operation_invalid_input',422).body(requestId));
+    const key=request.headers['idempotency-key'];
+    const result=await(await operationRuntime(context.config)).execute(id,{...body,task_id:params(request).taskId},
+      sessionActor({spaceId:resolved.spaceId,userId:resolved.userId}),requestId,typeof key==='string'?key:undefined);
+    return reply.code(result.http_status).send(result.body);
+  }});
 
   app.patch("/api/v1/tasks/:taskId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -158,8 +179,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const body = jsonBody(request);
       const structured = protocol.TaskPatchStructuredFieldsSchema.safeParse(body);
       if (!structured.success) throw new HttpError(422, structured.error.message);
-      return reply.send(await repository().updateTask(identity, params(request).taskId ?? "", body));
+      return reply.send(await repository().updateTaskFromPublicPatch(identity, params(request).taskId ?? "", body));
     } catch (error) {
+      if(error instanceof ProjectTaskPlacementRequiresCore || error instanceof TaskStatusRequiresCore)
+        return reply.code(422).send(new OperationError('operation_invalid_input',422).body(resolveRequestId(request)));
       return sendRouteError(reply, error);
     }
   });

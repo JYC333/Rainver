@@ -8,7 +8,7 @@ import { parseClaudeOAuthUsage } from "../src/usageProbe.js";
 afterEach(() => vi.unstubAllGlobals());
 
 it("preserves small measured consumption for display-time rounding", () => {
-  const quota = parseAntigravityQuota({ buckets: [{ modelId: "gemini", remainingFraction: 0.9985148 }] });
+  const quota = parseAntigravityQuota({ groups: [{ buckets: [{ bucketId: "gemini", remainingFraction: 0.9985148 }] }] });
   expect(quota.windows?.[0].used_pct).toBeCloseTo(0.14852, 5);
 });
 
@@ -28,10 +28,10 @@ it("retains model-family windows and aggregates only explicit cadences", () => {
 });
 
 it("never mistakes missing or invalid fractions for unused capacity", () => {
-  expect(parseAntigravityQuota({ buckets: [{ modelId: "gemini", remainingFraction: 2 }] }).available).toBe(false);
+  expect(parseAntigravityQuota({ groups: [{ buckets: [{ bucketId: "gemini", remainingFraction: 2 }] }] }).available).toBe(false);
   expect(parseAntigravityQuota({ models: { gemini: { quotaInfo: { remainingFraction: 1 } } } }).available).toBe(false);
-  const legacy = parseAntigravityQuota({ buckets: [{ modelId: "gemini", remainingFraction: 0.5 }] });
-  expect(legacy).toMatchObject({ available: true, session_pct: null, week_pct: null });
+  const unclassified = parseAntigravityQuota({ groups: [{ buckets: [{ bucketId: "gemini", remainingFraction: 0.5 }] }] });
+  expect(unclassified).toMatchObject({ available: true, session_pct: null, week_pct: null });
 });
 
 it("preserves Fable's independent quota without replacing the account week", () => {
@@ -44,26 +44,33 @@ it("preserves Fable's independent quota without replacing the account week", () 
   expect(quota.windows).toHaveLength(4);
 });
 
-it("uses only this copy's refresh credential and fixed endpoints, falling back on denied summaries", async () => {
-  const home = await mkdtemp(join(tmpdir(), "rainver-quota-"));
+it("reads this copy's native status line without direct OAuth requests or credential parsing", async () => {
+  const home = await mkdtemp(join(tmpdir(), "rainver-quota-'account-"));
+  const fetcher = vi.fn();
+  vi.stubGlobal("fetch", fetcher);
   try {
-    await mkdir(join(home, ".gemini/antigravity-acp"), { recursive: true });
-    await writeFile(join(home, ".gemini/antigravity-acp/acp_token.json"), JSON.stringify({
-      client_id: "client", client_secret: "secret", refresh_token: "refresh+token", project_id: "project",
-      token_uri: "https://untrusted.example/token",
-    }));
-    const fetcher = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-secret" })))
-      .mockResolvedValueOnce(new Response("", { status: 403 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ buckets: [{ modelId: "gemini", remainingFraction: 0.6 }] })));
-    vi.stubGlobal("fetch", fetcher);
-    const quota = await probeAntigravity(home, null, 2);
+    await mkdir(join(home, ".gemini/antigravity-cli"), { recursive: true });
+    await writeFile(join(home, ".gemini/antigravity-cli/antigravity-oauth-token"), "synthetic-login-not-for-the-probe-to-parse");
+    const cli = join(home, "native-cli.cjs");
+    await writeFile(cli, `
+      const fs = require("node:fs");
+      const { join } = require("node:path");
+      const { spawnSync } = require("node:child_process");
+      fs.accessSync(join(process.env.HOME, ".gemini/antigravity-cli/antigravity-oauth-token"));
+      const settings = JSON.parse(process.argv[process.argv.indexOf("--settings") + 1]);
+      const captured = spawnSync(settings.statusLine.command, {
+        shell: true,
+        input: JSON.stringify({ quota: { "gemini-weekly": { remaining_fraction: 0.6 } }, email: "private@example.invalid", other: "access-secret" }),
+      });
+      if (captured.status !== 0) process.exit(1);
+      setInterval(() => {}, 1000);
+    `);
+    const quota = await probeAntigravity(home, null, 5, process.execPath, [cli]);
+    expect(quota.available).toBe(true);
+    expect(quota.week_pct).toBe(40);
     expect(quota.windows?.[0].used_pct).toBe(40);
-    expect(fetcher.mock.calls[0][0]).toBe("https://oauth2.googleapis.com/token");
-    expect(fetcher.mock.calls[0][1].body.get("refresh_token")).toBe("refresh+token");
-    expect(fetcher.mock.calls[2][1].body).toBe('{"project":"project"}');
-    expect(fetcher.mock.calls.every(call => call[1].redirect === "error")).toBe(true);
-    expect(JSON.stringify(quota)).not.toMatch(/access-secret|refresh.token|client_secret/);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(JSON.stringify(quota)).not.toMatch(/access-secret|private@example/);
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 

@@ -1,3 +1,5 @@
+import {insertProposalRow} from '../src/modules/proposals/reviewPackets.js';
+import {PgProposalApplyService} from '../src/modules/proposals/applyService.js';
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository.js";
 import { assertResearchResultRunEgress } from "../src/modules/projectResearch/researchResultEgress.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
@@ -33,7 +35,7 @@ async function op(id:string){return (await db.pool.query(`SELECT * FROM project_
 async function step(id:string){return (await db.pool.query(`SELECT * FROM inquiry_thread_steps WHERE id=$1`,[(await op(id)).research_step_id])).rows[0];}
 beforeEach(async()=>{
  if(!db.available)return;
- await resetTables(db.pool,['spaces','users'],{cascade:true});
+ await resetTables(db.pool,['spaces','users','source_connectors','source_providers'],{cascade:true});
  space=randomUUID();owner=randomUUID();project=randomUUID();workflow=randomUUID();
  await seedSpaceOwnerProject(db.pool,{space,owner,project,spaceType:'household'});
  thread=String((await new InquiryThreadService(db.pool).createThread(identity(),project,{kind:'question',statement:'Why fail?'})).id);
@@ -104,6 +106,35 @@ describe('Research call identity and evidence boundary',()=>{
   // Replaying the ended call's key conflicts with its recorded input; a new call reaches Source planning.
   await expect(extend).rejects.toThrow('Source connection not found');
   expect((await op(prior.id)).status).toBe('failed');
+ });
+ it.each([false,true])('accepts history-extension with null graph roots atomically, including its required Job (fail=%s)',async fail=>{
+  if(!db.available)return;
+  const channel=randomUUID(),binding=randomUUID();
+  await seedArxivSourceChain(db.pool,{space,owner,connection:randomUUID(),connector:randomUUID(),channel,now:new Date().toISOString()});
+  await db.pool.query("INSERT INTO project_source_bindings(id,space_id,project_id,source_channel_id,binding_key,status,priority,delivery_scope,collection_notifications_enabled,filters_json,routing_policy_json,extraction_policy_json,created_by_user_id,created_at,updated_at) VALUES($1,$2,$3,$4,'history','active',0,'project_members',true,'{}','{}','{}',$5,now(),now())",[binding,space,project,channel,owner]);
+  await db.pool.query('UPDATE project_research_workflows SET state_json=$2::jsonb WHERE object_id=$1',[workflow,JSON.stringify({research_question:'Why fail?',thread_scope:[{thread_id:thread,version:1,kind:'question',statement:'Why fail?'}],channel_ids:[channel],project_source_binding_ids:[binding],source_post_processing_rule_ids:[randomUUID()],report_depth:'quick',monitoring:{active:true},initial_intake:{from:'2025-06-01T00:00:00.000Z'}})]);
+  // Real offer payload with no project column: canonical payload fallback and
+  // owner preflight must agree with the actual applier's Project gate.
+  const proposal=await insertProposalRow(db.pool,{spaceId:space,proposalType:'research_history_extend',title:'Earlier range',payload:{proposal_type:'research_history_extend',project_id:project,workflow_id:workflow,from:'2025-01-01',to:'2025-02-01',max_items:20},rationale:'separate bounded decision',createdByUserId:owner,visibility:'private',riskLevel:'low'});
+  const apply=PgProposalApplyService.fromConfig(loadConfig({SERVER_DATABASE_URL:db.connectionUri}));
+  const before=(await db.pool.query('SELECT state_json FROM project_research_workflows WHERE object_id=$1',[workflow])).rows[0].state_json;
+  if(fail){await db.pool.query("CREATE FUNCTION refuse_history_job() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'history job refused'; END $$");await db.pool.query('CREATE TRIGGER refuse_history_job BEFORE INSERT ON extraction_jobs FOR EACH ROW EXECUTE FUNCTION refuse_history_job()');}
+  try{
+   const action=apply.accept(proposal.id,identity());
+   if(fail){
+    await expect(action).rejects.toThrow('history job refused');
+    expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[proposal.id])).rows[0].status).toBe('pending');
+    expect((await db.pool.query('SELECT id FROM project_operations WHERE project_id=$1',[project])).rows).toHaveLength(0);
+    expect((await db.pool.query('SELECT id FROM source_backfill_plans WHERE space_id=$1',[space])).rows).toHaveLength(0);
+    expect((await db.pool.query('SELECT state_json FROM project_research_workflows WHERE object_id=$1',[workflow])).rows[0].state_json).toEqual(before);
+    const audit=(await db.pool.query("SELECT metadata_json FROM policy_decision_records WHERE proposal_id=$1 AND action='proposal.apply'",[proposal.id])).rows;
+    expect(audit).toHaveLength(1);expect(audit[0].metadata_json.operation_outcome).toBe('failed');
+   }else{
+    expect((await action)?.proposal.status).toBe('accepted');
+    expect((await db.pool.query('SELECT id FROM source_backfill_plans WHERE space_id=$1',[space])).rows).toHaveLength(1);
+    expect((await db.pool.query('SELECT id FROM extraction_jobs WHERE space_id=$1',[space])).rows.length).toBeGreaterThan(0);
+   }
+  }finally{if(fail){await db.pool.query('DROP TRIGGER refuse_history_job ON extraction_jobs');await db.pool.query('DROP FUNCTION refuse_history_job()');}}
  });
  it('adopts a result whose evidence exceeds the references one problem fact can cite',async()=>{
   const ids:string[]=[];

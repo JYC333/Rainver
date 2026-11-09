@@ -173,6 +173,7 @@ export const RunTurnSchema = z.object({
    * nobody has to act on it.
    */
   blocked_on: z.enum(["authorization", "run_decision", "workspace", "quota"]).nullable(),
+  queue_wait_reason: z.enum(["waiting_for_parent", "waiting_for_delegation_admission"]).nullable().optional(),
   /**
    * The highest event index this projection consumed. A stream resumes from
    * here rather than replaying the turn.
@@ -235,6 +236,7 @@ export const TurnStreamFrameSchema = z.discriminatedUnion("type", [
      * the person to the wrong place.
      */
     blocked_on: RunTurnSchema.shape.blocked_on,
+    queue_wait_reason: RunTurnSchema.shape.queue_wait_reason,
   }).strict(),
 ]);
 export type TurnStreamFrame = z.infer<typeof TurnStreamFrameSchema>;

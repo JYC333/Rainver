@@ -48,8 +48,9 @@ role ceiling value set (owner critical, admin high, reviewer medium), consumed b
 the server; the shared table grants no authority on its own.
 
 Policy does not own proposal mutations. Authorization-request approval uses
-the same policy-audited ActionApprovalGrant creation authority as the public
-grant route.
+the same transaction-bound ActionApprovalGrant writer as the public operations.
+Its still-unmigrated approval command retains its own grant policy admission and
+audit in the approval transaction, without recursively dispatching an operation.
 
 Owner-started Reading goal setup can request a pending Source activation review
 without a second Run grant merely to submit the proposal. The owning Sources
@@ -115,8 +116,8 @@ to any business code. `computeDecision` (`gateway.ts`) always denies reserved ac
 | `runtime.execute` | run | medium | allow | `server/src/modules/runs/orchestrationService.ts` |
 | `run.spawn_child` | run | medium | require_approval (decided by `ruleRunSpawnChild`) | `server/src/modules/agentGroups/service.ts` via `enforce()` |
 | `authorization.request.create` | authorization_request | medium | allow (audit_required) | `server/src/modules/policy/authorizationRequestService.ts` |
-| `policy.action_grant.create` | action_approval_grant | high | allow (audit_required) | `server/src/modules/policy/actionApprovalGrantService.ts` |
-| `policy.action_grant.revoke` | action_approval_grant | high | allow (audit_required) | `server/src/modules/policy/actionApprovalGrantService.ts` |
+| `policy.action_grant.create` | action_approval_grant | high | allow (audit_required) | Operation core via `policy/actionGrantOperations.ts`; internal request approval via `authorizationRequestService.ts` |
+| `policy.action_grant.revoke` | action_approval_grant | high | allow (audit_required) | Operation core via `policy/actionGrantOperations.ts` |
 | `runtime_context_policy.change` | runtime_context_policy | high | deny | `server/src/modules/policy/runtimeContextPolicyRepository.ts` |
 | `work_context_setup.change` | work_context_setup | medium | deny | `server/src/modules/runtimeContext/workContextService.ts` |
 | `runtime.use_credential` | credential | high | require_approval (never reached: the rule decides every origin) | `policy/credentialSpend.ts` (`authorizeCredentialSpend`) |
@@ -483,3 +484,45 @@ The retired capability layer has no policy actions for conversion, capability
 mutation, normalized Skill rendering or native Skill execution. Review and
 scoped immutable-package binding still use the proposal gate; Runtime Context
 revalidates original-package selection and bytes before accepted Delivery.
+
+## Action approval grant commands
+
+`policy.action_grant.create` and `policy.action_grant.revoke` are user-only
+core-owned commands. Public POST adapters at `/api/v1/policy/action-grants` and
+`/api/v1/policy/action-grants/:grantId/revoke` call the same OperationExecutor
+as `/api/v1/actions/:opId`. All require an explicit `Idempotency-Key` and return
+`{status: "succeeded", data: <grant DTO>}` (201 create, 200 revoke), or canonical
+operation errors. Existing URLs are formal adapters; there is no old public
+writer, transport dedupe or fallback. No browser grant-write caller exists.
+
+Strict shared schemas reject unknown fields/coercion; optional create scope,
+expiry and usage limit fields default to null. Malformed/nonobject JSON returns
+`operation_invalid_input` (422). The revoke URL owns its grant id; the body is
+empty. Generic revoke takes `{grant_id}`. Same-key replay across the entries
+returns the original DTO after current authority checks; changed input returns
+`idempotency_key_reused` (422), concurrent reservation returns retryable
+`idempotency_in_progress` (409). Missing keys return 422. A new-key revoke of a
+nonactive grant returns hidden 404; the original key can replay its success.
+
+Current owner membership is locked before Agent/Project/Run scope or grant
+locks. Cross-Space targets and lost owner authority return hidden 404. These
+commands are never grantable or Agent-callable, even for owner-instructed Runs.
+The registry's public metadata is not Agent authority. One final policy record
+per admitted invocation (including replay) replaces duplicate route/service
+enforcement. The core owns domain mutation, mandatory decision audit and receipt
+in one transaction; failure withholds output and rolls back business effects.
+
+`ActionApprovalGrantService.createInTransaction/revokeInTransaction` are the
+canonical domain writers; callers own admission and the surrounding transaction.
+Authorization-request approval remains a separate legacy command and uses this
+same create writer with its own audited gate in its transaction. The complete
+`decide` transaction owner is wrapped by `withPolicyAuditRecovery`: after a
+refused approval or failed grant/Job write has rolled back and released its
+connection, the existing helper restores the original decision record id with
+`operation_outcome: failed`. Successful commits keep their single audit record;
+unavailable audit storage never permits a grant or partial approval. Grant lookup,
+consumption and proposal approval provenance keep their owning transactions.
+The active-scope unique index and stale exact-scope expiry remain domain rules,
+independent of core request deduplication. This family has no external effects,
+Jobs or production approval mapping. Evidence and limits live in
+[Operation core acceptance](../architecture/OPERATION_CORE_ACCEPTANCE.md).

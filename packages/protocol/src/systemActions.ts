@@ -1,12 +1,24 @@
-import {ActionCatalogInputSchema,ActionCatalogOutputSchema} from "./operations.js";
+import {SourceProcessingCreateSchema,SourceProcessingUpdateSchema,SourceProcessingDispatchSchema,SourceExtractionDispatchSchema,SourceProcessingRuleSchema,SourceDispatchReceiptSchema} from './sourceProcessingOperations.js';
+import {SourceChannelCreateInputSchema,SourceChannelCreateOutputSchema} from './sourceChannelCreateOperation.js';
+import {SourceMonitorTargetSchema,SourceMonitorUpdateSchema,SourceMonitorOutputSchema,SourceMonitorScanOutputSchema} from './sourceMonitorOperations.js';
+import {SourceRecipeCreateInputSchema,SourceRecipeCreateOutputSchema} from './sourceRecipeOperations.js';
+import {SourceSubscriptionInputSchema,SourceRecommendationInputSchema,SourceSubscriptionOutputSchema} from './sourceSubscriptionOperations.js';
+import {ProjectSourceBindInputSchema,ProjectSourceTargetSchema,ProjectSourceUpdateInputSchema,ProjectSourceBackfillOutputSchema,ProjectSourceBindingOutputSchema,ProjectSourceUnbindOutputSchema} from './projectSourceOperations.js';
+import {InquiryThreadCreateInputSchema,InquiryThreadCreateReceiptSchema,NoteQuestionInputSchema,NoteQuestionReceiptSchema} from './inquiryCreationOperations.js';
+import {TaskReportInputSchema,TaskCompleteInputSchema,TaskReviewInputSchema,TaskHandoffInputSchema,TaskStatusInputSchema,TaskDeleteInputSchema,TaskStatusOutputSchema,TaskReportOutputSchema,TaskCompleteOutputSchema,TaskHandoffOutputSchema,TaskDeleteOutputSchema} from './taskLifecycle.js';
+import {BoardConfigureOperationInputSchema,BoardConfigureOperationOutputSchema,TaskMoveOperationInputSchema,TaskMoveOperationOutputSchema} from './operations.js';
+import {ProjectOperationCreateInputSchema, ProjectOperationCancelInputSchema, ProjectOperationCommandOutputSchema} from './operations.js';
+import {CollaborationParticipantsInputSchema,CollaborationParticipantsOutputSchema,ActionCatalogInputSchema,ActionCatalogOutputSchema,ActionGrantCreateInputSchema,ActionGrantRevokeInputSchema,ActionGrantOutputSchema} from "./operations.js";
 import { PROJECT_READING_RECORD_LIMITS } from './reader.js';
-import { BoardConfigurationInputSchema, BoardColumnSelectionSchema } from "./projectWork.js";
+import { BoardColumnSelectionSchema } from "./projectWork.js";
 import { ResearchResultAdoptionSchema } from "./researchCalls.js";
 import { ProblemWorkRequestSchema, ProblemCloseRoundRequestSchema, validateProblemWorkSelection } from "./problemEngine.js";
 import {SourceMaterialSubmissionSchema,SourceMaterialInvestigationSchema} from './sourceMaterials.js';
 import {SourceGoalVersionWriteSchema,SourceGoalRepairSchema} from './sourceGoals.js';
 import { ProposeProjectMonitoringSchema } from "./projectInformationMonitoring.js";
 import { z } from "zod";
+import {TaskSpacePlacementInputSchema,TaskSpacePlacementOutputSchema} from './taskSpacePlacement.js';
+import {SourceBackfillPreviewInputSchema,SourceBackfillCreateInputSchema,SourceBackfillControlInputSchema,SourceBackfillPreviewOutputSchema,SourceBackfillReceiptSchema} from './sourceBackfillOperations.js';
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { PolicyActionId } from "./policy.js";
 import {
@@ -266,15 +278,7 @@ const proposalInputs:Record<string,z.ZodType>={
   "task.list": z.object({
     status: z.enum(["inbox", "ready", "in_progress", "waiting_for_review", "blocked", "done", "cancelled"]).optional(),
   }).strict(),
-  "task.report": z.object({
-    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
-    summary: z.string().trim().min(1).max(8_000),
-    outcome: z.enum(["progress", "done", "stuck", "handoff"]).optional(),
-    refs: z.array(z.object({
-      type: z.string().trim().min(1).max(32),
-      id: z.string().min(1),
-    })).max(20).optional(),
-  }).strict(),
+  "task.report": TaskReportInputSchema,
   // Settlement matches `artifact_type` against the Task's declared
   // `required_outputs_json`, so this is the field that decides whether a
   // finished Run closes its Task or parks it for review.
@@ -286,38 +290,15 @@ const proposalInputs:Record<string,z.ZodType>={
       .describe("output is a deliverable the Task asked for; evidence supports a conclusion; draft is working material kept for the record."),
     note: z.string().trim().max(2000).optional(),
   }).strict(),
-  "task.handoff": z.object({
-    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
-    /** Null releases the Task back to its assignment chain. */
-    to: z.object({
-      kind: z.enum(["user", "agent"]),
-      id: z.string().min(1),
-    }).nullable(),
-    note: z.string().trim().max(2_000).nullable().optional(),
-  }).strict(),
+  "task.handoff": TaskHandoffInputSchema,
   "board.read": z.object({}).strict(),
-  "board.configure": BoardConfigurationInputSchema.extend({reason:z.string().trim().min(1).max(2000)}),
-  "task.move_to_column": BoardColumnSelectionSchema.extend({task_id:z.string().min(1),reason:z.string().trim().min(1).max(2000)}),
-  "task.delete": z.object({
-    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Read the list first; never invent an id."),
-    reason: z.string().trim().min(1).max(2000),
-  }).strict(),
-  "task.set_status": z.object({
-    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
-    status: z.enum(["inbox", "ready", "in_progress", "waiting_for_review", "blocked", "done", "cancelled"]),
-    reason: z.string().trim().min(1).max(500),
-  }).strict(),
-  "task.complete": z.object({
-    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
-    summary: z.string().trim().min(1).max(2_000)
-      .describe("What was done, in the words the person will read on the closed Task."),
-  }).strict(),
-  "task.request_review": z.object({
-    task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
-    reason: z.string().trim().min(1).max(2_000),
-    /** What the person is being asked to choose between, when there is a choice. */
-    options: z.array(z.string().trim().min(1).max(500)).max(6).optional(),
-  }).strict(),
+  "board.configure": BoardConfigureOperationInputSchema,
+  "task.move_to_column": TaskMoveOperationInputSchema,
+  "task.place_in_space_board": TaskSpacePlacementInputSchema,
+  "task.delete": TaskDeleteInputSchema,
+  "task.set_status": TaskStatusInputSchema,
+  "task.complete": TaskCompleteInputSchema,
+  "task.request_review": TaskReviewInputSchema,
   "task.plan.propose": z.object({
     task_id: z.string().min(1).describe("The Task id exactly as returned by task.list. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
     plan_id: z.string().min(1).nullable().optional(),
@@ -502,6 +483,7 @@ const visibility = (...values: SystemActionVisibility[]) => new Set(values);
 
 export const SYSTEM_ACTION_REGISTRY = [
   { ...httpAction("system.actions.list", "List available operation entries", "systemActions", "OperationCatalog.list", "system.actions.list", "none"), input_schema:ActionCatalogInputSchema, output_schema:ActionCatalogOutputSchema, execution:{kind:"query",tx:"core_owned"} },
+  { ...httpAction("room.collaboration.update_participants", "Change task collaboration participants", "agentGroups", "collaborationParticipantsOperation", "room.collaboration.manage", "durable"), input_schema: CollaborationParticipantsInputSchema, output_schema: CollaborationParticipantsOutputSchema, execution: {kind:"command",tx:"core_owned"} },
   agentAction("authorization.request", "Request authorization for a denied action", "policy", "AuthorizationRequestService.createFromDeniedDecision", "authorization.request.create", "durable", { resource_type: "authorization_request", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("input_resource.read", "Read lines from an attached conversation resource", "conversationInput", "ConversationInputResourceService.read", "input_resource.read", "none", { resource_type: "conversation_input_resource", resource_id_input_field: "resource_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("input_resource.search", "Search an attached conversation resource", "conversationInput", "ConversationInputResourceService.search", "input_resource.search", "none", { resource_type: "conversation_input_resource", resource_id_input_field: "resource_id", resource_id_fallback: "run", check_action_approval_grant: false }),
@@ -524,13 +506,25 @@ export const SYSTEM_ACTION_REGISTRY = [
   action("agent.wait_for_results", "Wait for agent results", "agent_groups", "AgentGroupRunService.waitForResults", "runtime.execute", "none", { policyResource: { resource_type: "run", resource_id_fallback: "run", check_action_approval_grant: false }, agentToolSurface: "delegation", policyAdapter: "declared_resource", inputSchema: AgentWaitForResultsInputSchema }),
   action("agent.list_runs", "List Room runs", "agent_groups", "RoomRunControl.dispatch", "runtime.execute", "none", { policyResource: { resource_type: "run", resource_id_fallback: "run", check_action_approval_grant: false }, agentToolSurface: "delegation", policyAdapter: "declared_resource", inputSchema: AgentListRunsInputSchema }),
   action("agent.cancel_run", "Cancel a Room run", "agent_groups", "RoomRunControl.dispatch", "runtime.execute", "durable", { policyResource: { resource_type: "run", resource_id_fallback: "run", check_action_approval_grant: false }, agentToolSurface: "delegation", policyAdapter: "declared_resource", inputSchema: AgentCancelRunInputSchema }),
+  {...httpAction("source.processing.rule.create","Create Source processing rule","sources","SourceProcessingCommands","source.connection.manage","durable"),input_schema:SourceProcessingCreateSchema,output_schema:SourceProcessingRuleSchema,execution:{kind:"command",tx:"core_owned"}},
+  {...httpAction("source.processing.rule.update","Update Source processing rule","sources","SourceProcessingCommands","source.connection.manage","durable"),input_schema:SourceProcessingUpdateSchema,output_schema:SourceProcessingRuleSchema,execution:{kind:"command",tx:"core_owned"}},
+  {...httpAction("source.processing.rule.dispatch","Queue Source processing","sources","SourceProcessingCommands","source.connection.manage","durable"),input_schema:SourceProcessingDispatchSchema,output_schema:SourceDispatchReceiptSchema,execution:{kind:"command",tx:"core_owned"}},
+  {...httpAction("source.extraction.dispatch","Queue extraction Job","sources","SourceProcessingCommands","source.item_create","durable"),input_schema:SourceExtractionDispatchSchema,output_schema:SourceDispatchReceiptSchema,execution:{kind:"command",tx:"core_owned"}},
+  {...httpAction("source.channel.create", "Create a Source Monitor", "sources", "SourceChannelService.create", "source.connection.manage", "durable"),input_schema:SourceChannelCreateInputSchema,output_schema:SourceChannelCreateOutputSchema,execution:{kind:"command",tx:"core_owned"}},
+  {...httpAction("source.channel.update", "Update a Source Monitor", "sources", "SourceChannelService.update", "source.connection.manage", "durable"),input_schema:SourceMonitorUpdateSchema,output_schema:SourceMonitorOutputSchema,execution:{kind:'command',tx:'core_owned'}},
+  {...httpAction("source.channel.scan", "Queue a Source Monitor scan", "sources", "SourceChannelService.scan", "source.connection.manage", "durable"),input_schema:SourceMonitorTargetSchema,output_schema:SourceMonitorScanOutputSchema,execution:{kind:'command',tx:'core_owned'}},
+  {...httpAction("source.channel.set_subscription", "Change my Source subscription", "sources", "SourceChannelService.setSubscription", "source.subscription.manage", "durable"),input_schema:SourceSubscriptionInputSchema,output_schema:SourceSubscriptionOutputSchema,execution:{kind:'command',tx:'core_owned'}},
+  {...httpAction("source.recommendation.decide", "Decide my Source recommendation", "sources", "SourceChannelService.decideRecommendation", "source.subscription.manage", "durable"),input_schema:SourceRecommendationInputSchema,output_schema:SourceSubscriptionOutputSchema,execution:{kind:'command',tx:'core_owned'}},
   httpAction("source.recipe.plan", "Plan a Source recipe", "sources", "SourceRecipeService.planSource", "source.recipe.create", "none"),
-  httpAction("source.recipe.create", "Create a Source recipe draft", "sources", "SourceRecipeService.createSource", "source.recipe.create", "draft"),
+  {...httpAction("source.recipe.create", "Create a Source recipe draft", "sources", "SourceRecipeService.createSource", "source.recipe.create", "draft"),input_schema:SourceRecipeCreateInputSchema,output_schema:SourceRecipeCreateOutputSchema,execution:{kind:"command",tx:"core_owned"}},
   httpAction("source.recipe.dry_run", "Dry-run a Source recipe", "sources", "SourceRecipeService.dryRunRecipeVersion", "source.recipe.dry_run", "none"),
   httpAction("source.recipe.activate", "Activate a Source recipe", "sources", "SourceRecipeService.activateRecipe", "source.recipe.activate", "durable"),
-  httpAction("project.source.bind", "Bind a Source to a Project", "projects", "ProjectSourceBindingService.createBinding", "project.source.bind", "durable"),
-  httpAction("policy.action_grant.create", "Create an action approval grant", "policy", "ActionApprovalGrantService.create", "policy.action_grant.create", "durable"),
-  httpAction("policy.action_grant.revoke", "Revoke an action approval grant", "policy", "ActionApprovalGrantService.revoke", "policy.action_grant.revoke", "durable"),
+  {...httpAction("project.source.bind", "Bind a Source to a Project", "projects", "ProjectSourceBindingService.createBinding", "project.source.bind", "durable"),input_schema:ProjectSourceBindInputSchema,output_schema:ProjectSourceBindingOutputSchema,execution:{kind:'command',tx:'core_owned'}},
+  {...httpAction("project.source.update", "Update Project Source consumption", "projects", "ProjectSourceBindingService.updateBinding", "project.source.bind", "durable"),input_schema:ProjectSourceUpdateInputSchema,output_schema:ProjectSourceBindingOutputSchema,execution:{kind:'command',tx:'core_owned'}},
+  {...httpAction("project.source.unbind", "Unbind a Source from a Project", "projects", "ProjectSourceBindingService.deleteBinding", "project.source.bind", "durable"),input_schema:ProjectSourceTargetSchema,output_schema:ProjectSourceUnbindOutputSchema,execution:{kind:'command',tx:'core_owned'}},
+  {...httpAction("project.source.backfill", "Route retained Source material to a Project", "projects", "ProjectSourceBindingService.backfillBinding", "project.source.bind", "durable"),input_schema:ProjectSourceTargetSchema,output_schema:ProjectSourceBackfillOutputSchema,execution:{kind:'command',tx:'core_owned'}},
+  { ...httpAction("policy.action_grant.create", "Create an action approval grant", "policy", "ActionApprovalGrantService.createInTransaction", "policy.action_grant.create", "durable"), input_schema:ActionGrantCreateInputSchema, output_schema:ActionGrantOutputSchema, execution:{kind:"command",tx:"core_owned"} },
+  { ...httpAction("policy.action_grant.revoke", "Revoke an action approval grant", "policy", "ActionApprovalGrantService.revokeInTransaction", "policy.action_grant.revoke", "durable"), input_schema:ActionGrantRevokeInputSchema, output_schema:ActionGrantOutputSchema, execution:{kind:"command",tx:"core_owned"} },
   agentAction("source.goal.read", "Read collection goal", "sources", "SourceGoalService.read", "source.goal.manage", "none", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("source.goal.sources", "List authorized collection sources", "sources", "SourceGoalActions.sources", "source.goal.manage", "none", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("source.goal.inspect", "Inspect untrusted source documentation", "sources", "SourceGoalActions.inspect", "source.goal.manage", "durable", {resource_type:"source_goal",resource_id_input_field:"goal_id",resource_id_fallback:"run",check_action_approval_grant:false}),
@@ -545,10 +539,10 @@ export const SYSTEM_ACTION_REGISTRY = [
   gatedProposalAction("project.source.propose_bind", "Propose binding a Source to a Project", "projects", "ProjectSourceBindingService.proposeBind", "project.source.bind", "project_source_bind", "money"),
   gatedProposalAction("project.propose_definition", "Propose the Project goal or core problem", "projects", "ProjectDefinitionProposalService.proposeDefinition", "project.brief.propose", "project_brief_publish", "direction"),
   httpAction("project.operation.read", "Read Project operation progress", "projects", "ProjectOperationService.get", "project.operation.manage", "none"),
-  httpAction("project.operation.create", "Create a Project operation", "projects", "ProjectOperationService.create", "project.operation.manage", "durable"),
-  httpAction("project.operation.cancel", "Cancel a Project operation", "projects", "ProjectOperationService.cancel", "project.operation.manage", "durable"),
-  httpAction("source.backfill.preview", "Preview Source history import", "sources", "SourceBackfillPlanningService.preview", "source.backfill.plan", "none"),
-  httpAction("source.backfill.create_plan", "Create Source history import plan", "sources", "SourceBackfillPlanningService.create", "source.backfill.plan", "draft"),
+  { ...httpAction("project.operation.create", "Create a Project operation", "projects", "ProjectOperationService.create", "project.operation.manage", "durable"), input_schema:ProjectOperationCreateInputSchema, output_schema:ProjectOperationCommandOutputSchema, execution:{kind:"command",tx:"core_owned"} },
+  { ...httpAction("project.operation.cancel", "Cancel a Project operation", "projects", "ProjectOperationService.cancel", "project.operation.manage", "durable"), input_schema:ProjectOperationCancelInputSchema, output_schema:ProjectOperationCommandOutputSchema, execution:{kind:"command",tx:"core_owned"} },
+  {...httpAction("source.backfill.preview", "Preview Source history import", "sources", "SourceBackfillPlanningService.preview", "source.backfill.plan", "none"),input_schema:SourceBackfillPreviewInputSchema,output_schema:SourceBackfillPreviewOutputSchema,execution:{kind:'query',tx:'core_owned'}},
+  {...httpAction("source.backfill.create_plan", "Create Source history import plan", "sources", "SourceBackfillPlanningService.create", "source.backfill.plan", "draft"),input_schema:SourceBackfillCreateInputSchema,output_schema:SourceBackfillReceiptSchema,execution:{kind:'command',tx:'core_owned'}},
   gatedProposalAction("source.backfill.propose_start", "Propose Source history import", "sources", "SourceBackfillPlanningService.proposeStart", "source.backfill.plan", "source_backfill_start", "money", { resource_type: "source_backfill_plan", resource_id_input_field: "source_backfill_plan_id", resource_id_fallback: "run" }),
   // The Project write surface. `task.create` and `task.set_status` are
   // gated by trigger origin in `decisionCore.ts`: a person asking for something
@@ -567,20 +561,21 @@ export const SYSTEM_ACTION_REGISTRY = [
   agentAction("inquiry.reference_task_result","Reference a linked Task result in problem work","inquiry","InquiryTaskAssociationService.referenceResult","inquiry.work.record","durable",{resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),
   agentAction("task.create", "Create a Project Task", "tasks", "PgTaskRepository.createTask", "task.create", "durable", { resource_type: "project", resource_id_input_field: "project_id", resource_id_fallback: "project_or_run", check_action_approval_grant: false }),
   agentAction("task.create_batch", "Create an explicitly requested batch of Project Tasks", "tasks", "PgTaskRepository.createTask", "task.create", "durable", { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }),
-  agentAction("task.report", "Report on a Task", "projectWork", "ProjectWorkTaskActions.report", "task.report", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
-  agentAction("task.handoff", "Hand off responsibility for a Task", "projectWork", "ProjectWorkTaskActions.handoff", "task.handoff", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  { ...agentAction("task.report", "Report on a Task", "projectWork", "ProjectWorkTaskActions.report", "task.report", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),input_schema:TaskReportInputSchema,output_schema:TaskReportOutputSchema,execution:{kind:"command",tx:"core_owned"} },
+  { ...agentAction("task.handoff", "Hand off responsibility for a Task", "projectWork", "ProjectWorkTaskActions.handoff", "task.handoff", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),input_schema:TaskHandoffInputSchema,output_schema:TaskHandoffOutputSchema,execution:{kind:"command",tx:"core_owned"} },
   agentAction("board.read", "Read this Project's columns, status meanings and revision", "projectWork", "getProjectBoard", "board.read", "none", {resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),
-  agentAction("board.configure", "Create, rename, delete, reorder, remap or set WIP limits for Board columns; read board.read first", "projectWork", "configureProjectBoard", "board.configure", "durable", {resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),
-  agentAction("task.move_to_column", "Move a Task to an exact column from board.read", "projectWork", "moveTaskToColumn", "task.column.move", "durable", {resource_type:"task",resource_id_input_field:"task_id",resource_id_fallback:"run",check_action_approval_grant:false}),
-  agentAction("task.delete", "Delete a Task", "projectWork", "deleteTask", "task.delete", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
-  agentAction("task.set_status", "Move a Task to its board status", "projectWork", "ProjectWorkTaskActions.setStatus", "task.status.set", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  { ...agentAction("board.configure", "Create, rename, delete, reorder, remap or set WIP limits for Board columns; read board.read first", "projectWork", "configureProjectBoard", "board.configure", "durable", {resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}), input_schema:BoardConfigureOperationInputSchema,output_schema:BoardConfigureOperationOutputSchema,visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"command",tx:"core_owned"} },
+  { ...agentAction("task.move_to_column", "Move a Task to an exact column from board.read", "projectWork", "moveTaskToColumn", "task.column.move", "durable", {resource_type:"task",resource_id_input_field:"task_id",resource_id_fallback:"run",check_action_approval_grant:false}), input_schema:TaskMoveOperationInputSchema,output_schema:TaskMoveOperationOutputSchema,visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"command",tx:"core_owned"} },
+  {...httpAction('task.place_in_space_board','Place a standalone Task on a Space Board','projectWork','placeTaskInSpaceBoard','task.column.move','durable'),input_schema:TaskSpacePlacementInputSchema,output_schema:TaskSpacePlacementOutputSchema,execution:{kind:'command',tx:'core_owned'}},
+  { ...agentAction("task.delete", "Delete a Task", "projectWork", "deleteTask", "task.delete", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),input_schema:TaskDeleteInputSchema,output_schema:TaskDeleteOutputSchema, visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"command",tx:"core_owned"} },
+  { ...agentAction("task.set_status", "Move a Task to its board status", "projectWork", "ProjectWorkTaskActions.setStatus", "task.status.set", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),input_schema:TaskStatusInputSchema,output_schema:TaskStatusOutputSchema, visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"command",tx:"core_owned"} },
   // Closing is a commitment, so it is origin-gated like `task.create` and
   // `task.set_status` rather than ungated like the append-only three: a
   // person asking in the turn authorizes it, an autonomous wake-up must be
   // seen. It cannot skip the completion contract the manual close enforces,
   // and unlike a person it cannot override one.
-  agentAction("task.complete", "Say a Task's work is finished", "projectWork", "ProjectWorkTaskActions.complete", "task.complete", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
-  agentAction("task.request_review", "Ask a person to decide", "projectWork", "ProjectWorkTaskActions.requestReview", "task.request_review", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  { ...agentAction("task.complete", "Say a Task's work is finished", "projectWork", "ProjectWorkTaskActions.complete", "task.complete", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),input_schema:TaskCompleteInputSchema,output_schema:TaskCompleteOutputSchema,execution:{kind:"command",tx:"core_owned"} },
+  { ...agentAction("task.request_review", "Ask a person to decide", "projectWork", "ProjectWorkTaskActions.requestReview", "task.request_review", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),input_schema:TaskReviewInputSchema,output_schema:TaskStatusOutputSchema,execution:{kind:"command",tx:"core_owned"} },
   // Append-only like `task.report`, and ungated at any origin for the same
   // reason: it says what a file is, and a Task closes on the file existing
   // with the declared type — never on the declaration alone.
@@ -592,13 +587,14 @@ export const SYSTEM_ACTION_REGISTRY = [
   agentAction("proposal.decide", "Decide a proposal this conversation produced, on the person's instruction", "proposals", "ProposalDecisionExecutor.decide", "proposal.decide", "durable", { resource_type: "proposal", resource_id_input_field: "proposal_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   conditionallyGatedAgentAction("task.plan.propose", "Propose an Agent-generated Task plan", "plans", "PgPlanRepository.createPlanFromAgent", "task.plan.propose", "plan_review", "direction", { resource_type: "plan", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: true }),
   internalAction("source.backfill.start", "Start approved Source history import", "sources", "SourceBackfillExecutionService.start", "source.backfill.start"),
-  httpAction("source.backfill.pause", "Pause Source history import", "sources", "SourceBackfillPlanningService.setPaused", "source.backfill.manage", "durable"),
-  httpAction("source.backfill.resume", "Resume Source history import", "sources", "SourceBackfillPlanningService.setPaused", "source.backfill.manage", "durable"),
+  {...httpAction("source.backfill.pause", "Pause Source history import", "sources", "SourceBackfillPlanningService.setPaused", "source.backfill.manage", "durable"),input_schema:SourceBackfillControlInputSchema,output_schema:SourceBackfillReceiptSchema,execution:{kind:'command',tx:'core_owned'}},
+  {...httpAction("source.backfill.resume", "Resume Source history import", "sources", "SourceBackfillPlanningService.setPaused", "source.backfill.manage", "durable"),input_schema:SourceBackfillControlInputSchema,output_schema:SourceBackfillReceiptSchema,execution:{kind:'command',tx:'core_owned'}},
   // Object-bound user actions are presentation metadata as well as the typed
   // invocation inventory. None is `agent_tool` visible, so adding an advice
   // affordance does not widen an agent's callable surface.
   objectAction("note.promote_to_knowledge", "Promote a passage to a Knowledge Item", "knowledge", "PgKnowledgeRepository.promoteNoteToKnowledge", "knowledge.create", "proposal", ["note"]),
-  objectAction("note.raise_as_question", "Raise a passage as a Question", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable", ["note"]),
+  {...httpAction("inquiry.thread.create", "Create an Inquiry Thread", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable"),input_schema:InquiryThreadCreateInputSchema,output_schema:InquiryThreadCreateReceiptSchema,execution:{kind:'command',tx:'core_owned'}},
+  {...objectAction("note.raise_as_question", "Raise a passage as a Question", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable", ["note"]),input_schema:NoteQuestionInputSchema,output_schema:NoteQuestionReceiptSchema,execution:{kind:'command',tx:'core_owned'}},
   objectAction("note.link_to_evidence", "Link a passage to evidence", "knowledge", "PgKnowledgeRepository.createNoteLink", "note.link.create", "durable", ["note"]),
   objectAction("source.raise_as_question", "Explore as a Question", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable", ["source"]),
   // The deterministic way for an Agent to learn a Thread's id: a read that
@@ -827,7 +823,8 @@ export type SourceSystemActionId = Extract<SystemActionId, `source.${string}`>;
 
 /**
  * The model-facing JSON Schema for an action's `input_schema`, derived from
- * the same Zod that validates it. One source: the Run-scoped tool surface's
+ * canonical Zod, with bounded Agent-only Board field projection below.
+ * One source: the Run-scoped tool surface's
  * `list`/`describe` and the managed loop's tool assembly both read this rather
  * than a hand-maintained literal that can drift from what actually validates.
  *
@@ -835,9 +832,20 @@ export type SourceSystemActionId = Extract<SystemActionId, `source.${string}`>;
  * tool-call payload. Do not send it.
  */
 export function systemActionInputJsonSchema(
-  definition: Pick<SystemActionDefinition, "input_schema">,
+  definition: Pick<SystemActionDefinition, "input_schema"> & {id?:string},
 ): Record<string, unknown> {
-  const schema = zodToJsonSchema(definition.input_schema, {
+  // Bounded Agent-tool projection; canonical operation schemas retain human fields.
+  const reason=BoardConfigureOperationInputSchema.shape.reason.removeDefault().unwrap();
+  const input=definition.id==='board.configure'
+    ? BoardConfigureOperationInputSchema.extend({reason})
+    : definition.id==='task.move_to_column'
+      ? TaskMoveOperationInputSchema.omit({override_completion:true}).extend({reason})
+      : definition.id==='task.set_status'
+        ? TaskStatusInputSchema.omit({override_completion:true,blocked_reason:true}).extend({reason:TaskStatusInputSchema.shape.reason.removeDefault().unwrap()})
+        : definition.id==='task.delete'
+          ? TaskDeleteInputSchema.extend({reason:TaskDeleteInputSchema.shape.reason.removeDefault().unwrap()})
+          : definition.input_schema;
+  const schema = zodToJsonSchema(input, {
     target: "jsonSchema7",
     $refStrategy: "none",
   }) as Record<string, unknown>;

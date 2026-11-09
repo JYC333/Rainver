@@ -10,7 +10,8 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({ activeSpaceId: 'space-1', activeSpaceName: 'Space One', userId: 'user-owner' }),
 }))
-vi.mock('../../../core/spaceNav', () => ({
+vi.mock('../../../core/spaceNav', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../core/spaceNav')>(),
   SpaceLink: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a>,
 }))
 vi.mock('../../../components/ContentAccessControl', () => ({ ContentAccessControl: () => null }))
@@ -37,7 +38,7 @@ function proposal(overrides: Partial<Proposal>): Proposal {
 function renderPage() {
   return render(
     <MemoryRouter initialEntries={['/proposals/proposal-1']}>
-      <Routes><Route path="/proposals/:proposalId" element={<ProposalDetailPage />} /></Routes>
+      <Routes><Route path="/proposals/:proposalId" element={<ProposalDetailPage />} /><Route path="/spaces/:spaceId/proposals/:proposalId" element={<ProposalDetailPage />} /></Routes>
     </MemoryRouter>,
   )
 }
@@ -52,19 +53,16 @@ describe('ProposalDetailPage', () => {
     expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument()
   })
 
-  it('holds a maintenance update until its revision is written, starting from the current text', async () => {
+  it.each([false, true])('opens the saved maintenance revision, including a new frozen-review identity (%s)', async fresh => {
     const pendingRevision = proposal({
       proposal_type: 'memory_update',
       target_memory_id: 'memory-1',
       operator_revision: { edited_by_user_id: null, edited_at: null },
     })
-    mocked.get.mockResolvedValue(pendingRevision)
+    const revised = {...pendingRevision,id:fresh?"proposal-revised":pendingRevision.id,proposed_content:"The office opens at 8.",operator_revision:{edited_by_user_id:"user-owner",edited_at:"2026-10-14T10:00:00Z"}}
+    mocked.get.mockImplementation(async id => id === "proposal-revised" ? revised : pendingRevision)
     mocked.memoryGet.mockResolvedValue({ id: 'memory-1', content: 'The office opens at 9.' })
-    mocked.reviseProposal.mockResolvedValue({
-      ...pendingRevision,
-      proposed_content: 'The office opens at 8.',
-      operator_revision: { edited_by_user_id: 'user-owner', edited_at: '2026-10-14T10:00:00Z' },
-    })
+    mocked.reviseProposal.mockResolvedValue(revised)
     renderPage()
 
     expect(await screen.findByRole('button', { name: 'Accept' })).toBeDisabled()
@@ -75,6 +73,12 @@ describe('ProposalDetailPage', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Accept' })).toBeEnabled())
     expect(mocked.reviseProposal).toHaveBeenCalledWith('proposal-1', { content: 'The office opens at 8.' })
+    if(fresh){
+      await waitFor(() => expect(mocked.get).toHaveBeenCalledWith('proposal-revised'))
+      mocked.accept.mockResolvedValue({proposal:{...revised,status:'accepted'},result_type:'memory_entry',result:{}})
+      fireEvent.click(screen.getByRole('button',{name:'Accept'}))
+      await waitFor(()=>expect(mocked.accept).toHaveBeenCalledWith('proposal-revised',{}))
+    }
   })
 
   it('links an accepted workflow save to the draft it created in Evolution', async () => {

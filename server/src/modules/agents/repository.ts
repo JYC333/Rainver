@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
-import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
+import { getDbPool, type Pool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import { HttpError, type SpaceUserIdentity } from "../routeUtils/common.js";
 import {
@@ -979,7 +979,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     });
   }
 
-  async createInTransaction(client: PoolClient, input: AgentCreateInput): Promise<AgentOut> {
+  async createInTransaction(client: Queryable, input: AgentCreateInput): Promise<AgentOut> {
     if (input.visibility && !isContentVisibility(input.visibility)) {
       throw new HttpError(422, "Invalid visibility");
     }
@@ -1067,7 +1067,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   }
 
   async ensureRuntimeProfileInTransaction(
-    client: PoolClient,
+    client: Queryable,
     spaceId: string,
     agentId: string,
     input: {
@@ -1303,7 +1303,16 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     systemPrompt: string;
     promptProvenanceJson?: PromptProvenance | null;
   }): Promise<{ changed: boolean; versionId: string }> {
-    return withTransaction(this.pool, async (client) => {
+    return withTransaction(this.pool, client => this.publishSystemManagedPromptInTransaction(client,input));
+  }
+
+  async publishSystemManagedPromptInTransaction(client: Queryable, input: {
+    spaceId: string;
+    agentId: string;
+    agentKind: "system_source_post_processor" | "system_source_annotator" | "system_research";
+    systemPrompt: string;
+    promptProvenanceJson?: PromptProvenance | null;
+  }): Promise<{ changed: boolean; versionId: string }> {
       // The managed Assistant is materialized from a seed and reconciled
       // through `reconcileSystemManagedAgentInTransaction`, which tracks
       // `follows_seed_key`. Publishing an unmarked version here would detach
@@ -1348,11 +1357,10 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         [input.spaceId, input.agentId, version.id, new Date().toISOString()],
       );
       return { changed: true, versionId: version.id };
-    });
   }
 
   async reconcileSystemManagedAgentInTransaction(
-    client: PoolClient,
+    client: Queryable,
     input: {
       spaceId: string;
       agentId: string;
@@ -1804,7 +1812,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   }
 
   private async createAgentWithVersion(
-    client: PoolClient,
+    client: Queryable,
     input: {
       spaceId: string;
       projectId: string | null;

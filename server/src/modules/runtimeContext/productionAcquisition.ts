@@ -385,7 +385,15 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
     }));
     const row = thread.resume_attempted
       ? (await this.db.query<{ standing_digest: string | null; vendor_session_id: string | null }>(
-          `SELECT standing_digest, vendor_session_id FROM host_threads WHERE id = $1 AND space_id = $2`,
+          // A direct thread has no space_id (ck_host_threads_owner); its
+          // Space is its Agent's. Without this a resumed direct chat never
+          // finds its digest and re-sends the standing items every turn.
+          `SELECT standing_digest, vendor_session_id FROM host_threads
+            WHERE id = $1
+              AND (space_id = $2 OR (container_kind = 'direct' AND EXISTS (
+                SELECT 1 FROM agents thread_agent
+                 WHERE thread_agent.id = host_threads.agent_id AND thread_agent.space_id = $2
+              )))`,
           [thread.thread_id, run.space_id],
         )).rows[0] ?? null
       : null;
@@ -509,10 +517,13 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
 export async function loadAuthorizedCurrentContextMessage(
   db: Queryable,
   input: { messageId: string; spaceId: string; sessionId: string; userId: string; runId: string },
-): Promise<{ content: string; role: string; created_at: unknown; metadata_run_id: string | null } | undefined> {
-  return (await db.query<{ content: string; role: string; created_at: unknown; metadata_run_id: string | null }>(
+): Promise<{ content: string; role: string; created_at: unknown; linked_run_id: string | null } | undefined> {
+  // A direct chat message is linked to the Run it started and to every
+  // retry of that turn (`retry_run_ids`, appended by the retry route).
+  return (await db.query<{ content: string; role: string; created_at: unknown; linked_run_id: string | null }>(
     `SELECT message.content, message.role, message.created_at,
-            message.run_id AS metadata_run_id
+            CASE WHEN COALESCE(message.metadata_json->'retry_run_ids', '[]'::jsonb) ? $5::text
+                 THEN $5::text ELSE message.run_id END AS linked_run_id
        FROM messages message
        JOIN sessions session ON session.id=message.session_id AND session.space_id=message.space_id
        LEFT JOIN room_user_members room_member
@@ -523,7 +534,7 @@ export async function loadAuthorizedCurrentContextMessage(
         AND (
           (message.role='user' AND message.user_id=$4
             AND session.room_id IS NULL AND session.user_id=$4
-            AND message.run_id=$5)
+            AND (message.run_id=$5 OR COALESCE(message.metadata_json->'retry_run_ids', '[]'::jsonb) ? $5::text))
           OR (message.role='user' AND message.user_id=$4
             AND session.room_id IS NOT NULL AND room_member.user_id IS NOT NULL)
           OR (message.role='system'

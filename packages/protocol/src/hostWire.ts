@@ -154,6 +154,7 @@ export const RuntimeDistributionSchema = z.discriminatedUnion("kind", [
       cmd: z.string(),
       args: z.array(z.string()),
       sha256: z.string().nullable(),
+      sha512: z.string().regex(/^[a-f0-9]{128}$/iu).nullable().optional(),
       env: z.record(z.string()),
     })),
   }),

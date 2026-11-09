@@ -835,7 +835,7 @@ export default function UsagePage() {
                           <TableCell className="text-xs text-muted-foreground">{formatDateTime(event.occurred_at)}</TableCell>
                           <TableCell>{labelForChannel(event.execution_channel)}</TableCell>
                           <TableCell>
-                            <div className="max-w-[220px] truncate">{event.provider_name_snapshot ?? event.provider_type ?? t('workspace_ui.usage.unknown_provider')}</div>
+                            <div className="max-w-[220px] truncate" title={event.provider_display_name}>{event.provider_display_name ?? event.provider_name_snapshot ?? event.provider_type ?? t('workspace_ui.usage.unknown_provider')}</div>
                             <div className="max-w-[220px] truncate font-mono text-[11px] text-muted-foreground">{event.model ?? t('workspace_ui.usage.unknown_model')}</div>
                           </TableCell>
                           <TableCell>

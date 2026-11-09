@@ -70,6 +70,7 @@ function JobRow({
 
   return (
     <div className="border-b border-border last:border-0">
+      {job.status==='failed' && ['source_extraction_manual','source_post_processing_event'].includes(job.job_type) && job.result?.source_dispatch==='started' && <p className="px-4 pt-3 text-sm text-destructive" role="alert">{t('sources_ui.dispatch.unknown_result')}</p>}
       {/* Main row */}
       <div
         className="flex items-center gap-3 py-3 cursor-pointer hover:bg-muted/30 px-1 rounded transition-colors"

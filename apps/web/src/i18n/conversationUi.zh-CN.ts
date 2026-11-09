@@ -334,6 +334,8 @@ export const conversationUiZhCN = {
       delegated_result: '委派结果 · 点击展开',
       current_activity: '当前工作状态',
       waiting_agents: '等待其他 Agent 返回…',
+      waiting_parent: '等待主 Agent 交接并释放执行…',
+      waiting_admission: '等待委派任务调度…',
       destination: '消息去向',
       drop_pick: '不要带入这些内容',
       execution: '执行',

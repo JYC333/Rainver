@@ -82,7 +82,7 @@ export default function TaskContractEditor({ task, boards, agents, submitLabel, 
         task_type: taskType,
         priority,
         risk_level: riskLevel,
-        board_id: boardId || null,
+        ...(!task.project_id ? {board_id:boardId || null} : {}),
         assigned_agent_id: agentId || null,
         definition_of_done: definitionOfDone.trim() || null,
         max_runs: clearableLimit(maxRuns, task.max_runs),
@@ -110,7 +110,7 @@ export default function TaskContractEditor({ task, boards, agents, submitLabel, 
         <div className="space-y-1.5"><Label>Task type</Label><Select value={taskType} onChange={setTaskType} options={taskTypeOptions(taskType)} /></div>
         <div className="space-y-1.5"><Label>Priority</Label><Select value={priority} onChange={setPriority} options={TASK_PRIORITY_OPTIONS} /></div>
         <div className="space-y-1.5"><Label>Risk</Label><Select value={riskLevel} onChange={setRiskLevel} options={TASK_RISK_OPTIONS} /></div>
-        <div className="space-y-1.5"><Label>Board</Label><Select value={boardId} onChange={setBoardId} options={[{ value: '', label: 'No board' }, ...boards.map(board => ({ value: board.id, label: board.name }))]} /></div>
+        {!task.project_id && <div className="space-y-1.5"><Label>Board</Label><Select value={boardId} onChange={setBoardId} options={[{ value: '', label: 'No board' }, ...boards.map(board => ({ value: board.id, label: board.name }))]} /></div>}
         <div className="space-y-1.5 sm:col-span-2"><Label>Assigned Agent</Label><Select value={agentId} onChange={setAgentId} options={[{ value: '', label: 'Unassigned' }, ...agents.map(agent => ({ value: agent.id, label: agent.name }))]} /></div>
       </div>
 

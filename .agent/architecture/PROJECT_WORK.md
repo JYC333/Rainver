@@ -412,8 +412,8 @@ Task's `role = 'output'` artifacts. A dispatched CLI Run's files arrive
 without a type. The declaration names what a file is. Do not close from the
 anonymous files alone. The file itself is collected afterwards, and a declaration
 whose file never arrived is reported into the Task's stream rather than
-dropped. It is granted only for `trusted_host` (`SYSTEM_ACTIONS.md`).
-Do not grant it on a `sandboxed` Run.
+dropped. It is granted on a paired and a built-in Host alike
+(`SYSTEM_ACTIONS.md`): both collect the Run's output directory.
 
 They are the smallest set that lets an Agent advance work at all: name a piece
 of it, say what happened, give it to someone else, move it between Board statuses,
@@ -611,3 +611,87 @@ initiating user and admitted Run id. It emits nothing if already in progress,
 or when `set_task_in_progress=false` (e.g. merge resolution). Event failure
 rolls back Run/TaskRun/Job admission and Task status; no synthetic review or
 notification is generated.
+
+## Board operation transaction boundary
+
+Project Board configuration and exact Task column movement now enter the shared
+operation core from REST, generic API, existing Agent tools and typed Board UI
+consumers. They reuse configureProjectBoard/updateTask and the canonical work
+event/merge Job writers in one transaction. See
+[Task Board core commands](TASK_BOARD_MODEL.md#core-project-board-configuration-and-exact-placement).
+The old two Agent executors are removed. The separate status command still
+routes done/review into complete/review work, and deletion retains its own
+unfinished-execution/Host cleanup closure. Their subsequent core migration is
+documented in the lifecycle section below.
+
+## Core Task lifecycle boundary
+
+Six public commands use taskLifecycleOperations.ts and the shared strict
+taskLifecycle.ts protocol table: task.set_status, task.delete, task.report,
+task.complete, task.request_review and task.handoff. The latter four retain
+Agent-only authority; humans use status/delete with their existing permission
+and completion acknowledgement semantics, including Space-only Tasks. No
+execution owner, Run or manual origin is manufactured for a person.
+
+Agent set_status(done/waiting_for_review) calls completeTask/requestTaskReview
+directly inside the core transaction. Complete refuses missing file Artifacts,
+records skipped evaluation requirements, closes and writes the paired report
+and flow events plus merge intent. A report with outcome done still only reports.
+Review records the decision request and returns responsibility to a human while
+retaining the existing Agent claim; handoff validates the existing recipient
+access rules. The actual Agent actor and Run remain on every generated event.
+
+The core locks/revalidates Project and full Task access, live Run/current grants
+and on-behalf authority, including replay. It owns transport key conflicts and
+nonblocking concurrency admission. Existing work-event identities/domain
+uniqueness and internal callers are preserved; the new command's event-chain
+UUID is not a second transport dedupe store. No legacy Agent handler remains for
+these six commands. Internal settlement/undo still call their domain writers.
+
+Public PATCH status is refused under the Task lock, including mixed edits.
+Formal status/delete adapters and typed web callers carry explicit keys;
+ordinary metadata and standalone Board placement retain their separate legacy
+scope. There is no automatic retry or fallback. Domain completion metadata is
+allowlisted; unclassified private SQL/errors are never reflected.
+
+Delete retains evidence and refuses every non-hard-terminal linked Run and active
+Plan. Soft deletion, canonical work event, branch-delete and merge-withdrawal
+Job intents, mandatory audit and result receipt share one transaction. Workers
+retain actual Host/process cleanup and retry; no Host request is awaited in the
+core transaction. Production approval mappings remain disabled: unattended
+status/delete/complete fail closed with nonretryable approval-mapping 503, while
+report/handoff/review retain their existing origin-independent admission.
+
+The Task part of checkpoint 6 is implemented for review; Inquiry/Memory,
+Task creation, settlement's own public commands and the rest of P5 remain separate.
+
+### Task lifecycle discovery and contract editing
+
+A missing Task id may return a bounded correction hint only to an Agent after
+live Run/Agent/grant, responsible-person membership and current Run Project
+writer checks. taskTargetDiscovery.ts is the single six-command error path,
+using task.list's canonical content ACL, ordering and existing 50-row bound.
+Existing same-Space private/foreign/deleted targets stay hidden. Other Spaces
+are never consulted: an id there behaves identically to a random missing id,
+and any hint contains only currently visible Tasks in the Run's own Project.
+Human requests remain hidden. Mutation discovery does not restore old handlers,
+transport dedupe or unrestricted title enumeration.
+
+Agent completion refusals retain canonical safe missing/unacknowledged
+metadata. The Agent formatter adds fixed Artifact-type/artifact.submit/review
+guidance; it never forwards arbitrary domain exception messages.
+
+Project Task contract editing omits board_id/column_id and has no standalone
+Board selector. Exact Project placement remains on its named Board move command.
+Standalone Task editing retains the existing Board selection and PATCH scope.
+The locked backend placement guard still rejects a mixed Project contract/
+placement payload atomically.
+
+Human blocked_reason preserves its previous optionalString writer behavior:
+trim whitespace and normalize empty to null. No migration-specific per-field
+length quota was added. HTTP entry bodies are bounded by createServerApp's
+existing 32 MiB bodyLimit (including generic and Run-tool HTTP requests);
+in-process calls are not HTTP payloads. Human set_status reason remains an
+accepted input/fingerprint field, not a persisted ProjectWork event reason,
+matching the pre-migration human writer. The existing Agent event reason is
+still recorded. No new human attribution or event mechanism is introduced.

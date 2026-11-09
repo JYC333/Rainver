@@ -1,3 +1,5 @@
+import {lockProposalTransitions} from '../src/modules/systemActions/operations/proposalTransitions.js';
+import {linkProposalOperation} from './support/linkedProposalOperation.js';
 import { SkillPackageSchema, type SystemActionId } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -90,7 +92,7 @@ describe("skill import approval (real Postgres)", () => {
     registerSkillProposalAppliers(appliers);
     await withTransaction(db.pool, async client => {
       const proposal = (await client.query<ApplyProposal>("SELECT * FROM proposals WHERE id=$1", [review.proposal.id])).rows[0]!;
-      await appliers.apply({ db: client, proposal, userId: USER, config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }) });
+      await appliers.apply({ proposalTransitions:await lockProposalTransitions(client,SPACE,[proposal.id],true),db: client, proposal, userId: USER, config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }) });
     });
     expect(await resolveSkillBindings(db.pool, { space_id: SPACE, user_id: USER, agent_id: null, project_id: null })).toHaveLength(1);
     const registry = await loadSystemActionRegistry();
@@ -161,6 +163,7 @@ describe("skill import approval (real Postgres)", () => {
     const registry = new ProposalApplierRegistry();
     registerSkillProposalAppliers(registry);
     const result = await withTransaction(db.pool, async client => registry.apply({
+      proposalTransitions:await lockProposalTransitions(client,SPACE,[proposal.id],true),
       db: client, userId: USER, config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
       proposal: (await client.query<ApplyProposal>("SELECT * FROM proposals WHERE id=$1", [proposal.id])).rows[0]!,
     }));
@@ -435,6 +438,7 @@ describe("skill Review/Convert proposals (real Postgres)", () => {
     const registry = new ProposalApplierRegistry();
     registerSkillProposalAppliers(registry);
     await withTransaction(db.pool, async client => registry.apply({
+      proposalTransitions:await lockProposalTransitions(client,SPACE,[reviewOnly.proposal.id],true),
       db: client, userId: USER, config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
       proposal: (await client.query<ApplyProposal>("SELECT * FROM proposals WHERE id=$1", [reviewOnly.proposal.id])).rows[0]!,
     }));
@@ -446,7 +450,7 @@ describe("skill Review/Convert proposals (real Postgres)", () => {
     await expect(repo.getSkillPackage({ spaceId: SPACE, userId: MEMBER }, pkg.id)).resolves.toMatchObject({ pending_proposal: null });
   });
 
-  it("settles two reviews of one package approved at once: one applies, the other is superseded, neither deadlocks", async () => {
+  it("settles the whole package review set: a concurrent decision conflicts without waiting, no sibling remains pending", async () => {
     if (!db.available) return;
     await addMember(MEMBER, "member");
     const { repo, pkg } = await importOriginalSkill();
@@ -454,8 +458,8 @@ describe("skill Review/Convert proposals (real Postgres)", () => {
     const others = await repo.createSkillImportApprovalProposal({ identity: { spaceId: SPACE, userId: MEMBER }, skillPackageId: pkg.id,
       binding: { scope_type: "user", scope_id: MEMBER, enabled: true } });
     const service = new PgProposalApplyService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
-    // Holding the package row lets both approvals lock their own proposal
-    // first and then queue on the package: the order that used to deadlock.
+    // The first decision admits the complete set then waits on the package.
+    // The second must conflict before it acquires Proposal/domain locks.
     const holder = await db.pool.connect();
     let outcomes: PromiseSettledResult<unknown>[];
     try {
@@ -464,14 +468,16 @@ describe("skill Review/Convert proposals (real Postgres)", () => {
       let settled = 0;
       const accepts = [own, others].map(review => service.accept(review.proposal.id, { spaceId: SPACE, userId: USER })
         .finally(() => { settled += 1; }));
-      await waitForLockWaiter(db.pool, { waiters: 2, settled: () => settled > 0 });
+      const settledAccepts=Promise.allSettled(accepts);
+      await waitForLockWaiter(db.pool, { waiters: 1, settled: () => settled > 0 });
       await holder.query("COMMIT");
-      outcomes = await Promise.allSettled(accepts);
+      outcomes = await settledAccepts;
     } finally {
       await holder.query("ROLLBACK").catch(() => undefined);
       holder.release();
     }
-    expect(outcomes.filter(outcome => outcome.status === "rejected")).toEqual([]);
+    expect(outcomes.filter(outcome => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter(outcome => outcome.status === "rejected")).toEqual([expect.objectContaining({reason:expect.objectContaining({code:"idempotency_in_progress",httpStatus:409})})]);
     const ids = [own.proposal.id, others.proposal.id];
     const rows = (await db.pool.query<{ id: string; status: string; superseded_by: string | null }>(
       `SELECT id, status, payload_json->>'superseded_by_proposal_id' AS superseded_by
@@ -479,7 +485,7 @@ describe("skill Review/Convert proposals (real Postgres)", () => {
     const accepted = rows.filter(row => row.status === "accepted");
     expect(accepted).toHaveLength(1);
     const winner = accepted[0]!.id;
-    expect(rows.find(row => row.id !== winner)).toMatchObject({ status: "superseded", superseded_by: winner });
+    expect(rows.find(row => row.id !== winner)).toMatchObject({ status: "superseded" });
     const reviewed = await db.pool.query<{ status: string; reviewed_from: string }>(
       `SELECT status, manifest_json->'review'->>'reviewed_from_proposal_id' AS reviewed_from FROM skill_packages WHERE id = $1`, [pkg.id]);
     expect(reviewed.rows[0]).toEqual({ status: "reviewed", reviewed_from: winner });
@@ -588,4 +594,36 @@ describe("skill local overlay writes (real Postgres)", () => {
     );
     expect(active.rows).toEqual([{ alias: "second" }]);
   });
+});
+
+
+describe('linked Skill review closure',()=>{
+ it.each(['success','requestFailure','auditFailure'] as const)('supersedes every linked sibling atomically (%s)',async mode=>{
+  if(!db.available)return;
+  const MEMBER=randomUUID();await addMember(MEMBER,'member');
+  const {repo,pkg}=await importOriginalSkill();
+  const root=await repo.createSkillImportApprovalProposal({identity:{spaceId:SPACE,userId:USER},skillPackageId:pkg.id});
+  const sibling=await repo.createSkillImportApprovalProposal({identity:{spaceId:SPACE,userId:MEMBER},skillPackageId:pkg.id});
+  const request=await linkProposalOperation(db.pool,{spaceId:SPACE,userId:MEMBER},sibling.proposal.id);
+  if(mode!=='success'){
+   const table=mode==='auditFailure'?'policy_decision_records':'operation_idempotency';
+   const event=mode==='auditFailure'?'INSERT':'UPDATE';
+   await db.pool.query("CREATE FUNCTION refuse_skill_review() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'skill review refused'; END $$");
+   await db.pool.query(`CREATE TRIGGER refuse_skill_review BEFORE ${event} ON ${table} FOR EACH ROW EXECUTE FUNCTION refuse_skill_review()`);
+  }
+  try{
+   const accept=new PgProposalApplyService(loadConfig({SERVER_DATABASE_URL:db.connectionUri})).accept(root.proposal.id,{spaceId:SPACE,userId:USER});
+   if(mode==='success')await accept;else await expect(accept).rejects.toThrow();
+   expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE id=$1',[request])).rows[0]!.state).toBe(mode==='success'?'superseded':'pending_approval');
+   const rows=(await db.pool.query('SELECT id,status FROM proposals WHERE id=ANY($1::varchar[]) ORDER BY id',[[root.proposal.id,sibling.proposal.id]])).rows;
+   expect(rows.find(p=>p.id===root.proposal.id)!.status).toBe(mode==='success'?'accepted':'pending');
+   expect(rows.find(p=>p.id===sibling.proposal.id)!.status).toBe(mode==='success'?'superseded':'pending');
+   expect((await db.pool.query('SELECT status FROM skill_packages WHERE id=$1',[pkg.id])).rows[0]!.status).toBe(mode==='success'?'reviewed':'imported');
+   const audits=(await db.pool.query("SELECT metadata_json FROM policy_decision_records WHERE proposal_id=$1 AND action='proposal.apply'",[root.proposal.id])).rows;
+   expect(audits).toHaveLength(mode==='auditFailure'?0:1);
+   if(mode==='requestFailure')expect(audits[0]!.metadata_json.operation_outcome).toBe('failed');
+  }finally{
+   if(mode!=='success'){await db.pool.query(`DROP TRIGGER refuse_skill_review ON ${mode==='auditFailure'?'policy_decision_records':'operation_idempotency'}`);await db.pool.query('DROP FUNCTION refuse_skill_review()');}
+  }
+ });
 });

@@ -5,6 +5,10 @@ import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError, objectValue, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common.js";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "./access.js";
 
+export class ProjectOperationTerminalConflict extends HttpError {
+  constructor() { super(409, "Operation is already terminal"); }
+}
+
 const KINDS = new Set(["source_setup", "source_backfill", "research", "custom"]);
 
 interface ProjectOperationRecord extends Record<string, unknown> {
@@ -147,6 +151,10 @@ export class ProjectOperationRepository {
   }
 
   async cancel(identity: SpaceUserIdentity, projectId: string, operationId: string) {
+    return withQueryableTransaction(this.db, db => new ProjectOperationRepository(db).cancelLocked(identity, projectId, operationId));
+  }
+
+  private async cancelLocked(identity: SpaceUserIdentity, projectId: string, operationId: string) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     await this.assertOperationInProject(operationId, identity.spaceId, projectId);
     const kind = (await this.db.query<{ kind: string }>(
@@ -160,7 +168,7 @@ export class ProjectOperationRepository {
       // lazily because that module's import chain extends this class.
       const { ResearchOperationCancelService } = await import("../projectResearch/researchOperationCancel.js");
       const stopped = await new ResearchOperationCancelService(this.db).cancelOperation(identity, projectId, operationId);
-      if (stopped.already_terminal) throw new HttpError(409, "Operation is already terminal");
+      if (stopped.already_terminal) throw new ProjectOperationTerminalConflict();
       const row = (await this.db.query<ProjectOperationRecord>(
         `SELECT * FROM project_operations WHERE id=$1 AND space_id=$2 AND project_id=$3`,
         [operationId, identity.spaceId, projectId],
@@ -174,7 +182,7 @@ export class ProjectOperationRepository {
         RETURNING *`,
       [operationId, identity.spaceId, projectId, new Date().toISOString()],
     );
-    if (!result.rows[0]) throw new HttpError(409, "Operation is already terminal");
+    if (!result.rows[0]) throw new ProjectOperationTerminalConflict();
     return result.rows[0];
   }
 

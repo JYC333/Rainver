@@ -15,7 +15,7 @@ vi.mock('../../../api/client', async () => {
   return {
     ApiRequestError: actual.ApiRequestError,
     projectsApi: { getBoard: vi.fn(), configureBoard: vi.fn() },
-    tasksApi: { update: vi.fn(), create: vi.fn(), get: vi.fn(), delete: vi.fn() },
+    tasksApi: { moveToColumn: vi.fn(), update: vi.fn(), create: vi.fn(), get: vi.fn(), delete: vi.fn() },
     agentsApi: { list: vi.fn().mockResolvedValue([]) },
   }
 })
@@ -109,6 +109,7 @@ function renderBoard() {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(projectsApi.getBoard).mockResolvedValue(board)
+  vi.mocked(tasksApi.moveToColumn).mockResolvedValue({status:'succeeded',data:{}} as never)
 })
 
 describe('Project Board', () => {
@@ -211,15 +212,15 @@ describe('Project Board', () => {
     await screen.findByTestId('board-card-task-blocked')
     drop('task-blocked', 'in_progress')
     await act(() => Promise.resolve())
-    expect(tasksApi.update).not.toHaveBeenCalled()
+    expect(tasksApi.moveToColumn).not.toHaveBeenCalled()
   })
 
   it('puts a refused blocked card back still blocked', async () => {
-    vi.mocked(tasksApi.update).mockRejectedValue(new ApiRequestError('Not allowed', 409))
+    vi.mocked(tasksApi.moveToColumn).mockRejectedValue(new ApiRequestError('Not allowed', 409))
     renderBoard()
     await screen.findByTestId('board-card-task-blocked')
     drop('task-blocked', 'done')
-    await waitFor(() => expect(tasksApi.update).toHaveBeenCalledWith('task-blocked', { status: 'done' }))
+    await waitFor(() => expect(tasksApi.moveToColumn).toHaveBeenCalledWith('task-blocked', {column_key:'done',columns_revision:'fixture'},expect.any(String)))
 
     await waitFor(() => expect(screen.getByTestId('board-column-in_progress')).toContainElement(screen.getByTestId('board-card-task-blocked')))
     expect(screen.getByText('Waiting for the licence')).toBeInTheDocument()
@@ -231,9 +232,9 @@ describe('Project Board', () => {
   })
 
   it('does not send an empty acknowledgement as an override', async () => {
-    vi.mocked(tasksApi.update).mockResolvedValue({} as never)
-    await moveCardStatus('task-waiting', 'done', [])
-    expect(tasksApi.update).toHaveBeenCalledWith('task-waiting', { status: 'done' })
+    vi.mocked(tasksApi.moveToColumn).mockResolvedValue({status:'succeeded',data:{}} as never)
+    await moveCardStatus('task-waiting',{column_key:'done',columns_revision:'fixture'},'move-key',[])
+    expect(tasksApi.moveToColumn).toHaveBeenCalledWith('task-waiting',{column_key:'done',columns_revision:'fixture'},'move-key')
   })
 
   it('reads a refused close as the requirements it is missing', () => {
@@ -252,13 +253,13 @@ describe('Project Board', () => {
   })
 
   it('acknowledges exactly the reasons it was refused for', async () => {
-    vi.mocked(tasksApi.update).mockResolvedValue({} as never)
-    await moveCardStatus('task-waiting', 'done', ['evaluation', 'required_output:report'])
+    vi.mocked(tasksApi.moveToColumn).mockResolvedValue({status:'succeeded',data:{}} as never)
+    await moveCardStatus('task-waiting',{column_key:'done',columns_revision:'fixture'},'move-key',['evaluation', 'required_output:report'])
     // A bare force flag would record that it closed and lose what was skipped.
-    expect(tasksApi.update).toHaveBeenCalledWith('task-waiting', {
-      status: 'done',
+    expect(tasksApi.moveToColumn).toHaveBeenCalledWith('task-waiting', {
+      column_key:'done',columns_revision:'fixture',
       override_completion: { acknowledged: ['evaluation', 'required_output:report'] },
-    })
+    },'move-key')
   })
 
   it('words each refusal reason for a person', () => {
@@ -316,7 +317,7 @@ describe('Project Board', () => {
     fireEvent.click(await screen.findByRole('menuitem',{name:'Delete task'}))
     expect(await screen.findByRole('dialog')).toHaveTextContent('Execution and audit records are retained')
     fireEvent.click(screen.getByRole('button',{name:'Delete task'}))
-    await waitFor(()=>expect(tasksApi.delete).toHaveBeenCalledWith('task-ready'))
+    await waitFor(()=>expect(tasksApi.delete).toHaveBeenCalledWith('task-ready',expect.any(String)))
   })
 
   it('edits a Task in place and preserves it when the API refuses deletion', async () => {
@@ -388,7 +389,7 @@ describe('Project Board', () => {
     expect(dialog).toHaveTextContent('Current Tasks in this column will move')
     fireEvent.click(within(dialog).getByRole('button',{name:'Save'}))
     expect(await screen.findByRole('alert')).toHaveTextContent('Completion requirements unmet')
-    expect(projectsApi.configureBoard).toHaveBeenCalledWith('project-1',expect.objectContaining({columns:expect.arrayContaining([expect.objectContaining({key:'ready',status_key:'done'})])}))
+    expect(projectsApi.configureBoard).toHaveBeenCalledWith('project-1',expect.objectContaining({columns:expect.arrayContaining([expect.objectContaining({key:'ready',status_key:'done'})])}),expect.any(String))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
@@ -436,3 +437,10 @@ describe('Project Board', () => {
       .toHaveAttribute('href', '/projects/project-1/tasks/task-ready')
   })
 })
+
+it('keeps canonical completion refusal metadata usable by the Board confirmation dialog',()=>{
+ const refusal=new ApiRequestError('operation invalid input',422,'operation_invalid_input',{
+   error:{code:'operation_invalid_input',metadata:{code:'completion_requirements_unmet',missing:['required_output:report'],unacknowledged:['required_output:report']}},
+ });
+ expect(blockedCompletion(refusal)).toEqual(['required_output:report']);
+});

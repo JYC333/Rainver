@@ -1,3 +1,4 @@
+import {ProjectSourceMutationError} from './projectSourceMutationError.js';
 import { randomUUID } from "node:crypto";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError, dateIso, numberValue, objectValue, optionalString, requiredString } from "../routeUtils/common.js";
@@ -43,6 +44,13 @@ export class ProjectSourceBindingRepository {
     return rows.rows.map(projectSourceBindingWithProfileOut);
   }
 
+  /** Current Source-side authority, shared by canonical writes and core replay. */
+  async assertSourceBindingAuthority(identity:SpaceUserIdentity,channelId:string,body:Record<string,unknown>,creating:boolean):Promise<void>{
+    const connection=await this.getConnectionRow(identity,channelId);
+    if(!connection||creating&&!(await this.canViewConnectionMetadata(identity,connection)))throw new HttpError(404,"Source connection not found");
+    if(creating||body.delivery_scope!==undefined)this.resolveProjectSourceDeliveryScope(identity,connection,body);
+  }
+
   async createProjectSourceBinding(identity: SpaceUserIdentity, body: Record<string, unknown>) {
     const sourceChannelId = requiredString(body.source_channel_id, "source_channel_id");
     const projectId = requiredString(body.project_id, "project_id");
@@ -67,7 +75,7 @@ export class ProjectSourceBindingRepository {
     );
     if (existing.rows[0]) {
       if (existing.rows[0].status !== "archived") {
-        throw new HttpError(409, "Source is already bound to this Project");
+        throw new ProjectSourceMutationError(409, "Source is already bound to this Project");
       }
       const restored = await this.db.query<ProjectSourceBindingRow>(
         `UPDATE project_source_bindings
@@ -141,7 +149,7 @@ export class ProjectSourceBindingRepository {
     const connection = await this.getConnectionRow(identity, row.source_channel_id);
     if (!connection) throw new HttpError(404, "Source connection not found");
     const status = optionalString(body.status) ?? row.status;
-    if (!["active", "paused", "archived"].includes(status)) throw new HttpError(422, "invalid project source binding status");
+    if (!["active", "paused", "archived"].includes(status)) throw new ProjectSourceMutationError(422, "invalid project source binding status");
     const deliveryScope = body.delivery_scope === undefined
       ? row.delivery_scope
       : this.resolveProjectSourceDeliveryScope(identity, connection, body);
@@ -227,7 +235,7 @@ export class ProjectSourceBindingRepository {
     row: ProjectSourceBindingRow,
   ): Promise<Record<string, unknown>> {
     if (row.status !== "active") {
-      throw new HttpError(422, "Only active project source bindings can backfill history");
+      throw new ProjectSourceMutationError(422, "Only active project source bindings can backfill history");
     }
     const result = await recomputeProjectSourceBindingLinks(this.db, {
       spaceId: identity.spaceId,
@@ -412,7 +420,7 @@ export class ProjectSourceBindingRepository {
 
   private resolveProjectSourceDeliveryScope(identity: SpaceUserIdentity, connection: ConnectionRow, body: Record<string, unknown>): string {
     const requested = optionalString(body.delivery_scope);
-    if (requested && !PROJECT_SOURCE_DELIVERY_SCOPES.has(requested)) throw new HttpError(422, "delivery_scope must be project_members or source_subscribers");
+    if (requested && !PROJECT_SOURCE_DELIVERY_SCOPES.has(requested)) throw new ProjectSourceMutationError(422, "delivery_scope must be project_members or source_subscribers");
     const restricted = connection.visibility !== "space_shared" || Boolean(connection.credential_id) ||
       connection.handler_kind === "generated_custom" || connection.connector_type === "custom" || connection.connector_key === "custom";
     const scope = requested ?? (restricted ? "source_subscribers" : "project_members");
@@ -441,6 +449,6 @@ function projectSourceBindingWithProfileOut(row: ProjectSourceBindingRow) {
 
 function booleanBody(value: unknown, field: string, fallback: boolean): boolean {
   if (value === undefined || value === null) return fallback;
-  if (typeof value !== "boolean") throw new HttpError(422, `${field} must be a boolean`);
+  if (typeof value !== "boolean") throw new ProjectSourceMutationError(422, `${field} must be a boolean`);
   return value;
 }

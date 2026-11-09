@@ -1,3 +1,12 @@
+import {resolveRequestId} from '../../gateway/requestContext.js';
+import {introspectIdentity} from '../auth/identity.js';
+import {OperationError} from '../systemActions/operations/errors.js';
+import {operationRuntime} from '../systemActions/operations/runtime.js';
+import {sessionActor} from '../systemActions/operations/actor.js';
+import {registerSourceMonitorOperationRoutes} from './sourceMonitorOperationRoutes.js';
+import {registerSourceSubscriptionOperationRoutes} from './sourceSubscriptionOperationRoutes.js';
+import {registerRetiredSourceConnectionRoutes} from './retiredConnectionRoutes.js';
+import {registerBackfillOperationRoutes} from './sourceBackfillOperationRoutes.js';
 import {registerDeepReadingRoutes} from './deepReading/routes.js';
 import {registerMaterialProcessingRoutes} from './materialProcessing/routes.js';
 import {registerSourceGoalRoutes} from './goals/routes.js';
@@ -45,6 +54,10 @@ import { SourceQueryPreviewService } from "./sourceQueryPreviewService.js";
 import { applyContentCreationContext, resolveContentCreationContext } from "../access/creationContext.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerSourceMonitorOperationRoutes(app,context);
+  registerBackfillOperationRoutes(app,context);
+  registerSourceSubscriptionOperationRoutes(app,context);
+  registerRetiredSourceConnectionRoutes(app);
   const repository = () => new PgSourcesRepository(dbPool(context.config), context.config);
   const backfills = () => new SourceBackfillPlanningService(dbPool(context.config), context.config);
   const channels = () => new SourceChannelService(dbPool(context.config), context.config);
@@ -61,26 +74,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/sources/channels", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const creation = await resolveContentCreationContext(dbPool(context.config), {
-        userId: identity.userId,
-        requestSpaceId: identity.spaceId,
-        projectId: optionalString(body.project_id),
-      });
-      const creationIdentity = { spaceId: creation.spaceId, userId: identity.userId };
-      const gate = await enforceSources(context, creationIdentity, "source.connection.manage", "source_channel");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await channels().create(
-        creationIdentity,
-        applyContentCreationContext(body, creation),
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
+  app.post('/api/v1/sources/channels',{config:{operation:'source.channel.create'}},async(request,reply)=>{
+    const requestId=resolveRequestId(request);reply.header('cache-control','private, no-store');
+    const auth=await introspectIdentity(context.config,request,reply);
+    if(!auth.ok){const error=auth.reason==='denied'?new OperationError(auth.statusCode===401?'authentication_required':'operation_not_found',auth.statusCode===401?401:404):new OperationError('operation_temporarily_unavailable',503,true);return reply.code(error.httpStatus).send(error.body(requestId));}
+    let body:Record<string,unknown>;try{body=jsonBody(request);}catch{return reply.code(422).send(new OperationError('operation_invalid_input',422).body(requestId));}
+    const key=request.headers['idempotency-key'];
+    const result=await(await operationRuntime(context.config)).execute('source.channel.create',body,sessionActor({spaceId:auth.spaceId,userId:auth.userId}),requestId,typeof key==='string'?key:undefined);
+    return reply.code(result.http_status).send(result.body);
   });
 
   app.post("/api/v1/sources/query-preview", async (request, reply) => {
@@ -126,23 +127,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/sources/recommendations/:channelId/decision", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const decision = requiredString(jsonBody(request).decision, "decision");
-      if (!(["subscribed", "dismissed", "muted"] as string[]).includes(decision)) {
-        throw new HttpError(422, "decision must be subscribed, dismissed, or muted");
-      }
-      return reply.send(await channels().decideRecommendation(
-        identity,
-        params(request).channelId ?? "",
-        decision as "subscribed" | "dismissed" | "muted",
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/sources/channels/:channelId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -151,30 +135,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const channel = await channels().get(identity, params(request).channelId ?? "");
       if (!channel) return reply.code(404).send({ detail: "Source channel not found" });
       return reply.send(channel);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.patch("/api/v1/sources/channels/:channelId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "source.connection.manage", "source_channel", params(request).channelId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await channels().update(identity, params(request).channelId ?? "", jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/sources/channels/:channelId/scan", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "source.connection.manage", "source_channel", params(request).channelId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(202).send(await channels().scan(identity, params(request).channelId ?? ""));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -218,30 +178,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     } catch (error) { return sendRouteError(reply, error); }
   });
 
-  app.post("/api/v1/sources/channels/:channelId/backfill/plans/preview", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "source.backfill.plan", "source_backfill_plan");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await backfills().preview(identity, requiredString(params(request).channelId, "source_channel_id"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/sources/channels/:channelId/backfill/plans", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "source.backfill.plan", "source_backfill_plan");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await backfills().create(identity, requiredString(params(request).channelId, "source_channel_id"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
   app.get("/api/v1/sources/channels/:channelId/backfill/plans", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -275,32 +211,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const gate = await enforceSources(context, identity, "source.backfill.plan", "source_backfill_plan", p.planId);
       if (gate.blocked) return reply.code(403).send(gate.reply403);
       return reply.code(201).send(await backfills().proposeStart(identity, requiredString(p.channelId, "source_channel_id"), requiredString(p.planId, "plan_id")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/sources/channels/:channelId/backfill/plans/:planId/pause", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const gate = await enforceSources(context, identity, "source.backfill.manage", "source_backfill_plan", p.planId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await backfills().setPaused(identity, requiredString(p.channelId, "source_channel_id"), requiredString(p.planId, "plan_id"), true));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/sources/channels/:channelId/backfill/plans/:planId/resume", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const gate = await enforceSources(context, identity, "source.backfill.manage", "source_backfill_plan", p.planId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await backfills().setPaused(identity, requiredString(p.channelId, "source_channel_id"), requiredString(p.planId, "plan_id"), false));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -487,47 +397,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.get("/api/v1/sources/connections", async (request, reply) => {
-    return reply.code(410).send({ detail: "Source connections are internal provenance; use Source Channels" });
-  });
-
-  app.post("/api/v1/sources/connections", async (request, reply) => {
-    return reply.code(410).send({ detail: "Source connections are not user-created resources; create a Source Channel" });
-  });
-
-  app.post("/api/v1/sources/connections/drafts", async (request, reply) => {
-    return reply.code(410).send({ detail: "Source connection drafts were replaced by Source Channels" });
-  });
-
-  app.post("/api/v1/sources/connections/proposals", async (request, reply) => {
-    return reply.code(410).send({ detail: "Source connection proposals were replaced by Source Channel activation proposals" });
-  });
-
-  app.get("/api/v1/sources/connections/:connectionId", async (request, reply) => {
-    return reply.code(410).send({ detail: "Source connections are internal provenance; use Source Channels" });
-  });
-
-  app.post("/api/v1/sources/connections/:connectionId/recommendations", async (request, reply) => {
-    return reply.code(410).send({ detail: "Subscriptions are managed at Source Channel level" });
-  });
-
-  app.post("/api/v1/sources/connections/:connectionId/subscription", async (request, reply) => {
-    return reply.code(410).send({ detail: "Subscriptions are managed at Source Channel level" });
-  });
-
-  app.post("/api/v1/sources/channels/:channelId/subscription", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const status = optionalString(jsonBody(request).status);
-      if (status !== "subscribed" && status !== "muted") {
-        return reply.code(422).send({ detail: "status must be 'subscribed' or 'muted'" });
-      }
-      return reply.send(await channels().setSubscription(identity, params(request).channelId ?? "", status));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/sources/channels/:channelId/source-runs", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -553,52 +422,28 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/sources/channels/:channelId/post-processing/rules", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const connectionId = params(request).channelId ?? "";
-      const gate = await enforceSources(context, identity, "source.connection.manage", "source_channel", connectionId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await postProcessing().createRule(identity, connectionId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
+  app.post("/api/v1/sources/channels/:channelId/post-processing/rules",{config:{operation:'source.processing.rule.create'}},async(request,reply)=>{
+    const requestId=resolveRequestId(request);reply.header('cache-control','private, no-store');
+    const auth=await introspectIdentity(context.config,request,reply);
+    if(!auth.ok){const error=auth.reason==='denied'?new OperationError(auth.statusCode===401?'authentication_required':'operation_not_found',auth.statusCode===401?401:404):new OperationError('operation_temporarily_unavailable',503,true);return reply.code(error.httpStatus).send(error.body(requestId));}
+    let body:Record<string,unknown>;try{body={source_channel_id:params(request).channelId,rule:jsonBody(request)};}catch{return reply.code(422).send(new OperationError('operation_invalid_input',422).body(requestId));}
+    const key=request.headers['idempotency-key'];const result=await(await operationRuntime(context.config)).execute('source.processing.rule.create',body,sessionActor({spaceId:auth.spaceId,userId:auth.userId}),requestId,typeof key==='string'?key:undefined);return reply.code(result.http_status).send(result.body);
   });
 
-  app.patch("/api/v1/sources/channels/:channelId/post-processing/rules/:ruleId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const connectionId = params(request).channelId ?? "";
-      const gate = await enforceSources(context, identity, "source.connection.manage", "source_channel", connectionId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await postProcessing().updateRule(
-        identity,
-        connectionId,
-        params(request).ruleId ?? "",
-        jsonBody(request),
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
+  app.patch("/api/v1/sources/channels/:channelId/post-processing/rules/:ruleId",{config:{operation:'source.processing.rule.update'}},async(request,reply)=>{
+    const requestId=resolveRequestId(request);reply.header('cache-control','private, no-store');
+    const auth=await introspectIdentity(context.config,request,reply);
+    if(!auth.ok){const error=auth.reason==='denied'?new OperationError(auth.statusCode===401?'authentication_required':'operation_not_found',auth.statusCode===401?401:404):new OperationError('operation_temporarily_unavailable',503,true);return reply.code(error.httpStatus).send(error.body(requestId));}
+    let body:Record<string,unknown>;try{body={source_channel_id:params(request).channelId,rule_id:params(request).ruleId,changes:jsonBody(request)};}catch{return reply.code(422).send(new OperationError('operation_invalid_input',422).body(requestId));}
+    const key=request.headers['idempotency-key'];const result=await(await operationRuntime(context.config)).execute('source.processing.rule.update',body,sessionActor({spaceId:auth.spaceId,userId:auth.userId}),requestId,typeof key==='string'?key:undefined);return reply.code(result.http_status).send(result.body);
   });
 
-  app.post("/api/v1/sources/channels/:channelId/post-processing/rules/:ruleId/run", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const connectionId = params(request).channelId ?? "";
-      const gate = await enforceSources(context, identity, "source.connection.manage", "source_channel", connectionId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(202).send(await postProcessing().runRuleNow(
-        identity,
-        connectionId,
-        params(request).ruleId ?? "",
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
+  app.post("/api/v1/sources/channels/:channelId/post-processing/rules/:ruleId/run",{config:{operation:'source.processing.rule.dispatch'}},async(request,reply)=>{
+    const requestId=resolveRequestId(request);reply.header('cache-control','private, no-store');
+    const auth=await introspectIdentity(context.config,request,reply);
+    if(!auth.ok){const error=auth.reason==='denied'?new OperationError(auth.statusCode===401?'authentication_required':'operation_not_found',auth.statusCode===401?401:404):new OperationError('operation_temporarily_unavailable',503,true);return reply.code(error.httpStatus).send(error.body(requestId));}
+    let body:Record<string,unknown>;try{if(Object.keys(jsonBody(request)).length)throw new Error('Unexpected body');body={source_channel_id:params(request).channelId,rule_id:params(request).ruleId,mode:'run'};}catch{return reply.code(422).send(new OperationError('operation_invalid_input',422).body(requestId));}
+    const key=request.headers['idempotency-key'];const result=await(await operationRuntime(context.config)).execute('source.processing.rule.dispatch',body,sessionActor({spaceId:auth.spaceId,userId:auth.userId}),requestId,typeof key==='string'?key:undefined);return reply.code(result.http_status).send(result.body);
   });
 
   app.get("/api/v1/sources/channels/:channelId/post-processing/runs", async (request, reply) => {
@@ -641,21 +486,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/sources/channels/:channelId/post-processing/rules/:ruleId/drain", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const connectionId = params(request).channelId ?? "";
-      const gate = await enforceSources(context, identity, "source.connection.manage", "source_channel", connectionId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(202).send(await postProcessing().drainRuleNow(
-        identity,
-        connectionId,
-        params(request).ruleId ?? "",
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
+  app.post("/api/v1/sources/channels/:channelId/post-processing/rules/:ruleId/drain",{config:{operation:'source.processing.rule.dispatch'}},async(request,reply)=>{
+    const requestId=resolveRequestId(request);reply.header('cache-control','private, no-store');
+    const auth=await introspectIdentity(context.config,request,reply);
+    if(!auth.ok){const error=auth.reason==='denied'?new OperationError(auth.statusCode===401?'authentication_required':'operation_not_found',auth.statusCode===401?401:404):new OperationError('operation_temporarily_unavailable',503,true);return reply.code(error.httpStatus).send(error.body(requestId));}
+    let body:Record<string,unknown>;try{if(Object.keys(jsonBody(request)).length)throw new Error('Unexpected body');body={source_channel_id:params(request).channelId,rule_id:params(request).ruleId,mode:'drain'};}catch{return reply.code(422).send(new OperationError('operation_invalid_input',422).body(requestId));}
+    const key=request.headers['idempotency-key'];const result=await(await operationRuntime(context.config)).execute('source.processing.rule.dispatch',body,sessionActor({spaceId:auth.spaceId,userId:auth.userId}),requestId,typeof key==='string'?key:undefined);return reply.code(result.http_status).send(result.body);
   });
 
   app.get("/api/v1/sources/post-processing/decisions", async (request, reply) => {
@@ -724,18 +560,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     } catch (error) {
       return sendRouteError(reply, error);
     }
-  });
-
-  app.patch("/api/v1/sources/connections/:connectionId", async (request, reply) => {
-    return reply.code(410).send({ detail: "Source connections are internal provenance; update the Source Channel" });
-  });
-
-  app.delete("/api/v1/sources/connections/:connectionId", async (request, reply) => {
-    return reply.code(410).send({ detail: "Source connections are internal provenance; archive the Source Channel" });
-  });
-
-  app.post("/api/v1/sources/connections/:connectionId/scan", async (request, reply) => {
-    return reply.code(410).send({ detail: "Scan the Source Channel instead" });
   });
 
   app.get("/api/v1/sources/items", async (request, reply) => {
@@ -851,17 +675,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/sources/jobs/:jobId/run", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const jobId = params(request).jobId ?? "";
-      const gate = await enforceSources(context, identity, "source.item_create", "extraction_job", jobId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await repository().runJob(identity, jobId));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
+  app.post("/api/v1/sources/jobs/:jobId/run",{config:{operation:'source.extraction.dispatch'}},async(request,reply)=>{
+    const requestId=resolveRequestId(request);reply.header('cache-control','private, no-store');
+    const auth=await introspectIdentity(context.config,request,reply);
+    if(!auth.ok){const error=auth.reason==='denied'?new OperationError(auth.statusCode===401?'authentication_required':'operation_not_found',auth.statusCode===401?401:404):new OperationError('operation_temporarily_unavailable',503,true);return reply.code(error.httpStatus).send(error.body(requestId));}
+    let body:Record<string,unknown>;try{if(Object.keys(jsonBody(request)).length)throw new Error('Unexpected body');body={extraction_job_id:params(request).jobId};}catch{return reply.code(422).send(new OperationError('operation_invalid_input',422).body(requestId));}
+    const key=request.headers['idempotency-key'];const result=await(await operationRuntime(context.config)).execute('source.extraction.dispatch',body,sessionActor({spaceId:auth.spaceId,userId:auth.userId}),requestId,typeof key==='string'?key:undefined);return reply.code(result.http_status).send(result.body);
   });
 
   app.get("/api/v1/sources/evidence", async (request, reply) => {

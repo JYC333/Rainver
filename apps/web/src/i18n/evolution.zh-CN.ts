@@ -206,6 +206,14 @@ export const evolutionZhCN = {
   "activate": "启用",
   "deactivate": "停用",
   "inbox_page": {
+    "decision_pending": "决定已排队，成员仍待处理。",
+    "decision_applying": "正在执行已批准的效果，整批尚未完成。",
+    "decision_compensating": "执行失败，正在恢复本次决定产生的外部效果。",
+    "decision_compensation_failed": "恢复需要处理，整批并未获批完成。",
+    "decision_failed": "决定执行失败，未提交本批成员批准。",
+    "decision_succeeded": "决定已完成。",
+    "refresh_decision": "刷新决定",
+
     "bundle_created": "已创建自进化批次",
     "granting_user_required": "此提案需要授权用户批准。",
     "incomplete_patch_skipped_one": "此代码补丁不完整，{{count}} 处被跳过的更改不会应用。仍要应用吗？",

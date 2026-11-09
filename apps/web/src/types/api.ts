@@ -1013,27 +1013,9 @@ export interface SourceRecipeVersion {
   superseded_at: string | null
 }
 
-export interface SourceRecipeCreateRequest extends SourceRecipePlanRequest {
-  name: string
-  recipe?: SourceRecipeDefinition
-}
-
-/**
- * The channel a recipe source was created with, keyed by its connection:
- * `id` is the connection id and `source_channel_id` the channel's own id, so
- * it is not a `SourceChannel` and must not be passed to channel routes as one.
- */
-export type SourceRecipeCreateConnection = Omit<SourceChannel, 'id'> & {
-  id: string
-  source_channel_id: string
-  handler_kind: 'recipe'
-  status: 'paused'
-}
-
-export interface SourceRecipeCreateResponse {
-  connection: SourceRecipeCreateConnection
-  recipe_version: SourceRecipeVersion
-}
+export type SourceRecipeCreateRequest = import('@rainver/protocol').SourceRecipeCreateInput
+export type SourceRecipeCreateResponse = import('@rainver/protocol').SourceRecipeCreateOutput
+export type SourceRecipeCreateConnection = SourceRecipeCreateResponse['connection']
 
 export interface SourceRecipePipelineBridgeRequest {
   handler_version_id?: string
@@ -1106,31 +1088,7 @@ export interface EvidenceLink {
   updated_at: string
 }
 
-export interface ProjectSourceBinding {
-  id: string
-  space_id: string
-  project_id: string
-  source_channel_id: string
-  binding_key: string
-  status: string
-  priority: number
-  delivery_scope: 'project_members' | 'source_subscribers'
-  collection_notifications_enabled: boolean
-  standing_comparison_enabled: boolean
-  filters_json: Record<string, unknown>
-  routing_policy_json: Record<string, unknown>
-  extraction_policy_json: Record<string, unknown>
-  extraction_profile?: {
-    key: string
-    display_name: string
-    entity_type: string
-    graph_lens_id: string | null
-  } | null
-  created_by_user_id: string | null
-  created_at: string
-  updated_at: string
-  backfill_result?: ProjectSourceBindingBackfillResult
-}
+export type ProjectSourceBinding = import('@rainver/protocol').OperationOutput<'project.source.bind'>
 
 export interface ProjectExtractionProfile {
   key: string
@@ -1141,15 +1099,7 @@ export interface ProjectExtractionProfile {
   is_default: boolean
 }
 
-export interface ProjectSourceBindingBackfillResult {
-  binding_id: string
-  project_id: string
-  source_connection_id: string
-  created_links: number
-  reactivated_links: number
-  archived_links: number
-  evidence_links: number
-}
+export type ProjectSourceBindingBackfillResult = import('@rainver/protocol').OperationOutput<'project.source.backfill'>
 
 export interface ProjectSourceItem {
   id: string
@@ -1184,15 +1134,7 @@ export interface SourceHealth {
   consecutive_failures: number
 }
 
-export interface SourceBackfillStrategy {
-  window_unit: 'date_window' | 'page_cursor' | 'id_cursor'
-  history_mode?: 'bounded_range' | 'all_available'
-  from: string | null
-  to: string | null
-  window_size: number
-  max_items: number
-  direction: 'backward' | 'forward'
-}
+export type SourceBackfillStrategy = import('@rainver/protocol').SourceBackfillStrategy
 
 export interface SourceBackfillQuotaPolicy {
   window: 'minute' | 'hour' | 'day'
@@ -1848,6 +1790,7 @@ export interface ChatActionPreview {
 export interface Task {
   id: string
   space_id: string
+  project_id: string | null
   task_role: 'source' | 'subtask' | string
   owner_user_id: string | null
   project_folder_id: string | null
@@ -2243,6 +2186,7 @@ export interface EvolutionBundleMember {
 }
 
 export interface EvolutionBundle {
+  decision?: import("@rainver/protocol").EvolutionBundleDecisionReceipt | null
   id: string
   space_id: string
   title: string

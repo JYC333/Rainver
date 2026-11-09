@@ -1,3 +1,5 @@
+import {insertProposalRow} from '../src/modules/proposals/reviewPackets.js';
+import {linkProposalOperation} from './support/linkedProposalOperation.js';
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { reconcileAutonomyRun, settleAutonomyCoordinator } from "../src/modules/autonomy/finalizationReconciler.js";
@@ -549,7 +551,7 @@ describeWithPostgres("bounded periodic digest launch", () => {
     expect(coordinator.rows[0]?.status).toBe("succeeded");
   });
 
-  it("cancels stale waiting-for-review Runs idempotently and leaves an operational alert", async () => {
+  it.each(["unlinked","linked","rollback","busy"])("cancels stale waiting-for-review Runs atomically and leaves an alert (%s)", async mode => {
     await seedProject(PROJECT_A, "Review Project", beforeNow(6 * DAY_MS));
     const launched = await launch();
     const runId = launched.launched_run_ids[0]!;
@@ -562,11 +564,42 @@ describeWithPostgres("bounded periodic digest launch", () => {
       risk_level: "low",
       paused_at: beforeNow(3 * HOUR_MS),
     });
+    let proposalId:string|undefined,coordinatorDraft:string|undefined;
+    if(mode!=='unlinked'){
+      const draft=await insertProposalRow(db.pool,{spaceId:SPACE,createdByRunId:runId,proposalType:'memory_create',title:'Review',payload:{proposed_content:'Frozen'},rationale:'test',createdByUserId:USER,visibility:'private'});
+      proposalId=draft.id;await linkProposalOperation(db.pool,{spaceId:SPACE,userId:USER},draft.id);
+      const coordinator=await insertProposalRow(db.pool,{spaceId:SPACE,createdByRunId:launched.coordinator_run_id,proposalType:'memory_create',title:'Coordinator review',payload:{proposed_content:'Frozen coordinator'},rationale:'test',createdByUserId:USER,visibility:'private'});
+      coordinatorDraft=coordinator.id;await linkProposalOperation(db.pool,{spaceId:SPACE,userId:USER},coordinator.id);
+      await db.pool.query("UPDATE proposals SET status='staged' WHERE id=$1",[coordinator.id]);
+      await db.pool.query("UPDATE proposals SET status='staged' WHERE id=$1",[draft.id]);
+    }
     const recovery = new AutonomyRecoveryService(db.pool);
+    if(mode==='busy'){
+      const blocker=await db.pool.connect();
+      try{await blocker.query('BEGIN');await blocker.query('SELECT id FROM runs WHERE id=$1 FOR UPDATE',[runId]);
+       await expect(recovery.cancelStaleWaitingForReview({maxAgeSeconds:3600,now:NOW})).resolves.toEqual({cancelled:0,run_ids:[]});
+       expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[runId])).rows[0]!.status).toBe('waiting_for_review');
+      }finally{await blocker.query('ROLLBACK');blocker.release();}
+    }
+
+    if(mode==='rollback'){
+      await db.pool.query("CREATE FUNCTION refuse_autonomy_request() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'autonomy request refused'; END $$");await db.pool.query('CREATE TRIGGER refuse_autonomy_request BEFORE UPDATE ON operation_idempotency FOR EACH ROW EXECUTE FUNCTION refuse_autonomy_request()');
+      try{
+        await expect(recovery.cancelStaleWaitingForReview({maxAgeSeconds:3600,now:NOW})).rejects.toThrow('autonomy request refused');
+        expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[runId])).rows[0]!.status).toBe('waiting_for_review');
+        expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[proposalId])).rows[0]!.state).toBe('pending_approval');
+        expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[proposalId])).rows[0]!.status).toBe('staged');
+        expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[coordinatorDraft])).rows[0]!.status).toBe('staged');
+      }finally{await db.pool.query('DROP TRIGGER refuse_autonomy_request ON operation_idempotency');await db.pool.query('DROP FUNCTION refuse_autonomy_request()');}
+      return;
+    }
+
     await expect(recovery.cancelStaleWaitingForReview({ maxAgeSeconds: 3_600, now: NOW }))
       .resolves.toMatchObject({ cancelled: 1, run_ids: [runId] });
     await expect(recovery.cancelStaleWaitingForReview({ maxAgeSeconds: 3_600, now: NOW }))
       .resolves.toMatchObject({ cancelled: 0, run_ids: [] });
+    if(proposalId)expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[proposalId])).rows[0]!.state).toBe('rejected');
+    if(coordinatorDraft)expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[coordinatorDraft])).rows[0]!.status).toBe('pending');
     const run = await db.pool.query<{ status: string; error_json: { error_code: string } }>(
       `SELECT status, error_json FROM runs WHERE id = $1`,
       [runId],

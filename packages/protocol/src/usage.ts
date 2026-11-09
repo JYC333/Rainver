@@ -192,6 +192,7 @@ export const UsageEventDTOSchema = z.object({
   provider_id: IdSchema.nullable(),
   provider_type: z.string().nullable(),
   provider_name_snapshot: z.string().nullable(),
+  provider_display_name: z.string().optional(),
   vendor: z.string().nullable(),
   model: z.string().nullable(),
   task: z.string().nullable(),

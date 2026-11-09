@@ -2,9 +2,9 @@ import { PgRoomRosterRepository } from "./rosterRepository.js";
 import { defaultRoomDelegationBudget } from "./delegationBudget.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
-import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
+import { getDbPool, type Pool } from "../../db/pool.js";
 import { AgentGroupRunService, type AgentGroupMessageRecipientSegment, type RoomCoordinationTarget } from "../agentGroups/service.js";
-import { HttpError, bestEffortStep, withDbTransaction, dateIso } from "../routeUtils/common.js";
+import { HttpError, type Queryable, bestEffortStep, withDbTransaction, dateIso } from "../routeUtils/common.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { PgRunRepository } from "../runs/repository.js";
 import type { AgentRunRecord } from "../runs/repository.js";
@@ -655,7 +655,7 @@ export class RoomService {
     });
   }
 
-  private async sendInTransaction(client: PoolClient, identity: RoomIdentity, roomId: string, sessionId: string, input: RoomSendInput) {
+  private async sendInTransaction(client: Queryable, identity: RoomIdentity, roomId: string, sessionId: string, input: RoomSendInput) {
     const rooms = new PgRoomRepository(client);
     const room = await requireRoom(rooms, identity, roomId, true);
     const conversation = await requireConversation(rooms, identity, roomId, sessionId);
@@ -683,7 +683,7 @@ export class RoomService {
    * service opens a discussion with the topic as the person's message and
    * stamps it in the same transaction.
    */
-  async sendMessageInTransaction(client: PoolClient, identity: RoomIdentity, roomId: string, sessionId: string, input: {
+  async sendMessageInTransaction(client: Queryable, identity: RoomIdentity, roomId: string, sessionId: string, input: {
     content: string;
     discussion_id?: string | null;
     discussion_intent?: "join" | "separate";
@@ -921,7 +921,7 @@ export class RoomService {
 
 
   private async ensureRoomManager(
-    client: PoolClient,
+    client: Queryable,
     rooms: PgRoomRepository,
     room: RoomRecord,
     identity: RoomIdentity,
@@ -1054,7 +1054,7 @@ export class RoomService {
    * `SAVEPOINT`.
    */
   async continueAfterDomainEventInTransaction(
-    client: PoolClient,
+    client: Queryable,
     identity: RoomIdentity,
     roomId: string,
     sessionId: string,
@@ -1125,7 +1125,7 @@ export class RoomService {
   }
 
   private async dispatchRoomMessage(
-    client: PoolClient,
+    client: Queryable,
     rooms: PgRoomRepository,
     room: RoomRecord,
     identity: RoomIdentity,
@@ -1514,7 +1514,7 @@ export class RoomService {
 
 /** Bind a person's explicit reply to the exact discussion they chose, in the send transaction. */
 async function joinPostedRoomMessage(
-  client: PoolClient,
+  client: Queryable,
   identity: RoomIdentity,
   roomId: string,
   sessionId: string,
@@ -1662,7 +1662,7 @@ export const UNATTRIBUTED_CONTINUATION: ContinuationCause = { run_id: null, with
  * root Run, which is the turn that started it. Null when the group has none.
  */
 export async function groupRootRunId(
-  db: Pick<PoolClient, "query">,
+  db: Queryable,
   spaceId: string,
   groupId: string | null,
 ): Promise<string | null> {
@@ -1725,7 +1725,7 @@ const MAX_ROOM_FOCUS_REFS = 4;
  * message, so this fails open to `null`.
  */
 async function buildRoomProjectStateContext(
-  client: PoolClient,
+  client: Queryable,
   identity: RoomIdentity,
   projectId: string,
   focusRefs: Array<{ type: "task"; id: string }> | null = null,
@@ -1859,7 +1859,7 @@ function stringArray(value: unknown): string[] {
  * normally.
  */
 async function describeRoomFocus(
-  client: PoolClient,
+  client: Queryable,
   identity: RoomIdentity,
   projectId: string,
   focusRefs: Array<{ type: "task"; id: string }> | null,

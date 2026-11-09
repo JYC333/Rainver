@@ -1,9 +1,10 @@
+import {withRunTerminalOwner} from '../../systemActions/operations/proposalTransitions.js';
 import { readingMethodContext } from './methodContext.js';
 import { registerReadingTrialSettlement } from './trials.js';
 import { registerRevisionProviderTrials } from './providerTrial.js';
 import { ReadingMethodGenerationSchema } from '@rainver/protocol';
 import type { z } from 'zod';
-import { HttpError, withDbTransaction, withQueryableTransaction, type Pool, type SpaceUserIdentity } from '../../routeUtils/common.js';
+import { HttpError, withDbTransaction, type Pool, type SpaceUserIdentity } from '../../routeUtils/common.js';
 import { PgRunRepository } from '../../runs/repository.js';
 import { enqueueProviderTaskRunJob, providerTaskRunPreparers } from '../../runs/providerTaskRunHandler.js';
 import { readingAsset } from './access.js';
@@ -161,7 +162,7 @@ export function registerRevisionProviderRuns() {
           throw new HttpError(422, 'Revision did not return JSON');
         }
         const output = ReadingMethodGeneratedOutputSchema.parse(raw);
-        await withQueryableTransaction(db, async tx => {
+        await withRunTerminalOwner(db,async()=>[{id:run.id,space_id:run.space_id}],async tx => {
           await (await import('../../runtimeContext/index.js')).lockReadingRunAuthority(tx, run);
           await assertGenerationDispatch(tx, run);
           await tx.query(`SELECT id FROM runs WHERE id=$1 FOR UPDATE`, [run.id]);

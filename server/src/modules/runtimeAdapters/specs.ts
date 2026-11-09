@@ -29,6 +29,7 @@ export interface RuntimeBinaryTarget {
   cmd: string;
   args: string[];
   sha256: string | null;
+  sha512?: string | null;
   env: Record<string, string>;
 }
 export type RuntimeDistribution =

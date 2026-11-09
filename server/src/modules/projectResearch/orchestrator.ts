@@ -1,3 +1,4 @@
+import {withRunTerminalOwner,researchGraphRunRefs} from '../systemActions/operations/proposalTransitions.js';
 import { assertResearchOperationChange } from "./researchCallAccess.js";
 import { ResearchCallOptionsSchema } from "@rainver/protocol";
 import { createBoundResearchOperation, retryResearchPreparation, resumeResearchSetup, reconcileResearchCall } from "./researchProblemCalls.js";
@@ -21,6 +22,7 @@ import { upsertSourceChannelScanTask } from "../sources/sourceConnectionSchedule
 import { computeNextCheckAt } from "../sources/sourceScanCadence.js";
 import { ProjectResearchRepository } from "./repository.js";
 import { ProjectResearchAreaService, registerResearchProviderTaskRuns } from "./areaService.js";
+import { registerResearchStageProviderTaskRuns } from "./researchStageTasks.js";
 import { ProjectResearchReportStatusService } from "./reportStatusService.js";
 import { rejectLegacyResearchRuntimeFields } from "./inputValidation.js";
 import {
@@ -249,7 +251,7 @@ export class ProjectResearchOrchestrator {
     input.agentId = execution.agentId;
     input.runtimeProfileId = execution.runtimeProfileId;
 
-    return withQueryableTransaction(this.db, (db) =>
+    return withRunTerminalOwner(this.db,db=>researchGraphRunRefs(db,identity.spaceId,projectId), (db) =>
       new ProjectResearchOrchestrator(db, this.config).startInitialIntakeLocked(identity, projectId, input),
     );
   }
@@ -351,7 +353,7 @@ export class ProjectResearchOrchestrator {
     body: Record<string, unknown>,
   ) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    return withQueryableTransaction(this.db, (db) =>
+    return withRunTerminalOwner(this.db,db=>researchGraphRunRefs(db,identity.spaceId,projectId), (db) =>
       new ProjectResearchOrchestrator(db, this.config).startHistoricalBackfillLocked(identity, projectId, workflowId, body),
     );
   }
@@ -402,14 +404,14 @@ export class ProjectResearchOrchestrator {
     strategy: "rescreen" | "synthesis_only" | "apply_forward",
   ) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    return withQueryableTransaction(this.db, (db) =>
+    return withRunTerminalOwner(this.db,db=>researchGraphRunRefs(db,identity.spaceId,projectId), (db) =>
       new ProjectResearchOrchestrator(db, this.config).resolveQuestionChangeLocked(identity, projectId, workflowId, strategy),
     );
   }
 
   async generateReportSnapshot(identity: SpaceUserIdentity, projectId: string) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    return withQueryableTransaction(this.db, async (db) => {
+    return withRunTerminalOwner(this.db,db=>researchGraphRunRefs(db,identity.spaceId,projectId), async (db) => {
       const service = new ProjectResearchOrchestrator(db, this.config);
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const workflow = await service.workflow(identity.spaceId, projectId, null, true);
@@ -680,67 +682,62 @@ export class ProjectResearchOrchestrator {
       steps: operationSteps(),
       state,
     });
-    try {
-      const planner = new SourceBackfillPlanningService(this.db, this.config);
-      const plans: Record<string, unknown>[] = [];
-      for (let index = 0; index < channelIds.length; index += 1) {
-        const plan = await planner.create(identity, channelIds[index]!, {
-          strategy: {
-            window_unit: "date_window",
-            history_mode: "bounded_range",
-            from: normalizedFrom,
-            to: normalizedTo,
-            window_size: 30,
-            max_items: maxItems,
-            direction: "backward",
-            monitoring_field: optionalString(objectValue(workflowState.monitoring).field) ?? "submittedDate",
-          },
-          quota_policy: { window: "minute", limit_count: 10 },
-          idempotency_key: `${idempotencyKey}:backfill:${channelIds[index]}`,
-          project_source_binding_id: bindingIds[index],
-          project_operation_id: operation.id,
-        });
-        await new SourceBackfillExecutionService(this.db).startUserAuthorized(
-          identity.spaceId,
-          String(plan.id),
-          operation.id,
-          identity.userId,
-        );
-        plans.push(plan);
-      }
-      state.source_backfill_plan_ids = plans.map((plan) => String(plan.id));
-      state.source_backfill_plan_id = state.source_backfill_plan_ids[0] ?? null;
-      state.coverage_ranges = [{ from: normalizedFrom, to: normalizedTo, operation_id: operation.id, status: "pending" }];
-      state.current_stage = "backfill";
-      state.stage_state = "running";
-      await this.setState(operation, state, [
-        { seq: 0, status: "skipped" },
-        { seq: 1, status: "active", detail: { plan_ids: state.source_backfill_plan_ids, authorization: "explicit_user_start" } },
-        { seq: 2, status: "pending" },
-        { seq: 3, status: "pending" },
-        { seq: 4, status: "pending" },
-      ]);
-      await this.appendWorkflowCoverage(identity.spaceId, projectId, workflowId, {
-        from: normalizedFrom,
-        to: normalizedTo,
-        operation_id: operation.id,
-        status: "pending",
+    const planner = new SourceBackfillPlanningService(this.db, this.config);
+    const plans: Record<string, unknown>[] = [];
+    for (let index = 0; index < channelIds.length; index += 1) {
+      const plan = await planner.create(identity, channelIds[index]!, {
+        strategy: {
+          window_unit: "date_window",
+          history_mode: "bounded_range",
+          from: normalizedFrom,
+          to: normalizedTo,
+          window_size: 30,
+          max_items: maxItems,
+          direction: "backward",
+          monitoring_field: optionalString(objectValue(workflowState.monitoring).field) ?? "submittedDate",
+        },
+        quota_policy: { window: "minute", limit_count: 10 },
+        idempotency_key: `${idempotencyKey}:backfill:${channelIds[index]}`,
+        project_source_binding_id: bindingIds[index],
+        project_operation_id: operation.id,
       });
-      await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "research_workflow", workflowId, "workflow_definition");
-      for (let index = 0; index < plans.length; index += 1) {
-        await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "project_source_binding", bindingIds[index]!, "source_binding");
-        await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "source_backfill_plan", String(plans[index]!.id), "history_backfill");
-      }
-      return this.readOperation(identity, projectId, operation.id);
-    } catch (error) {
-      await this.failOperation(operation, error instanceof Error ? error.message : "Historical backfill setup failed");
-      throw error;
+      await new SourceBackfillExecutionService(this.db).startUserAuthorized(
+        identity.spaceId,
+        String(plan.id),
+        operation.id,
+        identity.userId,
+      );
+      plans.push(plan);
     }
+    state.source_backfill_plan_ids = plans.map((plan) => String(plan.id));
+    state.source_backfill_plan_id = state.source_backfill_plan_ids[0] ?? null;
+    state.coverage_ranges = [{ from: normalizedFrom, to: normalizedTo, operation_id: operation.id, status: "pending" }];
+    state.current_stage = "backfill";
+    state.stage_state = "running";
+    await this.setState(operation, state, [
+      { seq: 0, status: "skipped" },
+      { seq: 1, status: "active", detail: { plan_ids: state.source_backfill_plan_ids, authorization: "explicit_user_start" } },
+      { seq: 2, status: "pending" },
+      { seq: 3, status: "pending" },
+      { seq: 4, status: "pending" },
+    ]);
+    await this.appendWorkflowCoverage(identity.spaceId, projectId, workflowId, {
+      from: normalizedFrom,
+      to: normalizedTo,
+      operation_id: operation.id,
+      status: "pending",
+    });
+    await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "research_workflow", workflowId, "workflow_definition");
+    for (let index = 0; index < plans.length; index += 1) {
+      await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "project_source_binding", bindingIds[index]!, "source_binding");
+      await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "source_backfill_plan", String(plans[index]!.id), "history_backfill");
+    }
+    return this.readOperation(identity, projectId, operation.id);
   }
 
   async triggerIncremental(identity: SpaceUserIdentity, projectId: string, workflowId: string, body: Record<string, unknown>) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    return withQueryableTransaction(this.db, async (db) => {
+    return withRunTerminalOwner(this.db,db=>researchGraphRunRefs(db,identity.spaceId,projectId), async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       return new ProjectResearchOrchestrator(db, this.config).triggerIncrementalLocked(identity, projectId, workflowId, body);
     });
@@ -854,6 +851,12 @@ export class ProjectResearchOrchestrator {
     checkpointId: string,
     body: Record<string, unknown>,
   ) {
+    await assertProjectWriter(this.db,identity.spaceId,projectId,identity.userId);
+    return withRunTerminalOwner(this.db,db=>researchGraphRunRefs(db,identity.spaceId,projectId),db=>
+      new ProjectResearchOrchestrator(db,this.config).decideCheckpointLocked(identity,projectId,workflowId,checkpointId,body));
+  }
+
+  private async decideCheckpointLocked(identity:SpaceUserIdentity,projectId:string,workflowId:string,checkpointId:string,body:Record<string,unknown>){
     const research = new ProjectResearchRepository(this.db);
     const checkpoint = await research.decideCheckpoint(identity, projectId, workflowId, checkpointId, body);
     if (checkpoint.user_decision === "approved" || checkpoint.user_decision === "waived") {
@@ -869,6 +872,13 @@ export class ProjectResearchOrchestrator {
   }
 
   async reconcileOperation(spaceId: string, operationId: string): Promise<void> {
+    const operation=await this.operation(spaceId,operationId);
+    if(!operation)return;
+    return withRunTerminalOwner(this.db,db=>researchGraphRunRefs(db,spaceId,operation.project_id),db=>
+      new ProjectResearchOrchestrator(db,this.config).reconcileOperationLocked(spaceId,operationId));
+  }
+
+  private async reconcileOperationLocked(spaceId:string,operationId:string):Promise<void>{
     await reconcileResearchCall(this.db,spaceId,operationId);
     const operation = await this.operation(spaceId, operationId);
     if (!operation || ["completed", "failed", "cancelled"].includes(operation.status)) return;
@@ -1356,7 +1366,7 @@ export class ProjectResearchOrchestrator {
         ?? optionalString(runError.message)
         ?? optionalString(runError.agent_run_error_code)
         ?? optionalString(runError.error_code);
-      const runLabel = stageKey === "monitor_compare" ? "Monitoring comparison run" : "Synthesis agent run";
+      const runLabel = stageKey === "monitor_compare" ? "Monitoring comparison run" : "Synthesis run";
       await this.failOperation(operation, `${runLabel} ${row.status}${detail ? `: ${detail}` : " with no recorded error detail"}`);
       return;
     }
@@ -1873,8 +1883,10 @@ export class ProjectResearchOrchestrator {
   }
 
   async reconcilePostProcessingRun(spaceId: string, runId: string): Promise<void> {
-    await withQueryableTransaction(this.db, (db) =>
-      new ProjectResearchOrchestrator(db, this.config).reconcilePostProcessingRunLocked(spaceId, runId));
+    await withRunTerminalOwner(this.db,async db=>{
+      const run=(await db.query<{project_id:string|null}>('SELECT project_id FROM source_post_processing_runs WHERE id=$1 AND space_id=$2',[runId,spaceId])).rows[0];
+      return run?.project_id?researchGraphRunRefs(db,spaceId,run.project_id):[];
+    },db=>new ProjectResearchOrchestrator(db,this.config).reconcilePostProcessingRunLocked(spaceId,runId));
   }
 
   private async reconcilePostProcessingRunLocked(spaceId: string, runId: string): Promise<void> {
@@ -2832,9 +2844,11 @@ export class ProjectResearchOrchestrator {
 
 export function registerProjectResearchHandler(registry: JobHandlerRegistry, config: ServerConfig): void {
   if (!config.databaseUrl) return;
-  // Research's bounded ProviderTask Runs are performed by the shared
-  // `provider_task_run` worker; this is where the module says how.
+  // Research's bounded ProviderTask Runs — ad-hoc analysis and the queued
+  // monitoring-comparison/synthesis/critique stages — are performed by the
+  // shared `provider_task_run` worker; this is where the module says how.
   registerResearchProviderTaskRuns();
+  registerResearchStageProviderTaskRuns();
   registry.register("project_research_execution_nudge", async (job): Promise<JobHandlerResult> => {
     const db = getDbPool(config.databaseUrl!);
     const orchestrator = new ProjectResearchOrchestrator(db, config);

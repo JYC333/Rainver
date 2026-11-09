@@ -1,3 +1,4 @@
+import {linkProposalOperation} from './support/linkedProposalOperation.js';
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -341,26 +342,44 @@ describe("imported history extraction", () => {
     expect(active.rows[0]!.confirmed_decisions_json).toContain("Use ACP");
   });
 
-  it("merges into a Brief proposal already waiting instead of opening a second that overwrites it", async () => {
+  it.each(["unlinked","linked","rollback"])("merges Brief evidence without drifting frozen payload (%s)", async mode => {
     await seedSession("space_shared", [record("m1", "first decision")]);
     stubExtractor((ids) => ({
       ...extraction(),
       decisions: [{ id: randomUUID(), text: "Decision one", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
     }));
     const first = await service().extract(identity, PROJECT, attended);
+    const frozen=(await db.pool.query('SELECT payload_json FROM proposals WHERE id=$1',[first.brief_proposal_id])).rows[0]!.payload_json;
+    const request=mode==='unlinked'?null:await linkProposalOperation(db.pool,identity,first.brief_proposal_id!);
 
     await seedSession("space_shared", [record("m2", "second decision"), record("m3", "and more")]);
     stubExtractor((ids) => ({
       ...extraction(),
       decisions: [{ id: randomUUID(), text: "Decision two", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
     }));
+    if(mode==='rollback'){
+      await db.pool.query("CREATE FUNCTION refuse_import_revision() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.state='superseded' THEN RAISE EXCEPTION 'import revision refused'; END IF; RETURN NEW; END $$");
+      await db.pool.query('CREATE TRIGGER refuse_import_revision BEFORE UPDATE ON operation_idempotency FOR EACH ROW EXECUTE FUNCTION refuse_import_revision()');
+      try{
+        await expect(service().extract(identity,PROJECT,attended)).rejects.toThrow('import revision refused');
+        expect((await db.pool.query('SELECT status,payload_json FROM proposals WHERE id=$1',[first.brief_proposal_id])).rows[0]).toEqual({status:'pending',payload_json:frozen});
+        expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE id=$1',[request])).rows[0]!.state).toBe('pending_approval');
+        expect((await db.pool.query('SELECT id FROM proposals')).rows).toEqual([{id:first.brief_proposal_id}]);
+        expect(await service().pending(identity,PROJECT)).toEqual({records:2,sessions:1});
+      }finally{await db.pool.query('DROP TRIGGER refuse_import_revision ON operation_idempotency');await db.pool.query('DROP FUNCTION refuse_import_revision()');}
+      return;
+    }
     const second = await service().extract(identity, PROJECT, attended);
-
+    if(mode==='linked'){
+      expect(second.brief_proposal_id).not.toBe(first.brief_proposal_id);
+      expect((await db.pool.query('SELECT status,payload_json FROM proposals WHERE id=$1',[first.brief_proposal_id])).rows[0]).toEqual({status:'superseded',payload_json:frozen});
+      expect((await db.pool.query('SELECT state,frozen_json FROM operation_idempotency WHERE id=$1',[request])).rows[0]).toMatchObject({state:'superseded',frozen_json:{payload:frozen}});
+    }
     // Each proposal carries a complete replacement for the decision list, so
     // two pending ones would silently drop each other's work.
-    expect(second.brief_proposal_id).toBe(first.brief_proposal_id);
+    if(mode==='unlinked')expect(second.brief_proposal_id).toBe(first.brief_proposal_id);
     const proposals = await db.pool.query<{ payload_json: { confirmed_decisions: string[] } }>(
-      `SELECT payload_json FROM proposals WHERE space_id = $1 AND proposal_type = 'project_brief_publish'`,
+      `SELECT payload_json FROM proposals WHERE space_id = $1 AND proposal_type = 'project_brief_publish' AND status='pending'`,
       [SPACE],
     );
     expect(proposals.rows).toHaveLength(1);

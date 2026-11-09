@@ -21,7 +21,8 @@ export async function resolveProjectResearchSynthesisPrompt(
     spaceId: string;
     userId: string;
     projectId: string;
-    agentId: string;
+    /** Agent-scoped prompt overrides; a bounded ProviderTask stage has no Agent. */
+    agentId?: string | null;
     researchQuestion: string;
     researchScope: ResearchScopeContext;
     reportDepth?: "quick" | "full";
@@ -52,7 +53,8 @@ export async function resolveProjectResearchCritiquePrompt(
     spaceId: string;
     userId: string;
     projectId: string;
-    agentId: string;
+    /** Agent-scoped prompt overrides; a bounded ProviderTask stage has no Agent. */
+    agentId?: string | null;
     researchQuestion: string;
     researchScope: ResearchScopeContext;
     reportDepth: "quick" | "full";
@@ -103,7 +105,8 @@ export async function resolveProjectResearchMonitorComparePrompt(
     spaceId: string;
     userId: string;
     projectId: string;
-    agentId: string;
+    /** Agent-scoped prompt overrides; a bounded ProviderTask stage has no Agent. */
+    agentId?: string | null;
     researchQuestion: string;
     currentUnderstanding: string;
     newMaterial: unknown[];

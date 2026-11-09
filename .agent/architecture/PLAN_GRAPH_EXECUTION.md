@@ -215,3 +215,34 @@ still open; it selects existing candidate Runs rather than starting one
 automatically. Runtime session
 checkpoint/resume is delivered — see the "Runtime session" section of ADR 0007
 and [../modules/rooms.md](../modules/rooms.md).
+
+## P5-4 review replacement boundary
+
+Agent replanning preflights its planning Run without locking, resolves all old
+review Proposal ids, and admits their request keys before locking Run/Task/Plan
+or changing versions. Superseding reviews, linked requests and old/new versions
+roll back together. A concurrently created review outside that admitted set
+conflicts and requires rereading; no late key or automatic retry is used.
+Budget/graph/human-review rules and plan_checkpoint semantics are unchanged.
+Pool-owned Plan and Workflow reconciliation additionally pre-discovers the
+existing coordinator Run and admits its linked requests before Project/Plan/
+version/execution locks. Original integration, graph scheduling and terminal CTEs
+run through the same prepared transaction port; a failed publication/request
+transition rolls the graph/root back. Action node savepoints recognize this
+existing transaction brand as well as checked-out clients.
+
+Canonical accept's true BEGIN owner now preflights visibility and prepares the
+combined checkpoint/cascade Proposal and related graph Run request set before
+Proposal/domain locks. Child transition calls reuse that exact admitted closure;
+Plan/Workflow checkpoint appliers retain their domain/event/scheduling behavior.
+Research-bound Workflow checkpoints include the related Project graph Run set.
+Required Job/publication failures roll back checkpoint approval, graph/root and
+request state together, with canonical failed-audit recovery after release.
+
+Research start/reconcile/checkpoint/post-processing roots also prepare their
+existing Project graph Runs before domain locks. Canonical Run insertion can
+register a newly created Run on the actual transaction scope; terminal publication
+checks it has no linked requests, rather than admitting keys after domain locks.
+Membership growth for existing Runs still conflicts. General handler effects,
+Evolution and production mapped-decision qualification remain separate; no new
+mapping or automatic write retry is enabled.

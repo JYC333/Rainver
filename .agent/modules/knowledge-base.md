@@ -821,3 +821,18 @@ root, initial revision, blocks, Inbox and indexing. Renaming preserves the typed
 association. Reader enforces both current document and Note access before giving
 its link; it opens the Note's actual Space. Deleting a document cannot delete the
 Note, while purging the Note root removes its navigational binding by foreign key.
+
+
+### Core Note-to-Question action
+
+`note.raise_as_question` is a strict user-only core command. The existing
+Project `POST /inquiry/threads/from-note` URL is a thin adapter; NoteEditor's
+existing selection action calls the typed generic command with an explicit
+request key and reloads the currently authorized Thread. Current active Project
+writer and source Note read access are checked and pinned before composing the
+canonical Thread/revision/outbox/work-event and Thread-to-Note reference writers.
+The Note remains unchanged. Question/hypothesis fields, parent, link kind and
+independent producer uniqueness remain supported. Receipt replay rechecks
+both current Project authority and Note/Thread reach. No Wiki approval, Agent
+permission or plain `note_links` policy is changed. The latter's reserved-deny
+versus existing UI conflict remains a separate recorded human decision.
