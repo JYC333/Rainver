@@ -1,3 +1,4 @@
+import {registerProjectFolderIoRoutes} from './ioOperationRoutes.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { stateChangingReadAllowed } from "../../gateway/csrfOrigin.js";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
@@ -21,7 +22,6 @@ interface ProjectFolderServices {
   repository: Pick<
     PgProjectFolderRepository,
     | "list"
-    | "create"
     | "scanCandidates"
     | "get"
     | "update"
@@ -32,7 +32,7 @@ interface ProjectFolderServices {
     | "getFile"
     | "getGitStatus"
     | "getGitDiff"
-  > & Partial<Pick<PgProjectFolderRepository, "listLocations" | "listHostExecutionTargets" | "listFileRevisions" | "getDraft" | "upsertDraft" | "discardDraft" | "draftQuota" | "saveDraft" | "restoreRevisionAsDraft" | "previewRevision">>;
+  > & Partial<Pick<PgProjectFolderRepository, "listLocations" | "listHostExecutionTargets" | "listFileRevisions" | "getDraft" | "upsertDraft" | "discardDraft" | "draftQuota" | "previewRevision">>;
 }
 
 type ProjectFolderServicesFactory = (context: ModuleContext) => ProjectFolderServices;
@@ -84,6 +84,7 @@ function folderId(request: FastifyRequest): string {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerProjectFolderIoRoutes(app, context);
   app.get("/api/v1/projects/:projectId/host-execution-targets", async (request, reply) => {
     try {
       const id = await identity(context, request, reply);
@@ -115,28 +116,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/folders", async (request, reply) => {
-    try {
-      const id = await identity(context, request, reply);
-      if (!id) return reply;
-      const folder = await services(context).repository.create(id, projectId(request), jsonBody(request));
-      return reply.code(201).send(folder);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/folders/scan", async (request, reply) => {
-    try {
-      const id = await identity(context, request, reply);
-      if (!id) return reply;
-      return reply.send({
-        items: await services(context).repository.scanCandidates(id, projectId(request)),
-      });
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
+
 
   app.get("/api/v1/projects/:projectId/folders/:folderId", async (request, reply) => {
     try {
@@ -325,17 +307,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/folders/:folderId/file/draft/save", async (request, reply) => {
-    try {
-      const id = await identity(context, request, reply);
-      if (!id) return reply;
-      const repository = services(context).repository;
-      if (!repository.saveDraft) return reply.code(501).send({ detail: "Project Folder draft saving is unavailable" });
-      return reply.send(await repository.saveDraft(id, projectId(request), folderId(request), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   app.get("/api/v1/projects/:projectId/folders/:folderId/drafts/quota", async (request, reply) => {
     try {
@@ -368,17 +340,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/folders/:folderId/file/revisions/restore-as-draft", async (request, reply) => {
-    try {
-      const id = await identity(context, request, reply);
-      if (!id) return reply;
-      const repository = services(context).repository;
-      if (!repository.restoreRevisionAsDraft) return reply.code(501).send({ detail: "Restore as draft is unavailable" });
-      return reply.send(await repository.restoreRevisionAsDraft(id, projectId(request), folderId(request), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   app.get("/api/v1/projects/:projectId/folders/:folderId/file/revisions/:revisionId/preview", async (request, reply) => {
     try {

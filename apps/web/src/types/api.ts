@@ -3608,6 +3608,7 @@ export interface ProjectFileDraftQuota {
 }
 
 export interface ProjectFileDraftSave {
+  current_draft?:ProjectFileDraft|null
   file: FileContent
   revision: ProjectFileRevision
   draft_deleted: boolean

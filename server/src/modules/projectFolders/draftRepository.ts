@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool.js";
-import { withTransaction } from "../../db/tx.js";
-import type { Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 
 export const PROJECT_FILE_DRAFT_MAX_BYTES = 1_048_576;
 export const PROJECT_FILE_DRAFT_MAX_TOTAL_BYTES = 50 * 1_048_576;
@@ -116,7 +114,7 @@ export class PgProjectFileDraftRepository {
     mutation: ProjectFileDraftMutation;
   }): Promise<ProjectFileDraftRow> {
     return this.withTransaction(async (db) => {
-      await lockDraftQuota(db, input.spaceId, input.ownerUserId);
+      await lockProjectFileDraftQuota(db, input.spaceId, input.ownerUserId);
       await db.query(
         `DELETE FROM project_file_drafts
           WHERE space_id = $1 AND owner_user_id = $2
@@ -221,8 +219,7 @@ export class PgProjectFileDraftRepository {
   }
 
   private async withTransaction<T>(fn: (db: Queryable) => Promise<T>): Promise<T> {
-    if (isPool(this.db)) return withTransaction(this.db, (client) => fn(client));
-    return fn(this.db);
+    return withQueryableTransaction(this.db, fn);
   }
 }
 
@@ -256,7 +253,7 @@ async function usedBytes(db: Queryable, spaceId: string, ownerUserId: string): P
   return Number(result.rows[0]?.used_bytes ?? 0);
 }
 
-async function lockDraftQuota(db: Queryable, spaceId: string, ownerUserId: string): Promise<void> {
+export async function lockProjectFileDraftQuota(db: Queryable, spaceId: string, ownerUserId: string): Promise<void> {
   await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`project_file_drafts:${spaceId}:${ownerUserId}`]);
 }
 
@@ -286,8 +283,4 @@ function dateIso(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "string") return new Date(value).toISOString();
   return new Date(0).toISOString();
-}
-
-function isPool(db: Queryable): db is Pool {
-  return typeof (db as Partial<Pool>).connect === "function";
 }

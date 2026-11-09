@@ -1,3 +1,4 @@
+import {registerProjectFolderIoHandler} from '../projectFolders/ioWorker.js';
 import {registerCodePatchDecisionHandler,recoverCodePatchDecisions} from '../projectFolders/codePatchDecision.js';
 import {registerBundleDecisionHandler,recoverBundleDecisionJobs} from '../evolution/bundleDecisionJob.js';
 import {registerRunProposalPublication} from '../runs/proposalPublicationJob.js';
@@ -100,6 +101,7 @@ export function buildJobHandlerRegistry(
   pluginHost?: PluginHost,
 ): JobHandlerRegistry {
   const registry = new JobHandlerRegistry();
+  registerProjectFolderIoHandler(registry, config);
   registerSourceGoalJob(registry,config);
   registerProjectReadingJobs(registry,config);
   registerAgentRunHandler(registry, config);

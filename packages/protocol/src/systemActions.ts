@@ -1,3 +1,4 @@
+import {PROJECT_FOLDER_IO_SCHEMAS,PROJECT_FOLDER_IO_TITLES} from './projectFolderIoOperations.js';
 import {KNOWLEDGE_REVIEW_SCHEMAS,KNOWLEDGE_REVIEW_TITLES} from './knowledgeReviewOperations.js';
 import {KNOWLEDGE_OBJECT_SCHEMAS} from './knowledgeObjectOperations.js';
 import {NOTE_OBJECT_SCHEMAS,NOTE_OBJECT_TITLES} from './noteObjectOperations.js';
@@ -486,6 +487,7 @@ const proposalInputs:Record<string,z.ZodType>={
 const visibility = (...values: SystemActionVisibility[]) => new Set(values);
 
 export const SYSTEM_ACTION_REGISTRY = [
+  ...Object.entries(PROJECT_FOLDER_IO_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_FOLDER_IO_SCHEMAS,PROJECT_FOLDER_IO_TITLES[id as keyof typeof PROJECT_FOLDER_IO_SCHEMAS],'projectFolders','Project Folder IO intent and Job owner',id==='project.folder.draft.save'?'project_folder.apply_patch':'project.folder.command','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
   { ...httpAction("system.actions.list", "List available operation entries", "systemActions", "OperationCatalog.list", "system.actions.list", "none"), input_schema:ActionCatalogInputSchema, output_schema:ActionCatalogOutputSchema, execution:{kind:"query",tx:"core_owned"} },
   { ...httpAction("room.collaboration.update_participants", "Change task collaboration participants", "agentGroups", "collaborationParticipantsOperation", "room.collaboration.manage", "durable"), input_schema: CollaborationParticipantsInputSchema, output_schema: CollaborationParticipantsOutputSchema, execution: {kind:"command",tx:"core_owned"} },
   agentAction("authorization.request", "Request authorization for a denied action", "policy", "AuthorizationRequestService.createFromDeniedDecision", "authorization.request.create", "durable", { resource_type: "authorization_request", resource_id_fallback: "run", check_action_approval_grant: false }),

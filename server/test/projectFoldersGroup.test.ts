@@ -1,3 +1,5 @@
+import type {Queryable} from '../src/modules/routeUtils/common.js';
+import {prepareFolderImport} from '../src/modules/projectFolders/ioDomain.js';
 import { mkdir, mkdtemp, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,12 +83,6 @@ describe("projectFoldersRoutes", () => {
         expect(bare.statusCode, path).toBe(403);
       }
 
-      const activated = await app.inject({
-        method: "POST",
-        url: "/api/v1/projects/project-1/folders/folder-1/locations/location-2/activate",
-      });
-      expect(activated.statusCode).toBe(200);
-      expect(activated.json()).toEqual({ id: "location-2", status: "active" });
     });
 
   });
@@ -104,7 +100,6 @@ describe("projectFoldersRoutes", () => {
   function fakeRepository(): Pick<
     PgProjectFolderRepository,
     | "list"
-    | "create"
     | "scanCandidates"
     | "get"
     | "update"
@@ -120,9 +115,6 @@ describe("projectFoldersRoutes", () => {
     return {
       async list() {
         return { items: [{ id: "folder-1", name: "Folder" }], total: 1, limit: 50, offset: 0 };
-      },
-      async create() {
-        return { id: "folder-1", name: "Folder" };
       },
       async scanCandidates() {
         return [];
@@ -166,8 +158,7 @@ describe("projectFoldersRoutes", () => {
     } as unknown as Pick<
       PgProjectFolderRepository,
       | "list"
-      | "create"
-      | "scanCandidates"
+        | "scanCandidates"
       | "get"
       | "update"
       | "archive"
@@ -309,17 +300,19 @@ describe("projectFoldersSecurity", () => {
       await mkdir(nested, { recursive: true });
       await mkdir(outside);
       await symlink(outside, join(spaceRoot, "escape"));
-      const repo = repository(new SecurityDb(), root);
+      const domainDb=new SecurityDb(),repo = repository(domainDb, root);
+      const adapter:Queryable={async query<Row>(sql:string){const result=await domainDb.query(sql);return {...result,rows:result.rows as Row[]};}};
+      const importCandidate=(name:string,path:string)=>prepareFolderImport(adapter,loadConfig({WORKSPACE_ROOT:root}),{id:'intent',space_id:identity.spaceId,project_id:'project-1',user_id:identity.userId,frozen_json:{input:{name,root_path:path}}});
 
       await expect(repo.scanCandidates(identity, "project-1")).resolves.toEqual([
         { name: "candidate", path: candidate },
       ]);
       await expect(
-        repo.create(identity, "project-1", { name: "Nested", root_path: nested }),
-      ).rejects.toThrow(/pick from scanCandidates/);
+        importCandidate("Nested",nested),
+      ).rejects.toMatchObject({code:"folder_scan_target_changed"});
       await expect(
-        repo.create(identity, "project-1", { name: "Escape", root_path: join(spaceRoot, "escape") }),
-      ).rejects.toThrow(/pick from scanCandidates/);
+        importCandidate("Escape",join(spaceRoot,"escape")),
+      ).rejects.toMatchObject({code:"folder_scan_target_changed"});
     });
 
     it("requires Project write access to unregister and never removes the physical directory", async () => {

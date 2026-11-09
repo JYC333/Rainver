@@ -12,6 +12,8 @@ export interface CommandResult {
    * have written.
    */
   incomplete?: boolean;
+  /** `onStdout` asked to stop: the caller has read all it wanted. */
+  stopped?: boolean;
 }
 
 export class GitCommandError extends Error {
@@ -26,6 +28,8 @@ export class GitCommandError extends Error {
 }
 
 export interface RunGitOptions {
+  /** Bounded Git blob reads use base64 without decoding arbitrary bytes as UTF-8. */
+  outputEncoding?:"utf8"|"base64";
   /** Extra variables layered over the process environment (e.g. `GIT_INDEX_FILE`). */
   env?: Record<string, string>;
   /**
@@ -34,6 +38,15 @@ export interface RunGitOptions {
    * whole output is held in memory before any caller can bound it.
    */
   maxOutputBytes?: number;
+  /** Written to stdin, then stdin is closed (e.g. `cat-file --batch-check`). Without it stdin is ignored. */
+  input?: string;
+  /**
+   * Stream stdout to the caller instead of holding it: each chunk is handed
+   * over and not kept (`stdout` stays empty). Returning false stops the
+   * command at once; the result is then marked `stopped`, not `incomplete`.
+   * `maxOutputBytes` does not apply.
+   */
+  onStdout?: (chunk: Buffer) => boolean;
 }
 
 export async function runGit(
@@ -290,6 +303,9 @@ async function runCommand(
 ): Promise<CommandResult> {
   return new Promise((resolveResult) => {
     let stdout = "";
+    const chunks:Buffer[]=[];
+    const output=()=>options.outputEncoding==='base64'?Buffer.concat(chunks).toString('base64'):stdout;
+    const append=(chunk:Buffer)=>{if(options.outputEncoding==='base64')chunks.push(Buffer.from(chunk));else stdout+=chunk.toString('utf8');};
     let stdoutBytes = 0;
     let stderr = "";
     let settled = false;
@@ -297,23 +313,37 @@ async function runCommand(
     const child = spawn(command, [...args], {
       cwd,
       shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
     });
+    if (options.input !== undefined) {
+      // A child that exits before reading stdin answers through `close`, not an EPIPE crash.
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(options.input);
+    }
     child.stdout?.on("data", (chunk: Buffer) => {
       if (settled) return;
+      if (options.onStdout) {
+        if (options.onStdout(chunk) === false) {
+          settled = true;
+          clearTimeout(timer);
+          child.kill("SIGKILL");
+          resolveResult({ code: -1, stdout: "", stderr, stopped: true });
+        }
+        return;
+      }
       stdoutBytes += chunk.byteLength;
       const limit = options.maxOutputBytes;
       if (limit !== undefined && stdoutBytes > limit) {
         const room = Math.max(0, limit - (stdoutBytes - chunk.byteLength));
-        stdout += chunk.subarray(0, room).toString("utf8");
+        append(chunk.subarray(0,room));
         settled = true;
         clearTimeout(timer);
         child.kill("SIGKILL");
-        resolveResult({ code: -1, stdout, stderr: stderr || "Command output exceeded the limit.", incomplete: true });
+        resolveResult({ code: -1, stdout:output(), stderr: stderr || "Command output exceeded the limit.", incomplete: true });
         return;
       }
-      stdout += chunk.toString("utf8");
+      append(chunk);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
@@ -322,19 +352,19 @@ async function runCommand(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolveResult({ code: -1, stdout, stderr: error.message });
+      resolveResult({ code: -1, stdout:output(), stderr: error.message });
     });
     child.on("close", (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolveResult({ code: code ?? -1, stdout, stderr });
+      resolveResult({ code: code ?? -1, stdout:output(), stderr });
     });
     timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       child.kill("SIGKILL");
-      resolveResult({ code: -1, stdout, stderr: stderr || "Command timed out.", incomplete: true });
+      resolveResult({ code: -1, stdout:output(), stderr: stderr || "Command timed out.", incomplete: true });
     }, timeoutMs);
   });
 }

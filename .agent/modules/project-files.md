@@ -344,3 +344,12 @@ proposal.apply and write_patch audits join the DB transaction, including unlinke
 standalone decisions. Recovery uses the original audit id after rollback/release.
 Active-fingerprint admission precedes failed-intent reset/enqueue; same-intent
 replay is allowed and another active intent gives409 before any domain/Job write.
+
+## Durable Folder IO commands
+
+Folder create/scan, exact draft save, and restore-as-draft now register through
+Operation Core. Admission records a project_folder_io_intents row and a Job
+in one short transaction; the worker owns filesystem/Host effects and recovery.
+The existing browser client polls the exact request and retains draft conflict
+information. These changes introduce migration 0016, separate from execution
+workspace isolation. Existing Project/Host ownership and approval boundaries remain.

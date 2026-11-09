@@ -1,3 +1,4 @@
+import {PROJECT_FOLDER_IO_SCHEMAS} from './projectFolderIoOperations.js';
 import {KNOWLEDGE_REVIEW_SCHEMAS} from './knowledgeReviewOperations.js';
 import {KNOWLEDGE_OBJECT_SCHEMAS} from './knowledgeObjectOperations.js';
 import {NOTE_OBJECT_SCHEMAS} from './noteObjectOperations.js';
@@ -144,6 +145,7 @@ export const CollaborationParticipantsOutputSchema = z.object({
   max_delegations: z.number().int().positive(),
 }).strict();
 export const OPERATION_SCHEMA_TABLE = {
+  ...PROJECT_FOLDER_IO_SCHEMAS,
   'source.processing.rule.create':{input:SourceProcessingCreateSchema,output:SourceProcessingRuleSchema},
   'source.processing.rule.update':{input:SourceProcessingUpdateSchema,output:SourceProcessingRuleSchema},
   'source.processing.rule.dispatch':{input:SourceProcessingDispatchSchema,output:SourceDispatchReceiptSchema},

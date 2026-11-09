@@ -249,7 +249,6 @@ import type {
   ProjectExtractionProfile,
   ProjectFolder,
   ProjectFolderCreateBody,
-  ProjectFolderScanCandidate,
   ProjectFolderUpdateBody,
   ProjectInstructionVersion,
   ProjectOperation,
@@ -2101,6 +2100,43 @@ export const automationsApi = {
 }
 
 // ── Project Folders ──────────────────────────────────────────────────────
+function folderRefusalMetadata(error:unknown):Record<string,unknown>|null{
+  if(!(error instanceof ApiRequestError))return null;
+  const failure=error.payload?.error as {metadata?:Record<string,unknown>}|undefined;
+  return failure?.metadata??null;
+}
+async function hydrateDraftConflict(error:unknown,projectId:string,folderId:string,spaceId:string):Promise<void>{
+  const metadata=folderRefusalMetadata(error);
+  if(metadata?.code!=='draft_version_conflict')return;
+  if(metadata.current_draft_id===null){Object.assign(error as object,{currentDraft:null});return;}
+  if(typeof metadata.current_draft_id!=='string')return;
+  try{
+    const current=await get<ProjectFileDraft>(`/projects/${encodeURIComponent(projectId)}/folders/${encodeURIComponent(folderId)}/file/drafts/${encodeURIComponent(metadata.current_draft_id)}`,{spaceId});
+    Object.assign(error as object,{currentDraft:current});
+  }catch{/* Retain the canonical refusal if current authority or the supplementary read fails. */}
+}
+async function readPrivateFolderDraft(receipt:{id:string;space_id:string;project_id:string;folder_id:string},version:number):Promise<ProjectFileDraft>{
+  const current=await get<ProjectFileDraft>(`/projects/${encodeURIComponent(receipt.project_id)}/folders/${encodeURIComponent(receipt.folder_id)}/file/drafts/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id});
+  if(current.version!==version){const error=new ApiRequestError('The draft changed in another tab',409,'operation_conflict',{error:{code:'operation_conflict',metadata:{code:'draft_version_conflict',current_draft_id:current.id,current_version:current.version}}});throw Object.assign(error,{currentDraft:current});}
+  return current;
+}
+async function waitForFolderIo(receipt:import('@rainver/protocol').OperationOutput<'project.folder.scan'>):Promise<import('@rainver/protocol').ProjectFolderIoStatus>{
+  const started=Date.now(),authGeneration=_authContextGeneration;
+  for(;;){
+    if(authGeneration!==_authContextGeneration)throw new ApiRequestError('The session changed while the Folder request was running',401,'authentication_required');
+    const current=await get<import('@rainver/protocol').ProjectFolderIoStatus>(`/projects/${encodeURIComponent(receipt.project_id)}/folder-io/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id});
+    if(current.status==='succeeded')return current;
+    if(current.status==='failed'||current.status==='needs_attention'){
+      const code=current.error?.code??'folder_io_requires_attention';
+      const invalid=['draft_quota_exceeded','draft_revision_too_large','mixed_line_endings_confirmation_required'].includes(code);
+      const message=code==='mixed_line_endings_confirmation_required'?'Saving this draft requires confirmation to normalize mixed line endings':current.status==='needs_attention'?'The Folder request needs attention; open the Job Queue before trying another change':'The Folder request could not complete';
+      const error=new ApiRequestError(message,invalid?422:409,invalid?'operation_invalid_input':'operation_conflict',{error:{code:invalid?'operation_invalid_input':'operation_conflict',metadata:{code,...current.error?.metadata,intent_id:receipt.id,job_id:receipt.job_id}}});
+      if(receipt.folder_id)await hydrateDraftConflict(error,receipt.project_id,receipt.folder_id,receipt.space_id);throw error;
+    }
+    if(Date.now()-started>150000)throw new ApiRequestError('The Folder request is still running; check the Job Queue',503,'operation_temporarily_unavailable',{error:{code:'operation_temporarily_unavailable',metadata:{intent_id:receipt.id,job_id:receipt.job_id}}});
+    await new Promise(resolve=>setTimeout(resolve,250));
+  }
+}
 export const projectFoldersApi = {
   list:    (projectId: string, params: Record<string, string> = {}, options?: RequestOptions) =>
     get<Page<ProjectFolder>>(`/projects/${projectId}/folders?` + new URLSearchParams(params), options),
@@ -2112,10 +2148,13 @@ export const projectFoldersApi = {
     }))).filter((folder): folder is ProjectFolder => folder !== null)
     return { ...page, items: ready, total: ready.length }
   },
-  create:  (projectId: string, data: ProjectFolderCreateBody) =>
-    post<ProjectFolder>(`/projects/${projectId}/folders`, data),
-  scan:    (projectId: string) =>
-    post<{ items: ProjectFolderScanCandidate[] }>(`/projects/${projectId}/folders/scan`),
+  create:async(projectId:string,data:ProjectFolderCreateBody,key:string=crypto.randomUUID())=>{
+    const receipt=await noteObjectCall('project.folder.create',{...data,project_id:projectId},key),status=await waitForFolderIo(receipt);
+    if(status.result?.kind!=='create')throw new Error('Folder creation receipt is unavailable');return get<ProjectFolder>(`/projects/${encodeURIComponent(receipt.project_id)}/folders/${encodeURIComponent(status.result.folder_id)}`,{spaceId:receipt.space_id});
+  },
+  scan:async(projectId:string,key:string=crypto.randomUUID())=>{
+    const receipt=await noteObjectCall('project.folder.scan',{project_id:projectId},key),status=await waitForFolderIo(receipt);if(status.result?.kind!=='scan')throw new Error('Folder scan receipt is unavailable');return {items:status.result.items};
+  },
   get:     (projectId: string, folderId: string) =>
     get<ProjectFolder>(`/projects/${projectId}/folders/${folderId}`),
   locations: (projectId: string, folderId: string, options: RequestOptions = {}) =>
@@ -2162,18 +2201,21 @@ export const projectFoldersApi = {
   }) => post<ProjectFileDraft>(`/projects/${projectId}/folders/${folderId}/file/draft/rebase`, data),
   discardDraft: (projectId: string, folderId: string, draftId: string, draftVersion: number) =>
     post<{ discarded: true }>(`/projects/${projectId}/folders/${folderId}/file/draft/discard`, { draft_id: draftId, draft_version: draftVersion }),
-  saveDraft: (projectId: string, folderId: string, draftId: string, draftVersion: number, confirmMixedLineEndingNormalization = false) =>
-    post<ProjectFileDraftSave>(`/projects/${projectId}/folders/${folderId}/file/draft/save`, {
-      draft_id: draftId,
-      draft_version: draftVersion,
-      confirm_mixed_line_ending_normalization: confirmMixedLineEndingNormalization,
-    }),
+  saveDraft:async(projectId:string,folderId:string,draftId:string,draftVersion:number,confirmMixedLineEndingNormalization=false,key:string=crypto.randomUUID()):Promise<ProjectFileDraftSave>=>{
+    const receipt=await noteObjectCall('project.folder.draft.save',{project_id:projectId,folder_id:folderId,draft_id:draftId,draft_version:draftVersion,confirm_mixed_line_ending_normalization:confirmMixedLineEndingNormalization},key),status=await waitForFolderIo(receipt);
+    if(status.result?.kind!=='save_draft')throw new Error('File save receipt is unavailable');
+    const result=status.result,path=encodeURIComponent(result.path),location=encodeURIComponent(result.workspace_location_id),base=`/projects/${encodeURIComponent(receipt.project_id)}/folders/${encodeURIComponent(folderId)}`;
+    const [file,currentDraft]=await Promise.all([get<FileContent>(`${base}/file?path=${path}&workspace_location_id=${location}`,{spaceId:receipt.space_id}),get<ProjectFileDraft|null>(`${base}/file/draft?path=${path}&workspace_location_id=${location}`,{spaceId:receipt.space_id})]);
+    return {file,revision:result.revision,draft_deleted:result.draft_deleted,newer_draft_retained:currentDraft!==null,current_draft:currentDraft};
+  },
   draftQuota: (projectId: string, folderId: string) =>
     get<ProjectFileDraftQuota>(`/projects/${projectId}/folders/${folderId}/drafts/quota`),
   fileRevisions: (projectId: string, folderId: string, path: string) =>
     get<ProjectFileRevision[]>(`/projects/${projectId}/folders/${folderId}/file/revisions?path=${encodeURIComponent(path)}`),
-  restoreRevisionAsDraft: (projectId: string, folderId: string, revisionId: string) =>
-    post<ProjectFileDraft>(`/projects/${projectId}/folders/${folderId}/file/revisions/restore-as-draft`, { revision_id: revisionId }),
+  restoreRevisionAsDraft:async(projectId:string,folderId:string,revisionId:string,key:string=crypto.randomUUID())=>{
+    const receipt=await noteObjectCall('project.folder.revision.restore',{project_id:projectId,folder_id:folderId,revision_id:revisionId},key),status=await waitForFolderIo(receipt);
+    if(status.result?.kind!=='restore_revision')throw new Error('Revision restore receipt is unavailable');return readPrivateFolderDraft({id:status.result.draft_id,space_id:receipt.space_id,project_id:receipt.project_id,folder_id:folderId},status.result.version);
+  },
   previewRevision: (projectId: string, folderId: string, revisionId: string) =>
     get<{ revision: ProjectFileRevision; content: string | null }>(`/projects/${projectId}/folders/${folderId}/file/revisions/${encodeURIComponent(revisionId)}/preview`),
   gitStatus: (projectId: string, folderId: string) =>

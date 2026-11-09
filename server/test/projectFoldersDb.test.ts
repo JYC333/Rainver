@@ -1,3 +1,6 @@
+import {folderIoHarness} from './support/folderIoHarness.js';
+import * as folderIoDomain from '../src/modules/projectFolders/ioDomain.js';
+import {FolderIoRefusal} from '../src/modules/projectFolders/ioIntentRepository.js';
 import { join } from "node:path";
 import { seedServerHost, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -56,6 +59,7 @@ beforeEach(async () => {
     [PROJECT, SECOND_PROJECT, OTHER_PROJECT, SPACE, USER, OTHER_SPACE],
   );
   await seedMainlineRoomsForAllProjects(db.pool);
+  await db.pool.query("INSERT INTO space_memberships(id,space_id,user_id,role,status,created_at,updated_at) VALUES(gen_random_uuid()::varchar,$1,$3,'member','active',now(),now()),(gen_random_uuid()::varchar,$2,$3,'member','active',now(),now())",[SPACE,OTHER_SPACE,USER]);
 });
 
 async function insertFolder(
@@ -89,7 +93,7 @@ async function insertFolder(
  * Save to Folder is the only human write path onto a Host. These tests use a
  * real database. The route tests next door do not.
  */
-async function draftFolder(pool: Pool, id: string): Promise<{ folderRoot: string; repo: PgProjectFolderRepository; cleanup: () => Promise<void> }> {
+async function draftFolder(pool: Pool, id: string): Promise<{ folderRoot: string; repo: PgProjectFolderRepository; io:Awaited<ReturnType<typeof folderIoHarness>>; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(join(tmpdir(), "rainver-folder-drafts-"));
   const workspaceRoot = join(root, "workspaces");
   const folderRoot = join(workspaceRoot, id);
@@ -97,6 +101,7 @@ async function draftFolder(pool: Pool, id: string): Promise<{ folderRoot: string
   await insertFolder(pool, { id, rootPath: folderRoot });
   return {
     folderRoot,
+    io:await folderIoHarness(pool,loadConfig({WORKSPACE_ROOT:workspaceRoot,SERVER_DATABASE_URL:db.connectionUri}),{spaceId:SPACE,userId:USER}),
     repo: new PgProjectFolderRepository(
       pool,
       loadConfig({ WORKSPACE_ROOT: workspaceRoot, SERVER_DATABASE_URL: db.connectionUri }),
@@ -439,7 +444,8 @@ describe("Project Folder database invariants", () => {
         loadConfig({ WORKSPACE_ROOT: join(root, "workspaces"), SERVER_DATABASE_URL: db.connectionUri }),
       );
       const identity = { spaceId: SPACE, userId: USER };
-      const created = await repo.create(identity, PROJECT, { name: "New Managed Folder" });
+      const io=await folderIoHarness(db.pool,loadConfig({WORKSPACE_ROOT:join(root,'workspaces'),SERVER_DATABASE_URL:db.connectionUri}),identity);
+      const created = await io.run('project.folder.create',{project_id:PROJECT,name:'New Managed Folder'});
       const row = await db.pool.query<{
         execution_host_id: string;
         execution_host_kind: string;
@@ -447,17 +453,17 @@ describe("Project Folder database invariants", () => {
       }>(
         `SELECT execution_host_id, execution_host_kind, root_path
            FROM workspace_locations WHERE project_folder_id = $1`,
-        [created.id],
+        [created.folder_id],
       );
       expect(row.rows[0]).toMatchObject({ execution_host_id: HOST, execution_host_kind: "server" });
-      expect(await repo.getGitStatus(identity, PROJECT, created.id)).toMatchObject({
+      expect(await repo.getGitStatus(identity, PROJECT, String(created.folder_id))).toMatchObject({
         is_repo: true,
         files: [],
         truncated: false,
       });
 
       await writeFile(join(row.rows[0]!.root_path, "created.txt"), "created\n", "utf8");
-      await expect(repo.getGitStatus(identity, PROJECT, created.id)).resolves.toMatchObject({
+      await expect(repo.getGitStatus(identity, PROJECT, String(created.folder_id))).resolves.toMatchObject({
         is_repo: true,
         files: [{ path: "created.txt", status: "untracked" }],
       });
@@ -644,7 +650,7 @@ describe("Project Folder database invariants", () => {
   it("does not restore a deleted file over the unsaved new file the person is writing elsewhere", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const folderId = "17171717-1717-4717-8717-171717171717";
-    const { repo, cleanup } = await draftFolder(db.pool, folderId);
+    const { repo, io, cleanup } = await draftFolder(db.pool, folderId);
     try {
       const identity = { spaceId: SPACE, userId: USER };
       const location = (await db.pool.query<{ id: string }>(
@@ -658,8 +664,8 @@ describe("Project Folder database invariants", () => {
         path: "a.txt", beforeExists: true, beforeContent: "old a\n", afterExists: true, afterSha256: null, userId: USER,
       });
 
-      await expect(repo.restoreRevisionAsDraft(identity, PROJECT, folderId, { revision_id: revision.id }))
-        .rejects.toMatchObject({ statusCode: 409, responseBody: expect.objectContaining({ code: "draft_version_conflict" }) });
+      await expect(io.run('project.folder.revision.restore',{project_id:PROJECT,folder_id:folderId,revision_id:revision.id}))
+        .rejects.toMatchObject({ statusCode: 409, code: "draft_version_conflict" });
       await expect(db.pool.query<{ relative_path: string; content: string }>(
         `SELECT relative_path, content FROM project_file_drafts WHERE id = $1`, [todo.id],
       )).resolves.toMatchObject({ rows: [{ relative_path: "notes/todo.md", content: "- buy milk\n" }] });
@@ -669,7 +675,7 @@ describe("Project Folder database invariants", () => {
         spaceId: SPACE, projectId: PROJECT, projectFolderId: folderId, workspaceLocationId: location,
         path: "big.txt", beforeExists: true, beforeContent: "x".repeat(1_048_577), afterExists: true, afterSha256: null, userId: USER,
       });
-      await expect(repo.restoreRevisionAsDraft(identity, PROJECT, folderId, { revision_id: oversized.id }))
+      await expect(io.run('project.folder.revision.restore',{project_id:PROJECT,folder_id:folderId,revision_id:oversized.id}))
         .rejects.toMatchObject({ statusCode: 422 });
     } finally {
       await cleanup();
@@ -681,21 +687,21 @@ describe("Project Folder database invariants", () => {
    *  into a 404. This draft creates the file. */
   it("creates a file that is not on the local host yet", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
-    const { folderRoot, repo, cleanup } = await draftFolder(db.pool, "16161616-1616-4616-8616-161616161616");
+    const { folderRoot, repo, io, cleanup } = await draftFolder(db.pool, "16161616-1616-4616-8616-161616161616");
     try {
       const identity = { spaceId: SPACE, userId: USER };
       const folderId = "16161616-1616-4616-8616-161616161616";
       const content = "# Today\n";
       const draft = await repo.upsertDraft(identity, PROJECT, folderId, draftBody({ content, relativePath: "today.md" }));
 
-      const saved = await repo.saveDraft(identity, PROJECT, folderId, {
+      const saved = await io.run('project.folder.draft.save',{project_id:PROJECT,folder_id:folderId,
         draft_id: draft.id,
         draft_version: draft.version,
       });
 
       expect(saved).toMatchObject({
         draft_deleted: true,
-        file: { path: "today.md", content },
+        kind:'save_draft',path:'today.md',
         revision: { path: "today.md", before_exists: false, after_exists: true },
       });
       await expect(readFile(join(folderRoot, "today.md"), "utf8")).resolves.toBe(content);
@@ -708,10 +714,10 @@ describe("Project Folder database invariants", () => {
     }
   });
 
-  it("removes a newly-created file when database commit fails after the physical write", async (ctx) => {
+  it("recovers a recorded file effect after its final database transaction fails", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const folderId = "13131313-1313-4313-8313-131313131313";
-    const { folderRoot, repo, cleanup } = await draftFolder(db.pool, folderId);
+    const { folderRoot, repo, io, cleanup } = await draftFolder(db.pool, folderId);
     const revisionFailure = vi.spyOn(PgProjectFileRevisionStore.prototype, "createInTransaction")
       .mockRejectedValueOnce(new Error("forced revision failure"));
     try {
@@ -721,12 +727,15 @@ describe("Project Folder database invariants", () => {
         relativePath: "rollback.txt",
       }));
 
-      await expect(repo.saveDraft(identity, PROJECT, folderId, {
+      await expect(io.run('project.folder.draft.save',{project_id:PROJECT,folder_id:folderId,
         draft_id: draft.id,
         draft_version: draft.version,
-      })).rejects.toThrow("forced revision failure");
-      await expect(readFile(join(folderRoot, "rollback.txt"), "utf8"))
-        .rejects.toMatchObject({ code: "ENOENT" });
+      })).rejects.toMatchObject({code:'folder_io_incomplete'});
+      await expect(readFile(join(folderRoot,'rollback.txt'),'utf8')).resolves.toBe('temporary\n');
+      revisionFailure.mockRestore();
+      await db.pool.query("UPDATE jobs SET scheduled_at=now()-interval '1 second' WHERE job_type='project_folder_io'");
+      expect((await io.process()).status).toBe('completed');
+      expect((await db.pool.query('SELECT id FROM project_file_revisions WHERE project_folder_id=$1',[folderId])).rows).toHaveLength(1);
     } finally {
       revisionFailure.mockRestore();
       await cleanup();
@@ -736,10 +745,82 @@ describe("Project Folder database invariants", () => {
   /** The save result is what the editor keeps as the file's current state.
    *  It has to be byte-honest. Do not report the body without `has_bom`.
    *  The next save would strip the BOM off a Windows-authored file. */
+  it.each(['resume','independent_edit','revoked','cancelled'] as const)('settles an unacknowledged write safely: %s',async(mode)=>{
+    if(!db.available)return;
+    const folderId=randomUUID(),{folderRoot,repo,io,cleanup}=await draftFolder(db.pool,folderId);
+    const secret='PRIVATE frozen draft body\n',path='unknown.txt',input={project_id:PROJECT,folder_id:folderId};
+    const write=vi.spyOn(folderIoDomain,'writeFrozenDraft').mockImplementationOnce(async()=>{
+      // The physical effect happened; only its acknowledgement was lost.
+      await writeFile(join(folderRoot,path),secret);
+      throw new FolderIoRefusal('folder_write_unconfirmed');
+    });
+    try{
+      const draft=await repo.upsertDraft({spaceId:SPACE,userId:USER},PROJECT,folderId,draftBody({content:secret,relativePath:path}));
+      const command={...input,draft_id:draft.id,draft_version:draft.version},accepted=await io.submit('project.folder.draft.save',command);
+      expect(accepted.http_status).toBe(202);
+      const receipt=('data'in accepted.body?accepted.body.data:null) as{id:string;job_id:string};
+      await io.process();write.mockRestore();
+      expect(await io.read(receipt.id)).toMatchObject({status:'prepared',effect_json:{write_started:true}});
+      if(mode==='independent_edit')await writeFile(join(folderRoot,path),'Independent editor\n');
+      if(mode==='revoked')await db.pool.query("UPDATE projects SET status='archived' WHERE id=$1",[PROJECT]);
+      if(mode==='cancelled')await io.queue.cancelJob(receipt.job_id,null);
+      else{
+        await db.pool.query("UPDATE jobs SET scheduled_at=now()-interval '1 second' WHERE id=$1",[receipt.job_id]);
+        await io.process();
+      }
+      if(mode==='resume'){
+        const finished=await io.read(receipt.id);
+        expect(finished.status).toBe('succeeded');expect(JSON.stringify(finished.frozen_json)).not.toContain(secret);expect(JSON.stringify(finished.effect_json)).not.toContain(secret);
+        expect(finished.effect_json).toMatchObject({applied:true,after_sha256:createHash('sha256').update(secret).digest('hex')});
+        expect((await db.pool.query('SELECT id FROM project_file_revisions WHERE project_folder_id=$1',[folderId])).rows).toHaveLength(1);
+      }else{
+        if(mode==='revoked')await db.pool.query("UPDATE projects SET status='active' WHERE id=$1",[PROJECT]);
+        const refused=await io.submit('project.folder.draft.save',command);
+        expect(refused.http_status).toBe(409);
+        expect(JSON.stringify(refused.body)).not.toContain(secret);
+        const pending=await io.read(receipt.id);
+        // Cancelled Job reconciliation is lazy at admission. Regardless of the
+        // materialized status, the old durable scope always fences fresh keys.
+        if(mode!=='cancelled')expect(pending.status).toBe('needs_attention');
+        expect(JSON.stringify(pending.frozen_json)).toContain('PRIVATE frozen draft body');
+        expect(pending.effect_json).toMatchObject({write_started:true,desired:{content:secret}});
+      }
+      await expect(readFile(join(folderRoot,path),'utf8')).resolves.toBe(mode==='independent_edit'?'Independent editor\n':secret);
+    }finally{write.mockRestore();await cleanup();}
+  });
+
+  it('releases a cancelled pre-effect intent with body cleanup before accepting a fresh key',async(ctx)=>{
+    if(!db.available)return ctx.skip();
+    const folderId=randomUUID(),{repo,io,cleanup}=await draftFolder(db.pool,folderId);
+    try{
+      const draft=await repo.upsertDraft({spaceId:SPACE,userId:USER},PROJECT,folderId,draftBody({content:'PRIVATE cancelled body',relativePath:'cancelled.txt'}));
+      const input={project_id:PROJECT,folder_id:folderId,draft_id:draft.id,draft_version:draft.version};
+      const accepted=await io.submit('project.folder.draft.save',input),receipt=('data'in accepted.body?accepted.body.data:null) as{id:string;job_id:string};
+      expect(await io.queue.cancelJob(receipt.job_id,null)).toBe(true);
+      expect((await io.submit('project.folder.draft.save',input)).http_status).toBe(202);
+      const old=await io.read(receipt.id);expect(old).toMatchObject({status:'failed',error_code:'folder_job_cancelled'});
+      expect(JSON.stringify(old.frozen_json)).not.toContain('PRIVATE cancelled body');
+      expect((await io.process()).status).toBe('completed');
+    }finally{await cleanup();}
+  });
+
+  it('drops private body copies after a safe refusal without writing a file',async(ctx)=>{
+    if(!db.available)return ctx.skip();
+    const folderId=randomUUID(),{repo,io,cleanup}=await draftFolder(db.pool,folderId);
+    try{
+      const draft=await repo.upsertDraft({spaceId:SPACE,userId:USER},PROJECT,folderId,draftBody({content:'PRIVATE obsolete body',relativePath:'old.txt'}));
+      const accepted=await io.submit('project.folder.draft.save',{project_id:PROJECT,folder_id:folderId,draft_id:draft.id,draft_version:draft.version}),receipt=('data'in accepted.body?accepted.body.data:null) as{id:string};
+      await repo.upsertDraft({spaceId:SPACE,userId:USER},PROJECT,folderId,draftBody({content:'New body',relativePath:'old.txt',expectedVersion:draft.version}));
+      await io.process();const old=await io.read(receipt.id);
+      expect(old).toMatchObject({status:'failed',error_code:'draft_version_conflict'});
+      expect(JSON.stringify(old.frozen_json)).not.toContain('PRIVATE obsolete body');expect(JSON.stringify(old.effect_json)).not.toContain('PRIVATE obsolete body');
+    }finally{await cleanup();}
+  });
+
   it("reports a saved file exactly as a fresh read would, BOM included", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const folderId = "17171717-1717-4717-8717-171717171717";
-    const { folderRoot, repo, cleanup } = await draftFolder(db.pool, folderId);
+    const { folderRoot, repo, io, cleanup } = await draftFolder(db.pool, folderId);
     try {
       const identity = { spaceId: SPACE, userId: USER };
       const filePath = join(folderRoot, "bom.txt");
@@ -752,13 +833,14 @@ describe("Project Folder database invariants", () => {
       const firstDraft = await repo.upsertDraft(identity, PROJECT, folderId, draftBody({
         content: firstEdit, relativePath: "bom.txt", baseSha256: opened.sha256, preserveBom: true,
       }));
-      const saved = await repo.saveDraft(identity, PROJECT, folderId, {
+      await io.run('project.folder.draft.save',{project_id:PROJECT,folder_id:folderId,
         draft_id: firstDraft.id, draft_version: firstDraft.version,
       });
 
       const onDisk = await readFile(filePath);
       expect(onDisk.subarray(0, 3)).toEqual(bom);
-      expect(saved.file).toMatchObject({
+      const savedFile=await repo.getFile(identity,PROJECT,folderId,'bom.txt');
+      expect(savedFile).toMatchObject({
         content: firstEdit,
         encoding: "utf8",
         has_bom: true,
@@ -772,10 +854,10 @@ describe("Project Folder database invariants", () => {
       const secondDraft = await repo.upsertDraft(identity, PROJECT, folderId, draftBody({
         content: secondEdit,
         relativePath: "bom.txt",
-        baseSha256: saved.file.sha256,
-        preserveBom: Boolean(saved.file.has_bom),
+        baseSha256: savedFile.sha256,
+        preserveBom: Boolean(savedFile.has_bom),
       }));
-      await repo.saveDraft(identity, PROJECT, folderId, {
+      await io.run('project.folder.draft.save',{project_id:PROJECT,folder_id:folderId,
         draft_id: secondDraft.id, draft_version: secondDraft.version,
       });
 
@@ -790,7 +872,7 @@ describe("Project Folder database invariants", () => {
   it("saves an explicitly converted UTF-16 draft as UTF-8", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const folderId = "18181818-1818-4818-8818-181818181818";
-    const { folderRoot, repo, cleanup } = await draftFolder(db.pool, folderId);
+    const { folderRoot, repo, io, cleanup } = await draftFolder(db.pool, folderId);
     try {
       const identity = { spaceId: SPACE, userId: USER };
       const filePath = join(folderRoot, "utf16.txt");
@@ -804,7 +886,7 @@ describe("Project Folder database invariants", () => {
         baseSha256: opened.sha256,
       }));
 
-      await repo.saveDraft(identity, PROJECT, folderId, { draft_id: draft.id, draft_version: draft.version });
+      await io.run('project.folder.draft.save',{project_id:PROJECT,folder_id:folderId, draft_id: draft.id, draft_version: draft.version });
 
       await expect(readFile(filePath, "utf8")).resolves.toBe(converted);
       await expect(repo.getFile(identity, PROJECT, folderId, "utf16.txt"))
@@ -817,7 +899,7 @@ describe("Project Folder database invariants", () => {
   it("requires explicit confirmation before normalizing mixed line endings", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const folderId = "19191919-1919-4919-8919-191919191919";
-    const { folderRoot, repo, cleanup } = await draftFolder(db.pool, folderId);
+    const { folderRoot, repo, io, cleanup } = await draftFolder(db.pool, folderId);
     try {
       const identity = { spaceId: SPACE, userId: USER };
       const filePath = join(folderRoot, "mixed.txt");
@@ -831,16 +913,16 @@ describe("Project Folder database invariants", () => {
         lineEndingMode: "mixed",
       }));
 
-      await expect(repo.saveDraft(identity, PROJECT, folderId, {
+      await expect(io.run('project.folder.draft.save',{project_id:PROJECT,folder_id:folderId,
         draft_id: draft.id,
         draft_version: draft.version,
       })).rejects.toMatchObject({
         statusCode: 409,
-        responseBody: { code: "mixed_line_endings_confirmation_required" },
+        code: "mixed_line_endings_confirmation_required",
       });
       await expect(readFile(filePath, "utf8")).resolves.toBe("one\r\ntwo\n");
 
-      await repo.saveDraft(identity, PROJECT, folderId, {
+      await io.run('project.folder.draft.save',{project_id:PROJECT,folder_id:folderId,
         draft_id: draft.id,
         draft_version: draft.version,
         confirm_mixed_line_ending_normalization: true,

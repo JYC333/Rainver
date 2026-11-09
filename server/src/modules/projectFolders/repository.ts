@@ -1,20 +1,18 @@
+import { ProjectFolderMutationError,ProjectFolderRefusal,ProjectFolderFileRefusal } from './operationErrors.js';
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, realpath, rm, stat } from "node:fs/promises";
+import { readdir, realpath } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
   buildTree,
   folderGitDiff,
   folderGitStatus,
   FolderReadError,
-  ensureGitRepository,
   isWireRelativePath,
   listFolderDirectory,
   looksSecretLikePath,
   readFolderFile,
   restoreFolderFile,
   resolveRelativePath,
-  runLocationGit,
-  writeFolderFile,
   type FileContent,
   type FileNode,
   type GitStatus,
@@ -29,7 +27,6 @@ import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils
 import { assertProjectWriter, assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 import { projectFolderReadAccessSql } from "./access.js";
 import { isStale } from "../hosts/liveness.js";
-import { PgHostRepository } from "../hosts/repository.js";
 import {
   PgWorkspaceLocationRepository,
   locationAbsoluteRoot,
@@ -48,9 +45,6 @@ import {
   type ProjectFileDraftMutation,
   type ProjectFileDraftRow,
 } from "./draftRepository.js";
-import { assertRemoteRepositoryUrl, CLONE_GIT_ALLOW_PROTOCOL, redactRepositoryUrlCredentials } from "./repositoryUrl.js";
-import { startGuardedConnectProxy } from "@rainver/outbound-guard";
-import { outboundGuard } from "../sources/outboundUrlSafety.js";
 
 const FOLDER_KINDS = new Set(["code", "data", "docs"]);
 
@@ -127,13 +121,6 @@ interface ScanCandidate {
   path: string;
 }
 
-interface ProjectFileDraftSaveOut {
-  file: FileContent;
-  revision: ProjectFileRevisionOut;
-  draft_deleted: boolean;
-  newer_draft_retained: boolean;
-}
-
 export class PgProjectFolderRepository {
   constructor(
     private readonly db: Queryable,
@@ -194,97 +181,6 @@ export class PgProjectFolderRepository {
    * All three validate Project write access, allowed roots, collisions,
    * repository state, and Folder kind before registration.
    */
-  async create(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>): Promise<ProjectFolderOut> {
-    await this.assertProjectActive(identity, projectId);
-    const name = requiredText(body.name, "name");
-    const kind = optionalText(body.kind) ?? "code";
-    if (!FOLDER_KINDS.has(kind)) throw new HttpError(422, "kind must be one of code, data, docs");
-    const isPrimary = body.is_primary === true;
-
-    const duplicate = await this.db.query<{ id: string }>(
-      `SELECT id FROM project_folders
-        WHERE space_id = $1 AND project_id = $2 AND name = $3 AND status = 'active'
-        LIMIT 1`,
-      [identity.spaceId, projectId, name],
-    );
-    if (duplicate.rows[0]) {
-      throw new HttpError(409, `A Project Folder named '${name}' already exists in this Project`);
-    }
-
-    const repoUrl = optionalText(body.repo_url);
-    const requestedRootPath = optionalText(body.root_path);
-    let rootPath: string;
-    let registeredFrom: "managed" | "clone" | "scan";
-    if (requestedRootPath) {
-      rootPath = await this.connectExistingPath(identity.spaceId, requestedRootPath);
-      registeredFrom = "scan";
-    } else if (repoUrl) {
-      rootPath = await this.cloneRepository(identity.spaceId, name, repoUrl);
-      registeredFrom = "clone";
-    } else {
-      rootPath = await this.createManagedDir(identity.spaceId, name, { initializeGit: true });
-      registeredFrom = "managed";
-    }
-
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    // This flow (mkdir/clone/scan under `workspaceRoot`) only ever creates a
-    // folder on the server host — remote-host workspace registration is a
-    // separate daemon-driven path, not this endpoint.
-    const serverHostId = await new PgHostRepository(this.db).ensureServerHostId();
-    const folder = await withTransactionIfPool(this.db, async (db) => {
-      if (isPrimary) await demotePrimary(db, identity.spaceId, projectId);
-      const row = await db.query<ProjectFolderRow>(
-        `INSERT INTO project_folders (
-           id, space_id, project_id, created_by_user_id, name, description, kind,
-           is_primary, repo_url, default_branch,
-           metadata_json, status, protected, system_managed, registered_from,
-           created_at, updated_at
-         ) VALUES (
-           $1, $2, $3, $4, $5, $6, $7,
-           $8, $9, $10,
-           $11::jsonb, 'active', false, $12, $13,
-           $14, $14
-         )
-         RETURNING ${folderColumns()}`,
-        [
-          id,
-          identity.spaceId,
-          projectId,
-          identity.userId,
-          name,
-          optionalText(body.description),
-          kind,
-          isPrimary,
-          repoUrl,
-          optionalText(body.default_branch),
-          JSON.stringify(optionalObject(body.metadata_json)),
-          registeredFrom !== "scan",
-          registeredFrom,
-          now,
-        ],
-      );
-      // This flow's single physical checkout is this Folder's one active Location.
-      await new PgWorkspaceLocationRepository(db).create({
-        spaceId: identity.spaceId,
-        projectFolderId: id,
-        executionHostId: serverHostId,
-        executionHostKind: "server",
-        rootPath,
-      });
-      return folderToOut(row.rows[0]!);
-    });
-    const location = await new PgWorkspaceLocationRepository(this.db).getActive(id);
-    if (location) await new PgWorkspaceLocationRepository(this.db).refreshGitStatus(location, this.config.workspaceRoot);
-    return folder;
-  }
-
-  /**
-   * "Connect existing Folder" step 1: candidate directories inside the
-   * space's managed root that are not already registered as an active
-   * Folder anywhere in the space. Arbitrary host paths are never accepted —
-   * only entries from this list may be passed as `root_path` to `create`.
-   */
   async scanCandidates(
     identity: SpaceUserIdentity,
     projectId: string,
@@ -295,7 +191,9 @@ export class PgProjectFolderRepository {
 
   private async availableScanCandidates(spaceId: string): Promise<ScanCandidate[]> {
     const registered = await this.db.query<{ root_path: string | null }>(
-      `SELECT root_path FROM workspace_locations WHERE space_id = $1 AND status = 'active'`,
+      `SELECT root_path FROM workspace_locations WHERE space_id = $1 AND status = 'active'
+       UNION SELECT effect_json->'import'->>'rootPath' AS root_path FROM project_folder_io_intents
+        WHERE space_id=$1 AND kind='create' AND status IN ('pending','prepared','applied','needs_attention')`,
       [spaceId],
     );
     const knownPaths = new Set(
@@ -386,17 +284,17 @@ export class PgProjectFolderRepository {
       const candidate = target.rows[0];
       if (!candidate) throw new HttpError(404, "Workspace Location not found");
       if (candidate.status !== "stale") {
-        throw new HttpError(409, "Only a stale Workspace Location candidate can become active");
+        throw new ProjectFolderMutationError(409, "Only a stale Workspace Location candidate can become active");
       }
       if (!candidate.execution_ready) {
-        throw new HttpError(409, "The Workspace Location must be ready before it can become active");
+        throw new ProjectFolderMutationError(409, "The Workspace Location must be ready before it can become active");
       }
       if (candidate.execution_host_kind === "remote") {
         if (candidate.host_owner_user_id !== identity.userId) {
           throw new HttpError(403, "Only the target Host owner can activate this Workspace Location");
         }
         if (candidate.host_status !== "online" || isStale(candidate.last_heartbeat_at)) {
-          throw new HttpError(409, "The target execution Host is offline");
+          throw new ProjectFolderMutationError(409, "The target execution Host is offline");
         }
       }
       await db.query(
@@ -412,7 +310,7 @@ export class PgProjectFolderRepository {
       );
     });
     const activated = await new PgWorkspaceLocationRepository(this.db).get(identity, folderId, locationId);
-    if (!activated) throw new HttpError(409, "Workspace Location activation did not complete");
+    if (!activated) throw new ProjectFolderMutationError(409, "Workspace Location activation did not complete");
     return activated;
   }
 
@@ -531,8 +429,7 @@ export class PgProjectFolderRepository {
       const activeDraftCount = Number(drafts.rows[0]?.active_draft_count ?? 0);
       const affectedUserCount = Number(drafts.rows[0]?.affected_user_count ?? 0);
       if (activeDraftCount > 0 && options.confirm !== true) {
-        throw new HttpError(409, "Active File drafts must be explicitly confirmed before unregistering this Folder", {
-          detail: "Active File drafts must be explicitly confirmed before unregistering this Folder",
+        throw new ProjectFolderRefusal(409, "Active File drafts must be explicitly confirmed before unregistering this Folder", {
           code: "active_drafts_require_confirmation",
           active_draft_count: activeDraftCount,
           affected_user_count: affectedUserCount,
@@ -550,11 +447,7 @@ export class PgProjectFolderRepository {
         // used; its registration stays for them, and archiving is the way out.
         if ((error as { code?: unknown }).code !== "23503") throw error;
         const detail = "This Folder is referenced by existing Runs, Activity or other records; archive it instead";
-        throw new HttpError(409, detail, {
-          detail,
-          code: "project_folder_in_use",
-          constraint: (error as { constraint?: unknown }).constraint ?? null,
-        });
+        throw new ProjectFolderRefusal(409, detail, {code: "project_folder_in_use"});
       }
     });
   }
@@ -690,10 +583,11 @@ export class PgProjectFolderRepository {
     projectId: string,
     folderId: string,
     requestedPath: string,
+    workspaceLocationId?:string,
   ): Promise<ProjectFileDraftRow | null> {
     const folder = await this.requireWritableActiveFolder(identity, projectId, folderId);
     const path = parseEditablePath(requestedPath);
-    const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folder.id);
+    const location = workspaceLocationId?await resolveLocationWithHost(this.db,identity.spaceId,folder.id,workspaceLocationId):await resolveActiveLocationWithHost(this.db, identity.spaceId, folder.id);
     return new PgProjectFileDraftRepository(this.db).get({
       spaceId: folder.space_id,
       ownerUserId: identity.userId,
@@ -701,6 +595,11 @@ export class PgProjectFolderRepository {
       workspaceLocationId: location.id,
       relativePath: path,
     });
+  }
+
+  async getDraftById(identity:SpaceUserIdentity,projectId:string,folderId:string,draftId:string):Promise<ProjectFileDraftRow|null>{
+    const folder=await this.requireWritableActiveFolder(identity,projectId,folderId);
+    return new PgProjectFileDraftRepository(this.db).getById({id:draftId,spaceId:folder.space_id,ownerUserId:identity.userId,projectFolderId:folder.id});
   }
 
   async upsertDraft(
@@ -712,7 +611,7 @@ export class PgProjectFolderRepository {
     const folder = await this.requireWritableActiveFolder(identity, projectId, folderId);
     const mutation = parseDraftMutation(body);
     if (mutation.sourceEncoding !== "utf8") {
-      throw new HttpError(415, "Convert the UTF-16 file to UTF-8 before creating a draft");
+      throw new ProjectFolderRefusal(422, "Convert the UTF-16 file to UTF-8 before creating a draft",{code:'draft_encoding_conversion_required'});
     }
     const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folder.id);
     try {
@@ -725,7 +624,9 @@ export class PgProjectFolderRepository {
         mutation,
       });
     } catch (error) {
-      throw draftWriteError(error);
+      if(error instanceof DraftVersionConflictError)throw new ProjectFolderRefusal(409,error.message,{code:'draft_version_conflict',current_draft_id:error.current?.id??null,current_version:error.current?.version??null});
+      if(error instanceof DraftQuotaError)throw new ProjectFolderRefusal(413,error.message,{code:'draft_quota_exceeded',used_bytes:error.usedBytes,requested_bytes:error.requestedBytes,limit_bytes:PROJECT_FILE_DRAFT_MAX_TOTAL_BYTES});
+      throw error;
     }
   }
 
@@ -742,10 +643,10 @@ export class PgProjectFolderRepository {
     const current = await drafts.getById({ id, spaceId: folder.space_id, ownerUserId: identity.userId, projectFolderId: folder.id });
     if (!current) throw new HttpError(404, "Draft not found or expired");
     if (current.version !== version) {
-      throw new HttpError(409, "The draft changed in another tab", { detail: "The draft changed in another tab", code: "draft_version_conflict", current });
+      throw new ProjectFolderRefusal(409, "The draft changed in another tab", {code: "draft_version_conflict", current_draft_id:current.id,current_version:current.version});
     }
     if (!await drafts.discard({ id, spaceId: folder.space_id, ownerUserId: identity.userId, expectedVersion: version })) {
-      throw new HttpError(409, "The draft changed in another tab", { detail: "The draft changed in another tab", code: "draft_version_conflict" });
+      throw new ProjectFolderRefusal(409, "The draft changed in another tab", {code: "draft_version_conflict",current_draft_id:null,current_version:null});
     }
     return { discarded: true };
   }
@@ -757,171 +658,6 @@ export class PgProjectFolderRepository {
   ): Promise<{ used_bytes: number; limit_bytes: number }> {
     await this.requireWritableActiveFolder(identity, projectId, folderId);
     return new PgProjectFileDraftRepository(this.db).quota(identity.spaceId, identity.userId);
-  }
-
-  async saveDraft(
-    identity: SpaceUserIdentity,
-    projectId: string,
-    folderId: string,
-    body: Record<string, unknown>,
-  ): Promise<ProjectFileDraftSaveOut> {
-    const folder = await this.requireWritableActiveFolder(identity, projectId, folderId);
-    const draftId = requiredText(body.draft_id, "draft_id");
-    const requestedVersion = positiveInteger(body.draft_version, "draft_version");
-    const drafts = new PgProjectFileDraftRepository(this.db);
-    const draft = await drafts.getById({ id: draftId, spaceId: folder.space_id, ownerUserId: identity.userId, projectFolderId: folder.id });
-    if (!draft) throw new HttpError(404, "Draft not found or expired");
-    if (draft.version !== requestedVersion) {
-      throw new HttpError(409, "The draft changed in another tab", { detail: "The draft changed in another tab", code: "draft_version_conflict", current: draft });
-    }
-    await this.enforceFolderWrite(folder, identity.userId, draft.relative_path);
-    const location = await resolveLocationWithHost(this.db, folder.space_id, folder.id, draft.workspace_location_id);
-    const current = await this.readCurrentFileForDraft(folder, identity.userId, location, draft.relative_path);
-    if (current.exists !== draft.base_exists || (draft.base_exists && current.file?.sha256 !== draft.base_sha256)) {
-      throw new HttpError(409, "The Project Folder file changed since this draft was created", {
-        detail: "The Project Folder file changed since this draft was created",
-        code: "host_file_conflict",
-        draft,
-        current: current.file ? { sha256: current.file.sha256, size: current.file.size } : { exists: false },
-      });
-    }
-    const normalizesMixedLineEndings = draft.line_ending_mode === "mixed"
-      || lineEndingMode(draft.content) === "mixed"
-      || current.file?.line_ending_mode === "mixed";
-    if (normalizesMixedLineEndings && body.confirm_mixed_line_ending_normalization !== true) {
-      throw new HttpError(409, "Saving this draft will normalize mixed line endings", {
-        detail: "Saving this draft will normalize mixed line endings",
-        code: "mixed_line_endings_confirmation_required",
-      });
-    }
-
-    const serialized = serializeDraftText(draft);
-    const afterSha256 = hashText(serialized);
-    let beforeExists = current.exists;
-    let beforeContent = current.file ? revisionText(current.file) : null;
-    let physicalWritten = false;
-    try {
-      if (location.execution_host_kind === "remote") {
-        assertRemoteWriteAccess(location, identity.userId);
-        const result = await sharedHostConnectionRegistry.requestFolderWrite(location.execution_host_id, {
-          workspace_location_id: location.id,
-          path: draft.relative_path,
-          content: serialized,
-          expected_exists: current.exists,
-          expected_sha256: current.file?.sha256 ?? null,
-          protected: Boolean(folder.protected),
-          allow_encoding_conversion: current.file?.encoding === "utf16le" || current.file?.encoding === "utf16be",
-        });
-        if (!result.ok) throw mapRemoteFolderWriteError(result, location.host_name);
-        physicalWritten = true;
-        if (!result.exists || result.sha256 !== afterSha256) throw new HttpError(502, "The host acknowledged an unexpected file version");
-      } else {
-        const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
-        const result = await writeFolderFile(root, draft.relative_path, serialized, {
-          protectedFolder: Boolean(folder.protected),
-          expectedExists: current.exists,
-          expectedSha256: current.file?.sha256 ?? null,
-          allowEncodingConversion: current.file?.encoding === "utf16le" || current.file?.encoding === "utf16be",
-        });
-        physicalWritten = true;
-        beforeExists = result.before.exists;
-        if (result.sha256 !== afterSha256) throw new HttpError(502, "The host acknowledged an unexpected file version");
-      }
-
-      const revisionStore = new PgProjectFileRevisionStore(this.db);
-      const committed = await withTransactionIfPool(this.db, async (db) => {
-        const revision = await revisionStore.createInTransaction(db, {
-          spaceId: folder.space_id,
-          projectId,
-          projectFolderId: folder.id,
-          workspaceLocationId: location.id,
-          path: draft.relative_path,
-          beforeExists,
-          beforeContent,
-          afterExists: true,
-          afterSha256,
-          userId: identity.userId,
-          retentionDays: folder.snapshot_retention_days,
-          maxCount: folder.snapshot_max_count,
-        });
-        const draftDeleted = await drafts.deleteExact(db, {
-          id: draft.id,
-          spaceId: folder.space_id,
-          ownerUserId: identity.userId,
-          version: draft.version,
-        });
-        return { revision, draftDeleted };
-      });
-      return {
-        file: savedFileContent(draft, serialized, afterSha256),
-        revision: committed.revision,
-        draft_deleted: committed.draftDeleted,
-        newer_draft_retained: !committed.draftDeleted,
-      };
-    } catch (error) {
-      if (!physicalWritten) throw error;
-      try {
-        await this.restorePhysicalFile(
-          folder,
-          identity.userId,
-          location,
-          draft.relative_path,
-          beforeContent,
-          true,
-          afterSha256,
-          current.file?.encoding === "utf16le" || current.file?.encoding === "utf16be" ? current.file.encoding : "utf8",
-        );
-      } catch (rollbackError) {
-        throw new HttpError(502, `The draft save failed and automatic rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : "unknown rollback error"}`);
-      }
-      throw error;
-    }
-  }
-
-  async restoreRevisionAsDraft(
-    identity: SpaceUserIdentity,
-    projectId: string,
-    folderId: string,
-    body: Record<string, unknown>,
-  ): Promise<ProjectFileDraftRow> {
-    const folder = await this.requireWritableActiveFolder(identity, projectId, folderId);
-    const revisionId = requiredText(body.revision_id, "revision_id");
-    const revision = await new PgProjectFileRevisionStore(this.db).getAvailable(folder.space_id, projectId, folder.id, revisionId);
-    if (!revision) throw new HttpError(404, "File revision not found or expired");
-    const location = await resolveLocationWithHost(this.db, folder.space_id, folder.id, revision.workspace_location_id);
-    const current = await this.readCurrentFileForDraft(folder, identity.userId, location, revision.path);
-    const content = revision.before_exists ? revision.before_content ?? "" : "";
-    if (Buffer.byteLength(content, "utf8") > PROJECT_FILE_DRAFT_MAX_BYTES) {
-      throw new HttpError(422, "The revision is larger than a draft may be");
-    }
-    try {
-      return await new PgProjectFileDraftRepository(this.db).upsert({
-      spaceId: folder.space_id,
-      projectId,
-      projectFolderId: folder.id,
-      workspaceLocationId: location.id,
-      ownerUserId: identity.userId,
-      mutation: {
-        targetKind: current.exists ? "existing" : "new",
-        // A person has one new-file draft per Location, whatever its path:
-        // restoring a deleted file into that slot must not overwrite the
-        // unsaved file they were writing there. Absent is the precondition,
-        // as `upsertDraft` requires of an unversioned request.
-        ...(current.exists ? {} : { expectedVersion: null }),
-        relativePath: revision.path,
-        baseExists: current.exists,
-        baseSha256: current.file?.sha256 ?? null,
-        content,
-        contentSha256: hashText(content),
-        byteSize: Buffer.byteLength(content, "utf8"),
-        sourceEncoding: "utf8",
-        preserveBom: content.startsWith("\uFEFF"),
-        lineEndingMode: lineEndingMode(content),
-      },
-      });
-    } catch (error) {
-      throw draftWriteError(error);
-    }
   }
 
   async previewRevision(
@@ -941,7 +677,7 @@ export class PgProjectFolderRepository {
     };
   }
 
-  private async readCurrentFileForDraft(
+  async readCurrentFileForDraft(
     folder: ProjectFolderRow,
     userId: string,
     location: ActiveLocationWithHost,
@@ -959,7 +695,7 @@ export class PgProjectFolderRepository {
       const convertibleUtf16 = (file.encoding === "utf16le" || file.encoding === "utf16be")
         && file.conversion_available === true;
       if (!convertibleUtf16 && (file.writable === false || (file.encoding && file.encoding !== "utf8"))) {
-        throw new HttpError(415, "Only valid UTF-8 text files can be saved");
+        throw new ProjectFolderFileRefusal(415, "Only valid UTF-8 text files can be saved",'file_encoding_unsupported');
       }
       return { exists: true, file };
     } catch (error) {
@@ -1061,6 +797,11 @@ export class PgProjectFolderRepository {
     return folder;
   }
 
+  /** Owning Folder IO worker port; no filesystem work or policy bypass. */
+  writableFolderForIo(identity:SpaceUserIdentity,projectId:string,folderId:string):Promise<ProjectFolderRow>{
+    return this.requireWritableActiveFolder(identity,projectId,folderId);
+  }
+
   private async requireWritableActiveFolder(
     identity: SpaceUserIdentity,
     projectId: string,
@@ -1080,94 +821,6 @@ export class PgProjectFolderRepository {
     options: { allowArchived?: boolean } = {},
   ): Promise<void> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId, options);
-  }
-
-  private async createManagedDir(
-    spaceId: string,
-    name: string,
-    options: { initializeGit?: boolean } = {},
-  ): Promise<string> {
-    const spaceRoot = resolve(this.config.workspaceRoot, spaceId);
-    await mkdir(spaceRoot, { recursive: true });
-    const base = folderDirName(name);
-    let candidate = resolve(spaceRoot, base);
-    for (let i = 1; await stat(candidate).catch(() => null); i += 1) {
-      candidate = resolve(spaceRoot, `${base}-${i}`);
-    }
-    await mkdir(candidate, { recursive: true });
-    if (options.initializeGit) {
-      if (!await ensureGitRepository(candidate)) {
-        throw new HttpError(422, "Failed to initialize Git repository");
-      }
-    }
-    return candidate;
-  }
-
-  /**
-   * git opens its own connections, so the outbound guard cannot pin them the
-   * way it pins the server's fetches. The clone is instead pointed at a
-   * loopback CONNECT proxy that lives for this one clone: every host git asks
-   * for — the first, and each redirect it follows — is resolved through the
-   * guard and dialled only at the address the guard approved, so a public
-   * name that resolves or redirects into the instance's own network is
-   * refused at that hop. HTTPS only, through the proxy only (`http.proxy`
-   * set here beats any `~/.gitconfig` or environment proxy), and no prompt:
-   * a private repository authenticates with what its URL carries.
-   */
-  private async cloneRepository(spaceId: string, name: string, repoUrl: string): Promise<string> {
-    assertRemoteRepositoryUrl(repoUrl);
-    const target = await this.createManagedDir(spaceId, name);
-    const proxy = await startGuardedConnectProxy(outboundGuard);
-    let result;
-    try {
-      result = await runLocationGit([
-        "-c", `http.proxy=${proxy.url}`,
-        "-c", "http.proxyAuthMethod=basic",
-        "-c", "http.followRedirects=initial",
-        "clone", "--", repoUrl, target,
-      ], resolve(this.config.workspaceRoot, spaceId), 120_000, {
-        env: {
-          GIT_ALLOW_PROTOCOL: CLONE_GIT_ALLOW_PROTOCOL,
-          GIT_TERMINAL_PROMPT: "0",
-          // The proxy above is the route; an environment proxy must not be.
-          NO_PROXY: "",
-          no_proxy: "",
-        },
-      });
-    } finally {
-      await proxy.close();
-    }
-    if (result.code !== 0) {
-      const refused = proxy.refusals[0];
-      const detail = refused
-        ? `${refused.host}:${refused.port} was refused: ${refused.reason}`
-        : redactRepositoryUrlCredentials(result.stderr.slice(0, 400));
-      await rm(target, { recursive: true, force: true }).catch(() => undefined);
-      throw new HttpError(422, `Failed to clone repository: ${detail}`);
-    }
-    return target;
-  }
-
-  private async connectExistingPath(spaceId: string, requestedPath: string): Promise<string> {
-    const candidate = resolve(requestedPath);
-    const candidates = await this.availableScanCandidates(spaceId);
-    if (!candidates.some((item) => item.path === candidate)) {
-      throw new HttpError(422, "root_path must be inside the space's managed root — pick from scanCandidates");
-    }
-    const linkInfo = await lstat(candidate).catch(() => null);
-    if (!linkInfo?.isDirectory() || linkInfo.isSymbolicLink()) {
-      throw new HttpError(422, "root_path must be a scanned directory, not a symbolic link");
-    }
-    const canonicalPath = await realpath(candidate).catch(() => null);
-    if (!canonicalPath || canonicalPath !== candidate) {
-      throw new HttpError(422, "root_path changed after scanning; scan again");
-    }
-    const collision = await this.db.query<{ id: string }>(
-      `SELECT id FROM workspace_locations WHERE space_id = $1 AND root_path = $2 AND status = 'active' LIMIT 1`,
-      [spaceId, canonicalPath],
-    );
-    if (collision.rows[0]) throw new HttpError(409, "This directory is already a registered Workspace Location");
-    return canonicalPath;
   }
 
   private async enforceFolderRead(
@@ -1205,17 +858,18 @@ export class PgProjectFolderRepository {
     });
     if (result.status === "allow") return;
     if (result.status === "error") {
-      throw new HttpError(500, result.message ?? "Project Folder read policy audit failed");
+      throw new ProjectFolderFileRefusal(500, result.message ?? "Project Folder read policy audit failed",'operation_audit_unavailable');
     }
-    throw new HttpError(403, result.message ?? "Project Folder read denied by policy");
+    throw new ProjectFolderFileRefusal(403, result.message ?? "Project Folder read denied by policy",'operation_not_found');
   }
 
-  private async enforceFolderWrite(
+  async enforceFolderWrite(
     folder: ProjectFolderRow,
     userId: string,
     relativePath: string,
+    transaction?:Queryable,
   ): Promise<void> {
-    const result = await enforce(this.config, await loadActionRegistry(), {
+    const result = await enforce({...this.config,...(transaction?{auditTransaction:transaction}:{})}, await loadActionRegistry(), {
       action: "project_folder.apply_patch",
       actor_type: "user",
       actor_id: userId,
@@ -1256,7 +910,7 @@ export class PgProjectFolderRepository {
     }
   }
 
-  private async restorePhysicalFile(
+  async restorePhysicalFile(
     folder: ProjectFolderRow,
     userId: string,
     location: ActiveLocationWithHost,
@@ -1348,7 +1002,8 @@ export class PgProjectFolderRepository {
       ...(options.treeOffset === undefined ? {} : { tree_offset: options.treeOffset }),
     }, signal);
     if (result.ok) return result.result;
-    throw mapRemoteFolderReadError(result, location.host_name);
+    const refusal=mapRemoteFolderReadError(result,location.host_name);
+    throw new ProjectFolderFileRefusal(refusal.statusCode,refusal.message,result.error,refusal.responseBody);
   }
 }
 
@@ -1414,15 +1069,15 @@ function mapFolderReadError(error: unknown): never {
 function folderReadHttpError(error: FolderReadError): HttpError {
   switch (error.code) {
     case "not_found":
-      return new HttpError(404, error.message);
+      return new ProjectFolderFileRefusal(404,error.message,error.code);
     case "is_directory":
-      return new HttpError(400, error.message);
+      return new ProjectFolderFileRefusal(400,error.message,error.code);
     case "too_large":
-      return new HttpError(413, error.message);
+      return new ProjectFolderFileRefusal(413,error.message,error.code);
     case "path_forbidden":
-      return new HttpError(403, error.message);
+      return new ProjectFolderFileRefusal(403,error.message,error.code);
     case "unsupported_platform":
-      return new HttpError(503, error.message, { detail: error.message, code: "unsupported_platform" });
+      return new ProjectFolderFileRefusal(503,error.message,error.code,{ detail: error.message, code: "unsupported_platform" });
   }
   return new HttpError(500, "Unknown Folder read failure");
 }
@@ -1491,61 +1146,41 @@ function mapRemoteFolderWriteError(
 }
 
 /** The draft store's refusals as the route answers them; anything else passes through. */
-function draftWriteError(error: unknown): unknown {
-  if (error instanceof DraftVersionConflictError) {
-    return new HttpError(409, error.message, {
-      detail: error.message,
-      code: "draft_version_conflict",
-      current: error.current,
-    });
-  }
-  if (error instanceof DraftQuotaError) {
-    return new HttpError(413, error.message, {
-      detail: error.message,
-      code: "draft_quota_exceeded",
-      used_bytes: error.usedBytes,
-      requested_bytes: error.requestedBytes,
-      limit_bytes: PROJECT_FILE_DRAFT_MAX_TOTAL_BYTES,
-    });
-  }
-  return error;
-}
-
 function parseDraftMutation(body: Record<string, unknown>): ProjectFileDraftMutation {
   const targetKind = body.target_kind === "new" || body.target_kind === "existing" ? body.target_kind : null;
-  if (!targetKind) throw new HttpError(422, "target_kind must be existing or new");
+  if (!targetKind) throw new ProjectFolderMutationError(422, "target_kind must be existing or new");
   const relativePath = parseEditablePath(body.relative_path);
-  if (typeof body.content !== "string") throw new HttpError(422, "content is required");
+  if (typeof body.content !== "string") throw new ProjectFolderMutationError(422, "content is required");
   const byteSize = body.byte_size;
   if (!Number.isSafeInteger(byteSize) || (byteSize as number) < 0 || (byteSize as number) > PROJECT_FILE_DRAFT_MAX_BYTES) {
-    throw new HttpError(422, "byte_size is outside the draft limit");
+    throw new ProjectFolderMutationError(422, "byte_size is outside the draft limit");
   }
   const actualByteSize = Buffer.byteLength(body.content, "utf8");
-  if (actualByteSize !== byteSize) throw new HttpError(422, "byte_size does not match UTF-8 content");
+  if (actualByteSize !== byteSize) throw new ProjectFolderMutationError(422, "byte_size does not match UTF-8 content");
   const contentSha256 = body.content_sha256;
   if (typeof contentSha256 !== "string" || !/^[a-f0-9]{64}$/.test(contentSha256) || contentSha256 !== hashText(body.content)) {
-    throw new HttpError(422, "content_sha256 does not match UTF-8 content");
+    throw new ProjectFolderMutationError(422, "content_sha256 does not match UTF-8 content");
   }
   const baseExists = body.base_exists;
-  if (typeof baseExists !== "boolean") throw new HttpError(422, "base_exists is required");
+  if (typeof baseExists !== "boolean") throw new ProjectFolderMutationError(422, "base_exists is required");
   if (targetKind === "new" && baseExists) {
-    throw new HttpError(422, "base_exists must be false for a new file");
+    throw new ProjectFolderMutationError(422, "base_exists must be false for a new file");
   }
   const baseSha256 = body.base_sha256 === null ? null : body.base_sha256;
   if (baseExists && (typeof baseSha256 !== "string" || !/^[a-f0-9]{64}$/.test(baseSha256))) {
-    throw new HttpError(422, "base_sha256 is required for an existing file");
+    throw new ProjectFolderMutationError(422, "base_sha256 is required for an existing file");
   }
-  if (!baseExists && baseSha256 !== null) throw new HttpError(422, "base_sha256 must be null for a new file");
+  if (!baseExists && baseSha256 !== null) throw new ProjectFolderMutationError(422, "base_sha256 must be null for a new file");
   const sourceEncoding = body.source_encoding === "utf8" || body.source_encoding === "utf16le" || body.source_encoding === "utf16be"
     ? body.source_encoding
     : null;
-  if (!sourceEncoding) throw new HttpError(422, "source_encoding is invalid");
+  if (!sourceEncoding) throw new ProjectFolderMutationError(422, "source_encoding is invalid");
   const preserveBom = body.preserve_bom;
-  if (typeof preserveBom !== "boolean") throw new HttpError(422, "preserve_bom is required");
+  if (typeof preserveBom !== "boolean") throw new ProjectFolderMutationError(422, "preserve_bom is required");
   const lineEndingMode = body.line_ending_mode === "lf" || body.line_ending_mode === "crlf" || body.line_ending_mode === "mixed" || body.line_ending_mode === "none"
     ? body.line_ending_mode
     : null;
-  if (!lineEndingMode) throw new HttpError(422, "line_ending_mode is invalid");
+  if (!lineEndingMode) throw new ProjectFolderMutationError(422, "line_ending_mode is invalid");
   const expectedVersion = body.expected_version === undefined || body.expected_version === null
     ? body.expected_version ?? null
     : positiveInteger(body.expected_version, "expected_version");
@@ -1564,7 +1199,7 @@ function parseDraftMutation(body: Record<string, unknown>): ProjectFileDraftMuta
   };
 }
 
-function serializeDraftText(draft: ProjectFileDraftRow): string {
+export function serializeDraftText(draft: ProjectFileDraftRow): string {
   let content = draft.content.replace(/\r\n|\r|\n/gu, "\n");
   if (content.startsWith("\uFEFF")) content = content.slice(1);
   if (draft.line_ending_mode === "crlf") content = content.replace(/\n/gu, "\r\n");
@@ -1572,11 +1207,11 @@ function serializeDraftText(draft: ProjectFileDraftRow): string {
   return content;
 }
 
-function revisionText(file: FileContent): string {
+export function revisionText(file: FileContent): string {
   return file.has_bom ? `\uFEFF${file.content}` : file.content;
 }
 
-function lineEndingMode(content: string): "lf" | "crlf" | "mixed" | "none" {
+export function lineEndingMode(content: string): "lf" | "crlf" | "mixed" | "none" {
   const crlf = /\r\n/u.test(content);
   const loneLf = /(^|[^\r])\n/u.test(content);
   const loneCr = /\r(?!\n)/u.test(content);
@@ -1625,22 +1260,6 @@ function assertRemoteWriteAccess(location: ActiveLocationWithHost, userId: strin
  * disk. Return `has_bom` and `encoding` with the body. A body-only shape drops
  * them, and the next draft built from it strips the file's BOM.
  */
-function savedFileContent(draft: ProjectFileDraftRow, serialized: string, sha256: string): FileContent {
-  const content = draft.preserve_bom && serialized.startsWith("\uFEFF") ? serialized.slice(1) : serialized;
-  return {
-    path: draft.relative_path,
-    content,
-    size: Buffer.byteLength(serialized, "utf8"),
-    line_count: content.split(/\n/).length,
-    sha256,
-    encoding: "utf8",
-    has_bom: draft.preserve_bom,
-    line_ending_mode: lineEndingMode(content),
-    writable: true,
-    conversion_available: false,
-  };
-}
-
 function hashText(content: string): string {
   return createHash("sha256").update(Buffer.from(content, "utf8")).digest("hex");
 }
@@ -1656,15 +1275,6 @@ function folderReadAuditReasons(
   if (readKind === "git_diff" && relativePath === null) reasons.push("full_diff");
   if (looksSecretLikePath(relativePath)) reasons.push("secret_like_path");
   return reasons;
-}
-
-function folderDirName(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^\w\s-]/g, "")
-    .replace(/[\s_-]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "folder";
 }
 
 function requiredText(value: unknown, field: string): string {
@@ -1702,5 +1312,5 @@ function dateIso(value: unknown): string {
 
 function hostNotOwnedError(hostName: string): HttpError {
   const detail = `This Folder is on ${hostName}'s machine; only its owner can browse it here.`;
-  return new HttpError(403, detail, { detail, code: "host_not_owned", host_name: hostName });
+  return new ProjectFolderFileRefusal(403, detail, "operation_not_found",{ detail, code: "host_not_owned", host_name: hostName });
 }

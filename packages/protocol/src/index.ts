@@ -211,3 +211,5 @@ export * from './noteObjectOperations.js';
 export * from './knowledgeObjectOperations.js';
 
 export * from './knowledgeReviewOperations.js';
+
+export * from './projectFolderIoOperations.js';
