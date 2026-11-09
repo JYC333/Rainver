@@ -15,7 +15,7 @@ const room = {
 const session = { id: 'session-layout', room_id: room.id, space_id: room.space_id, project_id: room.project_id,
   title: 'Conversation', status: 'active', created_at: now, updated_at: now }
 const folder = { id: room.project_folder_id, name: `workspace_${'long-folder-name-'.repeat(9)}` }
-const project = { id: room.project_id, space_id: room.space_id, name: 'Layout project', status: 'active' }
+const project = { id: room.project_id, space_id: room.space_id, name: 'Layout project', status: 'active', current_user_can_read: true, current_user_can_write: true }
 const markdown = [
   '- 列表项包含 `apps/web/src/modules/conversation/ConversationSurface.tsx` 和 **加粗说明**，每行末尾都应该可见。'.repeat(3),
   '  - 嵌套列表也应在可用宽度内换行。',
@@ -45,6 +45,7 @@ async function mockApi(page) {
     else if (path.endsWith('/messages')) data = { ...pageOf([message]), queued: [] }
     else if (path === '/projects') data = pageOf([project])
     else if (path === `/projects/${project.id}`) data = project
+    else if (path === `/projects/${project.id}/overview`) data = { project, brief: null, attention: [] }
     else if (path.endsWith('/folders')) data = pageOf([folder])
     else if (path.endsWith('/locations')) data = [{ status: 'active', execution_ready: true }]
     else if (path.endsWith('/tree')) data = { name: 'source', path: '.', type: 'dir', children:

@@ -1,0 +1,1 @@
+ALTER TABLE "host_thread_events" ADD COLUMN "tool_details_json" jsonb;

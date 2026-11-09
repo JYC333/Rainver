@@ -1,12 +1,8 @@
 import { ConversationFilePreview } from "./ConversationFilePreview"
 import { RunModelLabel } from './RunModelLabel'
-import { useState } from 'react'
 import { AlertTriangle, ChevronRight, CircleHelp, Info, ListChecks } from 'lucide-react'
 import type { RunTurn, TurnPart } from '../../types/api'
 import { Message, MessageContent, MessageResponse } from '../../components/ai-elements/message'
-import {
-  Tool, ToolContent, ToolHeader, ToolInput, ToolOutput, type ToolState,
-} from '../../components/ai-elements/tool'
 import {
   Plan, PlanContent, PlanHeader, PlanTitle, PlanTrigger,
 } from '../../components/ai-elements/plan'
@@ -15,7 +11,10 @@ import { ConversationLink as SpaceLink } from './ConversationScope'
 import { cn } from '../../lib/utils'
 import { useAppTranslation } from '../../i18n'
 import { formatDateTime } from '../../i18n/format'
-import { presentConversationParts, presentToolOutput, progressTextIndexes } from './turnPresentation'
+import { presentConversationParts, progressTextIndexes, conversationWorkItems, isDebugDiagnostic } from './turnPresentation'
+import { ConversationToolGroup, ConversationToolStep } from './ConversationToolStep'
+import { Button } from '../../components/ui/button'
+import { useConversationDisclosure } from '../../components/ai-elements/conversation'
 
 /**
  * One Agent turn, in whichever of its four states it is in.
@@ -27,7 +26,7 @@ import { presentConversationParts, presentToolOutput, progressTextIndexes } from
  *
  * The four states are the same bubble, not four components:
  *
- * - **Working** — active/failed steps as they happen, text streaming under them.
+ * - **Working** — compact tool history as it happens, with text in order.
  * - **Blocked** — stopped, waiting on the person: an authorization to grant,
  *   a review somebody owes it. Said plainly, because a turn that looks busy
  *   while it is actually waiting on you is the worst of the four.
@@ -62,17 +61,21 @@ export function ConversationTurn({
 }) {
   const presentedParts = presentConversationParts(turn.parts)
   const { t } = useAppTranslation()
+  const [disclosure, setDisclosure] = useConversationDisclosure(turn.run_id)
+  const { work: showWork, diagnostics: showDiagnostics, tools: expanded } = disclosure
+  const onExpand = (id: string, open: boolean) => {
+    setDisclosure(current => ({ ...current, tools: { ...current.tools, [id]: open }, work: current.work || open }))
+  }
+  const debugText = [...new Set(turn.parts.filter(isDebugDiagnostic).flatMap(part => part.type === 'diagnostic' ? part.text.split('\n') : []))].join('\n')
   const steps = presentedParts.filter(isStep)
-  // Use the full chronology: completed tools are hidden in the conversation,
-  // but still delimit progress updates from the closing response.
   const progress = progressTextIndexes(turn.parts)
   const workCount = steps.length + progress.size
   const working = turn.state === 'working'
   const blocked = turn.state === 'blocked'
+  const stopped = turn.parts.some(part => part.type === 'diagnostic' && part.error_code === 'run_cancelled')
   // Finished work folds away; failed and blocked work does not, because it is
   // the explanation. A turn still running shows its steps because they are
   // what is happening.
-  const [showWork, setShowWork] = useState(false)
   const stepsOpen = working || blocked || turn.state === 'failed' || showWork
   return (
     <ConversationFilePreview key={turn.run_id} runId={turn.run_id}><Message from="assistant" className={cn('gap-1.5', className)}>
@@ -84,19 +87,22 @@ export function ConversationTurn({
           are the point and there is nothing to fold.
         */}
         {workCount > 0 && !working && !blocked && turn.state !== 'failed' && (
-          <button
-            type="button"
+          <Button
+            variant="ghost" size="sm"
+            data-conversation-disclosure
             aria-expanded={showWork}
-            onClick={() => setShowWork(current => !current)}
+            onClick={() => setDisclosure(current => ({ ...current, work: !current.work }))}
             className="flex w-fit items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
           >
             <ChevronRight className={cn('size-3 transition-transform', showWork && 'rotate-90')} />
             <span>{showWork ? t('conversation_ui.turn.hide_work') : t('conversation_ui.turn.show_work', { count: workCount })}</span>
-          </button>
+          </Button>
         )}
 
         <div className="flex flex-col gap-0.5">
-          {presentedParts.map(part => {
+          {conversationWorkItems(presentedParts).map(item => {
+            if (item.type === 'tools') return stepsOpen ? <ConversationToolGroup key={item.id} id={item.id} parts={item.parts} expanded={expanded} onExpand={onExpand} settled={turn.state === 'done' || turn.state === 'failed'} /> : null
+            const { part } = item
             if (part.type === 'text') {
               if (progress.has(part.index)) {
                 if (!stepsOpen) return null
@@ -106,12 +112,15 @@ export function ConversationTurn({
               }
               return <MessageResponse key={part.index}>{part.text}</MessageResponse>
             }
-            if (part.type === 'action_preview' || part.type === 'reasoning' || !stepsOpen) return null
+            if (part.type === 'action_preview' || part.type === 'reasoning') return null
+            const attention = part.type === 'diagnostic' && (part.level === 'warning' || part.level === 'error')
+            if (!stepsOpen && !attention) return null
+            if (part.type === 'tool_call') return <ConversationToolStep key={part.call_id ?? part.index} part={part} expanded={expanded} onExpand={onExpand} settled={turn.state === 'done' || turn.state === 'failed'} />
             return <TurnStep key={part.index} part={part} />
           })}
         </div>
 
-        {turn.state === 'failed' && (
+        {turn.state === 'failed' && !stopped && (
           <span className="flex w-fit items-center gap-1.5 text-xs text-destructive">
             <AlertTriangle className="size-3" /> {t('conversation_ui.turn.failed')}
           </span>
@@ -147,6 +156,12 @@ export function ConversationTurn({
           still arriving look identical without it.
         */}
         {working && <Shimmer className="text-sm">{t('conversation_ui.turn.working')}</Shimmer>}
+        {debugText && <div className="min-w-0">
+          <Button variant="ghost" size="sm" data-conversation-disclosure className="h-auto px-1.5 py-1 text-xs text-muted-foreground" aria-expanded={showDiagnostics} onClick={() => setDisclosure(current => ({ ...current, diagnostics: !current.diagnostics }))}>
+            <ChevronRight className={cn('size-3 transition-transform', showDiagnostics && 'rotate-90')} />{t('conversation_ui.turn.diagnostics')}
+          </Button>
+          {showDiagnostics && <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded border border-border bg-muted/20 p-2 text-xs text-muted-foreground">{debugText}</pre>}
+        </div>}
       </MessageContent>
     </Message></ConversationFilePreview>
   )
@@ -173,7 +188,7 @@ function isStep(part: TurnPart): part is StepPart {
   return part.type === 'tool_call' || part.type === 'plan' || part.type === 'diagnostic'
 }
 
-function TurnStep({ part }: { part: StepPart }) {
+function TurnStep({ part }: { part: Exclude<StepPart, { type: 'tool_call' }> }) {
   const { t } = useAppTranslation()
   if (part.type === 'plan') {
     return (
@@ -210,43 +225,7 @@ function TurnStep({ part }: { part: StepPart }) {
     )
   }
 
-  const result = presentToolOutput(part.output)
-  // A nonzero process exit is evidence for the Agent to interpret. It does
-  // not, by itself, establish a failed turn or an inability to run the tool.
-  const nonzeroExit = part.status === 'failed' && result.exitCode !== null && result.exitCode !== 0
-  const expandable = part.input !== null || part.output !== null || part.status === 'failed'
-  return (
-    <Tool>
-      <ToolHeader
-        type={part.name}
-        state={toolState(part.status)}
-        title={part.name}
-        kind={part.kind}
-        expandable={expandable}
-        statusIndicator={nonzeroExit ? (
-          <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
-            <Info className="size-3" /> {t('conversation_ui.turn.command_returned')}
-          </span>
-        ) : undefined}
-      />
-      {expandable && (
-        <ToolContent>
-          {part.input !== null && <ToolInput input={part.input} />}
-          {nonzeroExit && <p className="text-xs text-muted-foreground">{t('conversation_ui.turn.nonzero_exit')}</p>}
-          {part.status === 'failed' && !nonzeroExit && <p className="text-xs text-destructive">{t('conversation_ui.turn.tool_failed')}</p>}
-          {result.exitCode !== null && <p className="text-xs text-muted-foreground">{t('conversation_ui.turn.exit_code', { code: result.exitCode })}</p>}
-          {result.truncated && <p className="text-xs text-muted-foreground">{t('conversation_ui.turn.output_truncated')}</p>}
-          {(part.output !== null || part.status === 'failed') && (
-            <ToolOutput
-              output={result.text || t('conversation_ui.turn.no_output')}
-              errorText={undefined}
-              label={t('conversation_ui.turn.tool_output')}
-            />
-          )}
-        </ToolContent>
-      )}
-    </Tool>
-  )
+  return null
 }
 
 /**
@@ -254,6 +233,7 @@ function TurnStep({ part }: { part: StepPart }) {
  * reader's language. Any other diagnostic is the runtime's own text.
  */
 const LOCALIZED_DIAGNOSTIC_KEYS: Record<string, string> = {
+  run_cancelled: 'conversation_ui.turn.stopped',
   run_quiet: 'conversation_ui.turn.run_quiet',
   runtime_auth_none: 'conversation_ui.turn.runtime_auth_none',
   runtime_auth_available: 'conversation_ui.turn.runtime_auth_available',
@@ -269,12 +249,7 @@ const LOCALIZED_DIAGNOSTIC_KEYS: Record<string, string> = {
 }
 
 function diagnosticText(part: Extract<TurnPart, { type: 'diagnostic' }>, t: (key: string, options?: Record<string, string>) => string): string {
+  if (part.error_code === 'run_cancelled') return part.text ? `${t('conversation_ui.turn.stopped')}: ${part.text}` : t('conversation_ui.turn.stopped')
   const key = part.error_code ? LOCALIZED_DIAGNOSTIC_KEYS[part.error_code] : undefined
   return key ? t(key, { time: formatDateTime(part.text), name: part.text }) : part.text
-}
-
-function toolState(status: 'pending' | 'running' | 'succeeded' | 'failed'): ToolState {
-  if (status === 'pending') return 'input-streaming'
-  if (status === 'running') return 'input-available'
-  return status === 'failed' ? 'output-error' : 'output-available'
 }

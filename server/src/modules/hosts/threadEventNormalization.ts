@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import type { HostThreadEventType } from "./threadEventRepository.js";
-import { createAcpToolCallLifecycle } from "../runtimeAdapters/acpToolCallLifecycle.js";
+import { createAcpToolCallLifecycle, isTerminalAcpToolStatus } from "../runtimeAdapters/acpToolCallLifecycle.js";
 import { normalizeToolName } from "../runtimeAdapters/toolName.js";
-import { redactSecretPatterns } from "../runs/evidenceRedaction.js";
 import { createAcpRuntimeStatusProjector } from "../runtimeAdapters/acpRuntimeStatus.js";
+import type { ToolCallDetails } from "@rainver/protocol";
+import { createAcpToolPresentation, safeToolText } from "./acpToolPresentation.js";
 
 export interface ThreadEventDraft {
   event_type: HostThreadEventType;
@@ -13,11 +14,11 @@ export interface ThreadEventDraft {
   tool_input_summary?: string | null;
   tool_kind?: string | null;
   tool_result_summary?: string | null;
+  tool_details_json?: ToolCallDetails | null;
   status?: string | null;
 }
 
-const MAX_TOOL_RESULT_SUMMARY_CHARS = 4_000;
-const MAX_TOOL_INPUT_SUMMARY_CHARS = 200;
+const MAX_TOOL_INPUT_SUMMARY_CHARS = 8_000;
 
 /**
  * Turns a remote-host vendor CLI's ACP protocol traffic into the thread's
@@ -28,7 +29,7 @@ const MAX_TOOL_INPUT_SUMMARY_CHARS = 200;
  * replaces an entry and ToolCallUpdate carries patch fields for that same id.
  * It never infers reasoning from message text.
  */
-export function createThreadEventNormalizer(): {
+export function createThreadEventNormalizer(onDeferredOutput?: (drafts: ThreadEventDraft[]) => void): {
   pushStderr(chunk: string): ThreadEventDraft[];
   pushAcpTextDelta(delta: string): ThreadEventDraft[];
   pushAcpThoughtDelta(delta: string): ThreadEventDraft[];
@@ -40,12 +41,38 @@ export function createThreadEventNormalizer(): {
   const toolCalls = createAcpToolCallLifecycle();
   const toolFingerprints = new Map<string, string>();
   const terminalTools = new Map<string, string>();
+  const presentTool = createAcpToolPresentation();
+  const pendingOutput = new Map<string, ThreadEventDraft>();
+  const outputEmittedAt = new Map<string, number>();
+  let outputTimer: ReturnType<typeof setTimeout> | null = null;
 
   function changedToolEvents(drafts: ThreadEventDraft[]): ThreadEventDraft[] {
     return drafts.filter(draft => {
+      const id = draft.tool_call_id!;
       const fingerprint = createHash("sha256").update(JSON.stringify(draft)).digest("hex");
-      if (toolFingerprints.get(draft.tool_call_id!) === fingerprint) return false;
-      toolFingerprints.set(draft.tool_call_id!, fingerprint);
+      if (toolFingerprints.get(id) === fingerprint) {
+        pendingOutput.delete(id);
+        return false;
+      }
+      if (draft.event_type === "tool_activity_finished" && draft.status === null && draft.tool_result_summary !== null) {
+        if (Date.now() - (outputEmittedAt.get(id) ?? 0) < 250) {
+          pendingOutput.set(id, draft);
+          if (onDeferredOutput && outputTimer === null) outputTimer = setTimeout(() => {
+            outputTimer = null;
+            const ready = [...pendingOutput.values()];
+            pendingOutput.clear();
+            for (const event of ready) {
+              toolFingerprints.set(event.tool_call_id!, createHash("sha256").update(JSON.stringify(event)).digest("hex"));
+              outputEmittedAt.set(event.tool_call_id!, Date.now());
+            }
+            if (ready.length) onDeferredOutput(ready);
+          }, 250);
+          return false;
+        }
+      }
+      pendingOutput.delete(id);
+      toolFingerprints.set(id, fingerprint);
+      if (draft.tool_result_summary != null) outputEmittedAt.set(id, Date.now());
       return true;
     });
   }
@@ -103,39 +130,52 @@ export function createThreadEventNormalizer(): {
     if (statuses.length) return [...flushTextSegment(), ...statuses.map(value => ({ event_type: "status" as const, ...value }))];
     if (event.method !== "session/update") return [];
     const update = recordValue(recordValue(event.params).update);
+    if (update.sessionUpdate === "notice") {
+      const notice = recordValue(update.notice);
+      if (typeof notice.title !== "string") return [];
+      return [...flushTextSegment(), {
+        event_type: "status", status: "runtime_notice",
+        text: JSON.stringify({ severity: notice.severity === "error" || notice.severity === "warning" ? notice.severity : "info", title: safeToolText(notice.title, 1_000), description: typeof notice.description === "string" ? safeToolText(notice.description, 4_000) : null }),
+      }];
+    }
     const callId = stringValue(update.toolCallId ?? update.tool_call_id);
     if (update.sessionUpdate === "tool_call") {
       const status = acpToolStatus(stringValue(update.status)) ?? "pending";
       const toolName = normalizeToolName(stringValue(update.title ?? update.name));
       const lifecycle = toolCalls.started({ callId, name: toolName, status: stringValue(update.status) });
-      if (terminalTools.has(lifecycle.callId) && !["completed", "failed"].includes(stringValue(update.status) ?? "")) return flushTextSegment();
-      if (status === "succeeded" || status === "failed") terminalTools.set(lifecycle.callId, stringValue(update.status)!);
+      if (terminalTools.has(lifecycle.callId) && !isTerminalAcpToolStatus(stringValue(update.status))) return flushTextSegment();
+      const presentation = presentTool(lifecycle.callId, update);
+      const input = summarizeInput(update.rawInput ?? update.raw_input);
+      if (input !== null) presentation.details = { ...presentation.details, input_truncated: input.length > MAX_TOOL_INPUT_SUMMARY_CHARS };
+      if (isTerminalAcpToolStatus(stringValue(update.status))) terminalTools.set(lifecycle.callId, stringValue(update.status)!);
       return [
         ...flushTextSegment(),
         ...changedToolEvents([{
           event_type: "tool_activity_started",
           tool_call_id: lifecycle.callId,
           tool_name: toolName,
-          tool_input_summary: summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS, "head"),
+          tool_input_summary: input,
           // The 9-category kind is what
           // makes claude/codex/opencode tool rows comparable in the UI.
           tool_kind: stringValue(update.kind),
-          tool_result_summary: summarizeToolOutput(update),
+          tool_result_summary: presentation.output,
+          ...(presentation.details ? { tool_details_json: presentation.details } : {}),
           status,
         }]),
       ];
     }
     if (update.sessionUpdate === "tool_call_update") {
       const status = stringValue(update.status);
-      if (status !== null && !["pending", "in_progress", "completed", "failed"].includes(status)) return [];
+      if (status !== null && !["pending", "in_progress", "completed", "failed", "cancelled", "canceled"].includes(status)) return [];
       const toolName = normalizeToolName(stringValue(update.title ?? update.name));
       const toolKind = stringValue(update.kind);
-      const toolInput = summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS, "head");
-      const toolOutput = summarizeToolOutput(update);
+      const toolInput = summarizeInput(update.rawInput ?? update.raw_input);
       const lifecycle = toolCalls.updated({ callId, name: toolName, status });
       const terminal = terminalTools.get(lifecycle.callId);
-      if (terminal && status && status !== "completed" && status !== "failed") return flushTextSegment();
-      if (status === "completed" || status === "failed") terminalTools.set(lifecycle.callId, status);
+      if (terminal && status && !isTerminalAcpToolStatus(status)) return flushTextSegment();
+      const presentation = presentTool(lifecycle.callId, update);
+      if (toolInput !== null) presentation.details = { ...presentation.details, input_truncated: toolInput.length > MAX_TOOL_INPUT_SUMMARY_CHARS };
+      if (isTerminalAcpToolStatus(status)) terminalTools.set(lifecycle.callId, status!);
       const start: ThreadEventDraft[] = lifecycle.missingStart
         ? [{
             event_type: "tool_activity_started",
@@ -156,9 +196,8 @@ export function createThreadEventNormalizer(): {
           tool_input_summary: toolInput,
           tool_kind: toolKind,
           status: acpToolStatus(status ?? terminal ?? null),
-          // Absorbed for claude/opencode; codex-acp reports none
-          // (a known adapter asymmetry, not a bug).
-          tool_result_summary: toolOutput,
+          tool_result_summary: presentation.output,
+          ...(presentation.details ? { tool_details_json: presentation.details } : {}),
         }]),
       ];
     }
@@ -183,14 +222,18 @@ export function createThreadEventNormalizer(): {
     return lines
       .map((line) => line.trim())
       .filter(Boolean)
-      .map((line): ThreadEventDraft => ({ event_type: "diagnostic", text: line }));
+      .map((line): ThreadEventDraft => ({ event_type: "diagnostic", text: safeToolText(line, 8_000) }));
   }
 
   function finish(): ThreadEventDraft[] {
+    if (outputTimer !== null) clearTimeout(outputTimer);
+    outputTimer = null;
     const drafts: ThreadEventDraft[] = [];
     drafts.push(...flushTextSegment());
+    drafts.push(...pendingOutput.values());
+    pendingOutput.clear();
     if (stderrBuffer.trim()) {
-      drafts.push({ event_type: "diagnostic", text: stderrBuffer.trim() });
+      drafts.push({ event_type: "diagnostic", text: safeToolText(stderrBuffer.trim(), 8_000) });
     }
     stderrBuffer = "";
     return drafts;
@@ -201,16 +244,13 @@ export function createThreadEventNormalizer(): {
 
 function acpToolStatus(status: string | null): string | null {
   if (status === null) return null;
-  if (status === "failed") return "failed";
+  if (status === "failed" || status === "cancelled" || status === "canceled") return "failed";
   if (status === "completed") return "succeeded";
   if (status === "pending") return "pending";
   return "in_progress";
 }
 
-/** `head` keeps the start (a call's input); `middle` keeps both ends (its output). */
-type SummaryShape = "head" | "middle";
-
-function summarizeJson(value: unknown, maxChars: number, shape: SummaryShape): string | null {
+function summarizeInput(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   let text: string;
   try {
@@ -218,71 +258,7 @@ function summarizeJson(value: unknown, maxChars: number, shape: SummaryShape): s
   } catch {
     return null;
   }
-  return boundedSummary(text, maxChars, shape);
-}
-
-/**
- * How far past what is kept the redaction still reads. Far beyond any secret
- * shape, so a credential straddling a cut is matched whole before the cut,
- * while a multi-megabyte output is never scanned in full.
- */
-const REDACTION_WINDOW_FACTOR = 16;
-
-/**
- * Persisted tool summaries are redacted with the canonical evidence rule
- * before they are bounded: a command's output is exactly where an agent
- * prints a token it just read.
- */
-function boundedSummary(text: string, limit: number, shape: SummaryShape = "middle"): string {
-  const window = limit * REDACTION_WINDOW_FACTOR;
-  if (shape === "head") {
-    const redacted = redactSecretPatterns(text.slice(0, window));
-    return redacted.length > limit || text.length > window ? `${redacted.slice(0, limit)}…` : redacted;
-  }
-  const marker = "\n… [output truncated; middle omitted] …\n";
-  const redacted = text.length > window * 2
-    ? `${redactSecretPatterns(text.slice(0, window))}${marker}${redactSecretPatterns(text.slice(-window))}`
-    : redactSecretPatterns(text);
-  if (redacted.length <= limit) return redacted;
-  const half = Math.floor((limit - marker.length) / 2);
-  return `${redacted.slice(0, half)}${marker}${redacted.slice(-(limit - marker.length - half))}`;
-}
-
-function summarizeToolOutput(update: Record<string, unknown>): string | null {
-  const raw = update.rawOutput ?? update.raw_output;
-  const result = recordValue(raw);
-  if (typeof result.formatted_output === "string") {
-    const code = typeof result.exit_code === "number" ? result.exit_code
-      : typeof result.exit_code === "string" && /^-?\d+$/.test(result.exit_code) ? Number(result.exit_code) : null;
-    // Preserve execution metadata outside the bounded text. A warning-heavy
-    // prefix must not consume the exit code or the end of the command output.
-    return JSON.stringify({
-      exit_code: code !== null && Number.isSafeInteger(code) ? code : null,
-      formatted_output: boundedSummary(result.formatted_output, MAX_TOOL_RESULT_SUMMARY_CHARS),
-      truncated: result.formatted_output.length > MAX_TOOL_RESULT_SUMMARY_CHARS,
-    });
-  }
-  return summarizeToolResultContent(update.content) ?? summarizeJson(raw, MAX_TOOL_RESULT_SUMMARY_CHARS, "middle");
-}
-
-/**
- * Only the "content" tool-call-content
- * variant is absorbed — text an agent explicitly reported as a tool's
- * result. The "diff" variant is declined by design (the daemon's own
- * `git diff HEAD` captures the workspace's true state, including changes the
- * agent never reported — strictly better for review than trusting the
- * agent's self-reported diff).
- */
-function summarizeToolResultContent(content: unknown): string | null {
-  if (!Array.isArray(content)) return null;
-  const texts = content
-    .map(recordValue)
-    .filter((block) => block.type === "content")
-    .map((block) => stringValue(recordValue(block.content).text))
-    .filter((text): text is string => text !== null);
-  if (texts.length === 0) return null;
-  const joined = texts.join("\n");
-  return boundedSummary(joined, MAX_TOOL_RESULT_SUMMARY_CHARS);
+  return safeToolText(text, MAX_TOOL_INPUT_SUMMARY_CHARS, "head");
 }
 
 function recordValue(value: unknown): Record<string, unknown> {

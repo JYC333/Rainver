@@ -7,6 +7,10 @@ The editor, recovery drafts, and message-owned lazy input
 resources are recorded in [ADR 0021](../decisions/0021-files-code-codemirror-drafts-and-input-resources.md).
 This module guide describes the current behavior.
 
+The read-only `CodeMirrorMerge` comparison also supports a unified view for
+conversation step diffs. It reuses the installed CodeMirror merge extension
+with merge controls disabled; it grants no file-write or draft authority.
+
 ## Purpose
 Project-local interface for browsing and editing a Project Folder's files with CodeMirror 6,
 recovering unsaved human drafts, reviewing git status/diffs, and restoring history into a draft.

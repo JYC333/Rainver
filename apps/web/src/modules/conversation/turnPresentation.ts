@@ -26,17 +26,34 @@ export function presentToolOutput(output: string | null): { text: string | null;
   return { text: output, exitCode: null, truncated: output?.endsWith('…') === true || output?.includes('[output truncated; middle omitted]') === true }
 }
 
-/**
- * Builds the conversation's display model without changing the durable turn.
- *
- * Reasoning and successful calls remain available in the Run audit trail, but
- * they are not conversation content. Successful preauthorization diagnostics
- * also remain audit-only. Active/failed calls and other diagnostics stay
- * visible because they explain what is happening or what went wrong.
- */
+export function isDebugDiagnostic(part: TurnPart): boolean {
+  return part.type === 'diagnostic' && (part.visibility === 'debug'
+    || part.error_code === 'runtime_auth_available' || part.error_code === 'runtime_auth_none'
+    || (part.level === 'info' && !part.error_code))
+}
+
+/** Execution history stays intact; technical logs have their own disclosure. */
 export function presentConversationParts(parts: readonly TurnPart[]): TurnPart[] {
   return parts.filter(part => part.type !== 'reasoning'
-    && !(part.type === 'tool_call' && part.status === 'succeeded')
-    && !(part.type === 'diagnostic' && part.level === 'info' && !part.error_code
-      && /^Permission pre-authorized \([^\r\n()]+\): allowed$/.test(part.text)))
+    && !isDebugDiagnostic(part))
+}
+
+type ToolPart = Extract<TurnPart, { type: 'tool_call' }>
+export type ConversationWorkItem = { type: 'part'; part: TurnPart } | { type: 'tools'; id: string; parts: ToolPart[] }
+
+/** Consecutive read/search attempts share a compact disclosure, including unsuccessful attempts. */
+export function conversationWorkItems(parts: readonly TurnPart[]): ConversationWorkItem[] {
+  const items: ConversationWorkItem[] = []
+  let group: ToolPart[] = []
+  const flush = () => {
+    if (group.length > 1) items.push({ type: 'tools', id: `tools:${group[0].call_id ?? group[0].index}`, parts: group })
+    else if (group[0]) items.push({ type: 'part', part: group[0] })
+    group = []
+  }
+  for (const part of parts) {
+    if (part.type === 'tool_call' && (part.kind === 'read' || part.kind === 'search')) group.push(part)
+    else { flush(); items.push({ type: 'part', part }) }
+  }
+  flush()
+  return items
 }

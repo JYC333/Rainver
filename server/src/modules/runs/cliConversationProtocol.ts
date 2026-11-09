@@ -243,8 +243,9 @@ export class AcpController implements CliStdioController {
         clientCapabilities: {
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
+          _meta: { terminal_output: true },
           subagents: {},
-          session: { configOptions: { boolean: {} }, compaction: {} },
+          session: { configOptions: { boolean: {} }, compaction: {}, notices: {} },
           // Only where the runtime's question tool depends on it:
           // advertising it is what lets that question reach us, as a form we
           // translate into the reply rather than one the runtime drops.

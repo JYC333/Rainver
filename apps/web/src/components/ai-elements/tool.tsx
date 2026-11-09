@@ -130,7 +130,7 @@ export const ToolHeader = ({
     <>
       <div className="flex min-w-0 items-center gap-1.5">
         {toolIcon(kind)}
-        <span className="truncate text-xs text-muted-foreground">{title ?? derivedName}</span>
+        <span title={title ?? derivedName} className="truncate text-xs text-muted-foreground">{title ?? derivedName}</span>
         {statusIndicator ?? getStatusIndicator(state)}
       </div>
       {expandable && (

@@ -5,6 +5,17 @@ Agent's autonomous loop runs in an ACP runtime process launched by an
 execution Host daemon. Bounded model calls remain in the Provider subsystem;
 they are not Agent runtime adapters.
 
+## Conversation events
+
+All built-in and Registry ACP Agents share the same tool/output normalizer and
+Turn presentation. The ACP client advertises display-only terminal output
+and session notices, and accepts standard ACP plans; client-side terminal execution and filesystem RPC
+remain disabled. Tool updates retain exit/signal/error evidence, file locations
+and bounded step diffs in the canonical thread event. Missing output is a
+capability gap, never a derived failed status. Technical stderr stays in the
+diagnostic disclosure, while authoritative Run failures and typed warning/error
+notices remain visible. See [Conversation](../architecture/CONVERSATION.md).
+
 ## Runtime identity and registry
 
 `AgentRuntimeProfile.runtime_key` is the Agent deployment choice. It resolves

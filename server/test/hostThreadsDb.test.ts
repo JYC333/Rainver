@@ -865,6 +865,7 @@ describe("host_threads owner constraints", () => {
         event_type: "tool_activity_started",
         tool_call_id: longCallId,
         tool_name: longToolName,
+        tool_details_json: { title: "Read project file", exit_code: 1, error: "file does not exist" },
         status: "pending",
       },
     ]);
@@ -873,6 +874,7 @@ describe("host_threads owner constraints", () => {
       project_id: null,
       tool_call_id: longCallId,
       tool_name: longToolName,
+      tool_details_json: { title: "Read project file", exit_code: 1, error: "file does not exist" },
     });
   });
 

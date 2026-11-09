@@ -68,7 +68,7 @@ export function createAcpToolCallLifecycle(): AcpToolCallLifecycle {
     }
 
     const callId = syntheticId();
-    if (!isTerminalStatus(input.status ?? null)) {
+    if (!isTerminalAcpToolStatus(input.status ?? null)) {
       openAnonymousCalls.push({ callId, name: input.name });
     }
     return { callId, missingStart: false };
@@ -90,7 +90,7 @@ export function createAcpToolCallLifecycle(): AcpToolCallLifecycle {
         const anonymous = openAnonymousCalls[anonymousIndex]!;
         suppliedIdAliases.set(input.callId, anonymous.callId);
         knownCallIds.add(input.callId);
-        if (isTerminalStatus(input.status)) openAnonymousCalls.splice(anonymousIndex, 1);
+        if (isTerminalAcpToolStatus(input.status)) openAnonymousCalls.splice(anonymousIndex, 1);
         return { callId: anonymous.callId, missingStart: false };
       }
       const missingStart = !knownCallIds.has(input.callId);
@@ -102,7 +102,7 @@ export function createAcpToolCallLifecycle(): AcpToolCallLifecycle {
 
     if (anonymousIndex < 0) {
       const callId = syntheticId();
-      if (!isTerminalStatus(input.status)) {
+      if (!isTerminalAcpToolStatus(input.status)) {
         openAnonymousCalls.push({ callId, name: input.name });
       }
       return { callId, missingStart: true };
@@ -110,15 +110,15 @@ export function createAcpToolCallLifecycle(): AcpToolCallLifecycle {
 
     const call = openAnonymousCalls[anonymousIndex]!;
     if (call.name === null && input.name) call.name = input.name;
-    if (isTerminalStatus(input.status)) openAnonymousCalls.splice(anonymousIndex, 1);
+    if (isTerminalAcpToolStatus(input.status)) openAnonymousCalls.splice(anonymousIndex, 1);
     return { callId: call.callId, missingStart: false };
   };
 
   return { started, updated };
 }
 
-function isTerminalStatus(status: string | null): boolean {
-  return status === "completed" || status === "failed" || status === "succeeded";
+export function isTerminalAcpToolStatus(status: string | null): boolean {
+  return status === "completed" || status === "failed" || status === "succeeded" || status === "cancelled" || status === "canceled";
 }
 
 function matchingAnonymousCall(
@@ -136,7 +136,7 @@ function matchingAnonymousCall(
 }
 
 function closeAnonymousCall(calls: AnonymousCall[], callId: string, status: string | null): void {
-  if (!isTerminalStatus(status)) return;
+  if (!isTerminalAcpToolStatus(status)) return;
   const index = calls.findIndex((call) => call.callId === callId);
   if (index >= 0) calls.splice(index, 1);
 }

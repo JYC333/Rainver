@@ -34,7 +34,7 @@ describe("createThreadEventNormalizer", () => {
 
   it.each(["completed", "failed"])("retains exit metadata and the output tail without classifying warnings (%s)", (status) => {
     const normalizer = createThreadEventNormalizer();
-    const text = "[WARN] engine mismatch\n" + "log line\n".repeat(1000) + "test failure at the end";
+    const text = "[WARN] engine mismatch\n" + "log line\n".repeat(3000) + "test failure at the end";
     const rows = normalizer.pushAcpProtocolEvent({ method: "session/update", params: { update: {
       sessionUpdate: "tool_call_update", toolCallId: "exec", status,
       rawOutput: { formatted_output: text, exit_code: status === "failed" ? "1" : 0 },
@@ -44,7 +44,7 @@ describe("createThreadEventNormalizer", () => {
     const result = JSON.parse(event.tool_result_summary!);
     expect(result.exit_code).toBe(status === "failed" ? 1 : 0);
     expect(result.truncated).toBe(true);
-    expect(result.formatted_output).toHaveLength(4000);
+    expect(result.formatted_output).toHaveLength(16000);
     expect(result.formatted_output).toContain("[WARN] engine mismatch");
     expect(result.formatted_output).toContain("test failure at the end");
   });
@@ -187,7 +187,7 @@ describe("createThreadEventNormalizer", () => {
     }]);
   });
 
-  it("absorbs bounded tool-result content but ignores the declined diff variant (A9)", () => {
+  it("retains tool-result content and the step's reported file changes", () => {
     const normalizer = createThreadEventNormalizer();
     normalizer.pushAcpProtocolEvent({
       method: "session/update",
@@ -215,6 +215,7 @@ describe("createThreadEventNormalizer", () => {
       tool_kind: null,
       status: "succeeded",
       tool_result_summary: "command output",
+      tool_details_json: { diffs: [{ path: "/a.ts", old_text: "old", new_text: "new", truncated: false }] },
     }]);
   });
 
@@ -224,7 +225,7 @@ describe("createThreadEventNormalizer", () => {
       method: "session/update",
       params: { update: { sessionUpdate: "tool_call", toolCallId: "call-1" } },
     });
-    const longText = "x".repeat(5_000);
+    const longText = "x".repeat(50_000);
     const drafts = normalizer.pushAcpProtocolEvent({
       method: "session/update",
       params: {

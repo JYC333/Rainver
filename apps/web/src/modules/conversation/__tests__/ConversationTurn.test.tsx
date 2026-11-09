@@ -48,7 +48,7 @@ describe('ConversationTurn states', () => {
     expect(screen.queryByText('I will inspect the code.')).not.toBeInTheDocument()
     expect(screen.queryByText('The change is ready; checking tests.')).not.toBeInTheDocument()
     expect(screen.getByText('Fixed. All checks passed.')).toBeInTheDocument()
-    const disclosure = screen.getByRole('button', { name: 'show work (2 steps)' })
+    const disclosure = screen.getByRole('button', { name: 'show work (4 steps)' })
     expect(disclosure).toHaveAttribute('aria-expanded', 'false')
     fireEvent.click(disclosure)
     expect(screen.getByText('I will inspect the code.')).toBeInTheDocument()
@@ -65,7 +65,7 @@ describe('ConversationTurn states', () => {
       tool(1, 'test', 'succeeded'),
     ])} />)
     expect(screen.getByText(reply)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /show work/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /show work/ })).toBeInTheDocument()
   })
 
   it('keeps progress visible when the turn fails or waits for a decision', () => {
@@ -112,7 +112,7 @@ describe('ConversationTurn states', () => {
 
   it('keeps a tool failure without a process exit code visible as an error', () => {
     show(<ConversationTurn turn={turn('working', [{ ...tool(0, 'read', 'failed'), output: 'Permission denied' }])} />)
-    expect(screen.getByText('Error')).toBeInTheDocument()
+    expect(screen.getByText('Tool failed')).toBeInTheDocument()
     fireEvent.click(screen.getByText('read'))
     expect(screen.getByText(/The tool reported failure/)).toBeInTheDocument()
   })
@@ -130,18 +130,18 @@ describe('ConversationTurn states', () => {
     expect(screen.getByText(/Output is incomplete/)).toBeInTheDocument()
     expect(screen.queryByText(/Exit code:/)).not.toBeInTheDocument()
   })
-  it('working: hides completed tools while keeping the live text visible', () => {
+  it('working: retains completed tools alongside the live text', () => {
     show(<ConversationTurn turn={turn('working', [
       tool(0, 'search', 'succeeded'),
       { type: 'text', index: 1, text: 'Looking at the results.' },
     ])} />)
     expect(screen.queryByText(/tool call completed/)).not.toBeInTheDocument()
-    expect(screen.queryByText('search')).not.toBeInTheDocument()
+    expect(screen.getByText('search')).toBeInTheDocument()
     expect(screen.getByText('Looking at the results.')).toBeInTheDocument()
     expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
   })
 
-  it('renders assistant messages in order without exposing reasoning or completed tools', () => {
+  it('renders messages and completed tools in order while keeping reasoning private', () => {
     const { container } = show(<ConversationTurn turn={turn('working', [
       { type: 'text', index: 0, text: 'I will inspect.' },
       tool(1, 'read', 'succeeded'),
@@ -150,7 +150,7 @@ describe('ConversationTurn states', () => {
     ])} />)
     const text = container.textContent ?? ''
     expect(text.indexOf('I will inspect.')).toBeLessThan(text.indexOf('Done.'))
-    expect(screen.queryByText('read')).not.toBeInTheDocument()
+    expect(screen.getByText('read')).toBeInTheDocument()
     expect(screen.queryByText(/Thought for/)).not.toBeInTheDocument()
     expect(screen.queryByText('Checking details.')).not.toBeInTheDocument()
   })
@@ -166,28 +166,28 @@ describe('ConversationTurn states', () => {
     expect(screen.queryByText(/tool calls completed/)).not.toBeInTheDocument()
     expect(screen.getByText('search')).toBeInTheDocument()
     expect(screen.getByText('write')).toBeInTheDocument()
-    expect(screen.queryByText('task.create')).not.toBeInTheDocument()
+    expect(screen.getByText('task.create')).toBeInTheDocument()
   })
 
-  it('hides completed tools wherever they occurred in the protocol chronology', () => {
+  it('keeps completed tools in the protocol chronology', () => {
     show(<ConversationTurn turn={turn('working', [
       tool(0, 'first', 'succeeded'),
       { type: 'text', index: 1, text: 'Between calls.' },
       tool(2, 'second', 'succeeded'),
     ])} />)
     expect(screen.getByText('Between calls.')).toBeInTheDocument()
-    expect(screen.queryByText('first')).not.toBeInTheDocument()
-    expect(screen.queryByText('second')).not.toBeInTheDocument()
+    expect(screen.getByText('first')).toBeInTheDocument()
+    expect(screen.getByText('second')).toBeInTheDocument()
   })
 
-  it('done: the reply is the bubble and successful tools stay out of the conversation', () => {
+  it('done: the reply stays prominent and completed tools remain in the work disclosure', () => {
     show(<ConversationTurn turn={turn('done', [
       tool(0, 'search', 'succeeded'),
       tool(1, 'read', 'succeeded'),
       { type: 'text', index: 2, text: 'Found three.' },
     ])} />)
     expect(screen.getByText('Found three.')).toBeInTheDocument()
-    expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /show work/ })).toBeInTheDocument()
     expect(screen.queryByText('search')).not.toBeInTheDocument()
     expect(screen.queryByText('read')).not.toBeInTheDocument()
     expect(screen.queryByText('Parameters')).not.toBeInTheDocument()
@@ -211,7 +211,7 @@ describe('ConversationTurn states', () => {
     ])} />)
     expect(screen.getByText('Upstream refused.')).toBeInTheDocument()
     expect(screen.queryByText(/tool call completed/)).not.toBeInTheDocument()
-    expect(screen.queryByText('inspect')).not.toBeInTheDocument()
+    expect(screen.getByText('inspect')).toBeInTheDocument()
     expect(screen.getByText('write')).toBeInTheDocument()
     expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByText('write'))
@@ -226,7 +226,7 @@ describe('ConversationTurn states', () => {
     />)
     expect(screen.getByText('approval needed')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Review request' })).toBeInTheDocument()
-    expect(screen.queryByText('write_file')).not.toBeInTheDocument()
+    expect(screen.getByText('write_file')).toBeInTheDocument()
     expect(screen.queryByText(/tool call completed/)).not.toBeInTheDocument()
   })
 

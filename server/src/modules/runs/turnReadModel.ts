@@ -115,15 +115,17 @@ export async function loadRunTurn(
   // record, and a person asking what went wrong deserves better than
   // "the assistant could not complete this turn".
   const withFailure = state === "failed"
-      && !projection.parts.some((part) => part.type === "diagnostic" && part.level === "error")
+      && !projection.parts.some((part) => part.type === "diagnostic" && (row.status === "cancelled"
+        ? part.error_code === "run_cancelled"
+        : part.level === "error" && part.error_code !== "runtime_notice"))
     ? {
         ...projection,
         parts: [...projection.parts, {
           type: "diagnostic" as const,
           index: projection.parts.length,
-          level: "error" as const,
-          text: row.error_message ?? failureText(row.status),
-          error_code: row.error_code,
+          level: row.status === "cancelled" ? "info" as const : "error" as const,
+          text: row.error_message ?? (row.status === "cancelled" ? "" : failureText(row.status)),
+          error_code: row.status === "cancelled" ? "run_cancelled" : row.error_code,
         }],
       }
     : projection;
@@ -173,11 +175,22 @@ async function loadHostThreadRows(
   // Scoped to this Run: a host thread outlives one turn, carrying every turn
   // the conversation ever dispatched into it.
   const result = await db.query<HostThreadEventRow>(
-    `SELECT event_index, event_type, text, tool_call_id, tool_name,
-            tool_input_summary, tool_kind, tool_result_summary, status
+    `WITH ranked_events AS (
+       SELECT *, row_number() OVER (
+         PARTITION BY tool_call_id, (event_type = 'tool_activity_finished' AND status IS NULL
+           AND tool_call_id IS NOT NULL AND tool_name IS NULL AND tool_kind IS NULL AND tool_input_summary IS NULL AND tool_result_summary IS NOT NULL)
+         ORDER BY event_index DESC
+       ) AS output_rank
        FROM host_thread_events
-      WHERE host_task_thread_id = $1 AND run_id = $2
-        AND ${LATEST_ATTEMPT_SQL("host_thread_events", "$2")}
+       WHERE host_task_thread_id = $1 AND run_id = $2
+         AND ${LATEST_ATTEMPT_SQL("host_thread_events", "$2")}
+     )
+     SELECT event_index, event_type, text, tool_call_id, tool_name,
+            tool_input_summary, tool_kind, tool_result_summary, tool_details_json, status
+       FROM ranked_events
+      WHERE NOT (event_type = 'tool_activity_finished' AND status IS NULL
+        AND tool_call_id IS NOT NULL AND tool_name IS NULL AND tool_kind IS NULL AND tool_input_summary IS NULL AND tool_result_summary IS NOT NULL)
+        OR output_rank = 1
       ORDER BY event_index ASC
       LIMIT 2000`,
     [threadId, runId],

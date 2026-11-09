@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { Compartment, EditorState, type Extension } from '@codemirror/state'
-import { MergeView } from '@codemirror/merge'
+import { MergeView, unifiedMergeView } from '@codemirror/merge'
 import {
   bracketMatching,
   HighlightStyle,
@@ -238,6 +238,7 @@ export function CodeMirrorEditor({
 }
 
 interface CodeMirrorMergeProps {
+  unified?: boolean
   colorMode?: 'light' | 'dark'
   original: string
   current: string
@@ -247,10 +248,11 @@ interface CodeMirrorMergeProps {
   className?: string
 }
 
-/** Read-only comparison surface for explicit draft conflicts. */
-export function CodeMirrorMerge({ colorMode = 'dark', original, current, language = 'plain', ariaLabel = 'File conflict comparison', className }: CodeMirrorMergeProps) {
+/** Read-only comparison for draft conflicts and runtime-reported file changes. */
+export function CodeMirrorMerge({ colorMode = 'dark', original, current, language = 'plain', ariaLabel = 'File conflict comparison', className, unified = false }: CodeMirrorMergeProps) {
   const host = useRef<HTMLDivElement>(null)
   const mergeRef = useRef<MergeView | null>(null)
+  const unifiedRef = useRef<EditorView | null>(null)
   const themeA = useRef(new Compartment())
   const themeB = useRef(new Compartment())
   useEffect(() => {
@@ -270,6 +272,17 @@ export function CodeMirrorMerge({ colorMode = 'dark', original, current, languag
       EditorView.contentAttributes.of({ 'aria-label': ariaLabel }),
       languageCompartment.of([]),
     ]
+    if (unified) {
+      const view = new EditorView({ parent: host.current, doc: current, extensions: [
+        ...baseExtensions(languageA, themeA.current),
+        unifiedMergeView({ original, mergeControls: false }),
+      ] })
+      unifiedRef.current = view
+      void loadLanguage(language).then(extension => {
+        if (!cancelled) view.dispatch({ effects: languageA.reconfigure(extension) })
+      })
+      return () => { cancelled = true; view.destroy(); unifiedRef.current = null }
+    }
     const merge = new MergeView({
       orientation: 'a-b',
       parent: host.current,
@@ -290,10 +303,11 @@ export function CodeMirrorMerge({ colorMode = 'dark', original, current, languag
       merge.destroy()
       mergeRef.current = null
     }
-  }, [original, current, language, ariaLabel])
+  }, [original, current, language, ariaLabel, unified])
   useEffect(() => {
     mergeRef.current?.a.dispatch({ effects: themeA.current.reconfigure(modeTheme(colorMode)) })
     mergeRef.current?.b.dispatch({ effects: themeB.current.reconfigure(modeTheme(colorMode)) })
+    unifiedRef.current?.dispatch({ effects: themeA.current.reconfigure(modeTheme(colorMode)) })
   }, [colorMode])
   return <div ref={host} className={['h-full min-h-0 overflow-auto', className].filter(Boolean).join(' ')} />
 }

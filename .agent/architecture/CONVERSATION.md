@@ -119,8 +119,11 @@ A notice the server itself raises reaches a turn as a code, not prose: the
 host `status: run_quiet` silence notice becomes an `info` diagnostic with
 `error_code: "run_quiet"` (an English `text` fallback for other clients), and
 `ConversationTurn` words a known code through i18n
-(`conversation_ui.turn.run_quiet`) in the reader's language. Any other
-diagnostic is the runtime's own text and renders verbatim.
+(`conversation_ui.turn.run_quiet`) in the reader's language. Raw stderr is
+redacted, stripped of terminal control sequences and projected with
+`visibility: debug`; adjacent lines are combined and duplicate lines omitted.
+The conversation exposes these through a separate diagnostic-log disclosure.
+ACP session notices retain the runtime's severity and readable guidance.
 
 ACP tool lifecycles are correlated once at the adapter boundary by
 `runtimeAdapters/acpToolCallLifecycle.ts`, shared by the thread and semantic
@@ -135,9 +138,10 @@ ordinary output and warnings do not become error messages just because a call
 failed. A command with a reported nonzero exit has a neutral "Command returned"
 summary; its exit code and explanation are available in the expanded details,
 since the code alone does not establish a failed turn. Tool failures without
-a reported process exit code retain their error indicator.
+a reported process exit code retain a tool-level failure label. Read/search
+attempts are grouped without changing their recorded success/failure status.
 Host command summaries preserve a reported numeric exit code outside
-the bounded output text. New output summaries retain up to 4,000 characters,
+the bounded output text. Output snapshots retain up to 16,000 characters,
 keeping the beginning and end with an explicit omitted-middle marker. Input
 and output summaries pass the canonical `redactSecretPatterns`
 (`runs/evidenceRedaction.ts`) before they are bounded and persisted. Command
@@ -145,7 +149,24 @@ summaries carry a truncation flag; the browser also labels older summaries
 ending in an ellipsis as incomplete, without inventing lost output or exit codes.
 An empty command result is described as no reported output, not as the reason
 for failure. Existing stored command JSON summaries are rendered as readable
-output and exit metadata rather than as an error JSON blob.
+output and exit metadata rather than as an error JSON blob. Parameters retain
+up to 8,000 characters with an explicit truncation indicator.
+
+`hosts/acpToolPresentation.ts` normalizes structured output and the ACP v1
+`terminal_output`, `terminal_output_delta` and `terminal_exit` extensions for
+all runtimes. `host_thread_events.tool_details_json` retains readable titles,
+programmatic names, exit/signal/error details, file locations and bounded,
+redacted per-step diffs. Missing patch fields preserve earlier observations.
+An explicit content replacement clears removed diffs. A final formatted-output
+snapshot supersedes streamed fragments; unfinished output lines keep bounded
+raw context in memory so credential masking spans chunk boundaries. Output
+lines longer than 256,000 characters are omitted with a truncation marker.
+Output-only updates are coalesced within 250 ms; completion and final flush
+retain the latest snapshot, including when execution throws. Turn reads fold
+output-only snapshots per tool before applying their event limit, so streamed
+output cannot crowd the final tool result out of the turn. A terminal reference alone grants no execution or
+file-read authority. Runtime-reported diffs explain a step; the Host's final
+workspace diff remains the review evidence for the resulting workspace.
 
 ### State is decided once, on the server
 
@@ -319,20 +340,38 @@ reconciliation and action-preview filtering have one implementation in
 direct Agent chat links to Proposal review.
 
 The four states are one bubble, not four components. The conversation
-projection preserves assistant text in protocol order but deliberately omits
-reasoning parts and successful tool calls. Those records remain available in
-the durable Run audit; they are execution evidence, not conversation content.
-Active or failed calls, plans and diagnostics remain visible when they explain
-what is happening or what went wrong:
+projection preserves assistant text and tool calls in protocol order while
+keeping reasoning out of the conversation. A tool's card updates in place and
+retains completed results. Consecutive read/search calls share a collapsible
+group; parameters, output and file changes expand on demand. Tool disclosure
+choices survive updates, whole-process folding and replacement of a live turn
+by its saved message. The bounded disclosure store belongs to the conversation
+container and stores no message bodies. Technical diagnostics and
+native-account observations stay out of the progress stream. Authentication
+failures still use the authoritative Run failure or actionable notice:
 
-- **working** — active and failed steps as they happen, text streaming under
-  them; completed calls and reasoning do not produce conversation rows.
+- **working** — compact tool progress and completed steps, with streamed text
+  in order. Exploration failures remain inspectable inside the file group.
 - **blocked** — stopped, waiting on the person, said plainly and with somewhere
   to go and act.
-- **done** — the reply is the bubble; any remaining non-sensitive plan or
-  diagnostic work folds into one line above it.
-- **failed** — the same bubble carries the failure; failed calls and diagnostics
-  stay open as the explanation, while successful calls remain hidden.
+- **done** — the reply is prominent; the execution history folds into one line.
+  Warning/error notices remain visible independently of that fold.
+- **failed** — the same bubble carries the authoritative Run failure and keeps
+  its execution history available. A failed tool never independently fails a turn.
+  An authoritative cancelled Run carries `run_cancelled` and reads as Stopped,
+  while keeping the existing terminal turn state.
+
+Room, sidecar and direct conversation scrolling reuse `use-stick-to-bottom`
+through the shared Conversation components. Reading above the tail stops
+following; a return-to-bottom control resumes it. Opening process/tool/log
+disclosures pauses following so newly expanded content does not move past the
+reader.
+
+Reuse / Dependency Check: extend the existing ACP lifecycle, event repository,
+Turn/SSE contracts and shared Tool/Collapsible controls. Reuse the installed
+CodeMirror comparison and use-stick-to-bottom. Zed's tool/log separation and
+OpenHands' incremental tool records informed the interaction; their UI runtimes
+do not replace Rainver's React surfaces or Run authority. No dependency added.
 
 Completed action previews attached to older or newer assistant messages are
 also hidden from the conversation. They are execution records without a

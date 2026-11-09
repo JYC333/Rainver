@@ -2,10 +2,13 @@ import type {
   ActionPreviewTurnPart,
   PlanTurnPart,
   ToolCallStatus,
+  ToolCallDetails,
   TurnPart,
   TurnPartSource,
   TurnState,
 } from "@rainver/protocol";
+import { ToolCallDetailsSchema } from "@rainver/protocol";
+import { stripVTControlCharacters } from "node:util";
 
 import { RUN_QUIET_STATUS } from "./stallTimeout.js";
 
@@ -34,6 +37,7 @@ export interface HostThreadEventRow {
   tool_input_summary: string | null;
   tool_kind: string | null;
   tool_result_summary: string | null;
+  tool_details_json?: unknown;
   status: string | null;
 }
 
@@ -95,6 +99,8 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[]): Turn
   };
 
   for (const row of rows) {
+    const toolDetails = row.tool_details_json == null ? null : ToolCallDetailsSchema.safeParse(row.tool_details_json);
+    const details: ToolCallDetails | undefined = toolDetails?.success ? toolDetails.data : undefined;
     cursor = Math.max(cursor, row.event_index);
     switch (row.event_type) {
       case "assistant_text":
@@ -124,6 +130,7 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[]): Turn
           if (row.tool_input_summary) existing.input = row.tool_input_summary;
           existing.status = toolStatus(row.status, existing.status);
           existing.output = row.tool_result_summary ?? existing.output;
+          if (details) existing.details = { ...existing.details, ...details };
           break;
         }
         openText = null;
@@ -135,6 +142,7 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[]): Turn
           status: toolStatus(row.status, "running"),
           input: row.tool_input_summary,
           output: row.tool_result_summary,
+          ...(details ? { details } : {}),
         });
         if (row.tool_call_id) toolIndexByCallId.set(row.tool_call_id, index);
         break;
@@ -154,6 +162,7 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[]): Turn
             status: toolStatus(row.status, "running"),
             input: row.tool_input_summary,
             output: row.tool_result_summary,
+            ...(details ? { details } : {}),
           });
           if (row.tool_call_id) toolIndexByCallId.set(row.tool_call_id, missingIndex);
           break;
@@ -164,12 +173,18 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[]): Turn
         if (row.tool_input_summary) existing.input = row.tool_input_summary;
         existing.status = toolStatus(row.status, existing.status);
         existing.output = row.tool_result_summary ?? existing.output;
+        if (details) existing.details = { ...existing.details, ...details };
         break;
       }
       case "diagnostic": {
         if (!row.text) break;
         openText = null;
-        append({ type: "diagnostic", level: "info", text: row.text, error_code: null });
+        const text = stripVTControlCharacters(row.text);
+        const previous = parts.at(-1);
+        // Stderr is technical evidence; the Run read model supplies actual failures.
+        if (previous?.type === "diagnostic" && previous.visibility === "debug" && previous.text.length + text.length < 16_000) {
+          if (!previous.text.split("\n").includes(text)) previous.text += `\n${text}`;
+        } else append({ type: "diagnostic", level: "info", text, error_code: null, visibility: "debug" });
         break;
       }
       case "plan_updated": {
@@ -187,6 +202,18 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[]): Turn
         break;
       }
       case "status": {
+        if (row.status === "runtime_notice" && row.text) {
+          try {
+            const notice = JSON.parse(row.text);
+            if (typeof notice.title === "string") {
+              const level = notice.severity === "error" ? "error" : notice.severity === "warning" ? "warning" : "info";
+              const text = [notice.title, notice.description].filter(value => typeof value === "string").join("\n");
+              if (!parts.some(part => part.type === "diagnostic" && part.error_code === "runtime_notice" && part.text === text)) {
+                append({ type: "diagnostic", level, text, error_code: "runtime_notice" });
+              }
+            }
+          } catch { /* An invalid optional notice does not discard the turn. */ }
+        }
         if (row.status && /^runtime_(?:auth_(?:none|available)|compact(?:ing|ed|ion_failed|ion_cancelled)|retry_(?:waiting|finished)|subagent_(?:running|waiting|done))$/.test(row.status)) {
           openText = null;
           append({ type: "diagnostic", level: "info", text: row.text ?? "", error_code: row.status });

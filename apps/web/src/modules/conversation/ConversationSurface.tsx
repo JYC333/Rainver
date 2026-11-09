@@ -66,6 +66,8 @@ import {
 import { OpenDiscussionDialog } from './OpenDiscussionDialog'
 import { ConversationQuotaLine } from './ConversationQuotaLine'
 import { KnowledgeRetrievalToggle } from './KnowledgeRetrievalToggle'
+import { useStickToBottom } from 'use-stick-to-bottom'
+import { Conversation, ConversationContent, ConversationScrollButton } from '../../components/ai-elements/conversation'
 
 /**
  * One conversation, rendered wherever a conversation is read.
@@ -250,8 +252,7 @@ function ConversationSurfaceContent({
   const fetchedTurns = useRef(new Set<string>())
   const streamControllers = useRef(new Map<string, AbortController>())
   const requestSequence = useRef(0)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const followRef = useRef(true)
+  const scrolling = useStickToBottom({ initial: 'smooth', resize: 'smooth' })
   const previousConversationId = useRef<string | null | undefined>(undefined)
   const [resetToken, setResetToken] = useState(0)
   const [restoredDraft, setRestoredDraft] = useState<{ token: number; text: string; routeChoice: ComposerValue['routeChoice'] } | null>(null)
@@ -525,7 +526,7 @@ function ConversationSurfaceContent({
   // A new conversation starts from nothing and follows its tail.
   useEffect(() => {
     let cancelled = false
-    followRef.current = true
+    void scrolling.scrollToBottom()
     setContinuation(null)
     setMessagesLoading(true)
     setMessages([])
@@ -620,16 +621,6 @@ function ConversationSurfaceContent({
       message.role === 'assistant' && messageRunIds(message).some(runId => continuation.runIds.includes(runId)))
     if (visible) setContinuation(null)
   }, [messages, continuation])
-
-  // Follow the tail unless the person scrolled up to read.
-  useEffect(() => {
-    const container = scrollRef.current
-    if (messagesLoading || !container || !followRef.current || typeof container.scrollTo !== 'function') return
-    const frame = window.requestAnimationFrame(() => {
-      container.scrollTo({ top: container.scrollHeight, behavior: 'auto' })
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [messages, messagesLoading, continuation, liveTurns])
 
   const managerAgentId = detail?.agent_members.find(member => member.role === 'manager')?.agent_id
   const roomAgents = detail?.agent_members.map(member => ({
@@ -743,7 +734,7 @@ function ConversationSurfaceContent({
     )
     sendingRef.current = true
     setSending(true)
-    followRef.current = true
+    void scrolling.scrollToBottom()
     try {
       let effectiveInputParts = inputParts.filter(part => !implicitInputResource || !sameCurrentFilePart(part, implicitInputResource))
       if (implicitInputResource) {
@@ -838,7 +829,7 @@ function ConversationSurfaceContent({
     if (sendingRef.current) throw new Error(t('conversation_ui.surface.wait_reply'))
     sendingRef.current = true
     setSending(true)
-    followRef.current = true
+    void scrolling.scrollToBottom()
     setContinuation({ proposalId: preview.proposal_id, action, phase: 'submitting', runIds: [] })
     try {
       if (action === 'accept') await onBeforeContinue?.(action)
@@ -914,7 +905,7 @@ function ConversationSurfaceContent({
     if (sendingRef.current) throw new Error(t('conversation_ui.surface.wait_send'))
     sendingRef.current = true
     setSending(true)
-    followRef.current = true
+    void scrolling.scrollToBottom()
     try {
       const opened = await roomsApi.openDiscussion(roomId, conversationId, request, scope)
       keepDiscussion(opened.discussion)
@@ -1077,17 +1068,14 @@ function ConversationSurfaceContent({
           onAttachTo={sessionId => { void attachPickTo(sessionId) }}
         />
       )}
-      <div
-        ref={scrollRef}
-        role="log"
+      <Conversation
+        key={conversationId ?? roomId}
+        instance={scrolling}
+        className="min-h-0 flex-1"
         aria-label={t('conversation_ui.surface.messages')}
         aria-live="polite"
-        className={compact ? 'min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-y-contain p-3' : 'min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-y-contain px-5 py-4'}
-        onScroll={event => {
-          const container = event.currentTarget
-          followRef.current = container.scrollHeight - container.scrollTop - container.clientHeight <= 80
-        }}
       >
+        <ConversationContent scrollClassName="overscroll-y-contain" className={compact ? 'gap-3 p-3' : 'gap-4 px-5 py-4'}>
         {messagesLoading && (
           <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />{t('conversation_ui.surface.loading')}
@@ -1163,7 +1151,9 @@ function ConversationSurfaceContent({
             else void sendMessage(confirmUserIds)
           }}
         />
-      </div>
+        </ConversationContent>
+        <ConversationScrollButton className="absolute bottom-3 left-1/2 -translate-x-1/2" />
+      </Conversation>
       <ConversationActivity
         runs={Object.values(runs).filter(run =>
           (!isTerminalRunStatus(run.status) || run.status === 'waiting_for_review')

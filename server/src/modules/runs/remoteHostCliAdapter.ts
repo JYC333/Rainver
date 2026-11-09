@@ -451,7 +451,7 @@ async function runRemoteHostCliAdapter(
   }
 
   const registry = deps.connectionRegistry ?? sharedHostConnectionRegistry;
-  const threadEvents = createThreadEventNormalizer();
+  const threadEvents = createThreadEventNormalizer(drafts => { void input.thread_event_sink?.(drafts); });
   const runtimeEvents = createVendorEventNormalizer(spec.runtime_key);
   // A Run has no wall-clock deadline. Short-lived credentials are renewed
   // while execution is active and revoked on every terminal path.
@@ -815,12 +815,7 @@ async function runRemoteHostCliAdapter(
       const drafts = threadEvents.pushAcpProtocolEvent(event);
       if (drafts.length > 0) void input.thread_event_sink?.(drafts);
     },
-    // Makes the dispatch-preset pre-authorization a durable, visible fact on the
-    // thread this Run belongs to. Reuses the `diagnostic` event type. Do not
-    // add a new `host_thread_events` CHECK value. Keep it human-readable, not
-    // a serialized JSON blob: `ThreadConversation.tsx`'s `DiagnosticsDrawer`
-    // renders every `diagnostic` line verbatim and this fires on essentially every
-    // tool-using turn.
+    // Keep policy decisions in the thread's technical diagnostics.
     on_permission_decision: (record) => {
       void input.thread_event_sink?.([{
         event_type: "diagnostic",
@@ -883,16 +878,11 @@ async function runRemoteHostCliAdapter(
       if (drafts.length > 0) void input.thread_event_sink?.(drafts);
     },
   }).finally(async () => {
+    const finalDrafts = threadEvents.finish();
+    if (finalDrafts.length > 0) await input.thread_event_sink?.(finalDrafts);
     await modelWrites;
     if (modelWriteError) throw modelWriteError;
   });
-  const finalDrafts = threadEvents.finish();
-  // Awaited (unlike the per-chunk pushes above): every event queued so far
-  // must have actually committed before the terminal status event below is
-  // written, so a caller polling the events endpoint right as it sees this
-  // Run reach a terminal state never observes a truncated conversation.
-  if (finalDrafts.length > 0) await input.thread_event_sink?.(finalDrafts);
-
   const completedAt = new Date().toISOString();
   // A protocol run's session id comes from the controller's own result(),
   // never from parsing raw stdout (which for ACP is JSON-RPC framing, not

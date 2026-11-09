@@ -1,4 +1,4 @@
-import { pgTable, index, unique, check, foreignKey, varchar, text, integer, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, unique, check, foreignKey, varchar, text, integer, timestamp, jsonb, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { hostThreads } from "./hostThreads.js";
 import { runs } from "./runs.js";
@@ -52,10 +52,9 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	// tool_call.kind (execute/edit/read/...),
 	// initially set on tool_activity_started and patchable by finished updates.
 	toolKind: varchar("tool_kind", { length: 32 }),
-	// Bounded tool-result content, set on
-	// tool_activity_finished only. Populated for claude and opencode.
-	// codex-acp reports no result content. That is an adapter difference.
+	// Bounded, redacted output snapshots, including streamed terminal output.
 	toolResultSummary: text("tool_result_summary"),
+	toolDetailsJson: jsonb("tool_details_json"),
 	// tool activity: 'pending' | 'succeeded' | 'failed' | 'in_progress' (ACP's
 	// non-terminal status, absorbed as a same-shaped update — not a new
 	// event type). status: run lifecycle state ('run_started' |

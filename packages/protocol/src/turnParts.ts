@@ -62,11 +62,24 @@ export const ReasoningTurnPartSchema = z.object({
 export const ToolCallStatusSchema = z.enum(["pending", "running", "succeeded", "failed"]);
 export type ToolCallStatus = z.infer<typeof ToolCallStatusSchema>;
 
-/**
- * One tool the Agent used. `input` and `output` are null when the backend
- * does not report them, which is the managed case and also codex-acp, whose
- * adapter reports no result content.
- */
+export const ToolCallDetailsSchema = z.object({
+  title: z.string().optional(),
+  name: z.string().optional(),
+  exit_code: z.number().int().nullable().optional(),
+  signal: z.string().nullable().optional(),
+  error: z.string().optional(),
+  cancelled: z.boolean().optional(),
+  input_truncated: z.boolean().optional(),
+  output_truncated: z.boolean().optional(),
+  locations: z.array(z.object({ path: z.string(), line: z.number().int().nonnegative().optional() }).strict()).optional(),
+  diffs: z.array(z.object({
+    path: z.string(), old_text: z.string().nullable(), new_text: z.string(), truncated: z.boolean(),
+  }).strict()).optional(),
+  terminal_ids: z.array(z.string()).optional(),
+}).strict();
+export type ToolCallDetails = z.infer<typeof ToolCallDetailsSchema>;
+
+/** A tool observation. Missing input/output means the runtime did not supply it. */
 export const ToolCallTurnPartSchema = z.object({
   type: z.literal("tool_call"),
   index: z.number().int().nonnegative(),
@@ -76,6 +89,7 @@ export const ToolCallTurnPartSchema = z.object({
   status: ToolCallStatusSchema,
   input: z.string().nullable(),
   output: z.string().nullable(),
+  details: ToolCallDetailsSchema.optional(),
 }).strict();
 
 /** The Agent's own checklist for the turn, as its latest snapshot. */
@@ -96,6 +110,7 @@ export const DiagnosticTurnPartSchema = z.object({
   level: z.enum(["info", "warning", "error"]),
   text: z.string(),
   error_code: z.string().nullable(),
+  visibility: z.enum(["conversation", "debug"]).optional(),
 }).strict();
 
 /**

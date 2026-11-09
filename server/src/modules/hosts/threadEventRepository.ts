@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ToolCallDetails } from "@rainver/protocol";
 import type { Pool } from "../../db/pool.js";
 import { withDbTransaction, serializeCalls } from "../routeUtils/common.js";
 
@@ -34,6 +35,7 @@ interface HostThreadEvent {
   tool_input_summary: string | null;
   tool_kind: string | null;
   tool_result_summary: string | null;
+  tool_details_json: ToolCallDetails | null;
   status: string | null;
   created_at: string;
 }
@@ -46,11 +48,12 @@ interface NewHostThreadEvent {
   tool_input_summary?: string | null;
   tool_kind?: string | null;
   tool_result_summary?: string | null;
+  tool_details_json?: ToolCallDetails | null;
   status?: string | null;
 }
 
 const COLUMNS = `id, host_task_thread_id, run_id, attempt_number, project_id, event_index, event_type,
-  text, tool_call_id, tool_name, tool_input_summary, tool_kind, tool_result_summary, status, created_at`;
+  text, tool_call_id, tool_name, tool_input_summary, tool_kind, tool_result_summary, tool_details_json, status, created_at`;
 
 export class PgHostThreadEventRepository {
   // A real Pool, not the generic Queryable other repositories in this module
@@ -98,7 +101,7 @@ export class PgHostThreadEventRepository {
           `INSERT INTO host_thread_events (
              id, host_task_thread_id, run_id, attempt_number, project_id, event_index, event_type,
              text, tool_call_id, tool_name, tool_input_summary, tool_kind,
-             tool_result_summary, status, created_at
+             tool_result_summary, tool_details_json, status, created_at
            )
            SELECT
              $1, $2, $3,
@@ -111,7 +114,7 @@ export class PgHostThreadEventRepository {
              (SELECT COALESCE(MAX(event_index) + 1, 0)
                 FROM host_thread_events
                WHERE host_task_thread_id = $2::varchar),
-             $4, $5, $6, $7, $8, $9, $10, $11, now()
+             $4, $5, $6, $7, $8, $9, $10, $13::jsonb, $11, now()
            FROM (SELECT MAX(attempt_number) AS attempt_number FROM run_attempts WHERE run_id = $3::varchar) current_attempt
            WHERE $12::int IS NULL OR current_attempt.attempt_number = $12::int
            RETURNING ${COLUMNS}`,
@@ -128,6 +131,7 @@ export class PgHostThreadEventRepository {
             event.tool_result_summary ?? null,
             event.status ?? null,
             attemptNumber,
+            event.tool_details_json ? JSON.stringify(event.tool_details_json) : null,
           ],
         );
         // Nothing written: the attempt was superseded, and so is every later
