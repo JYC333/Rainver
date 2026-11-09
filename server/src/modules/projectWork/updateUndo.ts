@@ -1,3 +1,4 @@
+import {ProjectUpdateUndoError} from './updateUndoError.js';
 import { revertRoundCloseout } from "../inquiry/roundUndo.js";
 import { lockProblem } from "../inquiry/problemFacts.js";
 import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
@@ -33,12 +34,8 @@ export async function undoProjectUpdate(
   return withQueryableTransaction(db, async (tx) => undoLocked(tx, identity, projectId, eventId));
 }
 
-async function undoLocked(
-  db: Queryable,
-  identity: SpaceUserIdentity,
-  projectId: string,
-  eventId: string,
-): Promise<{ undone_event_id: string; action: string }> {
+/** The same audience predicate gates live execution and historical receipt release. */
+export async function readProjectUndoEvent(db: Queryable, identity: SpaceUserIdentity, projectId: string, eventId: string, lock = false) {
   const row = await db.query<{
     event_kind: string; subject_type: string; subject_id: string; data_json: Record<string, unknown> | null;
   }>(
@@ -47,14 +44,24 @@ async function undoLocked(
       WHERE e.id = $1 AND e.space_id = $2 AND e.project_id = $3
         AND ${runInheritedReadSql("e.data_json->>'run_id'", "e.space_id", "$4")}
         AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(e.data_json->'reference_refs','[]'::jsonb)) undo_ref WHERE NOT COALESCE(${referenceReadableSql("undo_ref","$4","e.space_id","e.project_id")},false))
-      FOR UPDATE OF e`,
+      ${lock ? "FOR UPDATE OF e" : ""}`,
     [eventId, identity.spaceId, projectId, identity.userId],
   );
-  const event = row.rows[0];
-  if (!event) throw new HttpError(404, "Update not found");
+  if (!row.rows[0]) throw new HttpError(404, "Update not found");
+  return row.rows[0];
+
+}
+
+async function undoLocked(
+  db: Queryable,
+  identity: SpaceUserIdentity,
+  projectId: string,
+  eventId: string,
+): Promise<{ undone_event_id: string; action: string }> {
+  const event = await readProjectUndoEvent(db, identity, projectId, eventId, true);
 
   const action = updateUndoAction(event.event_kind);
-  if (!action) throw new HttpError(409, `A ${event.event_kind} update cannot be undone`);
+  if (!action) throw new ProjectUpdateUndoError(409, `A ${event.event_kind} update cannot be undone`);
 
   // An update already reversed offers no second reversal: the reversal is its
   // own row, and undoing that is done from there.
@@ -66,7 +73,7 @@ async function undoLocked(
       WHERE space_id = $1 AND project_id = $3 AND data_json->>'undo_of_event_id' = $2 LIMIT 1`,
     [identity.spaceId, eventId, projectId],
   );
-  if (already.rows[0]) throw new HttpError(409, "This update has already been undone");
+  if (already.rows[0]) throw new ProjectUpdateUndoError(409, "This update has already been undone");
 
   if (action === "archive_memory") {
     // Archiving, not deleting: the entry and its provenance stay readable, so
@@ -80,7 +87,7 @@ async function undoLocked(
       event.subject_id,
       "archived",
     );
-    if (!archived) throw new HttpError(409, "That memory is no longer the caller's to archive");
+    if (!archived) throw new ProjectUpdateUndoError(409, "That memory is no longer the caller's to archive");
     await recordDomainWorkEvent(db, {
       spaceId: identity.spaceId,
       projectId,
@@ -105,7 +112,7 @@ async function undoLocked(
     const previousId = typeof event.data_json?.restores_memory_id === "string"
       ? event.data_json.restores_memory_id
       : null;
-    if (!previousId) throw new HttpError(409, "This change had no previous version to put back");
+    if (!previousId) throw new ProjectUpdateUndoError(409, "This change had no previous version to put back");
     const memory = new PgMemoryApplyRepository(db);
     // A stale page can still offer this after an unattended Run superseded the
     // persona again, or after the previous version was restored by hand. Both
@@ -115,14 +122,14 @@ async function undoLocked(
       try {
         return await memory.setOwnStatus(identity.spaceId, identity.userId, memoryId, status);
       } catch (error) {
-        if (error instanceof MemoryApplyError) throw new HttpError(409, error.message);
+        if (error instanceof MemoryApplyError) throw new ProjectUpdateUndoError(409, error.message);
         throw error;
       }
     };
     const archived = await step(event.subject_id, "archived");
-    if (!archived) throw new HttpError(409, "That memory is no longer the caller's to change");
+    if (!archived) throw new ProjectUpdateUndoError(409, "That memory is no longer the caller's to change");
     const restored = await step(previousId, "active");
-    if (!restored) throw new HttpError(409, "The previous version is no longer there to put back");
+    if (!restored) throw new ProjectUpdateUndoError(409, "The previous version is no longer there to put back");
     await recordDomainWorkEvent(db, {
       spaceId: identity.spaceId,
       projectId,
@@ -149,7 +156,7 @@ async function undoLocked(
 
   if(action === "revert_round_closeout") {
     const id=event.data_json?.closeout_id;
-    if(typeof id!=="string")throw new HttpError(409,"Close-out reference missing");
+    if(typeof id!=="string")throw new ProjectUpdateUndoError(409,"Close-out reference missing");
     await revertRoundCloseout(db,identity,projectId,event.subject_id,eventId,id);
     return {undone_event_id:eventId,action};
   }
@@ -157,14 +164,14 @@ async function undoLocked(
   const expected=event.data_json?.new_position;
   if(expected && typeof expected==="object") {
     const state=await db.query<{position:Record<string,unknown>}>(`SELECT COALESCE(to_jsonb(q),to_jsonb(h)) AS position FROM inquiry_threads t LEFT JOIN inquiry_question_states q ON q.thread_id=t.object_id LEFT JOIN inquiry_hypothesis_states h ON h.thread_id=t.object_id WHERE t.object_id=$1 AND t.space_id=$2`,[event.subject_id,identity.spaceId]);
-    if(!state.rows[0]||Object.entries(expected).some(([key,value])=>JSON.stringify(state.rows[0]!.position[key])!==JSON.stringify(value))) throw new HttpError(409,"The position changed after this conclusion; record a new judgment instead");
+    if(!state.rows[0]||Object.entries(expected).some(([key,value])=>JSON.stringify(state.rows[0]!.position[key])!==JSON.stringify(value))) throw new ProjectUpdateUndoError(409,"The position changed after this conclusion; record a new judgment instead");
   }
   // Reverting a conclusion is recording the position it replaced, not
   // deleting the Iteration: the account keeps both, and the Thread's history
   // says it went one way and then came back.
   const previous = event.data_json?.previous_position;
   if (!previous || typeof previous !== "object") {
-    throw new HttpError(409, "This conclusion did not record the position it replaced");
+    throw new ProjectUpdateUndoError(409, "This conclusion did not record the position it replaced");
   }
   const current=await lockProblem(db,identity,projectId,event.subject_id);
   await iterations.recordIteration(identity, projectId, event.subject_id, {

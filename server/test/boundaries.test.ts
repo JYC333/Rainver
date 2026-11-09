@@ -50,6 +50,7 @@ const ALLOWED_BARE_BY_FILE = new Map<string, string | string[]>([
   // schedule façade so no second hand-rolled cron/DST implementation grows
   // elsewhere. See REUSE_AND_DEPENDENCY_POLICY.md's canonical mechanism row.
   ["cron-parser", join("src", "modules", "automations", "schedule.ts")],
+  ["shell-quote", join("src", "modules", "runs", "verification", "commandArgv.ts")],
   // Argon2id is the password policy implementation and must not spread into
   // unrelated server modules.
   ["@node-rs/argon2", join("src", "modules", "auth")],

@@ -247,11 +247,11 @@ export class ProjectFileDraftController {
       // version. Rebase and discard would be refused on it too.
       const current = conflictingDraft(error)
       if (current === null) {
-        // No draft any more (discarded elsewhere): the unsaved edits start a
-        // new one, and the drain that follows sends them without a version.
+        // The other tab discarded it. Keep local edits, but require a new
+        // user edit before creating another intent; a refusal never retries a write.
         this.draft = null
-        this.error = null
-        this.setStatus('dirty')
+        this.setStatus('error')
+        for(const waiter of this.waiters.splice(0))waiter.reject(error)
         return
       }
       if (current !== undefined) this.draft = current
@@ -288,8 +288,9 @@ export class ProjectFileDraftController {
 
 function isConflictError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
-  const value = error as { code?: unknown; payload?: { code?: unknown } }
-  return value.code === 'draft_version_conflict'
+  const value = error as { code?: unknown; payload?: { code?: unknown;error?:{metadata?:{code?:unknown}} } }
+  const canonical=value.payload?.error?.metadata?.code
+  return canonical==='draft_version_conflict'||canonical==='host_file_conflict'||value.code === 'draft_version_conflict'
     || value.code === 'host_file_conflict'
     || value.payload?.code === 'draft_version_conflict'
     || value.payload?.code === 'host_file_conflict'
@@ -298,6 +299,7 @@ function isConflictError(error: unknown): boolean {
 /** The draft a `draft_version_conflict` refusal reports as current, if it says. */
 export function conflictingDraft(error: unknown): ProjectFileDraft | null | undefined {
   if (!error || typeof error !== 'object') return undefined
+  if('currentDraft' in error)return ((error as {currentDraft:ProjectFileDraft|null}).currentDraft??null)
   const payload = (error as { payload?: { code?: unknown; current?: unknown } }).payload
   if (payload?.code !== 'draft_version_conflict' || !('current' in payload)) return undefined
   return (payload.current ?? null) as ProjectFileDraft | null

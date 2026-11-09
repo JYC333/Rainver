@@ -112,3 +112,18 @@ scene offers To read, Read, All material, Daily editions and legacy By type
 routes. Query-based views select the matching scene item. Project navigation
 labels its existing Sources Area Reading; the page distinguishes Project reading
 from My reading. Home adds only a preferred-Space preview of the same reading API.
+
+Settings navigation is owned by Shell's `SettingsNavigation`: Settings owns
+Providers, Usage and Security; Space Settings owns Optional Modules, Network,
+Retrieval Settings and Prompt Library; Instance Settings owns its root and nested
+routes. Child pages show only an explicit Back to Settings link, without a
+second parent icon or breadcrumb trail. The three settings roots have no extra navigation row or Back to Home
+button. Links use deterministic parent
+routes and preserve the active Space instead of depending on browser history.
+Desktop Global Rail and mobile More share `railItemActive`, including Settings
+highlighting on Providers and Usage. This adds no permission or backend changes.
+
+The generic Prompt Library entry uses the Shell return link. A Reading Method
+workbench with an explicit Reading/Project origin owns its contextual return link
+instead; Shell suppresses its settings link there. Both decisions share the
+prompt-route helpers so only one return target is offered.

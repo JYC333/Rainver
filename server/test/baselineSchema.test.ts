@@ -1,5 +1,7 @@
+import { tmpdir } from 'node:os';
+import {seedSpaceOwnerProject} from './support/domainSeeds.js';
 import { join } from "node:path";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, mkdtempSync, copyFileSync, rmSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -575,6 +577,37 @@ describe("server runner applies the migration chain", () => {
       )).rejects.toMatchObject({ constraint: "ck_space_object_profiles_key_by_base_object_type" });
     }
   }, 120_000);
+
+  it.for(["0015", "0016"])("upgrades the published chain through %s without rewriting history or losing existing data", async (lastPublished, ctx) => {
+    if (!db.available) return ctx.skip();
+    await resetSchema(db.pool);
+    const prefix = mkdtempSync(join(tmpdir(), 'rainver-published-host-prefix-'));
+    try {
+      const published = loadMigrations(MIGRATIONS_DIR).filter(m => m.version <= lastPublished);
+      expect(published.at(-1)?.name).toBe(lastPublished === '0016' ? 'project_folder_io_intents' : 'host_tool_presentation');
+      const folderIo = loadMigrations(MIGRATIONS_DIR).find(m => m.version === '0016')!;
+      expect(folderIo.name).toBe('project_folder_io_intents');
+      expect(folderIo.checksum).toBe('d9f71a47ef6e95f046901e6af5c4da815aebe156e391b4fa1ea45a683f353307');
+      for (const m of published) copyFileSync(m.path, join(prefix, m.path.split('/').at(-1)!));
+      await migrate(db.pool, prefix);
+      const space=randomUUID(),owner=randomUUID(),project=randomUUID();
+      await seedSpaceOwnerProject(db.pool,{space,owner,project});
+      const intent=randomUUID();
+      if(lastPublished==='0016')await db.pool.query(`INSERT INTO project_folder_io_intents(id,space_id,project_id,user_id,kind,scope_key,status,frozen_json,effect_json,created_at,updated_at) VALUES($1,$2,$3,$4,'create',$1,'pending','{"preserved":true}','{}',now(),now())`,[intent,space,project,owner]);
+      const before=(await db.pool.query('SELECT version,name,checksum,applied_at FROM server_schema_migrations ORDER BY version')).rows;
+      expect((await db.pool.query("SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='host_thread_events' AND column_name='tool_details_json'")).rowCount).toBe(1);
+      const upgraded=await migrate(db.pool,MIGRATIONS_DIR);
+      expect(upgraded.applied).toEqual(loadMigrations(MIGRATIONS_DIR).filter(m => m.version > lastPublished).map(m => m.version));
+      expect((await db.pool.query('SELECT version,name,checksum,applied_at FROM server_schema_migrations WHERE version<=$1 ORDER BY version',[lastPublished])).rows).toEqual(before);
+      expect((await db.pool.query('SELECT id FROM projects WHERE id=$1',[project])).rows).toEqual([{id:project}]);
+      if(lastPublished==='0016')expect((await db.pool.query('SELECT id,frozen_json FROM project_folder_io_intents WHERE id=$1',[intent])).rows).toEqual([{id:intent,frozen_json:{preserved:true}}]);
+      for (const table of ['execution_workspaces','execution_workspace_runs','workspace_change_sets']) {
+        expect((await db.pool.query("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=$1",[table])).rowCount).toBe(1);
+      }
+      expect((await db.pool.query("SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='host_thread_events' AND column_name='tool_details_json'")).rowCount).toBe(1);
+      expect((await migrate(db.pool,MIGRATIONS_DIR)).applied).toEqual([]);
+    } finally { rmSync(prefix,{recursive:true,force:true}); }
+  });
 
   it("is idempotent on an already-migrated database", async () => {
     if (!db.available) return;

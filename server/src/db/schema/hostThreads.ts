@@ -5,6 +5,7 @@ import { agents } from "./agents.js";
 import { tasks } from "./tasks.js";
 import { hosts } from "./hosts.js";
 import { sessions } from "./sessions.js";
+import {runDelegations} from "./agentGroups.js";
 import { artifacts } from "./artifacts.js";
 
 /**
@@ -25,6 +26,8 @@ import { artifacts } from "./artifacts.js";
  * Room membership is derived through `sessions`.
  */
 export const hostThreads = pgTable("host_threads", {
+ executionWorkspaceJson:jsonb("execution_workspace_json"),
+ delegationId:varchar("delegation_id",{length:36}),
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }),
 	executionHostId: varchar("execution_host_id", { length: 36 }),
@@ -83,12 +86,15 @@ export const hostThreads = pgTable("host_threads", {
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 	pendingArchiveAt: timestamp("pending_archive_at", { withTimezone: true, mode: 'string' }),
 }, (table): PgTableExtraConfigValue[] => [
-	index("ix_host_threads_workspace_location_id").using("btree", table.workspaceLocationId.asc().nullsLast()),
+	uniqueIndex("uq_host_threads_delegation_active").on(table.delegationId).where(sql`delegation_id IS NOT NULL AND status IN ('active', 'session_reset')`),
+ foreignKey({columns:[table.delegationId,table.spaceId],foreignColumns:[runDelegations.id,runDelegations.spaceId]}).onDelete("cascade"),
+ check("ck_host_threads_delegation",sql`delegation_id IS NULL OR (container_kind='conversation' AND workspace_mode='location')`),
+ index("ix_host_threads_workspace_location_id").using("btree", table.workspaceLocationId.asc().nullsLast()),
 	index("ix_host_threads_workspace_mode").using("btree", table.workspaceMode.asc().nullsLast()),
 	index("ix_host_threads_session_id").on(table.spaceId, table.sessionId),
 	uniqueIndex("uq_host_threads_conversation_agent_active")
 		.on(table.sessionId, table.agentId)
-		.where(sql`container_kind = 'conversation' AND status IN ('active', 'session_reset') AND session_id IS NOT NULL`),
+		.where(sql`container_kind = 'conversation' AND status IN ('active', 'session_reset') AND session_id IS NOT NULL AND delegation_id IS NULL`),
 	uniqueIndex("uq_host_threads_direct_agent_user_active")
 		.on(table.agentId, table.containerUserId)
 		.where(sql`status IN ('active', 'session_reset')`),

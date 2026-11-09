@@ -1,3 +1,4 @@
+import { ExecutionWorkspaceRefSchema } from "./executionWorkspaces.js";
 import { HostSourceRejectedFrameSchema, HostSourceExecuteFrameSchema, HostSourceCancelFrameSchema, HostSourceResponseFrameSchema, HostSourceRequestFrameSchema, HostSourceResultFrameSchema } from "./sourceExecution.js";
 /**
  * The execution-host WebSocket wire, both directions, as one contract.
@@ -299,7 +300,9 @@ export const HostLaunchWorkSurfaceSchema = z.object({
 export type HostLaunchWorkSurface = z.infer<typeof HostLaunchWorkSurfaceSchema>;
 
 export const HostLaunchWorkspaceAccessSchema = z.object({
+  execution_workspace:ExecutionWorkspaceRefSchema.optional(),
   workspace_location_id: IdSchema,
+  mount_location_id:IdSchema.optional(),
   access_mode: z.enum(["read", "write"]),
   /** Only populated for a built-in Host; relative to its shared workspace root. */
   workspace_relative_path: z.string().trim().min(1).max(4096).optional(),
@@ -456,6 +459,7 @@ export type HostLaunchPayload = Omit<HostLaunchFrame, "type" | "run_id" | "launc
  * to the machine than the Run did.
  */
 export const HostCommandRunFrameSchema = z.object({
+  workspace_access:z.array(HostLaunchWorkspaceAccessSchema).optional(),
   type: z.literal("command_run"),
   request_id: IdSchema,
   /** Whose workspace to run in; resolved on the host, like every other path. */
@@ -564,6 +568,90 @@ export const HostTaskBranchDeleteFrameSchema = z.object({
 
 /** A 40- or 64-hex git object id. */
 const GitObjectIdSchema = z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u);
+/** Refs under refs/rainver/ the Host can attribute to one workspace, by name. */
+export const HostOwnedRefSchema=z.object({ref:z.string().regex(/^refs\/rainver\/[A-Za-z0-9._\/-]+$/).max(512),commit:GitObjectIdSchema});
+export const HostWorkspaceInventorySchema=z.object({worktree:z.boolean(),registration:z.boolean(),branch:z.boolean(),run_record:z.boolean(),pending_run_id:IdSchema.nullable(),merge_record:z.boolean(),quarantined_whole:z.number().int().nonnegative(),retained_quarantine:z.number().int().nonnegative(),active:z.boolean(),free_bytes:z.number().nonnegative().nullable(),
+ owned_refs:z.array(HostOwnedRefSchema).max(200).optional(),owned_refs_truncated:z.boolean().optional(),
+ /** Cursor of the next owned-ref page (pass as list_after to inspect); null on the last page. */
+ owned_refs_next:z.string().max(512).nullable().optional(),materialization_epoch:z.number().int().nonnegative().optional(),
+ /** One sorted page of the generation's refs/rainver/run-history/ commits present in Git. */
+ history_refs:z.array(GitObjectIdSchema).max(1000).optional(),
+ /** Cursor of the next history page (pass as history_after to inspect); null on the last page. */
+ history_refs_next:GitObjectIdSchema.nullable().optional(),
+ /** The newest release epoch that (re)kept each listed history commit, from the Host's keeper record. */
+ history_epochs:z.record(z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u),z.number().int().nonnegative()).optional(),
+ /** Branch release: requested Run-history versions Git cleanly reports gone (or not a commit), so no ref keeps them; a file read of one answers workspace_file_version_unavailable. */
+ history_unavailable:z.array(GitObjectIdSchema).max(1000).optional(),
+ /** release_refs: this operation finished (or replayed) on the Host; no execution of it is still running. */
+ ref_operation:z.string().uuid().optional(),
+ /** release_refs with pin_sources: commits whose sources ref now exists; missing objects are not listed. */
+ pinned_sources:z.array(GitObjectIdSchema).max(200).optional(),
+ /** release_refs with keep_sources/release_keepers (reclaim 4): commits whose keeper ref exists after the operation; a requested one missing here had no object. */
+ kept_sources:z.array(GitObjectIdSchema).max(200).optional(),
+ /** release_refs with settle_operations: each earlier operation either finished (its recorded result) or is now cancelled and can never run. */
+ settled_operations:z.array(z.object({operation_id:z.string().uuid(),state:z.enum(['finished','cancelled']),
+  retained_refs:z.array(z.object({ref:z.string().max(512),reason:z.string().max(64)})).max(200).optional()})).max(20).optional(),
+ /** Why a requested branch release was refused, e.g. workspace_reclaim_unproven. */
+ branch_retained_reason:z.string().max(64).optional(),
+ /** Requested ref releases that were kept, with a stable reason each. */
+ retained_refs:z.array(z.object({ref:z.string().max(512),reason:z.string().max(64)})).max(200).optional()});
+export const HostWorkspaceLaunchReportSchema=z.object({id:z.string().uuid(),generation:z.number().int().positive(),workspace_location_id:IdSchema.optional(),branch:z.string(),start_commit:GitObjectIdSchema,target_ref:z.string().nullable(),baseline_kind:z.enum(["committed","snapshot"]).optional(),snapshot_head:GitObjectIdSchema.nullable().optional(),baseline_tree:GitObjectIdSchema.nullable().optional(),launch_sequence:z.number().int().positive().optional()});
+export type HostWorkspaceLaunchReport=z.infer<typeof HostWorkspaceLaunchReportSchema>;
+export const HostWorkspaceScopeFrameSchema=z.object({type:z.literal('workspace_scope'),request_id:IdSchema,
+ workspace:LocationLaunchWorkspaceSchema,candidates:z.array(LocationLaunchWorkspaceSchema).max(100),preferred_location_id:IdSchema.optional()});
+export const HostWorkspaceIntegrationFrameSchema=z.object({
+ type:z.literal("workspace_integration"),request_id:IdSchema,
+ repair_mode:z.enum(['verification','user_resolution','agent_resolution']).optional(),
+ workspace:LocationLaunchWorkspaceSchema.extend({execution_workspace:ExecutionWorkspaceRefSchema.extend({integration_id:z.string().uuid()})}),
+ action:z.enum(["prepare","continue","finish","abort","seal","preserve","repair","native_prepare","native_checkpoint","native_publish","native_inspect","native_reconcile"]),
+ run_id:IdSchema.optional(),operation_id:IdSchema.optional(),verified_commit:GitObjectIdSchema.optional(),submitted_commit:GitObjectIdSchema.optional(),submitted_base:GitObjectIdSchema.optional(),target_workspace:ExecutionWorkspaceRefSchema.optional(),
+ source_commit:GitObjectIdSchema,base_commit:GitObjectIdSchema,
+ target_ref:z.string().regex(/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._\/-]*$/).max(256),
+ author:HostGitIdentitySchema,message:z.string().max(16000),
+ onto_commit:GitObjectIdSchema.optional(),candidate_commit:GitObjectIdSchema.optional(),
+});
+export const HostExecutionWorkspaceCommandSchema = z.object({
+  type:z.literal("execution_workspace_command"), request_id:IdSchema,
+  workspace:LocationLaunchWorkspaceSchema.extend({execution_workspace:ExecutionWorkspaceRefSchema}),
+  action:z.enum(["checkpoint","cleanup","inspect","read","archive_profiles","mirror","release_refs","list_refs"]), operation_id:z.string().uuid(),
+  run_id:IdSchema.optional(), author:z.object({name:z.string().max(512),email:z.string().max(512)}).optional(),
+  profile_agents:z.array(z.string().uuid()).max(100).optional(),
+  path:z.string().min(1).max(4096).optional(),
+  message:z.string().max(16000).optional(), expected_commit:GitObjectIdSchema.optional(), retain_branch:z.boolean().default(true),
+  /** Server merge facts for a branch release: the tip's tree must equal one of
+   * these commits' trees, and that commit must be reachable from target_ref. */
+  reclaim_proof:z.array(GitObjectIdSchema).max(50).optional(),
+  /** Recorded batch bases. The Host re-proves the tip's delta from each one that
+   * is history of both tip and target (and from its own merge-base) against the
+   * actual target tree; a base that fails these checks is ignored. */
+  reclaim_bases:z.array(GitObjectIdSchema).max(50).optional(),
+  /** Saved Run checkpoints of this generation; ones the target cannot reach are
+   * kept as run-history refs for the bounded history retention. */
+  history_commits:z.array(GitObjectIdSchema).max(1000).optional(),
+  /** Exact refs whose dependencies the server checked; deleted by expected-oid CAS. */
+  release_refs:z.array(z.object({ref:z.string().regex(/^refs\/rainver\/[A-Za-z0-9._\/-]+$/).max(512),expected_commit:GitObjectIdSchema.optional(),prefix:z.boolean().optional(),
+   /** Run history: the release epoch whose expiry this is; a ref (re)kept by a newer release is retained as ref_renewed. */
+   kept_epoch:z.number().int().nonnegative().optional()})).max(200).optional(),
+  /** release_refs: re-create refs/rainver/sources/<c> (only if missing and the commit is present) after a confirmed deletion gained a dependent. */
+  pin_sources:z.array(GitObjectIdSchema).max(200).optional(),
+  /** release_refs (reclaim 3): settle earlier ref operations of this identity before anything else, under
+   * the same Task lease: a finished one reports its result; any other is cancelled for good (a later
+   * delivery of it replays a no-op), so it can never delete after this reply. */
+  settle_operations:z.array(z.string().uuid()).max(20).optional(),
+  /** release_refs (reclaim 4): before settling, keep each commit under refs/rainver/source-keepers/<workspace>/g<n>/<c>
+   * (only while the object is present). No release list can name that ref, so no earlier operation can delete it. */
+  keep_sources:z.array(GitObjectIdSchema).max(200).optional(),
+  /** release_refs (reclaim 4): after pin_sources, delete these commits' keeper refs, each only if refs/rainver/sources/<c> now holds it. */
+  release_keepers:z.array(GitObjectIdSchema).max(200).optional(),
+  /** release_refs (reclaim 4): the request's shared `sources` deletions were claimed under the server's fence. A reclaim-4 Host
+   * deletes no refs/rainver/sources/ ref without it (`ref_release_unfenced`), so a late copy of an older, unfenced request deletes none. */
+  source_fence:z.literal(true).optional(),
+  /** list_refs: bounded refs/rainver inventory of this Location's repository; inspect: owned-ref page cursor. */
+  list_after:z.string().max(512).optional(),
+  /** inspect: Run-history page cursor (exclusive). */
+  history_after:GitObjectIdSchema.optional(),
+});
+
 
 /**
  * Merging a done Task's branch into the main branch (ADR 0016 §11), in the
@@ -880,6 +968,9 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
   HostFolderReadFrameSchema,
   HostFolderReadCancelFrameSchema,
   HostFolderWriteFrameSchema,
+  HostWorkspaceScopeFrameSchema,
+  HostWorkspaceIntegrationFrameSchema,
+  HostExecutionWorkspaceCommandSchema,
   HostTaskRunSettleFrameSchema,
   HostTaskBranchDeleteFrameSchema,
   HostTaskMergePrepareFrameSchema,
@@ -941,11 +1032,19 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
      * git-backed verification compares against, and what `task_run_settle`
      * squashes from. Absent when the Run fell back to running in place.
      */
+    execution_workspace: HostWorkspaceLaunchReportSchema.optional(),
+    execution_workspace_reports:z.array(HostWorkspaceLaunchReportSchema).optional(),
     task_worktree: z.object({
       branch: z.string().min(1).max(4096),
       start_commit: GitObjectIdSchema,
     }).optional(),
   }),
+  z.object({type:z.literal("workspace_integration_result"),request_id:IdSchema,ok:z.boolean(),
+    outcome:z.enum(["rebased","conflict","unresolved","no_changes","merged","main_moved","waiting_local_changes","sealed","aborted"]).nullable(),
+    main_branch:z.string().nullable(),onto_commit:GitObjectIdSchema.nullable(),candidate_commit:GitObjectIdSchema.nullable(),
+    source_commit:GitObjectIdSchema.optional(),base_commit:GitObjectIdSchema.optional(),conflicted_files:z.array(z.string()).max(500),automatic_repair_allowed:z.boolean().optional(),error:z.string().nullable()}),
+  z.object({type:z.literal('workspace_scope_result'),request_id:IdSchema,ok:z.boolean(),error:z.string().nullable(),root_location_id:IdSchema.nullable(),cwd_subpath:z.string().nullable()}),
+  z.object({type:z.literal("execution_workspace_result"),request_id:IdSchema,ok:z.boolean(),branch:z.string().nullable(),commit:GitObjectIdSchema.nullable(),cleanup_state:z.enum(["cleaned","blocked","retry_wait"]).optional(),inventory:HostWorkspaceInventorySchema.optional(),refs:z.array(HostOwnedRefSchema).max(500).optional(),refs_next:z.string().max(512).nullable().optional(),launch_info:HostWorkspaceLaunchReportSchema.optional(),file:z.object({path:z.string(),content_base64:z.string()}).optional(),error:z.string().nullable()}),
   z.object({
     type: z.literal("folder_write_result"),
     request_id: IdSchema,

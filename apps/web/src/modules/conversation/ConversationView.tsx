@@ -3,7 +3,8 @@ import { hasSkillReference, skillReferenceRanges, skillReferenceText, SkillMenuE
 import { useAppTranslation } from '../../i18n'
 import { forwardRef, useEffect, useLayoutEffect, useState, useRef, type ReactNode } from 'react'
 import { AlertTriangle, Loader2 } from 'lucide-react'
-import type { RunTurn } from '../../types/api'
+import type { RunTurn,RoomMessage } from '../../types/api'
+import {WorkspaceIntegrationNotice,isWorkspaceIntegrationNotice} from './WorkspaceIntegrationNotice'
 import {
   Conversation, ConversationContent, ConversationScrollButton,
 } from '../../components/ai-elements/conversation'
@@ -28,6 +29,7 @@ interface ConversationEntry {
   id: string
   role: 'user' | 'assistant'
   content: string
+  systemMessage?:RoomMessage
   runId?: string
   /** The live or replayed turn, when this surface has it. */
   turn?: RunTurn | null
@@ -72,6 +74,7 @@ export function ConversationView({
   inputResetToken,
   inputCapabilities,
   skillAgentId,
+  pendingControls,
 }: {
   entries: ConversationEntry[]
   sending: boolean
@@ -95,6 +98,7 @@ export function ConversationView({
   projectFolderId?: string | null
   inputFileSources?: ConversationInputFileSource[]
   skillAgentId?: string | null
+  pendingControls?: ReactNode
   sessionId?: string | null
   inputResetToken?: number
   inputCapabilities?: RuntimePromptCapabilities | null
@@ -112,13 +116,14 @@ export function ConversationView({
           <div className="flex h-full min-h-[220px] items-center justify-center text-sm text-muted-foreground">
             <Loader2 className="mr-2 size-4 animate-spin" /> Loading conversation…
           </div>
-        ) : entries.length === 0 && !sending ? (
+        ) : entries.length === 0 && !sending && !pendingControls ? (
           <EmptyState title={emptyTitle} description={emptyDescription} />
         ) : (
           <div className="flex flex-col gap-4">
             {entries.map(entry => (
               <ConversationEntryView key={entry.id} entry={entry} runHref={runHref?.(entry)} />
             ))}
+            {pendingControls}
             {/*
               Only until *this* turn appears. A turn renders what it is doing
               — including that it has stopped and is waiting on the person —
@@ -314,7 +319,7 @@ function ConversationEntryView({ entry, runHref }: { entry: ConversationEntry; r
             </span>
           )}
           <ConversationInputPartsView parts={entry.inputParts} text={entry.content} />
-          {entry.content && (entry.role === 'assistant' && entry.runId ? <ConversationFilePreview key={entry.runId} runId={entry.runId}><MessageResponse>{entry.content}</MessageResponse></ConversationFilePreview> : <MessageResponse>{entry.content}</MessageResponse>)}
+          {entry.systemMessage&&isWorkspaceIntegrationNotice(entry.systemMessage)?<WorkspaceIntegrationNotice message={entry.systemMessage}/>:entry.content && (entry.role === 'assistant' && entry.runId ? <ConversationFilePreview key={entry.runId} runId={entry.runId}><MessageResponse>{entry.content}</MessageResponse></ConversationFilePreview> : <MessageResponse>{entry.content}</MessageResponse>)}
           {entry.extra}
         </MessageContent>
       </Message>

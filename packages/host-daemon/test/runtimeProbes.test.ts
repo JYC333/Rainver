@@ -7,7 +7,7 @@ describe("runtime probes from the control plane", () => {
   const probe = {
     runtime_key: "opencode",
     runtime: "opencode",
-    argv: ["opencode", "acp", "--cwd", "rainver:remote-workspace-cwd"],
+    argv: ["opencode", "acp"],
     distribution: null,
     version: null,
     login: { command: ["opencode", "auth", "login"] },

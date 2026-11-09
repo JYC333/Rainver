@@ -30,6 +30,15 @@ describe('conversation file preview', () => {
     await waitFor(() => expect(runsApi.filePreview).toHaveBeenCalledWith('run-1', 'images/preview.png', expect.objectContaining({ spaceId: 'source' })))
     expect(await screen.findByRole('alert')).toHaveTextContent('unavailable')
   })
+  it('says a past Run version expired after workspace cleanup instead of offering a retry', async () => {
+    vi.mocked(runsApi.filePreview).mockResolvedValue({ kind: 'expired', name: 'notes.txt', expired_at: '2026-10-01T00:00:00.000Z' })
+    show('[Notes](notes.txt)')
+    fireEvent.click(await screen.findByRole('link', { name: 'Notes' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent(/no longer kept/)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: /try again/i })).toBeNull()
+  })
   it('opens the linked file in source-Space Files & Code without navigating to the host path', async () => {
     let resolve!: (value: { kind: 'workspace'; project_id: string; folder_id: string; path: string; line: number }) => void
     vi.mocked(runsApi.filePreview).mockReturnValueOnce(new Promise(r => { resolve = r }))

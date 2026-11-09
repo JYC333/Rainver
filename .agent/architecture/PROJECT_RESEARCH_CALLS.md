@@ -353,3 +353,114 @@ Checkpoint state and resume/failure effects now share their true root transactio
 Existing human gates, actor/Thread responsibilities, provenance and Job writers
 remain unchanged. No production approval mapping is enabled by these internal
 changes; Evolution and full qualification evidence remain pending.
+
+## Research workspace commands in the Project migration package
+
+The first eight human API commands use OperationExecutor: `research.area.initialize`,
+`research.checklist.create/update/delete`, `research.claim.link/update`,
+`research.evidence_card.update`, `research.screening.configure`. Their original
+REST URLs are thin adapters; generic POST and browser calls share canonical
+ProjectResearchAreaService / ProjectResearchRepository writers and the same core
+transaction, current Project/content authority, policy audit and ID-only receipt.
+They are user-only, non-grantable and do not enable an approval mapping.
+
+The key is admitted before sorted Projects and Source parent/child rows. Current
+role/grant/resource binding is checked after waiting; scope growth conflicts
+without a late Project lock. Claim reference read levels and Source card readable
+levels retain their canonical predicates. Checklist deletion replay checks current
+Project authority and never repeats deletion. Initialized-area inspection remains
+available to existing Project readers without repairing missing notes. Mutable
+content is fetched through current GET readers in the receipt Space; receipts
+contain only object/Project/Space IDs. Card detail reads require the active Corpus
+reference, current Source gate and mandatory cross-owner B11 audit.
+
+Screening configuration still writes the criteria and existing rule snapshots
+atomically. Note initialization stays on NoteWriter/outbox. Services joining a
+single transaction client issue their own queries sequentially. Only explicit
+ResearchWorkspaceMutationError validation sites are cacheable business failures;
+unexpected Http422 remains internal with full rollback and no cached body.
+
+This is 8 of the 32 baseline Research writes, not completion of the whole Research
+or Project package. Execution calls, workflow actions and remaining Research
+mutations retain their explicitly unmigrated inventory status until implemented.
+
+Project-package continuation adds research.intake.limit, research.standing.dismiss
+and research.standing.retry to the same human-only workspace core adapter. Limit
+configuration uses the canonical Workflow writer; retry persists the existing
+standing dispatch Job in the receipt/audit transaction and retains the original
+pending/running/finished semantics. Dismiss does not require Source content access
+that the original cleanup did not need, and caches no advice detail. Browser
+standing controls refresh their existing parent status surface; limit editing
+reads the exact receipt Workflow.
+
+`research.intake.draft` and `research.workflow.stage.record` use the same core
+under their retained PUT initial-intake and POST workflow-stage URLs. Drafts
+retain the existing question, partial refinement JSON, source-channel references
+and execution options; saving them grants no execution or Source authority.
+Stage recording writes metadata only. Existing Workflow and Thread roots,
+grants and optional same-Project Run references are locked and re-authorized
+before the writer and on replay. Receipts never include question or Workflow
+state; clients read the current authorized Workflow in the receipt Space.
+Replaying a saved draft or recorded stage cannot overwrite later edits. Only
+the known domain validation sites produce cached canonical 409/422 failures.
+This closes 13/32 Research writes; the complete Project-package progress and
+executed verification remain in the original P5 plan.
+
+`research.question.assessment.confirm` adds one keyed confirmation intent under
+the retained POST assessment/confirm URL. The canonical confirmation writer,
+context version, assessment session and policy audit commit together under the
+Project/Thread fences. Its receipt identifies the context version and Thread;
+the browser reads the current authorized assessment and confirmation history in
+the receipt Space and refuses to pair an older receipt with a newer framework.
+Those GETs enforce current full Thread access and mandatory cross-owner content
+audit, including after a prior confirmation succeeded.
+
+`research.ask_ai` uses the same core on the retained POST ask-ai URL. Admission
+atomically creates the private ProviderTask Run, its required existing Job, any
+initial notebook content, the receipt and policy audit. Its stable target is the
+requested Project/section; a reserved role held by an unreadable Note cannot be
+replaced. The receipt contains queued execution metadata and IDs. The browser
+submits one caller key and reports that work was queued; provider invocation and
+Note publication remain owned by the existing ProviderTask worker.
+
+Admission discovers and fences the actually copied Note, Source items, their
+connections, derived Note Source provenance and parent Projects before checking
+authority. It preserves the original readable excerpt tier, the shared daily
+Research ceiling and canonical Source consent for the fixed provider destination.
+The complete target Note audience must be allowed to read selected excerpts.
+Mandatory content-read audit failure rolls admission back. The worker rechecks
+current requester membership, Project state, frozen context visibility, provider
+eligibility, Source consent and Note audience before invocation and again before
+Note publication. The external provider call runs outside those transactions.
+Revocation during model execution prevents publication; the canonical worker
+records its ordinary failed result. No new execution or retry engine is added.
+
+Reuse / Dependency Check: both additions reuse OperationExecutor, canonical
+Research/Note writers, ProviderTask preparer/finalizer hooks, existing Job and Run
+repositories, Source prompt-egress policy and content-access predicates. No new
+dependency, execution engine or approval mapping is introduced. This closes
+15/32 baseline Research writes before the snapshot continuation; the remaining execution/workflow entries remain
+pending in the P5 inventory.
+
+`research.report.snapshot` retains POST reports and admits one immutable report
+execution through the core's prepared Run-terminal owner. The host discovers
+the complete existing Research graph Run set and admits linked request/Proposal
+transitions before Project, Corpus, Workflow and Thread locks. Nested graph
+settlement uses that exact set; newly observed Runs conflict and roll back.
+The canonical synthesis-only Workflow writer still owns the two-node graph,
+private evidence matrix, coordinator/leaf Runs and required Agent Job. There is
+no provider or filesystem work in the command transaction. Corpus scope growth
+after waiting conflicts before any new child authority is admitted.
+
+The requester needs current full Workflow and originating Thread access; the
+snapshot selects only fully readable Source material. Mandatory context and
+matrix-content read audit is part of admission, with an uncached safe 503 on
+failure. Coordinator and child Runs are private. That Run visibility is frozen
+in the Workflow Execution contract, and recovery applies the frozen value when
+scheduling later children. Missing values preserve the existing legacy default;
+invalid frozen values fail closed. Operation detail reads recheck the snapshot's
+current Workflow/Thread and frozen Source dependencies. Operation lists filter
+snapshots whose originating Workflow is hidden, preventing copied private
+questions from escaping through unbound Operation progress. The browser reads
+the exact queued Operation in the receipt Space after one keyed submission.
+This closes 16/32 baseline Research writes; other entries remain pending.

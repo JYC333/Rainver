@@ -776,6 +776,18 @@ describe("Task worktrees", () => {
     expect(order.indexOf("launched")).toBeGreaterThan(order.indexOf("command-done"));
   });
 
+  it('keeps a settled commit unchanged after a read-only continuation of the same Run',async()=>{
+    await initRepository(workspaceDir);
+    await runTask('run-summary','launch-summary-1','task-summary','echo feature > feature.txt');
+    const saved=await settle('run-summary','task-summary',{message:'source checkpoint'});
+    expect(saved.commit).toBeTruthy();
+    await runTask('run-summary','launch-summary-2','task-summary','cat feature.txt');
+    const after=await settle('run-summary','task-summary',{message:'read-only final summary'});
+    expect(after.commit).toBe(saved.commit);
+    expect(git(['rev-parse','rainver/task-task-summary'],workspaceDir)).toBe(saved.commit);
+    expect(await settle('run-summary','task-summary')).toEqual(after);
+  });
+
   it("settles a retried Run anew, from its original start, replacing the earlier attempt's commit", async () => {
     const initial = await initRepository(workspaceDir);
     await runTask("run-retry", "launch-retry-1", "task-retry", "echo one > one.txt");
@@ -828,4 +840,249 @@ describe("Task worktrees", () => {
     });
     expect(noWorktree.stdout.trim()).toBe(workspaceDir);
   });
+});
+
+
+describe('execution workspace ownership',()=>{
+ it('runs independent conversations concurrently and checkpoints only their own changes',async()=>{
+  await initRepository(workspaceDir);
+  const {randomUUID}=await import('node:crypto');
+  const {executeWorkspaceCommand}=await import('../src/executionWorkspace.js');
+  const a={id:randomUUID(),generation:1},b={id:randomUUID(),generation:1};
+  const left=collect(),right=collect(),logs:string[]=[];
+  const frame=(id:string,workspace:typeof a,file:string):LaunchFrame=>({
+   run_id:id,launch_id:randomUUID(),argv:[process.execPath,'-e',`require('fs').writeFileSync('${file}','own');setTimeout(()=>{},150)`],
+   workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:workspace},
+  });
+  await Promise.all([handleLaunch(frame('isolated-a',a,'a.txt'),left.send as never,line=>logs.push(line)),handleLaunch(frame('isolated-b',b,'b.txt'),right.send as never,line=>logs.push(line))]);
+  const [one,two]=await Promise.all([left.complete(),right.complete()]);
+  expect(one,JSON.stringify({one,logs})).toMatchObject({exit_code:0,execution_workspace:{id:a.id,generation:1}});
+  expect(two,JSON.stringify(two)).toMatchObject({exit_code:0,execution_workspace:{id:b.id,generation:1}});
+  expect(existsSync(join(workspaceDir,'a.txt'))).toBe(false);
+  for(const [ref,runId,file,other] of [[a,'isolated-a','a.txt','b.txt'],[b,'isolated-b','b.txt','a.txt']] as const){
+   const result=await executeWorkspaceCommand(workspaceDir,{type:'execution_workspace_command',request_id:randomUUID(),operation_id:randomUUID(),action:'checkpoint',retain_branch:true,
+    workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:ref},run_id:runId,author:{name:'Agent',email:'agent@example.com'},message:'Checkpoint'});
+   expect(result.ok,result.error??'').toBe(true);
+   expect(git(['show',`${result.branch}:${file}`],workspaceDir)).toBe('own');
+   expect(()=>git(['show',`${result.branch}:${other}`],workspaceDir)).toThrow();
+  }
+ });
+ it('refuses an implicit dirty baseline instead of launching in place',async()=>{
+  const {randomUUID}=await import('node:crypto');
+  await initRepository(workspaceDir);
+  await writeFile(join(workspaceDir,'unsaved.txt'),'person');
+  const run=collect();
+  await handleLaunch({run_id:'dirty-workspace',launch_id:randomUUID(),argv:[process.execPath,'-e',"require('fs').writeFileSync('bad.txt','bad')"],workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:{id:randomUUID(),generation:1}}},run.send as never,()=>{});
+  expect(await run.complete()).toMatchObject({exit_code:1,error:expect.stringContaining('waiting_for_baseline')});
+  expect(existsSync(join(workspaceDir,'bad.txt'))).toBe(false);
+ });
+ it('fences cleanup by expected commit and keeps unpublished branches when reclaiming a tree',async()=>{
+  const {randomUUID}=await import('node:crypto');
+  const {executeWorkspaceCommand,prepareExecutionWorkspace}=await import('../src/executionWorkspace.js');
+  const {workspaceWorktreeKey}=await import('../src/worktreeIdentity.js');
+  const first=await initRepository(workspaceDir),ref={id:randomUUID(),generation:1};
+  const check=await checkLocationRepository(workspaceDir);if(check.kind!=='repository')throw new Error('fixture');
+  const prepared=await prepareExecutionWorkspace(check.repo,'folder-1',ref,'cleanup-workspace');
+  await writeFile(join(prepared.root,'result.txt'),'keep');
+  const result=await executeWorkspaceCommand(workspaceDir,{type:'execution_workspace_command',request_id:randomUUID(),operation_id:randomUUID(),action:'checkpoint',retain_branch:true,workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:ref},run_id:'cleanup-workspace',author:{name:'Agent',email:'agent@example.com'}});
+  expect(result.ok).toBe(true);
+  const command={type:'execution_workspace_command' as const,request_id:randomUUID(),operation_id:randomUUID(),action:'cleanup' as const,retain_branch:false,workspace:{kind:'location' as const,workspace_location_id:'folder-1',execution_workspace:ref},expected_commit:first};
+  expect(await executeWorkspaceCommand(workspaceDir,command)).toMatchObject({ok:false,cleanup_state:'blocked',error:'workspace_generation_moved'});
+  expect(await executeWorkspaceCommand(workspaceDir,{...command,operation_id:randomUUID(),retain_branch:true,expected_commit:result.commit!})).toMatchObject({ok:true,cleanup_state:'cleaned'});
+  expect(git(['show',`${result.branch}:result.txt`],workspaceDir)).toBe('keep');
+  expect(existsSync(worktreePath(workspaceWorktreeKey(ref)))).toBe(false);
+ });
+});
+
+describe('workspace baseline and mount lifecycle',()=>{
+ it('launches a private snapshot with tracked and untracked multi-megabyte schema files without changing the source',async()=>{
+  const {randomUUID,createHash}=await import('node:crypto');
+  await initRepository(workspaceDir);
+  await writeFile(join(workspaceDir,'schema.json'),'{}\n');git(['add','schema.json'],workspaceDir);git(['commit','-qm','schema'],workspaceDir);
+  const tracked=JSON.stringify({tables:'a'.repeat(2300000)}),untracked=JSON.stringify({tables:'b'.repeat(2300000)});
+  await writeFile(join(workspaceDir,'schema.json'),tracked);await writeFile(join(workspaceDir,'next-schema.json'),untracked);
+  const head=git(['rev-parse','HEAD'],workspaceDir),index=await readFile(join(workspaceDir,'.git','index'));
+  const digest=(value:string)=>createHash('sha256').update(value).digest('hex'),run=collect();
+  const script="const fs=require('fs'),crypto=require('crypto');console.log(JSON.stringify(['schema.json','next-schema.json'].map(p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'))))";
+  await handleLaunch({run_id:randomUUID(),launch_id:randomUUID(),argv:[process.execPath,'-e',script],
+   workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:{id:randomUUID(),generation:1,baseline_mode:'snapshot'}}},run.send as never,()=>{});
+  expect(await run.complete()).toMatchObject({exit_code:0,execution_workspace:{generation:1}});
+  expect(JSON.parse(run.output())).toEqual([digest(tracked),digest(untracked)]);
+  expect(await readFile(join(workspaceDir,'schema.json'),'utf8')).toBe(tracked);
+  expect(await readFile(join(workspaceDir,'next-schema.json'),'utf8')).toBe(untracked);
+  expect(await readFile(join(workspaceDir,'.git','index'))).toEqual(index);expect(git(['rev-parse','HEAD'],workspaceDir)).toBe(head);
+ });
+ it.each(['file','total'] as const)('keeps a bounded snapshot %s budget before launching',async(kind)=>{
+  const {randomUUID}=await import('node:crypto');await initRepository(workspaceDir);
+  const bytes=Buffer.alloc(kind==='file'?16*1024*1024+1:13*1024*1024,97);
+  for(let i=0;i<(kind==='file'?1:5);i++)await writeFile(join(workspaceDir,`large-${i}.json`),bytes);
+  const run=collect();
+  await handleLaunch({run_id:randomUUID(),launch_id:randomUUID(),argv:[process.execPath,'-e',"process.stdout.write('MODEL_STARTED')"],
+   workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:{id:randomUUID(),generation:1,baseline_mode:'snapshot'}}},run.send as never,()=>{});
+  expect(await run.complete()).toMatchObject({exit_code:1,error:expect.stringContaining(kind==='file'?'workspace_snapshot_file_too_large':'workspace_snapshot_too_large')});
+  expect(run.output()).not.toContain('MODEL_STARTED');
+ });
+ it.each(['committed','snapshot'] as const)('launches with a safe tracked project .npmrc using a %s baseline',async(mode)=>{
+  const {randomUUID}=await import('node:crypto');
+  await initRepository(workspaceDir);
+  await writeFile(join(workspaceDir,'.npmrc'),'engine-strict=true\n');
+  git(['add','.npmrc'],workspaceDir);git(['commit','-qm','project engine policy'],workspaceDir);
+  const head=git(['rev-parse','HEAD'],workspaceDir);
+  if(mode==='snapshot')await writeFile(join(workspaceDir,'.npmrc'),'# Project build policy\r\nengine-strict=false\r\n');
+  const source=await readFile(join(workspaceDir,'.npmrc'),'utf8'),index=await readFile(join(workspaceDir,'.git','index'));
+  const run=collect();
+  await handleLaunch({run_id:randomUUID(),launch_id:randomUUID(),argv:[process.execPath,'-e',"process.stdout.write(require('fs').readFileSync('.npmrc','utf8'))"],
+   workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:{id:randomUUID(),generation:1,baseline_mode:mode}}},run.send as never,()=>{});
+  expect(await run.complete()).toMatchObject({exit_code:0,execution_workspace:{generation:1}});
+  expect(run.output()).toBe(source);
+  expect(await readFile(join(workspaceDir,'.npmrc'),'utf8')).toBe(source);
+  expect(await readFile(join(workspaceDir,'.git','index'))).toEqual(index);
+  expect(git(['rev-parse','HEAD'],workspaceDir)).toBe(head);
+ });
+ it.each(['committed','snapshot','hidden-committed'] as const)('refuses credential-bearing project configuration in a %s baseline before launching',async(mode)=>{
+  const {randomUUID}=await import('node:crypto');
+  await initRepository(workspaceDir);
+  const secret='//registry.npmjs.org/:_authToken=private-test-token\n';
+  await writeFile(join(workspaceDir,'.npmrc'),mode==='snapshot'?'engine-strict=true\n':secret);
+  git(['add','.npmrc'],workspaceDir);git(['commit','-qm','project config'],workspaceDir);
+  if(mode!=='committed')await writeFile(join(workspaceDir,'.npmrc'),mode==='snapshot'?secret:'engine-strict=true\n');
+  const index=await readFile(join(workspaceDir,'.git','index')),logs:string[]=[],run=collect();
+  await handleLaunch({run_id:randomUUID(),launch_id:randomUUID(),argv:[process.execPath,'-e',"process.stdout.write('MODEL_STARTED')"],
+   workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:{id:randomUUID(),generation:1,baseline_mode:mode==='committed'?'committed':'snapshot'}}},run.send as never,line=>logs.push(line));
+  expect(await run.complete()).toMatchObject({exit_code:1,error:expect.stringContaining('workspace_checkout_project_config_not_allowed')});
+  expect(run.output()).not.toContain('MODEL_STARTED');
+  expect(JSON.stringify([...run.frames,...logs])).not.toContain('private-test-token');
+  expect(await readFile(join(workspaceDir,'.git','index'))).toEqual(index);
+ });
+ it.each(['nested','symlink','unknown-setting','oversized'] as const)('keeps %s configuration outside the checkout exception',async(kind)=>{
+  const {assertWorkspaceCheckoutAllowed}=await import('../src/workspaceBaseline.js');
+  await initRepository(workspaceDir);
+  if(kind==='nested'){
+   await mkdir(join(workspaceDir,'sub'));await writeFile(join(workspaceDir,'sub','.npmrc'),'engine-strict=true\n');
+  }else if(kind==='symlink')await symlink('README.md',join(workspaceDir,'.npmrc'));
+  else await writeFile(join(workspaceDir,'.npmrc'),kind==='oversized'?'#'+'a'.repeat(4096):'engine-strict=${NPM_TOKEN}\n');
+  git(['add','.'],workspaceDir);git(['commit','-qm','restricted configuration'],workspaceDir);
+  await expect(assertWorkspaceCheckoutAllowed(workspaceDir,'HEAD')).rejects.toThrow(/^workspace_checkout_/);
+ });
+ it('checkpoints a no-write run with its actual base rather than a missing commit',async()=>{
+  const {randomUUID}=await import('node:crypto');const {prepareExecutionWorkspace,executeWorkspaceCommand}=await import('../src/executionWorkspace.js');
+  const base=await initRepository(workspaceDir),ref={id:randomUUID(),generation:1},run=randomUUID();
+  const repo=await checkLocationRepository(workspaceDir);if(repo.kind!=='repository')throw new Error('fixture');
+  await prepareExecutionWorkspace(repo.repo,'folder-1',ref,run);
+  const saved=await executeWorkspaceCommand(workspaceDir,{type:'execution_workspace_command',request_id:randomUUID(),operation_id:randomUUID(),workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:ref},action:'checkpoint',run_id:run,author:{name:'Agent',email:'agent@example.com'},retain_branch:true});
+  expect(saved).toMatchObject({ok:true,commit:base});
+ });
+
+ it('captures both sides of a staged rename without changing the source index',async()=>{
+  const {randomUUID}=await import('node:crypto');const {prepareExecutionWorkspace}=await import('../src/executionWorkspace.js');
+  const base=await initRepository(workspaceDir);
+  git(['mv','README.md','renamed.md'],workspaceDir);
+  const index=await readFile(join(workspaceDir,'.git','index'));
+  const repo=await checkLocationRepository(workspaceDir);if(repo.kind!=='repository')throw new Error('fixture');
+  const prepared=await prepareExecutionWorkspace(repo.repo,'folder-1',{id:randomUUID(),generation:1,baseline_mode:'snapshot'},randomUUID());
+  expect(existsSync(join(prepared.root,'README.md'))).toBe(false);
+  expect(await readFile(join(prepared.root,'renamed.md'),'utf8')).toBe(await readFile(join(workspaceDir,'renamed.md'),'utf8'));
+  expect(await readFile(join(workspaceDir,'.git','index'))).toEqual(index);
+  expect(git(['rev-parse','HEAD'],workspaceDir)).toBe(base);
+ });
+ it('captures an explicit private snapshot, excludes credentials and preserves the source index and files',async()=>{
+  const {randomUUID,createHash}=await import('node:crypto');const {prepareExecutionWorkspace}=await import('../src/executionWorkspace.js');
+  const base=await initRepository(workspaceDir);await writeFile(join(workspaceDir,'README.md'),'person edit');git(['add','README.md'],workspaceDir);
+  await writeFile(join(workspaceDir,'unsaved.txt'),'person unsaved');await writeFile(join(workspaceDir,'.env'),'TOKEN=private-value');
+  await writeFile(join(workspaceDir,'.npmrc'),'//registry.npmjs.org/:_authToken=private-value');
+  const before=await readFile(join(workspaceDir,'.git','index'));
+  const repo=await checkLocationRepository(workspaceDir);if(repo.kind!=='repository')throw new Error('fixture');
+  const prepared=await prepareExecutionWorkspace(repo.repo,'folder-1',{id:randomUUID(),generation:1,baseline_mode:'snapshot'},randomUUID());
+  expect(prepared).toMatchObject({baselineKind:'snapshot',snapshotHead:base});
+  expect(await readFile(join(prepared.root,'README.md'),'utf8')).toBe('person edit');expect(await readFile(join(prepared.root,'unsaved.txt'),'utf8')).toBe('person unsaved');
+  expect(existsSync(join(prepared.root,'.env'))).toBe(false);
+  expect(existsSync(join(prepared.root,'.npmrc'))).toBe(false);
+  expect(await readFile(join(workspaceDir,'.git','index'))).toEqual(before);expect(git(['rev-parse','HEAD'],workspaceDir)).toBe(base);
+  expect(await readFile(join(workspaceDir,'.env'),'utf8')).toBe('TOKEN=private-value');
+  const secret=Buffer.from('TOKEN=private-value'),oid=createHash('sha1').update(`blob ${secret.length}\0`).update(secret).digest('hex');
+  expect(()=>git(['cat-file','-e',oid],workspaceDir)).toThrow();
+ });
+ it('synchronizes an idle workspace to the pinned target while a retry retains its own partial work',async()=>{
+  const {randomUUID}=await import('node:crypto');const {prepareExecutionWorkspace,executeWorkspaceCommand}=await import('../src/executionWorkspace.js');
+  const base=await initRepository(workspaceDir),ref={id:randomUUID(),generation:1,target_ref:'refs/heads/main'};
+  const repo=await checkLocationRepository(workspaceDir);if(repo.kind!=='repository')throw new Error('fixture');
+  const firstRun=randomUUID();await prepareExecutionWorkspace(repo.repo,'folder-1',ref,firstRun);
+  await executeWorkspaceCommand(workspaceDir,{type:'execution_workspace_command',request_id:randomUUID(),operation_id:randomUUID(),workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:ref},action:'checkpoint',run_id:firstRun,author:{name:'Agent',email:'agent@example.com'},retain_branch:true});
+  await writeFile(join(workspaceDir,'other.txt'),'new target');git(['add','.'],workspaceDir);git(['commit','-qm','another conversation'],workspaceDir);const target=git(['rev-parse','HEAD'],workspaceDir);
+  const nextRef={...ref,base_commit:base,sync_to_target:true},run=randomUUID();
+  const next=await prepareExecutionWorkspace(repo.repo,'folder-1',nextRef,run);expect(next.startCommit).toBe(target);
+  await writeFile(join(next.root,'partial.txt'),'partial');
+  const saved=await executeWorkspaceCommand(workspaceDir,{type:'execution_workspace_command',request_id:randomUUID(),operation_id:randomUUID(),workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:ref},action:'checkpoint',run_id:run,author:{name:'Agent',email:'agent@example.com'},retain_branch:true});
+  const retry=await prepareExecutionWorkspace(repo.repo,'folder-1',nextRef,run);expect(await readFile(join(retry.root,'partial.txt'),'utf8')).toBe('partial');
+  expect(retry.launchSequence).toBeGreaterThan(next.launchSequence);expect(saved.commit).not.toBe(target);
+ });
+ it('runs two conversations with the same writable attachment concurrently, without writing either source',async()=>{
+  const {randomUUID}=await import('node:crypto');const {executeWorkspaceCommand}=await import('../src/executionWorkspace.js');
+  await initRepository(workspaceDir);const attachment=await realpath(await mkdtemp(join(tmpdir(),'rainver-attached-source-')));await initRepository(attachment);
+  try{
+   const config=await requireConfig();await saveConfig({...config,workspaces:{...config.workspaces,'folder-2':attachment}});
+   const waiting:import('node:http').ServerResponse[]=[];server.removeAllListeners('request');server.on('request',(request,response)=>{request.resume();request.on('end',()=>{if(request.url==='/ready'){waiting.push(response);if(waiting.length===2)for(const r of waiting)r.end('{}');}else response.end('{}');});});
+   const a=collect(),b=collect(),records=[] as Array<{primary:{id:string;generation:number};attached:{id:string;generation:number};run:string;file:string}>;
+   for(const [collector,file] of [[a,'a.txt'],[b,'b.txt']] as const){
+    const primary={id:randomUUID(),generation:1},attached={id:randomUUID(),generation:1},run=randomUUID();records.push({primary,attached,run,file});
+    const script=`const fs=require('fs');fs.writeFileSync('${file}','own');const p=JSON.parse(process.env.RAINVER_WORKSPACE_ACCESS)[0].path;fs.writeFileSync(require('path').join(p,'${file}'),'attached');fetch('${config.server_url}/ready',{signal:AbortSignal.timeout(5000)}).then(r=>r.text()).catch(()=>{process.exitCode=1})`;
+    void handleLaunch({run_id:run,launch_id:randomUUID(),workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:primary},workspace_access:[{workspace_location_id:'folder-2',access_mode:'write',execution_workspace:attached}],argv:[process.execPath,'-e',script]},collector.send as never,()=>{});
+   }
+   for(const complete of await Promise.all([a.complete(),b.complete()]))expect(complete,JSON.stringify(complete)).toMatchObject({exit_code:0,execution_workspace_reports:expect.arrayContaining([expect.objectContaining({workspace_location_id:'folder-2'})])});
+   expect(waiting).toHaveLength(2);
+   for(const r of records)for(const [root,id,ref] of [[workspaceDir,'folder-1',r.primary],[attachment,'folder-2',r.attached]] as const){
+    expect(existsSync(join(root,r.file))).toBe(false);
+    const saved=await executeWorkspaceCommand(root,{type:'execution_workspace_command',request_id:randomUUID(),operation_id:randomUUID(),workspace:{kind:'location',workspace_location_id:id,execution_workspace:ref},action:'checkpoint',run_id:r.run,author:{name:'Agent',email:'agent@example.com'},retain_branch:true});expect(saved.ok,saved.error??'').toBe(true);
+    expect(git(['show',`${saved.branch}:${r.file}`],root)).toBe(id==='folder-1'?'own':'attached');
+   }
+  }finally{await rm(attachment,{recursive:true,force:true});}
+ });
+});
+
+describe('workspace scope and immutable artifacts',()=>{
+ it('normalizes aliases and subdirectories only with an explicitly granted repository root',async()=>{
+  const {resolveWorkspaceScope,workspaceScopedCwd}=await import('../src/workspaceScope.js');
+  const {randomUUID}=await import('node:crypto');await initRepository(workspaceDir);await mkdir(join(workspaceDir,'app'));
+  const root=randomUUID(),alias=randomUUID(),sub=randomUUID(),workspaces={[root]:workspaceDir,[alias]:workspaceDir,[sub]:join(workspaceDir,'app')};
+  const location=(id:string)=>({kind:'location' as const,workspace_location_id:id});
+  const frame={type:'workspace_scope' as const,request_id:randomUUID(),workspace:location(sub),candidates:[location(root),location(alias),location(sub)]};
+  const normalized=await resolveWorkspaceScope(frame,workspaces,null);
+  expect(normalized).toMatchObject({ok:true,root_location_id:[root,alias].sort()[0],cwd_subpath:'app'});
+  expect(await workspaceScopedCwd(workspaceDir,'app')).toBe(join(workspaceDir,'app'));
+  await expect(resolveWorkspaceScope({...frame,candidates:[location(sub)]},workspaces,null)).rejects.toThrow('requires_authorized_repository_root');
+  await expect(workspaceScopedCwd(workspaceDir,'../outside')).rejects.toThrow('invalid');
+ });
+ it('previews saved blobs after physical cleanup, independent of later source edits',async()=>{
+  const {randomUUID}=await import('node:crypto'),{prepareExecutionWorkspace,executeWorkspaceCommand}=await import('../src/executionWorkspace.js');
+  await initRepository(workspaceDir);const ref={id:randomUUID(),generation:1},run=randomUUID(),repo=await checkLocationRepository(workspaceDir);if(repo.kind!=='repository')throw new Error('fixture');
+  const w=await prepareExecutionWorkspace(repo.repo,'folder-1',ref,run);await writeFile(join(w.root,'captured.md'),'saved result');
+  const base={type:'execution_workspace_command' as const,request_id:randomUUID(),operation_id:randomUUID(),workspace:{kind:'location' as const,workspace_location_id:'folder-1',execution_workspace:ref},retain_branch:true};
+  const saved=await executeWorkspaceCommand(workspaceDir,{...base,action:'checkpoint',run_id:run,author:{name:'Agent',email:'agent@example.com'}});expect(saved.commit).toBeTruthy();
+  expect(await executeWorkspaceCommand(workspaceDir,{...base,action:'cleanup',expected_commit:saved.commit!})).toMatchObject({ok:true,cleanup_state:'cleaned',inventory:{worktree:false,registration:false,run_record:false,branch:true}});
+  await writeFile(join(workspaceDir,'captured.md'),'later source contents');
+  const read=await executeWorkspaceCommand(workspaceDir,{...base,action:'read',expected_commit:saved.commit!,path:join(w.root,'captured.md')});
+  expect(read).toMatchObject({ok:true,file:{path:'captured.md',content_base64:Buffer.from('saved result').toString('base64')}});
+  await expect(executeWorkspaceCommand(workspaceDir,{...base,action:'read',expected_commit:saved.commit!,path:'.env'})).rejects.toThrow();
+ });
+ it('runs a direct verifier against its private writable attachments and fails closed when missing',async()=>{
+  const {randomUUID}=await import('node:crypto'),{prepareExecutionWorkspace}=await import('../src/executionWorkspace.js');
+  await initRepository(workspaceDir);const repo=await checkLocationRepository(workspaceDir);if(repo.kind!=='repository')throw new Error('fixture');
+  const ref={id:randomUUID(),generation:1},w=await prepareExecutionWorkspace(repo.repo,'folder-1',ref,randomUUID());await writeFile(join(w.root,'owned.txt'),'private');
+  const command={request_id:randomUUID(),workspace:{kind:'location' as const,workspace_location_id:'folder-1',execution_workspace:ref},workspace_access:[{workspace_location_id:'folder-1',execution_workspace:ref,access_mode:'write' as const}],command:['sh','-c',`node -e 'const a=JSON.parse(process.env.RAINVER_WORKSPACE_ACCESS);process.stdout.write(require("fs").readFileSync(a[0].path+"/owned.txt","utf8"))'`],timeout_seconds:10};
+  expect(await runHostCommand(command)).toMatchObject({exit_code:0,stdout:'private',error:null});
+  expect(await runHostCommand({...command,workspace_access:[{...command.workspace_access[0]!,execution_workspace:{id:randomUUID(),generation:1}}]})).toMatchObject({exit_code:1,error:expect.stringContaining('attachment_missing')});
+ });
+});
+
+it('enforces a read-only private attachment while permitting writes to the primary private worktree',async ctx=>{
+ const {probeReadOnlyWorkspace}=await import('../src/readOnlyWorkspace.js');if(!(await probeReadOnlyWorkspace()).supported)return ctx.skip();
+ const {randomUUID}=await import('node:crypto');await initRepository(workspaceDir);
+ const source=await realpath(await mkdtemp(join(tmpdir(),'rainver-readonly-mount-')));await initRepository(source);
+ try{
+  const config=await requireConfig();await saveConfig({...config,workspaces:{...config.workspaces,'readonly-location':source}});
+  const run=collect(),primary={id:randomUUID(),generation:1},attached={id:randomUUID(),generation:1};
+  const script=`const fs=require('fs'),p=JSON.parse(process.env.RAINVER_WORKSPACE_ACCESS)[0].path;fs.writeFileSync('primary.txt','own');try{fs.writeFileSync(p+'/bad.txt','bad');process.exitCode=2}catch(e){if(e.code!=='EROFS'&&e.code!=='EACCES')throw e}process.stdout.write(fs.readFileSync(p+'/README.md','utf8'))`;
+  await handleLaunch({run_id:randomUUID(),launch_id:randomUUID(),argv:[process.execPath,'-e',script],workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:primary},workspace_access:[{workspace_location_id:'readonly-location',access_mode:'read',execution_workspace:attached}],isolation:{sandbox_mode:'read_write',egress_profile:'none'}},run.send as never,()=>{});
+  expect(await run.complete()).toMatchObject({exit_code:0});expect(existsSync(join(source,'bad.txt'))).toBe(false);expect(existsSync(join(workspaceDir,'primary.txt'))).toBe(false);
+ }finally{await rm(source,{recursive:true,force:true});}
 });

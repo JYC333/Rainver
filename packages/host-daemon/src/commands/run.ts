@@ -1,3 +1,6 @@
+import {publicWorkspaceError,resolveWorkspaceScope} from '../workspaceScope.js';
+import {executeWorkspaceIntegration} from '../workspaceIntegration.js';
+import { executeWorkspaceCommand } from "../executionWorkspace.js";
 import { ensurePackagedAdapter } from "../adapterInstallation.js";
 import {blockSourceExecution,sourceExecutionLocallyEnabled} from "../sourceCapability.js";
 import { recoverSourceExecutions } from "../sourceOwnership.js";
@@ -67,7 +70,7 @@ const TOOL_DRAIN_TIMEOUT_MS = 5 * 60 * 1000;
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 /** Unsettled Task worktrees are swept on connect and then this often (`taskWorktree.ts`). */
-const TASK_WORKTREE_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const TASK_WORKTREE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 /**
@@ -143,14 +146,7 @@ export function toLaunchFrame(frame: HostServerFrameOf<"launch">): LaunchFrame {
 function toLaunchWorkspace(workspace: HostServerFrameOf<"launch">["workspace"]): LaunchWorkspace | undefined {
   if (!workspace) return undefined;
   if (workspace.kind === "location") {
-    return {
-      kind: "location",
-      workspace_location_id: workspace.workspace_location_id,
-      ...(workspace.workspace_relative_path ? { workspace_relative_path: workspace.workspace_relative_path } : {}),
-      ...(workspace.worktree
-        ? { worktree: { task_id: workspace.worktree.task_id, ...(workspace.worktree.merge_id ? { merge_id: workspace.worktree.merge_id } : {}) } }
-        : {}),
-    };
+    return {...workspace};
   }
   return {
     kind: "managed",
@@ -346,7 +342,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         .catch((error) => log(`task worktree sweep failed: ${error instanceof Error ? error.message : String(error)}`));
     };
     /** A Task workspace's Location on this machine, the same resolution a launch uses. */
-    const taskLocationRoot = async (workspace: HostServerFrameOf<"task_run_settle">["workspace"]) => resolveLocationCwd(
+    const taskLocationRoot = async (workspace: { workspace_location_id: string; workspace_relative_path?: string }) => resolveLocationCwd(
       await currentWorkspaces(),
       workspace.workspace_location_id,
       workspace.workspace_relative_path,
@@ -573,6 +569,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
               {
                 request_id: frame.request_id,
                 workspace: toLaunchWorkspace(frame.workspace),
+                workspace_access: frame.workspace_access,
                 ...(frame.workspace_location_id ? { workspace_location_id: frame.workspace_location_id } : {}),
                 ...(frame.run_id ? { run_id: frame.run_id } : {}),
                 ...(frame.scratch_workspace ? { scratch_workspace: true } : {}),
@@ -589,6 +586,29 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             );
             sink.send({ type: "command_result", request_id: frame.request_id, ...result });
           })().catch((error) => failRequest(frame, error));
+          return;
+        }
+        case "workspace_scope": {
+          void currentWorkspaces().then(ws=>resolveWorkspaceScope(frame,ws,workspacesRoot()))
+            .then(reply=>sink.send({type:'workspace_scope_result',request_id:frame.request_id,...reply}))
+            .catch(error=>{log(`workspace scope ${frame.request_id}: ${String(error)}`);sink.send({type:'workspace_scope_result',request_id:frame.request_id,ok:false,error:publicWorkspaceError(error),root_location_id:null,cwd_subpath:null});});
+          return;
+        }
+        case "workspace_integration": {
+          void (async()=>{
+            const result=await executeWorkspaceIntegration(await taskLocationRoot(frame.workspace)??null,frame);
+            if(result.error)log(`workspace integration ${frame.request_id}: ${result.error}`);
+            sink.send({type:'workspace_integration_result',request_id:frame.request_id,...result,error:result.error?publicWorkspaceError(result.error):null});
+          })().catch(error=>sink.send({type:'workspace_integration_result',request_id:frame.request_id,ok:false,outcome:null,main_branch:null,onto_commit:null,candidate_commit:null,conflicted_files:[],error:publicWorkspaceError(error)}));
+          return;
+        }
+        case "execution_workspace_command": {
+          void (async()=>{
+            const locationRoot=frame.action==='archive_profiles'?null:await taskLocationRoot(frame.workspace);
+            const result=await executeWorkspaceCommand(locationRoot??null,frame);
+            if(result.error)log(`workspace command ${frame.request_id}: ${result.error}`);
+            sink.send({type:"execution_workspace_result",request_id:frame.request_id,...result,error:result.error?publicWorkspaceError(result.error):null});
+          })().catch(error=>sink.send({type:"execution_workspace_result",request_id:frame.request_id,ok:false,branch:null,commit:null,error:publicWorkspaceError(error)}));
           return;
         }
         case "task_run_settle": {

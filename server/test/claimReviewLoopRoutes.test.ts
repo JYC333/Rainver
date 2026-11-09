@@ -6,12 +6,17 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { knowledgeModule } from "../src/modules/knowledge/index.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthRepositoryForTests } from "../src/modules/auth/identity.js";
+import { useReviewPacketDatabase } from "./support/reviewPacketDatabase.js";
+import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
 // HTTP route coverage for the review-loop endpoints: Context Ops scan
-// gating, response shape, and artifact/proposal persistence wiring. The DB pool
-// is mocked (the deeper SQL is covered by the *Db real-Postgres tests).
+// gating and response shape use a scripted pool; packet persistence runs on the
+// shared real PostgreSQL so the proposal transaction and rows are real.
 
-vi.mock("../src/db/pool.js", () => ({ getDbPool: vi.fn() }));
+vi.mock("../src/db/pool.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../src/db/pool.js")>(),
+  getDbPool: vi.fn(),
+}));
 
 let app: FastifyInstance | undefined;
 
@@ -218,20 +223,14 @@ describe("claims trajectory route", () => {
 });
 
 describe("relation discovery-scan route", () => {
+  const packetDatabase = useReviewPacketDatabase(import.meta.url);
+
   it("discovers a relation candidate and creates a packet (admin)", async () => {
+    const pool = packetDatabase.database.pool;
+    await insertKnowledgeItem(pool, { id: "item-a", spaceId: "space-1", title: "Alpha", slug: "alpha", content: "Alpha depends on [[Beta]].", ownerUserId: "user-1", createdByUserId: "user-1" });
+    await insertKnowledgeItem(pool, { id: "item-b", spaceId: "space-1", title: "Beta", slug: "beta", content: "Beta.", ownerUserId: "user-1", createdByUserId: "user-1" });
     __setAuthRepositoryForTests(fakeAuthRepository("admin"));
-    mockPool((sql) => {
-      if (/FROM knowledge_items ki/.test(sql)) {
-        return {
-          rows: [
-            { id: "item-a", title: "Alpha", slug: "alpha", aliases_json: [], content: "Alpha depends on [[Beta]].", plain_text: null, visibility: "space_shared", status: "active" },
-            { id: "item-b", title: "Beta", slug: "beta", aliases_json: [], content: "Beta.", plain_text: null, visibility: "space_shared", status: "active" },
-          ],
-          rowCount: 2,
-        };
-      }
-      return undefined;
-    });
+    vi.mocked(getDbPool).mockReturnValue(pool);
     app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
@@ -241,7 +240,7 @@ describe("relation discovery-scan route", () => {
       payload: JSON.stringify({ create_packet: true }),
     });
 
-    expect(res.statusCode).toBe(201);
+    expect(res.statusCode, res.body).toBe(201);
     const body = res.json();
     expect(body.candidate_count).toBe(1);
     expect(body.artifact_id).toMatch(/[0-9a-f-]{36}/);
@@ -249,6 +248,10 @@ describe("relation discovery-scan route", () => {
     expect(body.proposal_candidate_count).toBe(1);
     expect(body.review_only_candidate_count).toBe(0);
     expect(body.canonical_write_performed).toBe(false);
+    const proposal = await pool.query("SELECT status, space_id FROM proposals WHERE id = $1", [body.proposal_id]);
+    expect(proposal.rows).toEqual([{ status: "pending", space_id: "space-1" }]);
+    expect((await pool.query("SELECT 1 FROM artifacts WHERE id = $1 AND space_id = 'space-1'", [body.artifact_id])).rowCount).toBe(1);
+    expect((await pool.query("SELECT 1 FROM object_relations")).rowCount).toBe(0);
   });
 
   it("rejects llm_extraction_enabled on the public discovery-scan route", async () => {

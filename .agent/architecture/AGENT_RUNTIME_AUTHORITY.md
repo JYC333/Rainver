@@ -109,10 +109,14 @@ Queued Runs may await route selection, but they cannot dispatch without the
 selected Profile, runtime key, Host and required snapshot. There is no
 AgentVersion selector fallback and no Host-global Provider fallback.
 
-Conversation bindings and Host threads additionally freeze their selected
-Profile/Host/installation and workspace context when initialized. Later edits
-can make a subsequent Run unavailable, but cannot silently rebind that
-conversation.
+Conversation bindings retain their selected Profile identity, Host and workspace.
+An explicit CLI/runtime-installation edit to that same Profile applies to future
+turns through the existing Conversation admission boundary: the old idle Host
+thread closes and a new CLI session uses the same physical workspace reference.
+Preflight reports the new selection without mutating the binding. In-flight Runs
+must settle and historical Run snapshots remain immutable. No alternative Profile,
+Host or Primary Workspace is silently selected when the new choice is unavailable;
+configuration-only snapshots retain their existing rules.
 
 Project Research stage executions are ordinary Agent Runs pinned to the
 provisioned research Agent's Profile. Its bounded incidental provider calls

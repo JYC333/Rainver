@@ -559,20 +559,27 @@ describe("projectResearchSynthesisRetryDb", () => {
       });
     });
 
-    it("treats concurrent synthesis retries as one idempotent command", async () => {
+    it("keeps concurrent synthesis retries unique and refuses a Run set that grew while waiting", async () => {
       if (!db.available) return;
       await seedSynthesisPrompt();
       await seedRelevantCorpusItem(db.pool, { space: SPACE, project: PROJECT, owner: OWNER });
       await seedFailedSynthesisOperation("prior-failed-run-id");
 
       const orchestrator = new ProjectResearchOrchestrator(db.pool, CONFIG);
-      const [first, second] = await Promise.all([
+      const outcomes = await Promise.allSettled([
         orchestrator.retryFailedOperation(identity, PROJECT, OPERATION),
         orchestrator.retryFailedOperation(identity, PROJECT, OPERATION),
       ]);
 
-      expect((first as { id: string }).id).toBe(OPERATION);
-      expect((second as { id: string }).id).toBe(OPERATION);
+      expect(outcomes.some(result => result.status === "fulfilled")).toBe(true);
+      for (const result of outcomes) {
+        if (result.status === "fulfilled") expect((result.value as { id: string }).id).toBe(OPERATION);
+        else expect(result.reason).toMatchObject({ code: "operation_conflict", statusCode: 409 });
+      }
+      // A caller observing a new root after its initial admission must roll back.
+      // The operation is now active, so a later retry is refused by the existing
+      // domain rule instead of scheduling another execution.
+      await expect(orchestrator.retryFailedOperation(identity, PROJECT, OPERATION)).rejects.toMatchObject({statusCode:409});
       expect((await db.pool.query(`SELECT research_attempt FROM project_operations WHERE id=$1`,[OPERATION])).rows[0].research_attempt).toBe(2);
       const runs = await db.pool.query(
         `SELECT id FROM runs

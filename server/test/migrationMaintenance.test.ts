@@ -40,9 +40,11 @@ describe("maintenance-only migrations", () => {
     expect(chain[0]).toMatchObject({ version: "0000", name: "baseline" });
     // 0004 drops the capability tables a pre-0004 release still reads, so it,
     // the problem-model cutover/ACL repair and the marker drop require stopped writers;
-    // 0010 renames space_invitations, which the previous release still reads.
+    // 0010 renames space_invitations, which the previous release still reads;
+    // 0017 retains former 0020, which drops the (host_id, commit) key the previous release's claim names in
+    // ON CONFLICT, and its backfill must see no older server claiming meanwhile.
     expect(chain.map((migration) => requiresMaintenance(migration.sql)))
-      .toEqual(chain.map((migration) => ["0004","0009","0010"].includes(migration.version)));
+      .toEqual(chain.map((migration) => ["0004","0009","0010","0017"].includes(migration.version)));
     expect(chain[0]!.sql).not.toContain("cli_credential_profiles");
     expect(chain[0]!.sql).toContain('CREATE TABLE "auth_accounts"');
     expect(chain[0]!.sql).toContain('CREATE TABLE "registration_intents"');

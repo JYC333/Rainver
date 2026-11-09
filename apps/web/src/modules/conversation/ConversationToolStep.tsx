@@ -1,9 +1,8 @@
 import { lazy, Suspense } from 'react'
-import { Check, Circle, FileSearch, Info, LoaderCircle, TriangleAlert } from 'lucide-react'
+import { Check, Circle, Info, LoaderCircle, TriangleAlert } from 'lucide-react'
 import type { ToolCallTurnPart } from '../../types/api'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput, type ToolState } from '../../components/ai-elements/tool'
 import { LocalMarkdownLink } from '../../components/ai-elements/markdownFileContext'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../components/ui/collapsible'
 import { useTheme } from '../../contexts/ThemeContext'
 import { useAppTranslation } from '../../i18n'
 import { presentToolOutput } from './turnPresentation'
@@ -14,23 +13,42 @@ type Expansion = { expanded: Record<string, boolean>; onExpand: (id: string, ope
 const toolKey = (part: ToolCallTurnPart) => `tool:${part.call_id ?? part.index}`
 
 export function ConversationToolGroup({ id, parts, expanded, onExpand, settled }: Expansion & { id: string; parts: ToolCallTurnPart[] }) {
-  const { t } = useAppTranslation()
-  const active = !settled && parts.some(part => part.status === 'running' || part.status === 'pending')
-  const failed = parts.filter(part => part.status === 'failed' && !part.details?.cancelled).length
-  const completed = parts.filter(part => part.status === 'succeeded').length
+  const latest = parts[parts.length - 1]
   const open = expanded[id] ?? parts.some(part => expanded[toolKey(part)])
-  return <Collapsible open={open} onOpenChange={value => onExpand(id, value)} className="min-w-0">
-    <CollapsibleTrigger className="flex min-h-8 w-full flex-wrap items-center gap-x-2 gap-y-1 rounded px-1.5 text-left text-xs text-muted-foreground hover:bg-muted/40">
-      {active ? <LoaderCircle className="size-3.5 animate-spin" /> : <FileSearch className="size-3.5" />}
-      <span>{t('conversation_ui.turn.file_activity', { count: parts.length })}</span>
-      <span>{t('conversation_ui.turn.activity_completed', { count: completed })}</span>
-      {failed > 0 && <span>{t('conversation_ui.turn.activity_unsuccessful', { count: failed })}</span>}
-      <span className="ml-auto">{t(open ? 'conversation_ui.turn.collapse' : 'conversation_ui.turn.details')}</span>
-    </CollapsibleTrigger>
-    <CollapsibleContent className="ml-2 space-y-0.5 border-l border-border pl-2">
+  return <Tool open={open} onOpenChange={value => onExpand(id, value)}>
+    <ConversationToolHeader part={latest} settled={settled} count={parts.length} />
+    <ToolContent className="ml-2 w-auto space-y-0.5 rounded-none border-l border-border bg-transparent p-0 pl-2">
       {parts.map(part => <ConversationToolStep key={part.call_id ?? part.index} part={part} expanded={expanded} onExpand={onExpand} settled={settled} />)}
-    </CollapsibleContent>
-  </Collapsible>
+    </ToolContent>
+  </Tool>
+}
+
+function ConversationToolHeader({ part, settled, count }: { part: ToolCallTurnPart; settled?: boolean; count?: number }) {
+  const { t } = useAppTranslation()
+  const result = presentToolOutput(part.output)
+  const details = part.details
+  const exitCode = details && Object.prototype.hasOwnProperty.call(details, 'exit_code') ? details.exit_code ?? null : result.exitCode
+  const failed = part.status === 'failed'
+  const cancelled = details?.cancelled === true
+  const commandReturned = failed && exitCode !== null && exitCode !== 0
+  const read = part.kind === 'read' || part.kind === 'search'
+  const unfinished = settled && (part.status === 'pending' || part.status === 'running')
+  const state: ToolState = part.status === 'pending' ? 'input-streaming' : part.status === 'running' ? 'input-available' : failed ? 'output-error' : 'output-available'
+  const label = unfinished ? t('conversation_ui.turn.result_unreported') : cancelled ? t('conversation_ui.turn.tool_cancelled')
+    : commandReturned ? t('conversation_ui.turn.command_returned')
+    : failed ? t(read ? 'conversation_ui.turn.read_unsuccessful' : 'conversation_ui.turn.step_failed')
+    : t(`conversation_ui.turn.tool_${part.status}`)
+  const Icon = unfinished || cancelled || commandReturned ? Info : failed ? TriangleAlert : part.status === 'running' ? LoaderCircle : part.status === 'pending' ? Circle : Check
+  const expandable = count !== undefined || isToolExpandable(part)
+  return <ToolHeader type={part.name} state={state} title={details?.title ?? part.name} kind={part.kind} expandable={expandable}
+      statusIndicator={<span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+        <Icon className={part.status === 'running' && !unfinished ? 'size-3 animate-spin' : 'size-3'} />{label}
+        {count !== undefined && <span>· {t('conversation_ui.turn.activity_count', { count })}</span>}
+      </span>} />
+}
+
+function isToolExpandable(part: ToolCallTurnPart): boolean {
+  return part.input !== null || part.output !== null || part.status === 'failed' || Boolean(part.details?.locations?.length || part.details?.diffs?.length || part.details?.terminal_ids?.length)
 }
 
 export function ConversationToolStep({ part, expanded, onExpand, settled }: Expansion & { part: ToolCallTurnPart }) {
@@ -42,21 +60,10 @@ export function ConversationToolStep({ part, expanded, onExpand, settled }: Expa
   const cancelled = details?.cancelled === true
   const outputText = result.text || details?.error
   const commandReturned = failed && exitCode !== null && exitCode !== 0
-  const read = part.kind === 'read' || part.kind === 'search'
-  const unfinished = settled && (part.status === 'pending' || part.status === 'running')
   const key = toolKey(part)
-  const state: ToolState = part.status === 'pending' ? 'input-streaming' : part.status === 'running' ? 'input-available' : failed ? 'output-error' : 'output-available'
-  const label = unfinished ? t('conversation_ui.turn.result_unreported') : cancelled ? t('conversation_ui.turn.tool_cancelled')
-    : commandReturned ? t('conversation_ui.turn.command_returned')
-    : failed ? t(read ? 'conversation_ui.turn.read_unsuccessful' : 'conversation_ui.turn.step_failed')
-    : t(`conversation_ui.turn.tool_${part.status}`)
-  const Icon = unfinished || cancelled || commandReturned ? Info : failed ? TriangleAlert : part.status === 'running' ? LoaderCircle : part.status === 'pending' ? Circle : Check
-  const expandable = part.input !== null || part.output !== null || failed || Boolean(details?.locations?.length || details?.diffs?.length || details?.terminal_ids?.length)
+  const expandable = isToolExpandable(part)
   return <Tool open={expanded[key] ?? false} onOpenChange={open => onExpand(key, open)}>
-    <ToolHeader type={part.name} state={state} title={details?.title ?? part.name} kind={part.kind} expandable={expandable}
-      statusIndicator={<span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
-        <Icon className={part.status === 'running' && !unfinished ? 'size-3 animate-spin' : 'size-3'} />{label}
-      </span>} />
+    <ConversationToolHeader part={part} settled={settled} />
     {expandable && <ToolContent>
       {details?.name && details.name !== (details.title ?? part.name) && <p className="break-all text-xs text-muted-foreground">{details.name}</p>}
       {part.input !== null && <ToolInput input={part.input} />}

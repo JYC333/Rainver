@@ -1531,6 +1531,7 @@ async function prepareChatRun(
     project_id: input.projectId ?? null,
     visibility: input.visibility,
     contract_snapshot: {
+      ...(input.projectId && input.hostDispatch?.host_thread.workspace_location_id ? {execution_workspace_version:1 as const}:{}),
       source: { kind: "direct", id: input.sessionId },
       project_id: input.projectId ?? null,
       git_snapshot: input.hostDispatch?.git_snapshot ?? unavailableGitSnapshot(),

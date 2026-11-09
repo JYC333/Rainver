@@ -1488,6 +1488,41 @@ blanket prohibition on all Source helper defaults. Current production UI has no
 `createChannel` caller that retries this operation; the typed API remains callable
 without inventing a new UI event/retry engine or breaking its existing signature.
 
+
+### Isolated workspace commands
+
+The feature-owned `workspace.change.complete`, `workspace.integration.retry`
+and `workspace.change.abandon` registrations use Operation Core's authenticated
+`POST /api/v1/actions/:actionId` and agent tool transports. They require the
+normal idempotency key and an expected domain revision. Inputs and receipts are
+in `packages/protocol/src/executionWorkspaces.ts`; execution is owned by
+`projectFolders/workspaceOperations.ts`. Complete accepts a change-set id and
+summary; retry accepts an integration id and its current revision; abandon
+accepts a change-set id and reason. No caller supplies a Host path or target ref.
+All use dedicated Project-scoped policy actions, current source Run visibility,
+Project writer and personal Host ownership checks; agent calls additionally
+require a live grant and matching Run/workspace binding. They save intents and
+Jobs in the core transaction. Git, verification and cleanup run after it.
+
+`workspace.retention.update` is the user-only retention control (`reclaim_now`,
+`hold`, `release_hold`, `retry`) owned by
+`projectFolders/workspaceRetentionOperations.ts`. It takes a visible change-set
+id, applies the same visibility, Host-owner and Project-writer checks, and records
+retention intent plus a cleanup Job; it cannot release unmerged work.
+`reclaim_now` schedules that Job immediately; a hold does not mask a retained
+reason; `retry` keeps an issued release's epoch and plan so the Host resumes it.
+
+Retry also accepts an Agent-only `repair_instruction` for a blocked conflict.
+This queues a candidate-editing Run through the same Operation, Job and Host
+pipeline, using the requesting Run's runtime, lineage and bounded budget. The
+server records that Run, responsible person and original conflict paths; it
+rechecks authority and instruction provenance before execution and publication.
+This is distinct from the original human's `resolution` field; the two inputs
+are mutually exclusive. Neither accepts paths, refs or identity overrides.
+The repair Run uses native file tools in the isolated candidate. Only the
+permitted conflict paths are captured, then verified, sealed and published by
+the existing worker. A changed conflict scope requires a fresh request.
+
 The Source DB-only continuation exposes user-only `source.processing.rule.create`,
 `source.processing.rule.update`, `source.processing.rule.dispatch` (run/drain),
 and `source.extraction.dispatch`. Retained REST and typed browser entries share
@@ -1545,3 +1580,89 @@ production operation approval mapping is enabled. Nine retained POST/DELETE URLs
 are thin adapters, with body-free receipts and current reader calls. Packet GET
 adds no mutating route. Working inventory636=540legacy/39exempt/57core, remaining525
 after15 plugin paths; committed HEAD remains534 until coordinator submission.
+
+P5-5 extraction on5c407024 adds knowledge.candidate.extract (user/public API only,
+non-grantable, core-owned), using existing inquiry.knowledge.promote policy for the
+manual extraction intent. POST /projects/:projectId/knowledge-candidate-extractions
+is now a thin canonical adapter;202 is a queued Run/required Job receipt, not a
+completed extraction. No Agent surface or production approval mapping changes.
+Working inventory636=539legacy/39exempt/58core, remaining524 after15plugin URLs;
+formal HEAD remains525 until coordinator commit. Only one retained URL migrated.
+
+### Project total-package Research workspace increment
+
+The eight operations documented in [Research calls](PROJECT_RESEARCH_CALLS.md#research-workspace-commands-in-the-project-migration-package)
+are human-only core commands. Their REST adapters require Idempotency-Key and
+return canonical ID/Space/Project receipts; the browser refreshes current content.
+`research.workspace.update` is a fail-closed-audit policy action under the original
+Project writer/content gates, with no approval capability or Agent grant surface.
+Initialized-area reader inspection retains its existing non-repair behavior.
+The 123-URL total package remains in progress; eight new Research writes plus the
+existing extraction draft produce a working remaining projection of 516, not an
+already committed or independently reviewed total-package completion.
+
+### Parallel Project HTTP migration
+
+The current five-group HTTP projection is 94/123 implemented URLs: Research
+16/32, Inquiry 21/21, Experiment/Folder 24/24, ingress 6/14 and management 27/32.
+The exact inventory is 636 = 446 legacy + 39 transport exceptions + 151 core
+entries; excluding the unchanged 15 plugin writes leaves 431 P5 legacy entries.
+These are working-tree implementation counts, not accepted capability closure.
+
+The new human-only registrations reuse core transactions, mandatory policy audit,
+strict input/output contracts and canonical domain writers. Formal URLs and
+browser helpers require event keys and return metadata receipts; current content
+is read in the receipt Space. Managed Experiment launch still commits its Run
+and required Job together. Folder metadata/location/configuration controls do
+no Host/file IO inside the core transaction. Create/scan/save/restore commit
+private durable intent/Job receipts and run effects through the existing worker;
+uncertain effects retain recovery state and block fresh same-scope writes.
+Safe terminal state removes retained body copies. Project update/archive and
+Research snapshot admission reuse the core host's exact prepared Run terminal
+owner; cached replay cannot retire later work. Public-summary publication and
+revocation commit their canonical retrieval projection atomically. Research Ask
+AI and Notebook queue private Runs with frozen Source/Note authority, including
+historical message provenance. Corpus commands validate canonical Source origins;
+binding history submission creates the existing pending owner Proposal, without
+starting the import or granting approval.
+
+The remaining 29 exact Project URLs retain their legacy owners and explicit
+pending rows in the original P5 plan. No entry is retired to reduce the count.
+
+Inquiry's existing Agent `record_work`, `close_round`, `record_conclusion`,
+`link_task` and `reference_task_result` IDs now use separate grant-bound core
+registrations with their existing input semantics, origin policy, Run provenance
+and trusted attempt/call identity. Their old executor callbacks are removed.
+Direct Dispatcher and CLI adapters reuse `dispatchRunOperation` and the same
+core, without a second gateway policy decision. The host invocation context
+supplies the verified transport key; a model cannot supply a trusted key or
+choose another Project/Run. Unattended writes remain failclosed while approval
+mappings are unavailable. Human-only operations gain no Agent surface. No unified
+Project acceptance or production approval mapping is claimed.
+
+
+### Agent verification and conflict repair
+
+`workspace.change.complete` and Agent `workspace.integration.retry` bind their
+publication to the current Run's reply. Before that Run answers, canonical output
+validation/materialization, candidate repair/verification and target CAS must
+finish. No hidden successor Run is created. Background Jobs defer to this owner.
+`workspace.integration.verification.get` / `.configure` retain the Operation Core
+query/command paths and exact Folder/candidate authorization. The current assigned
+setup phase chooses real commands; only it may attest that repository inspection
+found no applicable project checks, in which case labeled basic checks remain.
+Users never enter commands or IDs. The recovery UI posts an ordinary visible
+request to the original conversation ingress; the Agent resolves metadata and
+uses these same Operations in its current Run. See
+[Project Files](../modules/project-files.md#agent-verification-and-conflict-repair).
+
+
+### Workspace publication recovery
+
+The existing completion command can admit one explicit independent `commit`
+from published target history, and integration retry supports a non-publishing
+`reconcile_only` check. Both use Operation Core and existing Jobs, not a second
+merge channel. Host commit reads and temporary-index Git adoption proofs never
+run inside core transactions or mutate the user's index. Exact candidates still
+require verification and CAS before publication. See
+[Project Files](../modules/project-files.md) for intake, permissions, no-change settlement and UI behavior.

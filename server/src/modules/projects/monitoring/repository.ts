@@ -1,3 +1,4 @@
+import {MonitoringControlError} from './operationErrors.js';
 import { randomUUID } from 'node:crypto';
 import { ProjectMonitoringConfigSchema, type MonitoringVersion, type ProjectMonitoringConfig } from '@rainver/protocol';
 import { type Queryable, HttpError } from '../../routeUtils/common.js';
@@ -37,8 +38,8 @@ export async function appendVersion(db: Queryable, spaceId: string, projectId: s
     query_fingerprint: string;
   }>(`SELECT COALESCE(ss.query_fingerprint,ch.query_fingerprint) AS query_fingerprint FROM source_channels ch LEFT JOIN source_search_specs ss ON ss.source_channel_id=ch.id AND ss.space_id=ch.space_id WHERE ch.space_id=$1 AND ch.id=$2`, [spaceId, config.source_channel_id]);
   const queryFingerprint = query.rows[0]?.query_fingerprint;
-  if (previous && previous.query_fingerprint !== queryFingerprint) throw new HttpError(409, 'Confirmed source query changed');
-  if (!queryFingerprint) throw new HttpError(409, 'Executable source query required');
+  if (previous && previous.query_fingerprint !== queryFingerprint) throw new MonitoringControlError(409, 'Confirmed source query changed');
+  if (!queryFingerprint) throw new MonitoringControlError(409, 'Executable source query required');
   const hash = fingerprintOf({
     config,
     query_fingerprint: queryFingerprint

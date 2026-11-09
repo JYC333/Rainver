@@ -6,7 +6,11 @@ import {
   registerClaimCandidatePacketProposalAppliers,
 } from "../src/modules/knowledge/claimCandidatePackets.js";
 import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
-import type { QueryResult, Queryable } from "../src/modules/routeUtils/common.js";
+import { seedSourceConnection, useReviewPacketDatabase } from "./support/reviewPacketDatabase.js";
+
+// Packet creation and acceptance run on the shared real PostgreSQL: the source
+// artifacts and Source connection are real rows, and every packet/child proposal
+// is read back from the database rather than from a scripted query fake.
 
 interface ArtifactRow {
   id: string;
@@ -16,13 +20,6 @@ interface ArtifactRow {
   metadata_json: Record<string, unknown>;
 }
 
-interface StoredProposal {
-  id: string;
-  proposal_type: string;
-  payload_json: Record<string, unknown>;
-  visibility: string;
-}
-
 interface SourceConnectionRow {
   id: string;
   owner_user_id: string;
@@ -30,70 +27,43 @@ interface SourceConnectionRow {
   policy_json: Record<string, unknown>;
 }
 
-class ClaimCandidatePacketFakeDb implements Queryable {
-  readonly calls: Array<{ sql: string; params: readonly unknown[] }> = [];
-  readonly insertedArtifacts: Array<Record<string, unknown>> = [];
-  readonly insertedProposals: StoredProposal[] = [];
-  updatedProposalPayload: Record<string, unknown> | null = null;
+const packetDatabase = useReviewPacketDatabase(import.meta.url);
 
-  constructor(
-    private readonly artifacts: ArtifactRow[],
-    private readonly sourceConnections: SourceConnectionRow[] = [],
-  ) {}
-
-  async query<Row = Record<string, unknown>>(
-    sql: string,
-    params: readonly unknown[] = [],
-  ): Promise<QueryResult<Row>> {
-    this.calls.push({ sql, params });
-    const norm = sql.replace(/\s+/g, " ").trim();
-    if (norm.startsWith("SELECT a.id, a.artifact_type, a.title, a.visibility, a.metadata_json FROM artifacts a")) {
-      const requested = Array.isArray(params[2]) ? params[2].map(String) : [];
-      const visibilityFilter = /AND a\.visibility (?:= '[^']+'|IN \([^)]+\)) AND a\.id/.exec(norm)?.[0] ?? "";
-      const allowedVisibilities = [...visibilityFilter.matchAll(/'(private|space_shared|selected_users)'/g)]
-        .map((match) => match[1]);
-      const rows = requested
-        .map((id) => this.artifacts.find((artifact) => artifact.id === id))
-        .filter((row): row is ArtifactRow => Boolean(row))
-        .filter((row) => allowedVisibilities.includes(row.visibility ?? "private"))
-        .map((row) => ({ ...row, visibility: row.visibility ?? "private" }))
-      return { rows: rows as Row[], rowCount: rows.length };
-    }
-    if (norm.startsWith("SELECT id, owner_user_id, consent_json, policy_json FROM source_connections")) {
-      const requested = Array.isArray(params[1]) ? params[1].map(String) : [];
-      const rows = this.sourceConnections.filter((row) => requested.includes(row.id));
-      return { rows: rows as Row[], rowCount: rows.length };
-    }
-    if (norm.startsWith("INSERT INTO artifacts")) {
-      const metadata = JSON.parse(String(params[13]));
-      this.insertedArtifacts.push({
-        id: params[0],
-        space_id: params[1],
-        artifact_type: params[4],
-        title: params[5],
-        metadata_json: metadata,
-        visibility: params[14],
-        owner_user_id: params[15],
-      });
-      return { rows: [], rowCount: 1 };
-    }
-    if (norm.startsWith("INSERT INTO proposals")) {
-      const payload = JSON.parse(String(params[10]));
-      const row: StoredProposal = {
-        id: String(params[0]),
-        proposal_type: String(params[3]),
-        payload_json: payload,
-        visibility: String(params[15] ?? "private"),
-      };
-      this.insertedProposals.push(row);
-      return { rows: [row] as unknown as Row[], rowCount: 1 };
-    }
-    if (norm.startsWith("UPDATE proposals")) {
-      this.updatedProposalPayload = JSON.parse(String(params[2]));
-      return { rows: [], rowCount: 1 };
-    }
-    return { rows: [], rowCount: 0 };
+async function seedWorld(artifacts: ArtifactRow[], sources: SourceConnectionRow[] = []) {
+  const pool = packetDatabase.database.pool;
+  for (const artifact of artifacts) {
+    await pool.query(
+      `INSERT INTO artifacts(id,space_id,owner_user_id,artifact_type,title,visibility,metadata_json,export_formats_json,created_at,updated_at)
+       VALUES($1,'space-1','user-1',$2,$3,$4,$5::jsonb,'[]',now(),now())`,
+      [artifact.id, artifact.artifact_type, artifact.title, artifact.visibility ?? "private", JSON.stringify(artifact.metadata_json)],
+    );
   }
+  for (const source of sources) {
+    await seedSourceConnection(pool, { id: source.id, space: "space-1", owner: source.owner_user_id, consent: source.consent_json, policy: source.policy_json });
+  }
+  return packetDatabase.observe();
+}
+
+async function storedProposals(type?: string) {
+  return (await packetDatabase.database.pool.query<{ id: string; proposal_type: string; status: string; visibility: string; payload_json: Record<string, unknown> }>(
+    `SELECT id, proposal_type, status, visibility, payload_json FROM proposals
+      WHERE space_id = 'space-1' AND ($1::text IS NULL OR proposal_type = $1) ORDER BY created_at, id`,
+    [type ?? null],
+  )).rows;
+}
+
+async function storedArtifact(id: string) {
+  return (await packetDatabase.database.pool.query(
+    "SELECT artifact_type, visibility, owner_user_id, metadata_json FROM artifacts WHERE id = $1 AND space_id = 'space-1'",
+    [id],
+  )).rows[0];
+}
+
+async function canonicalRowCount() {
+  const pool = packetDatabase.database.pool;
+  const claims = (await pool.query("SELECT count(*)::int AS n FROM claims")).rows[0].n as number;
+  const relations = (await pool.query("SELECT count(*)::int AS n FROM object_relations")).rows[0].n as number;
+  return claims + relations;
 }
 
 function retrievalBriefArtifact(): ArtifactRow {
@@ -237,38 +207,90 @@ function memoryMaintenanceArtifact(): ArtifactRow {
 }
 
 describe("Claim Candidate Packets", () => {
+  const privateRequest = (ids: string[], max = 10) => ({
+    source_artifact_ids: ids,
+    max_candidates: max,
+    review_scope: "private" as const,
+    promote_private_sources_to_space_ops: false,
+  });
+  const acceptPacket = async (db: Awaited<ReturnType<typeof seedWorld>>, proposalId: string) => {
+    const packet = (await storedProposals(CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE)).find((row) => row.id === proposalId);
+    expect(packet).toBeDefined();
+    const registry = new ProposalApplierRegistry();
+    registerClaimCandidatePacketProposalAppliers(registry);
+    return registry.apply({
+      config: {} as never,
+      db,
+      userId: "user-1",
+      proposal: {
+        id: proposalId,
+        space_id: "space-1",
+        proposal_type: CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE,
+        title: "Claim candidate packet",
+        payload_json: packet!.payload_json,
+        project_folder_id: null,
+        visibility: "private",
+        created_by_user_id: "user-1",
+        owner_user_id: null,
+        created_by_run_id: null,
+        project_id: null,
+      },
+    });
+  };
+  const applyLiteralPacket = async (candidate: Record<string, unknown>) => {
+    const db = await seedWorld([]);
+    const registry = new ProposalApplierRegistry();
+    registerClaimCandidatePacketProposalAppliers(registry);
+    return registry.apply({
+      config: {} as never,
+      db,
+      userId: "user-1",
+      proposal: {
+        id: "proposal-packet",
+        space_id: "space-1",
+        proposal_type: CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE,
+        title: "Claim candidate packet",
+        payload_json: { operation: "claim_candidate_packet", packet_artifact_id: "artifact-packet", candidates: [candidate] },
+        project_folder_id: null,
+        visibility: "private",
+        created_by_user_id: "user-1",
+        owner_user_id: null,
+        created_by_run_id: null,
+        project_id: null,
+      },
+    });
+  };
+
   it("creates packet artifacts and proposals from retrieval brief gap analysis", async () => {
-    const db = new ClaimCandidatePacketFakeDb([retrievalBriefArtifact()]);
+    const db = await seedWorld([retrievalBriefArtifact()]);
     const result = await createClaimCandidatePacketFromArtifacts(db, {
       spaceId: "space-1",
       ownerUserId: "user-1",
-      request: {
-        source_artifact_ids: ["artifact-brief"],
-        max_candidates: 10,
-        review_scope: "private",
-        promote_private_sources_to_space_ops: false,
-      },
+      request: privateRequest(["artifact-brief"]),
     });
 
     expect(result.candidateCount).toBe(6);
-    expect(db.insertedArtifacts[0]).toMatchObject({
+    expect(await storedArtifact(result.artifactId)).toMatchObject({
       artifact_type: CLAIM_CANDIDATE_PACKET_ARTIFACT_TYPE,
       visibility: "private",
       owner_user_id: "user-1",
     });
-    expect(db.insertedProposals[0]).toMatchObject({
+    const [packet, ...others] = await storedProposals();
+    expect(others).toHaveLength(0);
+    expect(packet).toMatchObject({
       id: result.proposalId,
       proposal_type: CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE,
+      status: "pending",
       visibility: "private",
     });
-    expect(db.insertedProposals[0]?.payload_json).toMatchObject({
+    expect(packet!.payload_json).toMatchObject({
       operation: "claim_candidate_packet",
       packet_artifact_id: result.artifactId,
       candidate_count: 6,
       generated_child_proposal_count: 0,
       canonical_write_performed: false,
     });
-    const candidates = db.insertedProposals[0]?.payload_json.candidates as Array<Record<string, unknown>>;
+    const candidates = packet!.payload_json.candidates as Array<Record<string, unknown>>;
     expect(candidates.map((candidate) => candidate.origin as Record<string, unknown>)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ source_section: "gap_analysis.stale" }),
@@ -278,24 +300,20 @@ describe("Claim Candidate Packets", () => {
     );
     expect(candidates.some((candidate) =>
       (candidate.proposed_action as Record<string, unknown> | null)?.proposal_type === "object_relation_create")).toBe(true);
+    expect(await canonicalRowCount()).toBe(0);
   });
 
   it("enriches brief claim candidates with holder, validity, and governed source refs", async () => {
-    const db = new ClaimCandidatePacketFakeDb([enrichedClaimBriefArtifact()], [readableSourceConnection()]);
+    const db = await seedWorld([enrichedClaimBriefArtifact()], [readableSourceConnection()]);
     const result = await createClaimCandidatePacketFromArtifacts(db, {
       spaceId: "space-1",
       ownerUserId: "user-1",
-      request: {
-        source_artifact_ids: ["artifact-enriched-brief"],
-        max_candidates: 10,
-        review_scope: "private",
-        promote_private_sources_to_space_ops: false,
-      },
+      request: privateRequest(["artifact-enriched-brief"]),
     });
 
     expect(result.candidateCount).toBe(1);
-    const candidates = db.insertedProposals[0]?.payload_json.candidates as Array<Record<string, unknown>>;
-    const candidate = candidates[0]!;
+    const [packet] = await storedProposals(CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE);
+    const candidate = (packet!.payload_json.candidates as Array<Record<string, unknown>>)[0]!;
     expect(candidate).toMatchObject({
       kind: "claim_candidate",
       source_connection_ids: ["source-1"],
@@ -331,38 +349,27 @@ describe("Claim Candidate Packets", () => {
   });
 
   it("requires explicit opt-in and confirmation before promoting private source artifacts into space_ops packets", async () => {
-    const privateBrief = retrievalBriefArtifact();
-    const blockedDb = new ClaimCandidatePacketFakeDb([privateBrief]);
+    const db = await seedWorld([retrievalBriefArtifact()]);
 
-    await expect(createClaimCandidatePacketFromArtifacts(blockedDb, {
+    await expect(createClaimCandidatePacketFromArtifacts(db, {
       spaceId: "space-1",
       ownerUserId: "user-1",
-      request: {
-        source_artifact_ids: ["artifact-brief"],
-        max_candidates: 10,
-        review_scope: "space_ops",
-        promote_private_sources_to_space_ops: false,
-      },
+      request: { ...privateRequest(["artifact-brief"]), review_scope: "space_ops" },
     })).rejects.toMatchObject({ statusCode: 404 });
 
-    await expect(createClaimCandidatePacketFromArtifacts(new ClaimCandidatePacketFakeDb([privateBrief]), {
+    await expect(createClaimCandidatePacketFromArtifacts(db, {
       spaceId: "space-1",
       ownerUserId: "user-1",
-      request: {
-        source_artifact_ids: ["artifact-brief"],
-        max_candidates: 10,
-        review_scope: "space_ops",
-        promote_private_sources_to_space_ops: true,
-      },
+      request: { ...privateRequest(["artifact-brief"]), review_scope: "space_ops", promote_private_sources_to_space_ops: true },
     })).rejects.toMatchObject({ statusCode: 422 });
+    expect(await storedProposals()).toHaveLength(0);
+    expect((await packetDatabase.database.pool.query("SELECT 1 FROM artifacts WHERE id <> 'artifact-brief'")).rowCount).toBe(0);
 
-    const promotedDb = new ClaimCandidatePacketFakeDb([privateBrief]);
-    const result = await createClaimCandidatePacketFromArtifacts(promotedDb, {
+    const result = await createClaimCandidatePacketFromArtifacts(db, {
       spaceId: "space-1",
       ownerUserId: "user-1",
       request: {
-        source_artifact_ids: ["artifact-brief"],
-        max_candidates: 10,
+        ...privateRequest(["artifact-brief"]),
         review_scope: "space_ops",
         promote_private_sources_to_space_ops: true,
         private_source_promotion_confirmed: true,
@@ -370,59 +377,33 @@ describe("Claim Candidate Packets", () => {
     });
 
     expect(result.sourceArtifactCount).toBe(1);
-    expect(promotedDb.insertedArtifacts[0]).toMatchObject({
+    expect(await storedArtifact(result.artifactId)).toMatchObject({
       visibility: "space_shared",
       metadata_json: expect.objectContaining({
         private_source_promotion: true,
         promoted_source_artifact_ids: ["artifact-brief"],
       }),
     });
-    expect(promotedDb.insertedProposals[0]).toMatchObject({
+    expect(await storedProposals()).toEqual([expect.objectContaining({
+      id: result.proposalId,
       visibility: "space_shared",
       payload_json: expect.objectContaining({
         review_scope: "space_ops",
         private_source_promotion: true,
         promoted_source_artifact_ids: ["artifact-brief"],
       }),
-    });
+    })]);
   });
 
   it("accepting a packet creates child proposals without canonical claim writes", async () => {
-    const db = new ClaimCandidatePacketFakeDb([retrievalBriefArtifact()]);
+    const db = await seedWorld([retrievalBriefArtifact()]);
     const createResult = await createClaimCandidatePacketFromArtifacts(db, {
       spaceId: "space-1",
       ownerUserId: "user-1",
-      request: {
-        source_artifact_ids: ["artifact-brief"],
-        max_candidates: 3,
-        review_scope: "private",
-        promote_private_sources_to_space_ops: false,
-      },
+      request: privateRequest(["artifact-brief"], 3),
     });
-    const packetProposal = db.insertedProposals.find((proposal) =>
-      proposal.proposal_type === CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE);
-    expect(packetProposal).toBeDefined();
 
-    const registry = new ProposalApplierRegistry();
-    registerClaimCandidatePacketProposalAppliers(registry);
-    const result = await registry.apply({
-      config: {} as never,
-      db,
-      userId: "user-1",
-      proposal: {
-        id: createResult.proposalId,
-        space_id: "space-1",
-        proposal_type: CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE,
-        title: "Claim candidate packet",
-        payload_json: packetProposal!.payload_json,
-        project_folder_id: null,
-        visibility: "private",
-        created_by_user_id: "user-1",
-        owner_user_id: null,
-        created_by_run_id: null,
-        project_id: null,
-      },
-    });
+    const result = await acceptPacket(db, createResult.proposalId);
 
     expect(result).toMatchObject({
       result_type: "claim_candidate_packet",
@@ -432,10 +413,9 @@ describe("Claim Candidate Packets", () => {
         canonical_write_performed: false,
       },
     });
-    expect(db.insertedProposals.filter((proposal) => proposal.proposal_type === "claim_create")).toHaveLength(1);
-    expect(db.insertedProposals.filter((proposal) => proposal.proposal_type === "object_relation_create")).toHaveLength(1);
-    expect(db.calls.some((call) => /INSERT INTO claims/.test(call.sql))).toBe(false);
-    expect(db.calls.some((call) => /INSERT INTO object_relations/.test(call.sql))).toBe(false);
+    expect(await storedProposals("claim_create")).toEqual([expect.objectContaining({ status: "pending" })]);
+    expect(await storedProposals("object_relation_create")).toEqual([expect.objectContaining({ status: "pending" })]);
+    expect(await canonicalRowCount()).toBe(0);
     expect(result.proposalPayloadPatch).toMatchObject({
       generated_child_proposal_count: 2,
       skipped_child_proposal_count: 0,
@@ -445,22 +425,16 @@ describe("Claim Candidate Packets", () => {
   });
 
   it("creates review notes and object relation candidates from maintenance findings", async () => {
-    const db = new ClaimCandidatePacketFakeDb([maintenanceArtifact(), memoryMaintenanceArtifact()]);
+    const db = await seedWorld([maintenanceArtifact(), memoryMaintenanceArtifact()]);
     const result = await createClaimCandidatePacketFromArtifacts(db, {
       spaceId: "space-1",
       ownerUserId: "user-1",
-      request: {
-        source_artifact_ids: ["artifact-maintenance", "artifact-memory-maintenance"],
-        max_candidates: 10,
-        review_scope: "private",
-        promote_private_sources_to_space_ops: false,
-      },
+      request: privateRequest(["artifact-maintenance", "artifact-memory-maintenance"]),
     });
 
     expect(result.candidateCount).toBe(6);
-    const packet = db.insertedProposals.find((proposal) =>
-      proposal.proposal_type === CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE);
-    const candidates = packet?.payload_json.candidates as Array<Record<string, unknown>>;
+    const [packet] = await storedProposals(CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE);
+    const candidates = packet!.payload_json.candidates as Array<Record<string, unknown>>;
     expect(candidates.filter((candidate) => candidate.kind === "review_note")).toHaveLength(4);
     expect(candidates.filter((candidate) => candidate.kind === "object_relation_candidate")).toHaveLength(2);
     expect(candidates.map((candidate) => candidate.origin as Record<string, unknown>)).toEqual(
@@ -472,178 +446,80 @@ describe("Claim Candidate Packets", () => {
   });
 
   it("accepting a maintenance packet creates object relation child proposals only", async () => {
-    const db = new ClaimCandidatePacketFakeDb([maintenanceArtifact()]);
+    const db = await seedWorld([maintenanceArtifact()]);
     const createResult = await createClaimCandidatePacketFromArtifacts(db, {
       spaceId: "space-1",
       ownerUserId: "user-1",
-      request: {
-        source_artifact_ids: ["artifact-maintenance"],
-        max_candidates: 10,
-        review_scope: "private",
-        promote_private_sources_to_space_ops: false,
-      },
+      request: privateRequest(["artifact-maintenance"]),
     });
-    const packetProposal = db.insertedProposals.find((proposal) =>
-      proposal.proposal_type === CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE);
 
-    const registry = new ProposalApplierRegistry();
-    registerClaimCandidatePacketProposalAppliers(registry);
-    const result = await registry.apply({
-      config: {} as never,
-      db,
-      userId: "user-1",
-      proposal: {
-        id: createResult.proposalId,
-        space_id: "space-1",
-        proposal_type: CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE,
-        title: "Claim candidate packet",
-        payload_json: packetProposal!.payload_json,
-        project_folder_id: null,
-        visibility: "private",
-        created_by_user_id: "user-1",
-        owner_user_id: null,
-        created_by_run_id: null,
-        project_id: null,
-      },
-    });
+    const result = await acceptPacket(db, createResult.proposalId);
 
     expect(result.result.generated_child_proposal_count).toBe(2);
-    expect(db.insertedProposals.filter((proposal) => proposal.proposal_type === "object_relation_create")).toHaveLength(2);
-    expect(db.insertedProposals.filter((proposal) => proposal.proposal_type === "claim_create")).toHaveLength(0);
+    expect(await storedProposals("object_relation_create")).toHaveLength(2);
+    expect(await storedProposals("claim_create")).toHaveLength(0);
+    expect(await canonicalRowCount()).toBe(0);
   });
 
   it("records skipped child proposals when candidate payload validation fails", async () => {
-    const db = new ClaimCandidatePacketFakeDb([]);
-    const registry = new ProposalApplierRegistry();
-    registerClaimCandidatePacketProposalAppliers(registry);
-
-    const result = await registry.apply({
-      config: {} as never,
-      db,
-      userId: "user-1",
-      proposal: {
-        id: "proposal-packet",
-        space_id: "space-1",
-        proposal_type: CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE,
-        title: "Claim candidate packet",
-        payload_json: {
-          operation: "claim_candidate_packet",
-          packet_artifact_id: "artifact-packet",
-          candidates: [
-            {
-              id: "candidate-bad",
-              title: "Bad candidate",
-              proposed_action: {
-                proposal_type: "claim_create",
-                title: "Bad child",
-                payload: {
-                  operation: "claim_create",
-                  claim_kind: "fact",
-                },
-              },
-            },
-          ],
-        },
-        project_folder_id: null,
-        visibility: "private",
-        created_by_user_id: "user-1",
-        owner_user_id: null,
-        created_by_run_id: null,
-        project_id: null,
+    const result = await applyLiteralPacket({
+      id: "candidate-bad",
+      title: "Bad candidate",
+      proposed_action: {
+        proposal_type: "claim_create",
+        title: "Bad child",
+        payload: { operation: "claim_create", claim_kind: "fact" },
       },
     });
 
     expect(result).toMatchObject({
       result_type: "claim_candidate_packet",
-      result: {
-        generated_child_proposal_count: 0,
-        skipped_child_proposal_count: 1,
-      },
+      result: { generated_child_proposal_count: 0, skipped_child_proposal_count: 1 },
     });
     expect(result.proposalPayloadPatch).toMatchObject({
       generated_child_proposal_count: 0,
       skipped_child_proposal_count: 1,
       skipped_child_proposals: [
-        expect.objectContaining({
-          candidate_id: "candidate-bad",
-          proposal_type: "claim_create",
-        }),
+        expect.objectContaining({ candidate_id: "candidate-bad", proposal_type: "claim_create" }),
       ],
     });
+    expect(await storedProposals()).toHaveLength(0);
   });
 
   it("records skipped child proposals when action type and payload operation differ", async () => {
-    const db = new ClaimCandidatePacketFakeDb([]);
-    const registry = new ProposalApplierRegistry();
-    registerClaimCandidatePacketProposalAppliers(registry);
-
-    const result = await registry.apply({
-      config: {} as never,
-      db,
-      userId: "user-1",
-      proposal: {
-        id: "proposal-packet",
-        space_id: "space-1",
-        proposal_type: CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE,
-        title: "Claim candidate packet",
-        payload_json: {
-          operation: "claim_candidate_packet",
-          packet_artifact_id: "artifact-packet",
-          candidates: [
-            {
-              id: "candidate-mismatch",
-              title: "Mismatched candidate",
-              proposed_action: {
-                proposal_type: "claim_create",
-                title: "Mismatched child",
-                payload: {
-                  operation: "object_relation_create",
-                  from_object_id: "33333333-3333-4333-8333-333333333333",
-                  to_object_id: "44444444-4444-4444-8444-444444444444",
-                  link_type: "related_to",
-                },
-              },
-            },
-          ],
+    const result = await applyLiteralPacket({
+      id: "candidate-mismatch",
+      title: "Mismatched candidate",
+      proposed_action: {
+        proposal_type: "claim_create",
+        title: "Mismatched child",
+        payload: {
+          operation: "object_relation_create",
+          from_object_id: "33333333-3333-4333-8333-333333333333",
+          to_object_id: "44444444-4444-4444-8444-444444444444",
+          link_type: "related_to",
         },
-        project_folder_id: null,
-        owner_user_id: null,
-        visibility: "private",
-        created_by_user_id: "user-1",
-        created_by_run_id: null,
-        project_id: null,
       },
     });
 
-    expect(result.result).toMatchObject({
-      generated_child_proposal_count: 0,
-      skipped_child_proposal_count: 1,
-    });
-    expect(db.insertedProposals).toHaveLength(0);
+    expect(result.result).toMatchObject({ generated_child_proposal_count: 0, skipped_child_proposal_count: 1 });
+    expect(await storedProposals()).toHaveLength(0);
     expect(result.proposalPayloadPatch).toMatchObject({
       skipped_child_proposals: [
-        expect.objectContaining({
-          candidate_id: "candidate-mismatch",
-          proposal_type: "claim_create",
-        }),
+        expect.objectContaining({ candidate_id: "candidate-mismatch", proposal_type: "claim_create" }),
       ],
     });
   });
 
   it("does not create a space_ops packet from private source artifacts", async () => {
-    const db = new ClaimCandidatePacketFakeDb([retrievalBriefArtifact()]);
+    const db = await seedWorld([retrievalBriefArtifact()]);
 
     await expect(createClaimCandidatePacketFromArtifacts(db, {
       spaceId: "space-1",
       ownerUserId: "user-1",
-      request: {
-        source_artifact_ids: ["artifact-brief"],
-        max_candidates: 10,
-        review_scope: "space_ops",
-        promote_private_sources_to_space_ops: false,
-      },
+      request: { ...privateRequest(["artifact-brief"]), review_scope: "space_ops" },
     })).rejects.toThrow(/source artifact not found or not visible/);
-    expect(db.insertedArtifacts).toHaveLength(0);
-    expect(db.insertedProposals).toHaveLength(0);
+    expect((await packetDatabase.database.pool.query("SELECT 1 FROM artifacts WHERE id <> 'artifact-brief'")).rowCount).toBe(0);
+    expect(await storedProposals()).toHaveLength(0);
   });
 });

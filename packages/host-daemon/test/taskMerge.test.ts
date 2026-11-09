@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile, unlink } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { saveConfig } from "../src/config.js";
 import { handleLaunch, type LaunchFrame } from "../src/execution.js";
-import { abortTaskMerge, continueTaskMerge, finishTaskMerge, prepareTaskMerge } from "../src/taskMerge.js";
+import { abortTaskMerge, continueTaskMerge, finishTaskMerge, prepareTaskMerge, prepareConflictResolution, prepareVerificationRepair } from "../src/taskMerge.js";
 import { deleteTaskBranch, settleTaskRun, sweepTaskWorktrees, TASK_BUSY } from "../src/taskWorktree.js";
 
 let configDir: string;
@@ -364,6 +364,70 @@ describe("task_merge_prepare", () => {
     expect(await continueTaskMerge(target("t-mdu", "merge-mdu"))).toMatchObject({ outcome: "unresolved", conflicted_files: ["README.md"] });
   });
 
+  it('keeps prepared ignored dependencies through verification capture, with tracked content fenced and cleanup intact',async()=>{
+    await initRepository();
+    await personCommits('.gitignore','node_modules/\nbuild-cache/\n');
+    await taskWork('t-ready','echo feature > feature.txt');
+    expect(await prepare('t-ready','merge-ready')).toMatchObject({outcome:'rebased'});
+    expect(await prepareVerificationRepair(target('t-ready','merge-ready'))).toEqual(['feature.txt']);
+    const cwd=worktreePath('t-ready');
+    await mkdir(join(cwd,'node_modules','prepared'),{recursive:true});
+    await mkdir(join(cwd,'build-cache'),{recursive:true});
+    await writeFile(join(cwd,'node_modules','prepared','check.cjs'),'console.log("prepared-check-passed");');
+    await writeFile(join(cwd,'build-cache','marker'),'prepared');
+    await writeFile(join(cwd,'README.md'),'outside the frozen change scope');
+    await writeFile(join(cwd,'stray.txt'),'must not survive capture');
+    const native=await runTask('verification-preparation','t-ready','test -f node_modules/prepared/check.cjs && printf native-preparation > build-cache/marker','merge-ready');
+    expect(native.completeFrame).toMatchObject({exit_code:0});
+    expect(await readFile(join(cwd,'build-cache','marker'),'utf8')).toBe('native-preparation');
+    const candidate=await continueTaskMerge(target('t-ready','merge-ready'));
+    expect(candidate.outcome).toBe('rebased');
+    expect(await readFile(join(cwd,'README.md'),'utf8')).toBe('one\ntwo\nthree\n');
+    expect(existsSync(join(cwd,'stray.txt'))).toBe(false);
+    expect(git(['ls-tree','-r','--name-only',candidate.task_commit!])).not.toContain('node_modules');
+    const {runHostCommand}=await import('../src/commandRun.js');
+    const checked=await runHostCommand({request_id:'prepared-check',workspace:{kind:'location',workspace_location_id:'folder-1',worktree:{task_id:'t-ready',merge_id:'merge-ready'}},command:[process.execPath,'node_modules/prepared/check.cjs'],timeout_seconds:10});
+    expect(checked).toMatchObject({exit_code:0,error:null});expect(checked.stdout).toContain('prepared-check-passed');
+    expect(await abortTaskMerge(target('t-ready','merge-ready'))).toMatchObject({ok:true});
+    expect(existsSync(join(cwd,'node_modules'))).toBe(false);
+    expect(existsSync(join(cwd,'build-cache'))).toBe(false);
+  });
+
+  it('prepares Agent verification for more than fifty changed paths within the canonical scope limit',async()=>{
+    await initRepository();
+    const names=Array.from({length:51},(_,index)=>`check-${index}.txt`);
+    await taskWork('t-verify-large',names.map(name=>`echo verified > ${name}`).join(' && '));
+    expect(await prepare('t-verify-large','merge-verify-large')).toMatchObject({outcome:'rebased'});
+    expect((await prepareVerificationRepair(target('t-verify-large','merge-verify-large')))?.sort()).toEqual([...names].sort());
+    await writeFile(join(worktreePath('t-verify-large'),names[0]),'fixed after checking\n');
+    const candidate=await continueTaskMerge(target('t-verify-large','merge-verify-large'));
+    expect(candidate.outcome).toBe('rebased');
+    expect(git(['show',`${candidate.task_commit}:${names[0]}`])).toBe('fixed after checking');
+  });
+
+  it('accepts an explicitly requested keep-target decision for a modify/delete conflict, while keeping other task changes',async()=>{
+    await initRepository();
+    await taskWork('t-human','rm README.md && echo other > other.txt');
+    await personCommits('README.md','one\nMAIN\nthree\n');
+    expect(await prepare('t-human','merge-human')).toMatchObject({outcome:'conflict'});
+    expect(await continueTaskMerge(target('t-human','merge-human'))).toMatchObject({outcome:'unresolved'});
+    expect(await prepareConflictResolution(target('t-human','wrong-attempt'))).toBeNull();
+    expect(await prepareConflictResolution(target('t-human','merge-human'))).toEqual(['README.md']);
+    const done=await continueTaskMerge(target('t-human','merge-human'));
+    expect(done.outcome).toBe('rebased');
+    expect(git(['show',`${done.task_commit}:README.md`])).toContain('MAIN');
+    expect(git(['show',`${done.task_commit}:other.txt`])).toBe('other');
+  });
+
+  it('never treats remaining text conflict markers as a human resolution',async()=>{
+    await initRepository();
+    await taskWork('t-human-markers',"printf 'one\\nTASK\\nthree\\n' > README.md");
+    await personCommits('README.md','one\nMAIN\nthree\n');
+    expect(await prepare('t-human-markers','merge-human-markers')).toMatchObject({outcome:'conflict'});
+    expect(await prepareConflictResolution(target('t-human-markers','merge-human-markers'))).toEqual(['README.md']);
+    expect(await continueTaskMerge(target('t-human-markers','merge-human-markers'))).toMatchObject({outcome:'unresolved'});
+  });
+
   it("hands a conflict with more paths than the wire carries to the person", async () => {
     await initRepository();
     const count = 501;
@@ -528,6 +592,23 @@ describe("task_merge_finish", () => {
     expect(await readFile(join(workspaceDir, "README.md"), "utf8")).toBe("person's edit\n");
   });
 
+  it("carries the person's clean edits on an overlapping file onto the merged content, keeping staged intent", async () => {
+    const result = await rebasedTask("t-c3", "merge-c3");
+    // The Task changes line three; the person's staged and unstaged edits both change line one.
+    await writeFile(join(workspaceDir, "README.md"), "ONE\ntwo\nthree\n");
+    git(["add", "README.md"]);
+    await writeFile(join(workspaceDir, "README.md"), "ONE!\ntwo\nthree\n");
+    expect(await finish("t-c3", "merge-c3", result)).toEqual({ ok: true, outcome: "merged", merged_commit: result.task_commit, overlapping_files: [], error: null });
+    expect(git(["show", "main:README.md"]).trim()).toBe("one\ntwo\nTHREE");
+    expect(git(["show", ":README.md"]).trim()).toBe("ONE\ntwo\nTHREE");
+    expect(await readFile(join(workspaceDir, "README.md"), "utf8")).toBe("ONE!\ntwo\nTHREE\n");
+    // The pre-publication working and staged contents are retained for recovery.
+    const refs = git(["for-each-ref", "--format=%(refname)", "refs/rainver/local-preimages/"]).trim().split("\n").sort();
+    expect(refs).toHaveLength(2);
+    expect(git(["show", `${refs[0]}:README.md`]).trim()).toBe("ONE!\ntwo\nthree");
+    expect(git(["show", `${refs[1]}:README.md`]).trim()).toBe("ONE\ntwo\nthree");
+  });
+
   it("waits when a file of the person's sits where the Task needs a directory", async () => {
     await initRepository();
     await taskWork("t-dir", "mkdir -p lib && echo code > lib/code.txt");
@@ -630,4 +711,213 @@ describe("task_merge_finish", () => {
       git(["worktree", "remove", "--force", elsewhere]);
     }
   });
+});
+
+describe('generic workspace integration',()=>{
+ async function change(base:string,edit:(root:string)=>Promise<void>){
+  const {randomUUID}=await import('node:crypto');
+  const {prepareExecutionWorkspace,executeWorkspaceCommand}=await import('../src/executionWorkspace.js');
+  const {checkLocationRepository}=await import('../src/taskWorktree.js');
+  const ref={id:randomUUID(),generation:1,base_commit:base},run=randomUUID();
+  const repo=await checkLocationRepository(workspaceDir);if(repo.kind!=='repository')throw new Error('fixture');
+  const prepared=await prepareExecutionWorkspace(repo.repo,'folder-1',ref,run);
+  await edit(prepared.root);
+  const saved=await executeWorkspaceCommand(workspaceDir,{type:'execution_workspace_command',request_id:randomUUID(),operation_id:randomUUID(),workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:ref},action:'checkpoint',run_id:run,author:AUTHOR,retain_branch:true});
+  expect(saved.ok,saved.error??'').toBe(true);
+  const frame={type:'workspace_integration' as const,request_id:randomUUID(),workspace:{kind:'location' as const,workspace_location_id:'folder-1',execution_workspace:{...ref,integration_id:randomUUID()}},action:'prepare' as const,source_commit:saved.commit!,base_commit:base,target_ref:'refs/heads/main',author:AUTHOR,message:'Requested change'};
+  return {frame,source:saved};
+ }
+ it.for(['unstaged','staged'] as const)('adopts files already exactly equal to a verified candidate without touching unrelated work: %s',async mode=>{
+  const {executeWorkspaceIntegration}=await import('../src/workspaceIntegration.js');
+  await initRepository();
+  await personCommits('notes.txt','original note\n');
+  const onto=git(['rev-parse','HEAD']),{frame}=await change(onto,async root=>{await writeFile(join(root,'README.md'),'agent result\n');await writeFile(join(root,'feature.txt'),'new feature\n')});
+  const candidate=await executeWorkspaceIntegration(workspaceDir,frame);expect(candidate).toMatchObject({outcome:'rebased'});
+  await writeFile(join(workspaceDir,'README.md'),'agent result\n');
+  await writeFile(join(workspaceDir,'feature.txt'),'new feature\n');
+  if(mode==='staged')git(['add','README.md','feature.txt']);
+  await writeFile(join(workspaceDir,'notes.txt'),'staged unrelated note\n');git(['add','notes.txt']);
+  await writeFile(join(workspaceDir,'notes.txt'),'unstaged unrelated note\n');
+  const beforeNotes=git(['show',':notes.txt']);
+  expect(await executeWorkspaceIntegration(workspaceDir,{...frame,action:'seal',candidate_commit:candidate.candidate_commit!})).toMatchObject({ok:true});
+  expect(await executeWorkspaceIntegration(workspaceDir,{...frame,action:'finish',candidate_commit:candidate.candidate_commit!,onto_commit:onto})).toMatchObject({ok:true,outcome:'merged'});
+  expect(git(['rev-parse','main'])).toBe(candidate.candidate_commit);
+  expect(git(['show','main:notes.txt'])).toBe('original note');
+  expect(git(['show',':notes.txt'])).toBe(beforeNotes);
+  expect(await readFile(join(workspaceDir,'notes.txt'),'utf8')).toBe('unstaged unrelated note\n');
+  expect(git(['status','--short'])).toBe('MM notes.txt');
+ });
+ it.runIf(process.getuid?.()!==0)('restores only adopted index entries when native fast-forward fails',async()=>{
+  const {executeWorkspaceIntegration}=await import('../src/workspaceIntegration.js');
+  const {chmod}=await import('node:fs/promises');
+  const base=await initRepository(),{frame}=await change(base,async root=>{await writeFile(join(root,'README.md'),'agent result\n');await writeFile(join(root,'new-file.txt'),'new feature\n')});
+  const candidate=await executeWorkspaceIntegration(workspaceDir,frame);expect(candidate).toMatchObject({outcome:'rebased'});
+  await writeFile(join(workspaceDir,'README.md'),'agent result\n');
+  const before=git(['ls-files','--stage']);
+  await chmod(workspaceDir,0o500);
+  try{
+   expect(await executeWorkspaceIntegration(workspaceDir,{...frame,action:'finish',candidate_commit:candidate.candidate_commit!,onto_commit:base})).toMatchObject({ok:false,outcome:null});
+  }finally{await chmod(workspaceDir,0o700)}
+  expect(git(['rev-parse','main'])).toBe(base);expect(git(['ls-files','--stage'])).toBe(before);
+  expect(await readFile(join(workspaceDir,'README.md'),'utf8')).toBe('agent result\n');
+ });
+ it.for(['different','partial_index','symlink'] as const)('preserves a local overlap that cannot be exactly adopted: %s',async mode=>{
+  const {executeWorkspaceIntegration}=await import('../src/workspaceIntegration.js');
+  const base=await initRepository(),{frame}=await change(base,async root=>{await writeFile(join(root,'README.md'),'agent result\n');await writeFile(join(root,'feature.txt'),'new feature\n')});
+  const candidate=await executeWorkspaceIntegration(workspaceDir,frame);expect(candidate).toMatchObject({outcome:'rebased'});
+  await writeFile(join(workspaceDir,'feature.txt'),'new feature\n');
+  if(mode==='partial_index'){await writeFile(join(workspaceDir,'README.md'),'independent staged intent\n');git(['add','README.md'])}
+  await writeFile(join(workspaceDir,'README.md'),mode==='different'?'different local result\n':'agent result\n');
+  if(mode==='symlink'){await writeFile(join(workspaceDir,'payload'),'agent result\n');await unlink(join(workspaceDir,'README.md'));const {symlink}=await import('node:fs/promises');await symlink('payload',join(workspaceDir,'README.md'))}
+  const beforeIndex=git(['ls-files','--stage']),beforeStatus=git(['status','--short']);
+  expect(await executeWorkspaceIntegration(workspaceDir,{...frame,action:'finish',candidate_commit:candidate.candidate_commit!,onto_commit:base})).toMatchObject({outcome:'waiting_local_changes'});
+  expect(git(['rev-parse','main'])).toBe(base);expect(git(['ls-files','--stage'])).toBe(beforeIndex);expect(git(['status','--short'])).toBe(beforeStatus);
+ });
+ it('edits a requested non-text conflict in the candidate through a native repair Run, keeping source and target unchanged until publication',async()=>{
+  const {executeWorkspaceIntegration}=await import('../src/workspaceIntegration.js');
+  const {randomUUID}=await import('node:crypto');
+  const base=await initRepository(),{frame,source}=await change(base,async root=>{await unlink(join(root,'README.md'));await writeFile(join(root,'feature.txt'),'agent feature');});
+  const onto=await personCommits('README.md','keep the current target\n');
+  expect(await executeWorkspaceIntegration(workspaceDir,frame)).toMatchObject({ok:true,outcome:'conflict',automatic_repair_allowed:false,conflicted_files:['README.md']});
+  expect(await executeWorkspaceIntegration(workspaceDir,{...frame,action:'continue'})).toMatchObject({outcome:'unresolved'});
+  expect(await executeWorkspaceIntegration(workspaceDir,{...frame,action:'repair',repair_mode:'agent_resolution'})).toMatchObject({ok:true,conflicted_files:['README.md']});
+  const run=collect();
+  await handleLaunch({run_id:randomUUID(),launch_id:randomUUID(),workspace:frame.workspace,argv:['sh','-c',"printf 'keep the current target with clarification\\n' > README.md; echo stray > unrelated.txt"]},run.send as never,()=>{});
+  expect(await run.complete()).toMatchObject({exit_code:0});
+  const candidate=await executeWorkspaceIntegration(workspaceDir,{...frame,action:'continue'});
+  expect(candidate).toMatchObject({ok:true,outcome:'rebased'});
+  expect(git(['show',`${candidate.candidate_commit}:README.md`])).toBe('keep the current target with clarification');
+  expect(git(['ls-tree',candidate.candidate_commit!,'unrelated.txt'])).toBe('');
+  expect(git(['rev-parse',source.branch!])).toBe(source.commit);
+  expect(git(['rev-parse','main'])).toBe(onto);
+  expect(await readFile(join(workspaceDir,'README.md'),'utf8')).toBe('keep the current target\n');
+  expect(await executeWorkspaceIntegration(workspaceDir,{...frame,action:'seal',candidate_commit:candidate.candidate_commit!})).toMatchObject({ok:true});
+  expect(await executeWorkspaceIntegration(workspaceDir,{...frame,action:'finish',candidate_commit:candidate.candidate_commit!,onto_commit:onto})).toMatchObject({ok:true,outcome:'merged'});
+  expect(git(['show','main:README.md'])).toBe('keep the current target with clarification');
+  expect(git(['show','main:feature.txt'])).toBe('agent feature');
+  expect(git(['rev-parse',source.branch!])).toBe(source.commit);
+ });
+ it('uses a separate candidate, seals verification, publishes by CAS and cleans through its own command',async()=>{
+  const {executeWorkspaceIntegration}=await import('../src/workspaceIntegration.js');
+  const {workspaceWorktreeKey}=await import('../src/worktreeIdentity.js');
+  const {executeWorkspaceCommand}=await import('../src/executionWorkspace.js');
+  const {randomUUID}=await import('node:crypto');
+  const base=await initRepository(),{frame,source}=await change(base,root=>writeFile(join(root,'feature.txt'),'agent'));
+  const step=await executeWorkspaceIntegration(workspaceDir,frame);
+  expect(step,JSON.stringify(step)).toMatchObject({ok:true,outcome:'rebased'});
+  expect(git(['rev-parse',source.branch!])).toBe(source.commit);
+  expect(git(['rev-parse','main'])).toBe(base);
+  const candidate=step.candidate_commit!,onto=('onto_commit' in step?step.onto_commit:null)!;
+  expect(await executeWorkspaceIntegration(workspaceDir,{...frame,action:'seal',candidate_commit:candidate})).toMatchObject({ok:true,outcome:'sealed'});
+  const done=await executeWorkspaceIntegration(workspaceDir,{...frame,action:'finish',candidate_commit:candidate,onto_commit:onto});
+  expect(done).toMatchObject({ok:true,outcome:'merged'});
+  expect(git(['show','main:feature.txt'])).toBe('agent');
+  expect(git(['rev-parse',source.branch!])).toBe(source.commit);
+  const cleanup=await executeWorkspaceCommand(workspaceDir,{type:'execution_workspace_command',request_id:randomUUID(),operation_id:randomUUID(),workspace:frame.workspace,action:'cleanup',expected_commit:candidate,retain_branch:false});
+  expect(cleanup).toMatchObject({ok:true,cleanup_state:'cleaned'});
+  expect(existsSync(worktreePath(workspaceWorktreeKey(frame.workspace.execution_workspace)))).toBe(false);
+ });
+ it('resolves only conflicted paths in the candidate and detects post-check modifications',async()=>{
+  const {executeWorkspaceIntegration}=await import('../src/workspaceIntegration.js');
+  const {workspaceWorktreeKey}=await import('../src/worktreeIdentity.js');
+  const {randomUUID}=await import('node:crypto');
+  const base=await initRepository(),{frame,source}=await change(base,root=>writeFile(join(root,'README.md'),'agent\ntwo\nthree\n'));
+  await personCommits('README.md','person\ntwo\nthree\n');
+  expect(await executeWorkspaceIntegration(workspaceDir,frame)).toMatchObject({ok:true,outcome:'conflict',conflicted_files:['README.md']});
+  const run=collect();
+  await handleLaunch({run_id:randomUUID(),launch_id:randomUUID(),workspace:frame.workspace,argv:['sh','-c',"printf 'person and agent\\ntwo\\nthree\\n' > README.md; echo stray > stray.txt"]},run.send as never,()=>{});
+  expect(await run.complete()).toMatchObject({exit_code:0});
+  const step=await executeWorkspaceIntegration(workspaceDir,{...frame,action:'continue'});
+  expect(step).toMatchObject({ok:true,outcome:'rebased'});
+  expect(git(['show',`${step.candidate_commit}:README.md`])).toContain('person and agent');
+  expect(()=>git(['show',`${step.candidate_commit}:stray.txt`])).toThrow();
+  const root=worktreePath(workspaceWorktreeKey(frame.workspace.execution_workspace));
+  await writeFile(join(root,'README.md'),'changed after checks');
+  expect(await executeWorkspaceIntegration(workspaceDir,{...frame,action:'seal',candidate_commit:step.candidate_commit!})).toMatchObject({ok:false,error:'integration_candidate_changed'});
+  expect(git(['rev-parse',source.branch!])).toBe(source.commit);
+ });
+ it('applies only the Agent delta from an imported dirty baseline',async()=>{
+  const {executeWorkspaceIntegration}=await import('../src/workspaceIntegration.js');
+  await initRepository();
+  git(['checkout','-q','-b','baseline-snapshot']);
+  const snapshot=await personCommits('unpublished.txt','user work');
+  git(['checkout','-q','main']);
+  const {frame}=await change(snapshot,root=>writeFile(join(root,'agent.txt'),'agent work'));
+  const step=await executeWorkspaceIntegration(workspaceDir,frame);
+  expect(step).toMatchObject({ok:true,outcome:'rebased'});
+  expect(git(['show',`${step.candidate_commit}:agent.txt`])).toBe('agent work');
+  expect(()=>git(['show',`${step.candidate_commit}:unpublished.txt`])).toThrow();
+ });
+});
+
+describe('hierarchical workspace publication',()=>{
+ it('integrates sibling changes into the parent before one parent publication',async()=>{
+  const {randomUUID}=await import('node:crypto');
+  const {executeWorkspaceIntegration}=await import('../src/workspaceIntegration.js');
+  const {prepareExecutionWorkspace,executeWorkspaceCommand}=await import('../src/executionWorkspace.js');
+  const {checkLocationRepository}=await import('../src/taskWorktree.js');
+  const original=await initRepository();
+  const check=await checkLocationRepository(workspaceDir);if(check.kind!=='repository')throw new Error('fixture');
+  const repo=check.repo;
+  async function source(base:string,file:string){
+   const ref={id:randomUUID(),generation:1,base_commit:base},run=randomUUID();
+   const tree=await prepareExecutionWorkspace(repo,'folder-1',ref,run);await writeFile(join(tree.root,file),file);
+   const saved=await executeWorkspaceCommand(workspaceDir,{type:'execution_workspace_command',request_id:randomUUID(),operation_id:randomUUID(),workspace:{kind:'location',workspace_location_id:'folder-1',execution_workspace:ref},action:'checkpoint',run_id:run,author:AUTHOR,retain_branch:true});
+   expect(saved.ok).toBe(true);return {ref,...saved};
+  }
+  async function publish(ref:{id:string;generation:number},base:string,commit:string,targetRef:string){
+   const frame={type:'workspace_integration' as const,request_id:randomUUID(),workspace:{kind:'location' as const,workspace_location_id:'folder-1',execution_workspace:{...ref,integration_id:randomUUID()}},action:'prepare' as const,source_commit:commit,base_commit:base,target_ref:targetRef,author:AUTHOR,message:'Adopt change'};
+   const step=await executeWorkspaceIntegration(workspaceDir,frame);expect(step,JSON.stringify(step)).toMatchObject({ok:true,outcome:'rebased'});
+   const finished=await executeWorkspaceIntegration(workspaceDir,{...frame,action:'finish',candidate_commit:step.candidate_commit!,onto_commit:step.onto_commit!});expect(finished).toMatchObject({ok:true,outcome:'merged'});
+  }
+  const parent=await source(original,'parent.txt'),a=await source(parent.commit!,'child-a.txt'),b=await source(parent.commit!,'child-b.txt');
+  for(const child of [a,b])await publish(child.ref,parent.commit!,child.commit!,`refs/heads/${parent.branch}`);
+  expect(git(['rev-parse','main'])).toBe(original);
+  await publish(parent.ref,original,git(['rev-parse',parent.branch!]),'refs/heads/main');
+  for(const file of ['parent.txt','child-a.txt','child-b.txt'])expect(git(['show',`main:${file}`])).toBe(file);
+ });
+});
+
+// Published content can outlive its original integration attempt or commit ID.
+describe('external adoption proof',()=>{
+ it('recognizes an applied patch after later independent edits without touching the real index or source files',async()=>{
+  const base=await initRepository();
+  await writeFile(join(workspaceDir,'feature.txt'),'feature\n');git(['add','feature.txt']);git(['commit','-qm','feature']);const source=git(['rev-parse','HEAD']);
+  git(['reset','--hard',base]);await personCommits('feature.txt','feature\n','manual adoption');await personCommits('README.md','new independent content\n');
+  await writeFile(join(workspaceDir,'local.txt'),'keep local edits\n');git(['add','local.txt']);
+  const before=git(['diff','--cached','--binary']),head=git(['rev-parse','HEAD']);
+  const {workspaceDeltaAlreadyApplied}=await import('../src/appliedWorkspaceDelta.js');
+  expect(await workspaceDeltaAlreadyApplied(workspaceDir,base,source,head)).toBe(true);
+  expect(git(['diff','--cached','--binary'])).toBe(before);expect(git(['rev-parse','HEAD'])).toBe(head);
+  expect(await readFile(join(workspaceDir,'local.txt'),'utf8')).toBe('keep local edits\n');
+ });
+ it('requires every changed path, including a deletion, to have been adopted',async()=>{
+  const base=await initRepository();await writeFile(join(workspaceDir,'one.txt'),'one\n');await unlink(join(workspaceDir,'README.md'));git(['add','-A']);git(['commit','-qm','add and delete']);const source=git(['rev-parse','HEAD']);
+  git(['reset','--hard',base]);await personCommits('one.txt','one\n');const partial=git(['rev-parse','HEAD']);
+  const {workspaceDeltaAlreadyApplied}=await import('../src/appliedWorkspaceDelta.js');
+  expect(await workspaceDeltaAlreadyApplied(workspaceDir,base,source,partial)).toBe(false);
+  await unlink(join(workspaceDir,'README.md'));git(['add','-A']);git(['commit','-qm','adopt deletion']);
+  expect(await workspaceDeltaAlreadyApplied(workspaceDir,base,source,git(['rev-parse','HEAD']))).toBe(true);
+ });
+ it('checks binary changes and refuses unrelated content',async()=>{
+  const base=await initRepository();await writeFile(join(workspaceDir,'binary.dat'),Buffer.from([0,255,12,15]));git(['add','.']);git(['commit','-qm','binary']);const source=git(['rev-parse','HEAD']);
+  const {workspaceDeltaAlreadyApplied}=await import('../src/appliedWorkspaceDelta.js');
+  expect(await workspaceDeltaAlreadyApplied(workspaceDir,base,source,base)).toBe(false);
+  expect(await workspaceDeltaAlreadyApplied(workspaceDir,base,source,source)).toBe(true);
+ });
+ it('prepares independent parallel candidates from the same frozen commit without losing the source pin',async()=>{
+  const base=await initRepository();await taskWork('parallel-source','printf feature > feature.txt');const source=git(['rev-parse','refs/heads/rainver/task-parallel-source']);
+  const results=await Promise.all(['first','second'].map(id=>prepareTaskMerge({locationRoot:workspaceDir,locationId:'folder-1',taskId:`parallel-${id}`,mergeId:`merge-${id}`,sourceCommit:source,baseCommit:base,targetRef:'refs/heads/main',author:AUTHOR,message:'Parallel candidate'})));
+  expect(results).toEqual([expect.objectContaining({ok:true,outcome:'rebased'}),expect.objectContaining({ok:true,outcome:'rebased'})]);expect(git(['rev-parse',`refs/rainver/sources/${source}`])).toBe(source);expect(git(['rev-parse','HEAD'])).toBe(base);
+ });
+ it('closes a frozen snapshot delta already adopted under another commit identity',async()=>{
+  const base=await initRepository();
+  await taskWork('snapshot-source','printf private > private.txt; printf feature > feature.txt');
+  const source=git(['rev-parse','refs/heads/rainver/task-snapshot-source']);
+  await personCommits('feature.txt','feature');await personCommits('private.txt','private');await personCommits('later.txt','later');
+  const current=git(['rev-parse','HEAD']);
+  const result=await prepareTaskMerge({locationRoot:workspaceDir,locationId:'folder-1',taskId:'adopted-candidate',mergeId:'adoption-merge',sourceCommit:source,baseCommit:base,targetRef:'refs/heads/main',author:AUTHOR,message:'Check adopted change'});
+  expect(result).toMatchObject({ok:true,outcome:'no_changes',onto_commit:current});expect(git(['rev-parse','HEAD'])).toBe(current);
+  expect(git(['rev-parse',`refs/rainver/sources/${source}`])).toBe(source);
+ });
 });

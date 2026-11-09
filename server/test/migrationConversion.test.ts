@@ -108,6 +108,11 @@ describe("root migration operations entrypoint", () => {
   });
 
   function cutoverHarness() {
+    // Docker bind mounts reject colons; run the operational scripts from a portable checkout fixture.
+    const checkout=join(root,"checkout");
+    cpSync(join(process.cwd(),"..","ops"),join(checkout,"ops"),{recursive:true});
+    cpSync(join(process.cwd(),"..","package.json"),join(checkout,"package.json"));
+    const cutoverScript=join(checkout,"ops","scripts","db","squash-migrations.sh");
     const archive = join(root, "archive");
     mkdirSync(archive);
     cpSync(source, join(archive, "source"), { recursive: true });
@@ -145,7 +150,7 @@ if (args.includes('convert')) process.stdout.write(JSON.stringify({state: args.i
 `, { mode: 0o755 });
     const run = (failure: string, options: { running?: string; restarting?: string; later?: number; chain?: boolean } = {}) => {
       rmSync(log, { force: true });
-      const result = spawnSync("bash", [script, "cutover", "--mode", "test", ...(failure === "none" ? [] : ["--archive", archive])], {
+      const result = spawnSync("bash", [cutoverScript, "cutover", "--mode", "test", ...(failure === "none" ? [] : ["--archive", archive])], {
         encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, RAINVER_ROOT: runtimeRoot,
           RAINVER_HOST_MODE_ROOT: "", CUTOVER_TEST_LOG: log, CUTOVER_TEST_FAILURE: failure, CUTOVER_TEST_ARCHIVE: archive,
           CUTOVER_TEST_RUNNING: options.running ?? "postgres\nserver\nfrontend\n",

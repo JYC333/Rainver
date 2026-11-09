@@ -1,3 +1,4 @@
+import {useReviewPacketDatabase} from './support/reviewPacketDatabase.js';
 import { describe, expect, it } from "vitest";
 import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import {
@@ -5,26 +6,10 @@ import {
   registerRetrievalDiagnosticsProposalAppliers,
   RETRIEVAL_DIAGNOSTICS_PACKET_PROPOSAL_TYPE,
 } from "../src/modules/retrieval/artifacts/diagnostics.js";
-import type { Queryable } from "../src/modules/routeUtils/common.js";
 
-interface CapturedQuery {
-  sql: string;
-  params: readonly unknown[];
-}
 
-function fakeDb(): Queryable & { calls: CapturedQuery[] } {
-  const calls: CapturedQuery[] = [];
-  return {
-    calls,
-    async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []) {
-      calls.push({ sql, params });
-      // Every INSERT this fake handles (proposals, artifacts) puts the
-      // generated id first; echo it back so callers relying on
-      // `RETURNING id` (e.g. insertProposalRow) get a usable row.
-      return { rows: [{ id: params[0] }] as Row[], rowCount: 1 };
-    },
-  };
-}
+const packetDatabase=useReviewPacketDatabase(import.meta.url);
+const realDb=()=>packetDatabase.observe();
 
 const report = {
   source: "product_diagnostic",
@@ -39,7 +24,7 @@ const report = {
 
 describe("retrieval diagnostics packets", () => {
   it("creates a private review packet from aggregate diagnostics", async () => {
-    const db = fakeDb();
+    const db = realDb();
     const proposalId = await createRetrievalDiagnosticsProposalPacket(db, {
       spaceId: "space-1",
       ownerUserId: "user-1",
@@ -48,7 +33,7 @@ describe("retrieval diagnostics packets", () => {
     });
 
     expect(proposalId).toMatch(/[0-9a-f-]{36}/);
-    const params = db.calls[0]!.params;
+    const params = db.calls.find(call=>/INSERT INTO proposals/.test(call.sql))!.params;
     expect(params[3]).toBe(RETRIEVAL_DIAGNOSTICS_PACKET_PROPOSAL_TYPE);
     expect(params[14]).toBe("user-1");
     const payload = JSON.parse(String(params[10]));
@@ -61,7 +46,7 @@ describe("retrieval diagnostics packets", () => {
   });
 
   it("accepts diagnostics packets without canonical writes", async () => {
-    const db = fakeDb();
+    const db = realDb();
     const registry = new ProposalApplierRegistry();
     registerRetrievalDiagnosticsProposalAppliers(registry);
     const applier = registry.get(RETRIEVAL_DIAGNOSTICS_PACKET_PROPOSAL_TYPE);

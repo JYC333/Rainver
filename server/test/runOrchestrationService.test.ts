@@ -2582,3 +2582,46 @@ describe("currentRuntimeContextInputRef", () => {
       .toEqual({ type: "run_request", id: "run-1" });
   });
 });
+
+// Workspace completion must precede the same Run's terminal reply.
+it.for(['success','invalid_output','materialization'] as const)('validates outputs before current-Run integration: %s',async mode=>{
+ const repo=new FakeRepo(),order:string[]=[];
+ const first={runtime_key:'codex_cli',adapter_kind:'local_cli',success:true,output_text:'accepted',exit_code:0,output_json:{runtime_key:'codex_cli'},metadata_json:{workspace_publication_pending:true}};
+ const service=orchestration(repo,{policyEnforcer:allowPolicy,verificationEngine:{async verify(input,phase){order.push(phase??'all');expect(input.workspace_publication_pending).toBe(true);return mode==='invalid_output'&&phase==='pre_materialization'?[{verifier_type:'output_schema',status:'failed',summary:'missing required output'} as never]:[]}},materializer:{async materializeAdapterResult(){order.push('materialize');return {items:[],errors:mode==='materialization'?['output failed']:[]}},async finalizeRun(){return {kind:'activity',status:'succeeded'} as never}} as unknown as RunMaterializationService});
+ vi.spyOn(service as any,'invokeAdapter').mockImplementation(async(_run:any,input:any)=>{
+  input.workspace_reply_sink(async(gate:{allowed:boolean})=>{order.push('integrate');expect(repo.terminalUpdates).toHaveLength(0);expect(gate.allowed).toBe(mode==='success');return {...first,success:gate.allowed,output_text:gate.allowed?'Merged and verified.':'Not merged: output validation failed.',error_code:gate.allowed?null:'workspace_integration_failed',metadata_json:{}}});
+  return first;
+ });
+ const outcome=await service.executeRun({run_id:'run-1',space_id:'space-1',worker_id:'worker-1',command_source:'job'});expect(order.at(-1)).toBe('integrate');expect(order[0]).toBe('pre_materialization');
+ expect(outcome.status).toBe(mode==='success'?'succeeded':'failed');expect(repo.terminalUpdates[0]?.output_text).not.toBe('accepted');
+});
+
+it('keeps cancellation attached while the same Run finishes publication',async()=>{
+ const repo=new FakeRepo(),registry=new LocalCliProcessRegistry(),service=orchestration(repo,{processRegistry:registry});
+ let signal!:AbortSignal,finish!:(gate:{allowed:boolean})=>Promise<any>,release!:()=>void;
+ const answer={runtime_key:'codex_cli',adapter_kind:'local_cli',success:true,output_text:'done',exit_code:0};
+ vi.spyOn(service as any,'invokeAdapterUnbounded').mockImplementation(async(_run:any,input:any)=>{signal=input.cancel_signal;input.workspace_reply_sink(async()=>{expect(signal.aborted).toBe(true);return answer});return answer});
+ await (service as any).invokeAdapter(repo.run,{workspace_reply_sink:(callback:any,close:any)=>{finish=callback;release=close}});
+ expect(signal.aborted).toBe(false);registry.terminate(repo.run!.id);expect(signal.aborted).toBe(true);
+ await finish({allowed:true});release();
+});
+
+// Recovered native-operation mistakes do not override an actual saved/merged outcome.
+// A governance failure the session did not recover from degrades the Run but
+// never withholds the reply the person is waiting for.
+it.for(['configure_conflict','complete_conflict','invalid_input','get_not_found','get_permission','permission','other_action','no_intent','no_gate'] as const)('recovers operation mistakes only after a native workspace effect completed: %s',async mode=>{
+ const repo=new FakeRepo();
+ const errorCode=mode==='permission'||mode==='get_permission'?'system_action_policy_denied':mode==='invalid_input'?'operation_invalid_input':mode==='get_not_found'?'operation_not_found':'operation_conflict';
+ const actionId=mode==='other_action'?'memory.retrieval.search':mode==='complete_conflict'||mode==='invalid_input'?'workspace.change.complete':mode==='get_not_found'||mode==='get_permission'?'workspace.change.get':'workspace.integration.verification.configure';
+ repo.actionEvents=[{event_type:'action_completed',status:'failed',attempt_number:1,error_code:errorCode,metadata_json:{action_id:actionId}}];
+ const service=orchestration(repo,{policyEnforcer:allowPolicy}),recover=['configure_conflict','complete_conflict','invalid_input','get_not_found'].includes(mode);let called=false;
+ const first={runtime_key:'codex_cli',adapter_kind:'local_cli',success:true,output_text:'accepted',exit_code:0,metadata_json:{workspace_publication_pending:true,workspace_native_settled:mode!=='no_intent'}};
+ vi.spyOn(service as any,'invokeAdapter').mockImplementation(async(_run:any,input:any)=>{
+  if(mode!=='no_gate')input.workspace_reply_sink(async(gate:{allowed:boolean})=>{called=true;expect(gate.allowed).toBe(true);return {...first,success:true,output_text:'Verified and merged.',metadata_json:{},error_code:null}});
+  return first;
+ });
+ const result=await service.executeRun({run_id:'run-1',space_id:'space-1',worker_id:'worker-1',command_source:'job'});
+ expect(result.status).toBe(recover?'succeeded':'degraded');expect(called).toBe(mode!=='no_gate');
+ expect(repo.runEvents.some(event=>event.error_code==='managed_tool_degraded')).toBe(!recover);
+ if(!recover&&mode!=='no_gate')expect(repo.terminalUpdates[0]).toMatchObject({status:'degraded'});
+});

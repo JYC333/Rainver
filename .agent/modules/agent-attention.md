@@ -79,6 +79,13 @@ UIDs live in technical details. A conversation continues to own its turns and
 has no duplicate execution list. Opening history or loading child pages does
 not acknowledge undisplayed results; existing revision/CAS guards still apply.
 
+Conversation details additionally mount the canonical `ConversationRunControls`
+for every loaded `run_decision`/`authorization` reason, even when a background Run
+has no transcript message. This is a decision card, not another execution history.
+Presentation context suppresses the same repair controls in an embedded workspace
+card; full conversation and Run-detail surfaces reuse the same commands and
+controls. Pending actions never become an implicit approval through reading.
+
 ## Readers and authority
 
 `repository.ts` reads authorized source facts in batched queries,

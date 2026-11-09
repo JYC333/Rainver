@@ -57,7 +57,7 @@ export type RemoteProviderBindingFrame = HostLaunchProviderBinding;
  */
 export interface RuntimeProfileScope {
   agent_id: string;
-  container_kind: "conversation" | "direct" | "location" | "agent";
+  container_kind: "conversation" | "direct" | "location" | "agent" | "workspace";
   container_id: string;
 }
 

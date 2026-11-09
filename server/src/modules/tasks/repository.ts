@@ -13,7 +13,7 @@ import {
   page,
   requiredString,
   toDbDate,
-  withDbTransaction,
+  withQueryableTransaction,
   type SpaceUserIdentity,
   type Queryable, dateIso } from "../routeUtils/common.js";
 import { PgRunRepository } from "../runs/repository.js";
@@ -192,7 +192,7 @@ export class ProjectTaskPlacementRequiresCore extends HttpError {
 }
 
 export class PgTaskRepository {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Queryable) {}
 
   async listBoards(identity: SpaceUserIdentity, filters: { projectFolderId: string | null; projectId: string | null; status: string | null; limit: number; offset: number }) {
     const params: unknown[] = [identity.spaceId];
@@ -217,7 +217,7 @@ export class PgTaskRepository {
   }
 
   async createBoard(identity: SpaceUserIdentity, body: Record<string, unknown>) {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const now = new Date().toISOString();
       const boardId = randomUUID();
       await client.query(
@@ -272,7 +272,7 @@ export class PgTaskRepository {
   }
 
   async updateBoard(identity: SpaceUserIdentity, boardId: string, body: Record<string, unknown>) {
-    await withDbTransaction(this.pool, async (client) => {
+    await withQueryableTransaction(this.pool, async (client) => {
       const board = await this.getBoardFrom(client, identity, boardId);
       if (!board) throw new HttpError(404, "Board not found");
       // The same gate as a Task: changing, deleting or moving a Project's Board
@@ -409,7 +409,7 @@ export class PgTaskRepository {
     attributedActorId?: string,
   ): Promise<ReturnType<typeof taskOut>> {
     if (!db) {
-      return withDbTransaction(this.pool, (client) => this.createTask(identity, body, client, attributedActorId));
+      return withQueryableTransaction(this.pool, (client) => this.createTask(identity, body, client, attributedActorId));
     }
 
     const now = new Date().toISOString();
@@ -786,7 +786,7 @@ export class PgTaskRepository {
       await write(db);
       return taskOut((await getVisibleTaskRow(db, identity, taskId))!);
     }
-    await withDbTransaction(this.pool, write);
+    await withQueryableTransaction(this.pool, write);
     return (await this.getTask(identity, taskId))!;
   }
 
@@ -958,7 +958,7 @@ export class PgTaskRepository {
         }),
       };
     };
-    return transactionClient ? execute(transactionClient) : withDbTransaction(this.pool, execute);
+    return transactionClient ? execute(transactionClient) : withQueryableTransaction(this.pool, execute);
   }
 
   /**
@@ -1009,6 +1009,9 @@ export class PgTaskRepository {
       payload: { run_id: input.runId },
     };
     if (merge) {
+      // Live quota refresh may outlive admission and requires its original Pool.
+      // Transaction-only repositories cannot launch that independent IO.
+      if (!isConnectablePool(this.pool)) throw new Error("Merge resolution requires a live quota Pool");
       await admitAgentOriginRun(client as PoolClient, {
         spaceId: identity.spaceId,
         runId: input.runId,
@@ -1224,7 +1227,7 @@ export class PgTaskRepository {
   }
 
   async requestPlanningRun(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const observed=await getVisibleTaskRow(client,identity,taskId);
       if(!observed)throw new HttpError(404,"Task not found");
       if(observed.project_id){
@@ -1452,7 +1455,7 @@ export class PgTaskRepository {
   }
 
   async createTaskEvaluation(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
-    return withDbTransaction(this.pool, (client) => this.createTaskEvaluationIn(client, identity, taskId, body));
+    return withQueryableTransaction(this.pool, (client) => this.createTaskEvaluationIn(client, identity, taskId, body));
   }
 
   private async createTaskEvaluationIn(
@@ -1631,4 +1634,8 @@ function planningInstruction(task: TaskRow, referenceWorkflowVersionId: string |
     referenceWorkflowVersionId ? `Use workflow version '${referenceWorkflowVersionId}' as an optional reference only; do not treat it as the execution source.` : null,
     "Use the task.plan.propose tool with a validated workflow_definition.v1 object. For every downstream node that consumes an upstream result, declare input_bindings from its direct depends_on nodes; do not rely on dependency order alone. Do not claim that any node has already executed.",
   ].filter(Boolean).join("\n\n");
+}
+
+function isConnectablePool(db: Queryable): db is Pool {
+  return "connect" in db && typeof db.connect === "function";
 }

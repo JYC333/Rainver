@@ -1,9 +1,13 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react'
-import { acpAgentsApi } from '../../../api/client'
+import { MemoryRouter } from 'react-router-dom'
+import type { ReactNode } from 'react'
+import { act, render as testingRender, screen, waitFor, within } from '@testing-library/react'
+import { acpAgentsApi, hostsApi } from '../../../api/client'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import HostAgents from '../HostAgents'
 import type { Host, HostRuntimeDefinitionOption } from '../../../types/api'
+
+vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpaceId: 'space-1' }) }))
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 
@@ -109,15 +113,26 @@ const HOST = {
 } as unknown as Host
 
 describe('HostAgents', () => {
-  it('shows named model quota separately from account-wide readings', async () => {
+  it('removes cached account identity when a later quota read is refused', async () => {
+    const host = { ...HOST, capabilities_json: { ...HOST.capabilities_json, installations: { claude_code: [{ id: 'own', version: '1.0.0', logged_in: true, options: null, reports_subscription_quota: true }] } } } as unknown as Host
+    const adapters = [{ runtime_key: 'claude_code', display_name: 'Claude Code', command: 'claude', remote_eligible: true, supports_runtime_native: true, supports_model_provider: false }] as HostRuntimeDefinitionOption[]
+    vi.mocked(hostsApi.usage).mockResolvedValueOnce({ items: [{ host_id: HOST.id, runtime_key: 'claude_code', installation: 'own', checked_at: new Date().toISOString(), quota: {
+      available: true, account: { provider: 'anthropic', product: 'claude', account_id: 'a'.repeat(64), organization_id: null },
+      session_pct: 42, session_resets: null, week_pct: null, week_resets: null, error: null,
+    } }] }).mockRejectedValueOnce(new Error('Access denied'))
+    const view = render(<HostAgents host={host} adapters={adapters} isInstanceAdmin={false} manageable onChanged={vi.fn()} />)
+    expect(await screen.findByText('Account: aaaaaaaa')).toBeInTheDocument()
+    view.rerender(<HostAgents host={{ ...host, capabilities_json: { ...host.capabilities_json, runtimes: [], versions: {}, installations: { claude_code: [{ id: 'own', version: '1.0.1', logged_in: true, options: null, reports_subscription_quota: true }] } } }} adapters={adapters} isInstanceAdmin={false} manageable onChanged={vi.fn()} />)
+    await waitFor(() => expect(screen.queryByText('Account: aaaaaaaa')).toBeNull())
+  })
+
+  it('links to account quota without repeating named model readings in the installation list', async () => {
     flags.namedQuota = true
     try {
       render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false} manageable onChanged={vi.fn()} />)
-      expect(await screen.findByText('Highest used 95%')).toBeInTheDocument()
-      expect(screen.queryByText('Fable weekly')).toBeNull()
-      await userEvent.click(screen.getByRole('button', { name: 'Usage details for goose · managed:1.2.3' }))
-      expect(screen.getByText('Fable weekly')).toBeInTheDocument()
-      expect(screen.getByRole('progressbar', { name: 'Fable weekly' })).toHaveAttribute('aria-valuenow', '95')
+      expect(await screen.findByRole('link', { name: 'View quota' })).toHaveAttribute('href', expect.stringContaining('/usage?tab=quotas&'))
+      expect(screen.queryByText('Highest used 95%')).toBeNull()
+      expect(screen.queryByRole('progressbar')).toBeNull()
     } finally { flags.namedQuota = false }
   })
 
@@ -444,3 +459,5 @@ describe('HostAgents', () => {
     expect(screen.queryByRole('button', { name: /Log out managed:3\.0\.0 of Kite/ })).toBeNull()
   })
 })
+
+function render(ui: ReactNode) { return testingRender(ui, { wrapper: ({ children }) => <MemoryRouter>{children}</MemoryRouter> }) }

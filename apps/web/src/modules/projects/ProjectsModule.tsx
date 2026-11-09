@@ -18,6 +18,7 @@ const ProjectDetailPage = lazy(() => import('./ProjectDetailPage'))
 const SourcesAreaPage = lazy(() => import('./SourcesAreaPage'))
 const ProjectFilesPage = lazy(() => import('../project_files/ProjectFilesPage'))
 const ProjectFolderSettingsPage = lazy(() => import('../project_files/ProjectFolderSettingsPage'))
+const ProjectAgentWorkspacesPage = lazy(() => import('../project_files/ProjectAgentWorkspacesPage'))
 const InquiryAreaPage = lazy(() => import('./InquiryAreaPage'))
 const QuestionAssessmentPage = lazy(() => import('./QuestionAssessmentPage'))
 const DecisionAreaPage = lazy(() => import('./DecisionAreaPage'))
@@ -56,6 +57,7 @@ export default function ProjectsModule() {
         <Route path="digest" element={<ProjectDailyRedirect />} />
         <Route path="raw" element={<Navigate to="../sources?tab=raw" replace />} />
         <Route path="files" element={<Suspense fallback={<PageFallback />}><ProjectFilesPage /></Suspense>} />
+        <Route path="files/workspaces" element={<Suspense fallback={<PageFallback />}><ProjectAgentWorkspacesPage /></Suspense>} />
         <Route path="folders/:folderId" element={<Suspense fallback={<PageFallback />}><ProjectFolderSettingsPage /></Suspense>} />
         <Route path="inquiry" element={<Suspense fallback={<PageFallback />}><InquiryAreaPage /></Suspense>} />
         <Route path="inquiry/records" element={<Suspense fallback={<PageFallback />}><ResearchRecordsPage /></Suspense>} />

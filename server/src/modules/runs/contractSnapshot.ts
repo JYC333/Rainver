@@ -85,6 +85,9 @@ export interface RunContractSnapshotInput {
    * (`resolveSandboxLevelForRuntime`) and refuses a Host that cannot enforce it.
    */
   workspace_access?: "read" | "write" | null;
+  execution_workspace_version?: 1;
+  workspace_integration_id?: string;
+  workspace_integration_attempt_id?: string;
 }
 
 interface RunContractSnapshot {
@@ -113,6 +116,9 @@ interface RunContractSnapshot {
   git_snapshot: RunGitSnapshot | null;
   task_merge_id?: string;
   workspace_access?: "read" | "write";
+  execution_workspace_version?: 1;
+  workspace_integration_id?: string;
+  workspace_integration_attempt_id?: string;
   created_at: string;
 }
 
@@ -155,6 +161,8 @@ export function createRunContractSnapshot(
     route_hints_json: cloneJson(input?.route_hints_json),
     policy_context_json: cloneJson(input?.policy_context_json),
     git_snapshot: input?.git_snapshot ? cloneJson(input.git_snapshot) as RunGitSnapshot : null,
+    ...(input?.workspace_integration_id?{workspace_integration_id:input.workspace_integration_id,workspace_integration_attempt_id:input.workspace_integration_attempt_id}:{}),
+    ...(input?.execution_workspace_version===1?{execution_workspace_version:1 as const}:{}),
     ...(input?.task_merge_id ? { task_merge_id: input.task_merge_id } : {}),
     ...(input?.workspace_access === "read" || input?.workspace_access === "write"
       ? { workspace_access: input.workspace_access } : {}),

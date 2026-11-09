@@ -4,9 +4,12 @@ import { getDbPool } from "../src/db/pool.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { knowledgeModule } from "../src/modules/knowledge/index.js";
 import { loadConfig } from "../src/config.js";
+import { useReviewPacketDatabase } from "./support/reviewPacketDatabase.js";
+import { updateSpaceRetrievalSettings } from "../src/modules/retrieval/settings.js";
 import { __setAuthIdentityForTests, __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth/identity.js";
 
-vi.mock("../src/db/pool.js", () => ({
+vi.mock("../src/db/pool.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../src/db/pool.js")>(),
   getDbPool: vi.fn(),
 }));
 
@@ -60,31 +63,6 @@ function scanPermissionDb(role = "member", scanMode: "admins" | "members" = "adm
   };
 }
 
-function proposalRow(params: readonly unknown[]) {
-  return {
-    id: params[0],
-    space_id: params[1],
-    created_by_user_id: params[14],
-    project_folder_id: params[12],
-    created_by_run_id: params[2],
-    proposal_type: params[3],
-    status: params[4],
-    risk_level: params[5],
-    urgency: params[6],
-    preview: params[7],
-    title: params[8],
-    payload_json: JSON.parse(String(params[10] ?? "{}")),
-    rationale: params[13],
-    visibility: params[15],
-    review_deadline: null,
-    expires_at: null,
-    created_at: "2026-06-26T00:00:00.000Z",
-    reviewed_at: null,
-    project_id: params[16],
-    egress_approval_id: null,
-    egress_approval_status: null,
-  };
-}
 
 function authWithRole(role: string): AuthRepository {
   return {
@@ -247,155 +225,83 @@ describe("Knowledge retrieval routes", () => {
     expect(res.json()).toEqual({ detail: "Requires space owner/admin role or enabled Context Ops member scan access" });
   });
 
-  it("creates claim candidate packets through the HTTP route", async () => {
-    __setAuthRepositoryForTests(authWithRole("admin"));
+  describe("persisted claim candidate packets", () => {
+    const packetDatabase = useReviewPacketDatabase(import.meta.url);
     const sourceArtifactId = "11111111-1111-4111-8111-111111111111";
-    const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
-    const client = {
-      async query(sql: string, params: readonly unknown[] = []) {
-        calls.push({ sql, params });
-        const norm = sql.replace(/\s+/g, " ").trim();
-        if (norm === "BEGIN" || norm === "COMMIT" || norm === "ROLLBACK") return { rows: [], rowCount: 0 };
-        if (norm.startsWith("INSERT INTO proposals")) return { rows: [proposalRow(params)], rowCount: 1 };
-        if (norm.startsWith("SELECT a.id, a.artifact_type, a.title, a.visibility, a.metadata_json FROM artifacts a")) {
-          return {
-            rows: [{
-              id: sourceArtifactId,
-              artifact_type: "retrieval_brief",
-              title: "Context Brief",
-              visibility: "private",
-              metadata_json: {
-                gap_analysis: {
-                  uncited_claims: ["A route-level claim candidate."],
-                },
-              },
-            }],
-            rowCount: 1,
-          };
-        }
-        return { rows: [], rowCount: 1 };
-      },
-      release() {},
-    };
-    vi.mocked(getDbPool).mockReturnValue({
-      async connect() {
-        return client;
-      },
-    } as never);
-    app = buildModuleServer(config(), [knowledgeModule]);
+    const seedBrief = (claim: string) => packetDatabase.database.pool.query(
+      `INSERT INTO artifacts(id,space_id,owner_user_id,artifact_type,title,visibility,metadata_json,export_formats_json,created_at,updated_at)
+       VALUES($1,'space-1','user-1','retrieval_brief','Context Brief','private',$2::jsonb,'[]',now(),now())`,
+      [sourceArtifactId, JSON.stringify({ gap_analysis: { uncited_claims: [claim] } })],
+    );
+    const packet = async (proposalId: string) => (await packetDatabase.database.pool.query(
+      "SELECT proposal_type, status, visibility, payload_json FROM proposals WHERE id = $1 AND space_id = 'space-1'",
+      [proposalId],
+    )).rows[0];
 
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/knowledge/claims/candidate-packets",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({
-        source_artifact_ids: [sourceArtifactId],
-        max_candidates: 10,
-        review_scope: "private",
-      }),
+    it("creates claim candidate packets through the HTTP route", async () => {
+      __setAuthRepositoryForTests(authWithRole("admin"));
+      const pool = packetDatabase.database.pool;
+      await seedBrief("A route-level claim candidate.");
+      vi.mocked(getDbPool).mockReturnValue(pool);
+      app = buildModuleServer(config(), [knowledgeModule]);
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/knowledge/claims/candidate-packets",
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({
+          source_artifact_ids: [sourceArtifactId],
+          max_candidates: 10,
+          review_scope: "private",
+        }),
+      });
+
+      expect(res.statusCode, res.body).toBe(201);
+      const body = res.json();
+      expect(body).toMatchObject({
+        artifact_id: expect.stringMatching(/[0-9a-f-]{36}/),
+        proposal_id: expect.stringMatching(/[0-9a-f-]{36}/),
+        candidate_count: 1,
+        source_artifact_count: 1,
+        generated_child_proposal_count: 0,
+      });
+      expect(await packet(body.proposal_id)).toMatchObject({ status: "pending", visibility: "private" });
+      expect((await pool.query("SELECT 1 FROM artifacts WHERE id = $1", [body.artifact_id])).rowCount).toBe(1);
+      expect((await pool.query("SELECT 1 FROM claims")).rowCount).toBe(0);
     });
 
-    expect(res.statusCode).toBe(201);
-    expect(res.json()).toMatchObject({
-      artifact_id: expect.stringMatching(/[0-9a-f-]{36}/),
-      proposal_id: expect.stringMatching(/[0-9a-f-]{36}/),
-      candidate_count: 1,
-      source_artifact_count: 1,
-      generated_child_proposal_count: 0,
-    });
-    expect(calls.some((call) => call.sql === "BEGIN")).toBe(true);
-    expect(calls.some((call) => /INSERT INTO artifacts/.test(call.sql))).toBe(true);
-    expect(calls.some((call) => /INSERT INTO proposals/.test(call.sql))).toBe(true);
-    expect(calls.some((call) => call.sql === "COMMIT")).toBe(true);
-  });
+    it("allows explicit private source promotion when creating a space_ops claim candidate packet", async () => {
+      __setAuthRepositoryForTests(authWithRole("admin"));
+      const pool = packetDatabase.database.pool;
+      await seedBrief("A promoted route-level claim candidate.");
+      await updateSpaceRetrievalSettings(pool, "space-1", { context_ops_review_mode: "admins" });
+      vi.mocked(getDbPool).mockReturnValue(pool);
+      app = buildModuleServer(config(), [knowledgeModule]);
 
-  it("allows explicit private source promotion when creating a space_ops claim candidate packet", async () => {
-    __setAuthRepositoryForTests(authWithRole("admin"));
-    const sourceArtifactId = "11111111-1111-4111-8111-111111111111";
-    const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
-    const client = {
-      async query(sql: string, params: readonly unknown[] = []) {
-        calls.push({ sql, params });
-        const norm = sql.replace(/\s+/g, " ").trim();
-        if (norm === "BEGIN" || norm === "COMMIT" || norm === "ROLLBACK") return { rows: [], rowCount: 0 };
-        if (norm.startsWith("INSERT INTO proposals")) return { rows: [proposalRow(params)], rowCount: 1 };
-        if (norm.startsWith("SELECT a.id, a.artifact_type, a.title, a.visibility, a.metadata_json FROM artifacts a")) {
-          return {
-            rows: [{
-              id: sourceArtifactId,
-              artifact_type: "retrieval_brief",
-              title: "Context Brief",
-              visibility: "private",
-              metadata_json: {
-                gap_analysis: {
-                  uncited_claims: ["A promoted route-level claim candidate."],
-                },
-              },
-            }],
-            rowCount: 1,
-          };
-        }
-        return { rows: [], rowCount: 1 };
-      },
-      release() {},
-    };
-    vi.mocked(getDbPool).mockReturnValue({
-      async query(sql: string) {
-        if (/FROM settings/.test(sql)) {
-          return {
-            rows: [{
-              settings_json: {
-                default_search_mode: "hybrid",
-                rerank_enabled: false,
-                query_rewrite_enabled: false,
-                query_rewrite_default: false,
-                use_query_cache: true,
-                include_trace: false,
-                external_egress_enabled: true,
-                retrieval_tool_mode: "off",
-                context_ops_review_mode: "admins",
-                context_ops_scan_mode: "admins",
-                embedding_dimensions: 2560,
-                max_results_default: 50,
-              },
-              created_at: "2026-06-26T00:00:00.000Z",
-              updated_at: "2026-06-26T00:00:00.000Z",
-            }],
-            rowCount: 1,
-          };
-        }
-        if (/FROM space_memberships/.test(sql)) return { rows: [{ role: "admin" }], rowCount: 1 };
-        return { rows: [], rowCount: 0 };
-      },
-      async connect() {
-        return client;
-      },
-    } as never);
-    app = buildModuleServer(config(), [knowledgeModule]);
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/knowledge/claims/candidate-packets",
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({
+          source_artifact_ids: [sourceArtifactId],
+          max_candidates: 10,
+          review_scope: "space_ops",
+          promote_private_sources_to_space_ops: true,
+          private_source_promotion_confirmed: true,
+        }),
+      });
 
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/knowledge/claims/candidate-packets",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({
-        source_artifact_ids: [sourceArtifactId],
-        max_candidates: 10,
-        review_scope: "space_ops",
-        promote_private_sources_to_space_ops: true,
-        private_source_promotion_confirmed: true,
-      }),
+      expect(res.statusCode, res.body).toBe(201);
+      const body = res.json();
+      expect(body).toMatchObject({
+        artifact_id: expect.stringMatching(/[0-9a-f-]{36}/),
+        proposal_id: expect.stringMatching(/[0-9a-f-]{36}/),
+        candidate_count: 1,
+        source_artifact_count: 1,
+      });
+      // The private brief was read only because promotion was explicit and confirmed.
+      expect(await packet(body.proposal_id)).toMatchObject({ status: "pending", visibility: "space_shared" });
     });
-
-    expect(res.statusCode).toBe(201);
-    expect(res.json()).toMatchObject({
-      artifact_id: expect.stringMatching(/[0-9a-f-]{36}/),
-      proposal_id: expect.stringMatching(/[0-9a-f-]{36}/),
-      candidate_count: 1,
-      source_artifact_count: 1,
-    });
-    expect(calls.find((call) =>
-      /SELECT a\.id, a\.artifact_type, a\.title, a\.visibility, a\.metadata_json/.test(call.sql))?.sql)
-      .toContain("a.visibility IN ('space_shared', 'private')");
   });
 
   it("requires owner or admin role for retrieval eval report persistence", async () => {

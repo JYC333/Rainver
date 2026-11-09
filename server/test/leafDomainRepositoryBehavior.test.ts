@@ -7,6 +7,7 @@ import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import type { ServerConfig } from "../src/config.js";
 import type { SpaceUserIdentity, Queryable } from "../src/modules/routeUtils/common.js";
 import { handleSourceRetrievalTestSql } from "./support/sourceRetrievalTestSql.js";
+import { seedSourceConnection, useReviewPacketDatabase } from "./support/reviewPacketDatabase.js";
 
 function sourcesConfig(): ServerConfig {
   return {
@@ -67,6 +68,9 @@ function sourcesConfig(): ServerConfig {
     customSourceGenerateRateLimitPerHour: 30,
     customSourceArtifactRetentionEnabled: true,
     customSourceArtifactRetentionDays: 30,
+    workspaceReclaimGraceMinutes: 10,
+    workspaceLocalPreimageRetentionDays: 7,
+    workspaceRunHistoryRetentionDays: 30,
     customSourceArtifactRetentionIntervalSeconds: 3600,
     backupEnabled: false,
     backupIntervalHours: 24,
@@ -456,33 +460,6 @@ describe("Leaf domain repository behavior", () => {
     expect(out).toMatchObject({ id: "activity-1", status: "raw" });
   });
 
-  it("consolidates activity into a pending memory proposal with inherited visibility and provenance", async () => {
-    const db = new FakeDb((sql, params) => {
-      if (sql.includes("FROM activity_records")) return [activityRow({ visibility: "private" })];
-      if (sql.includes("FROM retrieval_aliases")) return [];
-      if (sql.includes("FROM retrieval_chunks")) return [];
-      if (sql.includes("INSERT INTO proposals")) return [proposalRow(params)];
-      if (sql.includes("UPDATE activity_records")) return [];
-      throw new Error(`unexpected SQL: ${sql}`);
-    });
-
-    const proposals = await new PgActivityRepository(db).consolidate(identity, "activity-1");
-
-    expect(proposals).toHaveLength(1);
-    expect(proposals[0]).toMatchObject({
-      proposal_type: "memory_create",
-      status: "pending",
-      visibility: "private",
-    });
-    expect(proposals[0].provenance_entries).toEqual([
-      expect.objectContaining({
-        source_type: "activity",
-        source_id: "activity-1",
-        source_trust: "user_confirmed",
-      }),
-    ]);
-  });
-
   it("rejects direct consolidation for Activity pointer records", async () => {
     const db = new FakeDb((sql) => {
       if (sql.includes("FROM activity_records")) {
@@ -575,47 +552,6 @@ describe("Leaf domain repository behavior", () => {
     expect(proposalInsertCount).toBe(0);
     expect(activityUpdateSql).toContain("status = 'processed'");
     expect(activityUpdateParams?.[0]).toBe("activity-1");
-  });
-
-  it("creates source summary proposals with evidence and source provenance", async () => {
-    const proposalPayloads: Record<string, unknown>[] = [];
-    const db = new FakeDb((sql, params) => {
-      if (sql.includes("FROM extracted_evidence")) {
-        return [{ id: "evidence-1", title: "Evidence", content_excerpt: "Excerpt", source_uri: "https://example.test/e", trust_level: "normal" }];
-      }
-      if (sql.includes("FROM source_items")) {
-        return [{ id: "item-1", title: "Item", excerpt: "Item excerpt", source_uri: "https://example.test/i", content_state: "excerpt_saved" }];
-      }
-      if (sql.includes("INSERT INTO artifacts")) return [];
-      if (sql.includes("INSERT INTO proposals")) {
-        proposalPayloads.push(JSON.parse(String(params[10])) as Record<string, unknown>);
-        return [{ id: `${params[3]}-proposal` }];
-      }
-      throw new Error(`unexpected SQL: ${sql}`);
-    });
-
-    const out = await new PgSourcesRepository(db, sourcesConfig()).createSummaryRun(identity, {
-      evidence_ids: ["evidence-1"],
-      source_item_ids: ["item-1"],
-      create_memory_proposal: true,
-      create_knowledge_proposal: true,
-    });
-
-    expect(out).toMatchObject({ status: "succeeded", proposal_ids: ["memory_create-proposal", "knowledge_create-proposal"] });
-    expect(proposalPayloads[0]).toMatchObject({
-      provenance_entries: [
-        { source_type: "artifact", source_trust: "internal_system" },
-        { source_type: "extracted_evidence", source_id: "evidence-1", source_trust: "agent_inferred" },
-        { source_type: "source_item", source_id: "item-1", source_trust: "untrusted_external" },
-      ],
-    });
-    expect(proposalPayloads[1]).toMatchObject({
-      source_refs: [
-        { source_type: "artifact", source_trust: "internal_system" },
-        { source_type: "extracted_evidence", source_id: "evidence-1", source_trust: "agent_inferred" },
-        { source_type: "source_item", source_id: "item-1", source_trust: "untrusted_external" },
-      ],
-    });
   });
 
   it("requires project scope when creating project source bindings", async () => {
@@ -971,88 +907,6 @@ describe("Leaf domain repository behavior", () => {
     expect(itemSelect?.sql).toContain("FROM source_channel_subscription_windows delivered_window");
   });
 
-  it("allows source-derived summary proposals when the source policy opts in", async () => {
-    const db = new FakeDb((sql, params) => {
-      if (sql.includes("FROM source_items")) {
-        return [sourceItemRow({ connection_id: "conn-1" })];
-      }
-      if (sql.includes("INSERT INTO artifacts")) return [];
-      if (sql.includes("FROM source_connections")) {
-        return [sourceConnectionRow({ allowed_import_targets: ["activity", "source_artifact", "memory_proposal", "knowledge"] })];
-      }
-      if (sql.includes("INSERT INTO proposals")) return [{ id: `${params[3]}-proposal` }];
-      throw new Error(`unexpected SQL: ${sql}`);
-    });
-
-    const out = await new PgSourcesRepository(db, sourcesConfig()).createSummaryRun(identity, {
-      source_item_ids: ["item-1"],
-      create_memory_proposal: true,
-      create_knowledge_proposal: true,
-    });
-
-    expect(out).toMatchObject({ proposal_ids: ["memory_create-proposal", "knowledge_create-proposal"] });
-  });
-
-  it("creates Knowledge proposals with knowledge-specific provenance", async () => {
-    const db = new FakeDb((sql, params) => {
-      if (sql.includes("FROM space_object_profiles")) return [];
-      if (sql.includes("INSERT INTO proposals")) return [proposalRow(params)];
-      throw new Error(`unexpected SQL: ${sql}`);
-    });
-
-    const proposal = await new PgKnowledgeRepository(db).proposeCreate(identity, {
-      knowledge_kind: "concept",
-      title: "Knowledge item",
-      content: "Curated knowledge content.",
-      source_refs: [{ source_type: "activity", source_id: "activity-1", source_trust: "user_confirmed" }],
-    });
-
-    expect(proposal).toMatchObject({ proposal_type: "knowledge_create", status: "pending" });
-    expect(proposal.provenance_entries).toBeNull();
-  });
-
-  it("creates Claim proposals with normalized sources", async () => {
-    const payloads: Record<string, unknown>[] = [];
-    const db = new FakeDb((sql, params) => {
-      if (sql.includes("FROM space_object_profiles")) return [];
-      if (sql.includes("FROM source_connections")) {
-        return [sourceConnectionRow()];
-      }
-      if (sql.includes("INSERT INTO proposals")) {
-        payloads.push(JSON.parse(String(params[10])) as Record<string, unknown>);
-        return [proposalRow(params)];
-      }
-      throw new Error(`unexpected SQL: ${sql}`);
-    });
-
-    const proposal = await new PgKnowledgeRepository(db).proposeClaimCreate(identity, {
-      claim_kind: "fact",
-      subject_text: "Retrieval",
-      claim_text: "The retrieval default embedding dimension is 2560.",
-      sources: [{
-        source_ref_type: "external_pointer",
-        source_ref_id: "pointer-1",
-        source_connection_id: "conn-1",
-        evidence_role: "supports",
-        confidence: 0.8,
-      }],
-    });
-
-    expect(proposal).toMatchObject({ proposal_type: "claim_create", status: "pending" });
-    expect(payloads[0]).toMatchObject({
-      operation: "claim_create",
-      claim_kind: "fact",
-      subject_text: "Retrieval",
-      sources: [expect.objectContaining({
-        source_ref_type: "external_pointer",
-        source_ref_id: "pointer-1",
-        source_connection_id: "conn-1",
-        evidence_role: "supports",
-        confidence: 0.8,
-      })],
-    });
-  });
-
   it("rejects claim source refs without a source connection", async () => {
     const db = new FakeDb((sql) => {
       if (sql.includes("FROM space_object_profiles")) return [];
@@ -1069,82 +923,6 @@ describe("Leaf domain repository behavior", () => {
         evidence_role: "supports",
       }],
     })).rejects.toThrow("source_ref entries require source_connection_id");
-  });
-
-  it("creates object relation proposals after checking both endpoint objects", async () => {
-    const seenObjectLookups: unknown[][] = [];
-    const payloads: Record<string, unknown>[] = [];
-    const db = new FakeDb((sql, params) => {
-      if (sql.includes("FROM space_objects")) {
-        seenObjectLookups.push([...params]);
-        return [{
-          id: params[0],
-          space_id: "space-1",
-          object_type: "claim",
-          title: String(params[0]),
-          status: "active",
-          visibility: "space_shared",
-          owner_user_id: "user-1",
-          primary_project_id: null,
-          project_folder_id: null,
-          created_by_user_id: "user-1",
-        }];
-      }
-      if (sql.includes("INSERT INTO proposals")) {
-        payloads.push(JSON.parse(String(params[10])) as Record<string, unknown>);
-        return [proposalRow(params)];
-      }
-      throw new Error(`unexpected SQL: ${sql}`);
-    });
-
-    const proposal = await new PgKnowledgeRepository(db).proposeObjectRelation(identity, {
-      from_object_id: "claim-a",
-      to_object_id: "claim-b",
-      link_type: "supports",
-    });
-
-    expect(seenObjectLookups).toEqual([
-      ["claim-a", "space-1", "user-1"],
-      ["claim-b", "space-1", "user-1"],
-    ]);
-    expect(proposal).toMatchObject({ proposal_type: "object_relation_create", status: "pending" });
-    expect(payloads[0]).toMatchObject({
-      operation: "object_relation_create",
-      from_object_id: "claim-a",
-      to_object_id: "claim-b",
-      link_type: "supports",
-    });
-  });
-
-  it("keeps a relation proposal private when its target is narrower than its source", async () => {
-    const visibilities: unknown[] = [];
-    const db = new FakeDb((sql, params) => {
-      if (sql.includes("FROM space_objects")) {
-        return [{
-          id: params[0],
-          space_id: "space-1",
-          object_type: "claim",
-          title: params[0] === "claim-private" ? "Private title" : "Shared title",
-          status: "active",
-          visibility: params[0] === "claim-private" ? "private" : "space_shared",
-          owner_user_id: "user-1",
-          primary_project_id: null,
-          project_folder_id: null,
-          created_by_user_id: "user-1",
-        }];
-      }
-      if (sql.includes("INSERT INTO proposals")) {
-        visibilities.push(params[15]);
-        return [proposalRow(params)];
-      }
-      throw new Error(`unexpected SQL: ${sql}`);
-    });
-    const repository = new PgKnowledgeRepository(db);
-
-    await repository.proposeObjectRelation(identity, { from_object_id: "claim-shared", to_object_id: "claim-private", link_type: "supports" });
-    await repository.proposeObjectRelation(identity, { from_object_id: "claim-shared", to_object_id: "claim-other", link_type: "supports" });
-
-    expect(visibilities).toEqual(["private", "space_shared"]);
   });
 
   it("counts only what the viewer can read, in every part of the knowledge summary", async () => {
@@ -1392,5 +1170,185 @@ describe("Leaf domain repository behavior", () => {
     });
 
     expect(seenSql.some((sql) => sql.includes("INSERT INTO note_collection_items"))).toBe(true);
+  });
+});
+
+describe("Leaf domain proposal persistence (real PostgreSQL)", () => {
+  const packetDatabase = useReviewPacketDatabase(import.meta.url);
+  const pool = () => packetDatabase.database.pool;
+  const proposals = async () => (await pool().query<{ id: string; proposal_type: string; status: string; visibility: string; payload_json: Record<string, unknown> }>(
+    "SELECT id, proposal_type, status, visibility, payload_json FROM proposals WHERE space_id = 'space-1' ORDER BY created_at, proposal_type",
+  )).rows;
+  const sourceItem = (id: string, connectionId: string | null, contentState = "excerpt_saved") => pool().query(
+    `INSERT INTO source_items(id,space_id,connection_id,item_type,title,source_uri,excerpt,visibility,owner_user_id,created_by_user_id,content_state,retention_policy,first_seen_at,last_seen_at,created_at,updated_at)
+     VALUES($1,'space-1',$2,'external_url','Item','https://example.test/i','Item excerpt','private','user-1','user-1',$3,'summary_only',now(),now(),now(),now())`,
+    [id, connectionId, contentState],
+  );
+  const connection = (id: string, policy: Record<string, unknown>) =>
+    seedSourceConnection(pool(), { id, space: "space-1", owner: "user-1", policy: sourceConnectionRow(policy).policy_json });
+  const claimObject = async (id: string, visibility: string) => {
+    await pool().query(
+      `INSERT INTO space_objects (id, space_id, object_type, title, summary, visibility, owner_user_id, created_by_user_id, created_at, updated_at)
+       VALUES ($1, 'space-1', 'claim', $2, $3, $4, 'user-1', 'user-1', now(), now())`,
+      [id, id, id, visibility],
+    );
+    await pool().query(
+      `INSERT INTO claims (object_id, space_id, status, subject_text, claim_kind, claim_text, normalized_claim_hash, confidence, confidence_method, resolution_state, metadata_json)
+       VALUES ($1, 'space-1', 'active', 'Subject', 'fact', $2, md5($2::text), 0.5, 'human_confirmed', 'unreviewed', '{}'::jsonb)`,
+      [id, id],
+    );
+  };
+
+  it("consolidates activity into a pending memory proposal with inherited visibility and provenance", async () => {
+    await pool().query(
+      `INSERT INTO activity_records (id, space_id, user_id, owner_user_id, subject_user_id, activity_type, title, content, payload_json, status, visibility, source_kind, source_trust, occurred_at, created_at, updated_at)
+       VALUES ('activity-1', 'space-1', 'user-1', 'user-1', 'user-1', 'user_capture', 'Captured note', 'Remember the sourced activity.', '{}'::jsonb, 'raw', 'private', 'user_capture', 'user_confirmed', now(), now(), now())`,
+    );
+
+    const out = await new PgActivityRepository(packetDatabase.observe()).consolidate(identity, "activity-1");
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ proposal_type: "memory_create", status: "pending", visibility: "private" });
+    expect(out[0].provenance_entries).toEqual([
+      expect.objectContaining({ source_type: "activity", source_id: "activity-1", source_trust: "user_confirmed" }),
+    ]);
+    expect(await proposals()).toEqual([expect.objectContaining({ id: out[0].id, proposal_type: "memory_create", status: "pending", visibility: "private" })]);
+    expect((await pool().query("SELECT 1 FROM memory_entries")).rowCount).toBe(0);
+  });
+
+  it("creates source summary proposals with evidence and source provenance", async () => {
+    await sourceItem("item-1", null);
+    await pool().query(
+      `INSERT INTO extracted_evidence(id,space_id,owner_user_id,visibility,source_object_type,evidence_type,title,content_excerpt,source_uri,extraction_method,trust_level,confidence,status,metadata_json,created_at,updated_at)
+       VALUES('evidence-1','space-1','user-1','private','manual','excerpt','Evidence','Excerpt','https://example.test/e','manual','normal',0.5,'candidate','{}'::jsonb,now(),now())`,
+    );
+
+    const out = await new PgSourcesRepository(packetDatabase.observe(), sourcesConfig()).createSummaryRun(identity, {
+      evidence_ids: ["evidence-1"],
+      source_item_ids: ["item-1"],
+      create_memory_proposal: true,
+      create_knowledge_proposal: true,
+    });
+
+    expect(out.status).toBe("succeeded");
+    const rows = await proposals();
+    expect(out.proposal_ids).toEqual([
+      rows.find((row) => row.proposal_type === "memory_create")?.id,
+      rows.find((row) => row.proposal_type === "knowledge_create")?.id,
+    ]);
+    const provenance = [
+      { source_type: "artifact", source_id: out.artifact_id, source_trust: "internal_system" },
+      { source_type: "extracted_evidence", source_id: "evidence-1", source_trust: "agent_inferred" },
+      { source_type: "source_item", source_id: "item-1", source_trust: "untrusted_external" },
+    ].map((entry) => expect.objectContaining(entry));
+    expect(rows.find((row) => row.proposal_type === "memory_create")?.payload_json).toMatchObject({ provenance_entries: provenance });
+    expect(rows.find((row) => row.proposal_type === "knowledge_create")?.payload_json).toMatchObject({ source_refs: provenance });
+    expect((await pool().query("SELECT owner_user_id, visibility FROM artifacts WHERE id = $1", [out.artifact_id])).rows)
+      .toEqual([{ owner_user_id: "user-1", visibility: "private" }]);
+  });
+
+  it("allows source-derived summary proposals when the source policy opts in", async () => {
+    await connection("conn-1", { allowed_import_targets: ["activity", "source_artifact", "memory_proposal", "knowledge"] });
+    await sourceItem("item-1", "conn-1", "metadata_only");
+
+    const out = await new PgSourcesRepository(packetDatabase.observe(), sourcesConfig()).createSummaryRun(identity, {
+      source_item_ids: ["item-1"],
+      create_memory_proposal: true,
+      create_knowledge_proposal: true,
+    });
+
+    const rows = await proposals();
+    expect(rows.map((row) => [row.proposal_type, row.status]).sort()).toEqual([["knowledge_create", "pending"], ["memory_create", "pending"]]);
+    expect([...out.proposal_ids].sort()).toEqual(rows.map((row) => row.id).sort());
+  });
+
+  it("creates Knowledge proposals with knowledge-specific provenance", async () => {
+    const proposal = await new PgKnowledgeRepository(packetDatabase.observe()).proposeCreate(identity, {
+      knowledge_kind: "concept",
+      title: "Knowledge item",
+      content: "Curated knowledge content.",
+      source_refs: [{ source_type: "activity", source_id: "activity-1", source_trust: "user_confirmed" }],
+    });
+
+    expect(proposal).toMatchObject({ proposal_type: "knowledge_create", status: "pending" });
+    expect(proposal.provenance_entries).toBeNull();
+    const [row] = await proposals();
+    expect(row).toMatchObject({ id: proposal.id, proposal_type: "knowledge_create", status: "pending" });
+    expect(row!.payload_json).toMatchObject({ source_refs: [expect.objectContaining({ source_type: "activity", source_id: "activity-1" })] });
+    expect((await pool().query("SELECT 1 FROM knowledge_items")).rowCount).toBe(0);
+  });
+
+  it("creates Claim proposals with normalized sources", async () => {
+    await connection("conn-1", {});
+
+    const proposal = await new PgKnowledgeRepository(packetDatabase.observe()).proposeClaimCreate(identity, {
+      claim_kind: "fact",
+      subject_text: "Retrieval",
+      claim_text: "The retrieval default embedding dimension is 2560.",
+      sources: [{
+        source_ref_type: "external_pointer",
+        source_ref_id: "pointer-1",
+        source_connection_id: "conn-1",
+        evidence_role: "supports",
+        confidence: 0.8,
+      }],
+    });
+
+    expect(proposal).toMatchObject({ proposal_type: "claim_create", status: "pending" });
+    const [row] = await proposals();
+    expect(row?.id).toBe(proposal.id);
+    expect(row!.payload_json).toMatchObject({
+      operation: "claim_create",
+      claim_kind: "fact",
+      subject_text: "Retrieval",
+      sources: [expect.objectContaining({
+        source_ref_type: "external_pointer",
+        source_ref_id: "pointer-1",
+        source_connection_id: "conn-1",
+        evidence_role: "supports",
+        confidence: 0.8,
+      })],
+    });
+    expect((await pool().query("SELECT 1 FROM claims")).rowCount).toBe(0);
+  });
+
+  it("creates object relation proposals after checking both endpoint objects", async () => {
+    await claimObject("claim-a", "space_shared");
+    await claimObject("claim-b", "space_shared");
+    const repository = new PgKnowledgeRepository(packetDatabase.observe());
+
+    await expect(repository.proposeObjectRelation(identity, { from_object_id: "claim-a", to_object_id: "claim-missing", link_type: "supports" }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    expect(await proposals()).toHaveLength(0);
+
+    const proposal = await repository.proposeObjectRelation(identity, {
+      from_object_id: "claim-a",
+      to_object_id: "claim-b",
+      link_type: "supports",
+    });
+
+    expect(proposal).toMatchObject({ proposal_type: "object_relation_create", status: "pending" });
+    const [row] = await proposals();
+    expect(row?.id).toBe(proposal.id);
+    expect(row!.payload_json).toMatchObject({
+      operation: "object_relation_create",
+      from_object_id: "claim-a",
+      to_object_id: "claim-b",
+      link_type: "supports",
+    });
+    expect((await pool().query("SELECT 1 FROM object_relations")).rowCount).toBe(0);
+  });
+
+  it("keeps a relation proposal private when its target is narrower than its source", async () => {
+    await claimObject("claim-shared", "space_shared");
+    await claimObject("claim-private", "private");
+    await claimObject("claim-other", "space_shared");
+    const repository = new PgKnowledgeRepository(packetDatabase.observe());
+
+    const narrow = await repository.proposeObjectRelation(identity, { from_object_id: "claim-shared", to_object_id: "claim-private", link_type: "supports" });
+    const shared = await repository.proposeObjectRelation(identity, { from_object_id: "claim-shared", to_object_id: "claim-other", link_type: "supports" });
+
+    const visibility = new Map((await proposals()).map((row) => [row.id, row.visibility] as const));
+    expect([visibility.get(String(narrow.id)), visibility.get(String(shared.id))]).toEqual(["private", "space_shared"]);
   });
 });

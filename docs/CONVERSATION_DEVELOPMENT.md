@@ -119,11 +119,13 @@ remain pinned to the Conversation.
 
 ## Reviewing changes
 
-After a terminal Host Run, the conversation turn shows a read-only Changes card.
-It looks up the exact `remote_diff` Artifact captured for that Run, including
-Runs in managed workspaces. If no files changed, the card says so. If the
-Artifact is still uploading, the card retries for a short bounded period and
-offers a refresh.
+After a request's Runs (including explicitly delegated children) finish, the
+main Agent's final reply carries one default-collapsed Changes line. It looks up
+the exact `remote_diff` Artifact captured for each Run, including Runs in managed
+workspaces, and each isolated-workspace batch once with where it landed. If no
+files changed, nothing is shown. If the Artifact is still uploading, the line
+retries for a short bounded period and then says the record is unavailable,
+with a check-again action.
 
 Use the link to Files & Code to inspect the Project's current tree, status, or
 diff. That view is separate from the Run's immutable diff and is not a commit

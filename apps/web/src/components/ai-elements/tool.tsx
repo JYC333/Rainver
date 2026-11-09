@@ -134,13 +134,13 @@ export const ToolHeader = ({
         {statusIndicator ?? getStatusIndicator(state)}
       </div>
       {expandable && (
-        <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+        <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/tool-header:rotate-180" />
       )}
     </>
   );
 
   const classNames = cn(
-    "flex min-h-7 w-full items-center justify-between gap-3 rounded px-1.5 text-sm",
+    "group/tool-header flex min-h-7 w-full items-center justify-between gap-3 rounded px-1.5 text-sm",
     expandable && "transition-colors hover:bg-muted/40",
     className,
   );

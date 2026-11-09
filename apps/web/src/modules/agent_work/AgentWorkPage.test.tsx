@@ -26,11 +26,12 @@ vi.mock('../../api/client', async original => {
 vi.mock('../../contexts/SpaceContext', () => ({ useSpace: () => ({ userId: 'user', activeSpaceId: null, preferredSpaceId: 'space-a',
   spaces: [{ id: 'space-a', name: 'A', role: 'member' }, { id: 'space-b', name: 'B', role: 'owner' }] }) }))
 // Exercise the workbench's display contract independently of Room's own covered sender.
-vi.mock('../conversation/ConversationSurface', () => ({ ConversationSurface: (props: { spaceId: string; onMessagesDisplayed?: (ids: string[]) => void; onReadError?: (error: unknown) => void }) => {
+vi.mock('../conversation/ConversationSurface', () => ({ ConversationSurface: (props: { spaceId: string; pendingControls?: import('react').ReactNode; onMessagesDisplayed?: (ids: string[]) => void; onReadError?: (error: unknown) => void }) => {
   const scope = useConversationScope()
   const [shown, setShown] = useState(false)
   useEffect(() => { if (shown) props.onMessagesDisplayed?.(['message-b']) }, [shown, props.onMessagesDisplayed])
   return <div data-testid="surface" data-space={scope.spaceId} data-prop-space={props.spaceId}>
+    {props.pendingControls}
     <button onClick={() => setShown(true)}>Display reply</button>
     <button onClick={() => props.onReadError?.(new Error('read failed'))}>Fail reply</button>
     {shown && <p>Reply body</p>}<textarea aria-label="Reply editor" />
@@ -65,6 +66,21 @@ function roomWork(): AgentWorkItem {
   return work({ identity: { kind: 'session', source_id: 'session-b' }, operations: [{ kind: 'open_session', space_id: 'space-b', session_id: 'session-b', room_id: 'room-b', agent_id: 'agent-b' }],
     read_states: [{ subject: { kind: 'message', schema_version: 1, message_id: 'message-b', revision: 'message-rev' }, unread: true, manual_unread: false, read_at: null, state_version: 2 }] })
 }
+
+it('shows a background supervisor decision beside its conversation and retries through the shared controls',async()=>{
+ const source=roomWork()
+ source.reasons=[{kind:'run_decision',run_id:'repair-run',responsible:{kind:'user',id:'user',display_name:'Ada'}}]
+ vi.mocked(agentAttentionApi.list).mockResolvedValue(page([source]))
+ vi.mocked(agentAttentionApi.item).mockResolvedValue(source)
+ vi.mocked(runsApi.get).mockResolvedValue(run({id:'repair-run',status:'waiting_for_review',owner_user_id:'user',error_json:{supervisor_review:true,error_code:'runtime_nonzero_exit'}}))
+ vi.mocked(runsApi.resume).mockResolvedValue({} as never)
+ renderPage()
+ await openRun()
+ expect(await screen.findByRole('textbox',{name:'Reply editor'})).toBeVisible()
+ expect(await screen.findByText('Task needs your action')).toBeVisible()
+ fireEvent.click(await screen.findByRole('button',{name:'Retry execution'}))
+ await waitFor(()=>expect(runsApi.resume).toHaveBeenCalledWith('repair-run',expect.objectContaining({spaceId:'space-b'})))
+})
 beforeEach(() => {
   vi.clearAllMocks()
   void i18n.changeLanguage('en')
@@ -549,7 +565,7 @@ describe('Agent Work page', () => {
     vi.mocked(runsApi.get).mockResolvedValue(run({ status: action === 'stop' ? 'running' : 'waiting_for_review', error_json: { supervisor_review: true } }))
     renderPage()
     await openRun()
-    const name = action === 'stop' ? 'Stop' : action === 'resume' ? 'Resume' : 'Abandon Run'
+    const name = action === 'stop' ? 'Stop' : action === 'resume' ? 'Retry execution' : 'Abandon Run'
     fireEvent.click(await screen.findByRole('button', { name }))
     await waitFor(() => expect(runsApi[action]).toHaveBeenCalled())
     const args = vi.mocked(runsApi[action]).mock.calls[0]!

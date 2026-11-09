@@ -138,8 +138,12 @@ ordinary output and warnings do not become error messages just because a call
 failed. A command with a reported nonzero exit has a neutral "Command returned"
 summary; its exit code and explanation are available in the expanded details,
 since the code alone does not establish a failed turn. Tool failures without
-a reported process exit code retain a tool-level failure label. Read/search
-attempts are grouped without changing their recorded success/failure status.
+a reported process exit code retain a tool-level failure label. Consecutive tool
+calls of any kind share a collapsed activity group showing only the latest call
+and its status. Expanding shows every call in order, with individual details
+available separately. Visible prose, plans and notices separate groups; live
+updates retain the group's disclosure state. Grouping does not change recorded
+success/failure status.
 Host command summaries preserve a reported numeric exit code outside
 the bounded output text. Output snapshots retain up to 16,000 characters,
 keeping the beginning and end with an explicit omitted-middle marker. Input
@@ -390,6 +394,19 @@ send. A native copy with no signed-in account remains usable when its ACP
 profiles use the same installation gate; an unavailable ACP session does not
 turn a signed-out copy into a selectable runtime.
 
+Editing the already-bound Profile's CLI runtime or installation applies to the
+next turn while retaining the Conversation Host and Primary Workspace. Preflight
+shows the current selection and readiness without changing thread state; it hides
+occupancy/handoff observations from an incompatible old session. Admission and
+explicit reinitialization reconcile the change under the Conversation transaction
+lock, close the idle old thread and create a fresh Conversation × Agent thread.
+The physical execution-workspace reference, files and conversation history remain;
+historical Run snapshots and thread references are unchanged. A busy thread/Run
+must settle first. The new installation must pass the existing Host ownership,
+heartbeat, installation/login/ACP and workspace checks. A changed Profile default
+does not select a different Profile, and a runtime edit does not move the Host or
+Primary Workspace. Other configuration-only snapshots keep their existing rules.
+
 The execution context records the Primary Workspace's Git branch, commit,
 and readiness as observed at initialization, for display and audit only. No
 send compares the current checkout to it: the vendor CLI works in the
@@ -588,7 +605,15 @@ Agent and Session identities), so previously unsent text remains recoverable.
 
 `runs/useRunActions` is shared by RunDetailPage and ConversationRunControls for
 review resume/abandon and authorization decisions; only ConversationRunControls
-exposes the shared stop command. RunDetailPage keeps its existing action entries. A command targets one
+exposes the shared stop command. RunDetailPage mounts the same review controls
+instead of maintaining separate resume/approval buttons. Agent Work places pending
+background decisions inside the Room/direct transcript via a presentation slot,
+so a message-less Run still has an actionable card without squeezing the composer.
+Workspace repair cards reuse these controls and suppress duplicates already
+presented by the containing workbench. Supervisor holds say retry execution and
+retain failure guidance; authorization requests still say approve/reject. Conflict
+resolution is a separate explicit instruction on the existing workspace retry,
+not permission to skip candidate verification. A command targets one
 explicit Run. Authorization approval/rejection uses its owning endpoint and never
 also calls resume; Proposal decisions still use the Proposal endpoint and the
 existing Room/direct continuation path. Commands reread the canonical Run before
@@ -597,6 +622,24 @@ status polling, cancellation polling, Room message refresh and Turn streams rema
 the only corresponding update paths; no second sender or execution watcher was
 added. Reading a missing execution context does not provision a conversation;
 preflight initialization remains an explicit user action.
+
+Workspace integration posts structured `workspace_integration_notice.v1` system
+messages into the originating direct/Room conversation when repair is queued and
+when integration succeeds, needs no changes or stops. The existing message writer
+joins the owning transition transaction; the integration/attempt/outcome key makes
+delivery idempotent, and terminal Job replay restores a missing result without
+restarting Host work. The notification distinguishes repair completion, candidate
+creation, verification status and target publication, with a concrete next step.
+Raw instructions, private repair output and Host diagnostics are excluded.
+
+`WorkspaceIntegrationNotice` renders that body at the ordinary system-message
+level, with localized copy and source-Space Run links. Historical generic notices
+can enrich the same integration attempt through the canonical authorized Run
+reader and existing `useRun`; newer attempts never overwrite the old outcome.
+Missing/denied reads stay explicit. No model-generated follow-up, nested chat,
+custom execution watcher, command route or implicit retry is introduced. Direct
+chat reuses `usePeriodicRefresh` for visible, idle Session reads and appends only
+new integration system messages, preserving streaming replies and message IDs.
 
 RoomMessageComposer and ConversationInputComposer both pass the source scope to
 session file search and Folder tree/location/snapshot reads. Search cancellation
@@ -755,3 +798,115 @@ apply. Canonical Run progress survives leaving Reading. The sole result-submissi
 action, rather than conversation text or a tool name, records a collection sample.
 Missing API credentials are questions with the existing secure settings route,
 never requests to paste keys into chat. See [SOURCE_GOALS](SOURCE_GOALS.md).
+
+
+### Project checkout isolation
+
+New Project-Location chat contracts freeze `execution_workspace_version: 1`.
+`projectFolders/executionWorkspaces.ts` allocates a durable Conversation owner
+and Run binding before Host launch. The Host must advertise execution-workspace capability version 2; failure
+holds the isolated launch and never falls back to writing the original checkout.
+The launch frame carries the identity and generation, and verification and
+Run output preserve that identity. Legacy vendor sessions resume only when their
+stored workspace binding matches. Runtime profile caches are partitioned by the
+workspace identity, including generation.
+
+`workspace.change.complete` uses the shared Operation Core. It is an explicit,
+revision-checked completion intent, not an immediate Git write. A durable Job
+waits for process exit and checkpoint before preparing integration. Partial,
+failed or yielded work remains checkpointed without implicit publication. A
+yield freezes the parent's actual files before delegated work can be admitted.
+
+Publication is not conversation ownership. A ready/integrating batch, including a
+paused background repair, cannot hold the next human turn after the prior chat
+reply completes. A new turn gets its own change set without changing the older
+integration's frozen base/source. A repair Run is a separately tracked background
+execution, not a nested conversation or a new recipient for human messages.
+
+New conversation drafts default to `snapshot` (include current changes) for dirty
+source folders. The person can select `committed` instead before confirming the
+execution context; changing Host or Primary resets the draft to `snapshot`.
+Existing initialized conversations awaiting a baseline still require an explicit
+choice, including for active attachments. It uses the existing initialize command;
+no caller predicts whether a future prompt writes. Every writable mount receives
+its own private workspace. Same-repository aliases use one canonical authorized
+root; a subdirectory requires the repository root in this Run's frozen grants.
+Conflicting permissions on overlapping aliases are rejected. Host `workspace_scope`
+performs physical resolution; the server receives Location ids and relative
+subpaths, never remote absolute paths.
+
+Workspace batch rows (`runs/WorkspaceChangeList.tsx`) are shared by Run detail
+(`WorkspaceChangesCard`, every batch bound to that Run), the conversation's turn
+summary, its pending-work entry and Files & Code › Agent workspaces. They
+separate saved private work, integration and cleanup, and expose explicit
+complete/retry/keep-without-merging through the three Operation Core commands.
+Change rows, repair controls and failure guidance share one visual level; they
+are not rendered as framed cards inside one another. Base commits, refs, recovery
+ref counts and Host capacity sit in a collapsed technical-details disclosure.
+
+A Room conversation groups its loaded timeline by request (`roomTurnGroups` in
+`roomTimeline.ts`): the Runs one message started plus their explicitly delegated
+children. A child is explicit when a loaded message lists it in
+`delegated_run_ids` or its Run record carries the server's `delegation_id`; the
+second keeps a child reply and the parent's final reply in one group when the
+announcing message is on an earlier page. `parent_run_id` alone also marks
+serial queueing and never forms a group or folds a reply. Once every Run in a group is settled, one
+default-collapsed `TurnWorkspaceSummary` line sits under the main Agent's final
+reply (under the group's last message if it wrote none). It reads each Run's
+bound batches, lists each batch once and leaves a batch several turns share to
+the latest *settled* group that touches it (`planTurnSummaries`); earlier
+groups keep their exact per-Run diffs, and a later group that is still running
+or waiting for approval does not take a batch from them.
+The line names the most urgent state — needs a decision, merging, not saved,
+saved privately, kept, merged into the target, adopted by the parent — from
+server facts: `landing` is `target` for an integrated root batch, `parent` only
+when an adopting parent batch records the child in `adopted_child_change_ids`,
+and `parent_unverified` otherwise; a parent Run's success is never read as
+adoption. A read-only turn with no batch and no recorded diff shows nothing; a
+failed workspace read or a missing diff upload is shown as unavailable, never as
+no changes. Approval, stop, resume, retry and quota controls stay with their Run
+and are never folded into this summary. A separate collapsed pending-work line
+lists unfinished batches of the conversation that no mounted summary is
+displaying (older pages, failed turns, retained generations, unadopted
+children). Each summary reports the batches it actually shows; one that is
+checking, failed to read a Run, or is not rendered claims none, so a blocked
+batch stays in the pending line. The line pages with the server cursor and
+continues past a page that is entirely shown above. Direct-chat Run
+controls show the same summary for their single Run.
+When asked to fix integration conflicts, an authorized Agent can send
+`repair_instruction` through the existing workspace retry. This starts a bounded
+candidate-editing Run using its current runtime and lineage. It does not move
+the chat's working directory, create a nested conversation or require a human
+to invent a content decision; ambiguous intent can still request clarification.
+Multiple repositories integrate independently and show partial success. Run file
+preview reads the binding's immutable checkpoint on the owning Host, including
+after physical cleanup. Pending checkpoint returns 409; no live-source fallback.
+
+
+An initialized Conversation retains its pinned stale Location after a Project
+Location switch; an existing Run binding or active attachment grant also remains
+a valid pin. A new unpinned selection must use an active Location. Quarantined or
+retired workspace generations cannot be reopened by retrying a bound Run or by a
+late launch report. Integration uses the frozen launch layout and the published
+repository's own verification recipe. Missing layout or checks blocks publication;
+full Run content visibility and current publication authority are required.
+
+
+Workspace preflight maps both waiting_for_baseline and
+execution_workspace_host_upgrade_required to workspace_ui.execution translations
+in its initialized entry and expanded summary. The workspace result card explains
+a blocked checkpoint, disables Finish changes, and exposes evidence retention even
+when no source commit exists. A failed checkpoint is never presented as saved;
+withdrawal preserves the old binding and uses a fresh generation for future work.
+
+### Workspace integration and the final reply
+
+An Agent's explicit completion/retry intent is fulfilled inside its current Run
+before its final answer. The adapter holds source/repair answer drafts and
+terminal status; activity remains on that Run's ordinary flat event stream.
+Output validation/materialization precede integration; project checks run on the
+exact candidate. The Run retains its turn until repair, verification and target
+CAS complete, then gives the actual final outcome. A native runtime may be
+re-entered for another candidate phase in the same Run, not a hidden successor.
+A stopped or blocked task reports its concrete blocker and does not later start
+another Agent Run. Legacy background records remain accessible as history.

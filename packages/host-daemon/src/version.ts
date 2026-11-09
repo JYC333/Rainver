@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 interface PackageMetadata {
@@ -31,6 +32,12 @@ export function daemonVersion(): string {
 
   const buildId = readText(new URL("../BUILD_ID", import.meta.url));
   const normalizedBuildId = buildId?.match(/^[A-Za-z0-9._-]+$/)?.[0];
-  return normalizedBuildId ? `${version}+${normalizedBuildId.slice(0, 12)}` : version;
+  if(!normalizedBuildId)return version;
+  // Local builds of one commit differ by timestamp/PID, after the shared prefix.
+  // Keep that distinction within the server's 32-character version field.
+  const suffix=normalizedBuildId.startsWith('local-')
+    ? `local-${createHash('sha256').update(normalizedBuildId).digest('hex').slice(0,12)}`
+    : normalizedBuildId.slice(0,12);
+  return `${version}+${suffix}`;
 }
 

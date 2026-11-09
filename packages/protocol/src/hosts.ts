@@ -1,3 +1,4 @@
+import { ExecutionWorkspaceRefSchema, ExecutionWorkspaceCapabilitySchema } from "./executionWorkspaces.js";
 /**
  * Execution-host contracts: what a paired host can run, and what a dispatch
  * to it can choose from.
@@ -174,6 +175,8 @@ export const RuntimeInstallationSchema = z.object({
 export type RuntimeInstallation = z.infer<typeof RuntimeInstallationSchema>;
 
 export const HostCapabilitiesSchema = z.object({
+  execution_workspaces: ExecutionWorkspaceCapabilitySchema.optional(),
+  native_workspace_integration:z.literal(true).optional(),
   managed_cli_updates: z.literal(true).optional(),
   workspace_read_only: z.object({supported:z.boolean(),mechanism:z.literal("bwrap-v1"),reason:z.string().nullable()}).optional(),
   /** PATH binaries the daemon found (vendor CLIs and git), for display only. */
@@ -278,6 +281,7 @@ export const LocationLaunchWorkspaceSchema = z.object({
    * nor keeps a start commit for it. It is never settled; the merge continues
    * with `task_merge_continue`.
    */
+  execution_workspace: ExecutionWorkspaceRefSchema.optional(),
   worktree: z.object({ task_id: IdSchema, merge_id: IdSchema.optional() }).optional(),
 });
 export type LocationLaunchWorkspace = z.infer<typeof LocationLaunchWorkspaceSchema>;
@@ -316,7 +320,29 @@ export type ManagedWorkspaceHeartbeat = z.infer<typeof ManagedWorkspaceHeartbeat
  * "expired", "the vendor did not respond" — and worth showing as the reason
  * rather than as a blank.
  */
+/** Opaque vendor identity, never a token fingerprint or a Rainver user id. */
+export const SubscriptionAccountIdentitySchema = z.object({
+  provider: z.enum(["anthropic", "openai", "google"]),
+  product: z.enum(["claude", "codex", "antigravity"]),
+  identity_kind: z.enum(["vendor_id", "email"]).optional(),
+  account_id: z.string().regex(/^[a-f0-9]{64}$/),
+  organization_id: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+}).strict();
+export type SubscriptionAccountIdentity = z.infer<typeof SubscriptionAccountIdentitySchema>;
+
+/** Readable login metadata; never used as authority or a quota pool key. */
+export const SubscriptionAccountDisplaySchema = z.object({
+  email: z.string().trim().email().max(254),
+  workspace_name: z.string().trim().min(1).max(256).optional(),
+}).strict();
+export type SubscriptionAccountDisplay = z.infer<typeof SubscriptionAccountDisplaySchema>;
+
 export const HostUsageQuotaSchema = z.object({
+  account_display: SubscriptionAccountDisplaySchema.nullable().optional(),
+  /** Missing on older daemons; null means this probe could not establish identity. */
+  account: SubscriptionAccountIdentitySchema.nullable().optional(),
+  /** Server-owned per-window measurement clocks for partial Run updates. */
+  window_checked_at: z.record(ISODateTimeSchema).optional(),
   available: z.boolean(),
   windows: z.array(z.object({
     id: z.string().max(256),
@@ -333,6 +359,7 @@ export const HostUsageQuotaSchema = z.object({
 export type HostUsageQuota = z.infer<typeof HostUsageQuotaSchema>;
 
 export const HostRuntimeUsageSchema = z.object({
+  pool_id: z.string().optional(),
   host_id: IdSchema,
   runtime_key: z.string().min(1),
   installation: z.string().min(1),
@@ -340,6 +367,23 @@ export const HostRuntimeUsageSchema = z.object({
   checked_at: ISODateTimeSchema,
 });
 export type HostRuntimeUsage = z.infer<typeof HostRuntimeUsageSchema>;
+
+export const SubscriptionQuotaPoolSchema = z.object({
+  id: z.string(),
+  account: SubscriptionAccountIdentitySchema.nullable(),
+  account_display: SubscriptionAccountDisplaySchema.nullable().optional(),
+  label: z.string(),
+  windows: z.array(z.object({
+    id: z.string(), label: z.string(), used_pct: z.number().nonnegative().nullable(),
+    resets: z.string().nullable(), checked_at: ISODateTimeSchema,
+  })),
+  connections: z.array(z.object({
+    host_id: IdSchema, host_name: z.string(), runtime_key: z.string(), runtime_name: z.string(),
+    installation: z.string(), online: z.boolean(), can_refresh: z.boolean(),
+    checked_at: ISODateTimeSchema.nullable(), error: z.string().nullable(),
+  })),
+}).strict();
+export type SubscriptionQuotaPool = z.infer<typeof SubscriptionQuotaPoolSchema>;
 
 /** One recorded change to a host's runtimes, as the Updates page lists them. */
 export const HostRuntimeChangeSchema = z.object({

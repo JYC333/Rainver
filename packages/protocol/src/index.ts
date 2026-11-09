@@ -204,6 +204,8 @@ export * from './sourceSubscriptionOperations.js';
 
 export * from './sourceChannelCreateOperation.js';
 
+export * from "./executionWorkspaces.js";
+
 export * from './sourceProcessingOperations.js';
 
 export * from './noteObjectOperations.js';
@@ -212,4 +214,27 @@ export * from './knowledgeObjectOperations.js';
 
 export * from './knowledgeReviewOperations.js';
 
+export * from './knowledgeExtractionOperation.js';
+
+export * from './researchWorkspaceOperations.js';
+
+export * from './inquiryOperations.js';
+
+export * from './projectManagementOperations.js';
+
+export * from './projectExecutionOperations.js';
+
+export * from './projectIngressOperations.js';
+
+export * from './projectFolderOperations.js';
 export * from './projectFolderIoOperations.js';
+
+export * from './inquiryAgentOperations.js';
+
+export * from './projectCorpusOperations.js';
+
+export * from './projectSourceProposalOperations.js';
+
+export * from './researchAdhocOperation.js';
+
+export * from './researchExecutionOperations.js';

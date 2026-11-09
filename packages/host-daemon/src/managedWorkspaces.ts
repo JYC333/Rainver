@@ -15,7 +15,7 @@ export type ManagedWorkspaceContainerKind = "direct" | "conversation";
  * WorkspaceLocation the user owns, and that Location is what their vendor
  * session already belongs to.
  */
-type RuntimeProfileContainerKind = ManagedWorkspaceContainerKind | "location" | "agent";
+type RuntimeProfileContainerKind = ManagedWorkspaceContainerKind | "location" | "agent" | "workspace";
 
 export interface ManagedWorkspaceContainer {
   kind: ManagedWorkspaceContainerKind;
@@ -165,6 +165,10 @@ export async function restoreManagedWorkspace(
  * 30-day sweep removes it, and until then a person who did this by mistake
  * still has what was there.
  */
+export async function archiveRuntimeProfileContainer(agentId:string,kind:RuntimeProfileContainerKind,id:string){
+ return archiveDirectory(runtimeProfileContainerPath(agentId,kind,id));
+}
+
 export async function archiveAgentProfiles(agentId: string): Promise<boolean> {
   const profilesRoot = agentProfilesRoot(agentId);
   const kinds = await readdir(profilesRoot, { withFileTypes: true }).catch(() => []);

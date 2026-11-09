@@ -113,7 +113,7 @@ export function operationProposalService(config: ServerConfig, registry: Proposa
         force_record: true,
         proposal_id: id,
         context: {
-          ...item.policyContext?.(frozen.input, frozen.actor),
+          ...item.policyContext?.(frozen.input, frozen.actor, resolved),
           action_id: item.definition.id,
           trigger_origin: frozen.actor.effective_origin,
           instructed_by_user_id: frozen.actor.on_behalf_of_user_id

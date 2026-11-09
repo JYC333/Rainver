@@ -222,6 +222,8 @@ describe("follow-up Tasks from a Run's output (real Postgres)", () => {
   it("creates nothing from a Run that did not survive its own verification", async () => {
     if (!db.available) return;
     const run = await runWithOrigin("manual");
+    await db.pool.query("UPDATE runs SET status='running' WHERE id=$1",[run.id]);
+    run.status = "running";
     await service().materializeAdapterResult(
       { run, adapterResult: adapterResult() },
       { proposal_status: "staged" },

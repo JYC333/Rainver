@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { seedServerHost, seedMainlineRoomsForAllProjects, seedServerRuntimeProfile, seedSpaceMember } from "./support/domainSeeds.js";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { loadConfig } from '../src/config.js';
+import { buildModuleServer } from './support/moduleServer.js';
+import { experimentsModule } from '../src/modules/experiments/index.js';
+import { systemActionsModule } from '../src/modules/systemActions/index.js';
+import { __setAuthIdentityForTests } from '../src/modules/auth/identity.js';
 import { assertScopesDoNotOverlap, managedScopeViolation, normalizeExecutorConfig, scopePathArray } from "../src/modules/experiments/common.js";
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService.js";
 import { ExperimentInterpretationService } from "../src/modules/experiments/interpretationService.js";
@@ -552,4 +557,122 @@ describe("experimentsDb", () => {
       })).rejects.toMatchObject({ statusCode: 422 });
     });
   });
+  describe('Experiment Operation commands', () => {
+    let app: ReturnType<typeof buildModuleServer>;
+    const call = (id: string, input: object, key = randomUUID()) => app.inject({method:'POST',url:'/api/v1/actions/'+id,payload:input,headers:{'idempotency-key':key}});
+    const create = (name = 'Private Experiment', key = randomUUID()) => call('experiment.definition.create',{project_id:PROJECT,name},key);
+    beforeEach(() => {
+      if (!db.available) return;
+      app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[experimentsModule,systemActionsModule]);
+      __setAuthIdentityForTests(identity);
+    });
+    afterEach(async () => { __setAuthIdentityForTests(null); await app?.close(); });
+
+    it('shares normalized keys across formal and generic entries without caching Experiment content', async () => {
+      if (!db.available) return;
+      const key=randomUUID(), first=await app.inject({method:'POST',url:`/api/v1/projects/${PROJECT}/experiments/definitions`,payload:{name:'  Private Experiment  '},headers:{'idempotency-key':key}});
+      expect(first.statusCode,first.body).toBe(201);expect(first.body).not.toContain('Private Experiment');
+      expect((await create('Private Experiment',key)).json()).toEqual(first.json());
+      expect((await create('Changed Experiment',key)).statusCode).toBe(422);
+      const id=first.json().data.id;
+      expect((await app.inject({method:'GET',url:`/api/v1/projects/${PROJECT}/experiments/definitions/${id}`})).json().name).toBe('Private Experiment');
+      expect((await app.inject({method:'POST',url:`/api/v1/projects/${PROJECT}/experiments/definitions`,payload:{name:'No key'}})).statusCode).toBe(422);
+      expect((await call('experiment.definition.create',{project_id:PROJECT,name:'Invalid',extra:true})).statusCode).toBe(422);
+      expect((await db.pool.query('SELECT object_id FROM experiment_definitions')).rows).toHaveLength(1);
+    });
+
+    it('runs immutable versions, observations and reviewed Signal conversion through one durable authority', async () => {
+      if (!db.available) return;
+      const hypothesis=await new InquiryThreadService(db.pool).createThread(identity,PROJECT,{kind:'hypothesis',statement:'The measured result is reproducible'});
+      const created=await call('experiment.definition.create',{project_id:PROJECT,name:'Experiment',primary_hypothesis_thread_id:hypothesis.id});
+      expect(created.statusCode,created.body).toBe(201);
+      const definition=created.json().data.id, base={project_id:PROJECT,definition_id:definition};
+      const versionResult=await call('experiment.version.create',{...base,executor_type:'manual'});expect(versionResult.statusCode,versionResult.body).toBe(201);
+      const version=versionResult.json().data.id;
+      expect((await call('experiment.version.approve',{...base,version_id:version})).statusCode).toBe(200);
+      const runResult=await call('experiment.run.create',{...base,version_id:version,is_baseline:true});expect(runResult.statusCode,runResult.body).toBe(201);
+      const run=runResult.json().data.id, runBase={...base,experiment_run_id:run};
+      const observed=await call('experiment.observation.record',{...runBase,metric_name:'accuracy',value_number:0.91});expect(observed.statusCode,observed.body).toBe(201);
+      const completeKey=randomUUID(), completeBody={...runBase,status:'completed',observations:[{metric_name:'latency',value_number:4}]};
+      const complete=await call('experiment.run.complete',completeBody,completeKey);expect(complete.statusCode,complete.body).toBe(200);
+      expect((await call('experiment.run.complete',completeBody,completeKey)).json()).toEqual(complete.json());
+      expect((await call('experiment.observation.record',{...runBase,metric_name:'late',value_number:3})).statusCode).toBe(409);
+      const interpretation=await call('experiment.interpretation.create',{...base,run_ids:[run],verdict:'supports',conclusion:'Private conclusion'});expect(interpretation.statusCode,interpretation.body).toBe(201);expect(interpretation.body).not.toContain('Private conclusion');
+      const target={project_id:PROJECT,interpretation_id:interpretation.json().data.id};
+      expect((await call('experiment.interpretation.review',target)).statusCode).toBe(200);
+      const key=randomUUID(), converted=await call('experiment.interpretation.convert',target,key);expect(converted.statusCode,converted.body).toBe(201);
+      expect((await call('experiment.interpretation.convert',target,key)).json()).toEqual(converted.json());
+      expect((await db.pool.query('SELECT id FROM inquiry_evidence_signals')).rows).toHaveLength(1);
+      expect((await db.pool.query('SELECT id FROM inquiry_iterations WHERE thread_id=$1',[hypothesis.id])).rows).toEqual([]);
+      expect((await db.pool.query('SELECT metric_name FROM experiment_observations ORDER BY metric_name')).rows).toEqual([{metric_name:'accuracy'},{metric_name:'latency'}]);
+    });
+
+    it.each(['experiment_definitions','operation_idempotency','policy_decision_records'])('rolls back the complete Definition and request when %s storage fails',async table=>{
+      if (!db.available) return;
+      await db.pool.query("CREATE FUNCTION refuse_experiment() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'PRIVATE failure'; END $$");
+      await db.pool.query(`CREATE TRIGGER refuse_experiment BEFORE INSERT OR UPDATE ON ${table} FOR EACH ROW EXECUTE FUNCTION refuse_experiment()`);
+      try {
+        const result=await create();expect(result.statusCode,result.body).toBe(table==='policy_decision_records'?503:500);expect(result.body).not.toContain('PRIVATE');
+        expect((await db.pool.query("SELECT id FROM space_objects WHERE object_type='experiment'")).rows).toEqual([]);
+        expect((await db.pool.query('SELECT id FROM operation_idempotency')).rows).toEqual([]);
+        if(table!=='policy_decision_records')expect((await db.pool.query("SELECT metadata_json->>'operation_outcome' AS outcome FROM policy_decision_records WHERE metadata_json->>'operation_request_id'=$1",[result.json().error.request_id])).rows).toEqual([{outcome:'failed'}]);
+      } finally { await db.pool.query(`DROP TRIGGER refuse_experiment ON ${table}`);await db.pool.query('DROP FUNCTION refuse_experiment()'); }
+    });
+
+    it('commits one managed Run and Job on replay, and rolls both back when required Job storage fails',async()=>{
+      if (!db.available) return;
+      const thread=await new InquiryThreadService(db.pool).createThread(identity,PROJECT,{kind:'hypothesis',statement:'Managed comparison'});
+      const definition=(await call('experiment.definition.create',{project_id:PROJECT,name:'Managed',primary_hypothesis_thread_id:thread.id})).json().data.id;
+      const base={project_id:PROJECT,definition_id:definition};
+      const version=(await call('experiment.version.create',{...base,executor_type:'managed_code_comparison',config:{project_folder_id:WORKSPACE,run_command:'node experiment.mjs'}})).json().data.id;
+      expect((await call('experiment.version.approve',{...base,version_id:version})).statusCode).toBe(200);
+      const body={...base,version_id:version,agent_id:AGENT,is_baseline:true};
+      await db.pool.query("CREATE FUNCTION refuse_experiment_job() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'PRIVATE Job failure'; END $$");
+      await db.pool.query('CREATE TRIGGER refuse_experiment_job BEFORE INSERT ON jobs FOR EACH ROW EXECUTE FUNCTION refuse_experiment_job()');
+      try {const failed=await call('experiment.run.launch',body);expect(failed.statusCode,failed.body).toBe(500);expect(failed.body).not.toContain('PRIVATE');expect((await db.pool.query('SELECT id FROM experiment_runs')).rows).toEqual([]);expect((await db.pool.query('SELECT id FROM runs')).rows).toEqual([]);}
+      finally{await db.pool.query('DROP TRIGGER refuse_experiment_job ON jobs');await db.pool.query('DROP FUNCTION refuse_experiment_job()');}
+      const key=randomUUID(),launched=await call('experiment.run.launch',body,key);expect(launched.statusCode,launched.body).toBe(202);
+      const replay=await app.inject({method:'POST',url:`/api/v1/projects/${PROJECT}/experiments/definitions/${definition}/versions/${version}/runs/launch`,payload:{agent_id:AGENT,is_baseline:true},headers:{'idempotency-key':key}});
+      expect(replay.json()).toEqual(launched.json());expect((await db.pool.query("SELECT id FROM jobs WHERE job_type='agent_run'")).rows).toHaveLength(1);expect((await db.pool.query('SELECT id FROM run_attempts')).rows).toHaveLength(1);
+    });
+
+    it('checks private Definition and Project archive authority again before replay',async()=>{
+      if (!db.available) return;
+      const key=randomUUID(),first=await create('Private Experiment',key),id=first.json().data.id;
+      const peer=randomUUID();await seedSpaceMember(db.pool,{space:SPACE,user:peer});
+      await db.pool.query("UPDATE space_objects SET visibility='private',owner_user_id=$2 WHERE id=$1",[id,peer]);
+      expect((await create('Private Experiment',key)).statusCode).toBe(404);
+      await db.pool.query("UPDATE space_objects SET owner_user_id=$2 WHERE id=$1",[id,OWNER]);
+      await db.pool.query("UPDATE projects SET status='archived' WHERE id=$1",[PROJECT]);
+      const replay=await create('Private Experiment',key);expect(replay.statusCode,replay.body).toBe(409);expect(replay.json().error.code).toBe('operation_conflict');
+      expect((await create('After archive')).statusCode).toBe(409);
+    });
+
+    it('takes root locks before extension locks beside an independent root-first writer',async()=>{
+      if (!db.available) return;
+      const id=(await create()).json().data.id,holder=await db.pool.connect();
+      try{await holder.query('BEGIN');await holder.query('SELECT id FROM space_objects WHERE id=$1 FOR UPDATE',[id]);
+        let settled=false;const pending=call('experiment.definition.update',{project_id:PROJECT,definition_id:id,objective:'Current objective'}).finally(()=>{settled=true;});
+        await waitForLockWaiter(db.pool,{settled:()=>settled});
+        await holder.query("UPDATE experiment_definitions SET objective='Other writer' WHERE object_id=$1",[id]);await holder.query('COMMIT');
+        const result=await pending;expect(result.statusCode,result.body).toBe(200);
+        expect((await db.pool.query('SELECT objective FROM experiment_definitions WHERE object_id=$1',[id])).rows).toEqual([{objective:'Current objective'}]);
+      }finally{await holder.query('ROLLBACK');holder.release();}
+    });
+
+    it('denies a waiting writer whose membership was revoked and returns 409 for a concurrent key',async()=>{
+      if (!db.available) return;
+      const peer=randomUUID();await seedSpaceMember(db.pool,{space:SPACE,user:peer});
+      await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),SPACE,PROJECT,peer]);
+      __setAuthIdentityForTests({spaceId:SPACE,userId:peer});
+      const holder=await db.pool.connect(),key=randomUUID();
+      try{await holder.query('BEGIN');await holder.query('SELECT id FROM projects WHERE id=$1 FOR UPDATE',[PROJECT]);
+        let settled=false;const pending=create('Must not write',key).finally(()=>{settled=true;});await waitForLockWaiter(db.pool,{settled:()=>settled});
+        const busy=await create('Must not write',key);expect(busy.statusCode,busy.body).toBe(409);expect(busy.json().error.code).toBe('idempotency_in_progress');
+        await holder.query("UPDATE project_members SET role='viewer' WHERE project_id=$1 AND user_id=$2",[PROJECT,peer]);await holder.query('COMMIT');
+        const denied=await pending;expect(denied.statusCode,denied.body).toBe(404);expect((await db.pool.query('SELECT object_id FROM experiment_definitions')).rows).toEqual([]);
+      }finally{await holder.query('ROLLBACK');holder.release();}
+    });
+  });
+
 });

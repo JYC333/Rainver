@@ -1,5 +1,5 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import type { HostTaskWorkspace } from "@rainver/protocol";
+import type { HostTaskWorkspace,LocationLaunchWorkspace } from "@rainver/protocol";
 import { JobDeferredError } from "../jobs/handlerRegistry.js";
 import type { Queryable } from "../routeUtils/common.js";
 
@@ -76,7 +76,12 @@ export function taskWorkspace(
   taskId: string,
   workspaceRoot: string,
 ): HostTaskWorkspace | null {
-  const base = { kind: "location" as const, workspace_location_id: location.id, worktree: { task_id: taskId } };
+  const base=locationWorkspace(location,workspaceRoot);
+  return base?{...base,worktree:{task_id:taskId}}:null;
+}
+
+export function locationWorkspace(location:Pick<TaskLocationRow,"id"|"root_path"|"execution_host_kind">,workspaceRoot:string):LocationLaunchWorkspace|null{
+  const base={kind:"location" as const,workspace_location_id:location.id};
   if (location.execution_host_kind !== "server" || !location.root_path) return base;
   const path = relative(resolve(workspaceRoot), resolve(workspaceRoot, location.root_path));
   if (!path || isAbsolute(path) || path === ".." || path.startsWith(`..${sep}`)) return null;

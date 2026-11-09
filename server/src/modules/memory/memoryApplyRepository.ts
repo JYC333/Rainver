@@ -1146,6 +1146,15 @@ export class PgMemoryApplyRepository {
    * Returns null when the entry is not the caller's, so the route can fall
    * back rather than reporting a memory they may not know exists.
    */
+  /** Read-only authority check for a command that names this person's own version.
+   * Status is deliberately not a gate: a successful archive must remain replayable. */
+  async authorizeOwnVersion(spaceId: string, userId: string, memoryId: string): Promise<boolean> {
+    const row = await this.db.query<{root_id: string}>('SELECT COALESCE(root_memory_id,id) AS root_id FROM memory_entries WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL AND owner_user_id=$3 FOR UPDATE', [memoryId,spaceId,userId]);
+    if (!row.rows[0]) return false;
+    await this.db.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`memory-chain:${spaceId}:${row.rows[0].root_id}`]);
+    return true;
+  }
+
   async setOwnStatus(
     spaceId: string,
     userId: string,

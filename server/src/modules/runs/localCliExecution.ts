@@ -2,6 +2,8 @@ import type { CanonicalUsage } from "@rainver/protocol";
 import type { AcpRuntimeFailure } from "../runtimeAdapters/acpFailure.js";
 
 export interface CliExecutionResult {
+  execution_workspace_reports?:import("@rainver/protocol").HostWorkspaceLaunchReport[];
+  execution_workspace?:import("@rainver/protocol").HostWorkspaceLaunchReport;
   returncode: number;
   stdout: string;
   stderr: string;

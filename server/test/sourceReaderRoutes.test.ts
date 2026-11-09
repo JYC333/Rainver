@@ -1,3 +1,4 @@
+import {useReviewPacketDatabase} from './support/reviewPacketDatabase.js';
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildModuleServer } from "./support/moduleServer.js";
@@ -106,15 +107,6 @@ function fakeEvidenceRow(overrides: Record<string, unknown> = {}): Record<string
   };
 }
 
-function fakeProposalRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    id: "proposal-1", space_id: SPACE, created_by_user_id: USER, project_folder_id: null, created_by_run_id: null,
-    proposal_type: "memory_create", status: "pending", risk_level: "low", urgency: "normal", preview: false,
-    title: "The quick brown fox", payload_json: {}, rationale: "Created from reader annotation.", visibility: "space_shared",
-    review_deadline: null, expires_at: null, created_at: "2026-06-30T10:00:00.000Z", reviewed_at: null,
-    project_id: null, egress_approval_id: null, egress_approval_status: null, ...overrides,
-  };
-}
 
 interface CapturedQuery { sql: string; params: readonly unknown[] }
 
@@ -312,6 +304,13 @@ describe("PgReaderActionRepository.createEvidence", () => {
 });
 
 describe("PgReaderActionRepository.createProposal", () => {
+  const packetDatabase=useReviewPacketDatabase(import.meta.url);
+  beforeEach(async()=>{
+    if(!packetDatabase.database.available)return;
+    const pool=packetDatabase.database.pool;
+    await pool.query(`INSERT INTO source_items(id,space_id,item_type,title,visibility,owner_user_id,content_state,retention_policy,first_seen_at,last_seen_at,created_at,updated_at) VALUES('item-1','space-1','external_url','Item','space_shared','user-1','metadata_only','metadata_only',now(),now(),now(),now())`);
+    await pool.query(`INSERT INTO reader_annotations(id,space_id,document_type,document_id,annotation_type,quote_text,anchor_json,visibility,created_by_user_id,owner_user_id,created_at,updated_at) VALUES('ann-1','space-1','source_item','item-1','excerpt','The quick brown fox','{}'::jsonb,'space_shared','user-1','user-1',now(),now())`);
+  });
   it("throws 422 for an unsupported proposal_type", async () => {
     const { db } = sequentialDb([
       // SELECT annotation
@@ -327,16 +326,7 @@ describe("PgReaderActionRepository.createProposal", () => {
   });
 
   it("creates a memory_create proposal with status=pending", async () => {
-    const { db, calls } = sequentialDb([
-      // SELECT annotation
-      [fakeAnnotation({ visibility: "space_shared" })],
-      // assertDocumentReadable → SELECT source_items
-      [fakeItem()],
-      // loadAnnotationConnectionPolicy → empty (no connection)
-      [],
-      // INSERT INTO proposals RETURNING
-      [fakeProposalRow({ proposal_type: "memory_create", status: "pending" })],
-    ]);
+    const db=packetDatabase.observe(), calls=db.calls;
     const repo = new PgReaderActionRepository(db);
 
     const result = await repo.createProposal(identity, "ann-1", {
@@ -353,12 +343,7 @@ describe("PgReaderActionRepository.createProposal", () => {
   });
 
   it("creates a knowledge_create proposal with status=pending", async () => {
-    const { db, calls } = sequentialDb([
-      [fakeAnnotation({ visibility: "space_shared" })],
-      [fakeItem()],
-      [],
-      [fakeProposalRow({ proposal_type: "knowledge_create", status: "pending" })],
-    ]);
+    const db=packetDatabase.observe(), calls=db.calls;
     const repo = new PgReaderActionRepository(db);
 
     const result = await repo.createProposal(identity, "ann-1", {
@@ -374,12 +359,7 @@ describe("PgReaderActionRepository.createProposal", () => {
   });
 
   it("does not write to memory_entries or knowledge_items", async () => {
-    const { db, calls } = sequentialDb([
-      [fakeAnnotation({ visibility: "space_shared" })],
-      [fakeItem()],
-      [],
-      [fakeProposalRow()],
-    ]);
+    const db=packetDatabase.observe(), calls=db.calls;
     const repo = new PgReaderActionRepository(db);
 
     await repo.createProposal(identity, "ann-1", { proposal_type: "memory_create" });

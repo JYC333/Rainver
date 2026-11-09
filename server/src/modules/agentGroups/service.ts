@@ -1,3 +1,4 @@
+import {isolatedWorkspaceContract} from '../projectFolders/executionWorkspaces.js';
 import type {Queryable} from '../routeUtils/common.js';
 import {
   NO_SESSION_CONFIG,
@@ -1319,6 +1320,7 @@ export class AgentGroupRunService {
           runtime_installation: thread.runtime_installation,
         };
         delegatedHostDispatch = await prepareHostConversationDispatch({
+          ...(isolatedWorkspaceContract(parentRun.contract_snapshot_json)?{delegationId:delegation.id}:{}),
           db: repos.db,
           backend: delegatedBackend,
           container: { kind: "conversation", conversation_id: parentRun.session_id },
@@ -1419,8 +1421,8 @@ export class AgentGroupRunService {
       runtime_profile_id: delegatedBackend?.runtime_profile_id ?? null,
       runtime_profile_selection_source: delegatedBackend ? "explicit" : "default",
       contract_snapshot: group.room_id
-        ? { ...roomRunContract(group, undefined)!, workspace_access: childAccess }
-        : { source: { kind: "direct" as const, id: null }, workspace_access: childAccess },
+        ? { ...roomRunContract(group, undefined)!, workspace_access: childAccess, execution_workspace_version: isolatedWorkspaceContract(parentRun.contract_snapshot_json)?1 as const:undefined }
+        : { source: { kind: "direct" as const, id: null }, workspace_access: childAccess, ...(isolatedWorkspaceContract(parentRun.contract_snapshot_json)?{execution_workspace_version:1 as const}:{}) },
       budget_json: input.budget_json ?? {},
       context_policy_json: input.context_policy_json ?? {},
       visibility: group.room_id ? "selected_users" : undefined,
@@ -1741,6 +1743,7 @@ async function recordHostDispatch(
 }
 
 export async function prepareHostConversationDispatch(input: {
+  delegationId?: string;
   db: Queryable;
   backend: ResolvedConversationBackend;
   container: { kind: "conversation"; conversation_id: string } | { kind: "direct"; user_id: string };
@@ -1826,7 +1829,12 @@ export async function prepareHostConversationDispatch(input: {
   }
 
   const threads = new PgHostThreadRepository(input.db);
-  let hostThread = conversationScoped
+  let hostThread = input.delegationId && conversationScoped && input.backend.workspace_mode === 'location'
+    ? await threads.getOrCreateForDelegation({delegationId:input.delegationId,
+        executionHostId:input.backend.execution_host_id!,workspaceLocationId:input.backend.workspace_location_id!,
+        spaceId:input.spaceId,sessionId:input.sessionId,agentId:input.agentId,runtimeKey:input.backend.runtime_key,
+        runtimeInstallation:input.backend.runtime_installation!,createdByUserId:input.userId})
+    : conversationScoped
     ? await threads.getOrCreateForConversationAgent({
         executionHostId: input.backend.execution_host_id!,
         workspaceMode: input.backend.workspace_mode!,
@@ -1869,6 +1877,13 @@ export async function prepareHostConversationDispatch(input: {
       409,
       `Room agent '${input.agentId}' has an existing host session pinned to a different runtime; remove and re-add it before changing the binding`,
     );
+  }
+  // Reset before rendering the prompt: a fresh private cwd needs the standing
+  // context as well as a fresh vendor session.
+  if(conversationScoped && !input.delegationId && input.backend.workspace_mode==='location' && hostThread.vendor_session_id && (target.capabilities_json as {execution_workspaces?:{version:number}}|null)?.execution_workspaces?.version===2){
+    const current=(await input.db.query<{id:string;generation:number}>(`SELECT id,generation FROM execution_workspaces WHERE session_id=$1 AND space_id=$2 AND workspace_location_id=$3 AND owner_kind='conversation' ORDER BY generation DESC LIMIT 1`,[input.sessionId,input.spaceId,input.backend.workspace_location_id])).rows[0];
+    const binding=(await input.db.query<{execution_workspace_json:{id:string;generation:number}|null}>('SELECT execution_workspace_json FROM host_threads WHERE id=$1',[hostThread.id])).rows[0]?.execution_workspace_json;
+    if(!current||current.id!==binding?.id||current.generation!==binding.generation)hostThread=await threads.resetConversationAgent(hostThread.id)??hostThread;
   }
   const dispatchLockId = randomUUID();
   const claimed = conversationScoped
@@ -2586,6 +2601,7 @@ function roomRunContract(
 ) {
   if (!group.room_id) return undefined;
   return {
+    execution_workspace_version: 1 as const,
     source: { kind: "direct" as const, id: group.id },
     project_id: group.project_id,
     git_snapshot: backend?.git_snapshot ?? unavailableGitSnapshot(),

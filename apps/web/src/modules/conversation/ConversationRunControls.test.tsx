@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Run } from '../../types/api'
+import {workspaceChange} from '../runs/workspaceFixtures.test-support'
 
 const { artifactsApiMock, runsApiMock, authorizationApiMock } = vi.hoisted(() => ({
   artifactsApiMock: { get: vi.fn() },
@@ -102,6 +103,15 @@ describe('ConversationRunControls', () => {
     expect(runsApiMock.stop).toHaveBeenCalledWith('old-wait', expect.objectContaining({ spaceId: 'space-1' }))
   })
 
+  it('shows retained workspace actions on the latest failed turn even when it has no binding',async()=>{
+    const latest=run({status:'failed',contract_snapshot_json:{execution_workspace_version:1},workspace_changes:[],
+      error_json:{error_code:'execution_workspace_unavailable'},error_message:'workspace_permission_violation_needs_review'})
+    runsApiMock.get.mockResolvedValue({...latest,workspace_changes:[workspaceChange({state:'blocked',workspace_state:'blocked',source_commit:null,integration_detail:{checkpoint_blocked:true}})]})
+    render(<MemoryRouter><ConversationRunControls runId={latest.id} run={latest}/></MemoryRouter>)
+    expect(await screen.findByRole('button',{name:'Keep without merging'})).toBeEnabled()
+    expect(screen.getByText(/you can continue the conversation in a fresh workspace/)).toBeInTheDocument()
+  })
+
   it('does not offer per-run stop to another person or in read-only mode', () => {
     const { rerender } = render(<ConversationScope spaceId="space-1" actionUserId="viewer">
       <ConversationActivity runs={[run({ status: 'queued', instructed_by_user_id: 'owner' })]} turns={{}} agentName={() => 'Claude'} />
@@ -166,7 +176,11 @@ describe('ConversationRunControls', () => {
     await waitFor(() => expect(runsApiMock.artifacts).toHaveBeenCalledWith('run-1', { limit: '50' }, expect.any(Object)))
     expect(await screen.findByText('Open exact diff')).toHaveAttribute('href', '/spaces/space-1/artifacts/artifact-diff')
     expect(screen.getByText('Files & Code')).toHaveAttribute('href', '/spaces/space-1/projects/project-1/files')
-    expect(screen.getByTestId('changes-run-1')).toHaveClass('w-full', 'min-w-0', 'max-w-full')
+    // One default-collapsed line; the exact diff lives inside it.
+    const summary = screen.getByTestId('turn-workspace-summary')
+    expect(summary).not.toHaveAttribute('open')
+    expect(summary).toHaveClass('w-full', 'min-w-0', 'max-w-full')
+    expect(summary.querySelector('summary')).toHaveTextContent(/Changes\s*· Changes recorded/)
   })
 
   it('omits the Changes card when an uploaded diff is empty', async () => {
@@ -197,7 +211,8 @@ describe('ConversationRunControls', () => {
     )
 
     expect(await screen.findByTestId('changes-run-1')).toHaveTextContent('Changes recorded.')
-    expect(screen.getByText('Reviewer')).toBeInTheDocument()
+    // A single Run's summary sits under that Agent's own reply; it is not relabelled.
+    expect(screen.queryByText('Reviewer')).not.toBeInTheDocument()
     expect(screen.getByText('Open exact diff')).toBeInTheDocument()
     expect(screen.queryByText('Preview diff')).not.toBeInTheDocument()
   })
@@ -277,9 +292,26 @@ describe('ConversationRunControls', () => {
     runsApiMock.get.mockResolvedValue(run({ status: 'running' }))
     const changed = vi.fn()
     render(<MemoryRouter><ConversationRunControls spaceId="source-b" runId="run-1" run={run({ status: 'waiting_for_review', error_json: { supervisor_review: true } })} onChanged={changed} /></MemoryRouter>)
-    fireEvent.click(await screen.findByRole('button', { name: 'Resume' }))
+    expect(await screen.findByText(/Execution failed and is paused/)).toBeVisible()
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry execution' }))
     await waitFor(() => expect(changed).toHaveBeenCalledOnce())
     expect(runsApiMock.resume).toHaveBeenCalledWith('run-1', expect.objectContaining({ spaceId: 'source-b' }))
+  })
+  it('offers action reload after an authorization read fails, without treating the missing read as permission',async()=>{
+    runsApiMock.authorizationRequests.mockRejectedValueOnce(new Error('temporary read failure')).mockResolvedValue([])
+    render(<MemoryRouter><ConversationRunControls spaceId="source-b" runId="run-1" run={run({status:'waiting_for_review',error_json:{supervisor_review:true}})} /></MemoryRouter>)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Actions could not be loaded')
+    expect(screen.queryByRole('button',{name:'Retry execution'})).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button',{name:'Reload actions'}))
+    expect(await screen.findByRole('button',{name:'Retry execution'})).toBeVisible()
+  })
+
+  it('keeps a rejected supervisor retry visible in a background decision card',async()=>{
+    runsApiMock.resume.mockRejectedValueOnce(new Error('repair still unavailable'))
+    render(<MemoryRouter><ConversationScope spaceId="source-b" actionUserId="viewer" actionRole="owner"><ConversationRunControls spaceId="source-b" runId="run-1" reviewOnly run={run({status:'waiting_for_review',owner_user_id:'viewer',error_json:{supervisor_review:true}})} /></ConversationScope></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button',{name:'Retry execution'}))
+    expect(await screen.findByRole('alert')).toHaveTextContent('repair still unavailable')
+    expect(screen.getByRole('button',{name:'Abandon Run'})).toBeEnabled()
   })
 
   it.each([

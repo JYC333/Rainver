@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import type { HostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
@@ -9,7 +9,13 @@ import {
   recordHostRuntimeChange,
   refreshAllHostUsage,
   refreshHostUsage,
+  invalidateHostUsage,
 } from "../src/modules/hosts/usageService.js";
+import { readSubscriptionQuotaPools } from "../src/modules/hosts/subscriptionUsage.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { loadConfig } from "../src/config.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { hostsModule } from "../src/modules/hosts/index.js";
 
 /**
  * Subscription quota is readable only on the host that holds the login (ADR
@@ -18,6 +24,8 @@ import {
  * thing a page read touches.
  */
 const db = useTestDatabase(import.meta.filename);
+
+afterEach(() => { __setAuthIdentityForTests(null); });
 
 function registry(answers: Record<string, unknown>, online = true): HostConnectionRegistry {
   return {
@@ -219,6 +227,119 @@ describe("host subscription quota cache (real Postgres)", () => {
     const [row] = await readHostUsage(db.pool, "host-1");
     expect(row?.quota).toMatchObject({ session_pct: null, week_pct: null });
     expect(row?.quota.windows?.[0]).toMatchObject({ id: "seven_day_fable", used_pct: 99 });
+  });
+});
+
+describe("subscription account projection (real Postgres)", () => {
+  const account = { provider: "anthropic" as const, product: "claude" as const, account_id: "a".repeat(64), organization_id: "b".repeat(64) };
+  const quota = (session: number, identity: typeof account | null = account) => ({ available: true, account: identity, session_pct: session, session_resets: null, week_pct: null, week_resets: null, error: null });
+  async function remote(id: string, owner = "user-1") {
+    await db.pool.query(`INSERT INTO machines(id,owner_user_id,display_name,device_kind,created_at,updated_at) VALUES($1,$2,$1,'desktop',now(),now())`, [id, owner]);
+    await db.pool.query(`INSERT INTO hosts(id,owner_user_id,machine_id,name,kind,environment_kind,status,capabilities_json,last_heartbeat_at,created_at,updated_at)
+      VALUES($1,$2,$1,$1,'remote','linux_native','online',$3::jsonb,now(),now(),now())`, [id, owner, JSON.stringify({ installations: { claude_code: [{ id: "own", logged_in: true, version: "1", options: null }] } })]);
+  }
+  it("deduplicates copies across visible Hosts and filters other owners before grouping", async ctx => {
+    if (!db.available) return ctx.skip();
+    await remote("visible-host");
+    await db.pool.query(`INSERT INTO users(id,display_name,status,email,registration_source,created_at,updated_at) VALUES('user-2','Other','active','other@test.invalid','system',now(),now())`);
+    await remote("private-host", "user-2");
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: quota(10) }));
+    await refreshHostUsage(db.pool, "visible-host", "claude_code", "own", registry({ claude_code: quota(20) }));
+    await refreshHostUsage(db.pool, "private-host", "claude_code", "own", registry({ claude_code: quota(99) }));
+    const admin = await readSubscriptionQuotaPools(db.pool, "user-1", true);
+    expect(admin).toHaveLength(2); // The unchecked Codex installation stays independent.
+    const shared = admin.find(pool => pool.account);
+    expect(shared?.connections.map(item => item.host_id).sort()).toEqual(["host-1", "visible-host"]);
+    expect(shared?.windows[0]?.used_pct).toBe(20);
+    expect(JSON.stringify(admin)).not.toContain("private-host");
+    const member = await readSubscriptionQuotaPools(db.pool, "user-1", false);
+    expect(member).toHaveLength(1);
+    expect(member[0]?.connections.map(item => item.host_id)).toEqual(["visible-host"]);
+    expect(member[0]?.windows[0]?.used_pct).toBe(20);
+  });
+  it("does not merge unidentified copies or independent organizations", async ctx => {
+    if (!db.available) return ctx.skip();
+    await remote("visible-host");
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: quota(40, null) }));
+    await refreshHostUsage(db.pool, "visible-host", "claude_code", "own", registry({ claude_code: quota(40, null) }));
+    expect((await readSubscriptionQuotaPools(db.pool, "user-1", true)).filter(pool => pool.windows.length)).toHaveLength(2);
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: quota(40) }));
+    await refreshHostUsage(db.pool, "visible-host", "claude_code", "own", registry({ claude_code: quota(40, { ...account, organization_id: "c".repeat(64) }) }));
+    expect((await readSubscriptionQuotaPools(db.pool, "user-1", true)).filter(pool => pool.account)).toHaveLength(2);
+  });
+  it("groups Codex email identities across server and personal Host without merging workspaces or people", async ctx => {
+    if (!db.available) return ctx.skip();
+    await remote("visible-host");
+    await db.pool.query(`UPDATE hosts SET capabilities_json = $1::jsonb WHERE id = 'visible-host'`,
+      [JSON.stringify({ installations: { codex_cli: [{ id: "own", logged_in: true, version: "1", options: null }] } })]);
+    await db.pool.query(`UPDATE hosts SET capabilities_json = jsonb_set(capabilities_json, '{installations,codex_cli,0,logged_in}', 'true') WHERE id = 'host-1'`);
+    const identity = { provider: "openai" as const, product: "codex" as const, identity_kind: "email" as const,
+      account_id: "d".repeat(64), organization_id: "e".repeat(64) };
+    const reading = { ...quota(42), account: identity, account_display: { email: "person@example.test", workspace_name: "Personal" } };
+    await refreshHostUsage(db.pool, "host-1", "codex_cli", "managed:2.0.0", registry({ codex_cli: reading }));
+    await refreshHostUsage(db.pool, "visible-host", "codex_cli", "own", registry({ codex_cli: reading }));
+    const pools = await readSubscriptionQuotaPools(db.pool, "user-1", true);
+    const codex = pools.filter(pool => pool.account?.product === "codex");
+    expect(codex).toHaveLength(1);
+    expect(codex[0]?.connections.map(item => item.host_id).sort()).toEqual(["host-1", "visible-host"]);
+    expect(codex[0]?.windows[0]?.used_pct).toBe(42);
+    expect(codex[0]?.account_display).toEqual(reading.account_display);
+    expect((await readHostUsage(db.pool, "host-1")).find(row => row.runtime_key === "codex_cli")?.quota.account_display).toEqual(reading.account_display);
+    expect(JSON.stringify(await readSubscriptionQuotaPools(db.pool, "other-viewer", false))).not.toContain("person@example.test");
+    for (const other of [{ ...identity, organization_id: "f".repeat(64) }, { ...identity, account_id: "f".repeat(64) }]) {
+      await refreshHostUsage(db.pool, "visible-host", "codex_cli", "own", registry({ codex_cli: { ...reading, account: other } }));
+      expect((await readSubscriptionQuotaPools(db.pool, "user-1", true)).filter(pool => pool.account?.product === "codex")).toHaveLength(2);
+    }
+  });
+  it("does not retain the previous account's model windows after a login switch", async ctx => {
+    if (!db.available) return ctx.skip();
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: { ...quota(10), windows: [{ id: "seven_day_fable", label: "Fable weekly", used_pct: 99, resets: new Date(Date.now()+3600000).toISOString() }] } }));
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: quota(5, { ...account, account_id: "c".repeat(64) }) }));
+    const pools = await readSubscriptionQuotaPools(db.pool, "user-1", true);
+    expect(pools.find(pool => pool.account)?.windows.map(item => item.id)).toEqual(["session"]);
+    await db.pool.query(`UPDATE hosts SET capabilities_json = jsonb_set(capabilities_json,'{installations,claude_code,0,logged_in}','false') WHERE id='host-1'`);
+    expect((await readSubscriptionQuotaPools(db.pool, "user-1", true)).some(pool => pool.account)).toBe(false);
+  });
+  it("invalidates a slow probe when login starts instead of restoring the old account", async ctx => {
+    if (!db.available) return ctx.skip();
+    let answer!: (value: ReturnType<typeof quota>) => void;
+    const pending = refreshHostUsage(db.pool, "host-1", "claude_code", "own", { requestUsageProbe: () => new Promise(resolve => { answer = resolve; }) } as unknown as HostConnectionRegistry);
+    await invalidateHostUsage(db.pool, "host-1", "claude_code", "own");
+    answer(quota(95));
+    await expect(pending).rejects.toMatchObject({ statusCode: 409 });
+    expect(await readHostUsage(db.pool, "host-1")).toEqual([]);
+  });
+  it("keeps each window's actual measurement time when a later Run updates only one", async ctx => {
+    if (!db.available) return ctx.skip();
+    await remote("visible-host");
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: { ...quota(10), week_pct: 80 } }));
+    await refreshHostUsage(db.pool, "visible-host", "claude_code", "own", registry({ claude_code: { ...quota(20), week_pct: 30 } }));
+    const old = new Date(Date.now() - 120000).toISOString();
+    const newer = new Date(Date.now() - 60000).toISOString();
+    await db.pool.query(`UPDATE host_runtime_usage SET checked_at=$1, quota_json=jsonb_set(quota_json,'{window_checked_at}',$2::jsonb) WHERE host_id='host-1'`, [old, JSON.stringify({ session: old, week: old })]);
+    await db.pool.query(`UPDATE host_runtime_usage SET checked_at=$1, quota_json=jsonb_set(quota_json,'{window_checked_at}',$2::jsonb) WHERE host_id='visible-host'`, [newer, JSON.stringify({ session: newer, week: newer })]);
+    await mergeRunQuota(db.pool, { hostId: "host-1", runtimeKey: "claude_code", installation: "own", quota: { rate_limit_type: "five_hour", utilization: 0.9, resets_at: Date.now()/1000+3600 } });
+    const pooled = (await readSubscriptionQuotaPools(db.pool, "user-1", true)).find(item => item.account);
+    expect(pooled?.windows.find(item => item.id === "session")?.used_pct).toBe(90);
+    expect(pooled?.windows.find(item => item.id === "week")).toMatchObject({ used_pct: 30, checked_at: newer });
+  });
+  it("serves the account projection through current Host permissions, including the built-in admin gate", async ctx => {
+    if (!db.available) return ctx.skip();
+    await remote("visible-host");
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: quota(80) }));
+    await refreshHostUsage(db.pool, "visible-host", "claude_code", "own", registry({ claude_code: quota(20) }));
+    const email = (await db.pool.query<{email:string}>("SELECT email FROM users WHERE id='user-1'")).rows[0]!.email;
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, INSTANCE_ADMIN_EMAIL: email }), [hostsModule]);
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    try {
+      const response = await app.inject({ method: "GET", url: "/api/v1/hosts/subscription-usage" });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json().items.find((item: { account: unknown }) => item.account).connections).toHaveLength(2);
+      __setAuthIdentityForTests({ spaceId: "space-1", userId: "non-owner" });
+      const hidden = await app.inject({ method: "GET", url: "/api/v1/hosts/subscription-usage" });
+      expect(hidden.statusCode).toBe(200);
+      expect(hidden.json()).toEqual({ items: [] });
+    } finally { __setAuthIdentityForTests(null); await app.close(); }
   });
 });
 

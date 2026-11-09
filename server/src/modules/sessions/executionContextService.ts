@@ -19,7 +19,9 @@ import { withTransaction } from "../../db/tx.js";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectWriter } from "../projects/access.js";
 import { PgHostRepository } from "../hosts/repository.js";
-import { normalizeHostCapabilities } from "../hosts/capabilities.js";
+import {locationIsOnline,runtimeAvailability,hostInstallationAvailability} from "./executionRuntimeAvailability.js";
+export {locationIsOnline} from "./executionRuntimeAvailability.js";
+import {rebindConversationRuntime,matchesConversationWorkspace} from "../hosts/conversationRuntimeBindings.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
@@ -81,14 +83,22 @@ export class ConversationExecutionContextService {
       const context = await repository.lockDraft(session);
       const requestedRuntimes = requestedRuntimeSelections(request);
       if (context.state === "initialized") {
+        for(const runtime of requestedRuntimes)await rebindConversationRuntime(client,{spaceId:identity.spaceId,userId:identity.userId,sessionId:session.id,agentId:runtime.agent_id,requestedProfileId:runtime.runtime_profile_id});
         await this.assertImmutableSelection(repository, session, context, request.selection, request.runtime);
+        if(request.workspace_baseline){
+          if(session.project_id)await assertProjectWriter(client,identity.spaceId,session.project_id,identity.userId);
+          if(context.dispatch_lock_id)throw new ConversationExecutionContextError(409,'Workspace baseline cannot change during dispatch');
+          await repository.selectWorkspaceBaseline(identity.spaceId,sessionId,request.workspace_baseline);
+          context.workspace_baseline=request.workspace_baseline;
+        }
         const participantAgentIds = await repository.listConversationParticipantAgentIds(session);
         for (const runtime of requestedRuntimes) {
           if (!participantAgentIds.includes(runtime.agent_id)) {
             throw new ConversationExecutionContextError(403, "The selected Agent is not a participant in this Conversation");
           }
         }
-        // Runtime pins are immutable per Conversation × Agent, but each
+        // Profile identity and workspace stay pinned per Conversation × Agent;
+        // an explicit CLI/copy edit to that Profile is reconciled above. Each
         // participating Agent may be explicitly initialized after the
         // Conversation itself has been initialized. This keeps multi-Agent
         // Room dispatch deterministic without guessing a CLI profile.
@@ -217,6 +227,7 @@ export class ConversationExecutionContextService {
         projectFolderId: primary.projectFolderId,
         locationId: primary.locationId,
         userId: identity.userId,
+        workspaceBaseline:request.workspace_baseline??null,
         git: {
           branch: initializedGit.branch,
           commitSha: initializedGit.commit_sha,
@@ -563,14 +574,7 @@ export class ConversationExecutionContextService {
           if (!profile || !thread) {
             return { agentName, usable: false, reason: "The persisted runtime binding or Host thread is missing" };
           }
-          const stillPinned = thread.execution_host_id === context.execution_host_id
-            && thread.workspace_mode === context.primary_workspace_mode
-            && thread.workspace_location_id === context.primary_workspace_location_id
-            && profile.execution_host_id === thread.execution_host_id
-            && profile.workspace_mode === thread.workspace_mode
-            && profile.workspace_location_id === thread.workspace_location_id
-            && profile.runtime_key === thread.runtime_key
-            && profile.runtime_installation === thread.runtime_installation;
+          const stillPinned = matchesConversationWorkspace(thread,context)&&matchesConversationWorkspace(profile,context);
           const pinnedHost = hosts.find((host) => host.id === thread.execution_host_id) ?? null;
           const pinnedLocation = thread.workspace_location_id
             ? locations.find((location) => location.id === thread.workspace_location_id) ?? null
@@ -619,14 +623,18 @@ export class ConversationExecutionContextService {
         ? managedGitSnapshot()
         : null;
     const summary = this.summaryFromParts(context, session.id, host ? hostSummary(host, session.id) : null, pinnedRuntimeChoice(runtime), primary, git, await repository.listAttachments(identity.spaceId, session.id), runtimes);
-    const blockedReason = context.state === "initialized"
+    const blockedReason = primary?.kind==='location'&&summary.host?.isolated_workspaces_available===false?'execution_workspace_host_upgrade_required':context.state === "initialized"
       ? initializedBlockReason(summary, initializedRuntimeAvailability)
       : draftBlockReason(host, defaultPrimary, primaryLocation, runtime, hosts, executableLocations, usableRuntimeCandidates);
+    let dirtyAttachment=false;
+    for(const a of summary.attachments)if(a.status==='active'&&a.git_dirty&&!await repository.hasOpenIsolatedWorkspace(identity.spaceId,session.id,a.workspace_location_id))dirtyAttachment=true;
+    const needsBaseline=Boolean(!context.workspace_baseline&&((git?.dirty&&primary?.kind==='location'
+      &&!(await repository.hasOpenIsolatedWorkspace(identity.spaceId,session.id,primary.workspace_location_id)))||dirtyAttachment));
     return {
       summary: {
         ...summary,
-        can_send: blockedReason === null,
-        blocked_reason: blockedReason,
+        can_send: blockedReason === null&&!needsBaseline,
+        blocked_reason: blockedReason??(needsBaseline?"waiting_for_baseline":null),
       },
       available_hosts: hosts.map((candidate) => hostSummary(candidate, session.id)),
       available_runtime_profiles: availableRuntimeProfiles,
@@ -687,6 +695,7 @@ export class ConversationExecutionContextService {
       runtimes,
       primary,
       git,
+      workspace_baseline:context.workspace_baseline??null,
       attachments,
       dispatch_locked: Boolean(context.dispatch_lock_id),
       queue_paused_at: context.queue_paused_at,
@@ -699,7 +708,7 @@ export class ConversationExecutionContextService {
     repository: PgConversationExecutionContextRepository,
     identity: ConversationExecutionContextIdentity,
     session: ExecutionSessionRow,
-    _context: ExecutionContextRow,
+    context: ExecutionContextRow,
     requested?: ConversationRuntimeChoice | null,
   ): Promise<ConversationRuntimeSelection | null> {
     const agentId = requested?.agent_id ?? await repository.resolveConversationAgent(identity.spaceId, session.id, session.project_id);
@@ -708,11 +717,13 @@ export class ConversationExecutionContextService {
     const binding = await repository.getBinding(identity.spaceId, session.id, agentId);
     const thread = await repository.getConversationThread(identity.spaceId, session.id, agentId);
     if (!binding || !thread) return null;
+    const profile=await repository.getRuntimeProfile(identity.spaceId,agentId,binding.runtime_profile_id);
+    const target=profile&&matchesConversationWorkspace(profile,context)?profile:thread;
     return {
       agent_id: agentId,
       runtime_profile_id: binding.runtime_profile_id,
-      runtime_key: thread.runtime_key,
-      runtime_installation: thread.runtime_installation,
+      runtime_key: target.runtime_key,
+      runtime_installation: target.runtime_installation!,
     };
   }
 
@@ -722,22 +733,26 @@ export class ConversationExecutionContextService {
     session: ExecutionSessionRow,
   ): Promise<ConversationPinnedRuntime[]> {
     const bindings = await repository.listBindings(identity.spaceId, session.id);
+    const context=await repository.getContext(identity.spaceId,session.id);
     const runtimes: ConversationPinnedRuntime[] = [];
     for (const binding of bindings) {
       if (!await repository.canAgentParticipate(session, binding.agent_id, identity.userId)) continue;
       const thread = await repository.getConversationThread(identity.spaceId, session.id, binding.agent_id);
       if (!thread) continue;
+      const profile=await repository.getRuntimeProfile(identity.spaceId,binding.agent_id,binding.runtime_profile_id);
+      const target=profile&&context&&matchesConversationWorkspace(profile,context)?profile:thread;
+      const changed=target.runtime_key!==thread.runtime_key||target.runtime_installation!==thread.runtime_installation;
       runtimes.push({
         agent_id: binding.agent_id,
         runtime_profile_id: binding.runtime_profile_id,
-        runtime_key: thread.runtime_key,
-        runtime_installation: thread.runtime_installation,
-        context_tokens: thread.context_tokens,
-        context_window_tokens: thread.context_window_tokens,
-        handoff_artifact_id: thread.handoff_artifact_id,
-        summary_artifact_id: thread.summary_artifact_id,
-        last_run_ended_at: thread.status !== 'active' || thread.last_run_ended_at === null ? null : new Date(thread.last_run_ended_at).toISOString(),
-        prompt_cache_ttl_seconds: getRuntimeAdapterSpec(thread.runtime_key)?.usage.prompt_cache_ttl_seconds ?? null,
+        runtime_key: target.runtime_key,
+        runtime_installation: target.runtime_installation!,
+        context_tokens: changed?null:thread.context_tokens,
+        context_window_tokens: changed?null:thread.context_window_tokens,
+        handoff_artifact_id: changed?null:thread.handoff_artifact_id,
+        summary_artifact_id: changed?null:thread.summary_artifact_id,
+        last_run_ended_at: changed||thread.status !== 'active' || thread.last_run_ended_at === null ? null : new Date(thread.last_run_ended_at).toISOString(),
+        prompt_cache_ttl_seconds: getRuntimeAdapterSpec(target.runtime_key)?.usage.prompt_cache_ttl_seconds ?? null,
       });
     }
     return runtimes;
@@ -968,59 +983,4 @@ function initializedBlockReason(
 
 function isUniqueViolation(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "23505");
-}
-
-export function locationIsOnline(location: Pick<ExecutionLocationRow, "host_kind" | "host_status" | "last_heartbeat_at">): boolean {
-  return hostIsOnline({
-    kind: location.host_kind,
-    status: location.host_status,
-    last_heartbeat_at: location.last_heartbeat_at,
-  });
-}
-
-function runtimeAvailability(
-  profile: RuntimeProfileRow,
-  host: ExecutionHostRow | null,
-  location: ExecutionLocationRow | null,
-  options: { allowStaleLocation?: boolean } = {},
-): { usable: boolean; reason: string | null } {
-  if (!profile.enabled) return { usable: false, reason: "The runtime profile is disabled" };
-  if (!profile.execution_host_id || !profile.workspace_mode || !profile.runtime_installation) {
-    return { usable: false, reason: "The runtime is not bound to an execution Host and workspace" };
-  }
-  if (!host) return { usable: false, reason: "The execution Host is unavailable" };
-  // `listHosts(userId)` has already applied Host ownership visibility; this
-  // helper only evaluates the current heartbeat/capability state.
-  if (!hostIsOnline(host)) return { usable: false, reason: "The execution Host is offline" };
-  const installation = hostInstallationAvailability(host, profile.runtime_key, profile.runtime_installation);
-  if (!installation.usable) return installation;
-  if (profile.workspace_mode === "location") {
-    if (!location || location.execution_host_id !== host.id) {
-      return { usable: false, reason: "The bound Workspace Location is unavailable" };
-    }
-    if (location.status !== "active" && !(options.allowStaleLocation && location.status === "stale")) {
-      return { usable: false, reason: "The bound Workspace Location is unavailable" };
-    }
-    if (!location.execution_ready || !locationIsOnline(location)) {
-      return { usable: false, reason: "The bound Workspace Location is not ready" };
-    }
-  }
-  return { usable: true, reason: null };
-}
-
-function hostInstallationAvailability(
-  host: ExecutionHostRow,
-  runtimeKey: string,
-  installationId: string | null,
-): { usable: boolean; reason: string | null } {
-  // The built-in host reports its installations like any other daemon, and a
-  // container with nothing installed reports none. Do not waive the check
-  // for it. That offers a copy that does not exist and fails at launch.
-  const installation = normalizeHostCapabilities(host.capabilities_json).installations[runtimeKey]
-    ?.find((candidate) => candidate.id === installationId);
-  if (!installation) return { usable: false, reason: "The CLI installation is unavailable on the Host" };
-  if (installation.logged_in === false && installation.options?.session_available !== true) {
-    return { usable: false, reason: "The CLI installation has no signed-in account or available ACP session" };
-  }
-  return { usable: true, reason: null };
 }

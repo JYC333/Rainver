@@ -886,6 +886,10 @@ const ruleManagedSystemActionGrant: Rule = (ctx) => {
 // the only origin on which the Agent can be carrying one is the person's own
 // turn.
 const ORIGIN_GATED_PROJECT_WRITES = new Set([
+  "workspace.integration.verification.configure",
+  "workspace.integration.retry",
+  "workspace.change.abandon",
+  "workspace.change.complete",
   "research.result.adopt",
   "task.create",
   "task.status.set",

@@ -1,10 +1,10 @@
+import {useReviewPacketDatabase} from './support/reviewPacketDatabase.js';
 import { beforeEach, describe, expect, it } from "vitest";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
 import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import { type MaintenanceReport, RetrievalMaintenanceService } from "../src/modules/retrieval/maintenance/service.js";
 import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
 import { createRetrievalMaintenanceProposalPacket, persistRetrievalMaintenanceReportArtifact, registerRetrievalMaintenanceProposalAppliers, RETRIEVAL_MAINTENANCE_PACKET_PROPOSAL_TYPE, RETRIEVAL_MAINTENANCE_REPORT_ARTIFACT_TYPE } from "../src/modules/retrieval/maintenance/artifacts.js";
-import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -172,29 +172,9 @@ describe("retrievalMaintenanceDb", () => {
 });
 
 describe("retrievalMaintenancePersistence", () => {
-  interface CapturedQuery {
-    sql: string;
-    params: readonly unknown[];
-  }
 
-  function fakeDb(): Queryable & { calls: CapturedQuery[] } {
-    const calls: CapturedQuery[] = [];
-    return {
-      calls,
-      async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []) {
-        calls.push({ sql, params });
-        // Every INSERT this fake handles (proposals, artifacts) puts the
-        // generated id first; echo it back so callers relying on
-        // `RETURNING id` (e.g. insertProposalRow) get a usable row. The
-        // lineage-key lookup SELECT must keep returning "not found" so
-        // create-packet calls don't short-circuit on a fake match.
-        if (/^\s*INSERT/i.test(sql)) {
-          return { rows: [{ id: params[0] }] as Row[], rowCount: 1 };
-        }
-        return { rows: [], rowCount: 0 };
-      },
-    };
-  }
+  const packetDatabase=useReviewPacketDatabase(import.meta.url);
+  const realDb=()=>packetDatabase.observe();
 
   function report(): MaintenanceReport {
     return {
@@ -234,7 +214,7 @@ describe("retrievalMaintenancePersistence", () => {
 
   describe("retrieval maintenance persistence", () => {
     it("persists maintenance reports as owner-private artifacts", async () => {
-      const db = fakeDb();
+      const db = realDb();
       const artifactId = await persistRetrievalMaintenanceReportArtifact(db, {
         spaceId: "space-1",
         ownerUserId: "user-1",
@@ -243,8 +223,8 @@ describe("retrievalMaintenancePersistence", () => {
       });
 
       expect(artifactId).toMatch(/[0-9a-f-]{36}/);
-      expect(db.calls).toHaveLength(1);
-      const params = db.calls[0]!.params;
+      expect(db.calls.filter(call=>/INSERT INTO (artifacts|proposals)/.test(call.sql))).toHaveLength(1);
+      const params = db.calls.find(call=>/INSERT INTO (artifacts|proposals)/.test(call.sql))!.params;
       expect(params[1]).toBe("space-1");
       expect(params[4]).toBe(RETRIEVAL_MAINTENANCE_REPORT_ARTIFACT_TYPE);
       expect(params[15]).toBe("user-1");
@@ -259,7 +239,7 @@ describe("retrievalMaintenancePersistence", () => {
     });
 
     it("records automation attribution without inventing a Run relationship", async () => {
-      const db = fakeDb();
+      const db = realDb();
       const artifactId = await persistRetrievalMaintenanceReportArtifact(db, {
         spaceId: "space-1",
         ownerUserId: "user-1",
@@ -277,18 +257,21 @@ describe("retrievalMaintenancePersistence", () => {
       });
 
       expect(proposalId).toMatch(/[0-9a-f-]{36}/);
-      const artifactParams = db.calls[0]!.params;
-      // db.calls[1] and [2] are createRetrievalMaintenanceProposalPacket's
-      // internal lineage lock and dedup lookup; the INSERT is [3].
-      const proposalParams = db.calls[3]!.params;
+      const artifactParams = db.calls.find((call) => /^\s*INSERT INTO artifacts/.test(call.sql))!.params;
+      const proposalParams = db.calls.find((call) => /^\s*INSERT INTO proposals/.test(call.sql))!.params;
       expect(artifactParams[2]).toBeNull();
       expect(proposalParams[2]).toBeNull();
+      const pool = packetDatabase.database.pool;
+      expect((await pool.query("SELECT run_id, metadata_json->>'automation_run_id' AS automation FROM artifacts WHERE id = $1", [artifactId])).rows)
+        .toEqual([{ run_id: null, automation: "automation-run-1" }]);
+      expect((await pool.query("SELECT created_by_run_id, payload_json->>'automation_run_id' AS automation FROM proposals WHERE id = $1", [proposalId])).rows)
+        .toEqual([{ created_by_run_id: null, automation: "automation-run-1" }]);
       expect(JSON.parse(String(artifactParams[13]))).toMatchObject({ automation_run_id: "automation-run-1" });
       expect(JSON.parse(String(proposalParams[10]))).toMatchObject({ automation_run_id: "automation-run-1" });
     });
 
     it("creates a private batched maintenance packet proposal", async () => {
-      const db = fakeDb();
+      const db = realDb();
       const proposalId = await createRetrievalMaintenanceProposalPacket(db, {
         spaceId: "space-1",
         ownerUserId: "user-1",
@@ -299,8 +282,8 @@ describe("retrievalMaintenancePersistence", () => {
 
       expect(proposalId).toMatch(/[0-9a-f-]{36}/);
       // db.calls[0] and [1] are the internal lineage lock and dedup lookup.
-      expect(db.calls).toHaveLength(3);
-      const params = db.calls[2]!.params;
+      expect(db.calls.filter(call=>/INSERT INTO proposals/.test(call.sql))).toHaveLength(1);
+      const params = db.calls.find(call=>/INSERT INTO proposals/.test(call.sql))!.params;
       expect(params[1]).toBe("space-1");
       expect(params[3]).toBe(RETRIEVAL_MAINTENANCE_PACKET_PROPOSAL_TYPE);
       expect(params[14]).toBe("user-1");
@@ -314,7 +297,7 @@ describe("retrievalMaintenancePersistence", () => {
     });
 
     it("accepting a packet creates child proposals, not canonical Knowledge rows", async () => {
-      const db = fakeDb();
+      const db = realDb();
       const registry = new ProposalApplierRegistry();
       registerRetrievalMaintenanceProposalAppliers(registry);
       const applier = registry.get(RETRIEVAL_MAINTENANCE_PACKET_PROPOSAL_TYPE);

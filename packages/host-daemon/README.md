@@ -238,6 +238,9 @@ adapter pack, and a Node 24 fallback for the current Linux architecture. It
 uses a unique `local-...` build id, disables automatic updates for the local
 install, and preserves the existing Host config and login state. No GitHub
 release or push is involved.
+The local package embeds its build ID inside `app/`, matching the CI layout.
+The daemon heartbeat reports a compact fingerprint of the complete local build
+ID, so rebuilding one commit produces a distinguishable running version.
 
 To only create the local release, or to inspect/reuse its assets:
 
@@ -318,6 +321,29 @@ Do not restart a Host during active work: drain it and upgrade via the existing
 Host update flow after review/approval. Building this checkout does not update an
 installed service automatically.
 
+Isolated workspace preparation permits a tracked root project `.npmrc` only
+when it is at most 4 KiB and contains `engine-strict=true/false`, blank lines
+and comments. It validates the selected Git blob and rechecks changed snapshot
+bytes before copying them. Authentication/registry settings and interpolation
+are refused; untracked `.npmrc` files are excluded. Nested `.npmrc` files and
+symbolic links remain unsupported. Ordinary Folder reads continue to deny
+credential-store paths. Preparation failures report fixed actionable reasons
+without exposing configuration contents or local filesystem paths.
+
+The server treats missing launch receipts as bounded operational recovery, not
+as a permission breach. A new conversation turn can use a fresh workspace when
+the previous generation cannot safely continue; the old identity and changes
+remain preserved separately. The current Run detail/card includes retained
+unresolved conversation changes, so recovery actions do not depend on locating
+the old failure message. Current authorization and verification gates still
+apply to execution and publication.
+
+Private dirty-baseline snapshots allow up to 1,000 changed paths, 16 MiB per
+changed file and 64 MiB of changed bytes, with a 512 MiB tracked checkout cap.
+The 1 MiB Folder preview limit does not apply to snapshot import. Generated
+migration metadata is copied in full within these bounds; an overflow refuses
+the snapshot with a file/total limit reason instead of silently omitting bytes.
+
 ### Antigravity CLI
 
 The Antigravity Registry Agent installs Google’s official CLI and launches it
@@ -333,3 +359,41 @@ not import credentials from other Antigravity applications. Quota inspection
 uses the official CLI status-line JSON with temporary session settings. It sends
 no prompt, reads no token itself, and leaves refresh to the CLI. The existing
 `script(1)` terminal utility is required; no native settings are overwritten.
+
+
+### Isolated Project workspaces
+
+Execution-workspace capability v2 is available on Linux and macOS Hosts. Native
+Windows currently withholds this capability because the owned-resource filename
+encoding is not Windows compatible; isolated Project launches refuse explicitly.
+The server requires v2 and never falls back to writing the shared source checkout.
+Ordinary managed workspaces keep their existing capabilities.
+
+`native_workspace_integration:true` additionally supports active-session prepare, checkpoint,
+publish and adoption inspection. The same Agent/worktree retains dependencies
+between turns; source cleanup runs only after the idle period. Git publication
+uses the shared short lease/CAS helper and preserves unrelated original-checkout
+changes. No repair CLI/profile or separate test environment is spawned. Checked
+versions are Agent-attested and Host tree-fenced. Terminal native receipt files
+are reclaimed with source cleanup; incomplete journals and preimages remain
+recoverable. Update the server, web and Host together to enable this path; an
+older Host receives an explicit capability error rather than an unknown frame.
+
+Workspace/attempt profile archival uses its logical identity and can run after
+the source Location was unregistered or removed. Physical worktree cleanup still
+requires the authorized source repository and validates its expected branch tip.
+A blocked cleanup preserves the recorded outcome and retained recovery evidence.
+
+### Subscription account observations
+
+Subscription probes can report opaque account/product/organization identities.
+Claude reads its authenticated profile; Codex reads its own account RPC before
+and after quota, keeping the person and selected workspace distinct. Older
+app servers missing either identifier remain unmerged. Local login-file
+fingerprints only detect a concurrent replacement and never leave the Host.
+Antigravity captures the signed-in email from the same native status-line JSON
+as its quota and hashes it locally, explicitly marking email-based identity.
+Full login email and optional workspace name are whitelisted display metadata
+under the existing quota visibility gate; tokens and real paths never appear
+in the quota response. Display metadata is separate from pool identity. Older
+daemons or missing identity still report quota, but remain unmerged in Usage.

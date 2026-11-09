@@ -245,3 +245,61 @@ Its strict schema requires the original kind and statement, preserves typed
 state/parent fields and retains independent producer uniqueness. It is distinct
 from `inquiry.create_thread`, the Agent-only origin/grant-bound legacy tool:
 no human/Agent authority is inferred across these entries.
+
+## Human workspace operation adapters and retained Agent commands
+
+The 21 mutating Project-local Inquiry URLs now register formal adapters to
+Operation Core, with strict command DTOs and mandatory `Idempotency-Key` headers.
+`operationRoutes.ts` owns the exact method/path list; `operations.ts` composes
+existing Thread, Iteration, Signal, problem and Task association writers through
+the core-owned transaction port. Commands return strict metadata receipts, never
+stored judgment, Note, Signal, Candidate or Source bodies. Typed browser helpers
+submit one event key without write retries and reread the current problem,
+review packet or exact Delta Brief in the receipt's Space when content is needed.
+The exact `GET /inquiry/delta-briefs/:briefId` applies the existing per-viewer Brief
+projection and does not count as a migrated write.
+
+Admission discovers parent scope without locking, reserves the operation key,
+then locks sorted Project authorities and referenced roots, Source parents,
+subscriptions, grants and domain rows before revalidation. Private/unreadable
+Candidates remain filtered out of review-packet and Delta Brief collection;
+they do not block processing of visible Candidates. Personal focus retains its
+existing reader permission, including readable archived Project history. Other
+writes require live active-Project writer authority. Ownership reassignment and
+unlink cleanup retain their existing domain semantics. Known validation sites
+raise typed Inquiry errors; unexpected helper errors roll back without reflected
+private messages or cached request outcomes.
+
+The existing Agent ids `inquiry.record_work`, `inquiry.close_round`,
+`inquiry.record_conclusion`, `inquiry.link_task` and
+`inquiry.reference_task_result` also execute through the core. Their old executor
+registrations are removed. Existing immutable Run grants, live Run/person/Project
+identity, policy action, effective trigger origin and Agent/Run work-event
+provenance remain authoritative; no new human or Agent surfaces are granted.
+Unchanged Agent conclusions still call only round close-out; cognitive changes
+still create exactly one Iteration. Missing unattended approval mappings remain
+failclosed and do not create a Proposal or perform the write.
+
+Agent request scopes include the live Run and attempt. Task association/result
+commands derive their trusted domain call identity from the core's immutable
+host-authored invocation context and attempt, never a model field. Existing
+versioned problem/domain receipts remain separate history and retain their
+producer keys. The original five-Task creation ceiling remains an explicit,
+nonretryable 429 with safe limit metadata; it does not become an internal error.
+Task repository/service transaction ports accept `Queryable` so nested creation
+joins the same transaction; independent live quota IO still requires its original
+connectable Pool. Inquiry Thread creation and its separate Agent fan-out contract
+remain owned by the earlier creation family, outside this 21-URL inventory.
+
+Reuse / Dependency Check: existing OperationExecutor, branded transaction port,
+Project/content ACL predicates, domain writers, canonical work events and shared
+real PostgreSQL fixtures are reused. Existing Zod Task/problem contracts are
+shared from `taskCreateInput.ts` and `problemEngine.ts`; no new dependency,
+approval implementation or execution/retry engine is introduced.
+
+Focused evidence is `server/test/inquiryOperationDb.test.ts`, the existing
+Thread/Signal/ProblemEngine/TaskAssociations/DirectWrites suites,
+`packages/protocol/test/inquiryOperations.test.ts` and
+`apps/web/src/__tests__/inquiry-operation-api.test.ts`. Project workspace
+component coverage remains in `ProblemWorkspace.test.tsx`; this migration changes
+API adapters, not presentation or visual acceptance.

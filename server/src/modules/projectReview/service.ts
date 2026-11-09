@@ -1,3 +1,5 @@
+import type {OperationActor} from '@rainver/protocol';
+import {discoverInquiry,authorizeInquiry} from '../inquiry/operationAdmission.js';
 import { HttpError, type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../routeUtils/common.js";
 import { InquirySignalService } from "../inquiry/signalService.js";
 import { KnowledgePromotionCandidateService } from "../knowledgePromotion/candidateService.js";
@@ -9,6 +11,14 @@ import { KnowledgePromotionCandidateService } from "../knowledgePromotion/candid
  */
 export class ProjectReviewSessionService {
   constructor(private readonly db: Queryable) {}
+
+  async discoverAdmission(projectId: string, actor: OperationActor) {
+    return discoverInquiry(this.db,{project_id:projectId},actor,'inquiry.review_packet.open');
+  }
+
+  async authorizeAdmission(projectId: string, actor: OperationActor, before: Awaited<ReturnType<ProjectReviewSessionService['discoverAdmission']>>) {
+    return authorizeInquiry(this.db,{project_id:projectId},actor,'inquiry.review_packet.open',before);
+  }
 
   async open(identity: SpaceUserIdentity, projectId: string, limit = 5): Promise<Record<string, unknown>> {
     if (!Number.isInteger(limit)) throw new HttpError(422, "limit must be an integer");

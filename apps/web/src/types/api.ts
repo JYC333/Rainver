@@ -1,4 +1,5 @@
-import type { ProjectAccess } from "@rainver/protocol"
+import type { ProjectAccess, CodePatchDecisionReceipt, SourceBackfillStrategy } from "@rainver/protocol"
+export type { CodePatchDecisionReceipt, SourceBackfillStrategy }
 // API response shapes shared with the server HTTP contracts.
 import type {
   LINK_STATUS_VALUES,
@@ -1134,7 +1135,6 @@ export interface SourceHealth {
   consecutive_failures: number
 }
 
-export type SourceBackfillStrategy = import('@rainver/protocol').SourceBackfillStrategy
 
 export interface SourceBackfillQuotaPolicy {
   window: 'minute' | 'hour' | 'day'
@@ -1894,6 +1894,7 @@ export interface RunUsage {
 }
 
 export interface Run {
+  workspace_changes?:import("@rainver/protocol").WorkspaceChangeView[];
   id: string
   space_id: string
   /**
@@ -1916,6 +1917,8 @@ export interface Run {
   host_task_thread_id?: string | null
   session_id: string | null
   parent_run_id: string | null
+  /** Set only on an explicitly delegated child; `parent_run_id` alone also marks serial queueing. */
+  delegation_id?: string | null
   instructed_by_user_id?: string | null
   instructed_by_agent_id?: string | null
   run_type: string
@@ -2288,7 +2291,6 @@ export interface Artifact {
 }
 
 /** Canonical proposal (`GET /proposals`, `ProposalOut`). */
-export type CodePatchDecisionReceipt = import("@rainver/protocol").CodePatchDecisionReceipt
 
 export interface Proposal {
   code_patch_decision?: import("@rainver/protocol").CodePatchDecisionReceipt

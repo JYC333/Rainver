@@ -2,7 +2,7 @@ import {waitForLockWaiter} from './support/lockWait.js';
 import {resetTables} from './support/resetTables.js';
 import {ProjectDefinitionProposalService} from '../src/modules/projects/projectDefinitionProposalService.js';
 import {PgProposalApplyService} from '../src/modules/proposals/applyService.js';
-import {lockProposalTransitions} from '../src/modules/systemActions/operations/proposalTransitions.js';
+import {lockProposalTransitions,withRunTerminalOwner,preparedRunTerminalOwner,prepareOperationRunTerminalOwner} from '../src/modules/systemActions/operations/proposalTransitions.js';
 import {canonical,lockRequestKey,record,requestScope,fingerprint} from '../src/modules/systemActions/operations/repository.js';
 import {assertProjectWriterForMutation} from '../src/modules/projects/access.js';
 import {assertSourceEgressAllowedForDestination} from '../src/modules/sources/sourcePromptEgress.js';
@@ -30,7 +30,10 @@ import { ProjectOperationService } from "../src/modules/projects/projectOperatio
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { SYSTEM_ACTION_REGISTRY, type SystemActionDefinition } from '@rainver/protocol';
+import { SYSTEM_ACTION_REGISTRY, NOTE_OBJECT_SCHEMAS, KNOWLEDGE_OBJECT_SCHEMAS, KNOWLEDGE_REVIEW_SCHEMAS,
+  RESEARCH_WORKSPACE_SCHEMAS, INQUIRY_OPERATION_SCHEMAS, PROJECT_EXECUTION_SCHEMAS,
+  PROJECT_FOLDER_SCHEMAS, PROJECT_FOLDER_IO_SCHEMAS, PROJECT_INGRESS_SCHEMAS, PROJECT_MANAGEMENT_SCHEMAS, PROJECT_CORPUS_SCHEMAS, PROJECT_SOURCE_PROPOSAL_SCHEMAS, RESEARCH_EXECUTION_SCHEMAS,
+  type SystemActionDefinition } from '@rainver/protocol';
 import { useTestDatabase } from './support/testDatabase.js';
 import { seedSpaceOwnerProject, seedSpaceMember, seedRun } from './support/domainSeeds.js';
 import { loadConfig } from '../src/config.js';
@@ -43,6 +46,13 @@ import { buildModuleServer } from './support/moduleServer.js';
 import { systemActionsModule } from '../src/modules/systemActions/index.js';
 import { __setAuthIdentityForTests } from '../src/modules/auth/identity.js';
 const ENABLED_USER_OPERATIONS = ["board.configure", "inquiry.thread.create", "knowledge.note.delete", "knowledge.note.rollback", "note.raise_as_question", "policy.action_grant.create", "policy.action_grant.revoke", "project.operation.cancel", "project.operation.create", "project.source.backfill", "project.source.bind", "project.source.unbind", "project.source.update", "research.cancel_acquisition", "room.collaboration.update_participants", "source.backfill.create_plan", "source.backfill.pause", "source.backfill.preview", "source.backfill.resume", "source.channel.create", "source.channel.scan", "source.channel.set_subscription", "source.channel.update", "source.extraction.dispatch", "source.processing.rule.create", "source.processing.rule.dispatch", "source.processing.rule.update", "source.recipe.create", "source.recommendation.decide", "system.actions.list", "task.delete", "task.move_to_column", "task.place_in_space_board", "task.set_status"];
+ENABLED_USER_OPERATIONS.push('knowledge.candidate.extract','research.ask_ai',...Object.keys(PROJECT_SOURCE_PROPOSAL_SCHEMAS),...Object.keys(RESEARCH_EXECUTION_SCHEMAS),...Object.keys(NOTE_OBJECT_SCHEMAS),
+  ...Object.keys(KNOWLEDGE_OBJECT_SCHEMAS),...Object.keys(KNOWLEDGE_REVIEW_SCHEMAS),
+  ...Object.keys(RESEARCH_WORKSPACE_SCHEMAS),...Object.keys(INQUIRY_OPERATION_SCHEMAS),
+  ...Object.keys(PROJECT_EXECUTION_SCHEMAS),...Object.keys(PROJECT_FOLDER_SCHEMAS),...Object.keys(PROJECT_FOLDER_IO_SCHEMAS),
+  ...Object.keys(PROJECT_INGRESS_SCHEMAS),...Object.keys(PROJECT_MANAGEMENT_SCHEMAS),...Object.keys(PROJECT_CORPUS_SCHEMAS));
+ENABLED_USER_OPERATIONS.push('workspace.change.abandon','workspace.change.complete','workspace.change.get','workspace.retention.update','workspace.integration.retry','workspace.integration.verification.get','workspace.integration.verification.configure');
+ENABLED_USER_OPERATIONS.sort();
 const db = useTestDatabase(import.meta.filename);
 let space: string, owner: string, project: string, operation: string;
 beforeEach(async () => {
@@ -124,6 +134,18 @@ const update: OperationRegistration['execute'] = async (tx, input) => {
   });
 };
 describe('transactional operation execution', () => {
+  it('supplies immutable host invocation identity and never reexecutes it on replay', async () => {
+    const seen:unknown[]=[],key=randomUUID();
+    const r=registration(async(tx,input,a,invocation)=>{
+      expect(Object.isFrozen(invocation)).toBe(true);
+      expect(invocation).toEqual({requestId:'host-request',idempotencyKey:key});
+      seen.push(invocation);return update(tx,input,a);
+    }),engine=core(r);
+    const first=await engine.execute(r.definition.id,{name:'host-bound'},actor(),'host-request',key);
+    expect(first.http_status).toBe(200);
+    const replay=await engine.execute(r.definition.id,{name:'host-bound'},actor(),'later-request',key);
+    expect(replay.body).toEqual(first.body);expect(seen).toHaveLength(1);
+  });
   it('commits once and replays after the business version advances; changed input conflicts', async () => {
     const r = registration(update),
       engine = core(r),
@@ -358,6 +380,44 @@ function approvalFixture(options:{dependency?:string;type?:string;channel?:strin
     service
   };
 }
+describe('core-owned Run terminal lifecycle',()=>{
+ const world=async()=>{
+  const run=randomUUID();await seedRun(db.pool,{id:run,space,owner,agent:randomUUID(),version:randomUUID()});
+  const approval=approvalFixture({runId:run});
+  const pending=await approval.engine.execute(approval.r.definition.id,{name:'Frozen terminal'},actor(),randomUUID(),randomUUID());
+  expect(pending.http_status).toBe(202);const proposal=(pending.body as {proposal_id:string}).proposal_id;
+  return {run,proposal,discover:async()=>[{space_id:space,id:run}]};
+ };
+ it('joins nested canonical Run owners, finishes linked requests atomically and expires the owner after commit',async()=>{
+  const {run,proposal,discover}=await world();let captured:ReturnType<typeof preparedRunTerminalOwner>,discoveries=0;
+  const r=registration(async(tx,input,a)=>withRunTerminalOwner(tx,discover,async joined=>{
+   captured=preparedRunTerminalOwner(joined,space,run);expect(captured).not.toBeNull();
+   await joined.query("UPDATE proposals SET status='rejected' WHERE id=$1",[proposal]);return update(joined,input,a);
+  }));r.runTerminalOwner={async discover(){discoveries++;return discover();}};
+  const engine=core(r),key=randomUUID(),first=await engine.execute(r.definition.id,{name:'Terminalized'},actor(),randomUUID(),key);
+  expect(first.http_status,JSON.stringify(first.body)).toBe(200);expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[proposal])).rows).toEqual([{state:'rejected'}]);
+  expect(()=>captured!.assertRun(space,run)).toThrow();const before=discoveries;
+  expect((await engine.execute(r.definition.id,{name:'Terminalized'},actor(),randomUUID(),key)).body).toEqual(first.body);expect(discoveries).toBe(before);
+ });
+ it.each(['invalid_output','linked_request_store'])('rolls terminal/domain/core effects back and recovers one audit on %s failure',async failure=>{
+  const {proposal,discover}=await world();const before=(await db.pool.query('SELECT title FROM project_operations WHERE id=$1',[operation])).rows[0].title;
+  const r=registration(async(tx,input,a)=>{await tx.query("UPDATE proposals SET status='rejected' WHERE id=$1",[proposal]);const output=await update(tx,input,a);return failure==='invalid_output'?{name:'bad',version:'PRIVATE invalid'}:output;});r.runTerminalOwner={discover};
+  if(failure==='linked_request_store'){await db.pool.query("CREATE FUNCTION refuse_terminal_finish() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.state='rejected' THEN RAISE EXCEPTION 'PRIVATE transition'; END IF; RETURN NEW; END $$");await db.pool.query('CREATE TRIGGER refuse_terminal_finish BEFORE UPDATE ON operation_idempotency FOR EACH ROW EXECUTE FUNCTION refuse_terminal_finish()');}
+  try{const request=randomUUID(),result=await core(r).execute(r.definition.id,{name:'Rollback terminal'},actor(),request,randomUUID());expect(result.http_status,JSON.stringify(result.body)).toBe(500);expect(JSON.stringify(result.body)).not.toContain('PRIVATE');expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[proposal])).rows).toEqual([{status:'pending'}]);expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[proposal])).rows).toEqual([{state:'pending_approval'}]);expect((await db.pool.query('SELECT title FROM project_operations WHERE id=$1',[operation])).rows[0].title).toBe(before);expect((await db.pool.query("SELECT metadata_json->>'operation_outcome' AS outcome FROM policy_decision_records WHERE metadata_json->>'operation_request_id'=$1",[request])).rows).toEqual([{outcome:'failed'}]);}
+  finally{if(failure==='linked_request_store'){await db.pool.query('DROP TRIGGER refuse_terminal_finish ON operation_idempotency');await db.pool.query('DROP FUNCTION refuse_terminal_finish()');}}
+ });
+ it('rejects preparation by a child port that has no actual host client',async()=>{
+  const r=registration(async tx=>{await prepareOperationRunTerminalOwner(tx,tx,space,async()=>[]);return {name:'unreachable',version:1};});
+  const result=await core(r).execute(r.definition.id,{name:'Do not write'},actor(),randomUUID(),randomUUID());expect(result.http_status,JSON.stringify(result.body)).toBe(503);expect((await db.pool.query('SELECT id FROM operation_idempotency WHERE space_id=$1',[space])).rows).toEqual([]);
+ });
+ it('refuses a Run set that grows while waiting for the Project fence',async()=>{
+  const first=randomUUID(),later=randomUUID();for(const id of [first,later])await seedRun(db.pool,{id,space,owner,agent:randomUUID(),version:randomUUID()});await db.pool.query('UPDATE runs SET project_id=$2 WHERE id=$1',[first,project]);
+  const discover=async(tx:Parameters<OperationRegistration['execute']>[0])=>(await tx.query<{id:string;space_id:string}>('SELECT id,space_id FROM runs WHERE project_id=$1 AND space_id=$2 ORDER BY id',[project,space])).rows;
+  const r=registration(async(tx,input,a)=>withRunTerminalOwner(tx,discover,joined=>update(joined,input,a)));r.runTerminalOwner={discover};r.authorize=async tx=>{await tx.query('SELECT id FROM projects WHERE id=$1 FOR UPDATE',[project]);};
+  const holder=await db.pool.connect();try{await holder.query('BEGIN');await holder.query('SELECT id FROM projects WHERE id=$1 FOR UPDATE',[project]);const pending=core(r).execute(r.definition.id,{name:'No late closure'},actor(),randomUUID(),randomUUID());await waitForLockWaiter(db.pool);await holder.query('UPDATE runs SET project_id=$2 WHERE id=$1',[later,project]);await holder.query('COMMIT');const result=await pending;expect(result.http_status,JSON.stringify(result.body)).toBe(409);expect((await db.pool.query('SELECT title FROM project_operations WHERE id=$1',[operation])).rows[0].title).toBe('Research');}
+  finally{await holder.query('ROLLBACK');holder.release();}
+ });
+});
 describe('canonical Proposal integration', () => {
   it('creates one durable pending Proposal and accepts business/result/decision in one transaction', async () => {
     const {

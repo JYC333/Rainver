@@ -8,7 +8,7 @@ import type {
 } from "./types.js";
 
 export interface VerificationPlanReader {
-  getPlan(run: Pick<RunRecord, "space_id" | "project_folder_id" | "contract_snapshot_json">): Promise<ValidationRecipePlan>;
+  getPlan(run: Pick<RunRecord, "space_id" | "project_folder_id" | "contract_snapshot_json">, options?: { include_folder_defaults: boolean }): Promise<ValidationRecipePlan>;
 }
 
 interface VerificationPlanRow {
@@ -25,7 +25,7 @@ interface VerificationPlanRow {
 export class PgVerificationRepository implements VerificationPlanReader {
   constructor(private readonly db: Queryable) {}
 
-  async getPlan(run: Pick<RunRecord, "space_id" | "project_folder_id" | "contract_snapshot_json">): Promise<ValidationRecipePlan> {
+  async getPlan(run: Pick<RunRecord, "space_id" | "project_folder_id" | "contract_snapshot_json">, options?: { include_folder_defaults: boolean }): Promise<ValidationRecipePlan> {
     let plan = emptyPlan();
     if (run.project_folder_id) {
       const result = await this.db.query<VerificationPlanRow>(
@@ -62,6 +62,12 @@ export class PgVerificationRepository implements VerificationPlanReader {
           forbidden_paths: row.forbidden_paths_json,
         };
       }
+    }
+
+    // A Folder's defaults verify executable work, not every conversation reply.
+    // Keep its path protection; explicitly named recipes below remain mandatory.
+    if (options?.include_folder_defaults === false) {
+      plan = { ...emptyPlan(), forbidden_paths: plan.forbidden_paths };
     }
 
     // A workflow or plan node may name one or more validation recipes. These are

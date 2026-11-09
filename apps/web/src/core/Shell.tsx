@@ -9,6 +9,7 @@ import { SpaceSwitcher } from '../components/SpaceSwitcher'
 import { UserAvatar } from '../components/UserAvatar'
 import { GlobalRail, type PluginNavItem } from '../components/shell/GlobalRail'
 import { SceneSidebar, SceneTabs } from '../components/shell/SceneSidebar'
+import { SettingsNavigation } from '../components/shell/SettingsNavigation'
 import { MobileTabBar } from '../components/shell/MobileTabBar'
 import { FloatingQuickCapture } from '../components/FloatingQuickCapture'
 import { ProjectCaptureTargetProvider } from '../contexts/CaptureContext'
@@ -209,7 +210,7 @@ function ShellContent() {
   const sceneCollapsed = scene ? (collapsedScenes[scene.id] ?? false) : false
   const showSidebar = Boolean(scene) && !sceneCollapsed
   const module = moduleForPath(logicalPath, effectiveModules)
-  const title = scene
+  const title = logicalPath === '/settings/security' ? t('settings.account_security') : scene
     ? t(`nav.${scene.id}`, { defaultValue: t(`modules.${scene.id}`, { defaultValue: scene.title }) })
     : isHome ? t('nav.home') : module ? t(`modules.${module.id}`, { defaultValue: module.label }) : 'rainver'
   const permissionSpaceId = activeSpaceId ?? preferredSpaceId
@@ -270,6 +271,7 @@ function ShellContent() {
         </div>
 
         <main className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
+          <SettingsNavigation />
           <Outlet />
         </main>
 

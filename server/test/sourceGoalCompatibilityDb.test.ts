@@ -1,3 +1,5 @@
+import {withDbTransaction} from '../src/modules/routeUtils/common.js';
+import {waitForLockWaiter} from './support/lockWait.js';
 import {RuntimeContextContinuityService} from '../src/modules/runtimeContext/continuity/service.js';
 import {ExecutionControlSnapshotRepository} from '../src/modules/policy/executionControlSnapshots.js';
 import {RuntimeContextPolicyRepository} from '../src/modules/policy/runtimeContextPolicyRepository.js';
@@ -16,7 +18,7 @@ import {sourcePolicyEnvelope} from './support/customSourceFixtures.js';
 import {loadConfig,type ServerConfig} from '../src/config.js';
 import {SourceRecipeCreateService} from '../src/modules/sources/sourceRecipes/recipeCreateService.js';
 import {SourceRecipeDryRunService} from '../src/modules/sources/sourceRecipes/recipeDryRunService.js';
-import {mapLegacyGoal,rollbackGoalCompatibility} from '../src/modules/sources/goals/compatibility.js';
+import {mapLegacyGoal,rollbackGoalCompatibility,setLegacyGoalPaused} from '../src/modules/sources/goals/compatibility.js';
 import {SourceGoalService,type GoalExecutionPort} from '../src/modules/sources/goals/service.js';
 import {SourceGoalConversation} from '../src/modules/sources/goals/conversation.js';
 import {SourceChannelService} from '../src/modules/sources/channels/sourceChannelService.js';
@@ -116,7 +118,7 @@ it('A2: a legacy PATCH waiting behind takeover cannot reactivate the old task',a
   expect(follower).toBeDefined();
   patch=new SourceChannelService(db.pool,config).update(identity,channelId,{fetch_frequency:'daily',status:'active'});const refused=expect(patch).rejects.toMatchObject({statusCode:409});
   // ...and the PATCH is queued behind that takeover backend (tuple-lock order), before the holder releases.
-  let queued=false;for(let n=0;n<500&&!queued;n++){await holder.query('SELECT pg_stat_clear_snapshot()');queued=(await holder.query<{n:number}>("SELECT count(*)::int n FROM pg_stat_activity WHERE datname=current_database() AND pid<>$1 AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'SELECT id FROM source_channels%'",[follower!])).rows[0].n>0;if(!queued)await new Promise(r=>setTimeout(r,10));}
+  let queued=false;for(let n=0;n<500&&!queued;n++){await holder.query('SELECT pg_stat_clear_snapshot()');queued=(await holder.query<{n:number}>("SELECT count(*)::int n FROM pg_stat_activity WHERE datname=current_database() AND pid<>$1 AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'SELECT id,project_id,owner_user_id,visibility FROM source_connections%'",[follower!])).rows[0].n>0;if(!queued)await new Promise(r=>setTimeout(r,10));}
   expect(queued).toBe(true);
   await holder.query('COMMIT');await start;await refused;expect((await db.pool.query("SELECT task_type FROM scheduler_tasks WHERE status='active' AND next_run_at IS NOT NULL")).rows).toEqual([{task_type:'source_goal_tick'}]);}finally{await holder.query('ROLLBACK');holder.release();await Promise.allSettled([start,...(patch?[patch]:[])])}
 });
@@ -349,4 +351,18 @@ it('a stale legacy alias can be removed without pausing a channel owned by anoth
  expect((await db.pool.query('SELECT status FROM source_channels WHERE id=$1',[channelId])).rows[0].status).toBe('active');
  expect((await db.pool.query('SELECT status FROM source_goals WHERE id=$1',[alias.id])).rows[0].status).toBe('deleted');
  expect((await snapshot()).source_items).toEqual(before.source_items);
+});
+
+it.for(['map','pause','rollback'] as const)('locks the Source parent before channel writes during %s compatibility work',async(kind,ctx)=>{
+ if(!db.available)return ctx.skip();
+ const {goal,service,version}=await prepared();
+ if(kind==='rollback')await service.follow(identity,goal.id,{version_id:version.id,idempotency_key:'rollback-lock'});
+ const holder=await db.pool.connect();let settled=false;let pending:Promise<unknown>|undefined;
+ try{
+  await holder.query('BEGIN');await holder.query('SELECT id FROM source_connections WHERE id=$1 FOR UPDATE',[connectionId]);
+  pending=kind==='map'?mapLegacyGoal(db.pool,identity,channelId):kind==='rollback'?rollbackGoalCompatibility(db.pool,identity,goal.id):withDbTransaction(db.pool,tx=>setLegacyGoalPaused(tx,identity,goal.id,true,config));
+  void pending.then(()=>{settled=true},()=>{settled=true});
+  await waitForLockWaiter(db.pool,{settled:()=>settled});expect(settled).toBe(false);
+  await holder.query('COMMIT');await pending;
+ }finally{await holder.query('ROLLBACK');holder.release();if(pending)await Promise.allSettled([pending]);}
 });

@@ -41,7 +41,7 @@ export function presentConversationParts(parts: readonly TurnPart[]): TurnPart[]
 type ToolPart = Extract<TurnPart, { type: 'tool_call' }>
 export type ConversationWorkItem = { type: 'part'; part: TurnPart } | { type: 'tools'; id: string; parts: ToolPart[] }
 
-/** Consecutive read/search attempts share a compact disclosure, including unsuccessful attempts. */
+/** Consecutive tool calls share a disclosure without crossing visible message boundaries. */
 export function conversationWorkItems(parts: readonly TurnPart[]): ConversationWorkItem[] {
   const items: ConversationWorkItem[] = []
   let group: ToolPart[] = []
@@ -51,7 +51,7 @@ export function conversationWorkItems(parts: readonly TurnPart[]): ConversationW
     group = []
   }
   for (const part of parts) {
-    if (part.type === 'tool_call' && (part.kind === 'read' || part.kind === 'search')) group.push(part)
+    if (part.type === 'tool_call') group.push(part)
     else { flush(); items.push({ type: 'part', part }) }
   }
   flush()

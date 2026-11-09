@@ -1,3 +1,4 @@
+import {InquiryMutationError} from "./operationErrors.js";
 import { assertLinkTypeAllowed } from "../ontology/validation.js";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -194,19 +195,19 @@ export class InquirySignalService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const classification = requiredString(body.classification, "classification");
     if (!SIGNAL_CLASSIFICATIONS.includes(classification as SignalClassification)) {
-      throw new HttpError(422, `classification must be one of: ${SIGNAL_CLASSIFICATIONS.join(", ")}`);
+      throw new InquiryMutationError(422, `classification must be one of: ${SIGNAL_CLASSIFICATIONS.join(", ")}`);
     }
     const corpusItemId = optionalString(body.corpus_item_id);
     const experimentInterpretationId = optionalString(body.experiment_interpretation_id);
     if ((corpusItemId === null) === (experimentInterpretationId === null)) {
-      throw new HttpError(422, "Exactly one of corpus_item_id or experiment_interpretation_id is required");
+      throw new InquiryMutationError(422, "Exactly one of corpus_item_id or experiment_interpretation_id is required");
     }
     if (experimentInterpretationId && !allowExperimentSource) {
-      throw new HttpError(422, "Experiment Evidence Signals must be created through reviewed Interpretation conversion");
+      throw new InquiryMutationError(422, "Experiment Evidence Signals must be created through reviewed Interpretation conversion");
     }
     const confidence = optionalNumber(body.confidence, "confidence");
     if (confidence !== null && (confidence < 0 || confidence > 1)) {
-      throw new HttpError(422, "confidence must be between 0 and 1");
+      throw new InquiryMutationError(422, "confidence must be between 0 and 1");
     }
     const isMaterial = typeof body.is_material === "boolean"
       ? body.is_material
@@ -223,11 +224,11 @@ export class InquirySignalService {
       );
       if (!thread.rows[0]) throw new HttpError(404, "Thread not found");
       if (thread.rows[0].lifecycle_status !== "active") {
-        throw new HttpError(409, "Evidence Signals can only target an active Thread");
+        throw new InquiryMutationError(409, "Evidence Signals can only target an active Thread");
       }
       if (corpusItemId) {
         if (!(await new ProjectCorpusRepository(db).canReadItem(identity, projectId, corpusItemId))) {
-          throw new HttpError(422, "Readable Corpus item not found in this Project");
+          throw new InquiryMutationError(422, "Readable Corpus item not found in this Project");
         }
       } else {
         const interpretation = await db.query<{ id: string }>(
@@ -241,7 +242,7 @@ export class InquirySignalService {
           [experimentInterpretationId, projectId, identity.spaceId, threadId],
         );
         if (!interpretation.rows[0]) {
-          throw new HttpError(409, "Experiment Interpretation must be reviewed and target this primary Hypothesis");
+          throw new InquiryMutationError(409, "Experiment Interpretation must be reviewed and target this primary Hypothesis");
         }
       }
 
@@ -299,9 +300,9 @@ export class InquirySignalService {
           [projectId, dedupeKey, producerIdempotencyKey],
         );
         const delivered = existing.rows[0];
-        if (!delivered) throw new HttpError(409, "Signal delivery conflicted; retry");
+        if (!delivered) throw new InquiryMutationError(409, "Signal delivery conflicted; retry");
         if (delivered.dedupe_key !== dedupeKey) {
-          throw new HttpError(409, "producer_idempotency_key was already used for a different Signal payload");
+          throw new InquiryMutationError(409, "producer_idempotency_key was already used for a different Signal payload");
         }
         return { signal: signalToOut(delivered), consolidatedNow: false };
       }
@@ -367,7 +368,7 @@ export class InquirySignalService {
         WHERE thread_id=$1 AND candidate_kind=$2 AND semantic_key=$3 AND status='pending' FOR UPDATE`,
       [threadId, candidateKind, semanticKey],
     );
-    if (!existing.rows[0]) throw new HttpError(409, "Candidate consolidation conflicted; retry");
+    if (!existing.rows[0]) throw new InquiryMutationError(409, "Candidate consolidation conflicted; retry");
     await db.query(`UPDATE inquiry_signal_candidates SET updated_at=$1 WHERE id=$2`, [now, existing.rows[0].id]);
     void signal;
     return existing.rows[0].id;
@@ -463,7 +464,7 @@ export class InquirySignalService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const decision = requiredString(body.decision, "decision");
     if (!CANDIDATE_DECISIONS.includes(decision as CandidateDecision)) {
-      throw new HttpError(422, `decision must be one of: ${CANDIDATE_DECISIONS.join(", ")}`);
+      throw new InquiryMutationError(422, `decision must be one of: ${CANDIDATE_DECISIONS.join(", ")}`);
     }
     const now = new Date().toISOString();
 
@@ -476,7 +477,7 @@ export class InquirySignalService {
       const candidate = row.rows[0];
       if (!candidate) throw new HttpError(404, "Candidate not found");
       await this.assertCandidateReadable(db, identity, projectId, candidate);
-      if (candidate.status !== "pending") throw new HttpError(409, `Candidate already decided (${candidate.status})`);
+      if (candidate.status !== "pending") throw new InquiryMutationError(409, `Candidate already decided (${candidate.status})`);
 
       let resultingIterationId: string | null = null;
       let newStatus: string;
@@ -506,7 +507,7 @@ export class InquirySignalService {
         }
         case "merge": {
           const targetId = requiredString(body.target_candidate_id, "target_candidate_id");
-          if (targetId === candidateId) throw new HttpError(422, "A Candidate cannot merge into itself");
+          if (targetId === candidateId) throw new InquiryMutationError(422, "A Candidate cannot merge into itself");
           const target = await db.query<CandidateRow>(
             `SELECT * FROM inquiry_signal_candidates
               WHERE id=$1 AND space_id=$2 AND project_id=$3 AND status='pending'
@@ -514,7 +515,7 @@ export class InquirySignalService {
               FOR UPDATE`,
             [targetId, identity.spaceId, projectId, candidate.thread_id, candidate.candidate_kind],
           );
-          if (!target.rows[0]) throw new HttpError(422, "Merge target must be pending on the same Thread and of the same kind");
+          if (!target.rows[0]) throw new InquiryMutationError(422, "Merge target must be pending on the same Thread and of the same kind");
           await this.assertCandidateReadable(db, identity, projectId, target.rows[0]);
           await db.query(`UPDATE inquiry_evidence_signals SET candidate_id=$1 WHERE candidate_id=$2`, [targetId, candidateId]);
           newStatus = "merged";
@@ -524,7 +525,7 @@ export class InquirySignalService {
           requiredString(body.reason, "reason");
           const deferUntil = requiredString(body.defer_until, "defer_until");
           if (!Number.isFinite(Date.parse(deferUntil)) || Date.parse(deferUntil) <= Date.now()) {
-            throw new HttpError(422, "defer_until must be a future ISO timestamp");
+            throw new InquiryMutationError(422, "defer_until must be a future ISO timestamp");
           }
           newStatus = "deferred";
           break;
@@ -728,7 +729,7 @@ export class InquirySignalService {
    * window from where the last one ended instead of re-summarizing the whole
    * Project history every time.
    */
-  async latestDeltaBrief(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown> | null> {
+  async latestDeltaBrief(identity: SpaceUserIdentity, projectId: string, briefId?: string): Promise<Record<string, unknown> | null> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const row = await this.db.query<{
       id: string;
@@ -739,10 +740,10 @@ export class InquirySignalService {
     }>(
       `SELECT id, coverage_start, coverage_end, content_json, created_at
          FROM inquiry_delta_briefs
-        WHERE space_id = $1 AND project_id = $2
+        WHERE space_id = $1 AND project_id = $2 AND ($3::varchar IS NULL OR id=$3)
         ORDER BY created_at DESC
         LIMIT 1`,
-      [identity.spaceId, projectId],
+      [identity.spaceId, projectId, briefId??null],
     );
     const brief = row.rows[0];
     if (!brief) return null;
@@ -875,7 +876,7 @@ export class InquirySignalService {
         [candidateId, identity.spaceId, projectId],
       );
       if (!candidate.rows[0] || candidate.rows[0].status !== "deferred") {
-        throw new HttpError(409, "Only a deferred Candidate can be reopened");
+        throw new InquiryMutationError(409, "Only a deferred Candidate can be reopened");
       }
       await this.assertCandidateReadable(db, identity, projectId, candidate.rows[0]);
       const equivalent = await db.query(
@@ -885,7 +886,7 @@ export class InquirySignalService {
           FOR UPDATE`,
         [candidate.rows[0].thread_id, candidate.rows[0].candidate_kind, candidate.rows[0].semantic_key, candidateId],
       );
-      if (equivalent.rows[0]) throw new HttpError(409, "An equivalent Candidate is already pending");
+      if (equivalent.rows[0]) throw new InquiryMutationError(409, "An equivalent Candidate is already pending");
       const updated = await db.query<CandidateRow>(
         `UPDATE inquiry_signal_candidates SET status='pending', defer_until=NULL,
            review_packet_id=NULL,
@@ -942,7 +943,7 @@ export class InquirySignalService {
         WHERE object_id=$1 AND space_id=$2 AND project_id=$3 AND lifecycle_status='active'`,
       [threadId, spaceId, projectId],
     );
-    if (!thread.rows[0]) throw new HttpError(409, "Candidate target Thread is not active");
+    if (!thread.rows[0]) throw new InquiryMutationError(409, "Candidate target Thread is not active");
   }
 }
 
@@ -987,7 +988,7 @@ export async function readableCandidateIds(
 function optionalNumber(value: unknown, label: string): number | null {
   if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
-  if (!Number.isFinite(n)) throw new HttpError(422, `${label} must be a number`);
+  if (!Number.isFinite(n)) throw new InquiryMutationError(422, `${label} must be a number`);
   return n;
 }
 

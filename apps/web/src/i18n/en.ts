@@ -1,6 +1,20 @@
 /** English is the source locale. Keep keys stable when display wording changes. */
 export const en = {
-  file_preview: { title: 'File preview', open_image: 'View image', loading: 'Loading preview…', retry: 'Try again', unavailable: 'This preview is unavailable, expired, or outside this conversation’s workspace. Ask the agent to share it again.' },
+  subscription_usage: {
+    title: 'Subscription quotas', history: 'Recorded consumption',
+    description: 'Provider-wide quotas, grouped by account and shared quota pool. These include usage outside Rainver.',
+    reload: 'Reload accounts', retry: 'Try again', loading: 'Loading subscription accounts…',
+    empty: 'No CLI subscriptions are available to view.', refresh: 'Refresh quota', view: 'View quota',
+    account: 'Account: {{account}}', unidentified: 'Account not identified. This connection is shown separately until its identity is confirmed.',
+    email_identity: 'Matched using the current CLI login email.',
+    changed: 'The selected account is no longer available. Its login or access may have changed.',
+    session: 'Session', week: 'Weekly', unavailable: 'Unavailable', used: '{{percent}}% used',
+    resets: 'Resets {{time}}', checked: 'Checked {{time}}', connections_one: '{{count}} connection', connections_other: '{{count}} connections',
+    online: 'Online', offline: 'Offline', not_logged_in: 'This CLI copy is not logged in.',
+    no_measurement: 'No current measured quota. Refresh an online connection to check.',
+    exhausted: 'A quota window is full for account {{account}}. View quota for affected connections.',
+  },
+  file_preview: { title: 'File preview', open_image: 'View image', loading: 'Loading preview…', retry: 'Try again', unavailable: 'This preview is unavailable, expired, or outside this conversation’s workspace. Ask the agent to share it again.', expired: 'This Run’s version of the file is no longer kept: its workspace was cleaned up after the work was merged and the history period ended{{date}}. The merged result is in the project files.', expired_date: ' ({{date}})' },
   fileTree: { openInNewTab: 'Open in new tab', loading: 'Loading…', empty: 'No files found', retry: 'Could not load directory · Retry', more: 'Load more' },
   agent_work: {
     badge: '{{needs}} need you · {{unread}} unread',
@@ -139,6 +153,7 @@ export const en = {
     skills: 'Skills', artifacts: 'Artifacts',
   },
   shell: {
+    settings_navigation: 'Settings navigation', back_to: 'Back to {{name}}',
     switch_to_light: 'Switch to light theme', switch_to_dark: 'Switch to dark theme',
     sign_in: 'Sign in', sign_out: 'Sign out', show_sidebar: 'Show sidebar',
     all_spaces: 'Showing: All spaces', global_navigation: 'Global navigation',
@@ -171,7 +186,7 @@ export const en = {
     open_security: 'Open Security', model_providers: 'Model Providers',
     model_providers_description: 'Configure LLM backends (OpenAI, Anthropic, OpenRouter, Ollama). A CLI runtime is logged in on its execution host instead, from the Command Center.',
     open_model_providers: 'Open Model Providers', usage: 'Usage',
-    usage_description: 'Review your token usage, estimated cost, sessions, and usage shared within the active Space.',
+    usage_description: 'Review subscription quotas, recorded token usage, estimated cost, and shared usage.',
     open_usage: 'Open Usage', appearance: 'Appearance', dark: 'Dark', light: 'Light',
     dark_description: 'Deep navy — default', light_description: 'Light purple skin',
     language: 'Language', language_description: 'Choose the language used by this browser.',
@@ -233,6 +248,6 @@ export const en = {
     prompt_library: 'Prompt Library', retrieval_settings: 'Retrieval Settings',
     plugins: 'Optional Modules', settings: 'Settings', space_settings: 'Space Settings',
     skills: 'Skills', agents_mgmt: 'Agents', providers: 'Providers',
-    usage: 'Token Usage', network_profiles: 'Network', automations: 'Automations',
+    usage: 'Usage', network_profiles: 'Network', automations: 'Automations',
   },
 } as const

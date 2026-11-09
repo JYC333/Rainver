@@ -6,6 +6,7 @@ import {
   clearFailedRuntimeOptionsCache,
   clearRuntimeOptionsCache,
   detectCapabilities,
+  executionWorkspaceCapability,
   __clearRuntimeOptionsCache,
   type RuntimeLookup,
 } from "../src/capabilities.js";
@@ -24,10 +25,17 @@ function own(capabilities: Awaited<ReturnType<typeof detectCapabilities>>, runti
 }
 
 describe("capability discovery", () => {
+  it('does not offer colon-named worktree resources on native Windows',()=>{
+    expect(executionWorkspaceCapability('win32')).toBeUndefined();
+    expect(executionWorkspaceCapability('linux')).toEqual({version:2,reclaim:4});
+    expect(executionWorkspaceCapability('darwin')).toEqual({version:2,reclaim:4});
+  });
+
   it("detects git, which every environment running this test suite has installed", async () => {
     const capabilities = await detectCapabilities();
     expect(capabilities.runtimes).toContain("git");
     expect(capabilities.versions.git).toMatch(/git version/i);
+    expect(capabilities.execution_workspaces).toEqual(executionWorkspaceCapability());
   });
 
   it("looks only for the runtimes the server named, plus git", async () => {

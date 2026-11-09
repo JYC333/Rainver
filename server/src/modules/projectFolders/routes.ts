@@ -1,10 +1,10 @@
-import {registerProjectFolderIoRoutes} from './ioOperationRoutes.js';
+import { registerProjectFolderIoRoutes } from './ioOperationRoutes.js';
+import { registerProjectFolderOperationRoutes } from './operationRoutes.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { stateChangingReadAllowed } from "../../gateway/csrfOrigin.js";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
-  jsonBody,
   dbPool,
   params,
   parsePage,
@@ -15,8 +15,9 @@ import {
 } from "../routeUtils/common.js";
 import { assertProjectReadable } from "../projects/access.js";
 import { PgProjectFolderRepository } from "./repository.js";
-import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
-import { PgWorkspaceLocationRepository } from "./workspaceLocations.js";
+import { AgentWorkspaceListQuerySchema, WorkspaceChangePageQuerySchema } from "@rainver/protocol";
+import { agentWorkspaceDetail, listAgentWorkspaces } from "./workspaceOverview.js";
+import { conversationWorkspaceChangesForViewer } from "./workspaceReadModel.js";
 
 interface ProjectFolderServices {
   repository: Pick<
@@ -84,7 +85,46 @@ function folderId(request: FastifyRequest): string {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerProjectFolderOperationRoutes(app, context);
   registerProjectFolderIoRoutes(app, context);
+  // Agent workspace overview: the same read authorities as Run workspace progress.
+  app.get("/api/v1/projects/:projectId/agent-workspaces", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const parsed = AgentWorkspaceListQuerySchema.safeParse(query(request));
+      if (!parsed.success) return reply.code(422).send({ detail: "Expected view=current|history, an opaque cursor and limit 1-50" });
+      return reply.send(await listAgentWorkspaces(dbPool(context.config), id, projectId(request), parsed.data));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+  app.get("/api/v1/projects/:projectId/agent-workspaces/:workspaceId", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const workspaceId = params(request).workspaceId ?? "";
+      const page = WorkspaceChangePageQuerySchema.safeParse(query(request));
+      if (!page.success) return reply.code(422).send({ detail: "Expected an opaque cursor and limit 1-100" });
+      return reply.send(await agentWorkspaceDetail(dbPool(context.config), id, projectId(request), workspaceId, page.data));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+  // Pending workspace work of one conversation, independent of which turns are loaded.
+  app.get("/api/v1/sessions/:sessionId/workspace-changes", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const page = WorkspaceChangePageQuerySchema.safeParse(query(request));
+      if (!page.success) return reply.code(422).send({ detail: "Expected an opaque cursor and limit 1-100" });
+      const result = await conversationWorkspaceChangesForViewer(dbPool(context.config), id.spaceId, params(request).sessionId ?? "", id.userId, page.data);
+      if (result === null) return reply.code(404).send({ detail: "Conversation not found" });
+      return reply.send({ items: result.entries, next_cursor: result.next_cursor });
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
   app.get("/api/v1/projects/:projectId/host-execution-targets", async (request, reply) => {
     try {
       const id = await identity(context, request, reply);
@@ -116,10 +156,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-
-
-
-
   app.get("/api/v1/projects/:projectId/folders/:folderId", async (request, reply) => {
     try {
       const id = await identity(context, request, reply);
@@ -140,77 +176,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const listLocations = service.listLocations;
       if (!listLocations) return reply.code(501).send({ detail: "Workspace Location listing is unavailable" });
       return reply.send(await listLocations.call(service, id, projectId(request), folderId(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/projects/:projectId/folders/:folderId/locations/:locationId/activate", async (request, reply) => {
-    try {
-      const id = await identity(context, request, reply);
-      if (!id) return reply;
-      const locationId = params(request).locationId;
-      if (!locationId) throw new HttpError(422, "locationId is required");
-      return reply.send(await services(context).repository.activateLocation(
-        id,
-        projectId(request),
-        folderId(request),
-        locationId,
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.patch("/api/v1/projects/:projectId/folders/:folderId", async (request, reply) => {
-    try {
-      const id = await identity(context, request, reply);
-      if (!id) return reply;
-      const folder = await services(context).repository.update(
-        id,
-        projectId(request),
-        folderId(request),
-        jsonBody(request),
-      );
-      if (!folder) return reply.code(404).send({ detail: "Project Folder not found" });
-      return reply.send(folder);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.delete("/api/v1/projects/:projectId/folders/:folderId", async (request, reply) => {
-    try {
-      const id = await identity(context, request, reply);
-      if (!id) return reply;
-      const archived = await services(context).repository.archive(id, projectId(request), folderId(request));
-      if (!archived) return reply.code(404).send({ detail: "Project Folder not found" });
-      return reply.code(204).send();
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/projects/:projectId/folders/:folderId/unregister", async (request, reply) => {
-    try {
-      const id = await identity(context, request, reply);
-      if (!id) return reply;
-      // Captured before the rows disappear: after a successful unregister the
-      // daemon should drop its local path mapping too (best effort — an
-      // offline daemon keeps it, and `workspace list` shows the divergence).
-      const remoteLocations = (await new PgWorkspaceLocationRepository(dbPool(context.config)).listForFolder(id, folderId(request)))
-        .filter((location) => location.execution_host_kind === "remote");
-      const removed = await services(context).repository.unregister(
-        id,
-        projectId(request),
-        folderId(request),
-        { confirm: jsonBody(request).confirm === true },
-      );
-      if (!removed) return reply.code(404).send({ detail: "Project Folder not found" });
-      for (const location of remoteLocations) {
-        void sharedHostConnectionRegistry.forgetHostWorkspace(location.execution_host_id, location.id);
-      }
-      return reply.code(204).send();
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -250,11 +215,20 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         projectId(request),
         folderId(request),
         requestedPath,
-        { includeUtf16Preview: query(request).convert === "utf8" },
+        { includeUtf16Preview: query(request).convert === "utf8",workspaceLocationId:query(request).workspace_location_id },
       ));
     } catch (error) {
       return sendRouteError(reply, error);
     }
+  });
+
+  app.get('/api/v1/projects/:projectId/folders/:folderId/file/drafts/:draftId',async(request,reply)=>{
+    reply.header('cache-control','private, no-store');
+    try{const id=await identity(context,request,reply);if(!id)return reply;
+      const draft=await PgProjectFolderRepository.fromConfig(context.config).getDraftById(id,projectId(request),folderId(request),params(request).draftId!);
+      if(!draft)return reply.code(404).send({detail:'Draft not found or expired'});
+      return reply.send(draft);
+    }catch(error){return sendRouteError(reply,error);}
   });
 
   app.get("/api/v1/projects/:projectId/folders/:folderId/file/draft", async (request, reply) => {
@@ -265,49 +239,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (!path) throw new HttpError(422, "path is required");
       const repository = services(context).repository;
       if (!repository.getDraft) return reply.code(501).send({ detail: "Project Folder drafts are unavailable" });
-      return reply.send(await repository.getDraft(id, projectId(request), folderId(request), path));
+      return reply.send(await repository.getDraft(id, projectId(request), folderId(request), path,query(request).workspace_location_id));
     } catch (error) {
       return sendRouteError(reply, error);
     }
   });
-
-  app.put("/api/v1/projects/:projectId/folders/:folderId/file/draft", async (request, reply) => {
-    try {
-      const id = await identity(context, request, reply);
-      if (!id) return reply;
-      const repository = services(context).repository;
-      if (!repository.upsertDraft) return reply.code(501).send({ detail: "Project Folder drafts are unavailable" });
-      return reply.send(await repository.upsertDraft(id, projectId(request), folderId(request), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/projects/:projectId/folders/:folderId/file/draft/rebase", async (request, reply) => {
-    try {
-      const id = await identity(context, request, reply);
-      if (!id) return reply;
-      const repository = services(context).repository;
-      if (!repository.upsertDraft) return reply.code(501).send({ detail: "Project Folder drafts are unavailable" });
-      return reply.send(await repository.upsertDraft(id, projectId(request), folderId(request), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/projects/:projectId/folders/:folderId/file/draft/discard", async (request, reply) => {
-    try {
-      const id = await identity(context, request, reply);
-      if (!id) return reply;
-      const repository = services(context).repository;
-      if (!repository.discardDraft) return reply.code(501).send({ detail: "Project Folder drafts are unavailable" });
-      return reply.send(await repository.discardDraft(id, projectId(request), folderId(request), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-
 
   app.get("/api/v1/projects/:projectId/folders/:folderId/drafts/quota", async (request, reply) => {
     try {
@@ -339,8 +275,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return sendRouteError(reply, error);
     }
   });
-
-
 
   app.get("/api/v1/projects/:projectId/folders/:folderId/file/revisions/:revisionId/preview", async (request, reply) => {
     try {

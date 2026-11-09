@@ -16,6 +16,8 @@ import { failureKind } from './useAgentWorkList'
 import { WorkReasons } from './WorkReasons'
 import { WorkConversation } from './WorkConversation'
 import { WorkRun } from './WorkRun'
+import { ConversationRunControls, PresentedRunDecisions } from '../conversation/ConversationRunControls'
+import { Card } from '../../components/ui/card'
 
 export function WorkDetail({ source, revision, onClose, onUnread, onChanged, onReadState }: {
   source: AgentWorkItem; revision: number; onClose: () => void; onUnread: () => void; onChanged: () => void; onReadState: (state: AgentAttentionReadState) => void
@@ -146,6 +148,7 @@ function DetailContent({ item, childPage, onConflict, onUnread, onChanged, onRea
       || (state.subject.kind === 'task_merge' && reasons.some(reason => reason.kind === 'task_merge' && state.subject.kind === 'task_merge' && reason.merge_id === state.subject.merge_id)))
   }, [reading.confirm, item.identity, reasons])
   const conversation = item.operations.some(operation => operation.kind === 'open_session') && item.access_level === 'full'
+  const decisionRuns = useMemo(() => new Set(conversation ? reasons.flatMap(reason => reason.kind === 'run_decision' || reason.kind === 'authorization' ? [reason.run_id] : []) : []), [reasons, conversation])
   const [historyOpen, setHistoryOpen] = useState(false)
   const allRuns = [...item.runs, ...(childPage?.runs ?? [])]
   // Keep the selected result stable while child windows/background refreshes arrive.
@@ -158,7 +161,11 @@ function DetailContent({ item, childPage, onConflict, onUnread, onChanged, onRea
     ...item.operations.filter(operation => operation.kind === 'open_task').map(operation => ({ key: operation.task_id, to: `/tasks/${operation.task_id}`, label: t('agent_work.open_task') })),
     ...reasons.filter(reason => reason.kind === 'proposal').map(reason => ({ key: reason.proposal_id, to: `/proposals/${reason.proposal_id}`, label: t('agent_work.open_proposal') })),
   ]
-  return <>
+  const pendingControls = decisionRuns.size > 0 ? [...decisionRuns].map(runId => <Card key={runId} className="p-3">
+    <p className="text-sm font-medium">{t('conversation_ui.run.pending_action')}</p>
+    <ConversationRunControls runId={runId} reviewOnly onChanged={onChanged} onAuthorizationDisplayed={ids => reading.runDisplayed(runId, ids)} />
+  </Card>) : undefined
+  return <PresentedRunDecisions.Provider value={decisionRuns}>
     <div className="flex shrink-0 flex-wrap items-start justify-between gap-2">
       <h2 className="min-w-0 break-words text-lg font-semibold tracking-tight">{item.title}</h2>
       {item.read_states.length > 0 && <Button data-work-unread size="sm" variant="outline" disabled={reading.busy} onClick={() => void reading.markUnread()}>{t('agent_work.mark_unread')}</Button>}
@@ -169,7 +176,7 @@ function DetailContent({ item, childPage, onConflict, onUnread, onChanged, onRea
       {links.map(link => <ConversationLink key={link.key} className="text-xs font-medium text-accent-foreground underline-offset-2 hover:underline" to={link.to}>{link.label}</ConversationLink>)}
     </div>}
     {conversation
-      ? <AttentionViewingGroup value={reading.viewingGroup}><WorkConversation item={item} onMessagesDisplayed={reading.messagesDisplayed} onReadError={onReadError} onChanged={onChanged} /></AttentionViewingGroup>
+      ? <AttentionViewingGroup value={reading.viewingGroup}><WorkConversation item={item} onMessagesDisplayed={reading.messagesDisplayed} onReadError={onReadError} onChanged={onChanged} pendingControls={pendingControls} /></AttentionViewingGroup>
       : item.access_level !== 'full' && <p className="text-xs text-muted-foreground">{t('agent_work.summary_only')}</p>}
     {/* A reply conversation already owns its turns and execution controls. */}
     {!conversation && <section aria-label={t('agent_work.result')} className="min-h-0 flex-1 space-y-3 overflow-auto">
@@ -197,5 +204,5 @@ function DetailContent({ item, childPage, onConflict, onUnread, onChanged, onRea
         </>}
       </div>}
     </section>}
-  </>
+  </PresentedRunDecisions.Provider>
 }

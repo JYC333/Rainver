@@ -7,9 +7,11 @@ import { knowledgeModule } from "../src/modules/knowledge/index.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthRepositoryForTests } from "../src/modules/auth/identity.js";
 import { RETRIEVAL_CALIBRATION_DECISION_ARTIFACT_TYPE } from "../src/modules/retrieval/artifacts/calibration.js";
+import { useReviewPacketDatabase } from "./support/reviewPacketDatabase.js";
 import { RETRIEVAL_EVAL_REPORT_ARTIFACT_TYPE } from "../src/modules/retrieval/artifacts/eval.js";
 
-vi.mock("../src/db/pool.js", () => ({
+vi.mock("../src/db/pool.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../src/db/pool.js")>(),
   getDbPool: vi.fn(),
 }));
 
@@ -405,69 +407,54 @@ describe("Knowledge retrieval eval report route", () => {
     expect(JSON.stringify(metadata)).not.toContain("private uncited claim");
   });
 
-  it("can create a private diagnostics review packet from aggregate diagnostics", async () => {
-    __setAuthRepositoryForTests(fakeAuthRepository());
-    const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
-    const client = {
-      async query(sql: string, params: readonly unknown[] = []) {
-        calls.push({ sql, params });
-        // Every INSERT this fake handles puts the generated id first; echo
-        // it back so callers relying on `RETURNING id` get a usable row.
-        if (/^\s*INSERT/i.test(sql)) return { rows: [{ id: params[0] }], rowCount: 1 };
-        return { rows: [], rowCount: 1 };
-      },
-      release() {},
-    };
-    vi.mocked(getDbPool).mockReturnValue({
-      async query(sql: string, params: readonly unknown[] = []) {
-        calls.push({ sql, params });
-        if (/FROM settings/.test(sql)) return { rows: [settingsRow()], rowCount: 1 };
-        if (/FROM artifacts/.test(sql)) {
-          if (/created_at </.test(sql)) return { rows: [], rowCount: 0 };
-          return {
-            rows: [
-              {
-                artifact_type: "retrieval_maintenance_report",
-                metadata_json: {
-                  kind: "retrieval_maintenance_report",
-                  counts: { thin: 2 },
-                },
-              },
-            ],
-            rowCount: 1,
-          };
-        }
-        return { rows: [], rowCount: 1 };
-      },
-      async connect() {
-        return client;
-      },
-    } as never);
-    app = buildModuleServer(config(), [knowledgeModule]);
+  describe("persisted diagnostics packet", () => {
+    const packetDatabase = useReviewPacketDatabase(import.meta.url);
 
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/knowledge/retrieval/eval/diagnostics/report",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ window_days: 7, limit: 20, create_packet: true }),
-    });
+    it("can create a private diagnostics review packet from aggregate diagnostics", async () => {
+      __setAuthRepositoryForTests(fakeAuthRepository());
+      const pool = packetDatabase.database.pool;
+      await pool.query(
+        `INSERT INTO artifacts(id,space_id,owner_user_id,artifact_type,title,visibility,metadata_json,export_formats_json,created_at,updated_at)
+         VALUES('maint-1','space-1','user-1','retrieval_maintenance_report','Maintenance','private',$1::jsonb,'[]',now(),now())`,
+        [JSON.stringify({ kind: "retrieval_maintenance_report", counts: { thin: 2 } })],
+      );
+      vi.mocked(getDbPool).mockReturnValue(pool);
+      app = buildModuleServer(config(), [knowledgeModule]);
 
-    expect(res.statusCode).toBe(201);
-    expect(res.json()).toMatchObject({
-      artifact_id: expect.stringMatching(/[0-9a-f-]{36}/),
-      proposal_id: expect.stringMatching(/[0-9a-f-]{36}/),
-      diagnostic_codes: expect.arrayContaining(["maintenance_findings_present"]),
-    });
-    expect(calls.some((call) => call.sql === "BEGIN")).toBe(true);
-    expect(calls.some((call) => /INSERT INTO artifacts/.test(call.sql))).toBe(true);
-    const proposalInsert = calls.find((call) => /INSERT INTO proposals/.test(call.sql));
-    expect(proposalInsert).toBeDefined();
-    expect(proposalInsert!.params[3]).toBe("retrieval_diagnostics_packet");
-    const payload = JSON.parse(String(proposalInsert!.params[10]));
-    expect(payload).toMatchObject({
-      operation: "retrieval_diagnostics_packet",
-      canonical_write_performed: false,
-      diagnostic_codes: expect.arrayContaining(["maintenance_findings_present"]),
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/knowledge/retrieval/eval/diagnostics/report",
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({ window_days: 7, limit: 20, create_packet: true }),
+      });
+
+      expect(res.statusCode, res.body).toBe(201);
+      const body = res.json();
+      expect(body).toMatchObject({
+        artifact_id: expect.stringMatching(/[0-9a-f-]{36}/),
+        proposal_id: expect.stringMatching(/[0-9a-f-]{36}/),
+        diagnostic_codes: expect.arrayContaining(["maintenance_findings_present"]),
+      });
+      const proposal = (await pool.query(
+        "SELECT proposal_type, status, visibility, created_by_user_id, payload_json FROM proposals WHERE id = $1 AND space_id = 'space-1'",
+        [body.proposal_id],
+      )).rows[0];
+      expect(proposal).toMatchObject({
+        proposal_type: "retrieval_diagnostics_packet",
+        status: "pending",
+        visibility: "private",
+        created_by_user_id: "user-1",
+        payload_json: {
+          operation: "retrieval_diagnostics_packet",
+          canonical_write_performed: false,
+          diagnostic_codes: expect.arrayContaining(["maintenance_findings_present"]),
+        },
+      });
+      const artifact = (await pool.query(
+        "SELECT owner_user_id, visibility FROM artifacts WHERE id = $1 AND space_id = 'space-1'",
+        [body.artifact_id],
+      )).rows[0];
+      expect(artifact).toEqual({ owner_user_id: "user-1", visibility: "private" });
     });
   });
 

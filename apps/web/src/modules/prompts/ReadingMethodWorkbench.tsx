@@ -21,7 +21,7 @@ import { Button } from '../../components/ui/button';
 import { Textarea } from '../../components/ui/textarea';
 import { errMsg } from '../../lib/utils';
 import { readingMethodsApi, evidenceSample,revisionSample, type ReadingMethodContext, type ReadingMethodTrialView } from './readingMethodApi';
-export default function ReadingMethodWorkbench() {
+export default function ReadingMethodWorkbench({ showBackLink = true }: { showBackLink?: boolean } = {}) {
   const {
     activeSpaceId,
     userId
@@ -262,7 +262,7 @@ export default function ReadingMethodWorkbench() {
   }, [running, reload]);
 
   return <main className="mx-auto max-w-6xl space-y-5 p-4 pb-24 sm:p-6 sm:pb-12 reading-touch text-sm">
- <Button variant="ghost" size="sm" asChild><SpaceLink to={readingMethodReturn(item, q.get('reader'), data?.project_id ?? project)}>← {t(item?'readingMethod.back_to_reading':'readingMethod.back_to_settings')}</SpaceLink></Button>
+ {showBackLink && <Button variant="ghost" size="sm" asChild><SpaceLink to={readingMethodReturn(item, q.get('reader'), data?.project_id ?? project)}>← {t(item?'readingMethod.back_to_reading':'readingMethod.back_to_settings')}</SpaceLink></Button>}
  <header className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><h1 className="text-xl font-semibold">{t(target==='prompt.revision.method'?'readingMethod.revision_method':'readingMethod.reading_method')}</h1><p className="break-words text-sm text-muted-foreground">{data?.project_name ?? t('readingMethod.current_space')} · {data?.effective_version ? (data.effective_scope === 'system' ? t('readingMethod.system_baseline') : data.effective_scope === 'space' ? t('readingMethod.space_default') : t('readingMethod.project_override')) + t('readingMethod.effective') + ` v${data.effective_version}` : t('readingMethod.not_initialized_deployed')} · {editing ? t('readingMethod.unsaved_changes') : candidate ? t('readingMethod.candidate_draft') : t('readingMethod.production_unchanged')}</p></div>
  {data?.can_manage && data.initialized && (positive||proposal||candidate&&tab!=='compare'&&tab!=='current') && <Button disabled={busy||generationBusy||!!running||!!proposal||editing} onClick={()=>{if(positive)requestActivation();else setTab('compare');}}>{proposal?t('readingMethod.awaiting_decision'):positive?t('readingMethod.request_activation'):t('readingMethod.compare_runs')}</Button>}
  </header>

@@ -1,6 +1,6 @@
 import { useAttentionViewing } from '../agent_work/AgentAttentionProvider'
 import { ConversationScope, useConversationScope } from '../conversation/ConversationScope'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import { ConversationLink as Link } from '../conversation/ConversationScope'
 import { agentsApi, hostsApi, runsApi, sessionsApi } from '../../api/client'
@@ -10,6 +10,7 @@ import type {
   ConversationBackendBinding,
   ConversationBackendOption,
   Message,
+  RoomMessage,
   RunTurn,
 } from '../../types/api'
 import { ConversationView } from '../conversation/ConversationView'
@@ -31,6 +32,8 @@ import { ConversationGitContext } from '../conversation/ConversationGitContext'
 import { clearConversationDraft, writeConversationDraft } from '../conversation/conversationDraft'
 import { useConversationDraft } from '../conversation/useConversationDraft'
 import { ConversationRunControls } from '../conversation/ConversationRunControls'
+import {isWorkspaceIntegrationNotice} from '../conversation/WorkspaceIntegrationNotice'
+import {usePeriodicRefresh} from '../../hooks/usePeriodicRefresh'
 
 /**
  * How far back a reload reads turns for.
@@ -61,6 +64,7 @@ interface ChatMessage {
   runId?: string
   runIds?: string[]
   inputParts?: ConversationInputPart[]
+  systemMessage?:RoomMessage
 }
 
 interface BackendChoice {
@@ -78,6 +82,7 @@ interface BackendChoice {
  * so a refresh can reload persisted messages through the sessions API.
  */
 export default function ChatPanel(props: Parameters<typeof ChatPanelContent>[0]) {
+  const { userId, spaces } = useSpace()
   const [destination, setDestination] = useState({ requested: props.initialSessionId, accepted: undefined as string | undefined, epoch: 0 })
   if (destination.requested !== props.initialSessionId) {
     setDestination({ requested: props.initialSessionId, accepted: undefined, epoch: destination.epoch + (props.initialSessionId === destination.accepted ? 0 : 1) })
@@ -86,7 +91,7 @@ export default function ChatPanel(props: Parameters<typeof ChatPanelContent>[0])
     setDestination(current => ({ ...current, accepted: sessionId }))
     props.onSessionChange?.(sessionId)
   }, [props.onSessionChange])
-  return <ConversationScope key={`${props.agent.space_id}:${props.agent.id}:${destination.epoch}`} spaceId={props.agent.space_id}>
+  return <ConversationScope key={`${props.agent.space_id}:${props.agent.id}:${destination.epoch}`} spaceId={props.agent.space_id} actionUserId={userId} actionRole={spaces.find(space => space.id === props.agent.space_id)?.role ?? 'member'}>
     <ChatPanelContent {...props} onSessionChange={sessionChanged} />
   </ConversationScope>
 }
@@ -99,6 +104,7 @@ function ChatPanelContent({
   projectId,
   onMessagesDisplayed,
   onReadError,
+  pendingControls,
 }: {
   agent: AgentOut
   onMessagesDisplayed?: (ids: string[]) => void
@@ -107,6 +113,7 @@ function ChatPanelContent({
   initialSessionId?: string | null
   onSessionChange?: (sessionId: string) => void
   projectId?: string
+  pendingControls?: ReactNode
 }) {
   const scope = useConversationScope()
   const { userId } = useSpace()
@@ -216,6 +223,7 @@ function ChatPanelContent({
           id: m.id,
           role: m.role,
           content: m.content,
+          systemMessage:m.role==='system'?m as RoomMessage:undefined,
           inputParts: m.input_parts,
           actionPreviews: Array.isArray(m.metadata_json?.action_previews) ? m.metadata_json.action_previews as ChatActionPreview[] : undefined,
           artifactRefs: Array.isArray(m.metadata_json?.artifact_refs) ? m.metadata_json.artifact_refs.filter((value): value is string => typeof value === 'string') : undefined,
@@ -257,6 +265,26 @@ function ChatPanelContent({
       })
     return () => { cancelled = true }
   }, [initialSessionId, scope])
+
+  const noticeSession=useRef(sessionId)
+  noticeSession.current=sessionId
+  const refreshIntegrationNotices=useCallback(async()=>{
+    const id=sessionId
+    if(!id||scope.signal?.aborted)return
+    try{
+      const rows=await sessionsApi.messages(id,scope)
+      if(scope.signal?.aborted||noticeSession.current!==id)return
+      const notices=rows.filter(row=>isWorkspaceIntegrationNotice(row as RoomMessage))
+      setMessages(current=>{
+        if(current.some(message=>message.id&&isStreamPlaceholderId(message.id)))return current
+        const known=new Set(current.map(message=>message.id)),fresh=notices.filter(message=>!known.has(message.id))
+        return fresh.length?[...current,...fresh.map(message=>({id:message.id,role:message.role,content:message.content,systemMessage:message as RoomMessage}))]:current
+      })
+    }catch(error){if(!scope.signal?.aborted)readErrorRef.current?.(error)}
+  },[sessionId,scope])
+  // Reuse the common visible-surface reader; never replay sends or replace a
+  // streaming reply with a persisted page just to receive background results.
+  usePeriodicRefresh(refreshIntegrationNotices,5000,Boolean(sessionId)&&!loadingHistory&&!sending)
 
   const selectedBackendOption = backendOptions.find(option => option.runtime_profile_id === backend?.runtime_profile_id) ?? null
   const directInputFileSources = selectedBackendOption?.workspace_mode === 'location'
@@ -402,16 +430,20 @@ function ChatPanelContent({
         })
       } else {
         const note = res.error ?? t('conversation_ui.chat.turn_failed')
+        const content = res.assistant_message?.content || res.reply || (streamedContent ? `${streamedContent}\n\n${note}` : note)
         setMessages(current => {
           const streamed = current.find(item => item.id === streamingMessageId)
           const failed: ChatMessage = {
+            id: res.assistant_message?.id,
             role: 'assistant',
-            content: streamedContent ? `${streamedContent}\n\n${note}` : note,
+            content,
             error: true,
             // The steps stay on a failure, as much as on a success — when
             // something went wrong they are the explanation.
-            turn: settledTurn(streamed?.turn, 'failed', note),
+            turn: settledTurn(streamed?.turn, 'failed', content),
             actionPreviews: res.action_previews,
+            runId: res.run_id,
+            runIds: [res.run_id],
           }
           return streamed
             ? current.map(item => item.id === streamingMessageId ? failed : item)
@@ -615,12 +647,14 @@ function ChatPanelContent({
         </p>
       )}
       <ConversationView
+        pendingControls={pendingControls}
         entries={messages.map((m, index) => {
           const runIds = m.role === 'user' ? (m.runIds ?? (m.runId ? [m.runId] : [])) : []
           return {
             id: m.id ?? `entry-${index}`,
             role: m.role === 'user' ? 'user' as const : 'assistant' as const,
             content: m.content,
+            systemMessage:m.systemMessage,
             runId: m.runId,
             inputParts: m.inputParts,
             turn: m.turn ?? null,

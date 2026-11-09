@@ -1,9 +1,10 @@
+import {INQUIRY_OPERATION_SCHEMAS} from '@rainver/protocol';
 import type { RunLiveInputAvailability, RunLiveInputRequest, RunLiveInputResult } from "@rainver/protocol"
 import type {OperationId,OperationInput,OperationOutput,OperationOutcome} from "@rainver/protocol"
 import type { ProjectMember, ProjectMemberInput } from "@rainver/protocol"
 import type { InstanceInvitationResponse } from "@rainver/protocol"
 import type {ProblemProjectionSchema,ProblemWorkRequest,ProblemCloseRoundRequest,ResearchResultSchema} from "@rainver/protocol"
-import type {ProblemTaskLinkResult,ProblemLinkedTasksPage,TaskInquiryThreadsPage,ProblemTaskResult,TaskWorkHistoryPage} from "@rainver/protocol"
+import type {ProblemLinkedTasksPage,TaskInquiryThreadsPage,ProblemTaskResult,TaskWorkHistoryPage} from "@rainver/protocol"
 import type { ReaderDocumentNoteResponse, ReaderAnnotationRangeUpdate } from "@rainver/protocol"
 import type { Briefing, BriefingAdoptionPreview, BriefingAdoptionResult, BriefingFollowUpPreview, BriefingGenerateResponse, BriefingOverviewResponse, ReaderAppearance, ReaderPositionResult, ReaderPositionWrite, ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol'
 import type { RunFilePreview } from "@rainver/protocol"
@@ -177,8 +178,6 @@ import type {
   InquiryReviewPacket,
   InquiryThread,
   InquiryThreadDetail,
-  InquiryThreadNoteLink,
-  InquiryThreadRelation,
   InquiryThreadRevision,
   InquiryThreadStep,
   InterestProfileSnapshot,
@@ -249,7 +248,6 @@ import type {
   ProjectExtractionProfile,
   ProjectFolder,
   ProjectFolderCreateBody,
-  ProjectFolderUpdateBody,
   ProjectInstructionVersion,
   ProjectOperation,
   ProjectOverview,
@@ -934,8 +932,7 @@ export const focusAreasApi = {
   },
   setForObject: (objectId: string, focusAreaId: string | null) =>
     put<void>(`/space-objects/${encodeURIComponent(objectId)}/focus-area`, { focus_area_id: focusAreaId }),
-  setForProject: (projectId: string, focusAreaId: string | null) =>
-    put<void>(`/projects/${encodeURIComponent(projectId)}/focus-area`, { focus_area_id: focusAreaId }),
+  setForProject: async (projectId:string,focusAreaId:string|null,key:string=crypto.randomUUID()) => {await projectManagementCall('project.focus_area.set',{project_id:projectId,focus_area_id:focusAreaId},key);},
 }
 
 export const publicationsApi = {
@@ -1186,10 +1183,18 @@ export const notesCollectionsApi = {
  * Discuss and edit the Project's notes. The routes are Project-level.
  * Do not put them under `.../research/`.
  */
+type NotebookChatReply={session_id:string;run_id:string;ok:boolean;reply?:string;error?:string;notebook_edit?:{note_id:string;version:number;conflict:boolean}|null;daily_limit:number;daily_used:number};
 export const projectNotebookChatApi = {
-  send: (projectId: string, body: { message: string; session_id?: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } }) =>
-    post<{ session_id: string; run_id: string; ok: boolean; reply?: string; error?: string; notebook_edit?: { note_id: string; version: number; conflict: boolean } | null; daily_limit: number; daily_used: number }>(
-      `/projects/${encodeURIComponent(projectId)}/notebook-chat`, body),
+  send: async(projectId:string,body:{message:string;session_id?:string;source_item_ids?:string[];execution:{model_provider_id:string;model_name?:string}},key:string=crypto.randomUUID()):Promise<NotebookChatReply> => {
+    const receipt=await projectManagementCall('project.notebook.chat',{project_id:projectId,...body},key);
+    // Only the original command writes. Waiting for the same durable answer uses read-only requests.
+    for(let read=0;read<240;read++){
+      const result=await get<NotebookChatReply&{pending:boolean}>(`/projects/${encodeURIComponent(receipt.project_id)}/notebook-chat/${encodeURIComponent(receipt.run_id)}`,{spaceId:receipt.space_id});
+      if(!result.pending)return result;
+      await new Promise(resolve=>setTimeout(resolve,500));
+    }
+    throw new Error('The reply is still being prepared. Reopen this conversation shortly.');
+  },
 }
 
 export const notesTreeApi = {
@@ -2120,6 +2125,7 @@ async function readPrivateFolderDraft(receipt:{id:string;space_id:string;project
   if(current.version!==version){const error=new ApiRequestError('The draft changed in another tab',409,'operation_conflict',{error:{code:'operation_conflict',metadata:{code:'draft_version_conflict',current_draft_id:current.id,current_version:current.version}}});throw Object.assign(error,{currentDraft:current});}
   return current;
 }
+/** Read-only polling of one durable Folder request. Never resubmits its command. */
 async function waitForFolderIo(receipt:import('@rainver/protocol').OperationOutput<'project.folder.scan'>):Promise<import('@rainver/protocol').ProjectFolderIoStatus>{
   const started=Date.now(),authGeneration=_authContextGeneration;
   for(;;){
@@ -2137,6 +2143,18 @@ async function waitForFolderIo(receipt:import('@rainver/protocol').OperationOutp
     await new Promise(resolve=>setTimeout(resolve,250));
   }
 }
+/** Isolated Agent workspace progress: read-only projections. Commands stay in Operation Core. */
+export const agentWorkspacesApi = {
+  conversationChanges: (sessionId: string, page: { cursor?: string | null } = {}, options?: RequestOptions) =>
+    get<import('@rainver/protocol').ConversationWorkspaceChanges>(`/sessions/${encodeURIComponent(sessionId)}/workspace-changes${page.cursor ? `?${new URLSearchParams({ cursor: page.cursor })}` : ''}`, options),
+  list: (projectId: string, params: { view: 'current' | 'history'; cursor?: string | null; limit?: number }, options?: RequestOptions) =>
+    get<import('@rainver/protocol').AgentWorkspacePage>(`/projects/${encodeURIComponent(projectId)}/agent-workspaces?` + new URLSearchParams({
+      view: params.view, limit: String(params.limit ?? 20), ...(params.cursor ? { cursor: params.cursor } : {}),
+    }), options),
+  detail: (projectId: string, workspaceId: string, page: { cursor?: string | null } = {}, options?: RequestOptions) =>
+    get<import('@rainver/protocol').AgentWorkspaceDetail>(`/projects/${encodeURIComponent(projectId)}/agent-workspaces/${encodeURIComponent(workspaceId)}${page.cursor ? `?${new URLSearchParams({ cursor: page.cursor })}` : ''}`, options),
+}
+
 export const projectFoldersApi = {
   list:    (projectId: string, params: Record<string, string> = {}, options?: RequestOptions) =>
     get<Page<ProjectFolder>>(`/projects/${projectId}/folders?` + new URLSearchParams(params), options),
@@ -2159,48 +2177,42 @@ export const projectFoldersApi = {
     get<ProjectFolder>(`/projects/${projectId}/folders/${folderId}`),
   locations: (projectId: string, folderId: string, options: RequestOptions = {}) =>
     get<WorkspaceLocation[]>(`/projects/${projectId}/folders/${folderId}/locations`, options),
-  activateLocation: (projectId: string, folderId: string, locationId: string) =>
-    post<WorkspaceLocation>(`/projects/${projectId}/folders/${folderId}/locations/${locationId}/activate`),
-  update:  (projectId: string, folderId: string, data: ProjectFolderUpdateBody) =>
-    patch<ProjectFolder>(`/projects/${projectId}/folders/${folderId}`, data),
-  archive: (projectId: string, folderId: string) =>
-    del<null>(`/projects/${projectId}/folders/${folderId}`),
-  unregister: (projectId: string, folderId: string, confirm = false) =>
-    post<null>(`/projects/${projectId}/folders/${folderId}/unregister`, confirm ? { confirm: true } : {}),
+  activateLocation: async (projectId:string,folderId:string,locationId:string,key:string=crypto.randomUUID())=>{
+    const receipt=await noteObjectCall('project.folder.location.activate',{project_id:projectId,folder_id:folderId,location_id:locationId},key);
+    const rows=await get<WorkspaceLocation[]>(`/projects/${encodeURIComponent(receipt.project_id)}/folders/${encodeURIComponent(receipt.folder_id)}/locations`,{spaceId:receipt.space_id}),row=rows.find(location=>location.id===receipt.id);
+    if(!row)throw new Error('Workspace Location no longer available');return row;
+  },
+  update:async(projectId:string,folderId:string,data:Omit<OperationInput<'project.folder.update'>,'project_id'|'folder_id'>,key:string=crypto.randomUUID())=>{
+    const receipt=await noteObjectCall('project.folder.update',{...data,project_id:projectId,folder_id:folderId},key);
+    return get<ProjectFolder>(`/projects/${encodeURIComponent(receipt.project_id)}/folders/${encodeURIComponent(receipt.folder_id)}`,{spaceId:receipt.space_id});
+  },
+  archive:async(projectId:string,folderId:string,key:string=crypto.randomUUID())=>{
+    await noteObjectCall('project.folder.archive',{project_id:projectId,folder_id:folderId},key);return null;
+  },
+  unregister: async(projectId:string,folderId:string,confirm=false,key:string=crypto.randomUUID())=>{
+    await noteObjectCall('project.folder.unregister',{project_id:projectId,folder_id:folderId,confirm},key);return null;
+  },
   tree:    (projectId: string, folderId: string, path = '.', offset = 0, options: RequestOptions = {}) =>
     get<FileNode>(`/projects/${projectId}/folders/${folderId}/tree?path=${encodeURIComponent(path)}&offset=${offset}`, options),
   file:    (projectId: string, folderId: string, path: string, options: RequestOptions & { convertUtf8?: boolean } = {}) =>
     get<FileContent>(`/projects/${projectId}/folders/${folderId}/file?path=${encodeURIComponent(path)}${options.convertUtf8 ? '&convert=utf8' : ''}`, options),
   draft:   (projectId: string, folderId: string, path: string) =>
     get<ProjectFileDraft | null>(`/projects/${projectId}/folders/${folderId}/file/draft?path=${encodeURIComponent(path)}`),
-  upsertDraft: (projectId: string, folderId: string, data: {
-    expected_version?: number | null
-    target_kind: 'existing' | 'new'
-    relative_path: string
-    base_exists: boolean
-    base_sha256: string | null
-    content: string
-    content_sha256: string
-    byte_size: number
-    source_encoding: 'utf8' | 'utf16le' | 'utf16be'
-    preserve_bom: boolean
-    line_ending_mode: 'lf' | 'crlf' | 'mixed' | 'none'
-  }) => put<ProjectFileDraft>(`/projects/${projectId}/folders/${folderId}/file/draft`, data),
-  rebaseDraft: (projectId: string, folderId: string, data: {
-    expected_version: number
-    target_kind: 'existing' | 'new'
-    relative_path: string
-    base_exists: boolean
-    base_sha256: string | null
-    content: string
-    content_sha256: string
-    byte_size: number
-    source_encoding: 'utf8' | 'utf16le' | 'utf16be'
-    preserve_bom: boolean
-    line_ending_mode: 'lf' | 'crlf' | 'mixed' | 'none'
-  }) => post<ProjectFileDraft>(`/projects/${projectId}/folders/${folderId}/file/draft/rebase`, data),
-  discardDraft: (projectId: string, folderId: string, draftId: string, draftVersion: number) =>
-    post<{ discarded: true }>(`/projects/${projectId}/folders/${folderId}/file/draft/discard`, { draft_id: draftId, draft_version: draftVersion }),
+  upsertDraft:async(projectId:string,folderId:string,data:Omit<OperationInput<'project.folder.draft.upsert'>,'project_id'|'folder_id'>,key:string=crypto.randomUUID())=>{
+    const spaceId=_spaceId;
+    try{
+      const result=await callOperation('project.folder.draft.upsert',{...data,project_id:projectId,folder_id:folderId},key,{spaceId});
+      if(!('status' in result)||result.status!=='succeeded')throw new Error('Draft action did not complete');
+      return readPrivateFolderDraft(result.data,result.data.version);
+    }catch(error){if(!(error&&typeof error==='object'&&'currentDraft' in error))await hydrateDraftConflict(error,projectId,folderId,spaceId);throw error;}
+  },
+  rebaseDraft:(projectId:string,folderId:string,data:Omit<OperationInput<'project.folder.draft.upsert'>,'project_id'|'folder_id'|'expected_version'>&{expected_version:number},key:string=crypto.randomUUID()):Promise<ProjectFileDraft>=>
+    projectFoldersApi.upsertDraft(projectId,folderId,data,key),
+  discardDraft:async(projectId:string,folderId:string,draftId:string,draftVersion:number,key:string=crypto.randomUUID()):Promise<{discarded:true}>=>{
+    const spaceId=_spaceId;
+    try{const result=await callOperation('project.folder.draft.discard',{project_id:projectId,folder_id:folderId,draft_id:draftId,draft_version:draftVersion},key,{spaceId});if(!('status' in result)||result.status!=='succeeded')throw new Error('Draft discard did not complete');return {discarded:true};}
+    catch(error){await hydrateDraftConflict(error,projectId,folderId,spaceId);throw error;}
+  },
   saveDraft:async(projectId:string,folderId:string,draftId:string,draftVersion:number,confirmMixedLineEndingNormalization=false,key:string=crypto.randomUUID()):Promise<ProjectFileDraftSave>=>{
     const receipt=await noteObjectCall('project.folder.draft.save',{project_id:projectId,folder_id:folderId,draft_id:draftId,draft_version:draftVersion,confirm_mixed_line_ending_normalization:confirmMixedLineEndingNormalization},key),status=await waitForFolderIo(receipt);
     if(status.result?.kind!=='save_draft')throw new Error('File save receipt is unavailable');
@@ -2263,6 +2275,7 @@ export const ambientSessionsApi = {
 // ADR 0016: multi-host control center — pairing, dispatch, and the
 // work-stream read side (task threads). See .agent/modules/hosts.md.
 export const hostsApi = {
+  subscriptionUsage: () => get<{ items: import('@rainver/protocol').SubscriptionQuotaPool[] }>('/hosts/subscription-usage'),
   toolOperations: (hostId: string) =>
     get<{ items: Array<{ runtime_key: string; action: string }> }>(`/hosts/${encodeURIComponent(hostId)}/tool-operations`),
   list: (options: RequestOptions = {}) => get<{ items: Host[] }>('/hosts', options),
@@ -3161,10 +3174,23 @@ export const readerApi = {
 }
 
 // ── Projects ──────────────────────────────────────────────────────────────
+async function projectManagementCall<Id extends keyof typeof import('@rainver/protocol').PROJECT_MANAGEMENT_SCHEMAS>(id:Id,input:OperationInput<Id>,key:string){
+  const result=await callOperation(id,input,key);
+  if(!('status' in result)||result.status!=='succeeded')throw new Error('Project command did not complete');
+  return result.data;
+}
+async function currentProjectVersion<T extends {id:string}>(kind:'brief'|'instruction',receipt:{project_id:string;id:string;space_id:string}){
+  const rows=await get<T[]>(`/projects/${encodeURIComponent(receipt.project_id)}/${kind}-versions`,{spaceId:receipt.space_id});
+  const row=rows.find(r=>r.id===receipt.id);if(!row)throw new Error('Project version no longer available');return row;
+}
 export const projectsApi = {
   members: (id: string) => get<ProjectMember[]>(`/projects/${encodeURIComponent(id)}/members`),
-  addMember: (id: string, body: ProjectMemberInput) => post<ProjectMember>(`/projects/${encodeURIComponent(id)}/members`, body),
-  removeMember: (id: string, userId: string) => del<void>(`/projects/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`),
+  addMember: async (id: string, body: ProjectMemberInput,key:string=crypto.randomUUID()) => {
+    const receipt=await projectManagementCall('project.member.add',{...body,project_id:id},key);
+    const members=await get<ProjectMember[]>(`/projects/${encodeURIComponent(id)}/members`,{spaceId:receipt.space_id});
+    const row=members.find(member=>member.id===receipt.id);if(!row)throw new Error('Project member no longer available');return row;
+  },
+  removeMember: async (id: string, userId: string,key:string=crypto.randomUUID()) => {await projectManagementCall('project.member.remove',{project_id:id,user_id:userId},key);},
   list: (params: { status?: string; limit?: number; offset?: number } = {}, options?: RequestOptions) => {
     const q: Record<string, string> = {}
     if (params.status !== undefined) q.status = params.status
@@ -3172,24 +3198,28 @@ export const projectsApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<Project>>('/projects?' + new URLSearchParams(q), options)
   },
-  create: (data: ProjectCreate) => post<Project>('/projects', data),
+  create: async (data: ProjectCreate,key:string=crypto.randomUUID()) => {
+    const receipt=await projectManagementCall('project.create',data,key);return get<Project>(`/projects/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id});
+  },
   get: (id: string, options?: RequestOptions) => get<Project>(`/projects/${id}`,options),
-  update: (id: string, data: ProjectUpdate) => patch<Project>(`/projects/${id}`, data),
-  archive: (id: string) => post<Project>(`/projects/${id}/archive`),
+  update: async(id:string,data:ProjectUpdate,key:string=crypto.randomUUID()) => {const receipt=await projectManagementCall('project.update',{project_id:id,...data},key);return get<Project>(`/projects/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id});},
+  archive: async(id:string,key:string=crypto.randomUUID()) => {const receipt=await projectManagementCall('project.archive',{project_id:id},key);return get<Project>(`/projects/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id});},
   /** Draft and published snapshot side by side, for Project writers. */
   publicSummaryEditor: (id: string) =>
     get<ProjectPublicSummaryEditorState>(`/projects/${encodeURIComponent(id)}/public-summary/editor`),
   /** Saves the draft; every save bumps `draft_version`. Never changes what readers see. */
-  savePublicSummaryDraft: (id: string, body: ProjectPublicSummaryUpsertBody) =>
-    put<ProjectPublicSummaryDraft>(`/projects/${encodeURIComponent(id)}/public-summary`, body),
+  savePublicSummaryDraft: async(id:string,body:ProjectPublicSummaryUpsertBody,key:string=crypto.randomUUID()) => {
+    const receipt=await projectManagementCall('project.public_summary.save',{project_id:id,...body},key),state=await get<ProjectPublicSummaryEditorState>(`/projects/${encodeURIComponent(receipt.project_id)}/public-summary/editor`,{spaceId:receipt.space_id});
+    if(!state.draft)throw new Error('Public summary draft is no longer available');return state.draft;
+  },
   generatePublicSummaryDraft: (id: string) =>
     post<ProjectPublicSummaryDraft>(`/projects/${encodeURIComponent(id)}/public-summary/draft`, {}),
   /** Approves the named draft version as the space-public snapshot (owner-level). */
-  publishPublicSummary: (id: string, draftVersion: number) =>
-    post<ProjectPublicSummary>(`/projects/${encodeURIComponent(id)}/public-summary/publish`, { draft_version: draftVersion }),
+  publishPublicSummary: async(id:string,draftVersion:number,key:string=crypto.randomUUID()) => {
+    const receipt=await projectManagementCall('project.public_summary.publish',{project_id:id,draft_version:draftVersion},key);return get<ProjectPublicSummary>(`/projects/${encodeURIComponent(receipt.project_id)}/public-summary`,{spaceId:receipt.space_id});
+  },
   /** Takes the snapshot down; the draft stays (owner-level). */
-  revokePublicSummary: (id: string) =>
-    post<void>(`/projects/${encodeURIComponent(id)}/public-summary/revoke`, {}),
+  revokePublicSummary: async(id:string,key:string=crypto.randomUUID()) => {await projectManagementCall('project.public_summary.revoke',{project_id:id},key);},
   getOverview: (id: string) => get<ProjectOverview>(`/projects/${id}/overview`),
   hostExecutionTargets: (id: string) =>
     get<HostExecutionTargetsResponse>(`/projects/${encodeURIComponent(id)}/host-execution-targets`),
@@ -3216,15 +3246,13 @@ export const projectsApi = {
     get<ProjectWorkUpdatesResponse>(`/projects/${id}/updates?` + new URLSearchParams(
       Object.fromEntries(Object.entries(params).map(([key, value]) => [key, String(value)])),
     )),
-  postUpdate: (id: string, body: { summary: string }) =>
-    post<{ id: string }>(`/projects/${id}/updates`, body),
+  postUpdate: (id:string,body:{summary:string},key:string=crypto.randomUUID()) => projectManagementCall('project.update.report',{project_id:id,...body},key),
   operations: async (id: string) => {
     const all:ProjectOperation[]=[];let after:string|undefined;
     for(;;){const page=await get<ProjectOperation[]>(`/projects/${id}/operations?limit=100${after?`&after_id=${encodeURIComponent(after)}`:''}`);all.push(...page);if(page.length<100)break;after=page[page.length-1]!.id;}
     return all.sort((a,b)=>Date.parse(b.updated_at)-Date.parse(a.updated_at));
   },
-  undoUpdate: (projectId: string, eventId: string) =>
-    post<{ undone_event_id: string; action: string }>(`/projects/${encodeURIComponent(projectId)}/updates/${encodeURIComponent(eventId)}/undo`, {}),
+  undoUpdate: (projectId:string,eventId:string,key:string=crypto.randomUUID()) => projectManagementCall('project.update.undo',{project_id:projectId,event_id:eventId},key),
   getOperation: (id: string, operationId: string) => get<ProjectOperation>(`/projects/${id}/operations/${operationId}`),
   createOperation: (id: string, body: Omit<OperationInput<'project.operation.create'>,'project_id'>, key: string) =>
     callOperation('project.operation.create', {...body, project_id:id}, key),
@@ -3247,7 +3275,10 @@ export const projectsApi = {
     sourcesApi.deleteProjectSourceBinding(id,bindingId,key),
   backfillSourceBinding: (id:string,bindingId:string,key?:string) =>
     sourcesApi.backfillProjectSourceBinding(id,bindingId,key),
-  proposeBindingBackfill:(id:string,bindingId:string,body:Record<string,unknown>)=>post<{operation:ProjectOperation;plan:SourceBackfillPlan;proposal:Proposal}>(`/projects/${id}/sources/bindings/${bindingId}/propose-backfill`,body),
+  proposeBindingBackfill:async(id:string,bindingId:string,body:Omit<OperationInput<'project.source.propose_backfill'>,'project_id'|'binding_id'>,key:string=crypto.randomUUID())=>{
+    const result=await callOperation('project.source.propose_backfill',{project_id:id,binding_id:bindingId,...body},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Source history proposal command did not complete');return result.data;
+  },
   corpus: (id: string, params: {
     status?: string
     triage_status?: string
@@ -3267,13 +3298,16 @@ export const projectsApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<ProjectCorpusItem>>(`/projects/${id}/corpus?` + new URLSearchParams(q))
   },
-  addCorpusItem: (projectId: string, data: {
+  addCorpusItem: async (projectId: string, data: {
     source_item_id: string
     role?: ProjectCorpusItem['role']
     triage_status?: ProjectCorpusItem['triage_status']
     metadata_json?: Record<string, unknown>
-  }) => post<ProjectCorpusItem>(`/projects/${projectId}/corpus`, data),
-  updateCorpusItem: (projectId: string, corpusItemId: string, data: Partial<{
+  },key:string=crypto.randomUUID()) => {
+    const result=await callOperation('project.corpus.upsert',{project_id:projectId,...data},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Corpus command did not complete');return {id:result.data.id};
+  },
+  updateCorpusItem: async (projectId: string, corpusItemId: string, data: Partial<{
     role: ProjectCorpusItem['role']
     status: ProjectCorpusItem['status']
     triage_status: ProjectCorpusItem['triage_status']
@@ -3282,7 +3316,10 @@ export const projectsApi = {
     confidence: number | null
     reason: string | null
     metadata_json: Record<string, unknown>
-  }>) => patch<ProjectCorpusItem>(`/projects/${projectId}/corpus/${corpusItemId}`, data),
+  }>,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('project.corpus.update',{project_id:projectId,corpus_item_id:corpusItemId,...data},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Corpus command did not complete');return {id:result.data.id};
+  },
   backfillCorpusFromSources: (id: string) =>
     post<ProjectCorpusBackfillResult>(`/projects/${id}/corpus/backfill-source-items`),
   publicSummaryFeedback: (data: RetrievalFeedbackRequest) =>
@@ -3291,29 +3328,35 @@ export const projectsApi = {
     post<RetrievalBriefResponse>('/projects/retrieval/brief', data),
   getActiveBriefVersion: (id: string) => get<ProjectBriefVersion | null>(`/projects/${id}/brief-versions/active`),
   listBriefVersions: (id: string) => get<ProjectBriefVersion[]>(`/projects/${id}/brief-versions`),
-  createBriefVersion: (id: string, data: Partial<Pick<ProjectBriefVersion,
+  createBriefVersion: async (id: string, data: Partial<Pick<ProjectBriefVersion,
     'goal' | 'scope_included' | 'scope_excluded' | 'success_definition' | 'constraints' | 'assumptions' |
     'confirmed_decisions' | 'workspace_identity' | 'workspace_boundary' | 'source_refs'
-  >>) => post<ProjectBriefVersion>(`/projects/${id}/brief-versions`, data),
-  submitBriefForReview: (id: string, versionId: string) => post<ProjectBriefVersion>(`/projects/${id}/brief-versions/${versionId}/submit-review`),
-  publishBrief: (id: string, versionId: string) => post<ProjectBriefVersion>(`/projects/${id}/brief-versions/${versionId}/publish`),
+  >>,key:string=crypto.randomUUID()) => currentProjectVersion<ProjectBriefVersion>('brief',(await projectManagementCall('project.brief.create',{...data,project_id:id},key))),
+  submitBriefForReview: async (id:string,versionId:string,key:string=crypto.randomUUID()) => currentProjectVersion<ProjectBriefVersion>('brief',(await projectManagementCall('project.brief.submit_review',{project_id:id,version_id:versionId},key))),
+  publishBrief: async (id:string,versionId:string,key:string=crypto.randomUUID()) => currentProjectVersion<ProjectBriefVersion>('brief',(await projectManagementCall('project.brief.publish',{project_id:id,version_id:versionId},key))),
   getActiveInstructionVersion: (id: string) => get<ProjectInstructionVersion | null>(`/projects/${id}/instruction-versions/active`),
   listInstructionVersions: (id: string) => get<ProjectInstructionVersion[]>(`/projects/${id}/instruction-versions`),
-  createInstructionVersion: (id: string, data: Pick<ProjectInstructionVersion, 'title' | 'instruction_text'>) => post<ProjectInstructionVersion>(`/projects/${id}/instruction-versions`, data),
-  submitInstructionForReview: (id: string, versionId: string) => post<ProjectInstructionVersion>(`/projects/${id}/instruction-versions/${versionId}/submit-review`),
-  publishInstruction: (id: string, versionId: string) => post<ProjectInstructionVersion>(`/projects/${id}/instruction-versions/${versionId}/publish`),
+  createInstructionVersion: async (id:string,data:Pick<ProjectInstructionVersion,'title'|'instruction_text'>,key:string=crypto.randomUUID()) => currentProjectVersion<ProjectInstructionVersion>('instruction',(await projectManagementCall('project.instruction.create',{...data,project_id:id},key))),
+  submitInstructionForReview: async (id:string,versionId:string,key:string=crypto.randomUUID()) => currentProjectVersion<ProjectInstructionVersion>('instruction',(await projectManagementCall('project.instruction.submit_review',{project_id:id,version_id:versionId},key))),
+  publishInstruction: async (id:string,versionId:string,key:string=crypto.randomUUID()) => currentProjectVersion<ProjectInstructionVersion>('instruction',(await projectManagementCall('project.instruction.publish',{project_id:id,version_id:versionId},key))),
 }
 
+async function inquiryCommand<Id extends keyof typeof INQUIRY_OPERATION_SCHEMAS>(id:Id,input:unknown,key:string){
+  const normalized=INQUIRY_OPERATION_SCHEMAS[id].input.parse(input);
+  const result=await callOperation(id,normalized as import('@rainver/protocol').OperationInput<Id>,key);
+  if(!('status' in result)||result.status!=='succeeded')throw new Error('Inquiry command did not complete');
+  return result.data;
+}
 export const inquiryApi = {
   workspaceThreads:(project:string,filters:Record<string,string>={})=>get<{items:Array<{id:string;kind:string;statement:string;statement_truncated:boolean;lifecycle_status:string;attention_state:string;judgment:string|null;updated_at:string}>;next_cursor:string|null}>(`/projects/${encodeURIComponent(project)}/inquiry/workspace-threads?${new URLSearchParams(filters)}`),
   workspaceAccess:(project:string)=>get<{can_write:boolean}>(`/projects/${encodeURIComponent(project)}/inquiry/workspace-access`),
   problem:(project:string,thread:string,cursors:Record<string,string>={})=>get<typeof ProblemProjectionSchema._output>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/problem?${new URLSearchParams(cursors)}`),
-  recordProblemWork:(project:string,thread:string,body:ProblemWorkRequest)=>post<typeof ProblemProjectionSchema._output>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/problem/work`,body),
-  closeProblemRound:(project:string,thread:string,body:ProblemCloseRoundRequest)=>post<{id:string;thread_id:string;round_number:number;iteration_id:string|null;projection:typeof ProblemProjectionSchema._output}>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/problem/close-round`,body),
+  recordProblemWork:async(project:string,thread:string,body:ProblemWorkRequest,key:string=crypto.randomUUID())=>{const out=await inquiryCommand('inquiry.problem.record_work',{...body,project_id:project,thread_id:thread},key);return get<typeof ProblemProjectionSchema._output>(`/projects/${encodeURIComponent(out.project_id)}/inquiry/threads/${encodeURIComponent(thread)}/problem`,{spaceId:out.space_id});},
+  closeProblemRound:async(project:string,thread:string,body:ProblemCloseRoundRequest,key:string=crypto.randomUUID())=>{const out=await inquiryCommand('inquiry.problem.close_round',{...body,project_id:project,thread_id:thread},key);return {...out,projection:await get<typeof ProblemProjectionSchema._output>(`/projects/${encodeURIComponent(out.project_id)}/inquiry/threads/${encodeURIComponent(thread)}/problem`,{spaceId:out.space_id})};},
   linkedTasks:(project:string,thread:string,after?:string)=>get<ProblemLinkedTasksPage>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/tasks${after?`?after_task_id=${encodeURIComponent(after)}`:''}`),
-  linkTask:(project:string,thread:string,body:Record<string,unknown>)=>post<ProblemTaskLinkResult>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/tasks`,body),
+  linkTask:async(project:string,thread:string,body:Record<string,unknown>,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.task.link',{...body,project_id:project,thread_id:thread},key),
   taskResult:(project:string,thread:string,task:string)=>get<ProblemTaskResult>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/tasks/${encodeURIComponent(task)}/result`),
-  referenceTaskResult:(project:string,thread:string,task:string,body:Record<string,unknown>)=>post<Record<string,unknown>>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/tasks/${encodeURIComponent(task)}/reference-result`,body),
+  referenceTaskResult:async(project:string,thread:string,task:string,body:Record<string,unknown>,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.task.reference_result',{...body,project_id:project,thread_id:thread,task_id:task},key),
   listThreads: (projectId: string) =>
     get<InquiryThread[]>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads`),
   getThread: (projectId: string, threadId: string) =>
@@ -3332,10 +3375,7 @@ export const inquiryApi = {
     if(!('status' in result)||result.status!=='succeeded')throw new Error('Question creation did not complete');
     return get<InquiryThread>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(result.data.thread_id)}`);
   },
-  recordIteration: (projectId: string, threadId: string, data: Record<string, unknown>) =>
-    post<InquiryIteration & { thread: InquiryThread }>(
-      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/iterations`, data,
-    ),
+  recordIteration:async(projectId:string,threadId:string,data:Record<string,unknown>,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.iteration.record',{...data,project_id:projectId,thread_id:threadId},key),
   listOpenSteps: (projectId: string) =>
     get<InquiryOpenStep[]>(`/projects/${encodeURIComponent(projectId)}/inquiry/open-steps`),
   listSteps: (projectId: string, threadId: string) =>
@@ -3344,31 +3384,15 @@ export const inquiryApi = {
     get<InquiryIteration[]>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/iterations`),
   listRevisions: (projectId: string, threadId: string) =>
     get<InquiryThreadRevision[]>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/revisions`),
-  reviseDefinition: (projectId: string, threadId: string, data: Record<string, unknown>) =>
-    post<{ thread: InquiryThread; superseded_by_thread_id: string | null }>(
-      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/definition-revisions`, data,
-    ),
-  updateWork: (projectId: string, threadId: string, data: Record<string, unknown>) =>
-    patch<InquiryThread & { wip_limit_exceeded: boolean }>(
-      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/work-state`, data,
-    ),
-  transitionLifecycle: (projectId: string, threadId: string, lifecycleStatus: string, reason?: string) =>
-    post<InquiryThread>(
-      `/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/lifecycle-transitions`,
-      { lifecycle_status: lifecycleStatus, reason },
-    ),
-  addRelation: (projectId: string, data: Record<string, unknown>) =>
-    post<InquiryThreadRelation>(`/projects/${encodeURIComponent(projectId)}/inquiry/relations`, data),
-  removeRelation: (projectId: string, relationId: string) =>
-    del<null>(`/projects/${encodeURIComponent(projectId)}/inquiry/relations/${encodeURIComponent(relationId)}`),
-  setPrimaryParent: (projectId: string, threadId: string, parentThreadId: string | null) =>
-    put<InquiryThread>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/primary-parent`, { parent_thread_id: parentThreadId }),
-  linkNote: (projectId: string, threadId: string, noteObjectId: string, linkKind?: string) =>
-    post<InquiryThreadNoteLink>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/notes`, { note_object_id: noteObjectId, link_kind: linkKind }),
-  unlinkNote: (projectId: string, threadId: string, noteObjectId: string) =>
-    del<null>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/notes/${encodeURIComponent(noteObjectId)}`),
-  setPersonalFocus: (projectId: string, threadId: string, inFocus: boolean) =>
-    put<null>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads/${encodeURIComponent(threadId)}/personal-focus`, { in_focus: inFocus }),
+  reviseDefinition:async(projectId:string,threadId:string,data:Record<string,unknown>,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.definition.revise',{...data,project_id:projectId,thread_id:threadId},key),
+  updateWork:async(projectId:string,threadId:string,data:Record<string,unknown>,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.work.update',{...data,project_id:projectId,thread_id:threadId},key),
+  transitionLifecycle:async(projectId:string,threadId:string,lifecycleStatus:string,reason?:string,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.lifecycle.transition',{project_id:projectId,thread_id:threadId,lifecycle_status:lifecycleStatus,reason},key),
+  addRelation:async(projectId:string,data:Record<string,unknown>,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.relation.add',{...data,project_id:projectId},key),
+  removeRelation:async(projectId:string,relationId:string,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.relation.remove',{project_id:projectId,relation_id:relationId},key),
+  setPrimaryParent:async(projectId:string,threadId:string,parentThreadId:string|null,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.thread.set_primary_parent',{project_id:projectId,thread_id:threadId,parent_thread_id:parentThreadId},key),
+  linkNote:async(projectId:string,threadId:string,noteObjectId:string,linkKind?:string,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.note.link',{project_id:projectId,thread_id:threadId,note_object_id:noteObjectId,link_kind:linkKind},key),
+  unlinkNote:async(projectId:string,threadId:string,noteObjectId:string,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.note.unlink',{project_id:projectId,thread_id:threadId,note_object_id:noteObjectId},key),
+  setPersonalFocus:async(projectId:string,threadId:string,inFocus:boolean,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.personal_focus.set',{project_id:projectId,thread_id:threadId,in_focus:inFocus},key),
   getFocus: (projectId: string) =>
     get<{ personal_focus: InquiryThread[]; shared_focus_wip_limit: number }>(`/projects/${encodeURIComponent(projectId)}/inquiry/focus`),
   listCandidates: (projectId: string, status = 'pending') =>
@@ -3377,23 +3401,10 @@ export const inquiryApi = {
     get<InquiryCandidate>(
       `/projects/${encodeURIComponent(projectId)}/inquiry/candidates/${encodeURIComponent(candidateId)}`,
     ),
-  openReviewPacket: (projectId: string, limit = 5) =>
-    post<InquiryReviewPacket>(`/projects/${encodeURIComponent(projectId)}/inquiry/review-packets`, { limit }),
-  closeReviewPacket: (projectId: string, packetId: string) =>
-    post<{ id: string; status: 'closed'; closed_at: string }>(
-      `/projects/${encodeURIComponent(projectId)}/inquiry/review-packets/${encodeURIComponent(packetId)}/close`,
-      {},
-    ),
-  decideCandidate: (projectId: string, candidateId: string, data: Record<string, unknown>) =>
-    post<InquiryCandidate>(
-      `/projects/${encodeURIComponent(projectId)}/inquiry/candidates/${encodeURIComponent(candidateId)}/decision`,
-      data,
-    ),
-  reopenCandidate: (projectId: string, candidateId: string) =>
-    post<InquiryCandidate>(
-      `/projects/${encodeURIComponent(projectId)}/inquiry/candidates/${encodeURIComponent(candidateId)}/reopen`,
-      {},
-    ),
+  openReviewPacket:async(projectId:string,limit=5,key:string=crypto.randomUUID()):Promise<InquiryReviewPacket>=>{const out=await inquiryCommand('inquiry.review_packet.open',{project_id:projectId,limit},key);return out.id?get<InquiryReviewPacket>(`/projects/${encodeURIComponent(out.project_id)}/inquiry/review-packets/${encodeURIComponent(out.id)}`,{spaceId:out.space_id}):{id:null,project_id:out.project_id,status:'empty',created_at:new Date().toISOString(),candidates:[]};},
+  closeReviewPacket:async(projectId:string,packetId:string,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.review_packet.close',{project_id:projectId,packet_id:packetId},key),
+  decideCandidate:async(projectId:string,candidateId:string,data:Record<string,unknown>,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.candidate.decide',{...data,project_id:projectId,candidate_id:candidateId},key),
+  reopenCandidate:async(projectId:string,candidateId:string,key:string=crypto.randomUUID())=>inquiryCommand('inquiry.candidate.reopen',{project_id:projectId,candidate_id:candidateId},key),
   listSignals: (projectId: string, threadId?: string) => {
     const q = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : ''
     return get<InquiryEvidenceSignal[]>(`/projects/${encodeURIComponent(projectId)}/inquiry/signals${q}`)
@@ -3404,11 +3415,7 @@ export const inquiryApi = {
     get<InquiryDeltaBrief | null>(`/projects/${encodeURIComponent(projectId)}/inquiry/delta-briefs/latest`),
   // `coverage_start` is what makes this a delta rather than a re-summary of
   // the whole Project: callers pass the previous Brief's `coverage_end`.
-  generateDeltaBrief: (projectId: string, coverageStart?: string | null) =>
-    post<InquiryDeltaBrief>(
-      `/projects/${encodeURIComponent(projectId)}/inquiry/delta-briefs`,
-      coverageStart ? { coverage_start: coverageStart } : {},
-    ),
+  generateDeltaBrief:async(projectId:string,coverageStart?:string|null,key:string=crypto.randomUUID())=>{const out=await inquiryCommand('inquiry.delta_brief.generate',{project_id:projectId,coverage_start:coverageStart??null},key);return get<InquiryDeltaBrief>(`/projects/${encodeURIComponent(out.project_id)}/inquiry/delta-briefs/${encodeURIComponent(out.id!)}`,{spaceId:out.space_id});},
 }
 
 export interface InquiryDeltaBrief {
@@ -3420,72 +3427,51 @@ export interface InquiryDeltaBrief {
   created_at: string
 }
 
+type ExperimentReceipt = {id:string;space_id:string;project_id:string;definition_id:string}
+type ExperimentVersionBody = OperationInput<'experiment.version.create'> extends infer Input ? Input extends unknown ? Omit<Input,'project_id'|'definition_id'> : never : never
+async function currentExperimentDefinition(receipt:ExperimentReceipt){
+  return get<ExperimentDefinition & {versions:ExperimentVersion[]}>(`/projects/${encodeURIComponent(receipt.project_id)}/experiments/definitions/${encodeURIComponent(receipt.definition_id)}`,{spaceId:receipt.space_id});
+}
+async function currentExperimentVersion(receipt:ExperimentReceipt){
+  const definition=await currentExperimentDefinition(receipt),row=definition.versions.find(version=>version.id===receipt.id);
+  if(!row)throw new Error('Experiment Version no longer available');return row;
+}
+async function currentExperimentRun(receipt:ExperimentReceipt){
+  const rows=await get<ExperimentRun[]>(`/projects/${encodeURIComponent(receipt.project_id)}/experiments/definitions/${encodeURIComponent(receipt.definition_id)}/runs`,{spaceId:receipt.space_id}),row=rows.find(run=>run.id===receipt.id);
+  if(!row)throw new Error('Experiment Run no longer available');return row;
+}
+async function currentExperimentInterpretation(receipt:ExperimentReceipt){
+  const rows=await get<ExperimentInterpretation[]>(`/projects/${encodeURIComponent(receipt.project_id)}/experiments/definitions/${encodeURIComponent(receipt.definition_id)}/interpretations`,{spaceId:receipt.space_id}),row=rows.find(item=>item.id===receipt.id);
+  if(!row)throw new Error('Experiment Interpretation no longer available');return row;
+}
 export const experimentsApi = {
-  listDefinitions: (projectId: string) =>
-    get<ExperimentDefinition[]>(`/projects/${encodeURIComponent(projectId)}/experiments/definitions`),
-  createDefinition: (projectId: string, data: Record<string, unknown>) =>
-    post<ExperimentDefinition>(`/projects/${encodeURIComponent(projectId)}/experiments/definitions`, data),
-  getDefinition: (projectId: string, definitionId: string) =>
-    get<ExperimentDefinition & { versions: ExperimentVersion[] }>(
-      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}`,
-    ),
-  updateDefinition: (projectId: string, definitionId: string, data: Record<string, unknown>) =>
-    patch<ExperimentDefinition>(
-      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}`,
-      data,
-    ),
-  createVersion: (projectId: string, definitionId: string, data: Record<string, unknown>) =>
-    post<ExperimentVersion>(
-      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/versions`,
-      data,
-    ),
-  approveVersion: (projectId: string, definitionId: string, versionId: string) =>
-    post<ExperimentVersion>(
-      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/versions/${encodeURIComponent(versionId)}/approve`,
-      {},
-    ),
-  listRuns: (projectId: string, definitionId: string) =>
-    get<ExperimentRun[]>(
-      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/runs`,
-    ),
-  createRun: (projectId: string, definitionId: string, versionId: string, data: Record<string, unknown>) =>
-    post<ExperimentRun>(
-      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/versions/${encodeURIComponent(versionId)}/runs`,
-      data,
-    ),
-  launchRun: (projectId: string, definitionId: string, versionId: string, data: {
-    agent_id: string
-    runtime_profile_id?: string
-    is_baseline?: boolean
-    hypothesis?: string
-  }) => post<ExperimentRun>(
-    `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/versions/${encodeURIComponent(versionId)}/runs/launch`,
-    data,
-  ),
-  completeRun: (projectId: string, definitionId: string, runId: string, data: Record<string, unknown>) =>
-    post<ExperimentRun & { observations: ExperimentObservation[] }>(
-      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/runs/${encodeURIComponent(runId)}/complete`,
-      data,
-    ),
-  listInterpretations: (projectId: string, definitionId: string) =>
-    get<ExperimentInterpretation[]>(
-      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/interpretations`,
-    ),
-  createInterpretation: (projectId: string, definitionId: string, data: Record<string, unknown>) =>
-    post<ExperimentInterpretation>(
-      `/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/interpretations`,
-      data,
-    ),
-  reviewInterpretation: (projectId: string, interpretationId: string) =>
-    post<ExperimentInterpretation>(
-      `/projects/${encodeURIComponent(projectId)}/experiments/interpretations/${encodeURIComponent(interpretationId)}/review`,
-      {},
-    ),
-  convertInterpretation: (projectId: string, interpretationId: string, confidence?: number) =>
-    post<ExperimentInterpretation & { signal: Record<string, unknown> }>(
-      `/projects/${encodeURIComponent(projectId)}/experiments/interpretations/${encodeURIComponent(interpretationId)}/convert-to-signal`,
-      confidence === undefined ? {} : { confidence },
-    ),
+  listDefinitions:(projectId:string)=>get<ExperimentDefinition[]>(`/projects/${encodeURIComponent(projectId)}/experiments/definitions`),
+  getDefinition:(projectId:string,definitionId:string)=>get<ExperimentDefinition & {versions:ExperimentVersion[]}>(`/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}`),
+  createDefinition:async(projectId:string,data:Omit<OperationInput<'experiment.definition.create'>,'project_id'>,key:string=crypto.randomUUID())=>
+    currentExperimentDefinition(await noteObjectCall('experiment.definition.create',{...data,project_id:projectId},key)),
+  updateDefinition:async(projectId:string,definitionId:string,data:Omit<OperationInput<'experiment.definition.update'>,'project_id'|'definition_id'>,key:string=crypto.randomUUID())=>
+    currentExperimentDefinition(await noteObjectCall('experiment.definition.update',{...data,project_id:projectId,definition_id:definitionId},key)),
+  createVersion:async(projectId:string,definitionId:string,data:ExperimentVersionBody,key:string=crypto.randomUUID())=>
+    currentExperimentVersion(await noteObjectCall('experiment.version.create',{...data,project_id:projectId,definition_id:definitionId},key)),
+  approveVersion:async(projectId:string,definitionId:string,versionId:string,key:string=crypto.randomUUID())=>
+    currentExperimentVersion(await noteObjectCall('experiment.version.approve',{project_id:projectId,definition_id:definitionId,version_id:versionId},key)),
+  listRuns:(projectId:string,definitionId:string)=>get<ExperimentRun[]>(`/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/runs`),
+  createRun:async(projectId:string,definitionId:string,versionId:string,data:Omit<OperationInput<'experiment.run.create'>,'project_id'|'definition_id'|'version_id'>,key:string=crypto.randomUUID())=>
+    currentExperimentRun(await noteObjectCall('experiment.run.create',{...data,project_id:projectId,definition_id:definitionId,version_id:versionId},key)),
+  launchRun:async(projectId:string,definitionId:string,versionId:string,data:Omit<OperationInput<'experiment.run.launch'>,'project_id'|'definition_id'|'version_id'>,key:string=crypto.randomUUID())=>
+    currentExperimentRun(await noteObjectCall('experiment.run.launch',{...data,project_id:projectId,definition_id:definitionId,version_id:versionId},key)),
+  completeRun:async(projectId:string,definitionId:string,runId:string,data:Omit<OperationInput<'experiment.run.complete'>,'project_id'|'definition_id'|'experiment_run_id'>,key:string=crypto.randomUUID())=>{
+    const receipt=await noteObjectCall('experiment.run.complete',{...data,project_id:projectId,definition_id:definitionId,experiment_run_id:runId},key);
+    const run=await currentExperimentRun(receipt),observations=await get<ExperimentObservation[]>(`/projects/${encodeURIComponent(receipt.project_id)}/experiments/definitions/${encodeURIComponent(receipt.definition_id)}/runs/${encodeURIComponent(receipt.id)}/observations`,{spaceId:receipt.space_id});
+    return {...run,observations};
+  },
+  listInterpretations:(projectId:string,definitionId:string)=>get<ExperimentInterpretation[]>(`/projects/${encodeURIComponent(projectId)}/experiments/definitions/${encodeURIComponent(definitionId)}/interpretations`),
+  createInterpretation:async(projectId:string,definitionId:string,data:Omit<OperationInput<'experiment.interpretation.create'>,'project_id'|'definition_id'>,key:string=crypto.randomUUID())=>
+    currentExperimentInterpretation(await noteObjectCall('experiment.interpretation.create',{...data,project_id:projectId,definition_id:definitionId},key)),
+  reviewInterpretation:async(projectId:string,interpretationId:string,key:string=crypto.randomUUID())=>
+    currentExperimentInterpretation(await noteObjectCall('experiment.interpretation.review',{project_id:projectId,interpretation_id:interpretationId},key)),
+  convertInterpretation:async(projectId:string,interpretationId:string,confidence?:number,key:string=crypto.randomUUID())=>
+    currentExperimentInterpretation(await noteObjectCall('experiment.interpretation.convert',{project_id:projectId,interpretation_id:interpretationId,confidence},key)),
 }
 
 export interface KnowledgePromotionCandidate {
@@ -3507,15 +3493,7 @@ export interface KnowledgePromotionCandidate {
 }
 
 export const knowledgePromotionApi = {
-  extract: (projectId: string, body: {
-    source_kind: 'note' | 'inquiry_thread' | 'experiment_interpretation'
-    source_id: string
-    agent_id: string
-    runtime_profile_id?: string
-  }) => post<{ run_id: string; status: string; source_ref: Record<string, unknown> }>(
-    `/projects/${encodeURIComponent(projectId)}/knowledge-candidate-extractions`,
-    body,
-  ),
+  extract: async (projectId:string,body:{source_kind:'note'|'inquiry_thread'|'experiment_interpretation';source_id:string;agent_id:string;runtime_profile_id?:string},key:string=crypto.randomUUID()) => noteObjectCall('knowledge.candidate.extract',{...body,project_id:projectId},key),
   list: (projectId: string, status?: string) =>
     get<KnowledgePromotionCandidate[]>(
       `/projects/${encodeURIComponent(projectId)}/knowledge-candidates${status ? `?status=${encodeURIComponent(status)}` : ''}`,
@@ -3553,8 +3531,15 @@ export interface ProjectReviewSession {
 }
 
 export const projectReviewApi = {
-  open: (projectId: string, limit = 5) =>
-    post<ProjectReviewSession>(`/projects/${encodeURIComponent(projectId)}/review-sessions`, { limit }),
+  open: async (projectId:string,limit=5,key:string=crypto.randomUUID()):Promise<ProjectReviewSession> => {
+    const receipt=await projectManagementCall('project.review_session.open',{project_id:projectId,limit},key),base=`/projects/${encodeURIComponent(receipt.project_id)}`,options={spaceId:receipt.space_id};
+    const [inquiry,knowledge]=await Promise.all([
+      receipt.inquiry_packet_id?get<{id:string|null;candidates:unknown[]}>(`${base}/inquiry/review-packets/${encodeURIComponent(receipt.inquiry_packet_id)}`,options):Promise.resolve({id:null,candidates:[]}),
+      get<{id:string;candidates:KnowledgePromotionCandidate[]}>(`${base}/knowledge-candidate-review-packets/${encodeURIComponent(receipt.knowledge_packet_id)}`,options),
+    ]);
+    const count=inquiry.candidates.length+knowledge.candidates.length;
+    return {project_id:receipt.project_id,created_at:receipt.created_at,summary:count===0?'No material Inquiry or Knowledge changes need review.':`${inquiry.candidates.length} Inquiry change${inquiry.candidates.length===1?'':'s'} and ${knowledge.candidates.length} Knowledge change${knowledge.candidates.length===1?'':'s'} need review.`,sections:{inquiry:{packet:inquiry,decision_href:`/projects/${receipt.project_id}/inquiry`},knowledge:{packet:knowledge,decision_href:`/projects/${receipt.project_id}/inquiry?view=review&tab=candidates`}}};
+  },
 }
 
 export interface DecisionCase {
@@ -3574,13 +3559,17 @@ export interface DecisionCase {
 export const decisionCasesApi = {
   list: (projectId: string) => get<DecisionCase[]>(`/projects/${encodeURIComponent(projectId)}/decision-cases`),
   get: (projectId: string, caseId: string) => get<DecisionCase>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}`),
-  create: (projectId: string, body: { title: string; framing?: string; source_thread_ids?: string[] }) => post<DecisionCase>(`/projects/${encodeURIComponent(projectId)}/decision-cases`, body),
-  addOption: (projectId: string, caseId: string, body: { title: string; description?: string }) => post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/options`, body),
-  addCriterion: (projectId: string, caseId: string, body: { name: string; weight: number }) => post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/criteria`, body),
-  score: (projectId: string, caseId: string, body: { option_id: string; criterion_id: string; score: number; rationale?: string }) => post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/scores`, body),
-  decide: (projectId: string, caseId: string, optionId: string) => post<DecisionCase>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/decide`, { option_id: optionId }),
-  addCommitment: (projectId: string, caseId: string, statement: string) => post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/commitments`, { statement }),
-  createDelivery: (projectId: string, caseId: string, commitmentId: string) => post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/commitments/${encodeURIComponent(commitmentId)}/deliver`, {}),
+  create: async (projectId:string,body:{title:string;framing?:string;source_thread_ids?:string[]},key:string=crypto.randomUUID()) => {
+    const receipt=await projectManagementCall('decision.case.create',{...body,project_id:projectId},key);return get<DecisionCase>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id});
+  },
+  addOption: (projectId:string,caseId:string,body:{title:string;description?:string},key:string=crypto.randomUUID()) => projectManagementCall('decision.option.add',{...body,project_id:projectId,case_id:caseId},key),
+  addCriterion: (projectId:string,caseId:string,body:{name:string;weight:number},key:string=crypto.randomUUID()) => projectManagementCall('decision.criterion.add',{...body,project_id:projectId,case_id:caseId},key),
+  score: (projectId:string,caseId:string,body:{option_id:string;criterion_id:string;score:number;rationale?:string},key:string=crypto.randomUUID()) => projectManagementCall('decision.option.score',{...body,project_id:projectId,case_id:caseId},key),
+  decide: async (projectId:string,caseId:string,optionId:string,key:string=crypto.randomUUID()) => {
+    const receipt=await projectManagementCall('decision.case.decide',{project_id:projectId,case_id:caseId,option_id:optionId},key);return get<DecisionCase>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}`,{spaceId:receipt.space_id});
+  },
+  addCommitment: (projectId:string,caseId:string,statement:string,key:string=crypto.randomUUID()) => projectManagementCall('decision.commitment.add',{project_id:projectId,case_id:caseId,statement},key),
+  createDelivery: (projectId:string,caseId:string,commitmentId:string,key:string=crypto.randomUUID()) => projectManagementCall('decision.commitment.deliver',{project_id:projectId,case_id:caseId,commitment_id:commitmentId},key),
 }
 
 interface LearningObjective {
@@ -3621,31 +3610,59 @@ export const projectResearchApi = {
     post<{ advice: import('../types/api').ProjectResearchStandingAdvice; thread: InquiryThread }>(
       `/projects/${encodeURIComponent(projectId)}/research/standing/advice/${encodeURIComponent(adviceId)}/action`, {},
     ),
-  dismissStandingAdvice: (projectId: string, adviceId: string) =>
-    post<import('../types/api').ProjectResearchStandingAdvice>(
-      `/projects/${encodeURIComponent(projectId)}/research/standing/advice/${encodeURIComponent(adviceId)}/dismiss`, {},
-    ),
-  retryStandingBatch: (projectId: string, batchId: string) =>
-    post<import('../types/api').ProjectResearchStandingBatch>(
-      `/projects/${encodeURIComponent(projectId)}/research/standing/batches/${encodeURIComponent(batchId)}/retry`, {},
-    ),
+  dismissStandingAdvice: async (projectId:string,adviceId:string,key:string=crypto.randomUUID())=>{
+    const result=await callOperation('research.standing.dismiss',{project_id:projectId,advice_id:adviceId},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Standing advice command did not complete');return result.data;
+  },
+  retryStandingBatch: async (projectId:string,batchId:string,key:string=crypto.randomUUID())=>{
+    const result=await callOperation('research.standing.retry',{project_id:projectId,batch_id:batchId},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Standing retry command did not complete');return result.data;
+  },
   area: (projectId: string) => get<ResearchArea>(`/projects/${encodeURIComponent(projectId)}/research/area`),
-  initializeArea: (projectId: string) => post<ResearchArea>(`/projects/${encodeURIComponent(projectId)}/research/area`, {}),
+  initializeArea: async (projectId:string,key:string=crypto.randomUUID())=>{
+    const result=await callOperation('research.area.initialize',{project_id:projectId},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Research area command did not complete');
+    return get<ResearchArea>(`/projects/${encodeURIComponent(result.data.project_id)}/research/area`,{spaceId:result.data.space_id});
+  },
   readingList: (projectId: string, params: { triage_status?: string; read_status?: string; q?: string;limit?:string;offset?:string } = {}) => get<ResearchReadingList>(`/projects/${encodeURIComponent(projectId)}/research/reading-list?${new URLSearchParams(params)}`),
   // Per-note editing/revisions/rollback go through the generic notesApi —
   // a project's notebook is just Notes filed under its auto-created folder.
-  updateEvidenceCard: (projectId: string, sourceItemId: string, body: { why_md: string; how_md: string; what_md: string }) => put<ResearchEvidenceCard>(`/projects/${encodeURIComponent(projectId)}/research/reading-list/${encodeURIComponent(sourceItemId)}/card`, body),
-  createChecklistItem: (projectId: string, text: string) => post<ResearchChecklistItem>(`/projects/${encodeURIComponent(projectId)}/research/checklist`, { text }),
-  updateChecklistItem: (projectId: string, itemId: string, body: Partial<Pick<ResearchChecklistItem, 'text' | 'status' | 'sort_order'>>) => patch<ResearchChecklistItem>(`/projects/${encodeURIComponent(projectId)}/research/checklist/${encodeURIComponent(itemId)}`, body),
-  deleteChecklistItem: (projectId: string, itemId: string) => del<{ id: string }>(`/projects/${encodeURIComponent(projectId)}/research/checklist/${encodeURIComponent(itemId)}`),
+  updateEvidenceCard: async (projectId:string,sourceItemId:string,body:{why_md:string;how_md:string;what_md:string},key:string=crypto.randomUUID())=>{
+    const result=await callOperation('research.evidence_card.update',{project_id:projectId,source_item_id:sourceItemId,...body},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Research evidence card command did not complete');
+    return get<ResearchEvidenceCard>(`/projects/${encodeURIComponent(result.data.project_id)}/research/reading-list/${encodeURIComponent(sourceItemId)}/card`,{spaceId:result.data.space_id});
+  },
+  createChecklistItem: async (projectId:string,text:string,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('research.checklist.create',{project_id:projectId,text},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Research checklist command did not complete');
+    return get<ResearchChecklistItem>(`/projects/${encodeURIComponent(result.data.project_id)}/research/checklist/${encodeURIComponent(result.data.id)}`,{spaceId:result.data.space_id});
+  },
+  updateChecklistItem: async (projectId:string,itemId:string,body:Partial<Pick<ResearchChecklistItem,'text'|'status'|'sort_order'>>,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('research.checklist.update',{project_id:projectId,item_id:itemId,...body},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Research checklist command did not complete');
+    return get<ResearchChecklistItem>(`/projects/${encodeURIComponent(result.data.project_id)}/research/checklist/${encodeURIComponent(result.data.id)}`,{spaceId:result.data.space_id});
+  },
+  deleteChecklistItem: async (projectId:string,itemId:string,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('research.checklist.delete',{project_id:projectId,item_id:itemId},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Research checklist command did not complete');return {id:result.data.id};
+  },
+
   // `section_key` is accepted (see areaService.ts askAi): a registered role
   // resolves to the note holding that role; any other value is a literal title.
   // Enqueues a bounded `provider_task` Run and answers 201 `queued`. The note is
   // NOT updated when this resolves: a `provider_task_run` job applies the block
   // ops and then marks the Run terminal, so a caller may only report that the
   // work was queued.
-  askAi: (projectId: string, body: { prompt: string; section_key: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } }) => post<{ run_id: string; job_id: string; status: string; daily_limit: number; daily_used: number }>(`/projects/${encodeURIComponent(projectId)}/research/ask-ai`, body),
-  generateReportSnapshot: (projectId: string) => post<ProjectOperation>(`/projects/${encodeURIComponent(projectId)}/research/reports`, {}),
+  askAi: async (projectId: string, body: { prompt: string; section_key: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } },key:string=crypto.randomUUID()) => {
+    const result=await callOperation('research.ask_ai',{project_id:projectId,...body},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Research ad-hoc command did not complete');
+    const {run_id,job_id,status,daily_limit,daily_used}=result.data;return {run_id,job_id,status,daily_limit,daily_used};
+  },
+  generateReportSnapshot: async (projectId: string,key:string=crypto.randomUUID()) => {
+    const result=await callOperation('research.report.snapshot',{project_id:projectId},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Research snapshot command did not complete');
+    return get<ProjectOperation>(`/projects/${encodeURIComponent(projectId)}/operations/${encodeURIComponent(result.data.id)}`,{spaceId:result.data.space_id});
+  },
   refineQuestion: (projectId: string, body: {
     thread_id: string
     research_question: string
@@ -3661,16 +3678,28 @@ export const projectResearchApi = {
     get<ProjectResearchQuestionAssessmentConfirmation[]>(
       `/projects/${encodeURIComponent(projectId)}/research/question/assessment/confirmations?thread_id=${encodeURIComponent(threadId)}`,
     ),
-  confirmQuestionAssessment: (projectId: string, body: {
+  confirmQuestionAssessment: async (projectId: string, body: {
     thread_id: string
     refinement: ProjectResearchQuestionRefinement
     manually_adjusted: boolean
-  }) => post<ProjectResearchQuestionAssessmentConfirmationResponse>(
-    `/projects/${encodeURIComponent(projectId)}/research/question/assessment/confirm`,
-    body,
-  ),
-  saveInitialIntakeDraft: (projectId: string, body: ProjectResearchInitialIntakeInput) =>
-    put<ProjectResearchWorkflow>(`/projects/${encodeURIComponent(projectId)}/research/initial-intake`, body),
+  },key:string=crypto.randomUUID()):Promise<ProjectResearchQuestionAssessmentConfirmationResponse> => {
+    const result=await callOperation('research.question.assessment.confirm',{project_id:projectId,...body},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Research assessment confirmation did not complete');
+    const path=`/projects/${encodeURIComponent(result.data.project_id)}/research/question/assessment`;
+    const [session,history]=await Promise.all([
+      get<ProjectResearchQuestionAssessmentSession|null>(`${path}?thread_id=${encodeURIComponent(result.data.thread_id)}`,{spaceId:result.data.space_id}),
+      get<ProjectResearchQuestionAssessmentConfirmation[]>(`${path}/confirmations?thread_id=${encodeURIComponent(result.data.thread_id)}`,{spaceId:result.data.space_id}),
+    ]);
+    const confirmation=history.find(row=>row.id===result.data.id);
+    if(!confirmation||session?.latest_refinement?.research_context_version_id!==result.data.id)throw new Error('Confirmed framework changed; refresh the current assessment before continuing');
+    return {...session.latest_refinement,confirmation};
+  },
+  saveInitialIntakeDraft: async (projectId: string, body: ProjectResearchInitialIntakeInput, key:string=crypto.randomUUID()) => {
+    const result=await callOperation('research.intake.draft',{project_id:projectId,...body,thread_id:body.thread_id??''},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Research draft command did not complete');
+    const rows=await get<ProjectResearchWorkflow[]>(`/projects/${encodeURIComponent(result.data.project_id)}/research/workflow`,{spaceId:result.data.space_id});
+    const row=rows.find(r=>r.id===result.data.id);if(!row)throw new Error('Research workflow no longer available');return row;
+  },
   startInitialIntake: (projectId: string, body: ProjectResearchInitialIntakeInput) =>
     post<ProjectResearchInitialIntakeResponse>(`/projects/${encodeURIComponent(projectId)}/research/initial-intake/start`, body),
   workflows: (projectId: string) =>
@@ -3679,11 +3708,12 @@ export const projectResearchApi = {
     get<import('../types/api').ProjectResearchScanSummary[]>(
       `/projects/${encodeURIComponent(projectId)}/research/scan-summaries?limit=${limit}`,
     ),
-  runStage: (projectId: string, workflowId: string, stageKey: string, body: { run_id?: string } = {}) =>
-    post<ProjectResearchWorkflow>(
-      `/projects/${encodeURIComponent(projectId)}/research/workflow/${encodeURIComponent(workflowId)}/stages/${encodeURIComponent(stageKey)}/run`,
-      body,
-    ),
+  runStage: async (projectId: string, workflowId: string, stageKey: string, body: { run_id?: string } = {}, key:string=crypto.randomUUID()) => {
+    const result=await callOperation('research.workflow.stage.record',{project_id:projectId,workflow_id:workflowId,stage_key:stageKey,...body},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Research stage command did not complete');
+    const rows=await get<ProjectResearchWorkflow[]>(`/projects/${encodeURIComponent(result.data.project_id)}/research/workflow`,{spaceId:result.data.space_id});
+    const row=rows.find(r=>r.id===result.data.id);if(!row)throw new Error('Research workflow no longer available');return row;
+  },
   triggerIncremental: (projectId: string, workflowId: string, body: { source_item_ids?: string[]; idempotency_key?: string } = {}) =>
     post<Record<string, unknown>>(
       `/projects/${encodeURIComponent(projectId)}/research/workflow/${encodeURIComponent(workflowId)}/trigger`,
@@ -3694,11 +3724,12 @@ export const projectResearchApi = {
       `/projects/${encodeURIComponent(projectId)}/research/workflow/${encodeURIComponent(workflowId)}/history-backfill`,
       body,
     ),
-  updateInitialItemLimit: (projectId: string, max_items: number, workflowId?: string | null) =>
-    put<ProjectResearchWorkflow>(
-      `/projects/${encodeURIComponent(projectId)}/research/item-limit`,
-      { max_items, ...(workflowId ? { workflow_id: workflowId } : {}) },
-    ),
+  updateInitialItemLimit: async (projectId:string,max_items:number,workflowId?:string|null,key:string=crypto.randomUUID())=>{
+    const result=await callOperation('research.intake.limit',{project_id:projectId,max_items,workflow_id:workflowId??null},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Research limit command did not complete');
+    const rows=await get<ProjectResearchWorkflow[]>(`/projects/${encodeURIComponent(result.data.project_id)}/research/workflow`,{spaceId:result.data.space_id});
+    const row=rows.find(r=>r.id===result.data.id);if(!row)throw new Error('Research workflow no longer available');return row;
+  },
   applyQuestionForward: (projectId: string, workflowId: string) =>
     post<ProjectResearchWorkflow>(
       `/projects/${encodeURIComponent(projectId)}/research/question/apply-forward`,
@@ -3756,11 +3787,14 @@ export const projectResearchApi = {
     ),
   screeningCriteria: (projectId: string) =>
     get<ProjectResearchScreeningCriteria>(`/projects/${encodeURIComponent(projectId)}/research/screening-criteria`),
-  upsertScreeningCriteria: (projectId: string, body: Partial<Pick<
+  upsertScreeningCriteria: async (projectId: string, body: Partial<Pick<
     ProjectResearchScreeningCriteria,
     'include_keywords' | 'exclude_keywords' | 'domain_criteria' | 'date_range_start' | 'date_range_end' | 'source_restrictions' | 'required_evidence_fields'
-  >>) =>
-    put<ProjectResearchScreeningCriteria>(`/projects/${encodeURIComponent(projectId)}/research/screening-criteria`, body),
+  >>, key:string=crypto.randomUUID()) => {
+    const result=await callOperation('research.screening.configure',{project_id:projectId,...body},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Research screening command did not complete');
+    return get<ProjectResearchScreeningCriteria>(`/projects/${encodeURIComponent(result.data.project_id)}/research/screening-criteria`,{spaceId:result.data.space_id});
+  },
   evidenceMatrix: (projectId: string) =>
     get<ProjectResearchEvidenceMatrixItem[]>(`/projects/${encodeURIComponent(projectId)}/research/evidence-matrix`),
   rebuildEvidenceMatrix: (projectId: string) =>
@@ -4447,8 +4481,17 @@ export const projectMonitoringApi = {
   state:(projectId:string,offset=0)=>get<ProjectMonitoringState>(`/projects/${projectId}/information-monitoring?offset=${offset}`),
   setup:(projectId:string,query:string,provider_key:'arxiv'|'rss'|'atom'|'web_page'='arxiv')=>post<{channel_draft:{id:string};source_proposal:{id:string;status:string};binding_proposal:{id:string;status:string}}>(`/projects/${projectId}/information-monitoring/source-setup`,{query,provider_key,idempotency_key:crypto.randomUUID()}),
   propose:(projectId:string,config:ProjectMonitoringConfig,active:string|null)=>post(`/projects/${projectId}/information-monitoring/proposals`,{config,expected_active_version_id:active,idempotency_key:crypto.randomUUID()}),
-  details:(projectId:string,body:{expected_version_id:string;recommendation_count:number;language:string})=>patch<MonitoringVersion>(`/projects/${projectId}/information-monitoring/details`,body),
-  paused:(projectId:string,versionId:string,paused:boolean)=>patch(`/projects/${projectId}/information-monitoring/state`,{expected_version_id:versionId,paused}),
+  details:async(projectId:string,body:{expected_version_id:string;recommendation_count:number;language:string},key:string=crypto.randomUUID())=>{
+    const result=await callOperation('project.monitoring.details.update',{project_id:projectId,...body},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Monitoring details command did not complete');
+    const state=await get<ProjectMonitoringState>(`/projects/${encodeURIComponent(result.data.project_id)}/information-monitoring`,{spaceId:result.data.space_id});
+    if(!state.active)throw new Error('Monitoring version no longer available');return state.active;
+  },
+  paused:async(projectId:string,versionId:string,paused:boolean,key:string=crypto.randomUUID())=>{
+    const result=await callOperation('project.monitoring.state.update',{project_id:projectId,expected_version_id:versionId,paused},key);
+    if(!('status' in result)||result.status!=='succeeded')throw new Error('Monitoring state command did not complete');
+    return get<ProjectMonitoringState>(`/projects/${encodeURIComponent(result.data.project_id)}/information-monitoring`,{spaceId:result.data.space_id});
+  },
   run:(projectId:string,version:MonitoringVersion,kind:'initial'|'check'='initial')=>post(`/projects/${projectId}/information-monitoring/runs`,{version_id:version.id,config_hash:version.config_hash,kind,idempotency_key:crypto.randomUUID()}),
   feedback:(projectId:string,itemId:string,feedback:'read'|'relevant'|'not_relevant')=>post(`/projects/${projectId}/information-monitoring/items/${itemId}/feedback`,{feedback}),
 };

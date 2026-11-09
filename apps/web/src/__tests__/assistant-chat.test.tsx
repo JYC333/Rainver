@@ -38,7 +38,7 @@ vi.mock('../api/client', () => ({
 }))
 
 vi.mock('../contexts/SpaceContext', () => ({
-  useSpace: () => ({ activeSpaceId: 'personal-1', preferredSpaceId: 'personal-1', userId: 'u1' }),
+  useSpace: () => ({ activeSpaceId: 'personal-1', preferredSpaceId: 'personal-1', userId: 'u1', spaces: [{id:'personal-1',name:'Personal',role:'owner'}] }),
 }))
 
 import AssistantChatPage from '../modules/agents/AssistantChatPage'
@@ -122,6 +122,34 @@ describe('AssistantChatPage conversation backends', () => {
     Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo
   })
 
+  it('receives the background integration result in an open direct conversation through the shared visible-surface refresh',async()=>{
+    render(<MemoryRouter><ChatPanel agent={agent as never} initialSessionId="session-outcome"/></MemoryRouter>)
+    await waitFor(()=>expect(messagesMock).toHaveBeenCalledWith('session-outcome',expect.objectContaining({spaceId:'personal-1'})))
+    await screen.findByRole('textbox')
+    messagesMock.mockResolvedValue([{id:'integration-result',space_id:'personal-1',session_id:'session-outcome',role:'system',content:'The isolated change is preserved.',created_at:'2026-11-07T16:28:51Z',metadata_json:{room_display:'system_notice',execution_event:'workspace_integration',execution_event_key:'integration:attempt:verification_failed',execution_details:{schema_version:'workspace_integration_notice.v1',run_id:'origin',integration_id:'integration',attempt_id:'attempt',change_set_id:'change',target_ref:'refs/heads/dev',outcome:'verification_failed',reason:'verification_unconfigured',repair_status:'succeeded',verification_status:'unconfigured',checks_passed:0,checks_failed:0,candidate_ready:true,preserved:true}}}])
+    await act(async()=>{document.dispatchEvent(new Event('visibilitychange'))})
+    expect(await screen.findByText('Verification incomplete · not integrated into dev')).toBeVisible()
+    expect(screen.getByText(/No verification checks ran/)).toBeVisible()
+    await act(async()=>{document.dispatchEvent(new Event('visibilitychange'))})
+    expect(screen.getAllByText('Verification incomplete · not integrated into dev')).toHaveLength(1)
+    expect(agentsApi.chat).not.toHaveBeenCalled()
+  })
+
+  it('shows the saved Agent reply when verification fails after execution', async () => {
+    const reply = 'The investigation is complete.\n\nRun verification did not pass: Host unavailable.'
+    vi.mocked(agentsApi.chat).mockResolvedValue({ ok: false, session_id: 's1', run_id: 'r1', reply,
+      error: 'Host unavailable', error_code: 'verification_failed',
+      assistant_message: { id: 'saved-failed-reply', content: reply }, action_previews: [],
+    } as never)
+    renderPage()
+    const input = await enabledComposer()
+    fireEvent.change(input, { target: { value: 'Check the current status' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(await screen.findByText('The investigation is complete.')).toBeVisible()
+    expect(screen.getByText(/Run verification did not pass: Host unavailable/)).toBeVisible()
+    await waitFor(() => expect(input).not.toBeDisabled())
+  })
+
   it('reads and sends direct chat in the Agent Space B while the URL belongs to A', async () => {
     vi.mocked(agentsApi.chat).mockResolvedValue({ ok: true, session_id: 'session-b', run_id: null, reply: 'Done', assistant_message: null, action_previews: [] } as never)
     render(<MemoryRouter initialEntries={['/spaces/space-a/agents/a1/chat']}>
@@ -188,7 +216,7 @@ describe('AssistantChatPage conversation backends', () => {
     renderPage('/agents/a1/chat?session=session-past')
 
     expect(await screen.findByText('Here is what I found.')).toBeInTheDocument()
-    expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /show work/ })).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText('search')).not.toBeInTheDocument()
     expect(turnMock).toHaveBeenCalledWith('run-past', expect.any(Object))
   })
@@ -257,7 +285,7 @@ describe('AssistantChatPage conversation backends', () => {
     renderPage('/agents/a1/chat?session=session-lagging')
 
     expect(await screen.findByText('The answer is 42.')).toBeInTheDocument()
-    expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /show work/ })).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText('search')).not.toBeInTheDocument()
     expect(screen.queryByText('Working…')).not.toBeInTheDocument()
   })
@@ -450,9 +478,9 @@ describe('AssistantChatPage conversation backends', () => {
     expect(screen.getByText(/partial reply/)).toBeInTheDocument()
     expect(screen.getAllByText(/stream disconnected/)).toHaveLength(1)
     // A break is the third way a turn settles. The partial reply and error
-    // remain visible, but a successful call is still audit-only.
+    // remain visible; failed turns retain their steps for diagnosis.
     expect(screen.queryByText(/tool call completed/)).not.toBeInTheDocument()
-    expect(screen.queryByText('probe_tool')).not.toBeInTheDocument()
+    expect(screen.getByText('probe_tool')).toBeInTheDocument()
     expect(screen.getByTestId('location')).toHaveTextContent('session=session-new')
   })
 
@@ -505,7 +533,7 @@ describe('AssistantChatPage conversation backends', () => {
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: false })
 
     expect(await screen.findByText('Found three.')).toBeInTheDocument()
-    expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /show work/ })).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText('search')).not.toBeInTheDocument()
   })
 

@@ -5541,16 +5541,15 @@ describe("Room workflow (real Postgres)", () => {
       workspace: { kind: "location", workspace_location_id: "location-1" },
       host_thread: { schema_version: "host_thread.v1" },
     });
-    // A delegated specialist runs in the same vendor session as one that was
-    // @-mentioned, so its prompt opens with its own identity block — and a
+    // An isolated delegated specialist has a separate vendor session from
+    // an @-mentioned turn. Its prompt opens with its own identity block; a
     // sibling waiting on it is shown the instruction, never that prompt
     // (ADR 0003 §4, B68).
     expect(delegatedRun.rows[0]?.prompt).toContain("Separate evidence from assumption.");
     expect(runAssignedTask(delegatedRun.rows[0]!)).toBe("Delegate this host-bound investigation.");
     const delegatedThread = await db.pool.query<{ id: string; last_run_id: string; dispatch_lock_id: string | null }>(
-      `SELECT id, last_run_id, dispatch_lock_id FROM host_threads
-        WHERE session_id = $1 AND agent_id = $2 AND container_kind = 'conversation'`,
-      [conversation.id, delegatedAgent.id],
+      `SELECT id, last_run_id, dispatch_lock_id FROM host_threads WHERE id=$1`,
+      [delegatedRun.rows[0]!.host_task_thread_id],
     );
     expect(delegatedThread.rows[0]).toMatchObject({
       last_run_id: delegated.child_run_id,

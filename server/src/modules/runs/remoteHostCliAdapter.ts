@@ -1,3 +1,9 @@
+import {executeWorkspaceRunReply} from './workspaceRunReply.js';
+import {enqueueLegacyWorkspaceProfileArchive} from '../hosts/workspaceCleanup.js';
+import {workspaceIntegrationRecoveryHints,workspaceClosureRecoveryHints} from '../projectFolders/workspaceRecovery.js';
+import {executionWorkspaceMountRef,resolveWorkspaceScope} from '../hosts/workspaceScopes.js';
+import {workspaceLocationFrame} from '../hosts/workspaceLocation.js';
+import {ensureExecutionWorkspace, integrationWorkspaceForRun, isolatedWorkspaceContract, recordWorkspaceLaunch} from "../projectFolders/executionWorkspaces.js";
 import { randomUUID } from "node:crypto";
 import { ordinaryToolsForLaunch } from "./ordinaryToolLaunch.js";
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type HostLaunchOrdinaryTools, type InvocationDelivery, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent, type RuntimeSessionConfigDroppedSelection as DroppedSessionConfigSelection } from "@rainver/protocol";
@@ -70,18 +76,18 @@ import {
 /**
  * The daemon knows the real workspace path for a
  * run (it resolved it to spawn the process); the server never does (ADR 0016
- * B64). An ACP session still needs to name its `cwd` — both as an argv token
- * (opencode's `headless_command_template`) and inside the controller's own
- * `session/new`/`session/resume` JSON-RPC params — so the server writes this
- * exact placeholder wherever a real path would go, and the daemon substitutes
- * its own resolved path before spawning / before writing to the child's
- * stdin (`packages/host-daemon/src/execution.ts`'s `REMOTE_CWD_PLACEHOLDER`,
- * which must stay textually identical to this literal — the two packages
- * share no dependency to enforce that at the type level).
+ * B64). An ACP session names its `cwd` in the controller's
+ * `session/new`/`session/resume` JSON-RPC params. The server writes this
+ * placeholder there, and the daemon substitutes its resolved workspace path
+ * before writing to the child's stdin. The daemon also sets the process
+ * working directory when spawning; OpenCode needs no CLI cwd flag.
+ * `REMOTE_CWD_PLACEHOLDER` is the shared protocol constant consumed by
+ * `packages/host-daemon/src/execution.ts`.
  */
 export const REMOTE_HOST_ACP_CWD_PLACEHOLDER = REMOTE_CWD_PLACEHOLDER;
 
-interface RemoteHostCliAdapterInput {
+export interface RemoteHostCliAdapterInput {
+  workspace_reply_sink?:(finish:(gate:{allowed:boolean;reason?:string;deadline_signal?:AbortSignal})=>Promise<RunAdapterResultEnvelope>,release?:()=>void)=>void;
   run: AgentRunRecord;
   prompt: string | null;
   invocation_delivery?: InvocationDelivery;
@@ -109,7 +115,7 @@ interface RemoteHostCliAdapterInput {
   thread_event_sink?: (drafts: ThreadEventDraft[]) => Promise<void> | void;
   process_registry?: CliProcessRegistry;
   workspace?: LaunchWorkspace;
-  workspace_access?: Array<{ workspace_location_id: string; access_mode: "read" | "write" }>;
+  workspace_access?: import("@rainver/protocol").HostLaunchWorkspaceAccess[];
   /**
    * How many Runs this host may execute at once, or null for no cap. Only the
    * built-in host has one; the caller knows which host this is, and looking it
@@ -307,7 +313,11 @@ function databaseBindingPort(config: ServerConfig): RemoteBindingPort | null {
  * timeout, a thrown error — the token the host was handed stops working when
  * this returns, rather than at its own TTL.
  */
-export async function executeRemoteHostCliAdapter(
+export async function executeRemoteHostCliAdapter(input:RemoteHostCliAdapterInput,hostId:string,workspaceLocationId:string|null,deps:RemoteHostCliAdapterDeps={}):Promise<RunAdapterResultEnvelope>{
+ return executeWorkspaceRunReply(input,hostId,workspaceLocationId,deps,executeRemoteHostCliPhase);
+}
+
+async function executeRemoteHostCliPhase(
   input: RemoteHostCliAdapterInput,
   hostId: string,
   workspaceLocationId: string | null,
@@ -451,6 +461,83 @@ async function runRemoteHostCliAdapter(
   }
 
   const registry = deps.connectionRegistry ?? sharedHostConnectionRegistry;
+  let isolated:Awaited<ReturnType<typeof ensureExecutionWorkspace>>|null=null;
+  const normalizedScopes=new Map<string,Awaited<ReturnType<typeof resolveWorkspaceScope>>>();
+  const canonicalGrants=new Map<string,'read'|'write'>();
+  if(isolatedWorkspaceContract(input.run.contract_snapshot_json)&&deps.config?.databaseUrl&&input.run.project_id&&!(input.run.contract_snapshot_json as {workspace_integration_id?:string}).workspace_integration_id){
+    try{
+      const originalGrants=[...(workspaceLocationId?[{id:workspaceLocationId,access:(input.run.contract_snapshot_json as {workspace_access?:string}).workspace_access==='read'?'read' as const:'write' as const}]:[]),...(input.workspace_access??[]).map(a=>({id:a.workspace_location_id,access:(input.run.contract_snapshot_json as {workspace_access?:string}).workspace_access==='read'?'read' as const:a.access_mode}))];
+      for(const grant of originalGrants){
+        const scope=await resolveWorkspaceScope(deps.db??getDbPool(deps.config.databaseUrl),input.run.space_id,input.run.project_id,hostId,grant.id,originalGrants.map(g=>g.id),deps.config.workspaceRoot,registry,input.run.session_id);
+        const rootGrant=originalGrants.find(g=>g.id===scope.locationId);
+        if(grant.access==='write'&&rootGrant?.access!=='write')throw new Error('workspace_subdirectory_requires_writable_repository_root');
+        const previous=canonicalGrants.get(scope.locationId);
+        if(previous&&previous!==grant.access)throw new Error('workspace_alias_permissions_conflict');
+        canonicalGrants.set(scope.locationId,grant.access);normalizedScopes.set(grant.id,scope);
+      }
+    }catch(error){return remoteFailureWithEvent(input,spec.runtime_key,'execution_workspace_scope_unavailable',String(error),startedAt);}
+  }
+  if(isolatedWorkspaceContract(input.run.contract_snapshot_json)&&workspaceLocationId){
+    if(!deps.config?.databaseUrl)return remoteFailureWithEvent(input,spec.runtime_key,"execution_workspace_database_required","Workspace authority unavailable",startedAt);
+    try{
+      const workspaceDb=deps.db??getDbPool(deps.config.databaseUrl);
+      const repairContract=input.run.contract_snapshot_json as {workspace_integration_id?:string};
+      const scope=normalizedScopes.get(workspaceLocationId);
+      isolated=await (repairContract.workspace_integration_id?integrationWorkspaceForRun:ensureExecutionWorkspace)(workspaceDb,input.run,hostId,scope?.locationId??workspaceLocationId);
+      if(scope){isolated.ref=executionWorkspaceMountRef(isolated.ref,scope.subpath);await workspaceDb.query('UPDATE execution_workspace_runs SET launch_reference_json=$3::jsonb WHERE run_id=$1 AND workspace_id=$2',[input.run.id,isolated.workspace.id,JSON.stringify(isolated.ref)]);}
+      input.workspace=repairContract.workspace_integration_id
+        ?await workspaceLocationFrame(workspaceDb,isolated.workspace,isolated.ref,deps.config.workspaceRoot,input.run.instructed_by_user_id??input.run.owner_user_id??undefined)
+        :{...(scope?.workspace??launchWorkspace(input.workspace,workspaceLocationId,input.workspace_relative_path??null)!),execution_workspace:isolated.ref} as LaunchWorkspace;
+      if(!isolated.ref.integration_id&&input.run.host_task_thread_id&&input.run.agent_id&&input.run.session_id){
+        const oldBinding=(await workspaceDb.query<{execution_workspace_json:unknown}>('SELECT execution_workspace_json FROM host_threads WHERE id=$1',[input.run.host_task_thread_id])).rows[0]?.execution_workspace_json;
+        if(!oldBinding)await enqueueLegacyWorkspaceProfileArchive(workspaceDb,isolated.workspace,input.run.agent_id,input.run.session_id,input.run.instructed_by_user_id??input.run.owner_user_id!);
+      }
+      // A legacy cached session cannot silently resume in a new cwd.
+      if(input.resume_session_id){
+        const bindingDb=deps.db??getDbPool(deps.config.databaseUrl);
+        const previous=input.run.host_task_thread_id?(await bindingDb.query<{execution_workspace_json:{id:string;generation:number}|null}>("SELECT execution_workspace_json FROM host_threads WHERE id=$1 AND execution_host_id=$2",[input.run.host_task_thread_id,hostId])).rows[0]?.execution_workspace_json:null;
+        if(previous?.id!==isolated.workspace.id||previous.generation!==isolated.workspace.generation)input.resume_session_id=null;
+      }
+      if(input.run.host_task_thread_id)await (deps.db??getDbPool(deps.config.databaseUrl)).query("UPDATE host_threads SET execution_workspace_json=$2::jsonb WHERE id=$1 AND execution_host_id=$3",[input.run.host_task_thread_id,JSON.stringify({id:isolated.workspace.id,generation:isolated.workspace.generation,profile_container_id:isolated.ref.integration_id??isolated.workspace.id}),hostId]);
+      if(!isolated.ref.integration_id)supplementalInstructions.push(`Work in this conversation's isolated worktree. You can edit files, inspect Git and use normal Git operations on your own working branch; shared target publication uses workspace.change.complete. Your change set is ${isolated.changeSetId}, revision ${isolated.changeRevision}. For a private save without merging, use normal Git or action=checkpoint alone; do not prepare/publish. For an authorized merge, call workspace.change.complete with action=prepare and a summary. Read workspace.change.get for the actual result and current revision. Preparation applies only this batch's changes onto the target in your CURRENT worktree, retaining your original session and dependencies. Resolve conflicts yourself here, including any necessary related fixes; do not ask for test-command configuration or internal IDs. Save a version using your own Git commit or action=checkpoint, run appropriate project checks in this SAME runtime environment, repair failures and repeat as needed. Then call action=publish with verification={commit:the version you checked,checks:[{command,summary}],note:what you checked}. If there are no applicable checks, use an empty checks array with an honest inspection note. Wait for pending Git operations before editing files or issuing another workspace command. After each operation, workspace.change.get supplies the current revision and progress. If target_moved, prepare again and check the updated result. Only merged/no_changes completes publication; obtain that result BEFORE your final response. There is no successor Agent, configuration phase or system-run test environment. Do not move shared target refs yourself. A prepared or checkpointed commit is private until publish succeeds.`);
+      const recoveryUser=input.run.instructed_by_user_id??input.run.owner_user_id;
+      if(!isolated.ref.integration_id&&recoveryUser){
+        const recoverable=await workspaceIntegrationRecoveryHints(workspaceDb,input.run,recoveryUser,isolated.workspace.id);
+        const closable=await workspaceClosureRecoveryHints(workspaceDb,input.run,recoveryUser,isolated.workspace.id);
+        if(closable.length)supplementalInstructions.push(`Earlier retained batches in this conversation and repository that can be kept without merging: ${JSON.stringify(closable)}. Only when the user asks to withdraw failed work or close adopted/superseded work, call workspace.change.abandon with the supplied change_set_id, expected_revision and a concrete reason. Unknown pending checkpoints remain retained; closing them does not publish or delete files. Resolve these identities yourself; never ask the person to copy an internal ID.`);
+        if(recoverable.length)supplementalInstructions.push(`Earlier saved integrations: ${JSON.stringify(recoverable)}. To recover one, use workspace.integration.retry once; read workspace.change.get for that change set and continue prepare/checkpoint/publish in THIS same native session. A historical batch is prepared from its recorded commits into this worktree, and only while your current batch has no unsubmitted changes (otherwise workspace_commit_requires_empty_change: checkpoint or publish the current batch first). Resolve conflicts and checks yourself before replying. Reconcile_only can prove external adoption without publishing; a batch whose recorded delta another batch publishes closes as no_changes by itself. Do not claim queued/accepted means merged, ask the person to enter IDs or commands, or merge an entire private snapshot history.`);
+      }
+      if(isolated.retainedWorkspaceId)supplementalInstructions.push(`This turn continues in a fresh workspace because an earlier workspace could not safely continue. Earlier changes remain preserved in workspace ${isolated.retainedWorkspaceId} and are not included here. Tell the user this when relevant; do not claim those changes were discarded, adopted or published.`);
+    }catch(error){return remoteFailureWithEvent(input,spec.runtime_key,"execution_workspace_unavailable",error instanceof Error?error.message:String(error),startedAt);}
+  }
+  if(isolatedWorkspaceContract(input.run.contract_snapshot_json)&&input.workspace_access?.length){
+    if(!deps.config?.databaseUrl)return remoteFailureWithEvent(input,spec.runtime_key,'execution_workspace_database_required','Workspace authority unavailable',startedAt);
+    try{
+      if((input.run.contract_snapshot_json as {workspace_integration_id?:string}).workspace_integration_id)input.workspace_access=[];
+      else{
+        const references=[] as import('@rainver/protocol').HostLaunchWorkspaceAccess[];
+        for(const attachment of input.workspace_access){
+          const grant=(input.run.contract_snapshot_json as {workspace_access?:string}).workspace_access==='read'?'read':attachment.access_mode;
+          const scope=normalizedScopes.get(attachment.workspace_location_id);
+          const attached=await ensureExecutionWorkspace(deps.db??getDbPool(deps.config.databaseUrl),input.run,hostId,scope?.locationId??attachment.workspace_location_id,grant);
+          if(attached.retainedWorkspaceId){
+            if(attached.workspace.state==='requested')input.resume_session_id=null;
+            supplementalInstructions.push(`Attachment ${attachment.workspace_location_id} uses a fresh workspace. Earlier changes remain preserved separately in workspace ${attached.retainedWorkspaceId} and are not included here.`);
+          }
+          const attachedRef=executionWorkspaceMountRef(attached.ref,scope?.subpath);
+          const mounted=await workspaceLocationFrame(deps.db??getDbPool(deps.config.databaseUrl),attached.workspace,attachedRef,deps.config.workspaceRoot);
+          references.push({...attachment,...mounted,mount_location_id:attachment.workspace_location_id,access_mode:grant,execution_workspace:attachedRef});
+          supplementalInstructions.push(`Attached isolated workspace ${attachment.workspace_location_id}: change set ${attached.changeSetId}, revision ${attached.changeRevision}, permission ${grant}. Complete each modified writable change set explicitly; multi-repository publication is independent and may partially succeed.`);
+          const recoveryUser=input.run.instructed_by_user_id??input.run.owner_user_id;
+          if(grant==='write'&&recoveryUser){
+            const recoverable=await workspaceIntegrationRecoveryHints(deps.db??getDbPool(deps.config.databaseUrl),input.run,recoveryUser,attached.workspace.id);
+            if(recoverable.length)supplementalInstructions.push(`Earlier saved attachment integrations: ${JSON.stringify(recoverable)}. Recover through workspace.integration.retry and workspace.change.get, then perform preparation, conflict repair, checks and publication in this same Agent session for the authorized attachment. Never ask the person for command configuration or IDs.`);
+          }
+        }
+        input.workspace_access=references;
+      }
+    }catch(error){return remoteFailureWithEvent(input,spec.runtime_key,'execution_workspace_attachment_unavailable',String(error),startedAt);}
+  }
   const threadEvents = createThreadEventNormalizer(drafts => { void input.thread_event_sink?.(drafts); });
   const runtimeEvents = createVendorEventNormalizer(spec.runtime_key);
   // A Run has no wall-clock deadline. Short-lived credentials are renewed
@@ -480,7 +567,7 @@ async function runRemoteHostCliAdapter(
         );
       }
       const bound = await bindings.resolve(input.run);
-      const scope = await bindings.profileScope(input.run, workspaceLocationId);
+      const scope = isolated?{agent_id:input.run.agent_id,container_kind:"workspace" as const,container_id:isolated.ref.integration_id??isolated.workspace.id}:await bindings.profileScope(input.run, workspaceLocationId);
       if (bound) {
         if (!config) {
           throw new RemoteProviderBindingError(
@@ -919,6 +1006,10 @@ async function runRemoteHostCliAdapter(
     await bindings?.observeDroppedSessionConfig?.(input.run.id, input.run.space_id, droppedSessionConfig)
       .catch(() => undefined);
   }
+  if(isolated && !isolated.ref.integration_id && result.execution_workspace && deps.config?.databaseUrl)await recordWorkspaceLaunch(deps.db??getDbPool(deps.config.databaseUrl),input.run,result.execution_workspace);
+  if(result.execution_workspace_reports&&deps.config?.databaseUrl)for(const report of result.execution_workspace_reports){
+    if(!isolated||report.id!==isolated.workspace.id)await recordWorkspaceLaunch(deps.db??getDbPool(deps.config.databaseUrl),input.run,report);
+  }
   const metadata = {
     acp: protocolResult?.acp ?? null,
     runtime_native_version: result.native_runtime_version ?? null,
@@ -938,6 +1029,11 @@ async function runRemoteHostCliAdapter(
     // worktree stood at when it started — the base its verification diffs
     // against and what the Run's settle squashes from (ADR 0016 §11).
     ...(result.task_worktree ? { task_worktree: result.task_worktree } : {}),
+    ...(isolated?{execution_workspace_ref:isolated.ref}:{}),
+    execution_workspace_access:input.workspace_access??[],
+    execution_workspace_location:input.workspace??null,
+    ...(result.execution_workspace_reports?{execution_workspace_reports:result.execution_workspace_reports}:{}),
+    ...(result.execution_workspace ? {execution_workspace:result.execution_workspace}:{}),
     // The provider this run actually executed against, or null when it ran
     // on the copy's own subscription login. Reported rather than read off
     // the Run row, because this path *overwrites* that row mid-execution
@@ -1121,6 +1217,12 @@ export function withTaskWorktree(
   workspaceLocationId: string | null,
   run: TaskWorktreeRun,
 ): LaunchWorkspace | undefined {
+  if(run.execution_workspace){
+    if(run.execution_workspace_location)return run.execution_workspace_location;
+    if(workspace?.kind==='managed')throw new Error('Isolated workspace cannot use managed cwd');
+    const location=workspace??(workspaceLocationId?{kind:'location' as const,workspace_location_id:workspaceLocationId}:undefined);
+    return location?{...location,execution_workspace:run.execution_workspace}:undefined;
+  }
   const taskId = executionTaskId(run);
   if (!taskId) return workspace;
   if (workspace?.kind === "managed") return workspace;
@@ -1142,6 +1244,8 @@ export function taskMergeIdOf(run: { contract_snapshot_json?: unknown }): string
 }
 
 interface TaskWorktreeRun {
+  execution_workspace?: import("@rainver/protocol").ExecutionWorkspaceRef;
+  execution_workspace_location?:LaunchWorkspace;
   contract_snapshot_json?: unknown;
   run_type?: string | null;
   required_sandbox_level?: string | null;
@@ -1230,7 +1334,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
   /** Null when this Run was granted no tool and needs no way to call back. */
   private readonly workSurface: RunWorkSurfaceFrame | null = null,
     private readonly workspace?: LaunchWorkspace,
-    private readonly workspaceAccess: Array<{ workspace_location_id: string; access_mode: "read" | "write"; workspace_relative_path?: string }> = [],
+    private readonly workspaceAccess: import("@rainver/protocol").HostLaunchWorkspaceAccess[] = [],
     private readonly inputResources: Array<{
       input_id: string;
       workspace_location_id: string;
@@ -1439,6 +1543,8 @@ function toExecutionResult(
     stderr: protocol?.error ?? outcome.error ?? "",
     ...(outcome.egress?.length ? { egress: outcome.egress } : {}),
     ...(outcome.task_worktree ? { task_worktree: outcome.task_worktree } : {}),
+    ...(outcome.execution_workspace ? {execution_workspace:outcome.execution_workspace}:{}),
+    ...(outcome.execution_workspace_reports?{execution_workspace_reports:outcome.execution_workspace_reports}:{}),
     ...(outcome.time_zone ? { time_zone: outcome.time_zone } : {}),
     ...(outcome.native_runtime_version ? { native_runtime_version: outcome.native_runtime_version } : {}),
     timed_out: outcome.timed_out,

@@ -1114,3 +1114,120 @@ in the current parallel workspace, and no Host/schema0015 repair was made here.
 The seven repair files pass scoped diffcheck. Global diffcheck still flags only
 parallel ConversationTurn.tsx:252 (new EOF blank line), preserved and not counted
 as a clean whole-workspace check. No full suite or new visual/browser claim.
+
+## P5-5 Candidate extraction queued command/worker closure (basis5c407024)
+
+The existing extraction POST/generic/typed Review command share canonical queue
+and source resolver, not a new execution engine. The minimal202 queued receipt
+binds the original Run, never a later source revision. Source snapshot, current
+Agent/Profile, Run/required Job, B11/policy audit and operation outcome remain one
+transaction. Real-PG coverage includes formal/generic replay/defaultnull/changed
+input, independent intent keys, scope growth under a real row wait, current Agent/
+Project/foreign Space/source ACL, real Agent-command refusal, private snapshot
+Run visibility, source-read audit and terminal request/Job storage failures.
+
+The original terminal reconcile worker publishes Candidate rows and its durable
+Run-event receipt together, including zero results for revoked/unavailable sources.
+Actual JobWorker tests cover non-attempt-consuming defer under a held Run row,
+subsequent and duplicate delivery, publication receipt failure rollback and Worker
+ACK/result-store failure followed by receipt recovery without duplicate rows.
+Run execution and costs remain historical; no model/Host/network IO occurs inside
+publication or the core transaction. Existing Run orchestration dispatch seams
+also check the extraction source before external execution; revoked dispatch is
+not confused with a completed extraction. No new schema or event vocabulary was
+added: the existing action_completed event/writer carries a named domain receipt.
+
+This closes this extraction owner family only. Managed Channel/Recipe activation
+have distinct existing Agent proposal and human envelope semantics, and consent/
+egress/material invalid attempts remain independent checkpoint5 work. They are not
+claimed complete, nor is checkpoint5. Existing Note-link choice stays pending.
+
+Scoped evidence: new knowledgeExtractionOperationDb19 real-PG tests pass, existing
+knowledgePromotionDb12, operationRoutes12 and Run orchestration unit regression60
+pass. The unit tests are not durable-DB evidence. Protocol operations23; Web API26
+and Project Review parent6 pass. Node24 workspace dependency build and server/Web
+noEmit checks pass; no browser/visual acceptance or full suite was run. Initial
+unsupported event type/actor-FK attempt was corrected to the existing event model;
+Run routing/owning-entry and scheduled-time fixtures were corrected to valid
+production shapes, without relaxing success/defer or current-ACL assertions.
+Job rescheduling uses a clearly expired time to avoid PG microsecond/Node millisecond
+boundary flakiness. No schema/migration was added; parallel0015 is excluded.
+
+## Project 123-URL total package — incomplete implementation evidence
+
+The exact five-group 4335ee20 mapping and per-route status are in the original
+[P5 plan](../plans/operation-core/05-core-module-operation-migration.md#project-total-package--4335ee20-baseline-continuous-implementation).
+Eight Research workspace commands use the existing core and canonical DB writers;
+Candidate extraction remains the reviewed draft with finite source-table lock and
+terminal Worker recovery evidence. These are 9/123 implemented writes; 114 remain.
+There is no unified Project-package review or stage acceptance yet. No production
+approval mapping, Agent grant or public proposal decision permission was enabled.
+
+`researchWorkspaceOperationDb` uses real PostgreSQL for cross-transport replay,
+P1 same-key nonwaiting conflict then explicit replay, distinct-key ordering, current
+Project revocation, Source privatization and scope growth, Claim uniqueness,
+body-free receipts/current reads, unknown Http422 no-cache rollback, NoteWriter
+outbox rollback and mandatory audit/request/result failure. Original Research area
+and screening tests remain domain-consumer evidence. Extraction tests additionally
+exercise an interpretation row fence and actual terminal agent_run redelivery,
+without a second model execution. Tests are implementation evidence, not reviewers'
+execution claims; the final exact run results are appended to the original plan.
+
+Project-package continuation adds research.intake.limit, research.standing.dismiss
+and research.standing.retry to the same human-only workspace core adapter. Limit
+configuration uses the canonical Workflow writer; retry persists the existing
+standing dispatch Job in the receipt/audit transaction and retains the original
+pending/running/finished semantics. Dismiss does not require Source content access
+that the original cleanup did not need, and caches no advice detail. Browser
+standing controls refresh their existing parent status surface; limit editing
+reads the exact receipt Workflow. Subsequent parallel implementation brings the
+HTTP total to 70/123; 53 baseline Project URLs remain legacy. Precise verification
+and file ownership remain in the original P5 plan.
+
+The parallel batch includes two further Research commands, 21 Inquiry HTTP
+adapters, 11 Experiment commands, five Folder DB controls, two monitoring controls
+and 17 Project/Decision commands. New real-PG evidence protects replay, authority
+revocation, concurrent key/resource locks, canonical domain outcomes and rollback
+of domain/Run/Job/receipt/audit effects. Browser API and existing parent-surface
+tests check the changed consumers; presentation components were not changed and
+no visual acceptance is claimed.
+
+The five overlapping Agent capabilities (`inquiry.record_work`,
+`inquiry.close_round`, `inquiry.record_conclusion`, `inquiry.link_task`,
+`inquiry.reference_task_result`) now use core registrations under the same old
+IDs, immutable Run grants, effective origin, provenance and trusted attempt/call
+identity. The old callbacks are removed; direct Dispatcher and CLI entry points
+share the existing operation adapter. Eleven additional real-PG cases protect
+all five manual success/replay/grant-revocation paths, all five unattended
+failclosed paths with no Proposal/domain effects, and Task attempt isolation with
+refusal of model-injected trusted keys. InquiryOperationDb passed 23 cases in the
+first complete Agent run; original direct-write, Task-association and gateway
+consumers passed alongside it (4 files / 53 cases total).
+No unified five-package independent review has run; all production operation
+approval mappings and existing Agent authority remain unchanged.
+
+The subsequent parallel continuation reaches **94/123** retained Project HTTP
+adapters, with **29** still pending. Research is 16/32, Inquiry 21/21,
+Experiment/Folder 24/24, ingress 6/14 and management 27/32. The working inventory
+is 636 = 446 legacy + 39 exemptions + 151 core; P5 legacy excluding the unchanged
+15 plugin writes is 431. These counts do not change formal committed acceptance.
+
+Additional evidence covers Project lifecycle linked-request rollback and replay
+after reactivation; private Ask AI/Notebook Source/Note authority at dispatch and
+publication; snapshot Workflow/Thread/Source privacy across Run, detail and list
+reads; canonical Corpus source provenance; binding-history Proposal bundle
+rollback; and summary owner/version/Run/Room gates with atomic search projection
+and required embedding Job. Folder IO adds private durable intents and the
+existing Job worker boundary, exact-hash uncertain-effect recovery, refusal to
+overwrite independent edits, cancelled-Job recovery and terminal body cleanup.
+The generated Folder intent migration is a new schema change in this continuation.
+
+Core/Dispatcher/Synthesis/boundaries/migration-artifact verification passed
+107 cases, combined protocol contracts passed 66, route/guides/hygiene passed 32,
+and schema:check passed. Exact domain, browser and final build evidence is kept
+in the original P5 plan's continuation rather than inferred from inventory
+metadata. Cross-checking identified and fixed source-origin binding and cached
+channel-retirement races, and Folder uncertain-effect/cancel recovery gaps.
+These engineering cross-checks do not replace the planned independent
+Claude/Antigravity package review; no stage acceptance or production mapping is
+enabled by this continuation.

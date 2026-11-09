@@ -5,17 +5,34 @@ import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "./con
 import { hasSubscriptionQuota, normalizeHostCapabilities } from "./capabilities.js";
 export { hasSubscriptionQuota };
 import { acpRuntimeProbe } from "./runtimeProbes.js";
+import { quotaWindows, subscriptionPoolId } from "./subscriptionUsage.js";
+import { withTransaction } from "../../db/tx.js";
+import { HttpError } from "../routeUtils/common.js";
+
+const loginGenerations = new Map<string, number>();
+const loginScope = (hostId: string, runtimeKey: string, installation: string) => JSON.stringify([hostId, runtimeKey, installation]);
+
+/** A login/logout supersedes cached and in-flight readings, never credentials. */
+export async function invalidateHostUsage(pool: Pool, hostId: string, runtimeKey: string, installation: string): Promise<void> {
+  const key = loginScope(hostId, runtimeKey, installation);
+  loginGenerations.set(key, (loginGenerations.get(key) ?? 0) + 1);
+  await withTransaction(pool, async client => {
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`host-usage:${key}`]);
+    await client.query("DELETE FROM host_runtime_usage WHERE host_id = $1 AND runtime_key = $2 AND installation = $3", [hostId, runtimeKey, installation]);
+  });
+}
 
 /**
  * Subscription quota, read on the host and cached here. The control plane
  * asks the host and keeps only the numbers (ADR 0016). Do not copy a
- * credential into a profile directory to read them beside the server. They
- * are shown on the host card so someone can see a
- * subscription running out before a Run does, and one gate reads them: an
+ * credential into a profile directory to read them beside the server. Usage
+ * projects these readings by account; Command Center links to that projection.
+ * One gate reads the connection cache: an
  * Agent-triggered Room turn waits while its login is past the Space's reserve
  * line (`rooms/quotaGate.ts`).
  */
 interface HostUsageRow {
+  pool_id: string;
   host_id: string;
   runtime_key: string;
   installation: string;
@@ -34,6 +51,9 @@ export const HOST_USAGE_REFRESH_INTERVAL_SECONDS = 3 * 60 * 60;
 function quotaOf(value: unknown): HostUsageQuota {
   const row = (value ?? {}) as Partial<HostUsageQuota>;
   return {
+    account: HostUsageQuotaSchema.shape.account.safeParse(row.account).data,
+    account_display: HostUsageQuotaSchema.shape.account_display.safeParse(row.account_display).data,
+    window_checked_at: HostUsageQuotaSchema.shape.window_checked_at.safeParse(row.window_checked_at).data,
     windows: HostUsageQuotaSchema.shape.windows.safeParse(row.windows).data,
     available: row.available === true,
     session_pct: typeof row.session_pct === "number" ? row.session_pct : null,
@@ -59,6 +79,7 @@ export async function readHostUsage(pool: Pool, hostId: string): Promise<HostUsa
     [hostId],
   );
   return result.rows.map((row) => ({
+    pool_id: subscriptionPoolId(row.host_id, row.runtime_key, row.installation, quotaOf(row.quota_json).account),
     host_id: row.host_id,
     runtime_key: row.runtime_key,
     installation: row.installation,
@@ -67,14 +88,20 @@ export async function readHostUsage(pool: Pool, hostId: string): Promise<HostUsa
   }));
 }
 
-async function writeHostUsage(pool: Pool, hostId: string, runtimeKey: string, installation: string, quota: HostUsageQuota, checkedAt = new Date().toISOString()): Promise<string> {
-  await pool.query(
+async function writeHostUsage(pool: Pool, hostId: string, runtimeKey: string, installation: string, quota: HostUsageQuota, checkedAt = new Date().toISOString(), generation?: number): Promise<string> {
+  quota.window_checked_at ??= Object.fromEntries(quotaWindows(quota).map(window => [window.id, checkedAt]));
+  await withTransaction(pool, async client => {
+    const key = loginScope(hostId, runtimeKey, installation);
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`host-usage:${key}`]);
+    if (generation !== undefined && generation !== (loginGenerations.get(key) ?? 0)) throw new HttpError(409, "The CLI login changed during this check. Refresh usage again.");
+    await client.query(
     `INSERT INTO host_runtime_usage (host_id, runtime_key, installation, quota_json, checked_at)
      VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (host_id, runtime_key, installation)
      DO UPDATE SET quota_json = EXCLUDED.quota_json, checked_at = EXCLUDED.checked_at`,
     [hostId, runtimeKey, installation, JSON.stringify(quota), checkedAt],
   );
+  });
   return checkedAt;
 }
 
@@ -99,6 +126,7 @@ export async function refreshHostUsage(
     keepReadingWhenUnreadable?: boolean;
   } = {},
 ): Promise<HostUsageRow> {
+  const generation = loginGenerations.get(loginScope(hostId, runtimeKey, installation)) ?? 0;
   const quota = hasSubscriptionQuota(runtimeKey)
     ? await registry.requestUsageProbe(hostId, {
       runtime_key: runtimeKey,
@@ -120,18 +148,29 @@ export async function refreshHostUsage(
   if (options.keepReadingWhenUnreadable && !quota.available) {
     const cached = (await readHostUsage(pool, hostId))
       .find((row) => row.runtime_key === runtimeKey && row.installation === installation);
-    if (cached?.quota.available) return cached;
+    if (cached?.quota.available && generation === (loginGenerations.get(loginScope(hostId, runtimeKey, installation)) ?? 0)
+      && (quota.account === undefined || JSON.stringify(quota.account) === JSON.stringify(cached.quota.account))) return cached;
   }
   if (runtimeKey === "claude_code" && quota.available) {
     const cached = (await readHostUsage(pool, hostId)).find(row => row.runtime_key === runtimeKey && row.installation === installation);
     const reported = new Set(quota.windows?.map(item => item.id) ?? []);
-    const retained = (cached?.quota.windows ?? []).filter(item =>
+    const sameAccount = cached?.quota.account && quota.account
+      ? subscriptionPoolId(hostId, runtimeKey, installation, cached.quota.account) === subscriptionPoolId(hostId, runtimeKey, installation, quota.account)
+      : cached?.quota.account === undefined && quota.account === undefined;
+    const retained = (sameAccount ? cached?.quota.windows ?? [] : []).filter(item =>
       /^(five_hour|seven_day)_[a-z0-9_]+$/.test(item.id) && !reported.has(item.id)
       && item.resets !== null && Date.parse(item.resets.replace(/^Resets /, "")) > Date.now());
-    if (retained.length) quota.windows = [...(quota.windows ?? []), ...retained].slice(0, 64);
+    if (retained.length) {
+      const now = new Date().toISOString();
+      quota.window_checked_at = Object.fromEntries([
+        ...(quota.windows ?? []).map(item => [item.id, now]),
+        ...retained.map(item => [item.id, cached?.quota.window_checked_at?.[item.id] ?? cached!.checked_at]),
+      ]);
+      quota.windows = [...(quota.windows ?? []), ...retained].slice(0, 64);
+    }
   }
-  const checkedAt = await writeHostUsage(pool, hostId, runtimeKey, installation, quota);
-  return { host_id: hostId, runtime_key: runtimeKey, installation, quota, checked_at: checkedAt };
+  const checkedAt = await writeHostUsage(pool, hostId, runtimeKey, installation, quota, undefined, generation);
+  return { pool_id: subscriptionPoolId(hostId, runtimeKey, installation, quota.account), host_id: hostId, runtime_key: runtimeKey, installation, quota, checked_at: checkedAt };
 }
 
 /**
@@ -235,6 +274,7 @@ export async function mergeRunQuota(pool: Pool, input: {
   quota: { rate_limit_type: string; utilization: number; resets_at: number };
 }): Promise<void> {
   if (!hasSubscriptionQuota(input.runtimeKey)) return;
+  const generation = loginGenerations.get(loginScope(input.hostId, input.runtimeKey, input.installation)) ?? 0;
   // Only account-wide windows can update this account-wide cache. Model-
   // specific windows (for example seven_day_fable) have independent limits.
   const window = input.quota.rate_limit_type === "five_hour"
@@ -247,6 +287,9 @@ export async function mergeRunQuota(pool: Pool, input: {
   if (!Number.isFinite(input.quota.utilization) || input.quota.utilization < 0) return;
   const cached = (await readHostUsage(pool, input.hostId))
     .find((row) => row.runtime_key === input.runtimeKey && row.installation === input.installation);
+  const windowTimes = { ...(cached?.quota.window_checked_at ?? Object.fromEntries(quotaWindows(cached?.quota ?? { available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: null }).map(item => [item.id, cached!.checked_at]))) };
+  windowTimes[input.quota.rate_limit_type] = new Date().toISOString();
+  if (window) windowTimes[window] = windowTimes[input.quota.rate_limit_type]!;
   const pct = Math.max(0, Math.min(100, Math.round(input.quota.utilization * 100)));
   const resets = Number.isFinite(input.quota.resets_at) && input.quota.resets_at > 0
     ? `Resets ${new Date(input.quota.resets_at * 1000).toISOString()}`
@@ -256,17 +299,19 @@ export async function mergeRunQuota(pool: Pool, input: {
     const id = input.quota.rate_limit_type;
     const quota: HostUsageQuota = {
       ...(cached?.quota ?? { available: true, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: null }),
+      window_checked_at: windowTimes,
       available: true,
       windows: [
         { id, label: id.replace(/^seven_day_/, "").replace(/^five_hour_/, "").replaceAll("_", " ") + (id.startsWith("seven_day") ? " weekly" : " session"), used_pct: pct, resets },
         ...(cached?.quota.windows ?? []).filter(item => item.id !== id),
       ].slice(0, 64),
     };
-    await writeHostUsage(pool, input.hostId, input.runtimeKey, input.installation, quota, cached?.checked_at);
+    await writeHostUsage(pool, input.hostId, input.runtimeKey, input.installation, quota, cached?.checked_at, generation);
     return;
   }
   const quota: HostUsageQuota = {
     ...(cached?.quota ?? { available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: null }),
+    window_checked_at: windowTimes,
     ...(window === "session" ? { session_pct: pct, session_resets: resets } : { week_pct: pct, week_resets: resets }),
     error: null,
   };
@@ -277,5 +322,5 @@ export async function mergeRunQuota(pool: Pool, input: {
     quota.windows = [...quota.windows.filter(item => item.id !== id), updated].slice(0, 64);
   }
   quota.available = quota.session_pct !== null || quota.week_pct !== null;
-  await writeHostUsage(pool, input.hostId, input.runtimeKey, input.installation, quota);
+  await writeHostUsage(pool, input.hostId, input.runtimeKey, input.installation, quota, undefined, generation);
 }

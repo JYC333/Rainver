@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import type { HostUsageQuota, RuntimeStateBoundary } from "@rainver/protocol";
 import { helperProcessEnv } from "./providerBinding.js";
+import { subscriptionAccountDisplay } from "./subscriptionIdentity.js";
 import { killProcessGroup, settleProcessGroup } from "./processGroup.js";
 import { terminalAuthAvailable, ptyArgv, terminalShellCommand } from "./terminalAuth.js";
 
@@ -107,8 +108,12 @@ export async function probeAntigravity(
   try {
     while (Date.now() < deadline) {
       try {
-        const buckets: unknown = JSON.parse(await readFile(destination, "utf8"));
+        const captured = JSON.parse(await readFile(destination, "utf8"));
+        // Older captures were arrays; native identity and quota now share one sample.
+        const buckets: unknown = Array.isArray(captured) ? captured : captured.buckets;
         const quota = parseAntigravityQuota({ groups: [{ displayName: "Antigravity", buckets }] });
+        quota.account = Array.isArray(captured) ? null : captured.account ?? null;
+        quota.account_display = Array.isArray(captured) ? null : subscriptionAccountDisplay(captured.account_display?.email);
         if (quota.available) return quota;
       } catch { /* The native CLI has not published a measured quota yet. */ }
       if (closed) break;
@@ -125,16 +130,18 @@ export async function probeAntigravity(
   }
 }
 
-/** Only quota measurements leave the native status line; account and session fields are discarded. */
+/** Only quota, scoped identity and the current-login email leave the native status line. */
 const STATUSLINE_CAPTURE = String.raw`
 import { writeFile, rename } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 let input = "";
 for await (const chunk of process.stdin) {
   input += chunk;
   if (Buffer.byteLength(input) > 1024 * 1024) throw new Error("Native status line input exceeds its limit");
 }
 const payload = JSON.parse(input);
+const email = typeof payload.email === "string" && payload.email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payload.email) ? payload.email.toLowerCase() : null;
+const account = email ? { provider: "google", product: "antigravity", identity_kind: "email", account_id: createHash("sha256").update(email).digest("hex"), organization_id: null } : null;
 const buckets = Object.entries(payload.quota ?? {}).filter(([id]) => /^[a-z0-9_.-]{1,128}$/i.test(id)).slice(0, 64).map(([id, value]) => ({
   bucketId: id, window: id,
   remainingFraction: typeof value?.remaining_fraction === "number" ? value.remaining_fraction : undefined,
@@ -143,6 +150,6 @@ const buckets = Object.entries(payload.quota ?? {}).filter(([id]) => /^[a-z0-9_.
 }));
 const destination = process.argv[2];
 const temporary = destination + "." + randomUUID() + ".tmp";
-await writeFile(temporary, JSON.stringify(buckets), { mode: 0o600, flag: "wx" });
+await writeFile(temporary, JSON.stringify({ buckets, account, account_display: email ? { email } : null }), { mode: 0o600, flag: "wx" });
 await rename(temporary, destination);
 `;

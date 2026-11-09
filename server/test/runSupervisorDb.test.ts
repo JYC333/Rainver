@@ -1010,7 +1010,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       run_id: runId,
       space_id: SPACE,
       status: "failed",
-      error_json: { error_code: "adapter_runtime_error" },
+      error_json: { error_code: "adapter_runtime_error", runtime_failure: { category: 'configuration', message: 'repair startup failed' }, runtime_target: { host_id: 'retained-host' } },
       completed_at: new Date().toISOString(),
     });
     await repository.holdRunForSupervisorReview({
@@ -1020,6 +1020,9 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       reason_code: "retry_attempt_cap_reached",
       message: "review required",
     });
+    const held = await repository.getRun(SPACE,runId);
+    expect(held?.error_json).toMatchObject({ supervisor_review:true, supervisor_failure: {error_code:'adapter_runtime_error',runtime_failure:{message:'repair startup failed'},runtime_target:{host_id:'retained-host'}} });
+    expect((await repository.getLatestRunAttempt(SPACE,runId))?.error_json).toMatchObject({ supervisor_failure:{error_code:'adapter_runtime_error',runtime_failure:{message:'repair startup failed'}} });
     const resumed = await repository.resumeRunAfterSupervisorReview({
       run_id: runId,
       space_id: SPACE,

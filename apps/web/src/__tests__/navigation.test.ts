@@ -4,9 +4,23 @@ import { MODULE_REGISTRY } from '../modules/registry'
 import {
   routeScopeForPath, sceneForPath, spacePath, stripSpacePrefix,
   RAIL_ITEMS, MOBILE_TAB_ITEMS,
+  settingsSectionForPath, railItemActive,
 } from '../core/navigation'
 
 describe('navigation model', () => {
+  it.each([
+    ['/spaces/s/usage', 'settings'], ['/spaces/s/providers/p', 'settings'], ['/settings/security', 'settings'],
+    ['/spaces/s/plugins', 'space-settings'], ['/spaces/s/network-profiles', 'space-settings'],
+    ['/spaces/s/retrieval-settings', 'space-settings'], ['/spaces/s/prompts', 'space-settings'],
+    ['/instance-settings', 'instance-settings'],
+  ])('keeps %s in the %s settings area on desktop and mobile', (path, id) => {
+    expect(settingsSectionForPath(path)?.id).toBe(id)
+    expect(RAIL_ITEMS.filter(item => railItemActive(item, path)).map(item => item.id)).toEqual([id])
+  })
+  it('does not match settings by partial path prefixes', () => {
+    expect(settingsSectionForPath('/spaces/s/usage-other')).toBeNull()
+    expect(settingsSectionForPath('/spaces/s/projects/p/settings')).toBeNull()
+  })
   it('registers Agent Work as a user-level personal route and rail entry with a mobile tab', () => {
     const entry = MODULE_REGISTRY.find(item => item.id === 'agent-work')
     expect(entry).toMatchObject({ path: '/agent-work', perspectiveType: 'personal', source: 'built_in' })

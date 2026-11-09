@@ -1,4 +1,6 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import type { ReactNode } from 'react'
+import { act, fireEvent, render as testingRender, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   UsageDimensionsResponse,
@@ -399,3 +401,5 @@ describe('UsagePage', () => {
     }
   })
 })
+
+function render(ui: ReactNode) { return testingRender(ui, { wrapper: ({ children }) => <MemoryRouter initialEntries={['/usage?tab=history']}>{children}</MemoryRouter> }) }

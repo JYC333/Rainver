@@ -1,4 +1,5 @@
-import {ProblemTaskLinkResultSchema,ProblemLinkedTasksPageSchema,TaskInquiryThreadsPageSchema,ProblemTaskResultSchema,TaskWorkHistoryPageSchema} from "@rainver/protocol";
+import {CliAgentToolTransport} from '../src/modules/runs/cliToolTransport.js';
+import {INQUIRY_OPERATION_SCHEMAS,ProblemLinkedTasksPageSchema,TaskInquiryThreadsPageSchema,ProblemTaskResultSchema,TaskWorkHistoryPageSchema} from "@rainver/protocol";
 import {settleTasksForRun} from "../src/modules/projectWork/settlement.js";
 import {appendProjectWorkEvent} from "../src/modules/projectWork/eventWriter.js";
 import {readTaskHistory} from "../src/modules/projectWork/taskHistory.js";
@@ -133,7 +134,7 @@ describe('Inquiry and canonical Task associations (real PostgreSQL)',()=>{
  it('serves both HTTP directions, retains old history, and returns authorized 410 without moving Board status',async()=>{
   app=buildModuleServer(config(),[inquiryModule,tasksModule,projectWorkModule]);
   const base=`/api/v1/projects/${project}/inquiry/threads/${thread}/tasks`;
-  const response=await app.inject({method:'POST',url:base,payload:{task:{title:'HTTP repair'},role:'executes',reason:'Fix it',idempotency_key:'http'}});expect(response.statusCode).toBe(201);const task=ProblemTaskLinkResultSchema.parse(response.json()).task_id;
+  const response=await app.inject({method:'POST',url:base,headers:{'idempotency-key':randomUUID()},payload:{task:{title:'HTTP repair'},role:'executes',reason:'Fix it',idempotency_key:'http'}});expect(response.statusCode).toBe(201);const task=INQUIRY_OPERATION_SCHEMAS['inquiry.task.link'].output.parse(response.json().data).task_id;
   expect(ProblemLinkedTasksPageSchema.parse((await app.inject({method:'GET',url:base})).json()).items[0]!.id).toBe(task);
   expect(TaskInquiryThreadsPageSchema.parse((await app.inject({method:'GET',url:`/api/v1/tasks/${task}/inquiry-threads`})).json()).items[0]!.id).toBe(thread);
   expect(ProblemTaskResultSchema.parse((await app.inject({method:'GET',url:`${base}/${task}/result`})).json()).task_id).toBe(task);
@@ -149,14 +150,15 @@ describe('Inquiry and canonical Task associations (real PostgreSQL)',()=>{
   const created=await link({task:{title:'Collect logs',required_outputs:['log_bundle']}});
   expect((await db.pool.query(`SELECT required_outputs_json FROM tasks WHERE id=$1`,[created.task_id])).rows[0].required_outputs_json).toEqual(['log_bundle']);
   const runId=randomUUID(),agent=randomUUID();await seedRun(db.pool,{id:runId,space,owner,agent,version:randomUUID()});
-  await db.pool.query(`UPDATE runs SET project_id=$2,instructed_by_user_id=$3 WHERE id=$1`,[runId,project,owner]);
+  await db.pool.query(`UPDATE runs SET project_id=$2,instructed_by_user_id=$3,status='running',permission_snapshot_json=$4::jsonb WHERE id=$1`,[runId,project,owner,JSON.stringify({tool_grants:[{action_id:'inquiry.link_task'}]})]);
   app=buildModuleServer(config(),[inquiryModule,tasksModule,projectWorkModule]);
   const posted=await app.inject({method:'POST',url:'/api/v1/tasks',payload:{project_id:project,title:'Human Task',source_run_id:runId,links:[{entity_type:'inquiry_thread',entity_id:thread,role:'executes'}]}});
   expect(posted.statusCode).toBe(201);expect(posted.json().source_run_id).toBeNull();
   expect((await db.pool.query(`SELECT id FROM project_work_events WHERE space_id=$1 AND (data_json->>'run_id'=$2 OR correlation_id=$2)`,[space,runId])).rows).toEqual([]);
   const run={...(await db.pool.query(`SELECT * FROM runs WHERE id=$1`,[runId])).rows[0],project_id:project,instructed_by_user_id:owner} as AgentRunRecord;
   const map=new Map<SystemActionId,SystemActionExecutor>();registerInquirySystemActionExecutors(map,config(),run);
-  const call=async(title:string)=>String((((await map.get('inquiry.link_task')!({thread_id:thread,task:{title},reason:'Investigate',role:'investigates'},{idempotency_key:'1'} as any)) as any).modelResult as any).task_id);
+  expect(map.has('inquiry.link_task')).toBe(false);
+  const call=async(title:string)=>{const result=await new CliAgentToolTransport(config()).call(run,{id:'1',name:'inquiry.link_task',arguments:{thread_id:thread,task:{title},reason:'Investigate',role:'investigates'}}) as any;expect(result.httpStatus,JSON.stringify(result.body)).toBe(200);return String(result.body.data.task_id);};
   const first=await call('Attempt one');expect(await call('Attempt one')).toBe(first);
   // A Supervisor retry restarts the call counter: the same id there is a new call.
   await db.pool.query(`INSERT INTO run_attempts(id,space_id,run_id,attempt_number,status,created_at,updated_at) VALUES($1,$2,$3,2,'running',now(),now())`,[randomUUID(),space,runId]);
@@ -164,10 +166,10 @@ describe('Inquiry and canonical Task associations (real PostgreSQL)',()=>{
  });
  it('records Agent/Run provenance and rejects retired stage calls unless an old grant and Task authority exist',async()=>{
   const runId=randomUUID(),agent=randomUUID();await seedRun(db.pool,{id:runId,space,owner,agent,version:randomUUID()});
-  await db.pool.query(`UPDATE runs SET project_id=$2,instructed_by_user_id=$3 WHERE id=$1`,[runId,project,owner]);
-  const row=(await db.pool.query(`SELECT * FROM runs WHERE id=$1`,[runId])).rows[0];const run={...row,project_id:project,instructed_by_user_id:owner,permission_snapshot_json:{tool_grants:[{action_id:'task.advance_stage'}]}} as AgentRunRecord;
+  await db.pool.query(`UPDATE runs SET project_id=$2,instructed_by_user_id=$3,status='running',permission_snapshot_json=$4::jsonb WHERE id=$1`,[runId,project,owner,JSON.stringify({tool_grants:[{action_id:'inquiry.link_task'}]})]);
+  const row=(await db.pool.query(`SELECT * FROM runs WHERE id=$1`,[runId])).rows[0];const run={...row,project_id:project,instructed_by_user_id:owner,permission_snapshot_json:{tool_grants:[{action_id:'task.advance_stage'},{action_id:'inquiry.link_task'}]}} as AgentRunRecord;
   const map=new Map<SystemActionId,SystemActionExecutor>();registerInquirySystemActionExecutors(map,config(),run);
-  const linked=await map.get('inquiry.link_task')!({thread_id:thread,task:{title:'Agent repair'},reason:'Investigate',role:'investigates',idempotency_key:'untrusted'}, {idempotency_key:'call-1'} as any);const task=String(((linked as any).modelResult as any).task_id);
+  expect(map.has('inquiry.link_task')).toBe(false);const linked=await new CliAgentToolTransport(config()).call(run,{id:'call-1',name:'inquiry.link_task',arguments:{thread_id:thread,task:{title:'Agent repair'},reason:'Investigate',role:'investigates'}}) as any;expect(linked.httpStatus,JSON.stringify(linked.body)).toBe(200);const task=String(linked.body.data.task_id);
   const event=(await db.pool.query(`SELECT e.data_json,a.agent_id FROM project_work_events e JOIN actors a ON a.id=e.actor_id WHERE e.subject_id=$1 AND e.event_kind='thread.work_recorded' ORDER BY occurred_at DESC LIMIT 1`,[thread])).rows[0];expect(event.agent_id).toBe(agent);expect(event.data_json.run_id).toBe(runId);
   for(let n=1;n<5;n++)await service().link(identity(),project,thread,{task:{title:`Bounded Task ${n}`},reason:'Requested work',role:'prepares',idempotency_key:`bounded-${n}`},{runId,agentId:agent});
   await expect(service().link(identity(),project,thread,{task:{title:'Sixth ordinary create'},reason:'Extra',role:'prepares',idempotency_key:'sixth'},{runId,agentId:agent})).rejects.toMatchObject({statusCode:429});

@@ -115,3 +115,10 @@ describe("a request whose handler throws before answering", () => {
     expect(frame).toMatchObject({ type: resultType, request_id: "request-1", error: "Malformed daemon config" });
   });
 });
+
+it('preserves an isolated Location and candidate reference through the actual daemon dispatch conversion',()=>{
+ const ref={id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',generation:2,integration_id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',cwd_subpath:'packages/app'};
+ const parsed=parseServerFrame({type:'launch',run_id:'run',launch_id:'launch',argv:['node'],workspace:{kind:'location',workspace_location_id:'loc',workspace_relative_path:'project',execution_workspace:ref}});
+ expect(parsed.ok).toBe(true);if(!parsed.ok||parsed.frame.type!=='launch')throw new Error('fixture');
+ expect(toLaunchFrame(parsed.frame).workspace).toEqual({kind:'location',workspace_location_id:'loc',workspace_relative_path:'project',execution_workspace:ref});
+});

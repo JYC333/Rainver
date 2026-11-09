@@ -30,5 +30,7 @@ export const RunFilePreviewSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('workspace'), project_id: z.string(), folder_id: z.string(), path: z.string(), line: z.number().int().positive().optional() }),
   z.object({ kind: z.literal('image'), name: z.string(), mime_type: z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp']), content_base64: z.string() }),
   z.object({ kind: z.literal('text'), name: z.string(), content: z.string() }),
+  /** The Run's exact file version was released by workspace retention after its history period. */
+  z.object({ kind: z.literal('expired'), name: z.string(), expired_at: z.string().nullable() }),
 ]);
 export type RunFilePreview = z.infer<typeof RunFilePreviewSchema>;

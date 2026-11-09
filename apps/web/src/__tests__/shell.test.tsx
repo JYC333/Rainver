@@ -30,6 +30,12 @@ beforeEach(() => {
 const routerFuture = { v7_relativeSplatPath: true, v7_startTransition: true } as const
 
 describe('Shell scene sidebar collapse', () => {
+  it('labels the security child and keeps its Settings parent available', () => {
+    render(<MemoryRouter initialEntries={['/settings/security']} future={routerFuture}><Shell /></MemoryRouter>)
+    expect(screen.getByRole('heading', { name: 'Account security' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back to Settings' })).toHaveAttribute('href', '/settings')
+    expect(within(screen.getByRole('navigation', { name: 'Global navigation' })).getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
+  })
   beforeEach(() => {
     localStorage.clear()
   })

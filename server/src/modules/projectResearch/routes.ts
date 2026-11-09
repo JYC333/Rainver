@@ -72,16 +72,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post(`${base}/standing/advice/:adviceId/dismiss`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await new ProjectResearchStandingComparisonService(dbPool(context.config), context.config)
-        .dismissAdvice(identity, requireParam(request, "projectId"), requireParam(request, "adviceId")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   app.post(`${base}/standing/advice/:adviceId/action`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -94,16 +85,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post(`${base}/standing/batches/:batchId/retry`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await new ProjectResearchStandingComparisonService(dbPool(context.config), context.config)
-        .retryBatch(identity, requireParam(request, "projectId"), requireParam(request, "batchId")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   // Assessment routes are server-owned and rebuilt with this module by the dev polling watcher.
   app.get(`${base}/question/assessment`, async (request, reply) => {
@@ -143,16 +125,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post(`${base}/question/assessment/confirm`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(201).send(await new ProjectResearchQuestionRefineService(dbPool(context.config), context.config)
-        .confirm(identity, requireParam(request, "projectId"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   app.post(`${base}/initial-intake/start`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -170,31 +143,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.put(`${base}/initial-intake`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await orchestrator(context).saveInitialIntakeDraft(identity, requireParam(request, "projectId"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.put(`${base}/item-limit`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await orchestrator(context).updateInitialItemLimit(
-          identity,
-          requireParam(request, "projectId"),
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
+
 
   app.post(`${base}/question/apply-forward`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -240,15 +191,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post(`${base}/reports`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(202).send(await orchestrator(context).generateReportSnapshot(identity, requireParam(request, "projectId")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get(`${base}/workflow`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -402,23 +344,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post(`${base}/workflow/:workflowId/stages/:stageKey/run`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await repository(context).runStage(
-          identity,
-          requireParam(request, "projectId"),
-          requireParam(request, "workflowId"),
-          requireParam(request, "stageKey"),
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   app.get(`${base}/workflow/:workflowId/checkpoints`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -474,34 +400,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post(`${base}/claims`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply
-        .code(201)
-        .send(await repository(context).createClaimLink(identity, requireParam(request, "projectId"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.patch(`${base}/claims/:claimLinkId`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await repository(context).updateClaimLink(
-          identity,
-          requireParam(request, "projectId"),
-          requireParam(request, "claimLinkId"),
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
+
 
   app.get(`${base}/screening-criteria`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -513,17 +414,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.put(`${base}/screening-criteria`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await repository(context).upsertScreeningCriteria(identity, requireParam(request, "projectId"), jsonBody(request)),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   app.get(`${base}/evidence-matrix`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);

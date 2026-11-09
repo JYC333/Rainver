@@ -1,3 +1,4 @@
+import {registerProjectManagementOperationRoutes} from '../projects/managementOperationRoutes.js';
 import { introspectIdentity } from '../auth/identity.js';
 import {resolveRequestId} from '../../gateway/requestContext.js';
 import {sessionActor} from '../systemActions/operations/actor.js';
@@ -5,18 +6,12 @@ import {operationRuntime} from '../systemActions/operations/runtime.js';
 import {OperationError} from '../systemActions/operations/errors.js';
 import { readTaskHistory } from "./taskHistory.js";
 import type { FastifyInstance } from "fastify";
-import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import {
-  dbPool, HttpError, jsonBody, params, query, optionalString, requiredString, resolveIdentity, sendRouteError,
-  withDbTransaction, type Queryable,
+  dbPool, jsonBody, params, query, optionalString, requiredString, resolveIdentity, sendRouteError,
 } from "../routeUtils/common.js";
-import { resolveUserActorId } from "../../db/actorResolver.js";
 import { getProjectBoard, getTaskWorkView } from "./boardReadModel.js";
 import { getProjectUpdates } from "./updatesReadModel.js";
-import { undoProjectUpdate } from "./updateUndo.js";
-import { appendProjectWorkEvent } from "./eventWriter.js";
-import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 
 /**
  * Project read models and recorded updates.
@@ -26,6 +21,7 @@ import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "..
  * `tasks` owns the work item, not the advancement around it.
  */
 export function registerRoutes(app: FastifyInstance, context: { config: ServerConfig }): void {
+  registerProjectManagementOperationRoutes(app,context,'projectWork');
   const pool = () => dbPool(context.config);
 
   app.get("/api/v1/projects/:projectId/board", async (request, reply) => {
@@ -88,53 +84,8 @@ export function registerRoutes(app: FastifyInstance, context: { config: ServerCo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/updates/:eventId/undo", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      const eventId = requiredString(params(request).eventId, "event_id");
-      // Writer authority: undoing changes the Project, and the domain command
-      // it dispatches to re-checks that under its own lock.
-      return reply.send(await undoProjectUpdate(pool(), identity, projectId, eventId));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/updates", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      const parsed = protocol.ProjectUpdateRequestSchema.safeParse(jsonBody(request));
-      if (!parsed.success) throw new HttpError(422, parsed.error.message);
-      // A person's own account of where the Project stands. There is no Agent
-      // writer for `project.reported`. This route is the only producer, and
-      // Updates is a filter over the same stream rather than a second place
-      // the story could be told.
-      //
-      // Writer authority, not read: this appends to the record the Project is
-      // judged by. A `viewer` who can read the Project can read the Updates,
-      // and that is a different permission from writing one.
-      const event = await withDbTransaction(pool(), async (client: Queryable) => {
-        await lockActiveProjectForMutation(client, identity.spaceId, projectId);
-        await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
-        const actorId = await resolveUserActorId(client, identity.spaceId, identity.userId);
-        return appendProjectWorkEvent(client, {
-          spaceId: identity.spaceId,
-          projectId,
-          eventKind: "project.reported",
-          subjectType: "project",
-          subjectId: projectId,
-          actorId,
-          data: { summary: parsed.data.summary, via: "user" },
-        });
-      });
-      return reply.code(201).send({ id: event.id });
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
+
 
 }

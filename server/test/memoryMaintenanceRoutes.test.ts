@@ -5,9 +5,12 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { loadConfig } from "../src/config.js";
 import { __setMemoryIdentityForTests } from "../src/modules/memory/routes.js";
 import { memoryModule } from "../src/modules/memory/index.js";
+import { useReviewPacketDatabase } from "./support/reviewPacketDatabase.js";
+import { insertMemoryEntry } from "./support/memoryFixtures.js";
 import type { MemoryRow } from "../src/modules/memory/repository.js";
 
-vi.mock("../src/db/pool.js", () => ({
+vi.mock("../src/db/pool.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../src/db/pool.js")>(),
   getDbPool: vi.fn(),
 }));
 
@@ -175,78 +178,6 @@ describe("Memory maintenance routes", () => {
     expect(response.statusCode, response.body).toBe(404);
   });
 
-  it("creates a private report artifact and packet from a maintenance scan", async () => {
-    __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const db = fakePool([
-      row({ id: "memory-1", title: "Same" }),
-      row({ id: "memory-2", title: "Same" }),
-      row({ id: "memory-3", title: "Different" }),
-    ]);
-    vi.mocked(getDbPool).mockReturnValue(db.pool as never);
-    app = buildModuleServer(config(), [memoryModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/memory/maintenance/scan",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({
-        create_packet: true,
-        stale_after_days: 3650,
-        thin_content_chars: 1,
-      }),
-    });
-
-    expect(res.statusCode, res.body).toBe(200);
-    expect(res.json()).toMatchObject({
-      counts: expect.objectContaining({ duplicate: 1 }),
-      candidate_limit: 500,
-      candidates_examined: 3,
-      scanned: 3,
-      truncated: false,
-      artifact_id: expect.stringMatching(/[0-9a-f-]{36}/),
-      proposal_id: expect.stringMatching(/[0-9a-f-]{36}/),
-    });
-    expect(db.calls.map((call) => call.sql.replace(/\s+/g, " ").trim())).toEqual(
-      expect.arrayContaining(["BEGIN", "COMMIT"]),
-    );
-    const artifactInsert = db.calls.find((call) => /INSERT INTO artifacts/.test(call.sql));
-    expect(artifactInsert).toBeDefined();
-    const artifactPayload = JSON.parse(String(artifactInsert!.params[13]));
-    expect(artifactPayload).toMatchObject({
-      kind: "memory_maintenance_report",
-      visibility: "private",
-      owner_user_id: "user-1",
-      candidate_limit: 500,
-      candidates_examined: 3,
-      counts: expect.objectContaining({ duplicate: 1 }),
-      access_safety: {
-        owner_private: true,
-        raw_content_included: false,
-        snippets_included: false,
-      },
-    });
-
-    const proposalInsert = db.calls.find((call) => /INSERT INTO proposals/.test(call.sql));
-    expect(proposalInsert).toBeDefined();
-    expect(proposalInsert!.params[3]).toBe("memory_maintenance_packet");
-    expect(proposalInsert!.params[14]).toBe("user-1");
-    const proposalPayload = JSON.parse(String(proposalInsert!.params[10]));
-    expect(proposalPayload).toMatchObject({
-      operation: "memory_maintenance_packet",
-      report_artifact_id: res.json().artifact_id,
-      candidate_limit: 500,
-      candidates_examined: 3,
-      canonical_write_performed: false,
-    });
-
-    const accessLog = db.calls.find((call) => /INSERT INTO content_access_logs/.test(call.sql));
-    expect(accessLog).toBeDefined();
-    expect(accessLog!.params[1]).toEqual(["memory-1", "memory-2"]);
-    expect(accessLog!.params[2]).toBe("memory");
-    expect(accessLog!.params[6]).toBe("maintenance_scan");
-    expect(accessLog!.params).not.toContain("memory-3");
-  });
-
   it("rejects create_packet without persisted report", async () => {
     __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     app = buildModuleServer(config(), [memoryModule]);
@@ -317,31 +248,124 @@ describe("Memory maintenance routes", () => {
     expect(memorySelect?.params).toContain(projectId);
   });
 
-  it("rolls back the transaction when packet persistence fails", async () => {
-    __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const db = fakePool(
-      [
-        row({ id: "memory-1", title: "Same" }),
-        row({ id: "memory-2", title: "Same" }),
-      ],
-      { failOnProposalInsert: true },
-    );
-    vi.mocked(getDbPool).mockReturnValue(db.pool as never);
-    app = buildModuleServer(config(), [memoryModule]);
+  describe("persisted maintenance packets", () => {
+    const packetDatabase = useReviewPacketDatabase(import.meta.url);
+    const seedMemories = async (titles: string[]) => {
+      for (const [index, title] of titles.entries()) {
+        await insertMemoryEntry(packetDatabase.database.pool, "space-1", {
+          id: `memory-${index + 1}`,
+          owner_user_id: "user-1",
+          created_by: "user-1",
+          title,
+          content: "Readable memory content",
+          namespace: "user.default",
+          created_at: "2026-01-01T00:00:00.000Z",
+          updated_at: "2026-01-01T00:00:00.000Z",
+        });
+      }
+    };
 
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/memory/maintenance/scan",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ create_packet: true }),
+    it("creates a private report artifact and packet from a maintenance scan", async () => {
+      __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+      await seedMemories(["Same", "Same", "Different"]);
+      const db = packetDatabase.observe();
+      const pool = packetDatabase.database.pool;
+      vi.mocked(getDbPool).mockReturnValue(db as never);
+      app = buildModuleServer(config(), [memoryModule]);
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/memory/maintenance/scan",
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({
+          create_packet: true,
+          stale_after_days: 3650,
+          thin_content_chars: 1,
+        }),
+      });
+
+      expect(res.statusCode, res.body).toBe(200);
+      const body = res.json();
+      expect(body).toMatchObject({
+        counts: expect.objectContaining({ duplicate: 1 }),
+        candidate_limit: 500,
+        candidates_examined: 3,
+        scanned: 3,
+        truncated: false,
+        artifact_id: expect.stringMatching(/[0-9a-f-]{36}/),
+        proposal_id: expect.stringMatching(/[0-9a-f-]{36}/),
+      });
+      const artifact = (await pool.query(
+        "SELECT owner_user_id, visibility, metadata_json FROM artifacts WHERE id = $1 AND space_id = 'space-1'",
+        [body.artifact_id],
+      )).rows[0];
+      expect(artifact).toMatchObject({ owner_user_id: "user-1", visibility: "private" });
+      expect(artifact.metadata_json).toMatchObject({
+        kind: "memory_maintenance_report",
+        visibility: "private",
+        owner_user_id: "user-1",
+        candidate_limit: 500,
+        candidates_examined: 3,
+        counts: expect.objectContaining({ duplicate: 1 }),
+        access_safety: {
+          owner_private: true,
+          raw_content_included: false,
+          snippets_included: false,
+        },
+      });
+
+      const proposal = (await pool.query(
+        "SELECT proposal_type, status, created_by_user_id, payload_json FROM proposals WHERE id = $1 AND space_id = 'space-1'",
+        [body.proposal_id],
+      )).rows[0];
+      expect(proposal).toMatchObject({
+        proposal_type: "memory_maintenance_packet",
+        status: "pending",
+        created_by_user_id: "user-1",
+        payload_json: {
+          operation: "memory_maintenance_packet",
+          report_artifact_id: body.artifact_id,
+          candidate_limit: 500,
+          candidates_examined: 3,
+          canonical_write_performed: false,
+        },
+      });
+
+      const accessLog = db.calls.find((call) => /INSERT INTO content_access_logs/.test(call.sql));
+      expect(accessLog).toBeDefined();
+      expect([...(accessLog!.params[1] as string[])].sort()).toEqual(["memory-1", "memory-2"]);
+      expect(accessLog!.params[2]).toBe("memory");
+      expect(accessLog!.params[6]).toBe("maintenance_scan");
+      expect(accessLog!.params).not.toContain("memory-3");
+      // The owner reading their own Memory records reads, not an audit row for another viewer.
+      expect((await pool.query("SELECT id, access_count FROM memory_entries WHERE space_id = 'space-1' ORDER BY id")).rows)
+        .toEqual([{ id: "memory-1", access_count: 1 }, { id: "memory-2", access_count: 1 }, { id: "memory-3", access_count: 0 }]);
     });
 
-    expect(res.statusCode).toBe(400);
-    expect(res.json().detail).toContain("proposal insert failed");
-    const statements = db.calls.map((call) => call.sql.replace(/\s+/g, " ").trim());
-    expect(statements).toContain("BEGIN");
-    expect(statements).toContain("ROLLBACK");
-    expect(statements).not.toContain("COMMIT");
-    expect(db.calls.some((call) => /INSERT INTO content_access_logs/.test(call.sql))).toBe(false);
+    it("rolls back the transaction when packet persistence fails", async () => {
+      __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+      await seedMemories(["Same", "Same"]);
+      const pool = packetDatabase.database.pool;
+      const db = packetDatabase.observe({ failOn: { pattern: /^INSERT INTO proposals/, message: "proposal insert failed" } });
+      vi.mocked(getDbPool).mockReturnValue(db as never);
+      app = buildModuleServer(config(), [memoryModule]);
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/memory/maintenance/scan",
+        headers: { "content-type": "application/json" },
+        payload: JSON.stringify({ create_packet: true }),
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().detail).toContain("proposal insert failed");
+      // The report artifact was inserted inside the same transaction; it and any
+      // access log must be gone from PostgreSQL after the rollback.
+      expect(db.calls.some((call) => /INSERT INTO artifacts/.test(call.sql))).toBe(true);
+      expect((await pool.query("SELECT 1 FROM artifacts WHERE space_id = 'space-1'")).rowCount).toBe(0);
+      expect((await pool.query("SELECT 1 FROM proposals WHERE space_id = 'space-1'")).rowCount).toBe(0);
+      expect((await pool.query("SELECT 1 FROM content_access_logs WHERE space_id = 'space-1'")).rowCount).toBe(0);
+      expect((await pool.query("SELECT max(access_count) AS reads FROM memory_entries WHERE space_id = 'space-1'")).rows[0].reads).toBe(0);
+    });
   });
 });

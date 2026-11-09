@@ -10,9 +10,14 @@ import { registerKnowledgeProposalAppliers } from "../src/modules/knowledge/prop
 import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
+import { useReviewPacketDatabase } from "./support/reviewPacketDatabase.js";
+import { insertProposalRow } from "../src/modules/proposals/reviewPackets.js";
 import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext.js";
 
-vi.mock("../src/db/pool.js", () => ({ getDbPool: vi.fn() }));
+vi.mock("../src/db/pool.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../src/db/pool.js")>(),
+  getDbPool: vi.fn(),
+}));
 
 let app: FastifyInstance | undefined;
 
@@ -128,59 +133,6 @@ class ObjectProfileApplyFakeDb {
       return { rows: [], rowCount: row ? 1 : 0 };
     }
     return { rows: [], rowCount: 0 };
-  }
-}
-
-class ObjectProfileApplyServiceFakeClient extends ObjectProfileApplyFakeDb {
-  proposalRow: Record<string, unknown> = proposalRow({
-    proposal_type: "object_profile_create",
-    status: "pending",
-    risk_level: "high",
-    payload_json: {
-      operation: "object_profile_create",
-      key: "decision",
-      label: "Decision",
-      base_object_type: "knowledge_item",
-    },
-  });
-  acceptedUpdates = 0;
-  auditWrites = 0;
-  released = false;
-
-  override async query(sql: string, params: readonly unknown[] = []) {
-    const norm = sql.replace(/\s+/g, " ").trim();
-    if (norm === "BEGIN" || norm === "COMMIT" || norm === "ROLLBACK") {
-      return { rows: [], rowCount: 0 };
-    }
-    if (norm.startsWith("SELECT proposal.id, proposal.space_id, proposal.proposal_type")) {
-      return { rows: [this.proposalRow], rowCount: 1 };
-    }
-    if (norm.includes("AS effective_access_level")) {
-      return { rows: [{ effective_access_level: "full" }], rowCount: 1 };
-    }
-    if (norm.startsWith("SELECT role FROM space_memberships")) {
-      return { rows: [{ role: "admin" }], rowCount: 1 };
-    }
-    if (norm.startsWith("INSERT INTO policy_decision_records")) {
-      this.auditWrites += 1;
-      return { rows: [{ id: "policy-decision-1" }], rowCount: 1 };
-    }
-    if (norm.startsWith("UPDATE proposals SET status = $5")) {
-      if (this.proposalRow.status !== "pending") return { rows: [], rowCount: 0 };
-      this.proposalRow.status = params[4];
-      this.proposalRow.reviewed_at = params[2];
-      this.proposalRow.reviewed_by = params[3];
-      this.acceptedUpdates += 1;
-      return { rows: [], rowCount: 1 };
-    }
-    if (norm.startsWith("SELECT p.id, p.space_id")) {
-      return { rows: [this.proposalRow], rowCount: 1 };
-    }
-    return super.query(sql, params);
-  }
-
-  release() {
-    this.released = true;
   }
 }
 
@@ -367,48 +319,6 @@ describe("object kind proposal applier", () => {
 });
 
 describe("object kind proposal routes", () => {
-  it("lets a space admin create an object kind proposal", async () => {
-    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
-    mockPool((sql, params) => {
-      if (/INSERT INTO proposals/.test(sql)) {
-        return {
-          rows: [proposalRow({
-            id: "proposal-1",
-            proposal_type: String(params[3]),
-            title: String(params[8]),
-            payload_json: JSON.parse(String(params[10])),
-            risk_level: String(params[5]),
-          })],
-          rowCount: 1,
-        };
-      }
-      return undefined;
-    });
-    app = buildModuleServer(config(), [knowledgeModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/knowledge/object-schema/profiles/proposals",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({
-        key: "decision",
-        label: "Decision",
-        base_object_type: "knowledge_item",
-        relation_hints: [{
-          endpoint_object_type: "source",
-          link_type: "references",
-          direction: "from",
-        }],
-      }),
-    });
-
-    expect(res.statusCode).toBe(202);
-    const body = res.json();
-    expect(body.proposal_type).toBe("object_profile_create");
-    expect(body.risk_level).toBe("high");
-    expect(body.proposed_content).toContain("decision");
-  });
-
   it("rejects unsafe object kind config before creating a proposal", async () => {
     __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     let inserts = 0;
@@ -498,47 +408,6 @@ describe("object kind proposal routes", () => {
     expect(res.statusCode).toBe(422);
     expect(res.json().detail).toContain("risk is required");
     expect(inserts).toBe(0);
-  });
-
-  it("lets admins propose activating a draft object kind", async () => {
-    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
-    mockPool((sql, params) => {
-      if (/FROM space_object_profiles/.test(sql)) {
-        return {
-          rows: [objectProfileRow({
-            id: String(params[0]),
-            status: "draft",
-          })],
-          rowCount: 1,
-        };
-      }
-      if (/INSERT INTO proposals/.test(sql)) {
-        return {
-          rows: [proposalRow({
-            id: "proposal-activate",
-            proposal_type: String(params[3]),
-            title: String(params[8]),
-            payload_json: JSON.parse(String(params[10])),
-            risk_level: String(params[5]),
-          })],
-          rowCount: 1,
-        };
-      }
-      return undefined;
-    });
-    app = buildModuleServer(config(), [knowledgeModule]);
-
-    const res = await app.inject({
-      method: "PATCH",
-      url: "/api/v1/knowledge/object-schema/profiles/kind-1/proposals",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ status: "active" }),
-    });
-
-    expect(res.statusCode).toBe(202);
-    const body = res.json();
-    expect(body.proposal_type).toBe("object_profile_update");
-    expect(body.proposed_content).toContain("kind-1");
   });
 
   it("rejects archived object kind targets before creating review work", async () => {
@@ -659,29 +528,97 @@ describe("object kind proposal routes", () => {
     ]);
   });
 
+  it("rejects object kind proposal creation for non-admin members", async () => {
+    __setAuthRepositoryForTests(fakeAuthRepository("member"));
+    mockPool(() => undefined);
+    app = buildModuleServer(config(), [knowledgeModule]);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/knowledge/object-schema/profiles/proposals",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({
+        key: "decision",
+        label: "Decision",
+        base_object_type: "knowledge_item",
+      }),
+    });
+
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("persisted object kind proposals", () => {
+  const packetDatabase = useReviewPacketDatabase(import.meta.url);
+  const persisted = async (id: string) => (await packetDatabase.database.pool.query(
+    "SELECT proposal_type, status, risk_level, payload_json FROM proposals WHERE id = $1 AND space_id = 'space-1'",
+    [id],
+  )).rows[0];
+
+  it("lets a space admin create an object kind proposal", async () => {
+    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
+    vi.mocked(getDbPool).mockReturnValue(packetDatabase.database.pool);
+    app = buildModuleServer(config(), [knowledgeModule]);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/knowledge/object-schema/profiles/proposals",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({
+        key: "decision",
+        label: "Decision",
+        base_object_type: "knowledge_item",
+        relation_hints: [{
+          endpoint_object_type: "source",
+          link_type: "references",
+          direction: "from",
+        }],
+      }),
+    });
+
+    expect(res.statusCode, res.body).toBe(202);
+    const body = res.json();
+    expect(body.proposal_type).toBe("object_profile_create");
+    expect(body.risk_level).toBe("high");
+    expect(body.proposed_content).toContain("decision");
+    expect(await persisted(body.id)).toMatchObject({
+      proposal_type: "object_profile_create",
+      status: "pending",
+      risk_level: "high",
+      payload_json: { operation: "object_profile_create", key: "decision" },
+    });
+    expect((await packetDatabase.database.pool.query("SELECT 1 FROM space_object_profiles")).rowCount).toBe(0);
+  });
+
+  it("lets admins propose activating a draft object kind", async () => {
+    __setAuthRepositoryForTests(fakeAuthRepository("admin"));
+    const pool = packetDatabase.database.pool;
+    await pool.query(
+      `INSERT INTO space_object_profiles(id,space_id,key,label,base_object_type,status,created_by_user_id,created_at,updated_at)
+       VALUES('kind-1','space-1','decision','Decision','knowledge_item','draft','user-1',now(),now())`,
+    );
+    vi.mocked(getDbPool).mockReturnValue(pool);
+    app = buildModuleServer(config(), [knowledgeModule]);
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/knowledge/object-schema/profiles/kind-1/proposals",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ status: "active" }),
+    });
+
+    expect(res.statusCode, res.body).toBe(202);
+    const body = res.json();
+    expect(body.proposal_type).toBe("object_profile_update");
+    expect(body.proposed_content).toContain("kind-1");
+    expect(await persisted(body.id)).toMatchObject({ proposal_type: "object_profile_update", status: "pending" });
+    expect((await pool.query("SELECT status FROM space_object_profiles WHERE id = 'kind-1'")).rows).toEqual([{ status: "draft" }]);
+  });
+
   it("imports object schema manifests as draft object kind proposals", async () => {
     __setAuthRepositoryForTests(fakeAuthRepository("admin"));
-    const insertedPayloads: Record<string, unknown>[] = [];
-    mockPool((sql, params) => {
-      if (/FROM space_object_profiles/.test(sql)) {
-        return { rows: [], rowCount: 0 };
-      }
-      if (/INSERT INTO proposals/.test(sql)) {
-        const payload = JSON.parse(String(params[10])) as Record<string, unknown>;
-        insertedPayloads.push(payload);
-        return {
-          rows: [proposalRow({
-            id: `proposal-${insertedPayloads.length}`,
-            proposal_type: String(params[3]),
-            title: String(params[8]),
-            payload_json: payload,
-            risk_level: String(params[5]),
-          })],
-          rowCount: 1,
-        };
-      }
-      return undefined;
-    });
+    const pool = packetDatabase.database.pool;
+    vi.mocked(getDbPool).mockReturnValue(pool);
     app = buildModuleServer(config(), [knowledgeModule]);
 
     const res = await app.inject({
@@ -705,10 +642,12 @@ describe("object kind proposal routes", () => {
       }),
     });
 
-    expect(res.statusCode).toBe(202);
+    expect(res.statusCode, res.body).toBe(202);
     expect(res.json()).toMatchObject({ created_proposal_count: 1, skipped_count: 0 });
-    expect(insertedPayloads).toHaveLength(1);
-    expect(insertedPayloads[0]).toMatchObject({
+    const rows = (await pool.query("SELECT proposal_type, status, payload_json FROM proposals WHERE space_id = 'space-1'")).rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ proposal_type: "object_profile_create", status: "pending" });
+    expect(rows[0].payload_json).toMatchObject({
       operation: "object_profile_create",
       key: "decision",
       status: "draft",
@@ -716,50 +655,36 @@ describe("object kind proposal routes", () => {
     });
   });
 
-  it("rejects object kind proposal creation for non-admin members", async () => {
-    __setAuthRepositoryForTests(fakeAuthRepository("member"));
-    mockPool(() => undefined);
-    app = buildModuleServer(config(), [knowledgeModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/knowledge/object-schema/profiles/proposals",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({
-        key: "decision",
-        label: "Decision",
-        base_object_type: "knowledge_item",
-      }),
-    });
-
-    expect(res.statusCode).toBe(403);
-  });
-});
-
-describe("object kind proposal apply service", () => {
   it("marks generic object kind proposals accepted and prevents replay", async () => {
-    const client = new ObjectProfileApplyServiceFakeClient();
-    vi.mocked(getDbPool).mockReturnValue({
-      connect: async () => client,
-      query: async (sql: string, params?: readonly unknown[]) => client.query(sql, params),
-    } as never);
+    const pool = packetDatabase.database.pool;
+    const pending = await insertProposalRow(pool, {
+      spaceId: "space-1",
+      proposalType: "object_profile_create",
+      title: "Create object kind",
+      riskLevel: "high",
+      payload: { operation: "object_profile_create", key: "decision", label: "Decision", base_object_type: "knowledge_item" },
+      rationale: "Object kind creation requested.",
+      createdByUserId: "user-1",
+      visibility: "space_shared",
+    });
+    vi.mocked(getDbPool).mockReturnValue(pool);
     const registry = new ProposalApplierRegistry();
     registerKnowledgeProposalAppliers(registry);
     const service = new PgProposalApplyService(config(), registry);
 
-    const first = await service.accept("proposal-1", { spaceId: "space-1", userId: "user-1" });
+    const first = await service.accept(pending.id, { spaceId: "space-1", userId: "user-1" });
 
-    expect(first?.proposal).toMatchObject({ id: "proposal-1", status: "accepted" });
+    expect(first?.proposal).toMatchObject({ id: pending.id, status: "accepted" });
     expect(first?.result_type).toBe("object_profile");
-    expect(client.proposalRow.reviewed_by).toBe("user-1");
-    expect(client.acceptedUpdates).toBe(1);
-    expect(client.writes).toEqual(["object_profile_create"]);
+    expect((await pool.query("SELECT status, reviewed_by FROM proposals WHERE id = $1", [pending.id])).rows)
+      .toEqual([{ status: "accepted", reviewed_by: "user-1" }]);
+    const profiles = async () => (await pool.query("SELECT key, created_from_proposal_id FROM space_object_profiles WHERE space_id = 'space-1'")).rows;
+    expect(await profiles()).toEqual([{ key: "decision", created_from_proposal_id: pending.id }]);
 
-    const replay = await service.accept("proposal-1", { spaceId: "space-1", userId: "user-1" });
+    const replay = await service.accept(pending.id, { spaceId: "space-1", userId: "user-1" });
 
     expect(replay).toBeNull();
-    expect(client.acceptedUpdates).toBe(1);
-    expect(client.writes).toEqual(["object_profile_create"]);
+    expect(await profiles()).toHaveLength(1);
   });
 });
 
@@ -813,33 +738,6 @@ function mockPool(handler: Handler): void {
   } as never);
 }
 
-function proposalRow(overrides: Record<string, unknown> = {}) {
-  return {
-    id: "proposal-1",
-    space_id: "space-1",
-    created_by_user_id: "user-1",
-    project_folder_id: null,
-    created_by_run_id: null,
-    proposal_type: "object_profile_create",
-    status: "pending",
-    risk_level: "high",
-    urgency: "normal",
-    preview: false,
-    title: "Create object kind",
-    payload_json: {},
-    rationale: "Object kind creation requested.",
-    visibility: "space_shared",
-    review_deadline: null,
-    expires_at: null,
-    created_at: "2026-06-27T00:00:00.000Z",
-    reviewed_at: null,
-    reviewed_by: null,
-    project_id: null,
-    egress_approval_id: null,
-    egress_approval_status: null,
-    ...overrides,
-  };
-}
 
 function objectProfileRow(overrides: Record<string, unknown> = {}) {
   return {

@@ -1487,3 +1487,9 @@ start fence has no receipt: external effects may already have occurred and the
 task will not automatically execute again. Check Source history and Job logs;
 a known pre-I/O rejection can be resubmitted explicitly with a new key after its
 cause is corrected. No new monitor/dashboard or approval copy is introduced.
+
+Source-goal compatibility mapping, pause, scheduler takeover and rollback lock a known
+Project, then Source connections, then their channels. Multi-channel rollback locks
+all known parent connections before any child, matching legacy channel updates and
+the connection locks required by binding foreign keys. Changed parent identity is
+refused instead of acquiring a newly discovered parent after a channel lock.

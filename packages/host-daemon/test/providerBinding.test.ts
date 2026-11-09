@@ -703,3 +703,14 @@ describe("environment for a daemon-side helper process", () => {
     expect(env).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
   });
 });
+
+describe('workspace runtime profile identity',()=>{
+ it('materializes separate native cache roots with actual UUID container identities',async()=>{
+  const {runtimeProfileContainerPath}=await import('../src/managedWorkspaces.js');
+  const {randomUUID}=await import('node:crypto');const a=randomUUID(),b=randomUUID(),agent='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  expect(runtimeProfileContainerPath(agent,'workspace',a)).not.toBe(runtimeProfileContainerPath(agent,'workspace',b));
+  const root=await tempDir();
+  const result=await materializeProviderBinding(frame({profile_key:`agents/${agent}/workspace/${a}/claude_code/native`}),root,null);
+  expect(result.HOME).toBe(root);
+ });
+});

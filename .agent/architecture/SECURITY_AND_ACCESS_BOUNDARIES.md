@@ -1204,9 +1204,12 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   cross-site navigation from a browser that sends no fetch metadata carries no
   `Origin` either. Do not allow that case. `SameSite=Lax` sends the cookie on a
   top-level cross-site GET, so these needed the check a POST gets for free. A
-  route whose only effect is its response must not use it: the host usage route
-  is a cache read of `host_runtime_usage` — the probe is the POST beside it —
-  and guarding it would refuse an ordinary cross-origin read for nothing. The OAuth pair,
+  route whose only effect is its response must not use it. The host usage route
+  reads `host_runtime_usage`; the probe is the POST beside it. Its subscription-usage
+  account projection also only reads the cache, including the full login email
+  and optional workspace display name, filtering Host quota permissions
+  before grouping vendor identities. Guarding these reads would refuse an ordinary
+  cross-origin read for nothing. The OAuth pair,
   `GET /api/v1/auth/google` and its callback, creates a session by design and is
   protected by its own state cookie instead. It is **not** the only GET left
   that writes: a detail read records a `content_access_logs` row, `GET

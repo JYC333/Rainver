@@ -75,7 +75,7 @@ describe("the workspace a verifier runs in", () => {
       runtime_key: "codex_cli",
       model_override_json: { installation: "managed:1.11.0" },
       runtime_profile_snapshot_json: { runtime_installation: "own" },
-    })).toMatchObject({ runtime_key: "codex_cli", installation: "managed:1.11.0" });
+    })).toMatchObject({ runtime_tree_key: "codex_cli", installation: "managed:1.11.0" });
   });
 })
 

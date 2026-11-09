@@ -335,7 +335,7 @@ describe('Project Files & Code Area', () => {
     vi.mocked(projectFoldersApi.unregister).mockImplementation(async (_projectId, _folderId, confirm) => {
       if (confirm) return null as never
       throw Object.assign(new Error('Active File drafts must be explicitly confirmed before unregistering this Folder'), {
-        payload: { code: 'active_drafts_require_confirmation', active_draft_count: 2, affected_user_count: 1 },
+        payload: { error: {code:'operation_conflict',metadata:{code: 'active_drafts_require_confirmation', active_draft_count: 2, affected_user_count: 1}} },
       })
     })
 

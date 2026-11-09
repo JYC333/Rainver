@@ -1,3 +1,7 @@
+import {publicWorkspaceLaunchError,workspaceScopedCwd} from './workspaceScope.js';
+import {prepareWorkspaceAttachments,attachmentReports,attachmentGitBinds,type PreparedAttachment} from './workspaceAttachments.js';
+import { prepareExecutionWorkspace } from "./executionWorkspace.js";
+import { workspaceRunKey,workspaceWorktreeKey } from "./worktreeIdentity.js";
 import {readOnlyIpcFilter} from './readOnlyIpc.js';
 import {probeReadOnlyWorkspace,readOnlyBinary,assertReadOnlyBinds,workspacePathLeaseKeys,workspaceGitDirectory,readOnlyRootGuard,executableRoots,captureReadOnlyBasis} from './readOnlyWorkspace.js';
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostDaemonFrame, type HostEgressTransport, type HostLaunchFrame, type HostLaunchIsolation, type HostLaunchProviderBinding, type HostLaunchWorkSurface, type HostServerFrameOf } from "@rainver/protocol";
@@ -15,7 +19,7 @@ import { buildStrictNamespaceCommand, type StrictBind } from "./strictNamespace.
 import { uploadRunDiff, uploadRunOutputs } from "./api.js";
 import { captureGitHead, captureWorkspaceDiff, captureWorkspaceTree } from "./gitDiff.js";
 import { acquireLocationLeases, cancelAllLeaseWaits, cancelLeaseWaits, hasLeaseWaiters, releaseLocationLeases } from "./locationLease.js";
-import { checkLocationRepository, hasTaskWorktreeMaintenance, isTaskWorktreeInUse, prepareTaskWorktree, taskLeaseKey, touchTaskRecord, validTaskWorktreeIds, type LocationRepository, type TaskWorktree } from "./taskWorktree.js";
+import { checkLocationRepository, hasTaskWorktreeMaintenance, isTaskWorktreeInUse, prepareTaskWorktree, ownEntry, taskLeaseKey, touchTaskRecord, validTaskWorktreeIds, type LocationRepository, type TaskWorktree } from "./taskWorktree.js";
 import { mergeResolutionWorktree } from "./taskMerge.js";
 import { collectOutputFiles } from "./outputFiles.js";
 import { clearStateRootEnv, clearVendorCredentialEnv, filterAmbientEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "./providerBinding.js";
@@ -41,6 +45,7 @@ export interface LaunchWorkspace {
    * `taskWorktree.ts`) — or, with `merge_id`, resolve that merge's conflict
    * in it as the merge left it (`taskMerge.ts`).
    */
+  execution_workspace?: import("@rainver/protocol").ExecutionWorkspaceRef;
   worktree?: { task_id: string; merge_id?: string };
   agent_id?: string;
   container?: ManagedWorkspaceContainer;
@@ -760,7 +765,7 @@ function providerProfileDir(profileKey: string): string {
   if (segments.length !== 6 || agents !== "agents") {
     throw new Error(`runtime profile key has an unusable shape: ${profileKey}`);
   }
-  if (containerKind !== "direct" && containerKind !== "conversation" && containerKind !== "location" && containerKind !== "agent") {
+  if (containerKind !== "direct" && containerKind !== "conversation" && containerKind !== "location" && containerKind !== "agent" && containerKind !== "workspace") {
     throw new Error(`runtime profile key has an unusable container kind: ${profileKey}`);
   }
   for (const segment of [agentId, containerId, runtimeKey, providerId]) {
@@ -1098,7 +1103,8 @@ export async function handleLaunch(
  */
 interface LaunchHold {
   leases: string[];
-  worktree: TaskWorktree | null;
+  attachedWorktrees?:PreparedAttachment[];
+  worktree: (TaskWorktree & {targetRef?:string|null;baselineKind?:string;snapshotHead?:string|null;baselineTree?:string|null;launchSequence?:number}) | null;
   /** A merge's conflict resolution: the Task worktree as the merge left it, neither prepared nor settled. */
   resolution: { root: string; gitCommonDir: string } | null;
   spawned: boolean;
@@ -1142,10 +1148,10 @@ export function launchLeasePlan(
 ): { exclusive: string[]; shared: string[] } {
   if (!launchMayWrite(frame.isolation, strict)) {
     return {
-      exclusive: taskKey ? [taskKey] : [],
+      exclusive: [...(taskKey?[taskKey]:[]),...(frame.workspace_access??[]).filter(a=>a.execution_workspace).map(a=>taskLeaseKey(a.workspace_location_id,workspaceWorktreeKey(a.execution_workspace!)))],
       shared: [
         ...(locationId && !taskKey ? [locationId] : []),
-        ...(frame.workspace_access ?? []).map((attachment) => attachment.workspace_location_id),
+        ...(frame.workspace_access ?? []).filter(a=>!a.execution_workspace).map((attachment) => attachment.execution_workspace?taskLeaseKey(attachment.workspace_location_id,workspaceWorktreeKey(attachment.execution_workspace)):attachment.workspace_location_id),
       ],
     };
   }
@@ -1154,8 +1160,8 @@ export function launchLeasePlan(
       ...(taskKey ? [taskKey] : []),
       ...(locationId && !taskKey ? [locationId] : []),
       ...(frame.workspace_access ?? [])
-        .filter((attachment) => attachment.access_mode === "write")
-        .map((attachment) => attachment.workspace_location_id),
+        .filter((attachment) => attachment.execution_workspace||attachment.access_mode === "write")
+        .map((attachment) => attachment.execution_workspace?taskLeaseKey(attachment.workspace_location_id,workspaceWorktreeKey(attachment.execution_workspace)):attachment.workspace_location_id),
     ],
     shared: [],
   };
@@ -1169,7 +1175,9 @@ async function launchRun(
 ): Promise<void> {
   const config = await requireConfig();
   const personalRead=config.trust!=='strict'&&frame.isolation?.sandbox_mode==='read_only';
-  if(personalRead&&!(await probeReadOnlyWorkspace()).supported){send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:false,error:'Read-only workspace unavailable: install bubblewrap and allow mount/PID namespaces on this Linux Host; update/reconnect both sides. No writable fallback.'});return;}
+  const personalMixed=config.trust!=='strict'&&!personalRead&&Boolean(frame.workspace_access?.some(a=>a.execution_workspace&&a.access_mode==='read'));
+  const personalNamespace=personalRead||personalMixed;
+  if(personalNamespace&&!(await probeReadOnlyWorkspace()).supported){send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:false,error:'Read-only workspace unavailable: install bubblewrap and allow mount/PID namespaces on this Linux Host; update/reconnect both sides. No writable fallback.'});return;}
   let cwd: string | undefined;
   try {
     if (frame.workspace?.kind === "managed") {
@@ -1214,7 +1222,7 @@ async function launchRun(
     });
     return;
   }
-  const attachmentRoots=(frame.workspace_access??[]).map(a=>({path:resolveLocationCwd(config.workspaces,a.workspace_location_id,a.workspace_relative_path,workspacesRoot()),access:a.access_mode})).filter((a):a is {path:string;access:'read'|'write'}=>!!a.path);
+  const attachmentRoots=(frame.workspace_access??[]).filter(a=>!a.execution_workspace).map(a=>({path:resolveLocationCwd(config.workspaces,a.workspace_location_id,a.workspace_relative_path,workspacesRoot()),access:a.access_mode})).filter((a):a is {path:string;access:'read'|'write'}=>!!a.path);
   const commonGit=await workspaceGitDirectory(cwd);
   const attachedGit=(await Promise.all(attachmentRoots.map(a=>workspaceGitDirectory(a.path)))).filter((p):p is string=>!!p);
   if(personalRead){
@@ -1228,14 +1236,16 @@ async function launchRun(
   const locationId = frame.workspace?.kind === "managed"
     ? null
     : frame.workspace?.workspace_location_id ?? frame.workspace_location_id ?? null;
-  const taskId = !personalRead&&frame.workspace?.kind === "location" ? frame.workspace.worktree?.task_id ?? null : null;
+  const executionRef = frame.workspace?.kind === "location" ? frame.workspace.execution_workspace : undefined;
+  if(executionRef && frame.workspace?.kind === "location" && frame.workspace.worktree)throw new Error("Ambiguous execution workspace");
+  const taskId = executionRef ? workspaceWorktreeKey(executionRef) : !personalRead&&frame.workspace?.kind === "location" ? frame.workspace.worktree?.task_id ?? null : null;
   let taskRepository: LocationRepository | null = null;
   if (locationId && taskId) {
     // Not a checkout, or one with nothing committed: the Run works in place.
     // A checkout git refuses fails the launch instead — it is still the
     // person's checkout, and a Task does not run there.
     const check = await checkLocationRepository(cwd);
-    const refusal = check.kind === "unusable"
+    const refusal = executionRef && check.kind !== "repository" ? "execution_workspace_repository_unavailable" : check.kind === "unusable"
       ? `This Location is a git checkout Rainver cannot make a Task worktree of: ${check.reason}`
       : check.kind === "repository" && !validTaskWorktreeIds(locationId, taskId)
         ? "This Task's id cannot name a Task worktree on this host."
@@ -1324,81 +1334,60 @@ async function launchRun(
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     // With the Task's lease held: nothing else touches its worktree now.
-    const mergeId = frame.workspace?.kind === "location" ? frame.workspace.worktree?.merge_id : undefined;
+    const mergeId = frame.workspace?.kind === "location" ? frame.workspace.worktree?.merge_id ?? executionRef?.integration_id : undefined;
     try {
       if (mergeId) {
         hold.resolution = await mergeResolutionWorktree(taskRepository, locationId, taskId, mergeId);
         cwd = hold.resolution.root;
       } else {
-        hold.worktree = await prepareTaskWorktree(taskRepository, locationId, taskId, frame.run_id);
-        cwd = hold.worktree.root;
+        hold.worktree = executionRef ? await prepareExecutionWorkspace(taskRepository,locationId,executionRef,frame.run_id,{launchId:frame.launch_id,onQueued:()=>send({type:'waiting_for_workspace',run_id:frame.run_id,launch_id:frame.launch_id})}) : await prepareTaskWorktree(taskRepository, locationId, taskId, frame.run_id);
+        cwd = await workspaceScopedCwd(hold.worktree.root,executionRef?.cwd_subpath);
       }
     } catch (error) {
+      if(executionRef)log(`run ${frame.run_id}: workspace preparation failed: ${publicWorkspaceLaunchError(error)}`);
       send({
         type: "complete",
         run_id: frame.run_id,
         launch_id: frame.launch_id,
         exit_code: 1,
         timed_out: false,
-        error: `Could not prepare this Task's worktree: ${error instanceof Error ? error.message : String(error)}`,
+        error: executionRef?publicWorkspaceLaunchError(error):`Could not prepare this Task's worktree: ${error instanceof Error ? error.message : String(error)}`,
       });
       return;
     }
   }
   let attachedWorkspaceEnv: Record<string, string> = {};
+  const attachmentExecutionRoots:Record<string,string>={};
   let attachedWorkspaceBinds: Array<{ path: string; access_mode: "read" | "write" }> = [];
-  if (frame.workspace_access && frame.workspace_access.length > 0) {
-    const attached = [] as Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }>;
-    for (const attachment of frame.workspace_access) {
-      const configuredPath = config.workspaces[attachment.workspace_location_id];
-      const sharedRoot = workspacesRoot();
-      let path: string | undefined = configuredPath;
-      if (!path && sharedRoot && attachment.workspace_relative_path) {
-        try {
-          path = resolveSharedLocationRoot(sharedRoot, attachment.workspace_relative_path);
-        } catch (error) {
-          send({
-            type: "complete",
-            run_id: frame.run_id,
-            launch_id: frame.launch_id,
-            exit_code: 1,
-            timed_out: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return;
-        }
-      }
-      if (!path) {
-        send({
-          type: "complete",
-          run_id: frame.run_id,
-          launch_id: frame.launch_id,
-          exit_code: 1,
-          timed_out: false,
-          error: `This daemon has no local path registered for attached workspace ${attachment.workspace_location_id}.`,
-        });
-        return;
-      }
-      attached.push({
-        workspace_location_id: attachment.workspace_location_id,
-        access_mode: attachment.access_mode,
-        path,
-      });
+  if(frame.workspace_access?.length){
+    try{
+      const result=await prepareWorkspaceAttachments({attachments:frame.workspace_access,workspaces:config.workspaces,sharedRoot:workspacesRoot(),runId:frame.run_id,launchId:frame.launch_id,
+        onQueued:()=>send({type:'waiting_for_workspace',run_id:frame.run_id,launch_id:frame.launch_id}),
+        primary:executionRef&&hold.worktree&&locationId?{ref:executionRef,locationId,worktree:hold.worktree}:null});
+      hold.attachedWorktrees=result.prepared;
+      attachedWorkspaceEnv.RAINVER_WORKSPACE_ACCESS=JSON.stringify(result.entries);
+      for(const entry of result.entries)attachmentExecutionRoots[entry.workspace_location_id]=entry.path;
+      attachedWorkspaceBinds=result.entries.map(({path,access_mode})=>({path,access_mode}));
+    }catch(error){
+      const isolated=frame.workspace_access.some(a=>a.execution_workspace);
+      const message=isolated?publicWorkspaceLaunchError(error):String(error);
+      if(isolated)log(`run ${frame.run_id}: workspace attachment preparation failed: ${message}`);
+      send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:false,error:message});return;
     }
-    // The daemon is the only component that can resolve physical paths. Keep
-    // the control-plane authorization explicit for the child without ever
-    // accepting an arbitrary path from the launch frame.
-    attachedWorkspaceEnv.RAINVER_WORKSPACE_ACCESS = JSON.stringify(attached);
-    attachedWorkspaceBinds = attached.map(({ path, access_mode }) => ({ path, access_mode }));
   }
   let inputResourcePaths: Record<string, string>;
   try {
     const allowedLocationIds = new Set([
       frame.workspace_location_id,
       frame.workspace?.kind === "location" ? frame.workspace.workspace_location_id : undefined,
-      ...(frame.workspace_access?.map((item) => item.workspace_location_id) ?? []),
+      ...(frame.workspace_access?.flatMap((item) => [item.workspace_location_id,...(item.mount_location_id?[item.mount_location_id]:[])]) ?? []),
     ].filter((value): value is string => Boolean(value)));
-    inputResourcePaths = resolveInputResourcePaths(frame.input_resources, config.workspaces, allowedLocationIds, workspacesRoot());
+    const executionRoots={...config.workspaces};
+    if(locationId&&hold.worktree)executionRoots[locationId]=hold.worktree.root;
+    if(frame.workspace_location_id&&hold.worktree)executionRoots[frame.workspace_location_id]=cwd;
+    for(const attachment of hold.attachedWorktrees??[])executionRoots[attachment.locationId]=attachment.worktree.root;
+    Object.assign(executionRoots,attachmentExecutionRoots);
+    inputResourcePaths = resolveInputResourcePaths(frame.input_resources, executionRoots, allowedLocationIds, workspacesRoot());
   } catch (error) {
     send({
       type: "complete",
@@ -1501,7 +1490,7 @@ async function launchRun(
       // go.
       const relocatesState = Object.keys(binding.profile_env).length > 0
         || binding.files.length > 0 || binding.login_link !== null;
-      if(personalRead&&binding.credential_source==='host_login'&&!relocatesState)throw new Error('This runtime requires a declared login/state boundary for read-only execution; update its runtime definition, not its login.');
+      if(personalNamespace&&binding.credential_source==='host_login'&&!relocatesState)throw new Error('This runtime requires a declared login/state boundary for read-only execution; update its runtime definition, not its login.');
       if (relocatesState) {
         profileDir = providerProfileDir(binding.profile_key);
         loginHome = loginHomeFor(runtimeKey, frame.installation ?? OWN_INSTALLATION);
@@ -1586,7 +1575,7 @@ async function launchRun(
   let spawnCommand = command;
   let spawnCommandArgs = spawnArgs;
   let spawnEnv: Record<string, string> = { ...baseEnv, ...derivedEnv };
-  const strict = config.trust === "strict"||personalRead;
+  const strict = config.trust === "strict"||personalNamespace;
   // Ordinary tools and the instructing person's own account, only when the
   // control plane sent the field. Held on `hold` until the process exits.
   try {
@@ -1628,10 +1617,14 @@ async function launchRun(
       const tool = frame.installation && frame.installation !== OWN_INSTALLATION
         ? readToolManifestSync(frame.runtime_key ?? rawCommand, frame.installation)
         : null;
+      const ownedMetadata=hold.worktree??hold.resolution;
+      const workspaceGitEntry=executionRef&&ownedMetadata&&taskRepository
+        ? await ownEntry(taskRepository,ownedMetadata.root):null;
+      if(executionRef&&ownedMetadata&&!workspaceGitEntry)throw new Error('execution_workspace_git_entry_unverified');
       const plan = planStrictLaunch({
-        personalAmbient:personalRead?baseEnv:undefined,
-        loginFiles:personalRead&&profileDir?(frame.provider_binding?.login_link&&loginHome?[join(loginHome,frame.provider_binding.login_link.home_subdir,frame.provider_binding.login_link.credential_file)].filter(existsSync):[]):undefined,
-        readOnlyExecutables:personalRead?[...executableRoots(fileURLToPath(import.meta.url),spawnEnv),...executableRoots(command,spawnEnv),...((frame.installation??OWN_INSTALLATION)===OWN_INSTALLATION&&frame.runtime_key==='codex_cli'?executableRoots('codex',spawnEnv):[]),...((frame.installation??OWN_INSTALLATION)===OWN_INSTALLATION&&frame.runtime_key==='claude_code'?executableRoots('claude',spawnEnv):[]),...(spawnArgs[0]?.startsWith('/')&&existsSync(spawnArgs[0])?executableRoots(spawnArgs[0],spawnEnv):[]),...['NODE_EXTRA_CA_CERTS','SSL_CERT_FILE','SSL_CERT_DIR','REQUESTS_CA_BUNDLE','CURL_CA_BUNDLE'].map(key=>baseEnv[key]).filter((p):p is string=>!!p&&existsSync(p))]:undefined,
+        personalAmbient:personalNamespace?baseEnv:undefined,
+        loginFiles:personalNamespace&&profileDir?(frame.provider_binding?.login_link&&loginHome?[join(loginHome,frame.provider_binding.login_link.home_subdir,frame.provider_binding.login_link.credential_file)].filter(existsSync):[]):undefined,
+        readOnlyExecutables:personalNamespace?[...executableRoots(fileURLToPath(import.meta.url),spawnEnv),...executableRoots(command,spawnEnv),...((frame.installation??OWN_INSTALLATION)===OWN_INSTALLATION&&frame.runtime_key==='codex_cli'?executableRoots('codex',spawnEnv):[]),...((frame.installation??OWN_INSTALLATION)===OWN_INSTALLATION&&frame.runtime_key==='claude_code'?executableRoots('claude',spawnEnv):[]),...(spawnArgs[0]?.startsWith('/')&&existsSync(spawnArgs[0])?executableRoots(spawnArgs[0],spawnEnv):[]),...['NODE_EXTRA_CA_CERTS','SSL_CERT_FILE','SSL_CERT_DIR','REQUESTS_CA_BUNDLE','CURL_CA_BUNDLE'].map(key=>baseEnv[key]).filter((p):p is string=>!!p&&existsSync(p))]:undefined,
         runId: frame.run_id,
         runDir: runDir(frame.run_id),
         command,
@@ -1647,24 +1640,24 @@ async function launchRun(
         profileDir,
         loginHome,
         toolTree: tool ? managedToolTreeForLaunch(frame.runtime_key ?? rawCommand, frame.installation) : null,
-        runtimeRoot: daemonRuntimeRoot(undefined, personalRead ? baseEnv : null),
+        runtimeRoot: daemonRuntimeRoot(undefined, personalNamespace ? baseEnv : null),
         // A worktree's history lives in the repository's own git directory,
         // outside the worktree; without it git inside the namespace fails.
         ordinaryToolBinds: hold.ordinaryTools?.binds,
         workspaceBinds: hold.worktree ?? hold.resolution
-          ? [...attachedWorkspaceBinds, { path: (hold.worktree ?? hold.resolution)!.gitCommonDir, access_mode: "write" as const }]
-          : [...attachedWorkspaceBinds,...(personalRead?[...(commonGit?[commonGit]:[]),...attachedGit].map(path=>({path,access_mode:"read" as const})):[])],
+          ? [{path:ownedMetadata!.root,access_mode:frame.isolation?.sandbox_mode==='read_only'?'read' as const:'write' as const},...attachedWorkspaceBinds, { path: (hold.worktree ?? hold.resolution)!.gitCommonDir, access_mode: executionRef ? "read" as const : "write" as const },...(workspaceGitEntry?[{path:workspaceGitEntry,access_mode:frame.isolation?.sandbox_mode==='read_only'?"read" as const:"write" as const}]:[]),...await attachmentGitBinds(hold.attachedWorktrees??[],frame.isolation?.sandbox_mode==='read_only')]
+          : [...attachedWorkspaceBinds,...await attachmentGitBinds(hold.attachedWorktrees??[],frame.isolation?.sandbox_mode==='read_only'),...(personalRead?[...(commonGit?[commonGit]:[]),...attachedGit].map(path=>({path,access_mode:"read" as const})):[])],
       });
       await mkdir(plan.home, { recursive: true, mode: 0o700 });
-      if(personalRead){
+      if(personalNamespace){
         const binds:StrictBind[]=[];for(let i=0;i<plan.args.length;i++)if(plan.args[i]==='--bind')binds.push({path:plan.args[i+1]!,access:'read_write'});
-        assertReadOnlyBinds([cwd,...attachedWorkspaceBinds.map(b=>b.path),...(commonGit?[commonGit]:[]),...attachedGit],binds);
+        assertReadOnlyBinds(personalRead?[cwd,...attachedWorkspaceBinds.map(b=>b.path),...(commonGit?[commonGit]:[]),...attachedGit]:attachedWorkspaceBinds.filter(b=>b.access_mode==='read').map(b=>b.path),binds);
       }
-      spawnCommand = personalRead?readOnlyBinary():plan.command;
-      spawnCommandArgs = personalRead?["--seccomp","4",...plan.args]:plan.args;
+      spawnCommand = personalNamespace?readOnlyBinary():plan.command;
+      spawnCommandArgs = personalNamespace?["--seccomp","4",...plan.args]:plan.args;
       // Environment values stay in the inherited environment, never public argv.
       spawnEnv = plan.env;
-      stdio = personalRead?["pipe", "pipe", "pipe", "pipe", "pipe"]:["pipe", "pipe", "pipe", "pipe"];
+      stdio = personalNamespace?["pipe", "pipe", "pipe", "pipe", "pipe"]:["pipe", "pipe", "pipe", "pipe"];
     } catch (error) {
       log(`Namespace preparation failed: ${String(error)}`);
       // The grant was registered while building the plan; a Run that never
@@ -1720,7 +1713,7 @@ async function launchRun(
     stdio,
     detached: true,
   });
-  if(personalRead){const filter=child.stdio[4] as import('node:stream').Writable;filter.on('error',error=>log(`Local IPC filter pipe closed: ${String(error)}`));filter.end(readOnlyIpcFilter());}
+  if(personalNamespace){const filter=child.stdio[4] as import('node:stream').Writable;filter.on('error',error=>log(`Local IPC filter pipe closed: ${String(error)}`));filter.end(readOnlyIpcFilter());}
   // From here the close handler below releases the leases.
   hold.spawned = true;
   // A `stdin` frame that lands as the agent exits fails asynchronously (EPIPE)
@@ -1737,7 +1730,7 @@ async function launchRun(
       // Kill it. Letting it run would report a namespace failure about a
       // process that ran.
       if (!namespaceReady) terminateWithEscalation(child, true, log);
-      else if(personalRead)send({type:"launched",run_id:frame.run_id,launch_id:frame.launch_id});
+      else if(personalNamespace)send({type:"launched",run_id:frame.run_id,launch_id:frame.launch_id});
     });
   }
   const active: ActiveRun = {
@@ -1767,7 +1760,7 @@ async function launchRun(
   // `stdin` frame are two separate WS messages, and this handler reaches
   // this point only after two `await`s, so a same-tick follow-up `stdin`
   // frame's handler could otherwise run first and find no active run.
-  if(!personalRead)send({ type: "launched", run_id: frame.run_id, launch_id: frame.launch_id });
+  if(!personalNamespace)send({ type: "launched", run_id: frame.run_id, launch_id: frame.launch_id });
 
   if (frame.stdin) {
     const translated = substituteAcpInput(frame.stdin, active.placeholders, active.inputResourcePaths, hold.toolBridge?.directory);
@@ -1854,7 +1847,7 @@ async function launchRun(
         gitAfter = inTaskWorktree ? null : await captureGitHead(cwd).catch(() => null);
         // Its sweep counts a day from the Run's end, not its start.
         if (taskWorktree) {
-          await touchTaskRecord(taskWorktree, frame.run_id).catch((error: unknown) => {
+          await touchTaskRecord(taskWorktree, executionRef?workspaceRunKey(frame.run_id,executionRef):frame.run_id).catch((error: unknown) => {
             log(`run ${frame.run_id}: task worktree record update failed: ${error instanceof Error ? error.message : String(error)}`);
           });
         }
@@ -1925,7 +1918,9 @@ async function launchRun(
         ...(executionTimeZone.length <= 128 ? { time_zone: executionTimeZone } : {}),
         ...(nativeRuntimeVersion ? { native_runtime_version: nativeRuntimeVersion } : {}),
         ...(egress.length > 0 ? { egress } : {}),
-        ...(taskWorktree ? { task_worktree: { branch: taskWorktree.branch, start_commit: taskWorktree.startCommit } } : {}),
+        ...(taskWorktree && !executionRef ? { task_worktree: { branch: taskWorktree.branch, start_commit: taskWorktree.startCommit } } : {}),
+        ...((hold.attachedWorktrees?.length??0)>0?{execution_workspace_reports:attachmentReports(hold.attachedWorktrees!)}:{}),
+        ...(taskWorktree && executionRef ? {execution_workspace:{id:executionRef.id,generation:executionRef.generation,branch:taskWorktree.branch,start_commit:taskWorktree.startCommit,target_ref:taskWorktree.targetRef??executionRef.target_ref??null,baseline_kind:taskWorktree.baselineKind as "committed"|"snapshot"|undefined,snapshot_head:taskWorktree.snapshotHead??null,baseline_tree:taskWorktree.baselineTree??null,launch_sequence:taskWorktree.launchSequence}}:{}),
         error: launchFailureMessage({
           namespaceReady,
           timedOut: active.timedOut,

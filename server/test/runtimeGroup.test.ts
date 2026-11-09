@@ -81,7 +81,7 @@ describe("runtimeAdapters", () => {
       expect(getRuntimeAdapterSpec("opencode")).toMatchObject({
         implementation_status: "implemented",
         invocation: {
-          headless_command_template: ["{executable}", "acp", "--cwd", "{sandbox_cwd}"],
+          headless_command_template: ["{executable}", "acp"],
           protocol: "acp",
         },
         subagent_disable_config: {

@@ -1,8 +1,9 @@
+import {InquiryMutationError} from "./operationErrors.js";
 import { createHash } from "node:crypto";
 import type { ProblemReference } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
 import { assertThreadReadable } from "./threadAccess.js";
 import { recordThreadWorkEvent, type ThreadEventProvenance } from "./threadWorkEvents.js";
@@ -23,11 +24,11 @@ export async function lockProblem(db: Queryable, identity: SpaceUserIdentity, pr
   await assertThreadReadable(db, identity, projectId, threadId, "read_content");
   await assertThreadReadable(db, identity, projectId, threadId, "change");
   const r = await db.query<ProblemThread>(`SELECT object_id,statement,version,problem_revision,lifecycle_status,blocked_reason FROM inquiry_threads WHERE object_id=$1 AND space_id=$2 AND project_id=$3 FOR UPDATE`, [threadId, identity.spaceId, projectId]);
-  if (!r.rows[0] || r.rows[0].lifecycle_status !== "active") throw new HttpError(409, "Only an active Thread can change problem work");
+  if (!r.rows[0] || r.rows[0].lifecycle_status !== "active") throw new InquiryMutationError(409, "Only an active Thread can change problem work");
   return r.rows[0];
 }
 export function checkProblemVersion(thread: ProblemThread, body: Record<string, unknown>): void {
-  if (body.expected_version !== thread.version || body.expected_revision !== thread.problem_revision) throw new HttpError(409, "Problem changed; read its projection before retrying");
+  if (body.expected_version !== thread.version || body.expected_revision !== thread.problem_revision) throw new InquiryMutationError(409, "Problem changed; read its projection before retrying");
 }
 export async function problemRound(db: Queryable, spaceId: string, threadId: string): Promise<number> {
   const r = await db.query<{
@@ -43,7 +44,7 @@ export async function replayProblemCommand(db: Queryable, spaceId: string, threa
     result_json: Record<string, unknown>;
   }>(`SELECT thread_id,request_json,result_json FROM inquiry_problem_commands WHERE space_id=$1 AND idempotency_key=$2`, [spaceId, key]);
   if (!r.rows[0]) return null;
-  if (r.rows[0].thread_id !== threadId || !isDeepStrictEqual(r.rows[0].request_json, request)) throw new HttpError(409, "Idempotency key already used for a different command");
+  if (r.rows[0].thread_id !== threadId || !isDeepStrictEqual(r.rows[0].request_json, request)) throw new InquiryMutationError(409, "Idempotency key already used for a different command");
   return r.rows[0].result_json;
 }
 export async function saveProblemCommand(db: Queryable, identity: SpaceUserIdentity, projectId: string, threadId: string, key: string, request: unknown, result: unknown): Promise<void> {

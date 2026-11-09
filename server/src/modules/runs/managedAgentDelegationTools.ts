@@ -247,8 +247,8 @@ export async function runAgentRoomToolCall(
         child_run_id: result.child_run_id,
         status: result.delegation.status,
         workspace_access: params.workspace_access,
-        workspace_concurrency: params.workspace_access === "read" ? "shared_read" : "exclusive_write",
-        message: "Child run created. It starts after the parent yields or finishes, subject to FIFO, Host capacity and workspace access. Delegate all independent readers with workspace_access=read, then call agent.wait_for_results to yield; keeping the parent running does not start its children. Use agent.list_runs to inspect scheduling waits. Do not fabricate child results.",
+        workspace_concurrency: run.workspace_location_id&&(run.contract_snapshot_json as {execution_workspace_version?:number})?.execution_workspace_version===1?"isolated_workspace":params.workspace_access === "read" ? "shared_read" : "exclusive_write",
+        message: run.workspace_location_id&&(run.contract_snapshot_json as {execution_workspace_version?:number})?.execution_workspace_version===1?"Child run created in an independent workspace. After the parent yields and saves its checkpoint, independent children can execute together subject to dependencies, Host capacity and existing quotas. Yield with agent.wait_for_results; successful child integration is adopted by the parent before it resumes. Do not fabricate child results.":"Child run created. It starts after the parent yields or finishes, subject to FIFO, Host capacity and workspace access. Delegate all independent readers with workspace_access=read, then call agent.wait_for_results to yield; keeping the parent running does not start its children. Use agent.list_runs to inspect scheduling waits. Do not fabricate child results.",
       },
       summary: {
         tool_name: call.name,

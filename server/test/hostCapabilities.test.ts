@@ -96,3 +96,9 @@ it('gates read-only personal Host execution on its normalized capability, never 
  expect(refuse('read','acp_antigravity_acp','remote',{workspace_read_only:{supported:false,mechanism:'bwrap-v1'}})).toMatch(/bubblewrap/);
  expect(refuse('write','codex_cli','remote',{})).toBeNull();
 });
+
+it('keeps native integration independent from the v2 worktree offer for rolling upgrades',()=>{
+ const capabilities=normalizeHostCapabilities({runtimes:[],versions:{},installations:{},execution_workspaces:{version:2},native_workspace_integration:true});
+ expect(capabilities.execution_workspaces).toEqual({version:2});expect(capabilities.native_workspace_integration).toBe(true);
+ expect(normalizeHostCapabilities({runtimes:[],versions:{},execution_workspaces:{version:2}}).execution_workspaces).toEqual({version:2});
+});

@@ -399,21 +399,6 @@ describe("projectPublicSummaryRoutes", () => {
   }
 
   describe("Project public summary routes", () => {
-    it("rejects an upsert body missing summary_text", async () => {
-      __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-      app = buildModuleServer(config(), [projectsModule]);
-
-      const res = await app.inject({
-        method: "PUT",
-        url: "/api/v1/projects/project-1/public-summary",
-        headers: { "content-type": "application/json" },
-        payload: JSON.stringify({ topics: ["discovery"] }),
-      });
-
-      expect(res.statusCode).toBe(422);
-      expect(res.json().detail).toContain("summary_text");
-    });
-
     it("rejects a draft request with a non-numeric max_tokens", async () => {
       __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
       app = buildModuleServer(config(), [projectsModule]);

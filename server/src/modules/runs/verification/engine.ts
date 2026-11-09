@@ -1,3 +1,5 @@
+import {redactEvidenceText} from '../evidenceRedaction.js';
+import {verificationCommandArgv} from './commandArgv.js';
 import { basename, isAbsolute, } from "node:path";
 import type { RunMaterializationItemSummary } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
@@ -67,7 +69,7 @@ export interface VerificationCommandExecutor {
 
 export class PgVerificationEngine {
   /** See `verifyTaskWorkspace`. */
-  verifyTaskWorkspace(input: { run: RunRecord; target: VerificationTarget; base_commit_sha: string }): Promise<WorkspaceVerificationOutcome> {
+  verifyTaskWorkspace(input: { run: RunRecord; target: VerificationTarget; base_commit_sha: string; include_diagnostics?: boolean }): Promise<WorkspaceVerificationOutcome> {
     return verifyTaskWorkspace(this.planReader, this.commandExecutor, input);
   }
 
@@ -98,12 +100,15 @@ export class PgVerificationEngine {
     input: VerificationInput,
     phase: "all" | "pre_materialization" | "post_materialization" = "all",
   ): Promise<VerificationResultRecord[]> {
-    const plan = await this.planReader.getPlan(input.run);
+    const plan = await this.planReader.getPlan(input.run, {
+      include_folder_defaults: recordValue(recordValue(input.run.model_override_json).chat_turn).schema_version !== "chat_turn.v1",
+    });
     const declarations = buildVerificationDeclarations(
       input.run,
       plan,
       input.materialization_items,
     ).filter((declaration) => {
+      if(input.workspace_publication_pending&&WORKSPACE_VERIFIER_TYPES.has(declaration.verifier_type))return false;
       const postMaterialization =
         POST_MATERIALIZATION_VERIFIER_TYPES.has(declaration.verifier_type)
         || declaration.key.startsWith("code_patch:");
@@ -140,9 +145,12 @@ export interface WorkspaceVerificationCheck {
   key: string;
   status: VerificationStatus;
   summary: string;
+  /** Private bounded command output for the assigned repair, excluded from progress. */
+  diagnostics?: string;
 }
 
 export interface WorkspaceVerificationOutcome {
+  level?: 'project' | 'basic';
   /** `not_required` when the Task declares no check a workspace can answer. */
   status: "passed" | "failed" | "not_required";
   checks: WorkspaceVerificationCheck[];
@@ -161,7 +169,7 @@ export interface WorkspaceVerificationOutcome {
 export async function verifyTaskWorkspace(
   planReader: VerificationPlanReader,
   commandExecutor: VerificationCommandExecutor | undefined,
-  input: { run: RunRecord; target: VerificationTarget; base_commit_sha: string },
+  input: { run: RunRecord; target: VerificationTarget; base_commit_sha: string; include_diagnostics?: boolean },
 ): Promise<WorkspaceVerificationOutcome> {
   const plan = await planReader.getPlan(input.run);
   const declarations = buildVerificationDeclarations(input.run, plan, [])
@@ -180,7 +188,7 @@ export async function verifyTaskWorkspace(
   const checks: WorkspaceVerificationCheck[] = [];
   for (const declaration of declarations) {
     const result = await evaluateDeclaration(verificationInput, declaration, changed, commandExecutor);
-    checks.push({ verifier_type: result.verifier_type, key: result.key, status: result.status, summary: result.summary });
+    checks.push({ verifier_type: result.verifier_type, key: result.key, status: result.status, summary: result.summary, ...(input.include_diagnostics&&typeof result.details_json.command_diagnostics==='string'?{diagnostics:result.details_json.command_diagnostics}:{}) });
   }
   // A skipped check (a missing recipe) is not a pass: the gate is what the
   // Task declared, and a check that could not run did not say yes.
@@ -579,11 +587,8 @@ async function evaluateCommand(
 ): Promise<Omit<RawVerificationResult, "started_at" | "completed_at" | "verifier_type" | "key">> {
   if (!target) return unavailable("An execution host workspace is required for command verification.");
   if (!executor) return unavailable("Host command verification is unavailable.");
-  const command = commandArgv(declaration.config.command);
-  if (!command || command.length === 0) return unavailable("Validation command is missing or has an empty argument.");
-  if (command.some((part) => /[;&|<>]/.test(part))) {
-    return unavailable("Validation command contains unsupported shell syntax.");
-  }
+  const command = verificationCommandArgv(declaration.config.command);
+  if(!command)return unavailable('Invalid validation command: use one executable with quoted arguments, without shell operators, environment expansion or empty arguments.');
   const requestedTimeout = numberValue(declaration.config.timeout_seconds);
   const timeout = Math.min(
     MAX_COMMAND_TIMEOUT_SECONDS,
@@ -610,7 +615,12 @@ async function evaluateCommand(
   // the verifier leaves them with a Run that "failed its acceptance checks"
   // and no way to learn that the workspace could not be resolved or that a
   // test asserted something false. Bounded, because a recipe can print a lot.
-  const said = (execution.stderr || execution.stdout || "").trim().split("\n").filter(Boolean).at(-1)?.slice(0, 300);
+  const outputLines=[execution.stdout,execution.stderr].flatMap(text=>text.split("\n").map(line=>line.trim()).filter(Boolean));
+  const explanation=outputLines.find(line=>/\bERR_[A-Z_]+\b|^(?:Error:|error:|FAIL\b)|\berror TS\d+:/.test(line))
+    ??execution.stdout.trim().split("\n").filter(Boolean).at(-1)
+    ??execution.stderr.trim().split("\n").filter(Boolean).at(-1);
+  const said=redactEvidenceText(explanation)?.slice(0,300);
+  const diagnostics=`stdout:\n${redactEvidenceText(execution.stdout)?.slice(0,2800)??''}\nstderr:\n${redactEvidenceText(execution.stderr)?.slice(0,2800)??''}`;
   return {
     status: runnerUnavailable ? "error" : "failed",
     summary: [
@@ -626,6 +636,7 @@ async function evaluateCommand(
       failure_code: execution.failure_code ?? null,
       duration_ms: Date.now() - started,
       ...(said ? { host_message: said } : {}),
+      ...(diagnostics?{command_diagnostics:diagnostics}:{}),
     },
   };
 }
@@ -875,13 +886,17 @@ function aggregateResults(results: RawVerificationResult[]) {
           ? "skipped"
           : "passed";
     const failed = group.filter((result) => result.status !== "passed").length;
+    const errors = group.filter((result) => result.status === "error");
+    const firstProblem = group.find((result) => result.status !== "passed");
     return {
       verifier_type: verifierType,
       verifier_version: VERIFICATION_ENGINE_VERSION,
       status,
       summary: group.length === 1
         ? group[0]!.summary
-        : `${group.length - failed}/${group.length} ${verifierType} checks passed.`,
+        : errors.length > 0
+          ? `${errors.length}/${group.length} ${verifierType} checks could not run. ${errors[0]!.summary}`
+          : `${group.length - failed}/${group.length} ${verifierType} checks passed.${firstProblem ? ` ${firstProblem.summary}` : ""}`,
       evidence_refs_json: {
         checks: group.map((result) => ({
           key: result.key,
@@ -914,21 +929,6 @@ function failed(summary: string) {
     evidence_refs_json: { source: "verification_engine" },
     details_json: {},
   };
-}
-
-function commandArgv(value: unknown): string[] | null {
-  if (Array.isArray(value)) {
-    const parts = value.filter((part): part is string => typeof part === "string" && part.length > 0);
-    return parts.length === value.length ? parts : null;
-  }
-  if (typeof value !== "string" || !value.trim()) return null;
-  const parts: string[] = [];
-  const pattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^']*)'|(\S+)/g;
-  for (const match of value.matchAll(pattern)) parts.push(match[1] ?? match[2] ?? match[3] ?? "");
-  // `""` quotes an empty argument. The host wire refuses one, and a refused
-  // command_run frame gets no reply, so the Run would wait out the timeout.
-  if (parts.some((part) => part.length === 0)) return null;
-  return parts.length > 0 ? parts : null;
 }
 
 function safeRelativePath(value: string): boolean {

@@ -1,5 +1,6 @@
 import { researchMetadataReadableSql,researchOperationMetadata,RESEARCH_METADATA_COLUMNS } from "../projectResearch/researchOperationMetadata.js";
 import { ResearchCallContentUnavailable, assertResearchCallReadable } from "../projectResearch/researchCallAccess.js";
+import {assertResearchSnapshotContentReadable} from '../projectResearch/snapshotAccess.js';
 import { randomUUID } from "node:crypto";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError, objectValue, optionalString, requiredString, withQueryableTransaction } from "../routeUtils/common.js";
@@ -140,6 +141,7 @@ export class ProjectOperationRepository {
     const row = operation.rows[0];
     if (!row) throw new HttpError(404, "Project operation not found");
     await assertResearchCallReadable(this.db,identity,projectId,row.research_call_json,row.progress_json);
+    await assertResearchSnapshotContentReadable(this.db,identity,projectId,row.progress_json);
 
     const steps = await this.db.query(`SELECT * FROM project_operation_steps WHERE operation_id=$1 AND space_id=$2 ORDER BY seq`, [operationId, identity.spaceId]);
     const links = await this.db.query(`SELECT * FROM project_operation_links WHERE operation_id=$1 AND space_id=$2 ORDER BY created_at`, [operationId, identity.spaceId]);

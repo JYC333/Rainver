@@ -83,9 +83,12 @@ export class JobWorker {
       return { status: "completed", job_id: job.id };
     } catch (error) {
       const message = errorMessage(error);
-      if (error instanceof JobDeferredError && this.queue.deferJob) {
+      // A shared-source deletion fence (hosts/workspaceSourceFence) refused a
+      // dependent write until the Host confirms the deletion: wait, never fail.
+      const fenced = !(error instanceof JobDeferredError) && /workspace_source_release_pending/.test(message);
+      if ((error instanceof JobDeferredError || fenced) && this.queue.deferJob) {
         const scheduledAt = new Date(
-          Date.now() + Math.max(100, error.retryAfterMs),
+          Date.now() + Math.max(100, error instanceof JobDeferredError ? error.retryAfterMs : 15_000),
         );
         const deferred = await this.queue.deferJob(
           job.id,
@@ -98,7 +101,7 @@ export class JobWorker {
             job.id,
             "status_change",
             `Job deferred until ${scheduledAt.toISOString()}`,
-            { retry_after_ms: error.retryAfterMs },
+            { retry_after_ms: scheduledAt.getTime() - Date.now() },
           );
           return { status: "deferred", job_id: job.id };
         }

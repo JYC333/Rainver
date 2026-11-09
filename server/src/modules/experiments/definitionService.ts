@@ -1,3 +1,4 @@
+import { ExperimentMutationError } from './operationErrors.js';
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { threadReadableSql } from "../inquiry/threadAccess.js";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
@@ -134,7 +135,7 @@ export class ExperimentDefinitionService {
           [identity.spaceId, definitionId],
         );
         if (run.rows[0]) {
-          throw new HttpError(409, "primary_hypothesis_thread_id is immutable after the first Experiment Run");
+          throw new ExperimentMutationError(409, "primary_hypothesis_thread_id is immutable after the first Experiment Run");
         }
       }
       const now = new Date().toISOString();
@@ -188,18 +189,18 @@ export class ExperimentDefinitionService {
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const executorType = enumValue(body.executor_type, EXECUTOR_TYPES);
-    if (!executorType) throw new HttpError(422, `executor_type must be one of ${[...EXECUTOR_TYPES].join(", ")}`);
+    if (!executorType) throw new ExperimentMutationError(422, `executor_type must be one of ${[...EXECUTOR_TYPES].join(", ")}`);
     const config = normalizeExecutorConfig(executorType, objectValue(body.config));
     const requestedStatus = body.status === undefined ? "draft" : enumValue(body.status, VERSION_STATUSES, "status");
     if (requestedStatus !== "draft") {
-      throw new HttpError(422, "New Experiment Versions start as draft and must be approved explicitly");
+      throw new ExperimentMutationError(422, "New Experiment Versions start as draft and must be approved explicitly");
     }
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const definition = await this.definitionRow(identity.spaceId, projectId, definitionId, identity.userId, db);
       if (!definition) throw new HttpError(404, "Experiment Definition not found");
       if (definition.status === "completed" || definition.status === "archived") {
-        throw new HttpError(409, `Cannot add a Version to a ${definition.status} Experiment`);
+        throw new ExperimentMutationError(409, `Cannot add a Version to a ${definition.status} Experiment`);
       }
       const projectFolderId = optionalString(config.project_folder_id);
       if (projectFolderId) {
@@ -235,7 +236,7 @@ export class ExperimentDefinitionService {
       const definition = await this.definitionRow(identity.spaceId, projectId, definitionId, identity.userId, db);
       if (!definition) throw new HttpError(404, "Experiment Definition not found");
       if (definition.status === "completed" || definition.status === "archived") {
-        throw new HttpError(409, `Cannot approve a Version on a ${definition.status} Experiment`);
+        throw new ExperimentMutationError(409, `Cannot approve a Version on a ${definition.status} Experiment`);
       }
       const current = await db.query<VersionRow>(
         `SELECT * FROM experiment_versions
@@ -246,7 +247,7 @@ export class ExperimentDefinitionService {
       const version = current.rows[0];
       if (!version) throw new HttpError(404, "Experiment Version not found");
       if (version.status !== "draft") {
-        throw new HttpError(409, `Experiment Version is already ${version.status}`);
+        throw new ExperimentMutationError(409, `Experiment Version is already ${version.status}`);
       }
       const now = new Date().toISOString();
       const updated = await db.query<VersionRow>(
@@ -309,7 +310,7 @@ export class ExperimentDefinitionService {
       [threadId, identity.spaceId, projectId, identity.userId],
     );
     if (!thread.rows[0]) {
-      throw new HttpError(422, "primary_hypothesis_thread_id must reference a Hypothesis Thread in this Project");
+      throw new ExperimentMutationError(422, "primary_hypothesis_thread_id must reference a Hypothesis Thread in this Project");
     }
   }
 }

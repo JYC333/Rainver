@@ -1,3 +1,4 @@
+import {registerProjectManagementOperationRoutes} from '../projects/managementOperationRoutes.js';
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
@@ -13,6 +14,7 @@ import {
 import { FOCUS_AREA_CONTENTS_PAGE_SIZE, FocusAreaService } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerProjectManagementOperationRoutes(app,context,'focusAreas');
   const service = () => FocusAreaService.fromConfig(context.config);
 
   app.get("/api/v1/focus-areas", async (request, reply) => {
@@ -87,20 +89,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.put("/api/v1/projects/:projectId/focus-area", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      await service().setProjectFocusArea(
-        identity,
-        params(request).projectId ?? "",
-        focusAreaIdFromBody(jsonBody(request)),
-      );
-      return reply.code(204).send();
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   app.get("/api/v1/focus-areas/:focusAreaId/contents", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);

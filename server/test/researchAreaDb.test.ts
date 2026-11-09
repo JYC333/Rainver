@@ -20,6 +20,13 @@ import { PROVIDER_TASK_RUN_JOB_TYPE } from "../src/modules/runs/providerTaskRunH
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { runBoundedProviderTask } from "../src/modules/runs/boundedProviderTaskRun.js";
 
+async function performNotebookChat(service:ProjectResearchAreaService,identity:{spaceId:string;userId:string},body:Record<string,unknown>){
+ const queued=await service.notebookChat(identity,PROJECT,body);
+ await runQueuedProviderTask(queued.run_id);
+ await service.reconcileNotebookChat(identity.spaceId,queued.run_id);
+ const result=await service.notebookChatResult(identity,PROJECT,queued.run_id);if(result.pending)throw new Error("Notebook reply was not settled by its worker");return result;
+}
+
 const SPACE = "11111111-1111-4111-8111-111111111111"; const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; const PROJECT = "55555555-5555-4555-8555-555555555555";
 const PROVIDER = "99999999-9999-4999-8999-999999999999";
 let config: ServerConfig | undefined;
@@ -780,7 +787,7 @@ describe("Research Area (real Postgres)", () => {
     const service = new ProjectResearchAreaService(db.pool, config);
     await service.initializeArea(identity, PROJECT);
 
-    const first = await service.notebookChat(identity, PROJECT, {
+    const first = await performNotebookChat(service,identity,{
       message: "What is the current understanding?",
       execution: { model_provider_id: PROVIDER },
     });
@@ -805,7 +812,7 @@ describe("Research Area (real Postgres)", () => {
     });
     expect(chatRun?.provider_task_control_id).toBeTruthy();
 
-    const second = await service.notebookChat(identity, PROJECT, {
+    const second = await performNotebookChat(service,identity,{
       message: "Follow-up question.",
       session_id: sessionId,
       execution: { model_provider_id: PROVIDER },
@@ -852,7 +859,7 @@ describe("Research Area (real Postgres)", () => {
       }),
     });
 
-    const result = await service.notebookChat(identity, PROJECT, {
+    const result = await performNotebookChat(service,identity,{
       message: "Add the conclusion to the member's note.",
       execution: { model_provider_id: PROVIDER },
     });

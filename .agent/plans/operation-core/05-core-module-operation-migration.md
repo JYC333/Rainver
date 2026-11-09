@@ -1,9 +1,10 @@
 # Plan 5 — Core Module Migration to the Operation Core
 
 Status: in progress. Depends on the completed [Plan 1 contract](../../architecture/OPERATION_EXECUTION_CONTRACT.md),
-not on P3/P4. Authorized: implement continuously, run affected tests, review with
-Claude/Antigravity and commit by capability family. A reviewer without quota is
-skipped and recorded; known defects still require repair. No push or deployment.
+not on P3/P4. Current authorization: implement the five Project packages continuously, run
+affected checks, then the coordinator schedules one Claude/Antigravity review.
+No per-family review stop, staging, commit, push or deployment is authorized.
+Historical family review/commit notes below remain evidence of their own snapshots.
 
 ## Delivery contract
 
@@ -2423,3 +2424,638 @@ parallel apps/web/src/modules/conversation/ConversationTurn.tsx:252 EOF blank li
 it is preserved, not silently cleaned or reported as a global pass. No full suite,
 new presentation/browser acceptance, schema or permission change. Coordinator
 retains independent verification/submission; local tests are not another dual review.
+
+## P5-5 Candidate extraction Run/Job/worker family (basis5c407024)
+
+The prior23-file curated/Candidate family and scoped review repair are committed
+and reviewed in5c407024; they are not reopened. This batch completes the tightly
+owned Candidate extraction queue→existing Agent Run→terminal reconcile closure,
+including typed Review caller and original formal POST. It is not just an enqueue
+annotation: real required Job, dispatch checks and final durable publication receipt
+are implemented. Exactly1 retained URL moves; formal525, working524=
+636(539legacy/39exempt/58core) minus15plugins. Internal worker/receipt/read fixes
+remove no URL. Checkpoints1–4done,5current,8last.
+
+Reuse / Dependency Check: original KnowledgeExtractionService source resolver and
+Candidate writer, PgRunRepository/route/profile/Host execution, PgJobQueueRepository,
+original extraction reconcile JobHandler/JobWorker/defer, P1 core, current ACL and
+Project aggregate gates, B11/policy audit recovery, canonical Run event writer and
+existing orchestration source-dispatch seams. No extra dependency, execution/retry
+engine, table, generated migration or second domain writer. Receipt uses existing
+action_completed metadata rather than inventing an unsupported event enum or actor.
+
+The command writes queued Run + required Job + audit/request atomically, returns
+only Run identity/queued state and preserves source revision in the private
+execution contract. Old keys do not recapture new revisions; new intentions use
+new keys. Model/Host IO stays in the original worker. Narrow source prompts force
+private Run visibility; current source/Agent authority is checked at three existing
+orchestration checkpoints before external invocation. Publication rechecks live
+Project/user/Agent/source access and only narrows derived audience. Revocation
+never erases real Run outputs/expenses or claims external work was rolled back.
+
+Worker publication takes the original event writer try-fence before domain locks,
+locks bounded sorted Project/member/grant/Agent/source/Run sets with NOWAIT, and
+uses existing JobDeferredError rather than a retry loop. Candidate batch and
+required publication receipt event commit together, including zero/skipped counts.
+ACK storage failure replays that receipt; record failure rolls Candidates back.
+There is no unsupported run_events enum/schema change or fake user-as-actor id.
+The current queued toast/Review parent is unchanged; transport tests do not claim
+browser/visual acceptance or model/network execution.
+
+Actual next independent owner family is managed Source activation: human Recipe
+activation either applies inside its existing envelope or atomically submits its
+original approval proposal; Agent Channel activation creates a paused draft and
+proposal with different ownership/audience/credential rules. They are not the same
+operation, and neither is changed/enabled by this batch. Consent/egress/material
+submission/invalid-attempt gates remain real checkpoint5 work, not claimed complete.
+Note link/jot remains the existing pending human choice. No production mapping,
+new Agent grant or public proposal.decide authority is enabled. No new Task/Proposal
+was written in the live Project; review/commit remain coordinator-owned.
+
+Verification: new extraction PG19 pass (real queue, Worker, receipts and ACL),
+existing Knowledge promotion PG12 and inventory12 pass; original Run orchestration
+unit60 pass separately (not DB evidence). Protocol operations23; Web API26 + Project
+Review parent6 pass. Node24 deps/server/Web types pass. Full suite, live model/Host
+execution and browser/visual acceptance were not run. No schema or migration is
+required; current parallel0015/journal/Host/conversation/turnParts work is excluded.
+
+Failures before these final passes are not passes: the first receipt used an
+unsupported event type/actor FK, fixed by reusing action_completed metadata and the
+canonical event writer; new Run fixtures needed real routable Host/Profile settings
+and start shape; a cross-Project fixture needed a real owning entry. Schedule tests
+use a definitely expired time to avoid clock precision races. The canonical source
+Project read boundary was verified rather than inventing grant bypass: viewer+full
+source grant succeeds, no source Project writer is required, no Project read reach
+still denies. Strict Worker completed/deferred and atomic rollback assertions remain.
+
+Owned manifest (21 files; only these own hunks, no aggregate parallel changes):
+- Protocol src: knowledgeExtractionOperation.ts(new), index.ts, operations.ts,
+  systemActions.ts; test/operations.test.ts.
+- KnowledgePromotion: extractionService.ts, extractionOperation.ts(new),
+  extractionDispatch.ts(new), reviewOperationRoutes.ts and routes.ts.
+- Runs: orchestrationService.ts only three new extraction dispatch-guard calls.
+- Core integration: operations/runtime.ts and routeInventory.json.
+- server/test/knowledgeExtractionOperationDb.test.ts(new).
+- Web: api/client.ts and __tests__/conversation-scope-api.test.ts.
+- Existing docs: knowledge-base.md, SYSTEM_ACTIONS.md,
+  POLICY_ENFORCEMENT_INVENTORY.md, OPERATION_CORE_ACCEPTANCE.md and this original plan.
+No stage/commit/push/deploy/online writes, new live Project Task/Proposal or handover.
+
+## Project total package — 4335ee20 baseline, continuous implementation
+
+The user superseded per-family review stops: implement the following five groups
+continuously, then request one independent Claude/Antigravity review. No staging,
+commits, deployment or new product permission is authorized. The baseline has
+123 exact legacy method/path entries; GETs and already-migrated Project commands
+are excluded. Candidate extraction is the existing reviewed draft included here.
+Implementation and tests do not constitute independent review or stage acceptance.
+
+Reuse / Dependency Check: reuse OperationExecutor, existing purpose-bound domain
+services, NoteWriter, Proposal transitions, Run terminal owner ports and PgJobQueue.
+Use explicit per-command Zod DTOs and adapters; no generic business passthrough,
+new execution/retry engine or dependency. External effects stay on existing workers.
+
+| Group | Method | Retained path | Implementation status |
+|---|---|---|---|
+| 1 | POST | `/api/v1/projects/:projectId/research/acquisitions` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/area` | implemented Research workspace command; focused verification below |
+| 1 | POST | `/api/v1/projects/:projectId/research/ask-ai` | implemented `research.ask_ai`; continuation evidence below |
+| 1 | POST | `/api/v1/projects/:projectId/research/checklist` | implemented Research workspace command; focused verification below |
+| 1 | DELETE | `/api/v1/projects/:projectId/research/checklist/:itemId` | implemented Research workspace command; focused verification below |
+| 1 | PATCH | `/api/v1/projects/:projectId/research/checklist/:itemId` | implemented Research workspace command; focused verification below |
+| 1 | POST | `/api/v1/projects/:projectId/research/claims` | implemented Research workspace command; focused verification below |
+| 1 | PATCH | `/api/v1/projects/:projectId/research/claims/:claimLinkId` | implemented Research workspace command; focused verification below |
+| 1 | POST | `/api/v1/projects/:projectId/research/evidence-matrix/rebuild` | pending |
+| 1 | PUT | `/api/v1/projects/:projectId/research/initial-intake` | implemented in parallel Project batch; focused evidence below |
+| 1 | POST | `/api/v1/projects/:projectId/research/initial-intake/start` | pending |
+| 1 | PUT | `/api/v1/projects/:projectId/research/item-limit` | implemented workspace command; continuation evidence below |
+| 1 | POST | `/api/v1/projects/:projectId/research/operations/:operationId/adopt-result` | pending |
+| 1 | PUT | `/api/v1/projects/:projectId/research/operations/:operationId/item-limit` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/operations/:operationId/reconcile` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/operations/:operationId/rescan` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/operations/:operationId/retry` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/question/apply-forward` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/question/assessment/confirm` | implemented `research.question.assessment.confirm`; continuation evidence below |
+| 1 | POST | `/api/v1/projects/:projectId/research/question/refine` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/question/resolve` | pending |
+| 1 | PUT | `/api/v1/projects/:projectId/research/reading-list/:sourceItemId/card` | implemented Research workspace command; focused verification below |
+| 1 | POST | `/api/v1/projects/:projectId/research/reports` | implemented `research.report.snapshot`; continuation evidence below |
+| 1 | POST | `/api/v1/projects/:projectId/research/reports/:reportId/integrity` | pending |
+| 1 | PUT | `/api/v1/projects/:projectId/research/screening-criteria` | implemented Research workspace command; focused verification below |
+| 1 | POST | `/api/v1/projects/:projectId/research/standing/advice/:adviceId/action` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/standing/advice/:adviceId/dismiss` | implemented workspace command; continuation evidence below |
+| 1 | POST | `/api/v1/projects/:projectId/research/standing/batches/:batchId/retry` | implemented workspace command; continuation evidence below |
+| 1 | POST | `/api/v1/projects/:projectId/research/workflow/:workflowId/checkpoints/:checkpointId/decide` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/workflow/:workflowId/history-backfill` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/workflow/:workflowId/stages/:stageKey/run` | implemented in parallel Project batch; focused evidence below |
+| 1 | POST | `/api/v1/projects/:projectId/research/workflow/:workflowId/trigger` | pending |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/candidates/:candidateId/decision` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/candidates/:candidateId/reopen` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/delta-briefs` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/relations` | implemented in parallel Project batch; focused evidence below |
+| 2 | DELETE | `/api/v1/projects/:projectId/inquiry/relations/:relationId` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/review-packets` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/review-packets/:packetId/close` | implemented in parallel Project batch; focused evidence below |
+| 2 | PUT | `/api/v1/projects/:projectId/inquiry/settings/shared-focus-wip-limit` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/threads/:threadId/definition-revisions` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/threads/:threadId/iterations` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/threads/:threadId/lifecycle-transitions` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/threads/:threadId/notes` | implemented in parallel Project batch; focused evidence below |
+| 2 | DELETE | `/api/v1/projects/:projectId/inquiry/threads/:threadId/notes/:noteObjectId` | implemented in parallel Project batch; focused evidence below |
+| 2 | PUT | `/api/v1/projects/:projectId/inquiry/threads/:threadId/personal-focus` | implemented in parallel Project batch; focused evidence below |
+| 2 | PUT | `/api/v1/projects/:projectId/inquiry/threads/:threadId/primary-parent` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/threads/:threadId/problem/close-round` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/threads/:threadId/problem/work` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/threads/:threadId/signals` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/threads/:threadId/tasks` | implemented in parallel Project batch; focused evidence below |
+| 2 | POST | `/api/v1/projects/:projectId/inquiry/threads/:threadId/tasks/:taskId/reference-result` | implemented in parallel Project batch; focused evidence below |
+| 2 | PATCH | `/api/v1/projects/:projectId/inquiry/threads/:threadId/work-state` | implemented in parallel Project batch; focused evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/experiments/definitions` | implemented in parallel Project batch; focused evidence below |
+| 3 | PATCH | `/api/v1/projects/:projectId/experiments/definitions/:definitionId` | implemented in parallel Project batch; focused evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/experiments/definitions/:definitionId/interpretations` | implemented in parallel Project batch; focused evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/experiments/definitions/:definitionId/runs/:runId/complete` | implemented in parallel Project batch; focused evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/experiments/definitions/:definitionId/runs/:runId/observations` | implemented in parallel Project batch; focused evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/experiments/definitions/:definitionId/versions` | implemented in parallel Project batch; focused evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/experiments/definitions/:definitionId/versions/:versionId/approve` | implemented in parallel Project batch; focused evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/experiments/definitions/:definitionId/versions/:versionId/runs` | implemented in parallel Project batch; focused evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/experiments/definitions/:definitionId/versions/:versionId/runs/launch` | implemented in parallel Project batch; focused evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/experiments/interpretations/:interpretationId/convert-to-signal` | implemented in parallel Project batch; focused evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/experiments/interpretations/:interpretationId/review` | implemented in parallel Project batch; focused evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/folders` | implemented `project.folder.create`; continuation evidence below |
+| 3 | DELETE | `/api/v1/projects/:projectId/folders/:folderId` | implemented in parallel Project batch; focused evidence below |
+| 3 | PATCH | `/api/v1/projects/:projectId/folders/:folderId` | implemented in parallel Project batch; focused evidence below |
+| 3 | PATCH | `/api/v1/projects/:projectId/folders/:folderId/execution-config` | implemented in parallel Project batch; focused evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/folders/:folderId/execution-config` | implemented in parallel Project batch; focused evidence below |
+| 3 | PUT | `/api/v1/projects/:projectId/folders/:folderId/file/draft` | implemented `project.folder.draft.upsert`; continuation evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/folders/:folderId/file/draft/discard` | implemented `project.folder.draft.discard`; continuation evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/folders/:folderId/file/draft/rebase` | implemented `project.folder.draft.upsert`; continuation evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/folders/:folderId/file/draft/save` | implemented `project.folder.draft.save`; continuation evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/folders/:folderId/file/revisions/restore-as-draft` | implemented `project.folder.revision.restore`; continuation evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/folders/:folderId/locations/:locationId/activate` | implemented in parallel Project batch; focused evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/folders/:folderId/unregister` | implemented `project.folder.unregister`; continuation evidence below |
+| 3 | POST | `/api/v1/projects/:projectId/folders/scan` | implemented `project.folder.scan`; continuation evidence below |
+| 4 | POST | `/api/v1/projects/:projectId/corpus` | implemented `project.corpus.upsert`; continuation evidence below |
+| 4 | PATCH | `/api/v1/projects/:projectId/corpus/:corpusItemId` | implemented `project.corpus.update`; continuation evidence below |
+| 4 | POST | `/api/v1/projects/:projectId/corpus/backfill-source-items` | pending |
+| 4 | PATCH | `/api/v1/projects/:projectId/information-monitoring/details` | implemented in parallel Project batch; focused evidence below |
+| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/items/:itemId/feedback` | pending |
+| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/proposals` | pending |
+| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/reconcile` | pending |
+| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/runs` | pending |
+| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/source-setup` | pending |
+| 4 | PATCH | `/api/v1/projects/:projectId/information-monitoring/state` | implemented in parallel Project batch; focused evidence below |
+| 4 | POST | `/api/v1/projects/:projectId/knowledge-candidate-extractions` | existing extraction draft + finite review fixes; 21 PG tests passed |
+| 4 | POST | `/api/v1/projects/:projectId/sources/bindings/:bindingId/propose-backfill` | implemented `project.source.propose_backfill`; continuation evidence below |
+| 4 | POST | `/api/v1/projects/:projectId/sources/propose-bind` | pending |
+| 4 | POST | `/api/v1/projects/:projectId/sources/propose-setup` | pending |
+| 5 | POST | `/api/v1/projects` | implemented in parallel Project batch; focused evidence below |
+| 5 | PATCH | `/api/v1/projects/:projectId` | implemented `project.update`; continuation evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/archive` | implemented `project.archive`; continuation evidence below |
+| 5 | PUT | `/api/v1/projects/:projectId/attention/:sourceType/:sourceId/state` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/brief-versions` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/brief-versions/:versionId/publish` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/brief-versions/:versionId/submit-review` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/decision-cases` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/decision-cases/:caseId/commitments` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/decision-cases/:caseId/commitments/:commitmentId/deliver` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/decision-cases/:caseId/criteria` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/decision-cases/:caseId/decide` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/decision-cases/:caseId/options` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/decision-cases/:caseId/scores` | implemented in parallel Project batch; focused evidence below |
+| 5 | PUT | `/api/v1/projects/:projectId/focus-area` | implemented `project.focus_area.set`; continuation evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/imported-sessions/extraction` | pending |
+| 5 | POST | `/api/v1/projects/:projectId/instruction-versions` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/instruction-versions/:versionId/publish` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/instruction-versions/:versionId/submit-review` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/members` | implemented in parallel Project batch; focused evidence below |
+| 5 | DELETE | `/api/v1/projects/:projectId/members/:userId` | implemented in parallel Project batch; focused evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/notebook-chat` | implemented `project.notebook.chat`; continuation evidence below |
+| 5 | PUT | `/api/v1/projects/:projectId/public-summary` | implemented `project.public_summary.save`; continuation evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/public-summary/draft` | pending |
+| 5 | POST | `/api/v1/projects/:projectId/public-summary/publish` | implemented `project.public_summary.publish`; continuation evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/public-summary/revoke` | implemented `project.public_summary.revoke`; continuation evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/review-sessions` | implemented `project.review_session.open`; continuation evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/updates` | implemented `project.update.report`; continuation evidence below |
+| 5 | POST | `/api/v1/projects/:projectId/updates/:eventId/undo` | implemented `project.update.undo`; continuation evidence below |
+| 5 | POST | `/api/v1/projects/public-summaries/feedback` | pending |
+| 5 | POST | `/api/v1/projects/public-summaries/search` | pending |
+| 5 | POST | `/api/v1/projects/retrieval/brief` | pending |
+
+### Project total-package implementation progress (not unified review/acceptance)
+
+- Group 1: 8/32 implemented: area initialization, three checklist commands,
+  Claim link/create and update, evidence-card update, screening configuration.
+  The remaining 24 Research URLs are still legacy. Groups 2/3/5 are not migrated
+  by this increment (21/24/32 remain). Group 4 includes the existing extraction
+  draft (1/14 implemented; 13 remain). Total **9/123**, **114 pending**.
+- The eight new user-only operations use strict DTOs, default/null/text/array
+  normalization, original domain writers, sorted Project fences and parent/child
+  Source admission. An initialized area retains its original reader inspection
+  path without repairing/creating notes. No Agent surface/grant is added.
+- Retained REST adapters replace those business handlers. Browser commands carry
+  explicit event keys (optional helper defaults create a new event, no retries),
+  accept ID/Space/Project-only receipts and fetch current content through GET.
+  Checklist and evidence-card exact GETs are new reads, not migrated write counts.
+- Canonical Source/content read levels are retained: Claim references use the old
+  contentReadSql predicate; editing a card uses the old readable Source gate, not
+  a new full-content publication entitlement. Source/Claim Project changes are
+  discovered before domain locks and rejected if they grow/change after waiting.
+- ResearchWorkspaceMutationError marks only the actual known domain validation
+  sites (duplicate Claim/date ordering/declared domain criteria); unknown helper
+  Http422 rolls back with internal/no cached request/message. No generic HTTP
+  allowlist or approval mapping is introduced.
+- The extraction review fix locks the actual interpretation table, not an absent
+  space_objects row; its receipt is server-authored (actor_id NULL), written only
+  for succeeded Runs. Real agent_run JobWorker redelivery after terminal persistence
+  re-enqueues the missing reconciliation nudge without running the model again.
+- Counts: formal HEAD remains **525**. Working projection **516** = 636 total,
+  531 legacy / 39 exempt / 66 core, subtracting the unchanged 15 plugin paths.
+  Only the 9 exact retained URL changes count. Internal fixes/new GETs count zero.
+- This is incomplete implementation, not a request to stop for a small-family
+  review. The unified five-package review and overall migration acceptance remain
+  pending. No new product choice, production mapping or public proposal.decide
+  permission was introduced. The independent Note link choice stays unchanged.
+
+### Current Project-package file ownership and executed checks
+
+This explicit 35-file manifest includes the inherited 21-file extraction draft
+and 14 additional Research files. It excludes all parallel Conversation/tool/i18n,
+Host/runtime-adapter changes, INDEX, automatic-worktree plans and reports. It is
+not a staging list or a claim that all 123 URLs are done.
+
+- `.agent/architecture/OPERATION_CORE_ACCEPTANCE.md`
+- `.agent/architecture/POLICY_ENFORCEMENT_INVENTORY.md`
+- `.agent/architecture/PROJECT_RESEARCH_CALLS.md`
+- `.agent/architecture/SYSTEM_ACTIONS.md`
+- `.agent/modules/knowledge-base.md`
+- `.agent/plans/operation-core/05-core-module-operation-migration.md`
+- `apps/web/src/__tests__/conversation-scope-api.test.ts`
+- `apps/web/src/__tests__/research-workspace-api.test.ts`
+- `apps/web/src/api/client.ts`
+- `packages/protocol/src/index.ts`
+- `packages/protocol/src/operations.ts`
+- `packages/protocol/src/policy.ts`
+- `packages/protocol/src/systemActions.ts`
+- `packages/protocol/src/knowledgeExtractionOperation.ts`
+- `packages/protocol/src/researchWorkspaceOperations.ts`
+- `packages/protocol/test/operations.test.ts`
+- `packages/protocol/test/researchWorkspaceOperations.test.ts`
+- `server/src/modules/knowledgePromotion/extractionService.ts`
+- `server/src/modules/knowledgePromotion/reviewOperationRoutes.ts`
+- `server/src/modules/knowledgePromotion/routes.ts`
+- `server/src/modules/knowledgePromotion/extractionDispatch.ts`
+- `server/src/modules/knowledgePromotion/extractionOperation.ts`
+- `server/src/modules/projectResearch/areaRoutes.ts`
+- `server/src/modules/projectResearch/areaService.ts`
+- `server/src/modules/projectResearch/repository.ts`
+- `server/src/modules/projectResearch/routes.ts`
+- `server/src/modules/projectResearch/screeningCriteria.ts`
+- `server/src/modules/projectResearch/workspaceErrors.ts`
+- `server/src/modules/projectResearch/workspaceOperationRoutes.ts`
+- `server/src/modules/projectResearch/workspaceOperations.ts`
+- `server/src/modules/runs/orchestrationService.ts`
+- `server/src/modules/systemActions/operations/routeInventory.json`
+- `server/src/modules/systemActions/operations/runtime.ts`
+- `server/test/knowledgeExtractionOperationDb.test.ts`
+- `server/test/researchWorkspaceOperationDb.test.ts`
+
+Shared hunks: client.ts only knowledgePromotionApi.extract and the six
+projectResearchApi workspace helpers; protocol index/operations/systemActions
+only extraction + Research imports/exports/schema/registry entries; policy.ts only
+the new Research workspace policy definition; runtime.ts only their registration
+imports and composition entries; routeInventory only the 9 exact method/path
+classifications. orchestrationService.ts retains only the inherited extraction
+pre-dispatch authority guards. No parallel Conversation/Host/schema hunk belongs
+to this manifest.
+
+Executed with Node 24.18.0 (isolated shared real PostgreSQL required, no fake DB):
+
+- `pnpm run build:workspace-deps`: passed.
+- `REQUIRE_TEST_POSTGRES=true pnpm exec vitest run test/knowledgeExtractionOperationDb.test.ts test/researchWorkspaceOperationDb.test.ts test/researchAreaDb.test.ts test/researchScreeningCriteriaDb.test.ts test/projectResearchIntegrityDb.test.ts test/operationRoutes.test.ts test/agentGuides.test.ts`:
+  **7 files / 97 tests passed**, including 21 extraction and 16 new workspace
+  tests at that invocation. No client concurrent-query deprecation remained.
+- The final archived-Project admission fix moved the preliminary writer check
+  to its existing allowArchived precheck, retaining the authoritative active
+  aggregate lock/409 and initialized viewer inspection. Re-ran the affected
+  `test/researchWorkspaceOperationDb.test.ts`: **17/17 passed**, including the new
+  archived new-key/replay/viewer case. Other tests above are unchanged consumers.
+- Protocol `test/operations.test.ts test/researchWorkspaceOperations.test.ts`:
+  **2 files / 24 tests passed**.
+- Web `src/__tests__/research-workspace-api.test.ts src/__tests__/conversation-scope-api.test.ts`:
+  **2 files / 29 tests passed**. No matching `projectResearchSurfaces.test.tsx`
+  exists; an earlier multi-pattern invocation did not run that nonexistent file,
+  so no parent/visual test is claimed. Presentation components were not changed.
+- Server `tsc -p tsconfig.typecheck.json --noEmit` and web `tsc --noEmit` passed.
+  The web helper key parameters explicitly accept string keys (not the inferred
+  UUID template type). Scoped diff whitespace checks passed. No schema change,
+  migration generation, full suite, online data, staging or commit was performed.
+
+Remaining implementation is still 114 baseline Project URLs, before the planned
+single unified independent review. This evidence does not close a whole package,
+P5 or a live Task, and does not transfer any production mapping/Agent authority.
+
+### Project package continuation — initial limit and standing controls
+
+Implemented another 3 exact retained routes: initial intake item limit, standing
+advice dismiss, standing batch retry. Research is now **11/32**, ingress **1/14**,
+Inquiry **0/21**, Folder/Experiment **0/24**, management **0/32**: total **12/123**,
+**111 remain**. Formal remaining stays **525**; working projection **513**
+(636 total = 528 legacy / 39 exempt / 69 core, excluding 15 plugin writes).
+No unified review or package completion is claimed.
+
+Reuse: extend the existing strict workspace DTO/adapter/registration mechanism,
+use ProjectResearchOrchestrator.updateInitialItemLimit and the standing service
+inside the core port. Initial-limit null workflow creates a genuinely new Workflow
+once; old request replay never redirects to another/newer Workflow or resets its
+limit. Standing retry preserves pending/running/completed behavior, writes only
+the existing dispatch Job and never invokes a provider in the transaction.
+Dismiss retains Project-writer-only cleanup, including a private/withdrawn Source;
+its receipt contains no advice detail or Source body. Browser standing consumers
+already refresh status and ignore the old mutation row; they now consume a safe
+receipt. Limit editing follows the actual receipt Workflow through current GET.
+Only the two specific retry conflicts and the specific active-limit conflict were
+marked ResearchWorkspaceMutationError at their domain throw sites.
+
+Self-owned file additions beyond the prior 35-file manifest: orchestrator.ts and
+standingComparisonService.ts under server/src/modules/projectResearch (37 total).
+Shared changes here: researchWorkspaceOperations protocol/schema and server port,
+workspaceOperationRoutes paths/params, runtime passes config to the same DB-bound
+writer, routes.ts retires three old handlers, client.ts switches the corresponding
+three typed helpers, policy description and focused workspace PG/web tests. No
+parallel Conversation/Host or schema file is owned by this continuation.
+
+Verification: dependency build and server/web types passed. Related PG run:
+researchWorkspaceOperationDb (20), projectResearchStandingDb (11), operationRoutes
+(12): **3 files / 43 passed**. After the additional private-Source dismiss case,
+workspace PG **21/21 passed**. Protocol workspace contract **1/1 passed**.
+Standing parent surface test passed (2 cases); API mock reused a consumed Response,
+fixed to return a new Response per fetch and rerun separately. No presentation or
+visual change/acceptance, no full suite. No production approval mapping or new
+Agent/public proposal decision authority; no stage/commit/push/deploy/online DB.
+
+Final web rerun after fixing the response fixture: **2 files / 6 tests passed**
+(API 4 + existing standing parent 2). Focused diff whitespace check passed.
+
+## Parallel Project continuation — HTTP implementation and capability closure
+
+The user's request explicitly authorized parallel agents for this continuation.
+Three workers own Inquiry, Experiment/Folder and Project/Decision management;
+the coordinator owns Research, monitoring controls and shared integration.
+No per-family approval pause, staging, commit, push, deployment or product data
+operation is included. Existing INDEX, worktree plans/reports and concurrent
+Host/subscription work are preserved and excluded from this batch.
+
+| Project group | Implemented HTTP URLs | Remaining HTTP URLs |
+|---|---:|---:|
+| Research | 13/32 | 19 |
+| Inquiry | 21/21 | 0 |
+| Experiment / Folder | 16/24 | 8 |
+| Corpus / monitoring / Source ingress | 3/14 | 11 |
+| Project / Decision management | 17/32 | 15 |
+| Total | **70/123** | **53** |
+
+This continuation adds **58** exact retained URL migrations to the inherited
+12. The route inventory is **636 = 470 legacy + 39 exemptions + 127 core**;
+excluding the unchanged 15 plugin URLs leaves **455** P5 legacy entries.
+Formal committed HEAD and historical counts above remain their own snapshots.
+These HTTP counts do not establish complete capability or package acceptance.
+
+Reuse / Dependency Check: existing OperationExecutor/operationTransaction,
+canonical domain services, Project/Thread/Source/content predicates and locks,
+Proposal transitions, NoteWriter, Run/Job writers, Zod and shared PostgreSQL
+fixtures are reused. No dependency, schema change, new execution/retry engine
+or external execution inside core transactions is introduced. The only core
+port extension is a readonly host-authored invocation context carrying the
+already validated request ID/key, required to preserve trusted Agent call
+provenance; it cannot be supplied through a business/model DTO.
+
+The new user-facing contracts are strict and ungrantable. Formal adapters and
+browser helpers use explicit event keys, body-free receipts and current reads
+in the receipt Space. Old HTTP business handlers are retired for these exact
+paths. Domain idempotency/history, Run/attempt provenance, review/role gates
+and business uniqueness remain distinct from transport deduplication.
+
+Research adds initial-intake draft saving and workflow-stage metadata records,
+including current Workflow/Thread/Run gates and replay without reverting later
+edits. Monitoring adds details and paused-state CAS through its existing writer:
+version/query locks, lower-limit validation, Project/scheduler updates and core
+audit commit together. Experiment launch retains atomic Run/Attempt/Job intent;
+its worker executes externally. Folder closes metadata update/archive, Location
+activation and execution-config create/update without filesystem/Host IO.
+Management closes Project creation/member controls, six Brief/Instruction
+version commands, private attention and seven Decision commands including the
+atomic delivery Task. Inquiry HTTP closes its 21 listed routes; the overlapping
+Agent tools require their separate grant/origin/provenance closure below.
+
+Remaining scope is explicit: Research execution/planning/provider/checkpoint and
+result workflows (19 URLs); Folder create/scan/unregister and five draft/history
+operations (8); corpus, monitoring runs/proposals/reconciliation/feedback and
+Source proposals (11); Project update/archive, focus, import/notebook, summary,
+retrieval, reviews and updates/undo (15). Archive still requires the canonical
+complete Run/Proposal terminal owner. No endpoint is retired merely to reduce
+these counts, and no production approval mapping is enabled.
+
+Verification from isolated real PostgreSQL (Node 24, no fake DB):
+- Integrated HTTP batch: 10 server files / **105 tests passed**, zero skips:
+  Inquiry 12, Project management 13, ingress 5, Experiment 21, Folder 9+8,
+  route inventory 12, guides 8, boundaries 5 and hygiene 12.
+- Research affected run: 5 files / **93 passed** (workspace 24, area 22,
+  repository 17, rescan/drafts 18 and route inventory 12).
+- Monitoring consumer plus route/guides/boundaries/hygiene: 5 files / **99 passed**
+  (including 62 original monitoring cases). New ingress tests separately passed 5.
+- Core invocation-context and existing core regressions: **68 passed** in
+  operationExecutorDb, including immutable host identity and no reexecution on
+  replay. The catalog fixture now includes the explicitly migrated contracts.
+- Protocol focused run: 7 existing files / **58 passed**, no nonexistent-pattern
+  file is claimed. Research browser API/parent surfaces: 4 files / **32 passed**.
+- Management worker additionally ran kernel/members/decisions/integration;
+  Experiment/Folder worker ran their protocol and existing parent UI consumers.
+  Their final exact handoffs remain evidence for their scopes, not a full suite.
+- The ordinary sandbox PG attempt could not reach the container runtime and ran
+  no tests; the tool-approved shared-container runs above passed. No product
+  database was used. Presentation components were not changed; no visual
+  acceptance, full-suite pass or independent Claude/Antigravity review is claimed.
+
+### Inquiry Agent closure in the same parallel batch
+
+The five overlapping tools now use the same core under their existing IDs:
+`inquiry.record_work`, `inquiry.close_round`, `inquiry.record_conclusion`,
+`inquiry.link_task`, `inquiry.reference_task_result`. Their old callback executors
+are removed. Separate Agent input contracts preserve original grants, effective
+origin and domain producer/provenance semantics; they do not reuse a human
+identity, accept caller Project/Run authority or add a new grant. Task calls use
+the host-authored core invocation key plus the current Run attempt as before;
+models cannot inject the trusted identity. Resolve discovers without row locks;
+key reservation precedes authoritative lock/recheck. Both direct Dispatcher and
+CLI use the existing dispatchRunOperation helper and core, not a second gateway
+policy. No new production approval mapping is enabled; unattended calls return
+canonical mapping-unavailable and create no Proposal or domain effect.
+
+The first complete Agent run passed 4 real-PG files / **53 cases**: new Inquiry
+operation tests 23 (including 11 Agent cases), original Task associations 10,
+direct writes 10 and system-action gateway 10. This is additional capability
+closure evidence, adding no HTTP inventory count. Core/Dispatcher regressions
+also passed **72 cases** (executor 68 + Dispatcher 4). Server build including
+bundled plugins and web production/PWA build passed. Five browser API files
+passed **18 cases**. Web tsc passed at that snapshot; concurrent Host/subscription edits are preserved
+and excluded from this Project batch.
+
+The remaining 53 HTTP URLs and whole five-package independent review are still
+pending. This closes the five overlapping Agent execution paths, not P5 or the
+entire Project package. Final guide/type/fan-out checks follow their actual run
+results below.
+
+### Parallel Project continuation — lifecycle and durable effects
+
+The next continuation adds 24 retained adapters. The current registered
+projection is **94/123**. The exact method/path matrix and registered inventory
+agree, with focused continuation evidence below:
+
+| Group | Implemented HTTP adapters | Remaining legacy |
+|---|---:|---:|
+| Research | 16/32 | 16 |
+| Inquiry | 21/21 | 0 |
+| Experiment / Folder | 24/24 | 0 |
+| Corpus / monitoring / Source ingress | 6/14 | 8 |
+| Project / Decision management | 27/32 | 5 |
+| Total | **94/123** | **29** |
+
+The exact inventory is **636 = 446 legacy + 39 exemptions + 151 core**.
+Excluding the unchanged 15 plugin writes leaves **431** P5 legacy entries.
+This supersedes the working projection of 70/123 above, not its historical
+verification. Committed HEAD 4ff817a7 still has 540 legacy entries (525 excluding
+plugins). The concurrent Host/subscription commit and unrelated working changes
+are preserved. No Project change has been staged, committed, pushed or deployed.
+
+Reuse / Dependency Check: existing OperationExecutor, branded transaction,
+canonical domain services, prepared Run terminal owners, policy/audit recovery,
+PgJobQueue, Folder read/write CAS, private revision/draft stores and shared real
+PostgreSQL fixtures are reused. No dependency or generic execution/retry engine
+is added. Unlike the earlier 70-URL checkpoint, this continuation appends Drizzle
+schema and generated migration `0016_project_folder_io_intents.sql` for private
+Folder IO intent state. Core admission stores metadata receipts and required
+Jobs; filesystem, Host and provider effects execute outside core transactions.
+
+Project update/archive declare a core-host Run terminal discovery hook. The
+executor pairs its actual transaction client with the branded domain port,
+prepares the entire existing set before domain locks and finishes linked
+transitions once after successful domain/output/request validation. Replay skips
+this owner and cannot stop work created after reactivation. Unknown Run-set
+growth rolls back with 409; a child cannot prepare itself or acquire late keys.
+The existing concurrent synthesis regression now protects this exact-set rule
+and confirms one execution/Run/Job, with later active-operation retry refused.
+
+Research adds assessment confirmation, queued Ask AI and immutable report
+snapshot admission. Ask AI and Notebook freeze private Source/Note provenance,
+including historical assistant-message provenance, and check authority before
+dispatch and publication. Snapshot executions and resumed leaves retain frozen
+private visibility. Operation GET/list also apply current Workflow/Thread/Source
+gates; hiding only the Run would leave private questions exposed in progress.
+
+Folder adds draft upsert/discard/rebase, unregister with durable Host cleanup,
+and create/scan/save/restore intent commands. Job payloads contain opaque intent
+IDs; paths and source bytes stay in private state. Workers persist preimages
+before IO, recover uncertain acknowledgements by exact hashes and refuse
+independent edits. Unknown outcomes block a new same-scope write. Safe terminal
+body cleanup must preserve the original draft/revision retention boundary.
+
+Corpus upsert/update and the binding history-import proposal retain canonical
+domain writers and separate transport/domain keys. History submission commits
+Operation, Plan/segments and the pending owner Proposal together, without an
+execution Job or approval mapping. Cross-checking found a cached-replay channel
+retirement race; the expected-parent channel is now locked/rechecked after the
+Project wait without acquiring a newly discovered Source parent late. Corpus
+source-connection provenance and decision-channel closure now enforce live,
+same-Space, non-oversight access and canonical-origin matching. Materialized
+Objects retain their actual Source origins even before Project routing exists;
+unreadable origins cannot be mistaken for a source-free manual Object.
+
+Management additionally closes focus, combined review, Project work report/undo,
+private queued Notebook, lifecycle controls and public-summary save/publish/revoke.
+Summary owner/version/Run/Room gates remain. Publication, canonical search
+projection, required embedding Job, receipt and mandatory audit commit together;
+revocation removes the projection atomically.
+
+Confirmed verification at this checkpoint (Node 24; isolated real PostgreSQL
+for durable behavior, with pure/adapter checks counted separately):
+
+- Core/Dispatcher/Synthesis/boundaries/migration artifacts: 5 files / **107 passed**
+  (73 + 4 + 8 + 5 + 17). This includes the actual registered catalog.
+- Research continuation: **77 real-PG cases** across workspace/confirmation/Ask AI,
+  snapshot/existing synthesis/Source Evidence and frozen visibility restoration;
+  Web API/ResearchAreaPage 13, protocol 4 and guide checks 8 passed.
+- Project lifecycle: 3 PG files / **33 passed**. Management/summary/Notebook
+  continuation: 5 files / **48 passed**, including 12 hygiene checks; summary
+  protocol 5, browser API 9 and guide checks 8 passed.
+- Source history/monitoring ingress: **13 passed**, including retirement while
+  cached admission waits for the Project and five mandatory-store rollback cases.
+- Corpus before cross-check tightening: **28 real-PG + 2 Graph unit cases passed**;
+  browser API/Reading List/Project Sources 25 passed. The global-origin
+  checkpoint passed **44 cases** in four files: Corpus operations 14, existing
+  Academic Corpus 21 and snapshot 7 (42 real-PG), plus Graph 2 pure query tests.
+  The final multiple-origin selection adjustment then passed the current
+  **14 real-PG Corpus cases** again, including a second valid source, one hidden
+  alternative and all origins hidden on both new/cached calls. Those consumer
+  files were not rerun after that last narrow selection adjustment.
+- Protocol combined run: 9 files / **66 passed**. Route inventory/guides/hygiene:
+  3 files / **32 passed**. `schema:check` passed with 17 synchronized migrations.
+- Folder IO final runs: real PG/FS 28, HTTP/atomic PG 24 and pure SQL/path 8,
+  **60 passed** in total; browser API/FilesPage/controller 58, protocol 7 and
+  guides 8 passed. This includes exact-hash redelivery, independent edits,
+  authority withdrawal, cancellation fences and safe terminal body cleanup.
+- Integrated server typecheck and build including bundled plugins passed.
+  Web typecheck and production/PWA build passed. Final guide/inventory/hygiene
+  checks again passed **32 cases** after the continuation guides were updated.
+
+The remaining 29 exact routes stay pending in the finite matrix: 16 Research
+execution/planning/checkpoint/result writes; eight Corpus/monitoring/Source setup,
+proposal, run/reconcile or private-feedback writes; five imported extraction,
+summary generation/search/feedback and retrieval-brief writes. Their blockers are
+complete Source/Artifact authority closure, canonical Proposal/checkpoint owners,
+or separating provider/embedding IO from transaction-owned admission. Existing
+routes are retained. These implementation checks are not unified package review,
+stage acceptance, production mapping or new Agent permission.
+
+Final integration: current production code passed server typecheck/build with
+bundled plugins, web typecheck/production/PWA build and `git diff --check`.
+Folder's unavailable-PostgreSQL path still uses the shared fixture's explicit
+test skip; no silent pass or fake fallback was introduced. Private IO intent
+migration0016 has only been applied to isolated test databases. At that continuation checkpoint, full-suite verification and independent package
+review had not yet run. Visual redesign acceptance and P5 completion were not
+claimed; the 29 remaining implementation rows stay open.
+
+
+## Current batch test repair and joint commit — 2026-11-08
+
+This delivery combines the current P5 implementation with the latest native
+workspace-integration fixes. It does not complete the 29 pending route migrations.
+Temporary reports and generated build/cache files are excluded from the commit.
+
+Legacy Proposal persistence tests now use the shared real PostgreSQL fixture,
+including rollback after a driver-boundary INSERT failure and canonical apply
+replay. Production transaction assertions remain intact. Source compatibility
+mapping, takeover, pause and rollback lock Project, parent connections and then
+channels; rollback locks all distinct parents in order. Real-PG lock barriers
+cover the compatibility paths. Research no-oversight projections require full
+primary-Thread content, including summary-only denial. Corpus global-origin
+readability checks remain enforced on new and cached calls.
+
+Final checks ran in the same native workspace with Node 24:
+
+- Server: **7,428 passed, 5 existing smoke skips** across 597 files. The final
+  CPU-bounded full run passed the unchanged performance budgets (import total
+  29.7 seconds; test total 910.1 seconds). Earlier contended runs are not counted
+  as passes.
+- Web: **2,440 passed**; protocol: **439 passed**; Host: **656 passed, 22 existing
+  environment/OS-smoke skips**. Agent CLI: **49 passed**; Folder Read: **54**;
+  Outbound Guard: **52**; Reader Document: **12**.
+- Chromium: **12 passed**, covering folded final replies and native integration
+  in the original conversation across English/Chinese, phone/desktop and themes.
+- Server, Web and Host typechecks/builds passed, including bundled plugins and
+  the production/PWA build. Schema checks passed with **17 synchronized
+  migrations**; no production migration or deployment was performed.
+
+Claude and Antigravity independently reviewed the final implementation snapshot
+and found no blockers. These were code reviews, not independent executions of
+all suites; the coordinator ran the checks above. No performance threshold,
+production authority guard or transaction requirement was weakened to pass.

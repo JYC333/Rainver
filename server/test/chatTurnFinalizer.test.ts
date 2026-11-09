@@ -66,6 +66,30 @@ function continuity(onFinalize?: () => void) {
 }
 
 describe("finalizeChatTurn", () => {
+  it.each([false, true])("keeps a completed reply visible after verification fails (Room=%s)", async room => {
+    const messages: Array<{ content: string; metadata?: unknown }> = [], events: RunEventInput[] = [];
+    const current = run({ status: 'failed', error_json: { error_code: 'verification_failed', error_text: 'test command could not run: Host unavailable' } });
+    if (room) current.model_override_json = { ...current.model_override_json as object, execution_mode: 'room_conversation.v1' };
+    const stored = (content: string) => ({ id: 'saved-reply', session_id: 'session-1', space_id: 'space-1', user_id: 'user-1', role: 'assistant', content, metadata_json: null, created_at: '2026-07-26T10:00:02.000Z' });
+    const completion = await finalizeChatTurn(loadConfig({ SERVER_DATABASE_URL: 'postgresql://unused/test' }), {
+      async listRunEventsPage() { return { items: [], total: 0, limit: 1, offset: 0 }; },
+      async appendRunEvent(event) { events.push(event); return {} as never; },
+    }, current, {
+      sessions: {
+        async addAssistantMessageForRun(_space, _user, _session, _run, input) { messages.push(input); return stored(input.content); },
+        async addRoomAgentMessageForRun(input) { messages.push(input); return { ...stored(input.content), sender_agent_id: 'agent-1' }; },
+      },
+      resolveAgentActorId: async () => 'agent-1', continuity: continuity(), async loadActionPreviews() { return []; },
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.content).toContain('Hello from the worker.');
+    expect(messages[0]!.content).toContain('test command could not run: Host unavailable');
+    expect(messages[0]!.metadata).toMatchObject({ status: 'failed', error_code: 'verification_failed' });
+    expect(completion).toMatchObject({ ok: false, error_code: 'verification_failed', assistant_message: { id: 'saved-reply' } });
+    expect(completion?.reply).toBe(messages[0]!.content);
+    expect(events[0]).toMatchObject({ event_type: 'chat_completed', status: 'failed' });
+  });
+
   it("persists one idempotent assistant message before publishing completion", async () => {
     const calls: string[] = [];
     const events: RunEventInput[] = [];

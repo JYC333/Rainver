@@ -38,7 +38,7 @@ function writeNotebookSessionId(userId: string | undefined, projectId: string, s
 /**
  * Multi-turn conversation grounded in the Project's notes and selected evidence,
  * living beside the Project's notes surface. Each turn calls
- * POST /projects/:id/notebook-chat synchronously; when the reply includes a
+ * a keyed notebook-chat command and waits for its durable reply; when the reply includes a
  * notebook edit, the note already changed by the time the turn renders —
  * `onNotebookChanged` lets the surface reload its notes immediately.
  * The model may also create a brand-new note (see areaService.ts

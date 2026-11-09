@@ -1,7 +1,7 @@
 import { Link, useLocation } from 'react-router-dom'
 import { PanelLeftOpen, PanelLeftClose, Puzzle, BookOpen, Landmark, type LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/utils'
-import { RAIL_ITEMS, sceneForPath, spacePath, stripSpacePrefix, type RailItem } from '../../core/navigation'
+import { RAIL_ITEMS, railItemActive, spacePath, stripSpacePrefix, type RailItem } from '../../core/navigation'
 import { ReviewAttentionIndicator } from './ReviewAttentionIndicator'
 import { AttentionBadge } from '../../modules/agent_work/AttentionIndicators'
 import { useAppTranslation } from '../../i18n'
@@ -37,14 +37,6 @@ function ApertureMark({ size = 22 }: { size?: number }) {
   )
 }
 
-function railItemActive(item: RailItem, pathname: string): boolean {
-  const logical = stripSpacePrefix(pathname)
-  if (item.id === 'home') return logical === '/' || logical === '/home' || logical.startsWith('/home/')
-  const scene = sceneForPath(pathname)
-  if (scene && scene.id === item.id) return true
-  if (item.activePaths?.some(path => logical === path || logical.startsWith(`${path}/`))) return true
-  return logical === item.to || logical.startsWith(`${item.to}/`)
-}
 
 /**
  * Narrow, stable Global Rail for desktop. Icon-only by default; Home is always first.

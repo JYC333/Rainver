@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { HostUsageQuotaSchema, SubscriptionAccountIdentitySchema } from "../src/hosts.js";
 import { RoomDiscussionDetailSchema, RoomDiscussionNoticeSchema } from "../src/roomDiscussions.js";
 import { QuotaRecoverySchema, QuotaRecoveryUpdateSchema, SUBSCRIPTION_QUOTA_POLICY_DEFAULTS, SubscriptionQuotaPolicyUpdateSchema } from "../src/subscriptionQuota.js";
 
@@ -50,4 +51,25 @@ describe("subscription quota contracts", () => {
       discussion_id: "d-1", kind: "quota_hold", reason: "waiting", agent_ids: [], resets_at: "2026-09-24T19:40:00.000Z",
     }).kind).toBe("quota_hold");
   });
+});
+
+describe("subscription identity wire contract", () => {
+  const account = { provider: "google", product: "antigravity", identity_kind: "email", account_id: "a".repeat(64), organization_id: null };
+  it("keeps old daemon quota responses valid while preserving a new opaque identity", () => {
+    const quota = { available: true, session_pct: 0, session_resets: null, week_pct: null, week_resets: null, error: null };
+    expect(HostUsageQuotaSchema.parse(quota).account).toBeUndefined();
+    expect(HostUsageQuotaSchema.parse({ ...quota, account }).account).toEqual(account);
+  });
+  it("rejects credentials and raw email as a grouping identifier", () => {
+    expect(SubscriptionAccountIdentitySchema.safeParse({ ...account, access_token: "secret" }).success).toBe(false);
+    expect(SubscriptionAccountIdentitySchema.safeParse({ ...account, account_id: "private@example.test" }).success).toBe(false);
+  });
+});
+
+it("allows bounded login display metadata without accepting credentials", () => {
+  const quota = { available: true, session_pct: 42, session_resets: null, week_pct: null, week_resets: null, error: null };
+  const account_display = { email: "person@example.test", workspace_name: "Team" };
+  expect(HostUsageQuotaSchema.parse({ ...quota, account_display }).account_display).toEqual(account_display);
+  expect(HostUsageQuotaSchema.safeParse({ ...quota, account_display: { ...account_display, access_token: "secret" } }).success).toBe(false);
+  expect(HostUsageQuotaSchema.safeParse({ ...quota, account_display: { email: "invalid" } }).success).toBe(false);
 });

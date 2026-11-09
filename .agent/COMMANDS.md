@@ -136,6 +136,8 @@ pnpm run schema:check
 # of the SQL file (the runner scans the first 20 lines): `start.sh` and the UI update then refuse it
 # and name the offline command instead (ADR 0016 §10). The distinction
 # is compatibility with the running version, not whether a database changes.
+# 0017_isolated_workspaces_and_retention includes former 0020: the previous release's source
+# claim fails once its key is replaced (server/migrations/README.md).
 SERVER_DATABASE_URL=postgresql://... node dist/db/migrateCli.js maintenance-pending  # exit 10 = pending
 # Any pending migration (migrate.sh asks before its pre-migration dump): prints
 # the latest applied version, then pending files; exit 10 = pending, 0 = none.
@@ -478,6 +480,29 @@ The browser fixture uses synthetic APIs; screenshots are written under
 The native-process fixtures isolate HOME and configuration, while the ACP
 packages are the actual lockfile pins. Upstream account/inference availability
 still requires separate real-account acceptance.
+
+## Isolated Workspace Retention Verification
+
+Focused checks for source retention/reclamation (real PostgreSQL for the server
+file; real Git repositories in a temporary Host config for the daemon file):
+
+```bash
+cd packages/host-daemon
+pnpm exec vitest run test/workspaceRetention.test.ts test/taskWorktree.test.ts
+cd ../../server
+pnpm exec vitest run test/workspaceRetentionDb.test.ts test/workspaceSourceFenceDb.test.ts test/hostThreadsDb.test.ts test/agentWorkspacesDb.test.ts
+cd ../apps/web
+pnpm exec vitest run src/modules/runs/WorkspaceChangesCard.test.tsx src/modules/conversation/TurnWorkspaceSummary.test.tsx src/modules/project_files/ProjectAgentWorkspacesPage.test.tsx
+pnpm run build
+node --test src/__tests__/workspace-concurrency.browser.mjs
+node --test src/__tests__/agent-workspaces.browser.mjs
+```
+
+Browser screenshots go to `/tmp/rainver-workspace-shots` (`WORKSPACE_SHOTS`
+overrides it) and `/tmp/rainver-agent-workspace-shots` (`AGENT_WORKSPACE_SHOTS`);
+all APIs are synthetic. The second fixture covers the per-request collapsed
+summary with an explicit delegation, the conversation pending-work entry and
+Files & Code › Agent workspaces (entry, details, history, return).
 
 ## SQL Guards
 

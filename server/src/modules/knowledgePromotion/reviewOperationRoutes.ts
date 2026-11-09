@@ -7,6 +7,7 @@ import { sessionActor } from '../systemActions/operations/actor.js';
 import { OperationError } from '../systemActions/operations/errors.js';
 import { operationRuntime } from '../systemActions/operations/runtime.js';
 export const KNOWLEDGE_REVIEW_ROUTES = [
+ ['POST','/api/v1/projects/:projectId/knowledge-candidate-extractions','knowledge.candidate.extract'],
  ['POST','/api/v1/knowledge/items/:itemId/sources','knowledge.evidence.add'],
  ['DELETE','/api/v1/knowledge/items/:itemId/sources/:linkId','knowledge.evidence.remove'],
  ['POST','/api/v1/projects/:projectId/knowledge-candidates/from-note','knowledge.candidate.from_note'],

@@ -326,7 +326,7 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
       setSaveInFlight(true)
       try {
         const result = await onDraftSave(current, { confirmMixedLineEndingNormalization })
-        activeDraftRef.current = result.newer_draft_retained ? current : null
+        activeDraftRef.current = 'current_draft' in result?result.current_draft??null:result.newer_draft_retained ? current : null
         setActiveDraft(activeDraftRef.current)
         controller.commitCanonical(result.file.content, activeDraftRef.current)
       } finally {

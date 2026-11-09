@@ -1,5 +1,7 @@
+import {ResearchWorkspaceMutationError} from './workspaceErrors.js';
 import {withRunTerminalOwner,researchGraphRunRefs} from '../systemActions/operations/proposalTransitions.js';
 import { assertResearchOperationChange } from "./researchCallAccess.js";
+import {sourceItemFullContentReadClause} from '../sources/sourceItemAccess.js';
 import { ResearchCallOptionsSchema } from "@rainver/protocol";
 import { createBoundResearchOperation, retryResearchPreparation, resumeResearchSetup, reconcileResearchCall } from "./researchProblemCalls.js";
 import { problemCommandKey } from "../inquiry/problemFacts.js";
@@ -276,20 +278,20 @@ export class ProjectResearchOrchestrator {
     requestedWorkflowId: string | null,
   ) {
     await lockActiveProjectForMutation(this.db, identity.spaceId, projectId);
-    if (!draft.requestedThreadId) throw new HttpError(422, "thread_id is required for an initial material intake draft");
+    if (!draft.requestedThreadId) throw new ResearchWorkspaceMutationError(422, "thread_id is required for an initial material intake draft");
     const existing = requestedWorkflowId
       ? await this.workflow(identity.spaceId, projectId, requestedWorkflowId, true, true)
       : await this.workflowByThread(identity.spaceId, projectId, draft.requestedThreadId, true);
     if (requestedWorkflowId && !existing) throw new HttpError(404, "Research workflow not found");
     const existingThreadId = existing?.primary_thread_id ?? null;
     if (existing && existingThreadId !== draft.requestedThreadId) {
-      throw new HttpError(409, "The selected research workflow belongs to a different Inquiry Thread");
+      throw new ResearchWorkspaceMutationError(409, "The selected research workflow belongs to a different Inquiry Thread");
     }
     if (existing?.status === "active") {
-      throw new HttpError(409, "An active research workflow cannot be edited after initial material intake has started");
+      throw new ResearchWorkspaceMutationError(409, "An active research workflow cannot be edited after initial material intake has started");
     }
     if (existing && !["not_started", "paused"].includes(existing.status)) {
-      throw new HttpError(409, "This research workflow can no longer be edited");
+      throw new ResearchWorkspaceMutationError(409, "This research workflow can no longer be edited");
     }
     const workflowId = existing?.id ?? randomUUID();
     const startedBaseline = await this.db.query<{ id: string }>(
@@ -314,7 +316,7 @@ export class ProjectResearchOrchestrator {
       const canReconfigureEmptyIntake = latestBaseline.rows[0]?.status === "completed"
         && emptyResult.kind === "no_source_items";
       if (!canReconfigureEmptyIntake) {
-        throw new HttpError(409, "Initial material intake already started; its execution snapshot cannot be edited");
+        throw new ResearchWorkspaceMutationError(409, "Initial material intake already started; its execution snapshot cannot be edited");
       }
     }
 
@@ -415,21 +417,21 @@ export class ProjectResearchOrchestrator {
       const service = new ProjectResearchOrchestrator(db, this.config);
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const workflow = await service.workflow(identity.spaceId, projectId, null, true);
-      if (!workflow) throw new HttpError(409, "There is no active research workflow to synthesize");
+      if (!workflow) throw new ResearchWorkspaceMutationError(409, "There is no active research workflow to synthesize");
       await service.assertResearchQuestionAligned(identity.spaceId, projectId, workflow.state_json);
       const active = await service.activeResearchOperation(identity.spaceId, projectId, workflow.id);
-      if (active) throw new HttpError(409, "Wait for the active research operation to finish before generating a report snapshot");
+      if (active) throw new ResearchWorkspaceMutationError(409, "Wait for the active research operation to finish before generating a report snapshot");
       const corpus = await db.query<{ source_item_id: string }>(
         `SELECT DISTINCT pcis.source_item_id
            FROM project_corpus_item_sources pcis
            JOIN project_corpus_items pci ON pci.id=pcis.corpus_item_id AND pci.space_id=pcis.space_id
            JOIN source_items si ON si.id=pcis.source_item_id AND si.space_id=pcis.space_id AND si.deleted_at IS NULL
-          WHERE pcis.space_id=$1 AND pcis.project_id=$2 AND pci.status='active'
+          WHERE pcis.space_id=$1 AND pcis.project_id=$2 AND pci.status='active' AND ${sourceItemFullContentReadClause('si','$3')}
           ORDER BY pcis.source_item_id`,
-        [identity.spaceId, projectId],
+        [identity.spaceId, projectId,identity.userId],
       );
       const sourceItemIds = corpus.rows.map((row) => row.source_item_id);
-      if (!sourceItemIds.length) throw new HttpError(409, "The project corpus has no material to synthesize");
+      if (!sourceItemIds.length) throw new ResearchWorkspaceMutationError(409, "The project corpus has no material to synthesize");
       const key = `snapshot:${workflow.id}:${new Date().toISOString()}`;
       const state = incrementalStateFromWorkflow(workflow.state_json, workflow.id, sourceItemIds, key, null);
       state.run_kind = "synthesis_only";
@@ -1297,6 +1299,7 @@ export class ProjectResearchOrchestrator {
       [runId, spaceId],
     );
     const workflowInput = objectValue(objectValue(run.rows[0]?.contract_snapshot_json).workflow_input_json);
+    if(workflowInput.notebook_chat){await new ProjectResearchAreaService(this.db,this.config).reconcileNotebookChat(spaceId,runId);return;}
     if (workflowInput.research_adhoc) {
       await new ProjectResearchAreaService(this.db, this.config).applyAdhocRunOutput(spaceId, runId);
       return;
@@ -1706,7 +1709,7 @@ export class ProjectResearchOrchestrator {
         [identity.spaceId, projectId, current.id],
       );
       if (operation.rows[0]) {
-        throw new HttpError(409, "An active Project Research operation owns the item limit");
+        throw new ResearchWorkspaceMutationError(409, "An active Project Research operation owns the item limit");
       }
       const state = objectValue(current.state_json);
       const initialIntake = objectValue(state.initial_intake);
@@ -2636,7 +2639,7 @@ export class ProjectResearchOrchestrator {
 
   private async assertResearchQuestionAligned(spaceId: string, projectId: string, workflowValue: unknown): Promise<void> {
     if (await this.hasResearchQuestionDrift(spaceId, projectId, workflowValue)) {
-      throw new HttpError(409, "The scoped Inquiry Thread changed. Apply its current revision before continuing research.");
+      throw new ResearchWorkspaceMutationError(409, "The scoped Inquiry Thread changed. Apply its current revision before continuing research.");
     }
   }
 
@@ -2957,25 +2960,25 @@ function normalizeInitialIntakeInput(body: Record<string, unknown>, profileQuest
 function normalizeInitialIntakeDraft(body: Record<string, unknown>, profileQuestion: string | null): InitialIntakeDraft {
   rejectLegacyResearchRuntimeFields(body);
   const researchQuestion = optionalString(body.research_question) ?? profileQuestion;
-  if (!researchQuestion) throw new HttpError(422, "research_question is required");
+  if (!researchQuestion) throw new ResearchWorkspaceMutationError(422, "research_question is required");
   // A draft may be saved before any monitor exists (question refinement is
   // step one); only starting the intake requires monitors.
   const sourceChannelIds = normalizeSourceChannelIds(body.source_channel_ids);
   const historyMode = optionalString(body.history_mode) ?? "bounded_range";
   if (historyMode !== "bounded_range" && historyMode !== "all_available") {
-    throw new HttpError(422, "history_mode must be bounded_range or all_available");
+    throw new ResearchWorkspaceMutationError(422, "history_mode must be bounded_range or all_available");
   }
   const from = historyMode === "all_available" ? null : optionalDraftDate(body.from);
   const to = historyMode === "all_available" ? null : optionalDraftDate(body.to);
-  if (from && to && Date.parse(from) >= Date.parse(to)) throw new HttpError(422, "from must be earlier than to");
+  if (from && to && Date.parse(from) >= Date.parse(to)) throw new ResearchWorkspaceMutationError(422, "from must be earlier than to");
   const maxItems = body.max_items === undefined || body.max_items === "" ? MAX_ITEMS_DEFAULT : Number(body.max_items);
   if (!Number.isInteger(maxItems) || maxItems < 1 || maxItems > MAX_ITEMS_DEFAULT) {
-    throw new HttpError(422, `max_items must be an integer between 1 and ${MAX_ITEMS_DEFAULT}`);
+    throw new ResearchWorkspaceMutationError(422, `max_items must be an integer between 1 and ${MAX_ITEMS_DEFAULT}`);
   }
   const monitoringField = optionalString(body.monitoring_field) ?? "submittedDate";
-  if (!MONITORING_FIELDS.has(monitoringField)) throw new HttpError(422, "monitoring_field must be submittedDate or lastUpdatedDate");
+  if (!MONITORING_FIELDS.has(monitoringField)) throw new ResearchWorkspaceMutationError(422, "monitoring_field must be submittedDate or lastUpdatedDate");
   const schedule = optionalString(body.schedule) ?? "daily";
-  if (schedule !== "daily") throw new HttpError(422, "v1 supports a daily monitoring schedule");
+  if (schedule !== "daily") throw new ResearchWorkspaceMutationError(422, "v1 supports a daily monitoring schedule");
   const executionBody = objectValue(body.execution);
   const reportDepth = normalizeReportDepth(body.report_depth);
   const questionRefineSkipped = normalizeQuestionRefineSkipped(body.question_refine_skipped);
@@ -3006,9 +3009,9 @@ function normalizeInitialIntakeDraft(body: Record<string, unknown>, profileQuest
 
 function normalizeQuestionRefinementDraft(value: unknown): Record<string, unknown> | null {
   if (value === undefined || value === null) return null;
-  if (typeof value !== "object" || Array.isArray(value)) throw new HttpError(422, "question_refinement must be an object");
+  if (typeof value !== "object" || Array.isArray(value)) throw new ResearchWorkspaceMutationError(422, "question_refinement must be an object");
   const record = value as Record<string, unknown>;
-  if (JSON.stringify(record).length > 20_000) throw new HttpError(422, "question_refinement is too large to persist");
+  if (JSON.stringify(record).length > 20_000) throw new ResearchWorkspaceMutationError(422, "question_refinement is too large to persist");
   return record;
 }
 
@@ -3020,13 +3023,13 @@ function normalizeSourceChannelIds(value: unknown): string[] {
 
 function normalizeReportDepth(value: unknown): ResearchReportDepth {
   const depth = optionalString(value);
-  if (!depth) throw new HttpError(422, "report_depth is required");
-  if (depth !== "quick" && depth !== "full") throw new HttpError(422, "report_depth must be quick or full");
+  if (!depth) throw new ResearchWorkspaceMutationError(422, "report_depth is required");
+  if (depth !== "quick" && depth !== "full") throw new ResearchWorkspaceMutationError(422, "report_depth must be quick or full");
   return depth;
 }
 
 function normalizeQuestionRefineSkipped(value: unknown): boolean {
-  if (typeof value !== "boolean") throw new HttpError(422, "question_refine_skipped is required");
+  if (typeof value !== "boolean") throw new ResearchWorkspaceMutationError(422, "question_refine_skipped is required");
   return value;
 }
 

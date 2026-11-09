@@ -113,6 +113,8 @@ function toOut(row: FocusAreaRow): FocusArea {
   };
 }
 
+export class FocusAreaArchivedError extends HttpError {}
+
 export class FocusAreaService {
   constructor(private readonly db: Queryable) {}
 
@@ -280,6 +282,14 @@ export class FocusAreaService {
       `UPDATE space_objects SET focus_area_id = $3 WHERE id = $1 AND space_id = $2`,
       [objectId, identity.spaceId, focusAreaId],
     );
+  }
+
+  /** Stable classification admission shared by mutation and receipt replay. */
+  async authorizeProjectClassification(identity: SpaceUserIdentity, focusAreaId: string | null): Promise<void> {
+    if (focusAreaId === null) return;
+    const row = await this.db.query<{archived_at: unknown}>('SELECT archived_at FROM focus_areas WHERE id=$1 AND space_id=$2 FOR SHARE', [focusAreaId,identity.spaceId]);
+    if (!row.rows[0]) throw new HttpError(404, 'Focus area not found');
+    if (row.rows[0].archived_at !== null) throw new FocusAreaArchivedError(409, 'Focus area is archived');
   }
 
   async setProjectFocusArea(

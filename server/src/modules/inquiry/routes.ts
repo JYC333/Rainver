@@ -1,3 +1,4 @@
+import {registerInquiryOperationRoutes} from './operationRoutes.js';
 import {registerThreadCreationOperationRoutes} from './threadCreationOperationRoutes.js';
 import {threadReadableSql} from "./threadAccess.js";
 import {assertProjectReadable,canWriteProject} from "../projects/access.js";
@@ -8,9 +9,7 @@ import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
   HttpError,
-  jsonBody,
   intQuery,
-  numberValue,
   optionalString,
   params,
   query,
@@ -28,6 +27,7 @@ import { RetrievalSearchService } from "../retrieval/index.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   registerInquiryProjectIntegration();
+  registerInquiryOperationRoutes(app,context);
   const threads = () => InquiryThreadService.fromConfig(context.config);
   const iterations = () => InquiryIterationService.fromConfig(context.config);
   const signals = () => InquirySignalService.fromConfig(context.config);
@@ -38,12 +38,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
     try { const p=params(request);return reply.send(await problems().projection(identity,requiredString(p.projectId,"project_id"),requiredString(p.threadId,"thread_id"),{limit:intQuery(query(request).limit,50)??50,before_step:query(request).before_step?Number(query(request).before_step):undefined,before_closeout:query(request).before_closeout?Number(query(request).before_closeout):undefined})); } catch(error){return sendRouteError(reply,error);}
   });
-  for(const [path,command] of [["work","recordWork"],["close-round","closeRound"]] as const) {
-    app.post(`/api/v1/projects/:projectId/inquiry/threads/:threadId/problem/${path}`,async(request,reply)=>{
-      const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
-      try {const p=params(request);return reply.code(201).send(await problems()[command](identity,requiredString(p.projectId,"project_id"),requiredString(p.threadId,"thread_id"),jsonBody(request)));}catch(error){return sendRouteError(reply,error);}
-    });
-  }
   app.get('/api/v1/projects/:projectId/inquiry/workspace-threads',async(request,reply)=>{
     const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
     try{const project=requiredString(params(request).projectId,'project_id'),db=dbPool(context.config),q=query(request);await assertProjectReadable(db,identity.spaceId,project,identity.userId);
@@ -62,17 +56,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
     try{const p=params(request);return reply.send(await taskAssociations().tasks(identity,requiredString(p.projectId,"project_id"),requiredString(p.threadId,"thread_id"),optionalString(query(request).after_task_id)??undefined));}catch(error){return sendRouteError(reply,error);}
   });
-  app.post(taskPath,async(request,reply)=>{
-    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
-    try{const p=params(request);return reply.code(201).send(await taskAssociations().link(identity,requiredString(p.projectId,"project_id"),requiredString(p.threadId,"thread_id"),jsonBody(request)));}catch(error){return sendRouteError(reply,error);}
-  });
   app.get(`${taskPath}/:taskId/result`,async(request,reply)=>{
     const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
     try{const p=params(request);return reply.send(await taskAssociations().result(identity,requiredString(p.projectId,"project_id"),requiredString(p.threadId,"thread_id"),requiredString(p.taskId,"task_id")));}catch(error){return sendRouteError(reply,error);}
-  });
-  app.post(`${taskPath}/:taskId/reference-result`,async(request,reply)=>{
-    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
-    try{const p=params(request);return reply.code(201).send(await taskAssociations().referenceResult(identity,requiredString(p.projectId,"project_id"),requiredString(p.threadId,"thread_id"),requiredString(p.taskId,"task_id"),jsonBody(request)));}catch(error){return sendRouteError(reply,error);}
   });
   app.get("/api/v1/projects/:projectId/inquiry/threads", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -100,18 +86,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/inquiry/threads/:threadId/iterations", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const threadId = requiredString(p.threadId, "thread_id");
-      return reply.code(201).send(await iterations().recordIteration(identity, projectId, threadId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/projects/:projectId/inquiry/threads/:threadId/iterations", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -139,31 +113,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/inquiry/threads/:threadId/definition-revisions", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const threadId = requiredString(p.threadId, "thread_id");
-      return reply.code(201).send(await iterations().reviseDefinition(identity, projectId, threadId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.patch("/api/v1/projects/:projectId/inquiry/threads/:threadId/work-state", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const threadId = requiredString(p.threadId, "thread_id");
-      return reply.send(await iterations().updateWork(identity, projectId, threadId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/projects/:projectId/inquiry/open-steps", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -189,18 +139,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/inquiry/threads/:threadId/lifecycle-transitions", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const threadId = requiredString(p.threadId, "thread_id");
-      return reply.send(await iterations().transitionLifecycle(identity, projectId, threadId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/projects/:projectId/inquiry/threads/:threadId/work-events", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -215,88 +153,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/inquiry/relations", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      return reply.code(201).send(await threads().addRelation(identity, projectId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.delete("/api/v1/projects/:projectId/inquiry/relations/:relationId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const relationId = requiredString(p.relationId, "relation_id");
-      await threads().removeRelation(identity, projectId, relationId);
-      return reply.code(204).send();
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.put("/api/v1/projects/:projectId/inquiry/threads/:threadId/primary-parent", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const threadId = requiredString(p.threadId, "thread_id");
-      const body = jsonBody(request);
-      const parentThreadId = typeof body.parent_thread_id === "string" ? body.parent_thread_id : null;
-      return reply.send(await threads().setPrimaryParent(identity, projectId, threadId, parentThreadId));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/inquiry/threads/:threadId/notes", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const threadId = requiredString(p.threadId, "thread_id");
-      return reply.code(201).send(await threads().linkNote(identity, projectId, threadId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.delete("/api/v1/projects/:projectId/inquiry/threads/:threadId/notes/:noteObjectId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const threadId = requiredString(p.threadId, "thread_id");
-      const noteObjectId = requiredString(p.noteObjectId, "note_object_id");
-      await threads().unlinkNote(identity, projectId, threadId, noteObjectId);
-      return reply.code(204).send();
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.put("/api/v1/projects/:projectId/inquiry/threads/:threadId/personal-focus", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const threadId = requiredString(p.threadId, "thread_id");
-      const body = jsonBody(request);
-      await threads().setPersonalFocus(identity, projectId, threadId, body.in_focus !== false);
-      return reply.code(204).send();
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/projects/:projectId/inquiry/focus", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -313,33 +174,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.put("/api/v1/projects/:projectId/inquiry/settings/shared-focus-wip-limit", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      const body = jsonBody(request);
-      const limit = numberValue(body.shared_focus_wip_limit);
-      if (limit === null) throw new HttpError(422, "shared_focus_wip_limit is required");
-      const updated = await threads().setSharedFocusWipLimit(identity, projectId, limit);
-      return reply.send({ shared_focus_wip_limit: updated });
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/inquiry/threads/:threadId/signals", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const threadId = requiredString(p.threadId, "thread_id");
-      return reply.code(201).send(await signals().createSignal(identity, projectId, threadId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/projects/:projectId/inquiry/signals", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -378,45 +213,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/inquiry/candidates/:candidateId/reopen", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      return reply.send(await signals().reopenCandidate(
-        identity,
-        requiredString(p.projectId, "project_id"),
-        requiredString(p.candidateId, "candidate_id"),
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/inquiry/candidates/:candidateId/decision", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const candidateId = requiredString(p.candidateId, "candidate_id");
-      return reply.send(await signals().decideCandidate(identity, projectId, candidateId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/inquiry/review-packets", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      const body = jsonBody(request);
-      return reply.code(201).send(await signals().openReviewPacket(identity, projectId, numberValue(body.limit) ?? undefined));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/projects/:projectId/inquiry/review-packets/:packetId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -431,19 +229,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/inquiry/review-packets/:packetId/close", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const packetId = requiredString(p.packetId, "packet_id");
-      return reply.send(await signals().closeReviewPacket(identity, projectId, packetId));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
+  app.get("/api/v1/projects/:projectId/inquiry/delta-briefs/:briefId",async(request,reply)=>{
+    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
+    try{const p=params(request),brief=await signals().latestDeltaBrief(identity,requiredString(p.projectId,"project_id"),requiredString(p.briefId,"brief_id"));if(!brief)throw new HttpError(404,"Brief not found");return reply.send(brief);}catch(error){return sendRouteError(reply,error);}
+  });
   app.get("/api/v1/projects/:projectId/inquiry/delta-briefs/latest", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -455,16 +245,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/inquiry/delta-briefs", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      return reply.code(201).send(await signals().generateDeltaBrief(identity, projectId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   // Unified read plane: the Inquiry domain
   // adapter feeds the shared zero-LLM retrieval engine's rebuildable

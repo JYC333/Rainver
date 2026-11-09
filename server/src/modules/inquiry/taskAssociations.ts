@@ -1,7 +1,7 @@
+import {InquiryMutationError,InquiryTaskFanOutError} from "./operationErrors.js";
 import {runInheritedReadSql} from "../access/contentAccessSql.js";
 import {countTasksCreatedInTurn,lockTurnFanOutForTransaction,TASK_FAN_OUT_PER_TURN} from "../tasks/turnFanOut.js";
 import { ProblemTaskLinkRequestSchema, ProblemWorkRequestSchema } from '@rainver/protocol';
-import type { Pool } from '../../db/pool.js';
 import { resolveAgentActorId, resolveUserActorId } from '../../db/actorResolver.js';
 import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from '../routeUtils/common.js';
 import { PgTaskRepository } from '../tasks/repository.js';
@@ -15,7 +15,7 @@ import { InquiryProblemEngineService } from './problemEngineService.js';
 
 /** Long-lived Task links reuse task_entity_links, not a second progress model. */
 export class InquiryTaskAssociationService {
- constructor(private readonly pool:Pool){}
+ constructor(private readonly pool:Queryable){}
  private async assertRun(db:Queryable,identity:SpaceUserIdentity,project:string,source?:ThreadEventProvenance){
   if(!source?.runId)return;
   const row=await db.query(`SELECT r.id FROM runs r WHERE r.id=$1 AND r.space_id=$2 AND r.project_id=$3 AND r.instructed_by_user_id=$4 AND r.agent_id IS NOT DISTINCT FROM $5::varchar AND ${runInheritedReadSql('r.id','r.space_id','$4')}`,[source.runId,identity.spaceId,project,identity.userId,source.agentId??null]);
@@ -33,7 +33,7 @@ export class InquiryTaskAssociationService {
   return row;
  }
  async link(identity:SpaceUserIdentity,project:string,thread:string,body:unknown,provenance?:ThreadEventProvenance,trustedCall?:string){
-  const parsed=ProblemTaskLinkRequestSchema.safeParse(body);if(!parsed.success)throw new HttpError(422,parsed.error.message);const input=parsed.data;
+  const parsed=ProblemTaskLinkRequestSchema.safeParse(body);if(!parsed.success)throw new InquiryMutationError(422,parsed.error.message);const input=parsed.data;
   return withQueryableTransaction(this.pool,async db=>{
    await lockProblem(db,identity,project,thread);
    await this.assertRun(db,identity,project,provenance);
@@ -41,10 +41,10 @@ export class InquiryTaskAssociationService {
    const replay=await replayProblemCommand(db,identity.spaceId,thread,key,input);
    if(replay){await this.assertTask(db,identity,project,String(replay.task_id));return replay;}
    const actorId=provenance?.agentId?await resolveAgentActorId(db,identity.spaceId,provenance.agentId):await resolveUserActorId(db,identity.spaceId,identity.userId);
-   if(input.task?.project_id && input.task.project_id!==project)throw new HttpError(422,'Task must belong to this Project');
+   if(input.task?.project_id && input.task.project_id!==project)throw new InquiryMutationError(422,'Task must belong to this Project');
    if(input.task && provenance?.runId){
     await lockTurnFanOutForTransaction(db,provenance.runId);
-    if(await countTasksCreatedInTurn(db,identity.spaceId,provenance.runId)>=TASK_FAN_OUT_PER_TURN)throw new HttpError(429,'This turn reached the ordinary Task creation ceiling; use an explicitly requested bounded batch for a list');
+    if(await countTasksCreatedInTurn(db,identity.spaceId,provenance.runId)>=TASK_FAN_OUT_PER_TURN)throw new InquiryTaskFanOutError();
    }
    let created:Awaited<ReturnType<PgTaskRepository["createTask"]>>|null=null;
    if(input.task){
@@ -79,12 +79,12 @@ export class InquiryTaskAssociationService {
   return {task_id:row.id,status:row.status,task_work_path:`/tasks/${row.id}`,artifacts:artifacts.rows.slice(0,50),artifacts_truncated:artifacts.rows.length>50};
  }
  async referenceResult(identity:SpaceUserIdentity,project:string,thread:string,task:string,body:unknown,provenance?:ThreadEventProvenance,trustedCall?:string){
-  const parsed=ProblemWorkRequestSchema.safeParse(body);if(!parsed.success)throw new HttpError(422,parsed.error.message);const input=parsed.data;
-  if(input.work_kind!=='reference_result')throw new HttpError(422,'Use reference_result to collect Task results; judgment is separate');
+  const parsed=ProblemWorkRequestSchema.safeParse(body);if(!parsed.success)throw new InquiryMutationError(422,parsed.error.message);const input=parsed.data;
+  if(input.work_kind!=='reference_result')throw new InquiryMutationError(422,'Use reference_result to collect Task results; judgment is separate');
   return withQueryableTransaction(this.pool,async db=>{
    await lockProblem(db,identity,project,thread);await this.assertRun(db,identity,project,provenance);await this.assertLink(db,identity,project,thread,task);
    for(const ref of input.output_refs.filter(r=>r.type==='artifact')){
-    if(!(await db.query(`SELECT id FROM task_artifacts WHERE space_id=$1 AND task_id=$2 AND artifact_id=$3`,[identity.spaceId,task,ref.id])).rowCount)throw new HttpError(422,'Task result outputs must be linked to this Task');
+    if(!(await db.query(`SELECT id FROM task_artifacts WHERE space_id=$1 AND task_id=$2 AND artifact_id=$3`,[identity.spaceId,task,ref.id])).rowCount)throw new InquiryMutationError(422,'Task result outputs must be linked to this Task');
    }
    return new InquiryProblemEngineService(db).recordWork(identity,project,thread,{...input,input_refs:[...input.input_refs.filter(r=>r.type!=='task'||r.id!==task),{type:'task',id:task}]},provenance,undefined,trustedCall&&`task-result:${trustedCall}`);
   });

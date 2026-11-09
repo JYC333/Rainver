@@ -9,6 +9,8 @@ import { resolveProviderCommandStore } from "../providers/commands/store.js";
 import { completeProviderMessages } from "../providers/invocation/invocation.js";
 import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
 import { ProjectResearchExecutionProfileService, type ResearchExecutionSelection } from "./executionProfileService.js";
+import {ResearchWorkspaceMutationError} from './workspaceErrors.js';
+import {ContentAccessAuditService} from '../contentAccess/audit.js';
 import {
   RESEARCH_QUESTION_REFINEMENT_OUTPUT_CONTRACT,
   RESEARCH_QUESTION_SUBQUESTION_REPAIR_OUTPUT_CONTRACT,
@@ -121,11 +123,14 @@ export class ProjectResearchQuestionRefineService {
     projectId: string,
     threadId: string,
   ): Promise<QuestionAssessmentConfirmation[]> {
-    const conversations = new ProjectResearchQuestionAssessmentRepository(this.db);
-    await conversations.getConversation(identity, projectId, threadId);
-    const versions = await new ResearchContextRepository(this.db)
+    return withQueryableTransaction(this.db,async db=>{
+    const conversations = new ProjectResearchQuestionAssessmentRepository(db);
+    await conversations.lockReadableThread(identity, projectId, threadId);
+    const versions = await new ResearchContextRepository(db)
       .listAssessmentConfirmations(identity.spaceId, projectId, threadId);
+    if(versions.length){try{await new ContentAccessAuditService(db).recordReads({spaceId:identity.spaceId,resourceType:'space_object',resourceIds:[threadId],viewerUserId:identity.userId,accessType:'research_question_confirmation'});}catch{throw new HttpError(503,'Question confirmation read audit unavailable');}}
     return versions.map(confirmationFromContextVersion);
+    });
   }
 
   async confirm(
@@ -141,19 +146,14 @@ export class ProjectResearchQuestionRefineService {
     // not an upstream fault to retry.
     const normalized = await normalizeResult(refinementInput).catch((error: unknown) => {
       if (error instanceof HttpError && error.statusCode === 502) {
-        const body = error.responseBody && typeof error.responseBody === "object" ? error.responseBody as Record<string, unknown> : {};
-        throw new HttpError(422, "The submitted question framework is invalid", {
-          code: "question_refinement_input_invalid",
-          message: error.message,
-          ...(body.diagnostics !== undefined ? { diagnostics: body.diagnostics } : {}),
-        });
+        throw new ResearchWorkspaceMutationError(422, "The submitted question framework is invalid");
       }
       throw error;
     });
     const manuallyAdjusted = body.manually_adjusted === true;
     const conversations = new ProjectResearchQuestionAssessmentRepository(this.db);
     const session = await conversations.getConversation(identity, projectId, threadId);
-    if (!session) throw new HttpError(409, "Assess the question before confirming its framework");
+    if (!session) throw new ResearchWorkspaceMutationError(409, "Assess the question before confirming its framework");
 
     return withQueryableTransaction(this.db, async (db) => {
       const transactionConversations = new ProjectResearchQuestionAssessmentRepository(db);

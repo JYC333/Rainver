@@ -88,7 +88,9 @@ vi.mock('../../../api/client', async () => {
     initializeExecution: vi.fn(),
     mutateExecutionAttachments: vi.fn(),
   },
-  runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn(), authorizationRequests: vi.fn().mockResolvedValue([]) },
+  runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn(), authorizationRequests: vi.fn().mockResolvedValue([]), artifacts: vi.fn(async () => ({ items: [], total: 0, limit: 50, offset: 0 })) },
+  // Conversation pending workspace work: none unless a test says otherwise.
+  agentWorkspacesApi: { conversationChanges: vi.fn(async () => ({ items: [] })) },
   spacesApi: { members: vi.fn() },
   proposalsApi: { get: vi.fn(), accept: vi.fn(), reject: vi.fn() },
   }
@@ -901,13 +903,12 @@ describe('Rooms page', () => {
     try {
       renderRooms('/rooms?room=room-1&conversation=session-1')
       await act(async () => { await Promise.resolve() })
-      const conversation = screen.getByRole('log', { name: 'Conversation messages' })
-      const scrollTo = vi.fn()
+      const conversation = screen.getByRole('log', { name: 'Conversation messages' }).querySelector('[style*="scrollbar-gutter"]') as HTMLElement
+      expect(conversation).not.toBeNull()
       Object.defineProperties(conversation, {
         scrollHeight: { configurable: true, value: 1_000 },
         clientHeight: { configurable: true, value: 400 },
         scrollTop: { configurable: true, writable: true, value: 600 },
-        scrollTo: { configurable: true, value: scrollTo },
       })
       await act(async () => {
         resolveMessages({
@@ -922,10 +923,11 @@ describe('Rooms page', () => {
       // The follow-the-tail scroll is scheduled on an animation frame, which
       // the faked clock holds until advanced.
       await act(async () => { await vi.advanceTimersByTimeAsync(16) })
-      expect(scrollTo).toHaveBeenCalledWith({ top: 1_000, behavior: 'auto' })
+      expect(screen.getByText('Latest reply')).toBeInTheDocument()
 
       // The reader scrolls up to read history; the next poll brings a reply.
-      scrollTo.mockClear()
+      conversation.style.overflow = 'auto'
+      fireEvent.wheel(conversation, { deltaY: -100 })
       conversation.scrollTop = 100
       fireEvent.scroll(conversation)
       vi.mocked(roomsApi.messages).mockResolvedValue({
@@ -938,7 +940,8 @@ describe('Rooms page', () => {
       })
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
       expect(screen.getByText('A newer reply')).toBeInTheDocument()
-      expect(scrollTo).not.toHaveBeenCalled()
+      expect(conversation.scrollTop).toBe(100)
+      expect(roomsApi.messages).toHaveBeenCalledTimes(2)
     } finally {
       vi.useRealTimers()
     }
@@ -1288,7 +1291,7 @@ describe('Rooms page', () => {
     renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('Found three.')).toBeInTheDocument()
-    expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /show work/ })).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText('search')).not.toBeInTheDocument()
   })
 
@@ -1482,7 +1485,7 @@ describe('Rooms page', () => {
 
       expect(screen.getByText('Done here.')).toBeInTheDocument()
       // Settled: successful tools stay hidden, and nothing claims the Agent is still going.
-      expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /show work/ })).toHaveAttribute('aria-expanded', 'false')
       expect(screen.queryByText('search')).not.toBeInTheDocument()
       expect(screen.queryByText('Working…')).not.toBeInTheDocument()
       expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-stranded', expect.any(Object))
@@ -1550,7 +1553,7 @@ describe('Rooms page', () => {
       expect(screen.getByText('Found three.')).toBeInTheDocument()
       expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-old', expect.any(Object))
     })
-    expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /show work/ })).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText('search')).not.toBeInTheDocument()
     expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-old', expect.any(Object))
   })

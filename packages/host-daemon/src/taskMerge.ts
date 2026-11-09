@@ -1,3 +1,6 @@
+import {reconcileLocalChanges} from './localChangeReconciliation.js';
+import {workspaceDeltaAlreadyApplied} from './appliedWorkspaceDelta.js';
+import {workspaceIdentity} from './worktreeIdentity.js';
 import { lstat, mkdtemp, open, readdir, rm } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,7 +10,7 @@ import { runGit, runLocationGit } from "@rainver/folder-read";
 import { configDir } from "./config.js";
 import { captureWorkspaceTree } from "./gitDiff.js";
 import { commitOfRef, resolveMainBranch } from "./mainBranch.js";
-import { releaseLocationLeases, tryAcquireLease } from "./locationLease.js";
+import { releaseLocationLeases, tryAcquireLease, isLeaseBusy } from "./locationLease.js";
 import {
   addTaskWorktree,
   checkLocationRepository,
@@ -27,6 +30,7 @@ import {
   taskLeaseKey,
   validTaskWorktreeIds,
   withTaskHeld,
+  isTaskWorktreeInUse,
   worktreesBase,
   WORKTREE_TIMEOUT_MS,
   writeCommit,
@@ -73,6 +77,8 @@ import {
 type MergeState = "preparing" | "conflict" | "rebased";
 
 interface MergeRecord {
+  /** Keep ignored dependency/build preparation until exact-candidate verification. */
+  verification_prepared?: boolean;
   merge_id: string;
   state: MergeState;
   main_branch: string;
@@ -104,6 +110,7 @@ interface MergeRecord {
  * modify/delete) is resolved only by changing it.
  */
 interface ConflictEntry {
+  required?: boolean;
   path: string;
   merged: string | null;
   markers: boolean;
@@ -153,6 +160,9 @@ interface TaskMergeFinishResult {
 }
 
 interface MergeTarget {
+  targetRef?: string;
+  sourceCommit?: string;
+  baseCommit?: string;
   locationRoot: string | null;
   locationId: string;
   taskId: string;
@@ -215,6 +225,7 @@ function storedMergeRecord(value: Record<string, unknown> | null): MergeRecord |
     merge_id, state, main_branch, onto_commit, squash_commit, task_commit,
     pending_task_commit, merged_tree, conflicts: conflicts as ConflictEntry[],
     author: { name: identity.name, email: identity.email }, message, updated_at,
+    ...(value.verification_prepared===true?{verification_prepared:true}:{}),
   };
 }
 
@@ -299,7 +310,7 @@ async function mergeDriverOverrides(cwd: string): Promise<string[]> {
  * tip: the merged tree (conflict markers written into it) and the paths that
  * conflicted. Git picks the merge base, the squashed commit's parent.
  */
-async function mergeTrees(path: string, onto: string, squash: string): Promise<{ tree: string; conflicted: string[] }> {
+export async function mergeTrees(path: string, onto: string, squash: string): Promise<{ tree: string; conflicted: string[] }> {
   const overrides = await mergeDriverOverrides(path);
   const result = await runLocationGit(
     [...overrides, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", onto, squash],
@@ -321,11 +332,11 @@ async function treeOf(repoRoot: string, commit: string): Promise<string> {
  * `clean -fdx` when HEAD is the Task branch, otherwise (a Run switched it)
  * removed and made again.
  */
-async function resetWorktreeToBranch(repo: LocationRepository, locationId: string, taskId: string, path: string): Promise<void> {
+async function resetWorktreeToBranch(repo: LocationRepository, locationId: string, taskId: string, path: string, preserveIgnored=false): Promise<void> {
   const head = await runLocationGit(["symbolic-ref", "-q", "HEAD"], path);
   if (head.code === 0 && head.stdout.trim() === taskBranchRef(taskId)) {
     await gitOrThrow(["reset", "-q", "--hard", "HEAD"], path, WORKTREE_TIMEOUT_MS);
-    await gitOrThrow(["clean", "-q", "-f", "-d", "-x"], path, WORKTREE_TIMEOUT_MS);
+    await gitOrThrow(["clean", "-q", "-f", "-d", ...(preserveIgnored?[]:["-x"])], path, WORKTREE_TIMEOUT_MS);
     return;
   }
   await retireWorktree(repo, locationId, taskId, path);
@@ -435,7 +446,7 @@ async function settleRebased(
   record: MergeRecord,
   commit: string,
 ): Promise<TaskMergeStepResult> {
-  await resetWorktreeToBranch(repo, locationId, taskId, path);
+  await resetWorktreeToBranch(repo, locationId, taskId, path, record.verification_prepared===true);
   const rebased: MergeRecord = { ...record, state: "rebased", task_commit: commit, pending_task_commit: null };
   await writeMergeRecord(locationId, taskId, rebased);
   return rebasedAnswer(rebased, commit);
@@ -489,7 +500,7 @@ async function unresolvedPath(path: string, tree: string, conflict: ConflictEntr
   try {
     const entry = await entryAt(path, tree, conflict.path);
     if (entry?.type === "blob" && await blobHoldsMarkers(path, entry.oid)) return true;
-    if (!conflict.markers) return (entry?.oid ?? null) === conflict.merged;
+    if (conflict.required !== false && !conflict.markers) return (entry?.oid ?? null) === conflict.merged;
     return false;
   } catch {
     return true;
@@ -587,8 +598,10 @@ export async function prepareTaskMerge(input: MergeTarget & { author: GitIdentit
         await restoreSquash(repo, locationId, taskId, record);
         record = null;
       }
-      const main = await resolveMainBranch(repo.root);
-      if (!main?.branch || main.branch === taskBranchName(taskId)) {
+      const main = input.targetRef
+        ? {branch:input.targetRef.replace(/^refs\/heads\//,''),commit:await commitOfRef(repo.root,input.targetRef)}
+        : await resolveMainBranch(repo.root);
+      if (!main?.branch || !main.commit || main.branch === taskBranchName(taskId)) {
         await removeMergeRecord(locationId, taskId);
         return stepError("no_main_branch");
       }
@@ -597,16 +610,34 @@ export async function prepareTaskMerge(input: MergeTarget & { author: GitIdentit
         && await commitOfRef(repo.root, ref) === record.task_commit) {
         return rebasedAnswer(record, record.task_commit);
       }
+      // Generic owners use an independent candidate: never squash or move the
+      // source workspace. Rebuild from the frozen source after a target move.
+      if(input.sourceCommit){
+        if(!COMMIT_ID.test(input.sourceCommit))return stepError('integration_source_commit_invalid');
+        // An independently created commit may have no branch at all. Retain
+        // the exact frozen result before the disposable candidate is squashed.
+        const sourceRef=`refs/rainver/sources/${input.sourceCommit}`;
+        const retained=await commitOfRef(repo.root,sourceRef);
+        if(retained&&retained!==input.sourceCommit)return stepError('integration_source_ref_changed');
+        if(!retained){
+          const pinned=await runLocationGit(['update-ref','-m','rainver: retain frozen workspace source',sourceRef,input.sourceCommit,''],repo.root);
+          if(pinned.code!==0&&await commitOfRef(repo.root,sourceRef)!==input.sourceCommit)return stepError('integration_source_ref_unavailable');
+        }
+        const prior=await commitOfRef(repo.root,ref);
+        if(prior!==input.sourceCommit){
+          await gitOrThrow(['update-ref','-m','rainver: pin integration candidate',ref,input.sourceCommit,prior??''],repo.root);
+        }
+      }
       // After an earlier step of a merge what is left in the worktree is the
       // merge's own (conflicted files, what verification built): discarded.
-      const ready = await readyWorktreeForMerge(repo, locationId, taskId, hadRecord);
+      const ready = await readyWorktreeForMerge(repo, locationId, taskId, hadRecord || Boolean(input.sourceCommit));
       if (!ready) {
         await removeMergeRecord(locationId, taskId);
         return noChanges(main.branch, main.commit);
       }
       const tip = ready.tip;
       const base = await runLocationGit(["merge-base", main.commit, tip], repo.root);
-      const mergeBase = base.code === 0 ? base.stdout.trim() : "";
+      const mergeBase = input.baseCommit ?? (base.code === 0 ? base.stdout.trim() : "");
       if (!COMMIT_ID.test(mergeBase)) {
         await removeMergeRecord(locationId, taskId);
         return stepError(`The Task branch shares no history with ${main.branch}.`);
@@ -615,6 +646,10 @@ export async function prepareTaskMerge(input: MergeTarget & { author: GitIdentit
       if (await isAncestor(repo.root, tip, main.commit) || tipTree === await treeOf(repo.root, mergeBase)) {
         await removeMergeRecord(locationId, taskId);
         return noChanges(main.branch, main.commit);
+      }
+      if(input.baseCommit&&await workspaceDeltaAlreadyApplied(repo.root,mergeBase,tip,main.commit)){
+        await removeMergeRecord(locationId,taskId);
+        return noChanges(main.branch,main.commit);
       }
       const squash = await writeCommit(repo.root, tipTree, mergeBase, input.author, input.message);
       await moveBranch(repo.root, ref, squash, tip, "rainver: squash the Task for its merge");
@@ -625,7 +660,13 @@ export async function prepareTaskMerge(input: MergeTarget & { author: GitIdentit
         author: input.author, message: input.message, updated_at: "",
       };
       await writeMergeRecord(locationId, taskId, preparing);
-      const merged = await mergeTrees(ready.path, main.commit, squash);
+      // An explicit baseline may include a user's uncommitted snapshot. A
+      // synthetic target with that same parent applies only baseline→source,
+      // while the published candidate remains a child of the real target.
+      const mergeOnto = input.baseCommit
+        ? await writeCommit(repo.root,await treeOf(repo.root,main.commit),mergeBase,input.author,'Integration comparison baseline')
+        : main.commit;
+      const merged = await mergeTrees(ready.path, mergeOnto, squash);
       if (merged.conflicted.length === 0) {
         if (merged.tree === await treeOf(repo.root, main.commit)) {
           // The main branch already holds the Task's change.
@@ -793,52 +834,82 @@ export async function finishTaskMerge(
     const taskRef = taskBranchRef(taskId);
     if (await commitOfRef(repo.root, taskRef) !== taskCommit) return finishError("task_commit_mismatch");
     if (await commitOfRef(repo.root, `${taskCommit}^1`) !== ontoCommit) return finishError("task_commit_mismatch");
-    const mainRef = `refs/heads/${mainBranch}`;
-    const moved = (): TaskMergeFinishResult => ({ ok: true, outcome: "main_moved", merged_commit: null, overlapping_files: [], error: null });
-    const waiting = (files: string[]): TaskMergeFinishResult => ({ ok: true, outcome: "waiting_local_changes", merged_commit: null, overlapping_files: boundedFiles(files), error: null });
-    const mainTip = await commitOfRef(repo.root, mainRef);
-    if (mainTip === taskCommit) {
-      // A finish that stopped right after moving main.
-      await recordMerged(repo, locationId, taskId, mergeId, taskCommit, log);
-      return merged(taskCommit);
-    }
-    if (mainTip !== ontoCommit) return moved();
-    const holders = (await listWorktrees(repo.root)).filter((worktree) => worktree.branch === mainRef);
-    if (holders.some((worktree) => worktree.path !== repo.root)) return finishError("main_checked_out_elsewhere");
-    const checkoutHoldsMain = holders.length > 0;
-    if (await mainIsBusy(repo, mainBranch, checkoutHoldsMain)) return waiting([]);
-    if (checkoutHoldsMain) {
-      const holder = `merge:${randomUUID()}`;
-      if (!tryAcquireLease(locationId, holder)) return finishError("location_busy");
-      try {
-        const head = await runLocationGit(["symbolic-ref", "-q", "HEAD"], repo.root);
-        if (head.code !== 0 || head.stdout.trim() !== mainRef || await commitOfRef(repo.root, "HEAD") !== ontoCommit) return moved();
-        const overlap = await overlappingLocalChanges(repo.root, ontoCommit, taskCommit);
-        if (overlap.length > 0) return waiting(overlap);
-        const merge = await runLocationGit(
-          ["merge", "--ff-only", "--no-edit", "--no-overwrite-ignore", "--no-autostash", taskCommit],
-          repo.root,
-          WORKTREE_TIMEOUT_MS,
-          { env: { GIT_EDITOR: ":" } },
-        );
-        if (merge.code !== 0) return finishError(`git merge --ff-only failed: ${merge.stderr.trim().slice(0, 400)}`);
-        if (await commitOfRef(repo.root, mainRef) !== taskCommit) return finishError("the fast-forward did not leave the main branch at the Task commit");
-      } finally {
-        releaseLocationLeases([locationId], holder);
-      }
-    } else {
-      const update = await runLocationGit(["update-ref", "-m", `rainver: merge Task ${taskId}`, mainRef, taskCommit, ontoCommit], repo.root);
-      if (update.code !== 0) {
-        if (await commitOfRef(repo.root, mainRef) !== ontoCommit) return moved();
-        return finishError(`git update-ref failed: ${update.stderr.trim().slice(0, 400)}`);
-      }
-    }
+    const published=await publishWorkspaceCommit(repo,locationId,taskId,mainBranch,ontoCommit,taskCommit);
+    if(!published.ok||published.outcome!=='merged')return published;
     await recordMerged(repo, locationId, taskId, mergeId, taskCommit, log);
     return merged(taskCommit);
   }).catch((error: unknown) => finishError(errorText(error)));
   if (outcome) return outcome;
   // Busy: a finished merge still answers, its cleanup retried by a later repeat.
   return finished ? merged(finished.merged_commit) : finishError(TASK_BUSY);
+}
+
+/** Short target publication shared by native conversation and legacy Task integration.
+ * The caller owns the verified source tree; this function never cleans it. */
+export async function publishWorkspaceCommit(repo:LocationRepository, locationId:string, taskId:string, mainBranch:string, ontoCommit:string, taskCommit:string,options:{targetRoot?:string;leaseKey?:string;canPublish?:()=>boolean}={}):Promise<TaskMergeFinishResult>{
+ let targetRoot=options.targetRoot??repo.root;
+ let publicationLease=options.leaseKey??locationId;
+ if(!options.targetRoot){
+  const parent=/^rainver\/workspace-([a-f0-9-]{36})-g([1-9][0-9]*)$/.exec(mainBranch);
+  if(parent){
+   const parentKey=`workspace:${parent[1]}:${parent[2]}`;
+   const owned=await worktreeAt(repo,locationId,parentKey);
+   if(owned.entry){
+    publicationLease=taskLeaseKey(locationId,parentKey);
+    if(isLeaseBusy(publicationLease)||isTaskWorktreeInUse(publicationLease))return finishError(TASK_BUSY);
+    targetRoot=owned.path;
+   }
+  }
+ }
+ const merged=(commit:string):TaskMergeFinishResult=>({ok:true,outcome:'merged',merged_commit:commit,overlapping_files:[],error:null});
+    const mainRef = `refs/heads/${mainBranch}`;
+    const moved = (): TaskMergeFinishResult => ({ ok: true, outcome: "main_moved", merged_commit: null, overlapping_files: [], error: null });
+    const waiting = (files: string[]): TaskMergeFinishResult => ({ ok: true, outcome: "waiting_local_changes", merged_commit: null, overlapping_files: boundedFiles(files), error: null });
+    if(options.canPublish&&!options.canPublish())return finishError("native_integration_run_not_active");
+    const mainTip = await commitOfRef(repo.root, mainRef);
+    if (mainTip === taskCommit) {
+      // A finish that stopped right after moving main.
+      return merged(taskCommit);
+    }
+    if (mainTip !== ontoCommit) return moved();
+    const holders = (await listWorktrees(repo.root)).filter((worktree) => worktree.branch === mainRef);
+    if (holders.some((worktree) => worktree.path !== targetRoot)) return finishError("main_checked_out_elsewhere");
+    const checkoutHoldsMain = holders.length > 0;
+    if (await mainIsBusy(repo, mainBranch, checkoutHoldsMain)) return waiting([]);
+    if (checkoutHoldsMain) {
+      const holder = `merge:${randomUUID()}`;
+      if (!tryAcquireLease(publicationLease, holder)) return finishError("location_busy");
+      try {
+        const head = await runLocationGit(["symbolic-ref", "-q", "HEAD"], targetRoot);
+        if (head.code !== 0 || head.stdout.trim() !== mainRef || await commitOfRef(targetRoot, "HEAD") !== ontoCommit) return moved();
+        if(options.canPublish&&!options.canPublish())return finishError("native_integration_run_not_active");
+        const overlap = await overlappingLocalChanges(targetRoot, ontoCommit, taskCommit);
+        const local = overlap.length ? await reconcileLocalChanges(targetRoot, ontoCommit, taskCommit, overlap) : null;
+        if (local?.blocked.length) return waiting(local.blocked);
+        await local?.stage();
+        const merge = await runLocationGit(
+          ["merge", "--ff-only", "--no-edit", "--no-overwrite-ignore", "--no-autostash", taskCommit],
+          targetRoot,
+          WORKTREE_TIMEOUT_MS,
+          { env: { GIT_EDITOR: ":" } },
+        );
+        if (merge.code !== 0) {
+          await local?.rollback();
+          return finishError(`git merge --ff-only failed: ${merge.stderr.trim().slice(0, 400)}`);
+        }
+        if (await commitOfRef(repo.root, mainRef) !== taskCommit) return finishError("the fast-forward did not leave the main branch at the Task commit");
+        await local?.finish();
+      } finally {
+        releaseLocationLeases([publicationLease], holder);
+      }
+    } else {
+      const update = await runLocationGit(["update-ref", "-m", `rainver: merge Task ${taskId}`, mainRef, taskCommit, ontoCommit], targetRoot);
+      if (update.code !== 0) {
+        if (await commitOfRef(repo.root, mainRef) !== ontoCommit) return moved();
+        return finishError(`git update-ref failed: ${update.stderr.trim().slice(0, 400)}`);
+      }
+    }
+    return merged(taskCommit);
 }
 
 /** Stores the merged answer, then cleans up (`cleanUpMerged`). */
@@ -867,6 +938,7 @@ async function cleanUpMerged(
   mergedCommit: string,
   log: (line: string) => void,
 ): Promise<void> {
+  if(workspaceIdentity(taskId)?.integration_id)return; // durable generic cleanup Job owns reclamation
   const record = await readMergeRecord(locationId, taskId);
   if (record?.merge_id === mergeId) await removeMergeRecord(locationId, taskId);
   const taskRef = taskBranchRef(taskId);
@@ -934,7 +1006,7 @@ async function mainIsBusy(repo: LocationRepository, mainBranch: string, checkout
  * checkout already (ignored ones, which `status` does not list), or whose
  * directory is a file of the person's.
  */
-async function overlappingLocalChanges(root: string, ontoCommit: string, taskCommit: string): Promise<string[]> {
+export async function overlappingLocalChanges(root: string, ontoCommit: string, taskCommit: string): Promise<string[]> {
   const status = await gitRaw(["status", "--porcelain=v1", "-z", "--untracked-files=all"], root);
   const dirty = new Set<string>();
   const fields = status.split("\0");
@@ -1006,4 +1078,68 @@ export async function mergeResolutionWorktree(
   const { path, entry } = await worktreeAt(repo, locationId, taskId);
   if (!entry) throw new Error("the Task worktree is not a git worktree Rainver recognises");
   return { root: path, gitCommonDir: repo.gitCommonDir };
+}
+
+/** Verify the exact candidate tree after commands, under the same owner lease. */
+export async function sealMergeCandidate(input:MergeTarget & {candidateCommit:string}):Promise<boolean>{
+ const sealed=await withTaskHeld(taskLeaseKey(input.locationId,input.taskId),async()=>{
+  const repo=await usableRepository(input.locationRoot),record=await readMergeRecord(input.locationId,input.taskId);
+  if(record?.merge_id!==input.mergeId||record.task_commit!==input.candidateCommit)return false;
+  const {path,entry}=await worktreeAt(repo,input.locationId,input.taskId);
+  if(!entry)return false;
+  const captured=await captureWorkspaceTree(path,WORKTREE_TIMEOUT_MS,input.candidateCommit);
+  return captured===await treeOf(repo.root,input.candidateCommit);
+ });
+ return sealed===true;
+}
+
+/** Preserve failed candidate files as reachable evidence before reclamation/retry. */
+export async function preserveMergeCandidate(input:MergeTarget & {author:GitIdentity}):Promise<string|null>{
+ const result=await withTaskHeld(taskLeaseKey(input.locationId,input.taskId),async()=>{
+  const repo=await usableRepository(input.locationRoot),tip=await commitOfRef(repo.root,taskBranchRef(input.taskId));
+  if(!tip)return null;
+  const {path,entry}=await worktreeAt(repo,input.locationId,input.taskId);
+  const tree=entry?await captureWorkspaceTree(path,WORKTREE_TIMEOUT_MS,tip):await treeOf(repo.root,tip);
+  if(!tree)throw new Error('integration_evidence_capture_failed');
+  const commit=tree===await treeOf(repo.root,tip)?tip:await writeCommit(repo.root,tree,tip,input.author,'Preserved integration candidate');
+  await gitOrThrow(['update-ref',`refs/rainver/recovery/${input.mergeId}`,commit],repo.root);
+  if(commit!==tip)await moveBranch(repo.root,taskBranchRef(input.taskId),commit,tip,'rainver: preserve integration evidence');
+  return commit;
+ });
+ return result??null;
+}
+
+
+export async function canAutomaticallyRepairMerge(input:MergeTarget):Promise<boolean>{
+ const record=await readMergeRecord(input.locationId,input.taskId);
+ return Boolean(record?.merge_id===input.mergeId&&record.state==='conflict'&&!conflictsCut(record)&&record.conflicts.every(c=>c.markers));
+}
+/** The control plane calls this for a recorded human decision or scoped Agent repair.
+ * Unchanged non-marker content can now mean an explicit choice to keep it;
+ * conflict markers and all branch/capture guards still have to pass. */
+export async function prepareConflictResolution(input:MergeTarget):Promise<string[]|null>{
+ if(!validTarget(input))return null;
+ const result=await withTaskHeld(taskLeaseKey(input.locationId,input.taskId),async()=>{
+  const record=await readMergeRecord(input.locationId,input.taskId);
+  if(!record||record.merge_id!==input.mergeId||record.state!=='conflict'||conflictsCut(record)||record.conflicts.length===0)return null;
+  await writeMergeRecord(input.locationId,input.taskId,{...record,conflicts:record.conflicts.map(c=>({...c,required:false}))});
+  return record.conflicts.map(c=>c.path);
+ });
+ return result??null;
+}
+/** Reuse the same restricted resolution path for one bounded verification repair. */
+export async function prepareVerificationRepair(input:MergeTarget):Promise<string[]|null>{
+ const result=await withTaskHeld(taskLeaseKey(input.locationId,input.taskId),async()=>{
+  const repo=await usableRepository(input.locationRoot),record=await readMergeRecord(input.locationId,input.taskId);
+  if(record?.merge_id!==input.mergeId||record.state!=='rebased'||!record.task_commit)return null;
+  const files=nulFields(await gitRaw(['diff','--name-only','-z',record.onto_commit,record.task_commit],repo.root));
+  if(files.length===0||files.length>MAX_FILES)return null;
+  const tree=await treeOf(repo.root,record.task_commit),{path,entry}=await worktreeAt(repo,input.locationId,input.taskId);
+  if(!entry)return null;
+  await writeMergeRecord(input.locationId,input.taskId,{...record,verification_prepared:true,state:'conflict',squash_commit:record.task_commit,
+   task_commit:null,pending_task_commit:null,merged_tree:tree,
+   conflicts:(await describeConflicts(path,tree,files)).map(c=>({...c,required:false}))});
+  return files;
+ });
+ return result??null;
 }

@@ -1,5 +1,5 @@
+import { ExperimentMutationError } from './operationErrors.js';
 import { posix as pathPosix } from "node:path";
-import { HttpError } from "../routeUtils/common.js";
 
 export function stringArray(value: unknown): string[] {
   return Array.isArray(value)
@@ -14,7 +14,7 @@ export function jsonStringArray(value: unknown): string[] {
 export function enumValue(value: unknown, allowed: Set<string>, field = "value"): string | null {
   const text = typeof value === "string" && value.trim() ? value.trim() : null;
   if (!text) return null;
-  if (!allowed.has(text)) throw new HttpError(422, `${field} must be one of ${[...allowed].join(", ")}`);
+  if (!allowed.has(text)) throw new ExperimentMutationError(422, `${field} must be one of ${[...allowed].join(", ")}`);
   return text;
 }
 
@@ -24,15 +24,15 @@ export function scopePathArray(value: unknown, field: string): string[] {
   const seen = new Set<string>();
   for (const raw of stringArray(value)) {
     if (raw.includes("\0") || raw.includes("\\") || /^[A-Za-z]:/.test(raw) || pathPosix.isAbsolute(raw)) {
-      throw new HttpError(422, `${field} entries must be relative POSIX Project Folder paths`);
+      throw new ExperimentMutationError(422, `${field} entries must be relative POSIX Project Folder paths`);
     }
     // `normalize` keeps a trailing slash; a directory is the same scope either way.
     const normalized = withoutTrailingSlash(pathPosix.normalize(raw));
     if (normalized === "." || normalized === ".." || normalized.startsWith("../")) {
-      throw new HttpError(422, `${field} entries must stay inside the Project Folder`);
+      throw new ExperimentMutationError(422, `${field} entries must stay inside the Project Folder`);
     }
     if (normalized.includes("*")) {
-      throw new HttpError(422, `${field} entries must be literal files or directories, not glob patterns`);
+      throw new ExperimentMutationError(422, `${field} entries must be literal files or directories, not glob patterns`);
     }
     if (!seen.has(normalized)) {
       seen.add(normalized);
@@ -56,7 +56,7 @@ export function assertScopesDoNotOverlap(editable: string[], protectedPaths: str
   for (const editablePath of editable) {
     for (const protectedPath of protectedPaths) {
       if (scopeContains(editablePath, protectedPath) || scopeContains(protectedPath, editablePath)) {
-        throw new HttpError(422, `Path '${editablePath}' overlaps protected scope '${protectedPath}'`);
+        throw new ExperimentMutationError(422, `Path '${editablePath}' overlaps protected scope '${protectedPath}'`);
       }
     }
   }
@@ -84,7 +84,7 @@ export const EXECUTOR_TYPES = new Set(["manual", "managed_code_comparison"]);
 function positiveIntegerOrNull(value: unknown, field: string): number | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
-    throw new HttpError(422, `${field} must be a positive integer`);
+    throw new ExperimentMutationError(422, `${field} must be a positive integer`);
   }
   return value;
 }
@@ -93,7 +93,7 @@ function positiveIntegerOrNull(value: unknown, field: string): number | null {
 export function normalizeExecutorConfig(executorType: string, config: Record<string, unknown>): Record<string, unknown> {
   if (executorType !== "managed_code_comparison") return {};
   const projectFolderId = typeof config.project_folder_id === "string" && config.project_folder_id.trim() ? config.project_folder_id.trim() : null;
-  if (!projectFolderId) throw new HttpError(422, "config.project_folder_id is required for managed_code_comparison");
+  if (!projectFolderId) throw new ExperimentMutationError(422, "config.project_folder_id is required for managed_code_comparison");
   const editableScope = scopePathArray(config.editable_scope, "config.editable_scope");
   const protectedScope = scopePathArray(config.protected_scope, "config.protected_scope");
   assertScopesDoNotOverlap(editableScope, protectedScope);

@@ -121,8 +121,9 @@ describe('ProjectFileDraftController', () => {
     vi.useFakeTimers()
     try {
       const refusal = Object.assign(new Error('The draft changed in another tab'), {
-        code: 'draft_version_conflict',
-        payload: { code: 'draft_version_conflict', current: draft('from the other tab', 2) },
+        code: 'operation_conflict',
+        payload: { error: {code:'operation_conflict',metadata:{code:'draft_version_conflict'}} },
+        currentDraft:draft('from the other tab',2),
       })
       const save = vi.fn().mockRejectedValue(refusal)
       const controller = new ProjectFileDraftController({
@@ -167,6 +168,19 @@ describe('ProjectFileDraftController', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+  it('holds local edits when another tab removed the draft and creates no new write until a person edits again',async()=>{
+    vi.useFakeTimers()
+    try{
+      const refusal=Object.assign(new Error('The draft was removed'),{code:'operation_conflict',payload:{error:{metadata:{code:'draft_version_conflict'}}},currentDraft:null})
+      const save=vi.fn().mockRejectedValue(refusal),controller=new ProjectFileDraftController({initialContent:'disk',initialDraft:draft('mine',1),buildMutation:async(content,current)=>mutation(content,current?.version??null),save})
+      controller.setContent('unsaved edits')
+      await expect(controller.flush()).rejects.toBe(refusal)
+      expect(controller.snapshot()).toMatchObject({status:'error',draft:null,content:'unsaved edits'})
+      await vi.advanceTimersByTimeAsync(DRAFT_MAX_MS+DRAFT_IDLE_MS)
+      expect(save).toHaveBeenCalledTimes(1)
+      controller.destroy()
+    }finally{vi.useRealTimers()}
   })
 })
 

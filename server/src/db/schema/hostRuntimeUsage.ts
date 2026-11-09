@@ -23,7 +23,7 @@ export const hostRuntimeUsage = pgTable("host_runtime_usage", {
 	runtimeKey: varchar("runtime_key", { length: 64 }).notNull(),
 	/** `own` or `managed:<version>` — the copy, not the runtime (B68). */
 	installation: varchar({ length: 64 }).notNull(),
-	/** The wire's `HostUsageQuota`: percentages, reset text, and a reason when unavailable. Never a credential. */
+	/** HostUsageQuota: opaque subscription identity, measured windows/clocks and unavailable reason. Never a credential. */
 	quotaJson: jsonb("quota_json").notNull(),
 	checkedAt: timestamp("checked_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [

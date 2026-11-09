@@ -5,6 +5,8 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import HostsPanel from '../HostsPanel'
 import { hostsApi } from '../../../api/client'
 
+vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpaceId: 'space-1' }) }))
+
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 const authState = vi.hoisted(() => ({ currentUser: null as null | { is_instance_admin: boolean } }))
 vi.mock('../../../contexts/AuthContext', () => ({ useAuth: () => authState }))
@@ -390,53 +392,13 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     },
   }
 
-  it('keeps an explicit refresh when the slower cached usage read finishes afterward', async () => {
+  it('opens quota through the usage page even before the first cached measurement', async () => {
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [CLAUDE_HOST] })
-    let resolveCachedUsage!: (value: Awaited<ReturnType<typeof hostsApi.usage>>) => void
-    const cachedUsage = new Promise<Awaited<ReturnType<typeof hostsApi.usage>>>(resolve => {
-      resolveCachedUsage = resolve
-    })
-    vi.mocked(hostsApi.usage).mockReturnValue(cachedUsage)
-    vi.mocked(hostsApi.refreshUsage).mockResolvedValue({
-      host_id: 'host-1', runtime_key: 'claude_code', installation: 'managed:2.0.0',
-      quota: { available: true, session_pct: 61, session_resets: null, week_pct: 18, week_resets: null, error: null },
-      checked_at: '2026-09-08T00:00:00.000Z',
-    })
     renderPanel()
-
-    // The button must exist before the first probe — that is exactly the
-    // moment someone wants it, and the scheduled sweep is up to three hours
-    // away.
-    await userEvent.click(await screen.findByRole('button', { name: 'Usage details for Claude Code · managed:2.0.0' }))
-    const refresh = screen.getByRole('button', { name: 'Refresh usage' })
-    await userEvent.click(refresh)
-
-    await waitFor(() => expect(hostsApi.refreshUsage).toHaveBeenCalledWith('host-1', 'claude_code', 'managed:2.0.0'))
-    expect(await screen.findByText('Highest used 61%')).toBeInTheDocument()
-    expect(screen.getByRole('progressbar', { name: 'Session' })).toHaveAttribute('aria-valuenow', '61')
-
-    await act(async () => {
-      resolveCachedUsage({ items: [{
-        host_id: 'host-1', runtime_key: 'claude_code', installation: 'managed:2.0.0',
-        quota: { available: true, session_pct: 10, session_resets: null, week_pct: 5, week_resets: null, error: null },
-        checked_at: '2026-09-07T00:00:00.000Z',
-      }] })
-      await cachedUsage
-    })
-    expect(screen.getByText('Highest used 61%')).toBeInTheDocument()
-  })
-
-  it('says a copy could not be read instead of leaving it looking healthy', async () => {
-    vi.mocked(hostsApi.list).mockResolvedValue({ items: [CLAUDE_HOST] })
-    vi.mocked(hostsApi.usage).mockResolvedValue({ items: [{
-      host_id: 'host-1', runtime_key: 'claude_code', installation: 'managed:2.0.0',
-      quota: { available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: 'Log in to Claude Code on this host before reading usage.' },
-      checked_at: '2026-09-08T00:00:00.000Z',
-    }] })
-    renderPanel()
-
-    await userEvent.click(await screen.findByText('Usage unavailable'))
-    expect(screen.getByRole('status')).toHaveTextContent('Log in to Claude Code')
+    const link = await screen.findByRole('link', { name: 'View quota' })
+    expect(link).toHaveAttribute('href', '/spaces/space-1/usage?tab=quotas&host=host-1&runtime=claude_code&installation=managed%3A2.0.0')
+    expect(screen.queryByRole('progressbar')).toBeNull()
+    expect(hostsApi.refreshUsage).not.toHaveBeenCalled()
   })
 
   it('keeps rollback in version management and asks for it by adapter', async () => {

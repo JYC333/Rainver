@@ -13,10 +13,12 @@ const CODE_CAUSES = {
 
 /** Read only server-classified evidence, never infer auth/quota from prose. */
 export function runtimeFailure(run: Run) {
-  if (run.execution_kind !== 'agent' || !['failed', 'orphaned'].includes(run.status) || !run.error_json) return null
-  const evidence = RuntimeFailureEvidenceSchema.safeParse(run.error_json.runtime_failure)
-  const target = RuntimeFailureTargetSchema.safeParse(run.error_json.runtime_target)
-  const code = typeof run.error_json.error_code === 'string' ? run.error_json.error_code : ''
+  if (run.execution_kind !== 'agent' || !run.error_json || (!['failed', 'orphaned'].includes(run.status) && !(run.status === 'waiting_for_review' && run.error_json.supervisor_review === true))) return null
+  const held = run.error_json.supervisor_failure
+  const details = held && typeof held === 'object' && !Array.isArray(held) ? held as Record<string, unknown> : run.error_json
+  const evidence = RuntimeFailureEvidenceSchema.safeParse(details.runtime_failure)
+  const target = RuntimeFailureTargetSchema.safeParse(details.runtime_target)
+  const code = typeof details.error_code === 'string' ? details.error_code : ''
   const mapped = Object.prototype.hasOwnProperty.call(CODE_CAUSES, code) ? CODE_CAUSES[code as keyof typeof CODE_CAUSES] : null
   // A generic process exit adds no diagnosis. Keep typed evidence when the
   // server has it, while specific outcomes (timeout/session loss) still win.

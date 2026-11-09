@@ -1,6 +1,8 @@
+import {registerProjectManagementOperationRoutes} from '../projects/managementOperationRoutes.js';
+import {registerResearchWorkspaceOperationRoutes} from "./workspaceOperationRoutes.js";
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { dbPool, jsonBody, params, query, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common.js";
+import { dbPool, params, query, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common.js";
 import { ProjectResearchAreaService } from "./areaService.js";
 
 function requireParam(request: Parameters<typeof params>[0], name: string): string {
@@ -18,11 +20,14 @@ export function registerProjectResearchAreaRoutes(
    * the Project's notes on the Project's own notes surface. Register it under
    * the Project base, not under `.../research/`.
    */
-  projectBase: string,
+  _projectBase: string,
 ): void {
+  registerProjectManagementOperationRoutes(app,context,'projectResearch');
+  registerResearchWorkspaceOperationRoutes(app,context);
   const area = () => new ProjectResearchAreaService(dbPool(context.config), context.config);
   const route = (handler: (identity: { spaceId: string; userId: string }, request: Parameters<typeof params>[0]) => Promise<unknown>, status = 200) =>
     async (request: Parameters<typeof params>[0], reply: Parameters<typeof resolveIdentity>[2]) => {
+      reply.header('cache-control','private, no-store');
       const identity = await resolveIdentity(context.config, request, reply);
       if (!identity) return reply;
       try {
@@ -32,15 +37,11 @@ export function registerProjectResearchAreaRoutes(
       }
     };
 
+  app.get(`${base}/checklist/:itemId`,route((identity,request)=>area().getChecklistItem(identity,requireParam(request,'projectId'),requireParam(request,'itemId'))));
+  app.get(`${base}/reading-list/:sourceItemId/card`,route((identity,request)=>area().getEvidenceCard(identity,requireParam(request,'projectId'),requireParam(request,'sourceItemId'))));
   app.get(`${base}/area`, route((identity, request) => area().getArea(identity, requireParam(request, "projectId"))));
-  app.post(`${base}/area`, route((identity, request) => area().initializeArea(identity, requireParam(request, "projectId")), 201));
   app.get(`${base}/reading-list`, route((identity, request) => area().readingList(identity, requireParam(request, "projectId"), query(request))));
   // Note editing, revisions, and rollback are the generic
   // /api/v1/knowledge/notes/:noteId endpoints. Do not add them here.
-  app.post(`${base}/ask-ai`, route((identity, request) => area().askAi(identity, requireParam(request, "projectId"), jsonBody(request)), 201));
-  app.post(`${projectBase}/notebook-chat`, route((identity, request) => area().notebookChat(identity, requireParam(request, "projectId"), jsonBody(request)), 201));
-  app.put(`${base}/reading-list/:sourceItemId/card`, route((identity, request) => area().upsertEvidenceCard(identity, requireParam(request, "projectId"), requireParam(request, "sourceItemId"), jsonBody(request))));
-  app.post(`${base}/checklist`, route((identity, request) => area().createChecklistItem(identity, requireParam(request, "projectId"), jsonBody(request)), 201));
-  app.patch(`${base}/checklist/:itemId`, route((identity, request) => area().updateChecklistItem(identity, requireParam(request, "projectId"), requireParam(request, "itemId"), jsonBody(request))));
-  app.delete(`${base}/checklist/:itemId`, route((identity, request) => area().deleteChecklistItem(identity, requireParam(request, "projectId"), requireParam(request, "itemId"))));
+  app.get('/api/v1/projects/:projectId/notebook-chat/:runId',route((identity,request)=>area().notebookChatResult(identity,requireParam(request,'projectId'),requireParam(request,'runId'))));
 }

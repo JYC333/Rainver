@@ -157,6 +157,8 @@ mkdir -p "$host_payload/app" "$adapter_payload" "$node_payload/bin"
 cp -a "$deploy_dir/app/." "$host_payload/app/"
 cp -a "$deploy_dir/adapters/." "$adapter_payload/"
 printf '%s\n' "$build_id" > "$host_payload/BUILD_ID"
+# Match CI: the running daemon resolves BUILD_ID next to app/package.json.
+printf '%s\n' "$build_id" > "$host_payload/app/BUILD_ID"
 printf '%s\n' "$build_id" > "$adapter_payload/BUILD_ID"
 cp -L "$node_command" "$node_payload/bin/node"
 

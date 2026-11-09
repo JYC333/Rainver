@@ -1,3 +1,6 @@
+import {beforeEach} from 'vitest';
+import {resetTables} from './support/resetTables.js';
+import {researchWorkflowProjection} from '../src/modules/projectResearch/workflowOntology.js';
 import {assertResearchResultRunEgress} from '../src/modules/projectResearch/researchResultEgress.js';
 import type {RunRecord} from '../src/modules/runs/repository.js';
 import {seedArxivSourceChain,seedRelevantCorpusItem} from './support/researchSeeds.js';
@@ -1046,4 +1049,26 @@ it('measures dense bound origins and bounds deep/cyclic provenance without losin
  await graphDb.pool.query(`UPDATE space_objects SET visibility='private' WHERE id=$1`,[leafThread]);await expect(assertResearchReportCallReadable(graphDb.pool,viewer,project,rows[0]!.operation)).rejects.toMatchObject({statusCode:404});await expect(assertResearchArtifactReadable(graphDb.pool,viewer,rows[0]!.artifact)).rejects.toMatchObject({statusCode:404});// Full reads fail along the leaf binding even though unrelated direct origins remain visible.
 
  writeFileSync(join(graphEvidence,'graph-plan.json'),JSON.stringify({fixture:{bound_operations:202,artifacts:201,maximum_accepted_depth:200},plan,depthMs,depthQueries,cycleQueries,limitQueries,egressMs,egressQueries,deniedEgressQueries},null,2));
+});
+
+describe("Research Workflow primary-Thread content access",()=>{
+const db=useTestDatabase(import.meta.filename+"#workflowContentAccess");
+beforeEach(async()=>{
+ if(!db.available)return;
+ await resetTables(db.pool,['spaces','users'],{cascade:true});
+ await seedSpaceOwnerProject(db.pool,{space:'space',owner:'owner',project:'project',spaceType:'team'});
+ await seedSpaceMember(db.pool,{space:'space',user:'reader'});
+ await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES('reader-member','space','project','reader','viewer','active',now(),now())");
+ await db.pool.query("INSERT INTO space_objects(id,space_id,object_type,title,visibility,owner_user_id,created_by_user_id,primary_project_id,created_at,updated_at) VALUES('thread','space','inquiry_thread','Question','space_shared','owner','owner','project',now(),now())");
+ await db.pool.query("INSERT INTO inquiry_threads(object_id,space_id,project_id,kind,statement) VALUES('thread','space','project','question','Question')");
+ await insertResearchWorkflowFixture(db.pool,{id:'workflow',spaceId:'space',projectId:'project',title:'Workflow',status:'active',state:{},startedByUserId:'owner',primaryThreadId:'thread',now:new Date().toISOString()});
+});
+it('requires full primary-Thread content in a no-oversight Workflow provenance projection',async()=>{
+ const projection=researchWorkflowProjection({viewerPlaceholder:'$1',includeOversight:false});
+ const read=()=>db.pool.query(`SELECT w.object_id FROM ${projection.from} WHERE ${projection.visibilityPredicate}`,['reader']);
+ expect((await read()).rows).toEqual([{object_id:'workflow'}]);
+ await db.pool.query("UPDATE space_objects SET access_level='summary' WHERE id='thread'");
+ expect((await read()).rows).toEqual([]);
+});
+
 });

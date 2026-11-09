@@ -143,11 +143,12 @@ export async function finalizeChatTurn(
         },
       });
     }
-  } else if (outcome.ok) {
+  } else if (outcome.ok || outcome.reply) {
     const artifactRefs = artifactReferences(run.output_json);
     // The runtime's own question ended this turn: the reply is the
     // question, marked so the person sees it is waiting on them.
-    const awaitingAnswer = outcome.awaitingAnswer ? { awaiting_answer: true } : {};
+    const awaitingAnswer = outcome.ok && outcome.awaitingAnswer ? { awaiting_answer: true } : {};
+    const failure = outcome.ok ? {} : { status: run.status, error_code: outcome.errorCode };
     const sessions = deps.sessions ?? PgSessionRepository.fromConfig(config);
     const stored = isRoomConversationRun(run)
       ? await requiredRoomMessageWriter(sessions)({
@@ -155,10 +156,11 @@ export async function finalizeChatTurn(
           session_id: metadata.session_id,
           sender_agent_id: metadata.agent_id,
           run_id: run.id,
-          content: outcome.reply,
+          content: outcome.reply!,
           metadata: {
             ...(run.run_group_id ? { task_group_id: run.run_group_id } : {}),
             status: run.status,
+            ...failure,
             ...awaitingAnswer,
             ...(artifactRefs.length > 0 ? { artifact_refs: artifactRefs } : {}),
             ...(persistedActionPreviews.length > 0 ? { action_previews: persistedActionPreviews } : {}),
@@ -170,8 +172,9 @@ export async function finalizeChatTurn(
           metadata.session_id,
           run.id,
           {
-            content: outcome.reply,
+            content: outcome.reply!,
             metadata: {
+              ...failure,
               ...awaitingAnswer,
               ...(artifactRefs.length > 0 ? { artifact_refs: artifactRefs } : {}),
               ...(persistedActionPreviews.length > 0 ? { action_previews: persistedActionPreviews } : {}),
@@ -188,7 +191,7 @@ export async function finalizeChatTurn(
       id: stored.id,
       session_id: metadata.session_id,
       run_id: run.id,
-      content: outcome.reply,
+      content: outcome.reply!,
       artifact_refs: artifactRefs,
       tool_call_refs: actionPreviews.flatMap((preview) =>
         preview.tool_call_id ? [preview.tool_call_id] : []),
@@ -239,7 +242,7 @@ export async function finalizeChatTurn(
     session_id: metadata.session_id,
     run_id: run.id,
     ok: outcome.ok,
-    reply: outcome.ok ? outcome.reply : null,
+    reply: outcome.reply ?? null,
     error: outcome.ok ? null : outcome.error,
     error_code: outcome.ok ? null : outcome.errorCode,
     assistant_message: assistantMessage,
@@ -259,7 +262,7 @@ export async function finalizeChatTurn(
     actor_id: actorId,
     summary: outcome.ok
       ? "Chat turn completed."
-      : "Chat turn completed without an assistant reply.",
+      : assistantMessage ? "Chat turn completed with a reply and a verification failure." : "Chat turn completed without an assistant reply.",
     error_code: outcome.ok ? null : outcome.errorCode,
     error_message: outcome.ok ? null : outcome.error,
     metadata_json: {
@@ -417,6 +420,7 @@ function chatOutcome(
   ok: false;
   error: string;
   errorCode: string;
+  reply?: string;
 } {
   const outputEnvelope = recordValue(run.output_json);
   const output = runOutputResult(run.output_json);
@@ -440,7 +444,12 @@ function chatOutcome(
       stringValue(errorJson.error_text) ??
       stringValue(errorJson.error) ??
       `The assistant run ended with status '${run.status}'.`;
-    return { ok: false, error, errorCode };
+    // Validation failure is a fact about the work, not a reason to discard the
+    // runtime's completed explanation. Retain failed status and show both.
+    const failedReply = errorCode === "verification_failed" && reply
+      ? `${reply}\n\n${/[\u3400-\u9fff]/.test(reply) ? "本轮校验未通过：" : "Run verification did not pass: "}${error}`
+      : undefined;
+    return { ok: false, error, errorCode, ...(failedReply ? { reply: failedReply } : {}) };
   }
   return { ok: true, reply };
 }

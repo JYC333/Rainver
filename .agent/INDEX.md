@@ -278,6 +278,7 @@ when shortening a decision; do not delete an ADR merely because it is old.
 | [0025](decisions/0025-unpublished-migration-squash.md) | Unpublished plan migrations may be squashed into one formal migration, with explicit data-preserving history conversion for existing databases |
 | [0026](decisions/0026-sources-isolated-request-execution.md) | Sources-only Host execution, OS network/resource containment and shared per-request account/endpoint admission; generated-code product integration remains gated |
 | [0027](decisions/0027-problem-engine-research-separation.md) | Inquiry owns the generic problem method and round close-out; Task Board status is the only Task progress; Research is a bound capability; no runtime compatibility; one-time cutover and retirement of old-model archives |
+| [0029](decisions/0029-isolated-execution-workspaces.md) | Isolated conversation/delegation workspaces, frozen change sets, verified integration and durable cleanup; staged implementation |
 | [0028](decisions/0028-operation-execution-core.md) | Proposed operation executor decision and frozen Plan 1 contracts; runtime not enabled |
 
 ---

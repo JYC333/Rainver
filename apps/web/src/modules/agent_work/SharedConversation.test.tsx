@@ -8,7 +8,7 @@ import { ConversationSurface } from '../conversation/ConversationSurface'
 import { ConversationScope } from '../conversation/ConversationScope'
 import { deferred, run, turn } from './fixtures.test-support'
 
-vi.mock('../../contexts/SpaceContext', () => ({ useSpace: () => ({ userId: 'user', activeSpaceId: 'space-a', preferredSpaceId: 'space-a' }) }))
+vi.mock('../../contexts/SpaceContext', () => ({ useSpace: () => ({ userId: 'user', activeSpaceId: 'space-a', preferredSpaceId: 'space-a', spaces: [{id:'space-a',name:'A',role:'member'},{id:'space-b',name:'B',role:'owner'}] }) }))
 vi.mock('../../api/client', async original => ({
   ...await original<typeof import('../../api/client')>(),
   roomsApi: { messages: vi.fn(), conversationQuota: vi.fn(async () => null), summary: vi.fn(async () => null) },

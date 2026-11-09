@@ -120,6 +120,19 @@ describe("selected Skill work-surface transport", () => {
 });
 
 describe("executeRemoteHostCliAdapter", () => {
+  it('records the actual managed primary and mount references independently of a primary Git workspace',async()=>{
+    // Pure adapter transport seam: the supplied references stand for a previously
+    // authorized allocation; durable allocation/authority is tested with real PG.
+    const workspace={kind:'managed' as const,agent_id:'agent-1',container:{kind:'conversation' as const,conversation_id:'conversation-1'}};
+    const access=[{workspace_location_id:'attached-location',access_mode:'read' as const,execution_workspace:{id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',generation:1,cwd_subpath:'packages/app'}}];
+    const result=await executeRemoteHostCliAdapter({run:run(),prompt:'Review the attached package',model:null,resume_session_id:null,workspace,workspace_access:access},'host-1',null,{
+      bindings:NO_PROVIDER_BINDINGS,
+      executor:{runCommand:vi.fn().mockResolvedValue({returncode:0,stdout:'',stderr:'',timed_out:false})},
+    });
+    expect(result.metadata_json).toMatchObject({execution_workspace_location:workspace,execution_workspace_access:access});
+    expect(result.metadata_json).not.toHaveProperty('execution_workspace_ref');
+  });
+
   it("uses the actual native dispatch for recovery guidance even when the original Run has a stale Provider stamp", async () => {
     const result = await executeRemoteHostCliAdapter({
       run: run({ runtime_key: "codex_cli", model_provider_id: "previous-provider", runtime_profile_snapshot_json: { runtime_installation: "managed:2.5.0" } }),
@@ -230,7 +243,7 @@ describe("executeRemoteHostCliAdapter", () => {
     expect(result.error_code).not.toBe("conversation_input_unavailable");
   });
 
-  it("drives opencode's ACP controller over the daemon's duplex stdin frames and reports success", async () => {
+  it.each([null, "session-1"])("drives opencode's ACP controller with its workspace over duplex stdin (resume: %s)", async (resumeSessionId) => {
     const registry = new HostConnectionRegistry();
     const sink = new FakeSink();
     registry.registerConnection("host-1", sink);
@@ -243,7 +256,7 @@ describe("executeRemoteHostCliAdapter", () => {
         prompt: "add a test",
         invocation_delivery: runtimeContextDelivery("Use the authorized current request only."),
         model: null,
-        resume_session_id: null,
+        resume_session_id: resumeSessionId,
         runtime_event_sink: (event) => { runtimeEvents.push(event); },
         thread_event_sink: (drafts) => { threadDrafts.push(...drafts); },
       },
@@ -263,7 +276,8 @@ describe("executeRemoteHostCliAdapter", () => {
       stdin: null,
       egress_transport: { mode: "direct" },
     });
-    expect(launchFrame.argv as string[]).toContain("rainver:remote-workspace-cwd");
+    expect(launchFrame.argv).toEqual(["opencode", "acp"]);
+    expect(launchFrame).toMatchObject({workspace_location_id:"folder-1"});
 
     // The controller must not write its `initialize` request until the
     // daemon confirms the run is registered.
@@ -277,7 +291,13 @@ describe("executeRemoteHostCliAdapter", () => {
     registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`, launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
-    expect(JSON.parse((sink.sent[2] as { value: string }).value)).toMatchObject({ method: "session/new" });
+    expect(JSON.parse((sink.sent[2] as { value: string }).value)).toMatchObject({
+      method: resumeSessionId ? "session/resume" : "session/new",
+      params: {
+        cwd: "rainver:remote-workspace-cwd",
+        ...(resumeSessionId ? { sessionId: resumeSessionId } : {}),
+      },
+    });
 
     registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } })}\n`, launchIdOf(sink, "run-1"));
     await Promise.resolve();

@@ -247,6 +247,17 @@ that event are what an unattended Run leaves behind for a reader who was not
 there; see the Always-on enablement gate in
 [../tasks/deferred-register.md](../tasks/deferred-register.md).
 
+An isolated-workspace reply (`workspaceRunReply.ts`) follows the same rule:
+tool degradation and partial materialization settle the Run as `degraded` with
+its reply kept; only a semantic failure such as `usage_recording_failed`
+withholds the reply, and the withheld result carries that reason as its
+`error_code`. Revision and input mistakes on the workspace operations
+themselves (`operation_conflict`, `operation_invalid_input`, or
+`operation_not_found` from `workspace.change.get`, `workspace.change.complete`,
+`workspace.integration.retry` or `workspace.integration.verification.configure`)
+are ordinary Agent recovery, not degradation, once the same native session has
+settled its requested workspace effect. Permission denials always count.
+
 ACP Agent tools dispatch through Rainver's Agent Tool/System Action Gateways.
 Bounded ProviderTask calls use their own policy, Delivery, snapshot, error,
 and usage ledger; they do not pass through the Agent runtime adapter. A formal
@@ -414,6 +425,12 @@ proposal-envelope fields.
   repository changes and does not provide OS, network, or resource isolation.
 
 ## Validation status
+
+A failed deterministic verification keeps its failed Run/evaluation status and
+the completed Agent reply. Direct and Room conversation finalization persists
+that reply with an explicit validation-failure note and error metadata; the chat
+completion includes both the saved message and the failure. It does not replace
+a completed explanation with only a generic Room failure banner.
 
 The A2 Verification Engine runs before a worktree sandbox is cleaned up and
 persists one `verification_results` row per `(run, attempt_number,
@@ -591,6 +608,14 @@ is imposed on recovery). Sources settlement callbacks
 project only the named Run's terminal result; deadline cancellation runs in
 the ordinary read/tick path outside finalization ownership.
 
+Supervisor holds retain the original sanitized error and runtime diagnostics in
+`error_json.supervisor_failure` on the Run and held attempt. The review reason is
+separate from the underlying execution failure. Conversation and Run-detail
+surfaces use the same decision controls; supervisor recovery is labelled retry
+execution, while exact authorization requests retain approve/reject. Failed action
+reads offer reload and remain closed until authority is known. A failed command
+stays visible rather than leaving an unexplained decision badge.
+
 Runs in `waiting_for_review` have explicit human controls: `POST /resume`
 requeues after approval (`same_attempt` for an in-flight policy pause,
 `new_attempt` for a Supervisor terminal hold) and `POST /abandon` records a
@@ -716,7 +741,8 @@ Provider API keys are write-only on the API. Storage uses `Credential.secret_ref
 `apps/web/src/modules/runs/useRunActions.ts` owns the web command adapter shared
 by RunDetailPage and ConversationRunControls: resume, abandon, and exact
 pending authorization decisions. ConversationRunControls also uses its stop
-command; RunDetailPage does not add a stop button. It accepts the source Space and abort signal,
+command; RunDetailPage renders its review-only controls and does not add a stop
+button. It accepts the source Space and abort signal,
 serializes a component's in-flight commands, discards responses after a Run/Space
 change, and rereads the canonical Run before refreshing its caller. If only that
 reread (or the caller refresh) fails, the command still reports success and

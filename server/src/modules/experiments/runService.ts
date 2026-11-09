@@ -1,3 +1,4 @@
+import { ExperimentMutationError } from './operationErrors.js';
 import { randomUUID } from "node:crypto";
 import {
   HttpError,
@@ -94,25 +95,25 @@ export class ExperimentRunService {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const definition = await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
       if (definition.status === "completed" || definition.status === "archived") {
-        throw new HttpError(409, `Cannot create a Run for a ${definition.status} Experiment`);
+        throw new ExperimentMutationError(409, `Cannot create a Run for a ${definition.status} Experiment`);
       }
       if (!definition.primary_hypothesis_thread_id) {
-        throw new HttpError(409, "Link a primary Hypothesis Thread before creating the first Experiment Run");
+        throw new ExperimentMutationError(409, "Link a primary Hypothesis Thread before creating the first Experiment Run");
       }
       const version = await this.versionRow(db, identity.spaceId, definitionId, versionId);
       if (!version) throw new HttpError(404, "Experiment Version not found");
       if (version.status !== "approved") {
-        throw new HttpError(409, "Only an approved Experiment Version can create a Run");
+        throw new ExperimentMutationError(409, "Only an approved Experiment Version can create a Run");
       }
       const isBaseline = body.is_baseline === true;
       if (version.executor_type === "managed_code_comparison" && !isBaseline && !definition.baseline_run_id) {
-        throw new HttpError(422, "A baseline Run must be created (and completed) before any other Run on this Experiment");
+        throw new ExperimentMutationError(422, "A baseline Run must be created (and completed) before any other Run on this Experiment");
       }
       const config = objectValue(version.config_json);
       if (config.project_folder_id) await assertProjectFolderInProject(db, identity.spaceId, projectId, config.project_folder_id as string);
       const linkedRunId = optionalString(body.run_id);
       if (version.executor_type === "manual" && linkedRunId) {
-        throw new HttpError(422, "A manual Experiment Run cannot link to a managed Run");
+        throw new ExperimentMutationError(422, "A manual Experiment Run cannot link to a managed Run");
       }
       if (linkedRunId) {
         await this.assertManagedRunLink(
@@ -134,7 +135,7 @@ export class ExperimentRunService {
           [identity.spaceId, definitionId],
         );
         if (existingBaseline.rows[0]) {
-          throw new HttpError(409, "This Experiment already has an active or completed baseline Run");
+          throw new ExperimentMutationError(409, "This Experiment already has an active or completed baseline Run");
         }
       }
       const id = randomUUID();
@@ -163,31 +164,31 @@ export class ExperimentRunService {
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const agentId = optionalString(body.agent_id);
-    if (!agentId) throw new HttpError(422, "agent_id is required");
+    if (!agentId) throw new ExperimentMutationError(422, "agent_id is required");
     if (!(await canReadAgent(this.db, identity, agentId))) throw new HttpError(404, "Agent not found");
     return withQueryableTransaction(this.db, async db => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const definition = await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
       if (definition.status === "completed" || definition.status === "archived") {
-        throw new HttpError(409, `Cannot launch a Run for a ${definition.status} Experiment`);
+        throw new ExperimentMutationError(409, `Cannot launch a Run for a ${definition.status} Experiment`);
       }
       if (!definition.primary_hypothesis_thread_id) {
-        throw new HttpError(409, "Link a primary Hypothesis Thread before launching an Experiment Run");
+        throw new ExperimentMutationError(409, "Link a primary Hypothesis Thread before launching an Experiment Run");
       }
       const version = await this.versionRow(db, identity.spaceId, definitionId, versionId);
       if (!version) throw new HttpError(404, "Experiment Version not found");
-      if (version.status !== "approved") throw new HttpError(409, "Only an approved Experiment Version can launch");
+      if (version.status !== "approved") throw new ExperimentMutationError(409, "Only an approved Experiment Version can launch");
       if (version.executor_type !== "managed_code_comparison") {
-        throw new HttpError(422, "Only managed_code_comparison Versions can launch governed Runs");
+        throw new ExperimentMutationError(422, "Only managed_code_comparison Versions can launch governed Runs");
       }
       const isBaseline = body.is_baseline === true;
       if (!isBaseline && !definition.baseline_run_id) {
-        throw new HttpError(422, "A completed baseline Run is required before a comparison Run");
+        throw new ExperimentMutationError(422, "A completed baseline Run is required before a comparison Run");
       }
       const config = objectValue(version.config_json);
       const projectFolderId = optionalString(config.project_folder_id);
-      if (!projectFolderId) throw new HttpError(422, "The Version has no managed Project Folder");
-      if (!optionalString(config.run_command)) throw new HttpError(422, "The approved Version has no run_command");
+      if (!projectFolderId) throw new ExperimentMutationError(422, "The Version has no managed Project Folder");
+      if (!optionalString(config.run_command)) throw new ExperimentMutationError(422, "The approved Version has no run_command");
       await assertProjectFolderInProject(db, identity.spaceId, projectId, projectFolderId);
       if (isBaseline) {
         const baseline = await db.query<{ id: string }>(
@@ -196,7 +197,7 @@ export class ExperimentRunService {
               AND r.status IN ('queued','running','completed') LIMIT 1`,
           [identity.spaceId, definitionId],
         );
-        if (baseline.rows[0]) throw new HttpError(409, "This Experiment already has a baseline Run");
+        if (baseline.rows[0]) throw new ExperimentMutationError(409, "This Experiment already has a baseline Run");
       }
       const experimentRunId = randomUUID();
       const executionSnapshot = {
@@ -384,14 +385,14 @@ export class ExperimentRunService {
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const status = enumValue(body.status, TERMINAL_RUN_STATUSES, "status");
-    if (!status) throw new HttpError(422, `status must be one of ${[...TERMINAL_RUN_STATUSES].join(", ")}`);
+    if (!status) throw new ExperimentMutationError(422, `status must be one of ${[...TERMINAL_RUN_STATUSES].join(", ")}`);
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
       const run = await this.runRowForDefinition(db, identity.spaceId, definitionId, runId, { forUpdate: true });
       if (!run) throw new HttpError(404, "Experiment Run not found");
       if (TERMINAL_RUN_STATUSES.has(run.status)) {
-        throw new HttpError(409, `Experiment Run is already ${run.status}`);
+        throw new ExperimentMutationError(409, `Experiment Run is already ${run.status}`);
       }
       const artifactIds = [...new Set(stringArray(body.artifact_ids))];
       await this.assertArtifactsBelongToRun(
@@ -441,7 +442,7 @@ export class ExperimentRunService {
       const run = await this.runRowForDefinition(db, identity.spaceId, definitionId, runId, { forUpdate: true });
       if (!run) throw new HttpError(404, "Experiment Run not found");
       if (TERMINAL_RUN_STATUSES.has(run.status)) {
-        throw new HttpError(409, `Experiment Run is already ${run.status}`);
+        throw new ExperimentMutationError(409, `Experiment Run is already ${run.status}`);
       }
       return observationToOut(await this.insertObservation(db, identity, runId, body));
     });
@@ -457,12 +458,12 @@ export class ExperimentRunService {
 
   private async insertObservation(db: Queryable, identity: SpaceUserIdentity, runId: string, body: Record<string, unknown>): Promise<ObservationRow> {
     const metricName = typeof body.metric_name === "string" && body.metric_name.trim() ? body.metric_name.trim() : null;
-    if (!metricName) throw new HttpError(422, "metric_name is required");
+    if (!metricName) throw new ExperimentMutationError(422, "metric_name is required");
     const valueNumber = numberValue(body.value_number);
     const valueText = optionalString(body.value_text);
     const valueJson = body.value_json !== undefined && body.value_json !== null ? body.value_json : null;
     if (valueNumber === null && valueText === null && valueJson === null) {
-      throw new HttpError(422, "one of value_number, value_text, or value_json is required");
+      throw new ExperimentMutationError(422, "one of value_number, value_text, or value_json is required");
     }
     const source = enumValue(body.source, OBSERVATION_SOURCES, "source") ?? "manual";
     const id = randomUUID();
@@ -532,9 +533,9 @@ export class ExperimentRunService {
       [runId, spaceId, projectId, userId],
     );
     const run = result.rows[0];
-    if (!run) throw new HttpError(422, "run_id must reference a managed Run in this Project");
+    if (!run) throw new ExperimentMutationError(422, "run_id must reference a managed Run in this Project");
     if (projectFolderId && run.project_folder_id !== projectFolderId) {
-      throw new HttpError(422, "run_id must reference a managed Run for the Experiment Version's Project Folder");
+      throw new ExperimentMutationError(422, "run_id must reference a managed Run for the Experiment Version's Project Folder");
     }
   }
 
@@ -555,7 +556,7 @@ export class ExperimentRunService {
       [spaceId, projectId, artifactIds, linkedRunId, userId],
     );
     if (result.rows.length !== artifactIds.length) {
-      throw new HttpError(
+      throw new ExperimentMutationError(
         422,
         linkedRunId
           ? "artifact_ids must reference artifacts produced by the linked managed Run in this Project"

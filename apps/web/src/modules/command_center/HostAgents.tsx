@@ -13,6 +13,7 @@ import type { Host, HostRuntimeDefinitionOption, HostRuntimeUsage, RuntimeInstal
 import HostAgentRow, { type HostAgentLoginTarget } from './HostAgentRow'
 import RuntimeLoginTerminal from './RuntimeLoginTerminal'
 import { useHostToolOperations } from './useHostToolOperations'
+import { SpaceLink } from '../../core/spaceNav'
 
 /** How long a finished, successful login stays on screen before the panel closes itself. */
 const LOGIN_PANEL_AUTO_CLOSE_MS = 3_000
@@ -30,11 +31,6 @@ function usageFor(usage: ReadonlyMap<string, HostRuntimeUsage>, runtimeKey: stri
       .filter(([key]) => key.startsWith(prefix))
       .map(([key, item]) => [key.slice(prefix.length), item] as const),
   )
-}
-
-function usageBusyFor(busy: ReadonlySet<string>, runtimeKey: string): ReadonlySet<string> {
-  const prefix = `${runtimeKey}:`
-  return new Set([...busy].filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length)))
 }
 
 /**
@@ -96,49 +92,23 @@ export default function HostAgents({
   // server's cache. Never probed on render: the numbers live on the host and
   // reading them costs a network call or a CLI launch there.
   const [usage, setUsage] = useState<ReadonlyMap<string, HostRuntimeUsage>>(() => new Map())
-  const [usageBusy, setUsageBusy] = useState<ReadonlySet<string>>(() => new Set())
+  const [usageReload, setUsageReload] = useState(0)
+  const installationState = JSON.stringify(host.capabilities_json?.installations ?? {})
   const online = host.status === 'online'
 
   useEffect(() => {
+    if (loginOpen) return
     let cancelled = false
     void hostsApi.usage(host.id)
       .then(result => {
         if (cancelled) return
-        setUsage(previous => {
-          const next = new Map(previous)
-          for (const item of result.items) {
-            const key = `${item.runtime_key}:${item.installation}`
-            const current = next.get(key)
-            if (!current || Date.parse(item.checked_at) > Date.parse(current.checked_at)) {
-              next.set(key, item)
-            }
-          }
-          return next
-        })
+        setUsage(new Map(result.items.map(item => [`${item.runtime_key}:${item.installation}`, item])))
       })
       // A missing quota panel is not worth a toast: the copies, their logins
       // and every control on this card work without it.
-      .catch(() => {})
+      .catch(() => { if (!cancelled) setUsage(new Map()) })
     return () => { cancelled = true }
-  }, [host.id])
-
-  async function refreshUsage(runtimeKey: string, installation: string) {
-    const key = `${runtimeKey}:${installation}`
-    setUsageBusy(previous => new Set(previous).add(key))
-    try {
-      const item = await hostsApi.refreshUsage(host.id, runtimeKey, installation)
-      setUsage(previous => new Map(previous).set(key, item))
-      if (!item.quota.available && item.quota.error) toast.message(item.quota.error)
-    } catch (error) {
-      toast.error(errMsg(error))
-    } finally {
-      setUsageBusy(previous => {
-        const next = new Set(previous)
-        next.delete(key)
-        return next
-      })
-    }
-  }
+  }, [host.id, installationState, usageReload, loginOpen])
 
   const present = useMemo(() => adapters.filter(adapter => installationsOn(host, adapter).length > 0), [adapters, host])
   const builtinAdaptersByRegistryId = useMemo(
@@ -316,16 +286,15 @@ export default function HostAgents({
             installBusy={busy}
             manageable={manageable}
             usage={usageFor(usage, adapter.runtime_key)}
-            usageBusy={usageBusyFor(usageBusy, adapter.runtime_key)}
             onInstall={() => { void install(adapter) }}
             onUpdateOwn={() => { void updateOwn(adapter) }}
             onUninstall={entry => { void uninstall(adapter, entry) }}
             onRollback={() => { void rollback(adapter) }}
             onLogin={(installation, target) => {
+              setUsage(previous => { const next = new Map(previous); next.delete(`${adapter.runtime_key}:${installation}`); return next })
               clearLoginCloseTimer()
               setLoginOpen(previous => ({ attempt: (previous?.attempt ?? 0) + 1, runtimeKey: adapter.runtime_key, installation, target }))
             }}
-            onRefreshUsage={installation => { void refreshUsage(adapter.runtime_key, installation) }}
           />
   )
 
@@ -340,6 +309,24 @@ export default function HostAgents({
           </Button>
         )}
       </div>
+      {[...new Map([...usage.values()].filter(item => {
+        const copy = host.capabilities_json?.installations?.[item.runtime_key]?.find(copy => copy.id === item.installation)
+        const readings = [
+          { used_pct: item.quota.session_pct, resets: item.quota.session_resets },
+          { used_pct: item.quota.week_pct, resets: item.quota.week_resets },
+          ...(item.quota.windows ?? []),
+        ]
+        return copy?.logged_in !== false && copy && item.quota.available && readings.some(window => {
+          const reset = window.resets ? Date.parse(window.resets.replace(/^Resets\s+/i, '')) : NaN
+          return (window.used_pct ?? 0) >= 100 && (!Number.isFinite(reset) || reset > Date.now())
+        })
+      }).map(item => [item.pool_id ?? `${item.runtime_key}:${item.installation}`, item])).values()].map(item => (
+        <p key={item.pool_id ?? `${item.runtime_key}:${item.installation}`} className="rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning" role="status">
+          <SpaceLink className="underline" to={`/usage?tab=quotas&${item.pool_id ? `pool=${encodeURIComponent(item.pool_id)}` : `host=${encodeURIComponent(host.id)}&runtime=${encodeURIComponent(item.runtime_key)}&installation=${encodeURIComponent(item.installation)}`}`}>
+            {t('subscription_usage.exhausted', { account: item.quota.account?.account_id.slice(0, 8) ?? item.runtime_key })}
+          </SpaceLink>
+        </p>
+      ))}
       {present.length === 0 && !adding && (
         <p className="text-xs text-muted-foreground">No runtime copies are reported on this host yet.</p>
       )}
@@ -388,6 +375,7 @@ export default function HostAgents({
             interactive={loginOpen.target.kind !== 'acp' || loginOpen.target.method.type !== 'agent'}
             onRestart={() => { clearLoginCloseTimer(); setLoginOpen(current => current ? { ...current, attempt: current.attempt + 1 } : null) }}
             onDone={loggedIn => {
+              setUsageReload(previous => previous + 1)
               void onChanged()
               clearLoginCloseTimer()
               if (loggedIn === true) {

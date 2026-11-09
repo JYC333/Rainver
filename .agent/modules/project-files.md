@@ -59,6 +59,7 @@ GET        /api/v1/projects/{projectId}/folders/{folderId}/tree?path=...&offset=
 GET        /api/v1/projects/{projectId}/folders/{folderId}/file?path=...
 GET        /api/v1/projects/{projectId}/folders/{folderId}/file?path=...&convert=utf8 (explicit UTF-16 preview)
 GET/PUT    /api/v1/projects/{projectId}/folders/{folderId}/file/draft?path=...
+GET        /api/v1/projects/{projectId}/folders/{folderId}/file/drafts/{draftId}
 POST       /api/v1/projects/{projectId}/folders/{folderId}/file/draft/rebase
 POST       /api/v1/projects/{projectId}/folders/{folderId}/file/draft/discard
 POST       /api/v1/projects/{projectId}/folders/{folderId}/file/draft/save
@@ -209,9 +210,9 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   baseline. This does not promote the draft to the Folder or grant the Agent a
   live-draft write path; external Folder changes continue to trigger the normal
   draft conflict protection.
-- A conversation's Changes card resolves the exact `remote_diff` Artifact
-  attached to the completed Host Run, including managed-workspace Runs. It is
-  a read-only link to the Run's captured output; `Files & Code` remains the
+- A conversation turn's collapsed Changes summary resolves the exact
+  `remote_diff` Artifact attached to each completed Host Run, including
+  managed-workspace Runs. It is a read-only link to the Run's captured output; `Files & Code` remains the
   Project's current tree/status/diff view and is not an approval or commit
   surface.
 - When a Conversation turn stream settles, the shared browser surface notifies
@@ -285,6 +286,67 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 - `server/src/modules/projectFolderExecutionConfigs/` — execution-config routes
 - `apps/web/src/modules/project_files/` — Files & Code and Folder settings pages
 
+### Operation-core metadata controls
+
+Folder metadata update, archive, Location activation and execution-config create/
+update now share the OperationExecutor with their retained REST adapters. Each
+command requires an explicit caller key and returns a strict metadata receipt;
+browser helpers read current Folder/Location state in the receipt's Space. Replay
+rechecks current Project writer authority and remote Location ownership without
+repeating primary selection, activation or configuration writes. Archive and
+metadata cleanup remain allowed on archived Projects; activation and configuration
+creation/update require an active Project. These commands never touch disk or
+contact an execution Host inside the core transaction.
+
+Private draft upsert and explicit rebase share `project.folder.draft.upsert`;
+exact-version discard and unregister are separate commands. All four retained
+URLs require caller event keys and return metadata-only receipts. Draft receipts
+pin the Location and version: a replay cannot write into a newly active Location
+or silently acknowledge a later tab's content. The private exact-draft GET checks
+the current Project writer and row owner, including for conflict recovery. Conflict
+metadata contains only draft IDs/versions, never private text; quota refusal uses
+canonical 422 with `draft_quota_exceeded` and numeric quota metadata. Missing-draft
+conflicts keep local edits and wait for another user edit, without retrying a write.
+
+Unregister retains explicit active-draft confirmation and history/FK refusal.
+Registration, Location and confirmed draft deletion plus required remote cleanup
+Jobs commit together. The existing Job worker sends only frozen Host/Location IDs
+through `workspace_forget`; it never deletes files. An offline Host defers cleanup
+without consuming an attempt. Replay after deletion neither repeats cleanup Jobs
+nor affects another registration.
+
+Creation, scanning, Save to Folder and revision restore-as-draft now use four
+purpose-specific core commands and their retained REST adapters. Their 202
+receipt identifies a private `project_folder_io_intents` row and one required
+`project_folder_io` Job; its public payload contains only `intent_id`. The private
+owner-only `GET /api/v1/projects/{projectId}/folder-io/{intentId}` returns typed
+status/result metadata after current Project/Folder/Host authority checks. The
+browser polls that receipt without resubmitting, then reads current Folder/file/
+draft content in the receipt Space and pinned Location. A later draft stays open
+after saving an older accepted version. No Agent surface, grant or production
+approval mapping is added by these Folder controls.
+
+The existing JobWorker owns external IO. Short authority/audit transactions
+surround private preparation and final canonical DB writers; external Host/Git/
+filesystem effects never run inside a core transaction. The worker shares the
+code-patch Folder session gate. It persists frozen source bytes, preimage and
+desired hash before writing. Lost acknowledgements resume only from an exact
+hash/receipt; an independent edit, changed root or unknown import outcome leaves
+`needs_attention` and fences fresh keys for that scope. Known final refusals may
+compensate only the recognized written hash and original target identity. An
+offline Host defers through the existing queue without consuming an attempt.
+
+Cancelled/exhausted Jobs release an unused request lazily under the next owning
+admission only when no write/directory effect was started. Unknown outcomes keep
+the recovery fence even after cancellation or revoked authority. Successful and
+safely failed transactions clear copied draft/revision/preimage bodies, retaining
+only identity/hash/result metadata so these copies cannot bypass source TTLs.
+Pending recovery and `needs_attention` retain isolated private materials needed
+to establish an exact outcome or explicitly repair it; they are never included
+in readable Job payloads, events, contexts or status responses. Automatic replay
+does not overwrite independent edits. Migration0016 is generated from Drizzle;
+only isolated shared PostgreSQL test databases have applied it in this work.
+
 ## Opening a file from a reply
 
 `/projects/{projectId}/files?folder={folderId}&path={relativePath}&line={line}`
@@ -295,6 +357,43 @@ changing its text. Conversation links are resolved through the producing
 Run's file-preview API before navigation; the server never uses a model's
 absolute path to read outside the authorized registered workspace. Raster
 image links open the conversation preview dialog instead of the text editor.
+
+## Isolated Run output
+
+Files & Code continues to browse the registered source Location. New isolated
+Conversation output links use `runs/filePreview.ts` and the owning Host's immutable
+Git blob reader, scoped to the visible Run and its saved workspace binding.
+They do not redirect to the source editor. A pending checkpoint is reported;
+missing/unauthorized private output never falls back to the source. Source
+preview and legacy contracts keep their established Files & Code behavior.
+
+The existing Run workspace reader also exposes retained unresolved generations
+from the same Project conversation, including when its latest Run failed before
+receiving a workspace binding. Origin content visibility, remote Host ownership
+and current mutation authority still apply. A fresh continuation does not copy or
+publish the previous unverified changes; those remain separately recoverable.
+
+For failed integrations in the current writable conversation workspace, launch
+instructions include authorized retry IDs and revisions from this same reader.
+A later Run can request the existing integration retry without rebinding to the
+old change set. Different workspaces/generations and read-only bindings gain no
+such authority. Publication still verifies the frozen base-to-source delta and
+the contributing context provenance; the original folder's private snapshot is
+not part of the delta.
+
+On legacy Hosts/records, an authorized Agent can supply `repair_instruction`
+on that same retry to start a repair Run with native file editing in the isolated conflict candidate. It
+does not redirect Files & Code or the current conversation's working directory.
+The worker uses the requesting Run's runtime and captures only the frozen
+conflict paths. Original source files and private baseline stay unchanged;
+verification and publication remain system-owned. Human `resolution` is a
+separate input and cannot be fabricated by an Agent.
+
+
+Relative isolated output links resolve only against the canonical launch
+receipt's actual primary workspace identity/generation and cwd. A managed primary
+with Git attachments does not treat its first attachment as the primary. An
+authorized absolute attachment link still uses its immutable checkpoint reader.
 
 ### Durable Proposal file decisions (P5-4)
 
@@ -345,11 +444,203 @@ standalone decisions. Recovery uses the original audit id after rollback/release
 Active-fingerprint admission precedes failed-intent reset/enqueue; same-intent
 replay is allowed and another active intent gives409 before any domain/Job write.
 
-## Durable Folder IO commands
 
-Folder create/scan, exact draft save, and restore-as-draft now register through
-Operation Core. Admission records a project_folder_io_intents row and a Job
-in one short transaction; the worker owns filesystem/Host effects and recovery.
-The existing browser client polls the exact request and retains draft conflict
-information. These changes introduce migration 0016, separate from execution
-workspace isolation. Existing Project/Host ownership and approval boundaries remain.
+### Agent verification and conflict repair
+
+Hosts advertising `native_workspace_integration=true` use one native
+Agent session and the conversation's existing worktree throughout a task.
+`workspaceRunReply.ts` invokes that adapter once, reads final facts and releases
+its answer; it never relaunches a repair/configuration/summary phase. Only work
+still open on exit (a pending request or a prepared/conflicted/moved batch with
+no publish result) fails the Run; merged, `no_changes`, a private checkpoint and
+a reported failure are facts the Agent already read, so its answer stands.
+
+`workspace.change.complete` is the unified Operation Core command:
+
+- `prepare` applies only the batch delta onto the current target in that same
+  private worktree, preserving a Host preimage and ignored dependencies.
+- The Agent repairs conflicts and related code with its ordinary tools. Native
+  checks run in that same environment. A native Git commit or `checkpoint`
+  supplies the saved version to check, including on a strict Host. Checkpoint
+  alone saves privately without publication intent or a merge record. Native
+  commits keep their identities/history after Run settlement.
+- `publish` supplies `verification={commit,checks:[{command,summary}],note}`.
+  These are Agent-reported checks, explicitly labeled `agent_attested.v1`.
+  Empty checks require an honest note; no Folder command configuration is needed.
+- `workspace.change.get` returns current revision/progress. Only merged/no_changes
+  completes publication. A moving target returns to this same Agent. Publication
+  verifies tree equality, Git integrity, current authority and the short target
+  lease/CAS; it cannot silently include files changed after the checks.
+
+Core admission persists intent and a Job in one transaction; its afterCommit
+hook only kicks that same recoverable work outside the transaction. Replay uses
+one request identity, and a cancelled Run cannot publish. A lost publish receipt
+can prove an already-applied result even after the original process exits.
+No Agent task is started for recovery. Original-checkout edits on published files
+are carried onto the result when they merge cleanly (preimage retained) and block
+only when they do not; unrelated staged/unstaged edits,
+private-baseline exclusion and content provenance remain protected.
+
+Conversation source worktrees and their ignored dependencies persist while a
+Run uses them. The existing cleanup Job owns reclamation, with active
+Run/command/checkpoint guards and expected-tip fencing. A source whose batches
+all closed as integrated/no changes is reclaimed (tree, Git registration, managed
+branch, owned refs, receipts) a short grace after the last Run exits; the same
+conversation later rebuilds the same workspace identity from the target. Unmerged,
+blocked, kept-without-merging and private-baseline work keeps its branch with no
+automatic expiry. A past Run's file preview reads its exact version through an
+owned run-history ref for the configured history period after a reclaim, then
+shows an explicit expired state, only when that exact version is gone after the
+period and Git cleanly reports it missing; a missing file, refused read, a
+Host that cannot read its object store (permissions, corruption: 503) or an
+offline Host is never shown as expired. See *Source retention and reclamation* in
+[Hosts](hosts.md).
+
+Workspace batch rows show, once per workspace generation, its retention state,
+reason and time (grace end, hold end or reclaim time) and for current Project
+writers **Reclaim now**, **Keep 7 more days**, **Stop keeping** and **Retry
+cleanup**. These call `workspace.retention.update`; unmerged work offers no
+reclaim control. Retained and unowned recovery-ref counts, base commits and
+refs are in the row's collapsed technical details.
+
+### Agent workspace overview
+
+Files & Code has a secondary **Agent workspaces** entry under the Folder's
+Files/Changes tabs (and in the no-Folder empty state). It opens
+`/projects/:projectId/files/workspaces`, served by
+`GET /api/v1/projects/:projectId/agent-workspaces?view=current|history&cursor&limit`
+(`workspaceOverview.ts`). One row per workspace generation shows the
+conversation or Task title, Agent, Folder, server-derived work state
+(`attention`, `running`, `integrating`, `saved`, `unsaved`, `merged`, `adopted`,
+`adoption_unverified`, `no_changes`, `kept`, `idle`), retention and activity
+time. *Active & pending* (default) holds running, unfinished, unmerged-but-kept,
+held and attention rows; *History* holds the rest.
+Visibility is applied before anything is aggregated or paged: every batch and
+every bound Run must pass an owned or server Host, a readable conversation (the
+shared session gate) and a visible, unwithheld (`full`) Run body. The SQL form
+of that Run gate is `runBodyReadableSql` (`runs/runBodyReadSql.ts`). It is
+deliberately narrower than `getVisibleRun`, never wider: it applies the same
+content, Room and access-level (including oversight) layers and requires a
+`full` level, but it also requires the Run's conversation to be readable and
+excludes domain-gated Reading Runs fail-closed instead of evaluating their
+domain gate. `agentWorkspacesDb.test.ts` checks that the two agree for owned,
+shared, summary-only, private, granted and content-oversight Runs, and that the
+SQL gate only narrows for archived conversations and Reading Runs. A row's state, batch count, activity time and
+shown Run are computed from visible batches and Runs only, and a workspace with
+no visible batch is absent. Paging is an opaque keyset cursor over visible rows,
+so a page is full whenever more exist and the cursor only names a row the
+reader was shown. The list requires Project read; Task titles use the Task
+content gate. Details (`.../agent-workspaces/:workspaceId?cursor&limit`) page
+the same batches through the shared batch reader and reuse the existing safe
+commands and retention controls; rows link to the original conversation, Task
+and Run. An empty page with a cursor offers *Load more* rather than an empty
+state.
+
+The shared batch reader (`readVisibleWorkspaceChanges` in
+`workspaceReadModel.ts`) applies the same Host and Run-body gate inside its
+query and returns `{entries,next_cursor}` with a keyset cursor (limit 1–100), so
+hidden rows never use up a page. Conversation pending work
+(`GET /api/v1/sessions/:sessionId/workspace-changes?cursor&limit`), the
+workspace detail, the Project attention list and both integration- and
+closure-recovery hints all read through it. Recovery hints put their candidate
+scope in that query and page through the visible rows until they have at most
+five (integration hints newest first), so hidden batches never use up the cap,
+and a Run's bound batches are read completely.
+Private worktrees are not registered as Project Folders or browsed here; a
+reclaimed workspace says its result is in the Project Folder. Denied, failed,
+empty and offline-Host states are shown distinctly.
+
+On native Hosts, the Run and conversation card offer the existing **Let Agent
+verify and integrate** action for an open/blocked batch. It sends an explicit
+ordinary message to the visible original Agent/conversation. It opens no command
+configuration, ID entry or nested execution surface. Historical controls remain
+available for legacy Hosts/records; native retries use the active session.
+
+Reuse / Dependency Check: follow Orca's ordinary-Git worktree model and Vibe
+Kanban's Agent follow-up conflict repair; reuse native ACP, Operation Core,
+conversation ingress, Jobs, `mergeTrees`, shared target publication and cleanup.
+No dependency, Agent scheduler or replacement Git implementation is added.
+References: https://www.onorca.dev/docs/model/worktrees and
+https://www.vibekanban.com/docs/core-features/resolving-rebase-conflicts.
+
+### Workspace publication recovery
+
+`workspace.change.complete` accepts an optional full `commit` ID to publish an
+existing independent commit. The current authorized batch must have no other
+workspace changes; a settled `no_changes` batch without an integration may be
+explicitly submitted this way too. Existing exact Run binding, Project writer,
+Host ownership, origin, grant and revision checks remain in force. Admission is
+only an intent: it never writes a ref or declares the commit integrated.
+
+Legacy completion waits for successful settled Runs and saved checkpoints;
+native prepare validates the independent commit in the active session. A retried
+historical batch of the same workspace uses the same path with its recorded
+base: the worktree must hold no unsubmitted changes of the bound batch
+(`workspace_commit_requires_empty_change`), and a delta the target already
+contains closes as `no_changes`. A publication closes other blocked batches whose
+recorded delta it carried. Legacy completion
+then asks the owning Host to read the exact commit, its single parent and changed
+paths. The parent must belong to target history; protected paths and oversized
+path scopes refuse intake. It freezes only that parent-to-commit delta, retaining
+all contributing Run/context provenance. The existing integration Job constructs
+and verifies the candidate, seals it, publishes by CAS and owns cleanup. Host
+reads happen outside the core transaction; the freeze is a short fenced write.
+No private branch history, unrelated workspace edits or caller-selected paths
+are imported. An offline Host defers, and a rejected intake preserves the batch.
+
+People use the existing **Finish changes** control or ask the Agent to publish
+the work it prepared. The Agent resolves commit identities itself; there is no
+manual Git ID form. Both Run and conversation controls expose **Check whether already integrated**
+on failed integrations. It calls `workspace.integration.retry` with
+`reconcile_only: true`, which cannot carry repair instructions. Host preparation
+checks whether the complete frozen patch can be reversed against a private index
+of the committed target, without touching the user's index or working files.
+A bounded, complete Git proof closes the old record as `no_changes` and records
+the observed target commit. Missing proof keeps an actionable blocked record;
+this check never publishes, runs verification or starts another repair.
+Ordinary retries share the same adoption proof before rebuilding conflicts.
+
+A successful saved standalone batch with no file differences closes automatically
+as `no_changes`, with durable cleanup. Waiting/failed/pending work, submitted
+commit intents and delegated families are excluded. The conversation's turn
+summary omits `no_changes` rows; Run details and the Agent workspace overview
+retain history. Independent commits are resolved and submitted by
+the Agent through the same completion operation. Cleanup failures remain visible. Older real failures never become
+success merely because another batch or a local IDE test succeeded.
+
+A later writable Run in the same conversation workspace can also use the existing
+`workspace.change.abandon` command after an explicit request to close obsolete,
+already adopted or superseded work. It checks origin visibility and current
+Project/Host authority, preserves the saved source and records the reason, and
+cannot claim a merge succeeded. A later generation may withdraw retained work only for the same conversation,
+Project and registered Location; publication/retry does not gain that reach. This covers intentional later retirement of a file that makes exact
+patch-presence proof impossible. Raw closure reasons and submission actor details
+stay out of shared workspace progress; durable command history retains them.
+
+A terminal batch whose checkpoint recovery was exhausted can be explicitly kept
+without merging even when its checkpoint is still pending. Its checkpoint status
+is not relabelled successful, its unknown files stay intact, and no source cleanup
+is requested. Once its last unfinished batch is withdrawn, that old logical owner
+retires. Active Runs on the batch still block withdrawal. This retention does not
+block a newer generation or claim that any unverified work was integrated.
+
+Host preparation pins each exact frozen source under
+`refs/rainver/sources/<commit>` before squashing a disposable candidate. This also
+retains independently created commits that never had a branch. Physical worktree
+cleanup can remove candidate trees, registrations and temporary refs while these
+content-addressed result refs preserve committed work and its original identity.
+They are retained evidence, not an unowned worktree or a copied private history.
+A native request's explicit commit (an Agent-submitted one, or a historical
+batch's recorded source) is pinned the same way, and proven present, before
+`native_prepare` uses it; registering it is gated by the shared-source deletion
+fence like every other dependent (Hosts guide, *Ref operations*).
+
+Launch hints include authorized retained-batch identities and revisions, including
+exhausted earlier generations in the same conversation/Location. They omit old
+instructions and summaries, and never require a person to copy an internal ID.
+These advisory reads fail without blocking a normal turn. They grant withdrawal
+of retained work only; completion/retry keep their stricter publication binding.
+
+Research snapshot provenance projections propagate explicit no-oversight reads to
+both the Workflow and its primary Inquiry Thread. Publication does not inherit an
+administrator's oversight-only access through a nested provenance predicate.

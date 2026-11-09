@@ -2,7 +2,7 @@ import { useAppTranslation } from '../../i18n'
 import { useEffect, useRef, useState } from 'react'
 import HostRuntimeVersions from './HostRuntimeVersions'
 import { hasStableUpdate } from './runtimeVersions'
-import RuntimeQuotaDetails from './RuntimeQuotaDetails'
+import RuntimeAccountLink from './RuntimeAccountLink'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog'
 import { CircleArrowUp, Loader2 } from 'lucide-react'
 import { isOwnCliUpdateRuntimeKey } from '@rainver/protocol'
@@ -54,12 +54,10 @@ export default function HostAgentRow({
   installBusy,
   manageable,
   usage,
-  usageBusy,
   onInstall,
   onUpdateOwn,
   onUninstall,
   onLogin,
-  onRefreshUsage,
   targetInstallation,
   onRollback,
 }: {
@@ -77,12 +75,10 @@ export default function HostAgentRow({
   manageable: boolean
   /** The cached subscription quota per installation id; absent for a runtime that has none to report. */
   usage: ReadonlyMap<string, HostRuntimeUsage>
-  usageBusy: ReadonlySet<string>
   onInstall: () => void
   onUpdateOwn: () => void
   onUninstall: (entry: RuntimeInstallation) => void
   onLogin: (installation: string, target: HostAgentLoginTarget) => void
-  onRefreshUsage: (installation: string) => void
   targetInstallation?: string
   onRollback: () => void
 }) {
@@ -144,10 +140,7 @@ export default function HostAgentRow({
                 </TooltipProvider>
               ) : badge}
               {(usage.has(entry.id) || entry.reports_subscription_quota) && (
-                <RuntimeQuotaDetails usage={usage.get(entry.id)} title={`${adapter.display_name} · ${entry.id}`}
-                  canRefresh={manageable && Boolean(entry.reports_subscription_quota)}
-                  busy={usageBusy.has(entry.id)} online={host.status === 'online'}
-                  onRefresh={() => onRefreshUsage(entry.id)} />
+                <RuntimeAccountLink usage={entry.logged_in === false ? undefined : usage.get(entry.id)} hostId={host.id} runtimeKey={adapter.runtime_key} installation={entry.id} />
               )}
               {manageable && host.kind === 'remote' && entry.id === 'own' && isOwnCliUpdateRuntimeKey(adapter.runtime_key) && hasStableUpdate(entry.version, adapter.latest_own_version) && (
                 <Button size="sm" variant="ghost"

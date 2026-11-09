@@ -1,4 +1,5 @@
-import { cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { ownedBranchName, workspaceIdentity } from "./worktreeIdentity.js";
+import { cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -91,7 +92,7 @@ export interface GitIdentity {
 }
 
 export function taskBranchName(taskId: string): string {
-  return `rainver/task-${taskId}`;
+  return ownedBranchName(taskId);
 }
 
 export function taskBranchRef(taskId: string): string {
@@ -100,11 +101,11 @@ export function taskBranchRef(taskId: string): string {
 
 /** The lease a Task worktree's Runs, settle, delete and sweep share (`locationLease.ts`). */
 export function taskLeaseKey(locationId: string, taskId: string): string {
-  return `task:${locationId}:${taskId}`;
+  return `${workspaceIdentity(taskId) ? "workspace" : "task"}:${locationId}:${taskId}`;
 }
 
 export function validTaskWorktreeIds(locationId: string, taskId: string): boolean {
-  return ID_SEGMENT.test(locationId) && TASK_ID.test(taskId);
+  return ID_SEGMENT.test(locationId) && (TASK_ID.test(taskId) || workspaceIdentity(taskId) !== null);
 }
 
 /** A Location that owns its repository at its top level: the only kind a Task worktree is made of. */
@@ -237,6 +238,8 @@ export function worktreesBase(locationId: string, create: boolean): Promise<stri
 }
 
 interface TaskRecord {
+  /** Exact previously captured tip when this Run is continued. */
+  settled_commit?:string;
   run_id: string;
   start_commit: string;
   /** The Location's canonical path, for the sweep on a host whose Locations are not registered (the built-in host). */
@@ -307,7 +310,7 @@ async function readTaskRecord(locationId: string, taskId: string): Promise<TaskR
   const { run_id, start_commit, location_root, updated_at } = value;
   if (typeof run_id !== "string" || !ID_SEGMENT.test(run_id) || typeof start_commit !== "string" || !COMMIT_ID.test(start_commit)
     || typeof location_root !== "string" || typeof updated_at !== "string") return null;
-  return { run_id, start_commit, location_root, updated_at };
+  return { run_id, start_commit, location_root, updated_at,...(typeof value.settled_commit==='string'&&COMMIT_ID.test(value.settled_commit)?{settled_commit:value.settled_commit}:{}) };
 }
 
 async function readRunRecord(runId: string): Promise<RunRecord | null> {
@@ -823,6 +826,7 @@ export async function prepareTaskWorktree(
   locationId: string,
   taskId: string,
   runId: string,
+  options: { baseCommit?: string; keepTree?: boolean } = {},
 ): Promise<TaskWorktree> {
   if (!validTaskWorktreeIds(locationId, taskId) || !ID_SEGMENT.test(runId)) {
     throw new Error("the Location, Task or Run id cannot name a Task worktree");
@@ -846,8 +850,8 @@ export async function prepareTaskWorktree(
 
   let tip = await commitOfRef(repo.root, ref);
   if (!tip) {
-    const main = await resolveMainBranch(repo.root);
-    if (!main) throw new Error("the repository has no commit to start the Task branch from");
+    const main = options.baseCommit ? { commit: await commitOfRef(repo.root, options.baseCommit) } : await resolveMainBranch(repo.root);
+    if (!main?.commit) throw new Error("the repository has no commit to start the Task branch from");
     // Empty expected value: created only if it still does not exist.
     await gitOrThrow(["update-ref", "-m", "rainver: start the Task branch", ref, main.commit, ""], repo.root);
     tip = main.commit;
@@ -865,7 +869,7 @@ export async function prepareTaskWorktree(
   }
   if (state.kind === "worktree") {
     await clearStaleLock([state.entry], "index.lock");
-    if (!(sameRun && state.onBranch)) {
+    if (!(sameRun && state.onBranch) && !(options.keepTree && state.onBranch && record === null)) {
       const earlier = record && record.run_id !== runId ? record.run_id : null;
       const committed = await commitLeftovers(repo, path, ref, tip, sameRun ? runId : earlier);
       // Not capturable: kept whole, aside, and the Run starts fresh at the tip.
@@ -881,12 +885,13 @@ export async function prepareTaskWorktree(
 
   let startCommit: string | null = sameRun && record ? record.start_commit : null;
   let continuesSettled = false;
+  let settledCommit=sameRun?record?.settled_commit:undefined;
   if (!startCommit) {
     const settled = await readRunRecord(runId);
     if (settled && settled.location_id === locationId && settled.task_id === taskId
       && tip === (settled.commit ?? settled.start_commit) && await isAncestor(repo.root, settled.start_commit, tip)) {
       startCommit = settled.start_commit;
-      continuesSettled = true;
+      continuesSettled = true;settledCommit=settled.commit??settled.start_commit;
     }
   }
 
@@ -896,6 +901,7 @@ export async function prepareTaskWorktree(
   await writeJson(taskRecordPath(locationId, taskId), {
     run_id: runId,
     start_commit: startCommit,
+    ...(settledCommit?{settled_commit:settledCommit}:{}),
     location_root: repo.root,
     updated_at: new Date().toISOString(),
   } satisfies TaskRecord);
@@ -1043,7 +1049,7 @@ export async function existingTaskWorktree(
 // ---------------------------------------------------------------------------
 // Settle and delete
 
-interface TaskRunSettleResult {
+export interface TaskRunSettleResult {
   ok: boolean;
   branch: string | null;
   commit: string | null;
@@ -1117,7 +1123,7 @@ export async function settleTaskRun(input: {
     const tip = await commitOfRef(repo.root, ref);
     if (!tip) return { ok: false, branch: null, commit: null, error: `The Task branch ${branch} no longer exists.` };
     const start = record.start_commit;
-    if (!(await isAncestor(repo.root, start, tip))) {
+    if (!(await isAncestor(repo.root, start, tip)) && !(workspaceIdentity(taskId)&&!workspaceIdentity(taskId)?.integration_id)) {
       return { ok: false, branch: null, commit: null, error: `The Task branch ${branch} no longer contains the Run's start commit.` };
     }
     let state: WorktreeState = path ? await worktreeState(repo, path, ref, true) : { kind: "absent" };
@@ -1150,7 +1156,13 @@ export async function settleTaskRun(input: {
       tree = await gitOrThrow(["rev-parse", `${tip}^{tree}`], repo.root);
     }
     const startTree = await gitOrThrow(["rev-parse", `${start}^{tree}`], repo.root);
-    const next = tree === startTree ? start : await writeCommit(repo.root, tree, start, input.author, input.message);
+    // A read-only continuation of an already captured Run has no new delta.
+    // Reuse its exact receipt; do not rewrite its commit with a new timestamp.
+    const unchanged=record.settled_commit===tip&&tree===await gitOrThrow(['rev-parse',`${tip}^{tree}`],repo.root);
+    const nativeSource=workspaceIdentity(taskId)&&!workspaceIdentity(taskId)?.integration_id;
+    const next = nativeSource
+      ?tree===await gitOrThrow(['rev-parse',`${tip}^{tree}`],repo.root)?tip:await writeCommit(repo.root,tree,tip,input.author,input.message)
+      :tree === startTree ? start : unchanged?tip:await writeCommit(repo.root, tree, start, input.author, input.message);
     if (next !== tip) {
       await assertBranchFree(repo, ref, path ?? "");
       await moveBranch(repo.root, ref, next, tip, `rainver: settle run ${runId}`);
@@ -1162,7 +1174,11 @@ export async function settleTaskRun(input: {
     } satisfies RunRecord);
     await removeTaskRecord(locationId, taskId);
     // The Run is settled whatever happens to the directory now.
-    if (path && state.kind === "worktree") {
+    if (path && state.kind === "worktree" && workspaceIdentity(taskId)&&!workspaceIdentity(taskId)?.integration_id) {
+      // Conversation workspaces survive turns, including ignored dependencies.
+      // Physical reclamation belongs to the durable idle cleanup Job.
+      await gitOrThrow(["read-tree",next],path);
+    } else if (path && state.kind === "worktree") {
       await retireWorktree(repo, locationId, taskId, path)
         .then((outcome) => {
           if (outcome === "quarantined") log(`task ${taskId}: its worktree held what the branch cannot (or would not be removed); moved aside`);
@@ -1184,6 +1200,9 @@ function answerFromRunRecord(record: RunRecord, locationId: string, taskId: stri
 }
 
 interface TaskBranchDeleteResult {
+  quarantined?: boolean;
+  /** A requested branch release that its proof did not support. */
+  branch_retained_reason?: string;
   ok: boolean;
   deleted: boolean;
   error: string | null;
@@ -1198,12 +1217,41 @@ interface TaskBranchDeleteResult {
  * resolution or on the person's local changes) is dropped with it: the Task
  * it would merge is gone, and removing the worktree ends its rebase.
  */
-export async function deleteTaskBranch(input: { locationRoot: string | null; locationId: string; taskId: string }): Promise<TaskBranchDeleteResult> {
+export interface BranchReleaseHook {
+  /** Under the Task lease, a side-effect-free proof: null allows the branch release, a reason retains it. */
+  verify(repoRoot: string, tip: string): Promise<string | null>;
+  /**
+   * Under the same lease, after the tree was safely removed (no whole-tree
+   * quarantine) and immediately before the branch is deleted: durable evidence
+   * the release still needs once the branch is gone. A throw keeps the branch.
+   */
+  beforeRelease?(repoRoot: string, tip: string): Promise<void>;
+  /** Under the same lease, after the branch was actually deleted. */
+  released?(repoRoot: string): Promise<void>;
+}
+type TaskBranchDeleteInput = { locationRoot: string | null; locationId: string; taskId: string; expectedCommit?: string; retainBranch?: boolean; branchRelease?: BranchReleaseHook };
+export async function deleteTaskBranch(input: TaskBranchDeleteInput): Promise<TaskBranchDeleteResult> {
   const { locationId, taskId } = input;
   if (!validTaskWorktreeIds(locationId, taskId)) {
     return { ok: false, deleted: false, error: "The Location or Task id cannot name a Task worktree." };
   }
-  const outcome = await withTaskHeld(taskLeaseKey(locationId, taskId), async (): Promise<TaskBranchDeleteResult> => {
+  const outcome = await withTaskHeld(taskLeaseKey(locationId, taskId), () => deleteTaskBranchHeld(input));
+  if (!outcome) return { ok: false, deleted: false, error: TASK_BUSY };
+  const { tip: _tip, ...result } = outcome;
+  return result;
+}
+
+/**
+ * The same removal for a caller that already holds the Task's lease
+ * (`withTaskHeld(taskLeaseKey(...))`), so it can fence, delete and record
+ * follow-up work as one critical section. `tip` is the branch tip it saw.
+ */
+export async function deleteTaskBranchHeld(input: TaskBranchDeleteInput): Promise<TaskBranchDeleteResult & { tip?: string | null }> {
+  const { locationId, taskId } = input;
+  if (!validTaskWorktreeIds(locationId, taskId)) {
+    return { ok: false, deleted: false, error: "The Location or Task id cannot name a Task worktree." };
+  }
+  return (async (): Promise<TaskBranchDeleteResult & { tip?: string | null }> => {
     if (!input.locationRoot) return { ok: false, deleted: false, error: "This daemon has no local path registered for that workspace." };
     const check = await checkLocationRepository(input.locationRoot);
     if (check.kind === "unusable") return { ok: false, deleted: false, error: `The Location's repository cannot be used: ${check.reason}` };
@@ -1219,27 +1267,41 @@ export async function deleteTaskBranch(input: { locationRoot: string | null; loc
     const path = base ? join(base, taskId) : "";
     if (base) await discardInterruptedAdd(repo, locationId, taskId, path);
     const tip = await commitOfRef(repo.root, ref);
+    if (input.expectedCommit && tip && tip !== input.expectedCommit) return {ok:false,deleted:false,error:"workspace_generation_moved"};
+    if(workspaceIdentity(taskId)&&!workspaceIdentity(taskId)?.integration_id&&await readTaskRecord(locationId,taskId))return {ok:false,deleted:false,error:'workspace_uncheckpointed'};
     if (tip) await assertBranchFree(repo, ref, path);
+    // Proof is checked before the tree goes: a refused release keeps today's
+    // physical-only reclamation and reports why the branch stayed. The proof
+    // has no side effects, so a dirty-tree refusal below leaves nothing behind.
+    const retainedReason = tip && !input.retainBranch && input.branchRelease ? await input.branchRelease.verify(repo.root, tip) : null;
     let deleted = false;
+    let quarantined = false;
     if (base) {
       const state = await worktreeState(repo, path, ref, false);
-      if (state.kind === "worktree") await retireWorktree(repo, locationId, taskId, path);
+      if (state.kind === "worktree") {
+        if(workspaceIdentity(taskId) && await gitOrThrow(["status","--porcelain","--untracked-files=all"],path))return {ok:false,deleted:false,error:"workspace_uncheckpointed"};
+        quarantined=(await retireWorktree(repo, locationId, taskId, path)) === "quarantined";
+      }
       else if (state.kind === "junk") await removeJunk(repo, { locationId, taskId }, path);
-      else if (state.kind === "unrecognised") await quarantine(repo, locationId, taskId, path);
+      else if (state.kind === "unrecognised") {await quarantine(repo, locationId, taskId, path);quarantined=true;}
       deleted = state.kind !== "absent";
     }
-    if (tip) {
+    // A release never removes the branch beside a whole-tree quarantine (this
+    // call's or an earlier one): that tree is unsaved work, the branch its base.
+    const releaseHeld = Boolean(input.branchRelease) && await wholeQuarantineCount(locationId, taskId) > 0;
+    if (tip && !input.retainBranch && !retainedReason && !releaseHeld) {
+      if (input.branchRelease?.beforeRelease) await input.branchRelease.beforeRelease(repo.root, tip);
       await gitOrThrow(["update-ref", "-m", "rainver: the Task is gone", "-d", ref, tip], repo.root);
       deleted = true;
+      if (input.branchRelease?.released) await input.branchRelease.released(repo.root);
     }
     await removeTaskRecord(locationId, taskId);
     // A merge of a Task that is gone is over: its rebase went with the worktree.
     await rm(mergeRecordPath(locationId, taskId), { force: true });
-    return { ok: true, deleted, error: null };
-  }).catch((error: unknown): TaskBranchDeleteResult => ({
+    return { ok: true, deleted, tip, ...(quarantined?{quarantined:true}:{}), ...(retainedReason?{branch_retained_reason:retainedReason}:{}), error: null };
+  })().catch((error: unknown): TaskBranchDeleteResult => ({
     ok: false, deleted: false, error: error instanceof Error ? error.message : String(error),
   }));
-  return outcome ?? { ok: false, deleted: false, error: TASK_BUSY };
 }
 
 // ---------------------------------------------------------------------------
@@ -1277,7 +1339,7 @@ export async function sweepTaskWorktrees(input: {
       const base = await worktreesBase(locationId, false);
       if (!base) continue;
       for (const taskId of await readdir(base).catch(() => [] as string[])) {
-        if (!TASK_ID.test(taskId)) continue;
+        if (!TASK_ID.test(taskId) && !workspaceIdentity(taskId)) continue;
         try {
           if (await sweepOne(input, locationId, taskId, join(base, taskId), now, log)) removed += 1;
         } catch (error) {
@@ -1404,11 +1466,45 @@ async function pruneRetiredQuarantine(now: number, log: (line: string) => void):
 
 /** Settled Runs' and finished merges' stored answers, after 30 days. */
 async function pruneRunRecords(now: number): Promise<void> {
-  for (const directory of [join(configDir(), "task-runs"), join(configDir(), "task-merges")]) {
+  for (const directory of [join(configDir(), "task-runs"), join(configDir(), "task-merges"),join(configDir(),"workspace-launches"),join(configDir(),"workspace-cleanup")]) {
     for (const name of await readdir(directory).catch(() => [] as string[])) {
       const path = join(directory, name);
       const info = await stat(path).catch(() => null);
-      if (info?.isFile() && now - info.mtimeMs > RUN_RECORD_RETENTION_MS) await rm(path, { force: true });
+      if (info?.isFile() && now - info.mtimeMs > RUN_RECORD_RETENTION_MS){
+        const receipt=await readJson(path);
+        // A live/retained generic owner may still need replay after a long
+        // offline period. These small identity receipts outlive physical trees.
+        if(workspaceIdentity(String(receipt?.task_id??''))||directory.endsWith('workspace-launches')&&typeof receipt?.generation==='number')continue;
+        if(directory.endsWith("workspace-cleanup")&&(await readJson(path))?.state!=="cleaned")continue;
+        await rm(path, { force: true });
+      }
     }
   }
+}
+
+
+/** Logical, owner-scoped cleanup proof; never exposes another workspace or Host path. */
+async function quarantineCounts(locationId:string,key:string){
+ const quarantineDir=await daemonDir('task-worktrees-quarantine',locationId,false);
+ let whole=0,retired=0;
+ for(const name of quarantineDir?await readdir(quarantineDir).catch(()=>[]):[]){
+  if(!name.startsWith(`${key}-`))continue;
+  if(RETIRED_TARGET.test(name))retired++;else whole++;
+ }
+ return {whole,retired};
+}
+/** Whole trees moved aside (not the retired nested repositories a normal removal keeps). */
+export async function wholeQuarantineCount(locationId:string,key:string){return (await quarantineCounts(locationId,key)).whole;}
+export async function ownedWorkspaceInventory(repo:LocationRepository,locationId:string,key:string){
+ if(!validTaskWorktreeIds(locationId,key)||!workspaceIdentity(key))throw new Error('workspace_inventory_identity_invalid');
+ const base=await worktreesBase(locationId,false),path=base?join(base,key):null;
+ const info=path?await lstat(path).catch(()=>null):null;
+ const {whole,retired}=await quarantineCounts(locationId,key);
+ const record=await readTaskRecord(locationId,key);
+ const volume=await statfs(configDir()).catch(()=>null);
+ return {worktree:Boolean(info),registration:path?Boolean((await listWorktrees(repo.root)).some(w=>w.path===path)):false,
+   branch:Boolean(await commitOfRef(repo.root,taskBranchRef(key))),run_record:Boolean(record),pending_run_id:record?.run_id??null,
+   merge_record:Boolean(await lstat(mergeRecordPath(locationId,key)).catch(()=>null)),
+   quarantined_whole:whole,retained_quarantine:retired,active:isTaskBusy(taskLeaseKey(locationId,key)),
+   free_bytes:volume?Math.max(0,volume.bavail*volume.bsize):null};
 }

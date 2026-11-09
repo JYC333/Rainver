@@ -355,6 +355,18 @@ describe('ConversationExecutionPreflight', () => {
     expect(screen.getByText(/Execution Host is offline/)).toBeInTheDocument()
   })
 
+
+  it.each([
+    ['waiting_for_baseline','Choose a code version before starting.'],
+    ['execution_workspace_host_upgrade_required','Update and reconnect this Host to enable isolated workspaces.'],
+  ])('localizes initialized workspace admission reason %s in the entry and details',async(reason,message)=>{
+    const response=initializedResponse() as ConversationExecutionPreflightResponse;
+    response.summary.blocked_reason=reason;response.summary.can_send=false;
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response);
+    renderPanel();
+    expect((await screen.findAllByText(message)).length).toBeGreaterThan(0);
+    expect(screen.queryByText(reason)).not.toBeInTheDocument();
+  });
   it('collapses a healthy initialized execution context until the user asks for details', async () => {
     vi.mocked(sessionsApi.executionContext).mockResolvedValue(initializedResponse() as never)
     renderPanel()
@@ -427,4 +439,38 @@ describe('ConversationExecutionPreflight', () => {
     expect(screen.getByRole('button', { name: 'Grant write' })).not.toBeDisabled()
     expect(screen.getByRole('button', { name: 'Access' })).toHaveTextContent('Write')
   })
+  it.each(['snapshot', 'committed'] as const)('defaults a dirty draft to current changes and submits %s when confirmed', async mode => {
+    const response = draftResponse([{
+      workspace_location_id: 'location-1', project_folder_id: 'folder-1', folder_name: 'Source',
+      execution_host_id: 'host-1', display_path: '/work/source', execution_ready: true,
+      git: { source: 'workspace_location', workspace_location_id: 'location-1', branch: 'dev',
+        commit_sha: 'a'.repeat(40), dirty: true, execution_ready: true, observed_at: '2026-11-06T00:00:00Z' },
+    }])
+    response.available_runtime_profiles[0]!.workspace_mode = 'location'
+    response.available_runtime_profiles[0]!.workspace_location_id = 'location-1'
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response)
+    renderPanel()
+    expect(await screen.findByText('New execution includes an allowed private snapshot of current changes.')).toBeInTheDocument()
+    expect(sessionsApi.initializeExecution).not.toHaveBeenCalled()
+    if (mode === 'committed') fireEvent.click(screen.getByRole('button', { name: 'Use committed version' }))
+    const confirm = screen.getByRole('button', { name: 'Confirm execution context' })
+    await waitFor(() => expect(confirm).toBeEnabled())
+    fireEvent.click(confirm)
+    await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith(
+      'session-1', expect.objectContaining({ workspace_baseline: mode }), expect.any(Object),
+    ))
+  })
+
+  it('requires an explicit dirty baseline choice through the existing initialize operation',async()=>{
+    const response=initializedResponse() as ConversationExecutionPreflightResponse;
+    response.summary.primary={kind:'location',project_folder_id:'folder-1',workspace_location_id:'location-1',display_path:'/work/source'};
+    response.summary.git={source:'workspace_location',workspace_location_id:'location-1',branch:'dev',commit_sha:'a'.repeat(40),dirty:true,execution_ready:true,observed_at:'2026-11-06T00:00:00Z'};
+    response.summary.can_send=false;response.summary.blocked_reason='waiting_for_baseline';
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response);
+    renderPanel();
+    const snapshot=await screen.findByRole('button',{name:'Include current changes'});expect(sessionsApi.initializeExecution).not.toHaveBeenCalled();
+    fireEvent.click(snapshot);
+    await waitFor(()=>expect(sessionsApi.initializeExecution).toHaveBeenCalledWith('session-1',expect.objectContaining({workspace_baseline:'snapshot',selection:{execution_host_id:'host-1',primary:{kind:'location',workspace_location_id:'location-1'}}}),expect.any(Object)));
+  })
+
 })

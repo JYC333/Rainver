@@ -9,7 +9,7 @@ import { PgWorkspaceLocationRepository } from "../src/modules/projectFolders/wor
 import { loadConfig } from "../src/config.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
-import { seedAgentWithVersion, seedRoomManager } from "./support/domainSeeds.js";
+import { seedAgentWithVersion, seedRoomManager, seedRun } from "./support/domainSeeds.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { sessionsModule } from "../src/modules/sessions/index.js";
 import { __setSessionIdentityForTests } from "../src/modules/sessions/routes.js";
@@ -127,6 +127,7 @@ beforeEach(async () => {
      ) VALUES ($1, $2, $3, 'Host CLI', 'claude_code', 'runtime_native', $4, 'managed', 'managed:1.0.0', '{}', '{}', true, true, $5, $5)`,
     [RUNTIME, SPACE, AGENT, HOST, now],
   );
+  await db.pool.query(`UPDATE hosts SET capabilities_json=capabilities_json || '{"execution_workspaces":{"version":2}}'::jsonb`);
 });
 
 afterEach(() => {
@@ -360,7 +361,7 @@ describe("Conversation execution schema", () => {
     )).rejects.toMatchObject({ code: "23503" });
   });
 
-  it("initializes once, creates a Conversation runtime thread, and keeps the pin after profile edits", async (ctx) => {
+  it("initializes once, restores its pin after restart, and still refuses an unrelated Host change", async (ctx) => {
     if (!db.available) return ctx.skip();
     const service = new ConversationExecutionContextService(db.pool);
     const initialized = await service.initialize(
@@ -388,12 +389,13 @@ describe("Conversation execution schema", () => {
       runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME },
     });
     await db.pool.query(`UPDATE agent_runtime_profiles SET runtime_key = 'codex_cli' WHERE id = $1`, [RUNTIME]);
+    await db.pool.query(`UPDATE hosts SET capabilities_json=capabilities_json || '{"installations":{"codex_cli":[{"id":"managed:1.0.0","logged_in":true}]}}'::jsonb WHERE id=$1`,[HOST]);
     const preflight = await service.preflight({ spaceId: SPACE, userId: OWNER }, SESSION);
     expect(preflight.summary).toMatchObject({
       state: "initialized",
-      runtime: { agent_id: AGENT, runtime_key: "claude_code", runtime_installation: "managed:1.0.0" },
-      can_send: false,
-      blocked_reason: expect.stringContaining("no longer matches the pinned Host, CLI, or Primary Workspace"),
+      runtime: { agent_id: AGENT, runtime_key: "codex_cli", runtime_installation: "managed:1.0.0" },
+      can_send: true,
+      blocked_reason: null,
     });
     await expect(service.initialize(
       { spaceId: SPACE, userId: OWNER },
@@ -408,6 +410,73 @@ describe("Conversation execution schema", () => {
         },
       },
     )).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it.for(['installation','cli'] as const)('continues an existing Conversation after changing its %s, without resuming the old CLI session',async(kind,ctx)=>{
+    if(!db.available)return ctx.skip();
+    const service=new ConversationExecutionContextService(db.pool),identity={spaceId:SPACE,userId:OWNER};
+    await service.initialize(identity,SESSION,{selection:{execution_host_id:HOST,primary:{kind:'managed'}},runtime:{agent_id:AGENT,runtime_profile_id:RUNTIME,runtime_key:'claude_code',runtime_installation:'managed:1.0.0'}});
+    const threads=new PgHostThreadRepository(db.pool),old=await threads.getForConversationAgent(SPACE,SESSION,AGENT);
+    const historyId=randomUUID();await seedRun(db.pool,{id:historyId,space:SPACE,owner:OWNER,agent:AGENT,version:VERSION,existingAgent:true});
+    await db.pool.query("UPDATE runs SET status='succeeded',host_task_thread_id=$2,runtime_key='claude_code',runtime_profile_snapshot_json=$3::jsonb WHERE id=$1",[historyId,old!.id,JSON.stringify({runtime_installation:'managed:1.0.0'})]);
+    const history=(await db.pool.query('SELECT to_jsonb(r) AS value FROM runs r WHERE id=$1',[historyId])).rows[0].value;
+    await db.pool.query("UPDATE host_threads SET vendor_session_id='old-native-session',context_tokens=120,context_window_tokens=1000,execution_workspace_json=$2::jsonb WHERE id=$1",[old!.id,JSON.stringify({id:'preserved-workspace',generation:3})]);
+    const context=(await db.pool.query('SELECT to_jsonb(c) AS value FROM conversation_execution_contexts c WHERE session_id=$1',[SESSION])).rows[0].value;
+    const runtime=kind==='cli'?'codex_cli':'claude_code';
+    await db.pool.query("UPDATE hosts SET capabilities_json=capabilities_json||$2::jsonb WHERE id=$1",[HOST,JSON.stringify({installations:{[runtime]:[{id:'own',logged_in:true}]}})]);
+    await db.pool.query("UPDATE agent_runtime_profiles SET runtime_key=$2,runtime_installation='own' WHERE id=$1",[RUNTIME,runtime]);
+    const preflight=await service.preflight(identity,SESSION);
+    expect(preflight.summary).toMatchObject({can_send:true,blocked_reason:null,runtime:{runtime_key:runtime,runtime_installation:'own'}});
+    expect(preflight.summary.runtimes[0]).toMatchObject({runtime_key:runtime,runtime_installation:'own',context_tokens:null});
+    expect((await threads.getForConversationAgent(SPACE,SESSION,AGENT))?.id).toBe(old!.id);
+    const input={space_id:SPACE,user_id:OWNER,session_id:SESSION,agent_id:AGENT};
+    const backend=await new PgConversationBackendRepository(db.pool).resolveBinding(input);
+    expect(backend).toMatchObject({runtime_key:runtime,runtime_installation:'own'});
+    const next=await threads.getForConversationAgent(SPACE,SESSION,AGENT);
+    expect(next!.id).not.toBe(old!.id);expect(next).toMatchObject({runtime_key:runtime,runtime_installation:'own',vendor_session_id:null});
+    expect((await db.pool.query('SELECT status,vendor_session_id FROM host_threads WHERE id=$1',[old!.id])).rows[0]).toEqual({status:'closed',vendor_session_id:'old-native-session'});
+    expect((await db.pool.query('SELECT execution_workspace_json FROM host_threads WHERE id=$1',[next!.id])).rows[0].execution_workspace_json).toEqual({id:'preserved-workspace',generation:3});
+    expect((await db.pool.query('SELECT to_jsonb(c) AS value FROM conversation_execution_contexts c WHERE session_id=$1',[SESSION])).rows[0].value).toEqual(context);
+    expect((await db.pool.query('SELECT to_jsonb(r) AS value FROM runs r WHERE id=$1',[historyId])).rows[0].value).toEqual(history);
+    expect(await threads.recordRunOutcome(old!.id,{lastRunId:historyId,vendorSessionId:'late-session',sessionReset:false})).toBe(false);
+    expect((await threads.getForConversationAgent(SPACE,SESSION,AGENT))?.vendor_session_id).toBeNull();
+    await new PgConversationBackendRepository(db.pool).resolveBinding(input);
+    expect((await threads.getForConversationAgent(SPACE,SESSION,AGENT))?.id).toBe(next!.id);
+    expect((await db.pool.query("SELECT count(*)::int AS n FROM messages WHERE session_id=$1 AND metadata_json->>'execution_event'='execution_agent_runtime_changed'",[SESSION])).rows[0].n).toBe(1);
+  });
+
+  it('defers a runtime switch while the old thread is held and adopts it after the claim is released',async ctx=>{
+    if(!db.available)return ctx.skip();
+    const identity={spaceId:SPACE,userId:OWNER},service=new ConversationExecutionContextService(db.pool);
+    await service.initialize(identity,SESSION,{selection:{execution_host_id:HOST,primary:{kind:'managed'}},runtime:{agent_id:AGENT,runtime_profile_id:RUNTIME,runtime_key:'claude_code',runtime_installation:'managed:1.0.0'}});
+    const threads=new PgHostThreadRepository(db.pool),old=await threads.getForConversationAgent(SPACE,SESSION,AGENT);
+    const activeId=randomUUID();await seedRun(db.pool,{id:activeId,space:SPACE,owner:OWNER,agent:AGENT,version:VERSION,existingAgent:true});
+    await db.pool.query("UPDATE runs SET status='running',host_task_thread_id=$2 WHERE id=$1",[activeId,old!.id]);
+    await db.pool.query('UPDATE host_threads SET dispatch_lock_id=$2 WHERE id=$1',[old!.id,randomUUID()]);
+    await db.pool.query(`UPDATE hosts SET capabilities_json=capabilities_json||'{"installations":{"claude_code":[{"id":"own","logged_in":true}]}}'::jsonb WHERE id=$1`,[HOST]);
+    await db.pool.query("UPDATE agent_runtime_profiles SET runtime_installation='own' WHERE id=$1",[RUNTIME]);
+    const input={space_id:SPACE,user_id:OWNER,session_id:SESSION,agent_id:AGENT};
+    await expect(new PgConversationBackendRepository(db.pool).resolveBinding(input)).rejects.toMatchObject({statusCode:409});
+    expect((await threads.getForConversationAgent(SPACE,SESSION,AGENT))?.runtime_installation).toBe('managed:1.0.0');
+    await db.pool.query('UPDATE host_threads SET dispatch_lock_id=NULL WHERE id=$1',[old!.id]);
+    await expect(new PgConversationBackendRepository(db.pool).resolveBinding(input)).rejects.toMatchObject({statusCode:409});
+    await db.pool.query("UPDATE runs SET status='succeeded' WHERE id=$1",[activeId]);
+    expect(await new PgConversationBackendRepository(db.pool).resolveBinding(input)).toMatchObject({runtime_installation:'own'});
+  });
+
+  it('requires the selected new installation to be available, then permits explicit reinitialization of the same workspace',async ctx=>{
+    if(!db.available)return ctx.skip();
+    const identity={spaceId:SPACE,userId:OWNER},service=new ConversationExecutionContextService(db.pool);
+    const selection={execution_host_id:HOST,primary:{kind:'managed' as const}};
+    await service.initialize(identity,SESSION,{selection,runtime:{agent_id:AGENT,runtime_profile_id:RUNTIME,runtime_key:'claude_code',runtime_installation:'managed:1.0.0'}});
+    const threads=new PgHostThreadRepository(db.pool),old=await threads.getForConversationAgent(SPACE,SESSION,AGENT);
+    await db.pool.query("UPDATE agent_runtime_profiles SET runtime_installation='own' WHERE id=$1",[RUNTIME]);
+    expect((await service.preflight(identity,SESSION)).summary).toMatchObject({can_send:false,runtime:{runtime_installation:'own'}});
+    await expect(new PgConversationBackendRepository(db.pool).resolveBinding({space_id:SPACE,user_id:OWNER,session_id:SESSION,agent_id:AGENT})).rejects.toMatchObject({statusCode:409});
+    expect((await threads.getForConversationAgent(SPACE,SESSION,AGENT))?.id).toBe(old!.id);
+    await db.pool.query(`UPDATE hosts SET capabilities_json=capabilities_json||'{"installations":{"claude_code":[{"id":"own","logged_in":true}]}}'::jsonb WHERE id=$1`,[HOST]);
+    expect(await service.initialize(identity,SESSION,{selection,runtime:{agent_id:AGENT,runtime_profile_id:RUNTIME,runtime_key:'claude_code',runtime_installation:'own'}})).toMatchObject({state:'initialized',runtime:{runtime_installation:'own'}});
+    expect((await threads.getForConversationAgent(SPACE,SESSION,AGENT))?.id).not.toBe(old!.id);
   });
 
   it("accepts an existing native profile when ACP opens anonymously, then blocks if that session stops opening", async (ctx) => {

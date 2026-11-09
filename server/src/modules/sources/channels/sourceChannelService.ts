@@ -233,6 +233,7 @@ export class SourceChannelService {
   }
 
   async create(identity: SpaceUserIdentity, body: Record<string, unknown>, nativeDraft=false) {
+    requiredString(body.provider_key, "provider_key");
     return withQueryableTransaction(this.db, async db => {
       const root=typeof (this.db as {connect?:unknown}).connect==='function'&&typeof (this.db as {release?:unknown}).release!=='function';
       await lockMonitorCreation(db,identity,root);

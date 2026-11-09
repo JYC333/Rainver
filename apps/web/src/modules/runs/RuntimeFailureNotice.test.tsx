@@ -110,6 +110,7 @@ describe('runtime recovery guidance', () => {
 
   it('keeps unknown failures unknown and withholds guidance for summary-only or non-runtime outcomes', () => {
     expect(runtimeFailure(run({ status: 'failed', error_json: null }))).toBeNull()
+    expect(runtimeFailure(run({status:'waiting_for_review',error_json:{supervisor_review:true,error_code:'retry_attempt_cap_reached',supervisor_failure:{error_code:'runtime_nonzero_exit',runtime_failure:{...failure().error_json!.runtime_failure as object,category:'configuration',message:'bad configuration'}}}}))?.cause).toBe('configuration')
     expect(runtimeFailure(run({ status: 'failed', execution_kind: 'provider_task', error_json: failure().error_json }))).toBeNull()
     expect(runtimeFailure(run({ status: 'failed', error_json: { error_code: 'verification_failed' } }))).toBeNull()
     expect(runtimeFailure(run({ status: 'failed', error_json: { error_code: 'runtime_nonzero_exit' }, error_message: 'usage limit or auth?' }))?.cause).toBe('unknown')

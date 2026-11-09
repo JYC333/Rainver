@@ -6,7 +6,9 @@ import {
   type Queryable,
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
-import { assertProjectReadable, lockActiveProjectForMutation } from "../projects/access.js";
+import { assertProjectReadableLocked, lockActiveProjectForMutation } from "../projects/access.js";
+import {assertThreadReadable} from '../inquiry/threadAccess.js';
+import {ContentAccessAuditService} from '../contentAccess/audit.js';
 import type { QuestionRefinementResult } from "./questionRefineService.js";
 
 interface SessionRow {
@@ -69,21 +71,32 @@ export interface BegunQuestionAssessmentTurn {
 export class ProjectResearchQuestionAssessmentRepository {
   constructor(private readonly db: Queryable) {}
 
+  async lockReadableThread(identity:SpaceUserIdentity,projectId:string,threadId:string):Promise<void>{
+    await assertProjectReadableLocked(this.db,identity.spaceId,projectId,identity.userId);
+    await this.db.query('SELECT id FROM space_objects WHERE id=$1 AND space_id=$2 FOR SHARE',[threadId,identity.spaceId]);
+    await this.db.query('SELECT id FROM content_access_grants WHERE space_id=$1 AND resource_id=$2 ORDER BY id FOR SHARE',[identity.spaceId,threadId]);
+    await assertThreadReadable(this.db,identity,projectId,threadId,'read_content');
+  }
+
   async getConversation(
     identity: SpaceUserIdentity,
     projectId: string,
     threadId: string,
   ): Promise<QuestionAssessmentConversation | null> {
-    await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    await this.assertThread(projectId, identity.spaceId, threadId);
-    const session = await this.db.query<SessionRow>(
+    return withQueryableTransaction(this.db,async db=>{
+    await new ProjectResearchQuestionAssessmentRepository(db).lockReadableThread(identity,projectId,threadId);
+    const session = await db.query<SessionRow>(
       `SELECT id,thread_id,recommended_question,latest_refinement_json,assessment_baseline_json,research_context_version_id,created_at,updated_at
          FROM project_research_question_assessment_sessions
         WHERE space_id=$1 AND project_id=$2 AND thread_id=$3`,
       [identity.spaceId, projectId, threadId],
     );
     if (!session.rows[0]) return null;
-    return this.readConversation(identity.spaceId, session.rows[0]);
+    const result=await new ProjectResearchQuestionAssessmentRepository(db).readConversation(identity.spaceId,session.rows[0]);
+    try{await new ContentAccessAuditService(db).recordReads({spaceId:identity.spaceId,resourceType:'space_object',resourceIds:[threadId],viewerUserId:identity.userId,accessType:'research_question_assessment'});}
+    catch{throw new HttpError(503,'Question assessment read audit unavailable');}
+    return result;
+    });
   }
 
   async beginTurn(

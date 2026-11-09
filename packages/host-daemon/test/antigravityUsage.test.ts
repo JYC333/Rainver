@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { parseAntigravityQuota, probeAntigravity } from "../src/antigravityUsage.js";
+import { HostUsageQuotaSchema } from "@rainver/protocol";
 import { parseClaudeOAuthUsage } from "../src/usageProbe.js";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -44,7 +45,7 @@ it("preserves Fable's independent quota without replacing the account week", () 
   expect(quota.windows).toHaveLength(4);
 });
 
-it("reads this copy's native status line without direct OAuth requests or credential parsing", async () => {
+it.each(["private@example.invalid", "a.@x.com"])("reads native quota even if its display email is unsupported: %s", async email => {
   const home = await mkdtemp(join(tmpdir(), "rainver-quota-'account-"));
   const fetcher = vi.fn();
   vi.stubGlobal("fetch", fetcher);
@@ -60,7 +61,7 @@ it("reads this copy's native status line without direct OAuth requests or creden
       const settings = JSON.parse(process.argv[process.argv.indexOf("--settings") + 1]);
       const captured = spawnSync(settings.statusLine.command, {
         shell: true,
-        input: JSON.stringify({ quota: { "gemini-weekly": { remaining_fraction: 0.6 } }, email: "private@example.invalid", other: "access-secret" }),
+        input: JSON.stringify({ quota: { "gemini-weekly": { remaining_fraction: 0.6 } }, email: ${JSON.stringify(email)}, other: "access-secret" }),
       });
       if (captured.status !== 0) process.exit(1);
       setInterval(() => {}, 1000);
@@ -69,8 +70,12 @@ it("reads this copy's native status line without direct OAuth requests or creden
     expect(quota.available).toBe(true);
     expect(quota.week_pct).toBe(40);
     expect(quota.windows?.[0].used_pct).toBe(40);
+    expect(quota.account).toMatchObject({ provider: "google", product: "antigravity", identity_kind: "email", organization_id: null });
+    expect(quota.account?.account_id).toMatch(/^[a-f0-9]{64}$/);
     expect(fetcher).not.toHaveBeenCalled();
-    expect(JSON.stringify(quota)).not.toMatch(/access-secret|private@example/);
+    expect(quota.account_display).toEqual(email === "private@example.invalid" ? { email } : null);
+    expect(HostUsageQuotaSchema.safeParse(quota).success).toBe(true);
+    expect(JSON.stringify(quota)).not.toMatch(/access-secret/);
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 

@@ -510,12 +510,22 @@ system-managed research Agent. They are separately budgeted: at most
 `RESEARCH_ADHOC_DAILY_RUN_LIMIT` of those Runs per project per UTC day, counted
 per bounded task rather than per provider attempt.
 
-The two differ in who performs the task. Notebook chat is a turn the person is
-waiting for, so its reply is produced on the request. Ask-AI writes to a Note,
-so it is queued: the request admits the Run (`queued`, with no ModelProvider or
-ProviderTask references yet), freezes the rendered instruction, the output
-contract and the resolved provider/model on its contract, enqueues one
-`provider_task_run` job, and answers `{ run_id, job_id, status: "queued" }`.
+Both entries are queued: the request admits a Run (`queued`, with no ProviderTask
+attempt references yet), freezes the rendered instruction, output contract and
+resolved provider/model, and enqueues one `provider_task_run` Job. Notebook chat
+also persists its personal Session and user message in that transaction, returning
+a safe keyed receipt with Session/Run/Job IDs and budget counters. Its browser
+helper waits through read-only `GET .../notebook-chat/:runId` requests; it never
+retries the write. The Run is private and linked to that Session. The provider
+attempt revalidates current Project writer authority, the frozen readable Notes
+and selected Source material, destination-specific Source egress and provider
+eligibility. Notebook publication additionally checks that the edited Note's
+readers can read every frozen context Note and selected excerpt; a refused edit
+leaves the private answer available. Canonical Note changes, the assistant message
+and terminal success commit together through the Run terminal owner. Terminal Job
+redelivery repairs only a missing message/nudge and never calls the model again.
+Follow-up history carries the earlier answers' frozen Source/Note provenance, so
+withdrawn context cannot be resent through an otherwise unannotated chat message.
 The worker rebuilds the request from that contract — never from the job payload,
 so a re-resolved space default cannot change what a queued Run runs on — and
 applies the block ops before the Run goes terminal. Do not apply them on the
@@ -1050,6 +1060,42 @@ source_channel_id, binding_key)`.
 
 `project_corpus_items` is Project-owned. It reconciles Sources output into the
 project's working corpus:
+
+Human upsert and update use `project.corpus.upsert/update` through the operation
+core and retained POST/PATCH adapters. Strict references, explicit event keys,
+current Project writer and canonical Object/Source/Evidence readability precede
+the original writer. Sorted Project, Source parent/item, snapshot, root, grant
+and Corpus locks are derived before mutation; a changed binding conflicts
+without acquiring a late Project lock. SourceItem writer locks are acquired
+up front because passing triage can materialize the item. Domain provenance,
+confirmed triage and canonical reference merges remain with Corpus. Receipts
+contain only IDs; Reading List ignores the mutation body and refreshes its
+existing authorized read surface. Backfill remains a separate pending command.
+
+Corpus admission also discovers decision channels and their Source/Project
+parents, including stored decision references on updates and a decision whose
+Item has no connection. It locks that complete set before the domain writer;
+parent growth after waiting conflicts without taking a late Project lock.
+Explicit and stored Source labels require a current live, same-Space reader
+gate with oversight excluded. An explicit label must match the target's known
+Item, Snapshot or decision origin rather than overriding it. Manual Item,
+Evidence and Object references can still have no connection. Both new commands
+and old-key replay apply these gates; no full-read requirement is added to the
+existing materializer.
+Materialized Objects retain their global Item origins before Project routing
+exists. A readable real origin can be selected even when another is hidden;
+wholly unreadable origins are never treated as a manual Object with no origin.
+
+The binding history-import proposal uses `project.source.propose_backfill` and
+its retained POST adapter. The canonical `ProjectSourceProposalService` creates
+the Project Operation, Source backfill Plan/segments and pending owner Proposal
+in the core transaction; it schedules no import before review. The transport
+header key and existing domain `idempotency_key` remain separate. Reusing a
+domain key with another transport key returns the same domain identities, while
+changed input conflicts. Current Project/Source authority and sorted parent,
+channel and binding locks apply to replay. The receipt exposes IDs only. The
+existing money gate and `source.backfill.plan` policy remain; this registration
+adds no Agent grant or production approval mapping.
 
 - Corpus upsert/update and automated Source reconciliation serialize on the
   Project row. This is both the archive write fence and the identity fence:
@@ -1703,6 +1749,18 @@ The `/api/v1/projects/:projectId/information-monitoring` API is:
 | GET `/runs/:operationId` | Read a retained operation with its own version and result |
 | POST `/items/:itemId/feedback` | Self-private read/relevance feedback using Source item user state, not shared triage |
 
+The PATCH `/details` and `/state` URLs are OperationExecutor adapters for
+`project.monitoring.details.update` and `project.monitoring.state.update`.
+Both require an explicit Idempotency-Key and return a canonical ID/Space/Project
+receipt. The existing details writer still appends an immutable version only
+within approved scope and lower execution limits; state CAS still updates the
+Project and existing scheduler state together. Version/query locks, live writer
+authority, required audit and the receipt share the core transaction. Replay
+does not require the old version to remain active and never reapplies it;
+a fresh stale request returns canonical conflict. Browser helpers read current
+settings in the receipt Space. These human-only commands do not activate a
+Source, approve a proposal, dispatch work or broaden Agent permissions.
+
 Agent actions `project.monitoring.read`, `project.monitoring.propose` and
 `project.monitoring.propose_details` are registered on the conversation tool
 surface. Scope proposals retain owner approval; details proposals use explicit
@@ -2006,3 +2064,98 @@ permissions before returning historical output. Sources and Projects browser
 facades share these core calls; they return the existing typed binding/backfill
 shapes. The backfill DTO correctly names its actual source_channel_id rather
 than the former stale source_connection_id field.
+
+## Governed Project management commands
+
+Project creation/edit/archive, member add/remove, Brief and Instruction draft/review/publication,
+public-summary save/publish/revoke, personal attention state and the seven Decision Case commands execute through
+the operation core. Their retained REST URLs are formal adapters over the same
+strict schemas and explicit request keys as generic action POST. Browser helpers
+submit one keyed command and retrieve current Project/version/roster content in
+the receipt's original Space; Decision child commands return only identifiers.
+No mutation helper retries writes automatically. Ordinary receipts contain only id,
+space_id and project_id. Combined review and queued notebook receipts add typed
+packet/Session/Run/Job references and bounded timing/counter metadata, never
+Brief, Instruction, Case, Task, candidate or generated answer content.
+
+The original domain services remain the only business writers. Project creation
+atomically creates its published Brief v1 and empty mainline Room; repeated keys
+do not create either twice. Brief writers may draft and submit for review, while
+publication and Instruction transitions retain owner-level authority. Draft and
+publication are separate commands; an old submit-review receipt never republishes
+a newer version. Member commands preserve the roster service's exact Project
+owner / Space owner-or-admin rule and role-grant hierarchy, including the ban on
+a Space admin replacing a Project owner. They lock the audience and revalidate
+the target's live Space membership for additions. Personal attention state
+remains a reader action scoped to the authenticated person.
+
+Decision Case commands retain Project writer authority, Case/Thread content
+visibility and the original open/decided/commitment constraints. The delivery
+command joins the canonical Task writer in the operation transaction; it creates
+one delivery Task and records its commitment link atomically. Replay checks the
+current Case visibility before returning historical metadata. Active Project
+fences, locked membership/content authority, domain changes, mandatory operation
+audit and receipts share the core transaction. Named domain refusals are typed;
+unknown helper errors are not reflected or cached as validation failures.
+
+These are user-only registrations: no Agent grant, production approval mapping
+or automatic publication is added. Focus assignment, combined review opening and work report/undo
+commands now share the core too. Review opening returns packet references and
+reads current candidates through their owning GETs; replay never opens another
+packet. Reports append through the single Project work-event writer. Undo retains
+its original event audience, Inquiry/Run/Room/content closure and canonical own-memory
+applier authority; a reader may still undo their own memory without gaining Project
+writer authority. Known domain refusals remain typed and unknown helpers remain
+internal failures.
+
+Project update/archive retain the complete canonical Workflow/Run/Proposal/Job
+closure. A host-owned operation hook discovers and locks the exact Run set before
+Project locks and binds the existing terminal owner to the same transaction port.
+The canonical Project repository remains the lifecycle writer; rollback restores
+linked requests, staged proposals, Workflow state and Jobs together. An old archive
+receipt never stops work created after explicit reactivation.
+
+Public-summary draft saves preserve the active writer gate and current Run/Room
+readability of optional generation provenance. Publication/revocation retain
+owner-level authority, including revocation while the Project is archived. A publish
+names the locked draft version; saving a newer draft cannot change a reviewed
+snapshot. The publication, canonical retrieval projection, existing embedding
+backfill Job, mandatory audit and receipt commit in one transaction. Revocation
+removes the publication and its search projection together. Provider IO remains in
+the existing embedding worker. Mutation responses contain safe receipts; browser
+helpers retrieve current drafts/publications in the receipt's Space.
+
+Focused real-PostgreSQL evidence is in
+`server/test/projectManagementOperationDb.test.ts`,
+`server/test/projectLifecycleOperationDb.test.ts`,
+`server/test/projectNotebookChatOperationDb.test.ts` and
+`server/test/projectPublicSummaryOperationDb.test.ts`, with protocol and browser API
+contracts in their owning packages. These close 27 of the 32 inventoried Project
+management entries. Five remain: imported-session extraction (the importedSessions
+extraction owner must move provider execution and canonical Brief/memory proposal publication
+behind a durable intent/worker boundary); public-summary draft generation (the Projects
+generator must freeze inputs and revalidate authority before publishing its draft);
+public-summary search/feedback and Project retrieval brief (the Projects/retrieval
+owners must separate optional embedding/answer provider IO and trace/feedback writes
+from the core command/query transaction). Their existing routes remain independently
+inventoried; this does not close the full Project package.
+
+### Experiment Operation commands
+
+The eleven Experiment write entries now use one OperationExecutor command family:
+Definition create/update, Version create/approve, Run create/launch/complete,
+Observation record and Interpretation create/review/convert. Retained REST
+adapters and typed browser callers require explicit event keys, use strict inputs
+and return metadata-only receipts. Browser callers fetch current content through
+the existing Definition, Run, Observation and Interpretation reads in the receipt's
+Space; stored command outcomes contain no Experiment text or executor config.
+
+Project writer, Definition visibility, referenced Thread/Run/Artifact and remote
+execution authorities remain with their existing domain owners. Project locks,
+sorted ontology roots and domain rows fence command admission and replay. Existing
+Experiment services join the core transaction; managed launch atomically records
+the governed Run/Attempt and its dispatch Job, and the existing worker alone runs
+the experiment. Interpretation conversion still creates an Inquiry Evidence Signal
+and never changes the Hypothesis directly. Known Experiment validation failures are
+marked at their domain throw sites; unknown helper failures roll back without
+cached private errors. No new Agent surface or production approval mapping is added.

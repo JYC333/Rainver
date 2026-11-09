@@ -1,3 +1,4 @@
+import {InquiryMutationError} from "./operationErrors.js";
 import { assertProblemReferences } from "./problemReferences.js";
 import { ProblemPrimaryIntentSchema } from "@rainver/protocol";
 import { checkProblemVersion, closeRoundFact, lockProblem, problemCommandKey, problemRound, refreshProblem, replayProblemCommand, saveProblemCommand, startPrimary } from "./problemFacts.js";
@@ -76,20 +77,20 @@ export class InquiryIterationService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const changeSummary = requiredString(body.change_summary, "change_summary");
     if (body.method_version !== "problem_solving.v1") {
-      throw new HttpError(422, "method_version must be problem_solving.v1");
+      throw new InquiryMutationError(422, "method_version must be problem_solving.v1");
     }
     if (body.round_intent !== "position_only" && body.round_intent !== "close_round") {
-      throw new HttpError(422, "round_intent is required");
+      throw new InquiryMutationError(422, "round_intent is required");
     }
     const closeRound = body.round_intent === "close_round";
     if (typeof body.idempotency_key !== "string" || !body.idempotency_key || body.idempotency_key.length > 128) {
-      throw new HttpError(422, "idempotency_key is required");
+      throw new InquiryMutationError(422, "idempotency_key is required");
     }
     if (!Number.isInteger(body.expected_version) || !Number.isInteger(body.expected_revision)) {
-      throw new HttpError(422, "expected_version and expected_revision are required");
+      throw new InquiryMutationError(422, "expected_version and expected_revision are required");
     }
     const nextPrimary = body.start_next_primary === undefined ? undefined : ProblemPrimaryIntentSchema.safeParse(body.start_next_primary);
-    if (nextPrimary && !nextPrimary.success) throw new HttpError(422,"Invalid start_next_primary");
+    if (nextPrimary && !nextPrimary.success) throw new InquiryMutationError(422,"Invalid start_next_primary");
     const now = new Date().toISOString();
 
     const result = await withQueryableTransaction(this.db, async (db) => {
@@ -109,7 +110,7 @@ export class InquiryIterationService {
       const thread = threadRow.rows[0];
       if (!thread) throw new HttpError(404, "Thread not found");
       if (thread.lifecycle_status !== "active") {
-        throw new HttpError(409, "Only an active Thread can record an Iteration");
+        throw new InquiryMutationError(409, "Only an active Thread can record an Iteration");
       }
 
       const problem = await lockProblem(db,identity,projectId,threadId);
@@ -118,7 +119,7 @@ export class InquiryIterationService {
       const replay = await replayProblemCommand(db,identity.spaceId,threadId,receiptKey,body);
       if (replay) return replay;
       checkProblemVersion(problem,body);
-      if(nextPrimary?.success && problem.blocked_reason) throw new HttpError(409,"Unblock the Thread before starting work");
+      if(nextPrimary?.success && problem.blocked_reason) throw new InquiryMutationError(409,"Unblock the Thread before starting work");
       const round = await problemRound(db,identity.spaceId,threadId);
       let previousPosition: Record<string, unknown>;
       let newPosition: Record<string, unknown>;
@@ -134,7 +135,7 @@ export class InquiryIterationService {
         previousPosition = pick(state, QUESTION_COGNITIVE_FIELDS);
         const answerState = optionalString(body.answer_state);
         if (answerState && !QUESTION_ANSWER_STATES.includes(answerState as (typeof QUESTION_ANSWER_STATES)[number])) {
-          throw new HttpError(422, `answer_state must be one of: ${QUESTION_ANSWER_STATES.join(", ")}`);
+          throw new InquiryMutationError(422, `answer_state must be one of: ${QUESTION_ANSWER_STATES.join(", ")}`);
         }
         const updated = await db.query<QuestionStateRow>(
           `UPDATE inquiry_question_states SET
@@ -167,11 +168,11 @@ export class InquiryIterationService {
         previousPosition = pick(state, HYPOTHESIS_COGNITIVE_FIELDS);
         const evaluationState = optionalString(body.evaluation_state);
         if (evaluationState && !HYPOTHESIS_EVALUATION_STATES.includes(evaluationState as (typeof HYPOTHESIS_EVALUATION_STATES)[number])) {
-          throw new HttpError(422, `evaluation_state must be one of: ${HYPOTHESIS_EVALUATION_STATES.join(", ")}`);
+          throw new InquiryMutationError(422, `evaluation_state must be one of: ${HYPOTHESIS_EVALUATION_STATES.join(", ")}`);
         }
         const confidence = hasOwn(body, "confidence") ? optionalNumber(body.confidence, "confidence") : undefined;
         if (confidence !== undefined && confidence !== null && (confidence < 0 || confidence > 100)) {
-          throw new HttpError(422, "confidence must be between 0 and 100");
+          throw new InquiryMutationError(422, "confidence must be between 0 and 100");
         }
         const updated = await db.query<HypothesisStateRow>(
           `UPDATE inquiry_hypothesis_states SET
@@ -193,7 +194,7 @@ export class InquiryIterationService {
       }
 
       if (JSON.stringify(previousPosition) === JSON.stringify(newPosition)) {
-        throw new HttpError(422, "An Iteration must change at least one protected cognitive field");
+        throw new InquiryMutationError(422, "An Iteration must change at least one protected cognitive field");
       }
       const previousConfidence = typeof previousPosition.confidence === "number" ? previousPosition.confidence : null;
       const nextConfidence = typeof newPosition.confidence === "number" ? newPosition.confidence : null;
@@ -349,17 +350,17 @@ export class InquiryIterationService {
     await assertThreadReadable(this.db, identity, projectId, threadId, "change");
     const revisionKind = requiredString(body.revision_kind, "revision_kind");
     if (revisionKind !== "wording_only" && revisionKind !== "semantic_change") {
-      throw new HttpError(422, "revision_kind must be wording_only or semantic_change");
+      throw new InquiryMutationError(422, "revision_kind must be wording_only or semantic_change");
     }
     const newStatement = requiredString(body.new_statement, "new_statement");
-    if(Object.hasOwn(body,'new_scope_boundary') && revisionKind!=='semantic_change')throw new HttpError(422,'Boundary changes require a semantic Definition revision');
+    if(Object.hasOwn(body,'new_scope_boundary') && revisionKind!=='semantic_change')throw new InquiryMutationError(422,'Boundary changes require a semantic Definition revision');
     const structureAction = optionalString(body.structure_action);
     if (revisionKind === "semantic_change") {
       if (structureAction !== "narrow" && structureAction !== "child" && structureAction !== "supersede") {
-        throw new HttpError(422, "semantic_change requires structure_action: narrow, child, or supersede");
+        throw new InquiryMutationError(422, "semantic_change requires structure_action: narrow, child, or supersede");
       }
     } else if (structureAction) {
-      throw new HttpError(422, "structure_action is only valid for semantic_change");
+      throw new InquiryMutationError(422, "structure_action is only valid for semantic_change");
     }
     const now = new Date().toISOString();
 
@@ -372,7 +373,7 @@ export class InquiryIterationService {
       const thread = threadRow.rows[0];
       if (!thread) throw new HttpError(404, "Thread not found");
       if (thread.lifecycle_status !== "active") {
-        throw new HttpError(409, "Only an active Thread can revise its Definition");
+        throw new InquiryMutationError(409, "Only an active Thread can revise its Definition");
       }
 
       // Claim/prediction/falsification/resolution-criteria content is
@@ -584,8 +585,8 @@ export class InquiryIterationService {
 
   private async applyDefinitionFieldUpdates(db: Queryable, thread: ThreadRow, body: Record<string, unknown>): Promise<void> {
     if(Object.hasOwn(body,'new_scope_boundary')){
-      if(body.new_scope_boundary!==null&&typeof body.new_scope_boundary!=='string')throw new HttpError(422,'Boundary must be text or null');
-      const scope=optionalString(body.new_scope_boundary);if(scope && scope.length>4000)throw new HttpError(422,'Boundary is too long');
+      if(body.new_scope_boundary!==null&&typeof body.new_scope_boundary!=='string')throw new InquiryMutationError(422,'Boundary must be text or null');
+      const scope=optionalString(body.new_scope_boundary);if(scope && scope.length>4000)throw new InquiryMutationError(422,'Boundary is too long');
       await db.query(`UPDATE inquiry_threads SET scope_boundary=$1 WHERE object_id=$2 AND space_id=$3`,[scope,thread.id,thread.space_id]);
     }
     if (thread.kind === "question" && hasOwn(body, "new_resolution_criteria")) {
@@ -641,9 +642,9 @@ export class InquiryIterationService {
       if (!thread) throw new HttpError(404, "Thread not found");
 
       const requestedPriority = hasOwn(body, "priority") ? optionalNumber(body.priority, "priority") : undefined;
-      if (requestedPriority === null) throw new HttpError(422, "priority must be a number");
+      if (requestedPriority === null) throw new InquiryMutationError(422, "priority must be a number");
       const nextPriority = requestedPriority ?? thread.priority;
-      if (!Number.isInteger(nextPriority)) throw new HttpError(422, "priority must be an integer");
+      if (!Number.isInteger(nextPriority)) throw new InquiryMutationError(422, "priority must be an integer");
       const nextOwner = hasOwn(body, "owner_user_id") ? optionalString(body.owner_user_id) : thread.owner_user_id;
       // Ownership is what makes a private Thread readable, so handing a Thread
       // to someone else is its owner's call alone.
@@ -656,14 +657,14 @@ export class InquiryIterationService {
             WHERE space_id=$1 AND user_id=$2 AND status='active' LIMIT 1`,
           [identity.spaceId, nextOwner],
         );
-        if (!owner.rows[0]) throw new HttpError(422, "owner_user_id must be an active Space member");
+        if (!owner.rows[0]) throw new InquiryMutationError(422, "owner_user_id must be an active Space member");
       }
       const nextAttention = hasOwn(body, "attention_state") ? requiredString(body.attention_state, "attention_state") : thread.attention_state;
       if (nextAttention === "resolved" || nextAttention === "rejected" || nextAttention === "archived") {
-        throw new HttpError(422, "Terminal states must be changed through the lifecycle command");
+        throw new InquiryMutationError(422, "Terminal states must be changed through the lifecycle command");
       }
       if (!["focused", "monitoring", "backlog", "blocked"].includes(nextAttention)) {
-        throw new HttpError(422, "attention_state must be focused, monitoring, backlog, or blocked");
+        throw new InquiryMutationError(422, "attention_state must be focused, monitoring, backlog, or blocked");
       }
       const nextBlockedReason = hasOwn(body, "blocked_reason") ? optionalString(body.blocked_reason) : thread.blocked_reason;
       const openSteps = await listOpenSteps(db, {spaceId:identity.spaceId,threadId});
@@ -675,7 +676,7 @@ export class InquiryIterationService {
       // name.
       let wipLimitExceeded = false;
       if (willHaveOpenStep && nextBlockedReason) {
-        throw new HttpError(422, "A Thread cannot be blocked while a step is still open — clear the step first");
+        throw new InquiryMutationError(422, "A Thread cannot be blocked while a step is still open — clear the step first");
       }
       if (nextAttention === "focused" && thread.attention_state !== "focused") {
         // The WIP limit bounds how many Threads a person is actively working.
@@ -785,7 +786,7 @@ export class InquiryIterationService {
     const toStatus = requiredString(body.lifecycle_status, "lifecycle_status");
     const allowed = ["active", "resolved", "rejected", "archived"] as const;
     if (!allowed.includes(toStatus as (typeof allowed)[number])) {
-      throw new HttpError(422, `lifecycle_status must be one of: ${allowed.join(", ")}`);
+      throw new InquiryMutationError(422, `lifecycle_status must be one of: ${allowed.join(", ")}`);
     }
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
@@ -796,8 +797,8 @@ export class InquiryIterationService {
       );
       const current = row.rows[0];
       if (!current) throw new HttpError(404, "Thread not found");
-      if (current.lifecycle_status === "superseded") throw new HttpError(409, "A superseded Thread cannot transition");
-      if (current.lifecycle_status === toStatus) throw new HttpError(409, `Thread is already ${toStatus}`);
+      if (current.lifecycle_status === "superseded") throw new InquiryMutationError(409, "A superseded Thread cannot transition");
+      if (current.lifecycle_status === toStatus) throw new InquiryMutationError(409, `Thread is already ${toStatus}`);
       const attention = toStatus === "active" ? "backlog" : toStatus;
       const now = new Date().toISOString();
       const lifecycleEventId = randomUUID();
@@ -874,7 +875,7 @@ function hasOwn(body: Record<string, unknown>, key: string): boolean {
 function optionalNumber(value: unknown, label: string): number | null {
   if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
-  if (!Number.isFinite(n)) throw new HttpError(422, `${label} must be a number`);
+  if (!Number.isFinite(n)) throw new InquiryMutationError(422, `${label} must be a number`);
   return n;
 }
 

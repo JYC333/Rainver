@@ -5,6 +5,12 @@
 `GET /api/v1/runs/{runId}/turn/stream`. Host pairing uses WebSocket on
 the hosts module. There is no general product event bus.
 
+Workspace integration results use the existing system-message metadata envelope
+with `WorkspaceIntegrationNoticeSchema` facts in `execution_details`. The wire
+distinguishes queued repair, candidate/verification state and actual integration
+outcome. It carries no Host paths, raw repair instructions or private logs;
+localized conversation presentation links through the source Space.
+
 ## Purpose
 How the web client talks to `/api/v1`. Unknown paths return the local
 404 catch-all.

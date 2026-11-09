@@ -231,6 +231,7 @@ describe("Slice F relation discovery (real Postgres)", () => {
     expect(report.candidates.every((candidate) => candidate.proposed_action === null)).toBe(true);
     expect(report.counts.proposal_candidate).toBe(0);
     expect(report.counts.review_only_candidate).toBe(2);
+    expect(report.access_safety.source_policy_enforced).toBe(true);
   });
 
   it("fails closed for artifact text whose source policy denies the viewer", async () => {

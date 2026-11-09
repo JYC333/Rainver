@@ -1,3 +1,6 @@
+import {workspaceScopedCwd} from './workspaceScope.js';
+import {existingWorkspaceAttachments} from './workspaceAttachments.js';
+import { workspaceWorktreeKey } from "./worktreeIdentity.js";
 import {readOnlyIpcFilter} from './readOnlyIpc.js';
 import {probeReadOnlyWorkspace,readOnlyBinary,assertReadOnlyBinds,workspaceGitDirectory} from './readOnlyWorkspace.js';
 import { spawn } from "node:child_process";
@@ -9,7 +12,7 @@ import { buildStrictNamespaceCommand } from "./strictNamespace.js";
 import { isRuntimeKeyBeingReplaced, daemonRuntimeRoot, withRuntimeKeyHeld, managedToolTreeForLaunch, resolveAcpLaunch, resolveLocationCwd, strictBindsForRun } from "./execution.js";
 import { OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { ensureManagedWorkspace, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
-import { existingTaskWorktree, taskLeaseKey, useTaskWorktree } from "./taskWorktree.js";
+import { ownEntry,checkLocationRepository,existingTaskWorktree, taskLeaseKey, useTaskWorktree } from "./taskWorktree.js";
 
 /**
  * A fixed command the control plane runs in a workspace on this host.
@@ -25,7 +28,7 @@ import { existingTaskWorktree, taskLeaseKey, useTaskWorktree } from "./taskWorkt
  */
 interface CommandRunRequest {
   request_id: string;
-  workspace?: { kind: "location"; workspace_location_id?: string; workspace_relative_path?: string; worktree?: { task_id: string; merge_id?: string } } | { kind: "managed"; agent_id?: string; container?: ManagedWorkspaceContainer };
+  workspace?: { kind: "location"; workspace_location_id?: string; workspace_relative_path?: string; execution_workspace?: import("@rainver/protocol").ExecutionWorkspaceRef; worktree?: { task_id: string; merge_id?: string } } | { kind: "managed"; agent_id?: string; container?: ManagedWorkspaceContainer };
   workspace_location_id?: string;
   run_id?: string;
   scratch_workspace?: boolean;
@@ -39,6 +42,7 @@ interface CommandRunRequest {
   report_entries?: boolean;
   timeout_seconds: number;
   isolation?: HostLaunchIsolation;
+  workspace_access?:import("@rainver/protocol").HostLaunchWorkspaceAccess[];
 }
 
 interface CommandRunResult {
@@ -92,12 +96,14 @@ async function resolveCwd(request: CommandRunRequest, scratch: string): Promise<
   if (!cwd) throw new Error(`This daemon has no local path registered for workspace ${locationId}.`);
   // A Task Run that worked in its Task's worktree left its change there, not
   // in the checkout; a question about it is asked where it is.
-  const taskId = request.workspace?.kind === "location" ? request.workspace.worktree?.task_id : undefined;
+  const ref=request.workspace?.kind === "location"?request.workspace.execution_workspace:undefined;
+  const taskId = ref?workspaceWorktreeKey(ref):request.workspace?.kind === "location" ? request.workspace.worktree?.task_id : undefined;
   if (taskId) {
     // Throws for a worktree that is there but broken: the command fails
     // rather than checking the person's checkout instead.
     const worktree = await existingTaskWorktree(cwd, locationId, taskId);
-    if (worktree) return { cwd: worktree.root, gitCommonDir: worktree.gitCommonDir };
+    if (worktree) return { cwd: await workspaceScopedCwd(worktree.root,ref?.cwd_subpath), gitCommonDir: worktree.gitCommonDir };
+    if(ref)throw new Error("execution_workspace_missing");
   }
   return { cwd, gitCommonDir: null };
 }
@@ -115,13 +121,16 @@ export async function runHostCommand(
   // from. A command in a Task worktree marks it in use for as long, so the
   // sweep and a settle leave it alone.
   const workspace = request.workspace?.kind === "location" ? request.workspace : undefined;
-  const release = workspace?.worktree && workspace.workspace_location_id
-    ? useTaskWorktree(taskLeaseKey(workspace.workspace_location_id, workspace.worktree.task_id))
+  const key=workspace?.execution_workspace?workspaceWorktreeKey(workspace.execution_workspace):workspace?.worktree?.task_id;
+  const attachmentReleases=(request.workspace_access??[]).filter(a=>a.execution_workspace).map(a=>useTaskWorktree(taskLeaseKey(a.workspace_location_id,workspaceWorktreeKey(a.execution_workspace!))));
+  const release = key && workspace?.workspace_location_id
+    ? useTaskWorktree(taskLeaseKey(workspace.workspace_location_id, key))
     : null;
   try {
     return await withRuntimeKeyHeld(request.runtime_key, () => runHostCommandInner(request, log));
   } finally {
     release?.();
+    for(const releaseAttachment of attachmentReleases)releaseAttachment();
   }
 }
 
@@ -153,6 +162,9 @@ async function runHostCommandInner(
   } catch (error) {
     return { exit_code: 1, stdout: "", stderr: "", timed_out: false, error: error instanceof Error ? error.message : String(error) };
   }
+
+  let attachments:Awaited<ReturnType<typeof existingWorkspaceAttachments>>;
+  try{attachments=await existingWorkspaceAttachments(request.workspace_access??[],config.workspaces,workspacesRoot());}catch(error){return {exit_code:1,stdout:"",stderr:"",timed_out:false,error:String(error)};}
 
   // Either a command on PATH, or the installed copy of an adapter with these
   // as its arguments — the executable then comes from the manifest the daemon
@@ -202,11 +214,21 @@ async function runHostCommandInner(
     HOME: scratch,
     LANG: "C.UTF-8",
     ...resolved.env,
+    ...(attachments.entries.length?{RAINVER_WORKSPACE_ACCESS:JSON.stringify(attachments.entries)}:{}),
   };
-  const personalRead=config.trust!=='strict'&&request.isolation?.sandbox_mode==='read_only';
+  const personalRead=config.trust!=='strict'&&(request.isolation?.sandbox_mode==='read_only'||attachments.entries.some(a=>a.access_mode==='read'));
+  let ownedGitEntry:string|null=null;
+  let ownedRoot:string|null=null;
+  if(gitCommonDir&&request.workspace?.kind==='location'&&request.workspace.execution_workspace){
+    const source=resolveLocationCwd(config.workspaces,request.workspace.workspace_location_id!,request.workspace.workspace_relative_path,workspacesRoot());
+    const check=source?await checkLocationRepository(source):null;
+    ownedRoot=source?(await existingTaskWorktree(source,request.workspace.workspace_location_id!,workspaceWorktreeKey(request.workspace.execution_workspace)))?.root??null:null;
+    ownedGitEntry=check?.kind==='repository'?await ownEntry(check.repo,(await existingTaskWorktree(source!,request.workspace.workspace_location_id!,workspaceWorktreeKey(request.workspace.execution_workspace)))!.root):null;
+    if(!ownedGitEntry)return {exit_code:1,stdout:'',stderr:'',timed_out:false,error:'execution_workspace_git_entry_unverified'};
+  }
   if(personalRead&&!(await probeReadOnlyWorkspace()).supported)return {exit_code:1,stdout:'',stderr:'',timed_out:false,error:'Read-only workspace requires Linux bubblewrap mount/PID namespace support on this Host'};
   const strict = config.trust === "strict"||personalRead;
-  if(personalRead){gitCommonDir=await workspaceGitDirectory(cwd);try{assertReadOnlyBinds([cwd,...(gitCommonDir?[gitCommonDir]:[])],[{path:scratch,access:'read_write'}]);}catch(error){log(`Read-only command preparation failed: ${String(error)}`);return {exit_code:1,stdout:'',stderr:'',timed_out:false,error:'Read-only workspace preparation failed; inspect local Host log.'};}}
+  if(personalRead){gitCommonDir??=await workspaceGitDirectory(cwd);try{assertReadOnlyBinds([...(request.isolation?.sandbox_mode==='read_only'?[cwd]:[]),...attachments.entries.filter(a=>a.access_mode==='read').map(a=>a.path)],[{path:scratch,access:'read_write'}]);}catch(error){log(`Read-only command preparation failed: ${String(error)}`);return {exit_code:1,stdout:'',stderr:'',timed_out:false,error:'Read-only workspace preparation failed; inspect local Host log.'};}}
   try {
     await mkdir(scratch, { recursive: true, mode: 0o700 });
     if (strict) {
@@ -233,9 +255,13 @@ async function runHostCommandInner(
           // A Task worktree's history is in the repository's git directory,
           // outside the worktree; git inside the namespace needs it. Bound as
           // the workspace itself is.
-          workspaceBinds: gitCommonDir
-            ? [{ path: gitCommonDir, access: (request.isolation?.sandbox_mode ?? "read_write") === "read_only" ? "read_only" : "read_write" }]
-            : undefined,
+          workspaceBinds: [
+            ...(ownedRoot?[{path:ownedRoot,access:request.isolation?.sandbox_mode==='read_only'?'read_only' as const:'read_write' as const}]:[]),
+            ...attachments.entries.map(a=>({path:a.path,access:a.access_mode==='read'?'read_only' as const:'read_write' as const})),
+            ...attachments.binds.map(a=>({path:a.path,access:a.access_mode==='read'?'read_only' as const:'read_write' as const})),
+            ...(gitCommonDir?[{path:gitCommonDir,access:ownedGitEntry||request.isolation?.sandbox_mode==='read_only'?'read_only' as const:'read_write' as const}]:[]),
+            ...(ownedGitEntry?[{path:ownedGitEntry,access:request.isolation?.sandbox_mode==='read_only'?'read_only' as const:'read_write' as const}]:[]),
+          ],
         }),
         // Read-write because a verification recipe builds and tests; no
         // network because it has no upstream to reach — the recipe's inputs

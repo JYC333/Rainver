@@ -300,6 +300,14 @@ converted into API billing.
 tracked by the control plane only as an opaque `vendor_session_id` per task
 thread pinned to one (host, workspace, installation).
 
+An explicit CLI or installation edit to the Profile bound to a Conversation may
+replace that idle thread at the next authorized turn. Host/workspace authority
+remains fixed; the new installation must be available. The old thread and Run
+snapshots are retained, the replacement starts a new vendor session, and the
+physical workspace/files and Conversation history are preserved. In-flight Runs
+settle before replacement. Preflight may show the newly selected usable copy
+without mutating a thread; a Profile default/catalog miss never selects a fallback.
+
 Conversation continuity uses the same host-thread authority, generalized from
 Task threads: one live `host_threads` row per Conversation × Agent, resettable
 by the host owner, and closed when the specialist leaves the Room. Direct
@@ -385,6 +393,19 @@ credential store, handed to a subprocess as a token, or brokered per Run.
 Enabling a registry agent for the deployment is instance-admin gated,
 separately from installing it on a host.
 
+Subscription observations may also carry opaque vendor account, organization
+and product identifiers from that same login context (B47). These identify a
+shared quota pool, never a Rainver user or a credential. Antigravity's native
+status line provides a concurrent login email and quota; the Host hashes the
+email and marks its identity kind explicitly, without treating it as a permanent
+Google subject. Unknown identities remain installation-scoped. Reads filter
+authorized Host connections before grouping; matching an account grants no
+additional Host visibility or credential access. As explicitly requested for
+account recognition, quota observations may separately carry the full login
+email and optional organization/workspace name for display under that same
+Host-owner/server-admin read gate. Display metadata is not a pool key and
+never includes credentials.
+
 ### 8. Readiness and dispatch are separate from liveness
 
 `hosts.status` and heartbeat staleness answer reachability, for the built-in
@@ -444,6 +465,8 @@ schedule. A UI-triggered offline upgrade would need an executor that survives
 stopping the server that requested it, and is not built.
 
 ### 11. How changes land, and what is deferred
+
+[ADR 0029](0029-isolated-execution-workspaces.md) supersedes in-place Conversation execution only for new isolated workspace contracts. Existing contracts and other Host boundaries below remain applicable.
 
 An Agent on an execution host lands changes without a per-change review. A
 Conversation turn edits its Location in place, bounded by Project write

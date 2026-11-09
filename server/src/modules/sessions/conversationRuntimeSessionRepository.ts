@@ -13,6 +13,8 @@ import type { Queryable } from "../routeUtils/common.js";
  * before its reply and continuity are published. Failed/cancelled/orphaned
  * Runs release it even without that event, so recovery never strands a
  * conversation behind a failed turn.
+ * Background workspace publication consumes frozen commits in a separate
+ * candidate. It does not hold the conversation, even when repair needs review.
  *
  * `admitting` asks on behalf of one Run about to be admitted: its own
  * group's Runs that cannot run yet — itself, those parked on a dependency,
@@ -90,6 +92,11 @@ export async function conversationTurnTaken(
               OR run.id IN (SELECT id FROM jobless)
               -- Read-only reviews of one group run together: one admitted
               -- does not hold the turn against another review.
+              OR (run.delegation_id IS NOT NULL AND run.workspace_location_id IS NOT NULL
+                AND run.contract_snapshot_json->>'execution_workspace_version' = '1'
+                AND EXISTS (SELECT 1 FROM runs admitting WHERE admitting.id=$3::varchar AND admitting.space_id=$1
+                  AND admitting.delegation_id IS NOT NULL AND admitting.workspace_location_id IS NOT NULL
+                  AND admitting.contract_snapshot_json->>'execution_workspace_version' = '1'))
               OR (run.contract_snapshot_json->>'workspace_access' = 'read'
                 AND EXISTS (SELECT 1 FROM runs admitting
                              WHERE admitting.space_id = $1 AND admitting.id = $3::varchar

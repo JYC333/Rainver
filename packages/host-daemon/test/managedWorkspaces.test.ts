@@ -213,3 +213,31 @@ describe("a managed workspace is a repository", () => {
     expect(await readFile(join(path, "kept.txt"), "utf8")).toBe("first\n");
   });
 })
+
+describe('isolated cache launch and retirement',()=>{
+ it('archives retained cache identities after the source directory is removed or unregistered',async()=>{
+  const {executeWorkspaceCommand}=await import('../src/executionWorkspace.js');
+  const {randomUUID}=await import('node:crypto');const workspaceId=randomUUID(),attemptId=randomUUID();
+  const source=join(stateDir,'removed-source');await mkdir(source);await rm(source,{recursive:true});
+  const command={type:'execution_workspace_command' as const,request_id:randomUUID(),operation_id:randomUUID(),workspace:{kind:'location' as const,workspace_location_id:randomUUID(),execution_workspace:{id:workspaceId,generation:1}},action:'archive_profiles' as const,profile_agents:[AGENT_ID],retain_branch:true};
+  for(const [locationRoot,ref,id] of [[source,command.workspace.execution_workspace,workspaceId],[null,{...command.workspace.execution_workspace,integration_id:attemptId},attemptId]] as const){
+   const cache=runtimeProfileContainerPath(AGENT_ID,'workspace',id);await mkdir(cache,{recursive:true});await writeFile(join(cache,'session.json'),'retained vendor state');
+   expect(await executeWorkspaceCommand(locationRoot,{...command,workspace:{...command.workspace,execution_workspace:ref}})).toMatchObject({ok:true,error:null});
+   expect(existsSync(cache)).toBe(false);
+   const archived=(await readdir(join(cache,'..'))).find(name=>name.startsWith(id+'.removed-'))!;
+   expect(await readFile(join(cache,'..',archived,'session.json'),'utf8')).toBe('retained vendor state');
+  }
+ });
+
+ it('launches with a workspace UUID cache and archives exactly that cache',async()=>{
+  const {randomUUID}=await import('node:crypto'),{archiveRuntimeProfileContainer}=await import('../src/managedWorkspaces.js');
+  const workspaceId=randomUUID(),frames:Record<string,unknown>[]=[];
+  await handleLaunch({run_id:randomUUID(),launch_id:randomUUID(),workspace:{kind:'managed',agent_id:AGENT_ID,container:{kind:'conversation',id:CONVERSATION_ID}},
+   provider_binding:{profile_key:`agents/${AGENT_ID}/workspace/${workspaceId}/claude_code/native`,env:{},profile_env:{HOME:'.'},files:[],credential_source:'provider_lease',login_link:null},argv:['sh','-c','echo "$HOME"']},frame=>frames.push(frame),()=>{});
+  await new Promise<void>((resolve,reject)=>{const start=Date.now();const poll=()=>frames.some(f=>f.type==='complete')?resolve():Date.now()-start>10000?reject(new Error('launch timeout')):setTimeout(poll,10);poll();});
+  expect(frames.find(f=>f.type==='complete'),JSON.stringify(frames)).toMatchObject({exit_code:0});
+  const path=runtimeProfileContainerPath(AGENT_ID,'workspace',workspaceId);expect(existsSync(path)).toBe(true);
+  expect(frames.filter(f=>f.type==='output').map(f=>f.chunk).join('')).toContain(path);
+  expect(await archiveRuntimeProfileContainer(AGENT_ID,'workspace',workspaceId)).toBe(true);expect(existsSync(path)).toBe(false);
+ });
+});

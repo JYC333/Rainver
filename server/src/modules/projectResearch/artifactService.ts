@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import { objectValue } from "../routeUtils/common.js";
+import {ResearchContentReadAuditError} from './workspaceErrors.js';
+import {ContentAccessAuditService} from '../contentAccess/audit.js';
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess.js";
@@ -99,6 +101,11 @@ export class ProjectResearchArtifactService {
       [input.spaceId, input.projectId, input.ownerUserId],
     );
 
+    try{
+      const audit=new ContentAccessAuditService(this.db);
+      for(const [resourceType,resourceIds] of [['source_item',rows.rows.flatMap(row=>row.source_item_id?[row.source_item_id]:[])],['extracted_evidence',rows.rows.flatMap(row=>row.evidence_id?[row.evidence_id]:[])]] as const)
+        await audit.recordReads({spaceId:input.spaceId,viewerUserId:input.ownerUserId,resourceType,resourceIds,accessType:'research_evidence_matrix'});
+    }catch{throw new ResearchContentReadAuditError();}
     const content = JSON.stringify({
       schema_version: "evidence_matrix.v1",
       project_id: input.projectId,

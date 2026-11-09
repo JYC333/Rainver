@@ -582,9 +582,9 @@ describe("handleLaunch", () => {
   it("resolves an ACP launch the same way for a job and for the options probe: vendor CLI as named, bundled adapter through node", () => {
     // A vendor CLI that speaks ACP itself (opencode) is spawned as the spec
     // renders it — nothing in this daemon needs to know it exists.
-    expect(resolveAcpLaunch("opencode", ["acp", "--cwd", "/w"])).toEqual({
+    expect(resolveAcpLaunch("opencode", ["acp"])).toEqual({
       command: "opencode",
-      args: ["acp", "--cwd", "/w"],
+      args: ["acp"],
       env: {},
     });
     const codex = resolveAcpLaunch("codex-acp", []);

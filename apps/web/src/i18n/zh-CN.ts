@@ -3,7 +3,21 @@ import type { en } from './en'
 type TranslateShape<T> = { [K in keyof T]: T[K] extends string ? string : TranslateShape<T[K]> }
 
 export const zhCN = {
-  file_preview: { title: '文件预览', open_image: '查看图片', loading: '正在加载预览…', retry: '重试', unavailable: '预览不可用、已失效，或不在当前对话的工作区内，请让 Agent 重新提供。' },
+  subscription_usage: {
+    title: '订阅额度', history: '历史消耗',
+    description: '按厂商账号及共享额度池展示整体额度，包含 Rainver 之外的使用。',
+    reload: '重新加载账号', retry: '重试', loading: '正在加载订阅账号…',
+    empty: '暂无可查看的 CLI 订阅。', refresh: '刷新额度', view: '查看额度',
+    account: '账号：{{account}}', unidentified: '账号待识别。确认身份前，此连接独立展示。',
+    email_identity: '根据 CLI 当前登录邮箱匹配。',
+    changed: '所选账号已不可用，登录状态或访问权限可能已改变。',
+    session: '会话额度', week: '每周额度', unavailable: '不可用', used: '已用 {{percent}}%',
+    resets: '{{time}} 恢复', checked: '更新于 {{time}}', connections_one: '{{count}} 个关联连接', connections_other: '{{count}} 个关联连接',
+    online: '在线', offline: '离线', not_logged_in: '此 CLI 副本尚未登录。',
+    no_measurement: '暂无当前有效的额度读数，可刷新在线连接查询。',
+    exhausted: '账号 {{account}} 有额度窗口已耗尽，查看额度以了解受影响的连接。',
+  },
+  file_preview: { title: '文件预览', open_image: '查看图片', loading: '正在加载预览…', retry: '重试', unavailable: '预览不可用、已失效，或不在当前对话的工作区内，请让 Agent 重新提供。', expired: '这次运行时的文件版本已不再保留：工作已合并、工作区已清理，且历史保留期已结束{{date}}。合并后的结果可在项目文件中查看。', expired_date: '（{{date}}）' },
   fileTree: { openInNewTab: '在新标签中打开', loading: '加载中…', empty: '没有文件', retry: '目录加载失败 · 重试', more: '加载更多' },
   agent_work: {
     badge: '{{needs}} 项需要你 · {{unread}} 项未读',
@@ -142,6 +156,7 @@ export const zhCN = {
     skills: '技能库', artifacts: '产物',
   },
   shell: {
+    settings_navigation: '设置导航', back_to: '返回{{name}}',
     switch_to_light: '切换到浅色主题', switch_to_dark: '切换到深色主题',
     sign_in: '登录', sign_out: '退出登录', show_sidebar: '显示侧边栏',
     all_spaces: '显示：所有空间', global_navigation: '全局导航',
@@ -174,7 +189,7 @@ export const zhCN = {
     open_security: '打开安全设置', model_providers: '模型提供方',
     model_providers_description: '配置 LLM 后端（OpenAI、Anthropic、OpenRouter、Ollama）。CLI 运行时在所属执行主机上的指挥中心登录。',
     open_model_providers: '打开模型提供方', usage: '用量',
-    usage_description: '查看 Token 用量、预估成本、会话，以及当前空间内共享的用量。',
+    usage_description: '查看订阅额度、历史 Token 消耗、预估成本和共享用量。',
     open_usage: '打开用量', appearance: '外观', dark: '深色', light: '浅色',
     dark_description: '深海军蓝，默认主题', light_description: '浅紫色主题',
     language: '语言', language_description: '选择此浏览器的界面语言。',
@@ -236,6 +251,6 @@ export const zhCN = {
     prompt_library: '提示词库', retrieval_settings: '检索设置',
     plugins: '可选模块', settings: '设置', space_settings: '空间设置',
     skills: '技能库', agents_mgmt: '智能体', providers: '提供方',
-    usage: 'Token 用量', network_profiles: '网络', automations: '自动化',
+    usage: '用量', network_profiles: '网络', automations: '自动化',
   },
 } satisfies TranslateShape<typeof en>

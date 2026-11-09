@@ -204,6 +204,7 @@ what is installed.
 | Recurring in-process work and its cursor state | `SchedulerRegistry` + `PgSchedulerTaskStore` (`scheduler_tasks`) | `server/src/modules/scheduler/` |
 | Durable async jobs and their retry/attempt semantics | `JobHandlerRegistry` + job worker | `server/src/modules/jobs/` |
 | Cron expressions and next-run computation | `cron-parser`, confined to `schedule.ts`, behind `computeNextRunAt` / `parseSchedule` / `InvalidScheduleError`. Day-of-month and day-of-week combine with OR. A DST spring-forward gap shifts the instant forward by the gap length instead of skipping to the next valid day; that is the accepted behavior for a schedule whose minute falls inside the transition, and a regression test locks it. | `server/src/modules/automations/schedule.ts` |
+| Verification command word parsing | `shell-quote` through `verificationCommandArgv`; reject shell operators and expansion, keep quoted argv literal, never execute a shell | `server/src/modules/runs/verification/commandArgv.ts` |
 | Proposal-gated writes | proposal applier registry | `server/src/modules/proposals/` |
 | Agent task/conversation context | `RuntimeContextGatewayPort` facade | `server/src/modules/runtimeContext/` |
 | Bounded model invocation and provider credentials | `providers`; Agent execution is ACP through the execution Host daemon | `server/src/modules/providers/` |
@@ -219,6 +220,9 @@ what is installed.
 | Sources generated-code execution foundation | Dedicated Host frames + bubblewrap + systemd/cgroup v2; server `fetchGuarded` and persistent request admission, fail closed on missing capabilities (ADR 0026). Pinned `@crawlee/basic` 3.18.2 and `cheerio` 1.2.0 run only in the trusted Host daemon, serial queue/HTML adapter with isolated dependency-free handlers | `packages/host-daemon/src/sourceExecution.ts`, `server/src/modules/sources/sourceRequestBroker.ts` |
 | XML parsing | `fast-xml-parser` | `server/src/modules/sources/` |
 | Skill ZIP import | `fflate` streaming `Unzip`; entry count and decompressed bytes bounded by the importer, no filesystem extraction | `server/src/modules/skills/skillArchive.ts` |
+| Power-safe Host record a remote decision relies on (ref-operation/release journals, epoch and keeper records) | `writeJsonDurable` / `syncExistingDurable`: file fsync, rename, parent-directory fsync, and the directory chain up to the config directory until once synced; equal/replayed values are synced, never trusted; any failure throws before the ack. Ordinary receipts keep `writeJson` (atomic rename only) — do not widen durability to unrelated records | `packages/host-daemon/src/durableFile.ts` |
+| Power-safe Git ref a remote decision or a deletion relies on (keeper, re-pin, Run history), and exact ref presence | `syncRefDurable` (loose file + directories, `packed-refs`, or reftable) after every write and for an already-present equal ref; `readRef` tells absence from a read fault | `packages/host-daemon/src/durableRef.ts` |
+| Bounded, cancellable Git output (streamed pages) | `runLocationGit(..., {onStdout})`: chunks are not held; returning false stops Git (`stopped`) | `packages/folder-read/src/git.ts` |
 | Managed runtime zip extraction on a Host | `yauzl` streaming to disk, Unix modes from the central directory, path-escape refusal; no `unzip` dependency on the machine. Tarballs still use `tar` | `packages/host-daemon/src/zipExtract.ts` |
 | PDF text extraction | `unpdf` — confined to the extractor | `server/src/modules/sources/pdfExtract.ts` |
 | YAML | `yaml` | catalog/manifest readers |

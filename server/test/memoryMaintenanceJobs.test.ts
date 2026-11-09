@@ -4,6 +4,9 @@ import {
   runMemoryMaintenanceJobOnce,
 } from "../src/modules/memory/maintenanceJobs.js";
 import type { MemoryRow, Queryable } from "../src/modules/memory/repository.js";
+import { withDbTransaction } from "../src/modules/routeUtils/common.js";
+import { useReviewPacketDatabase } from "./support/reviewPacketDatabase.js";
+import { insertMemoryEntry } from "./support/memoryFixtures.js";
 
 interface CapturedQuery {
   sql: string;
@@ -169,45 +172,6 @@ function job(overrides: Partial<MemoryMaintenanceJobRow> = {}): MemoryMaintenanc
   };
 }
 
-function memoryRow(overrides: Partial<MemoryRow> = {}): MemoryRow {
-  return {
-    id: "memory-1",
-    space_id: "space-1",
-    subject_user_id: null,
-    owner_user_id: "user-1",
-    scope_type: "user",
-    namespace: "user.default",
-    memory_type: "fact",
-    title: "Shared",
-    content: "Long enough visible memory content.",
-    status: "active",
-    visibility: "private",
-    sensitivity_level: "normal",
-    access_level: "full",
-    last_confirmed_at: null,
-    confidence: 1,
-    importance: 0.5,
-    source_id: null,
-    created_by: "user-1",
-    created_at: "2026-01-01T00:00:00.000Z",
-    updated_at: "2026-01-01T00:00:00.000Z",
-    deleted_at: null,
-    version: 1,
-    tags: [],
-    memory_layer: "semantic",
-    source_trust: "user_confirmed",
-    created_from_proposal_id: null,
-    root_memory_id: null,
-    supersedes_memory_id: null,
-    project_id: null,
-    agent_id: null,
-    origin_room_id: null,
-    approved_by: null,
-    access_count: 0,
-    last_accessed_at: null,
-    ...overrides,
-  };
-}
 
 describe("Memory maintenance jobs", () => {
   it("creates normalized full-scan jobs", async () => {
@@ -239,37 +203,6 @@ describe("Memory maintenance jobs", () => {
     });
   });
 
-  it("runs one job page and persists report, packet, reads, and completed state", async () => {
-    const db = new FakeJobDb([
-      memoryRow({ id: "memory-1", title: "Shared" }),
-      memoryRow({ id: "memory-2", title: "Shared" }),
-    ], { job: job() });
-
-    const result = await runMemoryMaintenanceJobOnce(db, {
-      spaceId: "space-1",
-      userId: "user-1",
-      jobId: "job-1",
-      includeSpaceOps: false,
-    });
-
-    expect(result).not.toBeNull();
-    expect(result!.job.status).toBe("completed");
-    expect(result!.job.total_scanned).toBe(2);
-    expect(result!.job.total_findings).toBe(1);
-    expect(result!.job.last_report_artifact_id).toMatch(/[0-9a-f-]{36}/);
-    expect(result!.job.last_packet_proposal_id).toMatch(/[0-9a-f-]{36}/);
-    expect(result!.report).toMatchObject({
-      job_id: "job-1",
-      job_status: "completed",
-      counts: { duplicate: 1 },
-      artifact_id: result!.job.last_report_artifact_id,
-      proposal_id: result!.job.last_packet_proposal_id,
-    });
-    expect(db.calls.some((call) => call.sql.includes("INSERT INTO artifacts"))).toBe(true);
-    expect(db.calls.some((call) => call.sql.includes("INSERT INTO proposals"))).toBe(true);
-    expect(db.calls.some((call) => call.sql.includes("INSERT INTO content_access_logs"))).toBe(true);
-  });
-
   it("marks a job failed and returns report null when the page run fails", async () => {
     const db = new FakeJobDb([], { job: job(), failOnScan: true });
 
@@ -291,5 +224,56 @@ describe("Memory maintenance jobs", () => {
     expect(db.calls.some((call) => call.sql.includes("SAVEPOINT memory_maintenance_job_run"))).toBe(true);
     expect(db.calls.some((call) => call.sql.includes("ROLLBACK TO SAVEPOINT memory_maintenance_job_run"))).toBe(true);
     expect(db.calls.some((call) => call.sql.includes("SET status = 'failed'"))).toBe(true);
+  });
+});
+
+describe("Memory maintenance jobs (real PostgreSQL)", () => {
+  const packetDatabase = useReviewPacketDatabase(import.meta.url);
+
+  it("runs one job page and persists report, packet, reads, and completed state", async () => {
+    const pool = packetDatabase.database.pool;
+    for (const id of ["memory-1", "memory-2"]) {
+      await insertMemoryEntry(pool, "space-1", {
+        id, owner_user_id: "user-1", created_by: "user-1", title: "Shared",
+        content: "Long enough visible memory content.", namespace: "user.default",
+        created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z",
+      });
+    }
+    const created = await createMemoryMaintenanceJob(pool, {
+      spaceId: "space-1",
+      ownerUserId: "user-1",
+      request: { ...job().scan_options_json, project_id: null } as never,
+    });
+
+    const result = await withDbTransaction(pool, (client) => runMemoryMaintenanceJobOnce(client, {
+      spaceId: "space-1",
+      userId: "user-1",
+      jobId: created.id,
+      includeSpaceOps: false,
+    }));
+
+    expect(result).not.toBeNull();
+    expect(result!.job.status).toBe("completed");
+    expect(result!.job.total_scanned).toBe(2);
+    expect(result!.job.total_findings).toBe(1);
+    expect(result!.report).toMatchObject({
+      job_id: created.id,
+      job_status: "completed",
+      counts: { duplicate: 1 },
+      artifact_id: result!.job.last_report_artifact_id,
+      proposal_id: result!.job.last_packet_proposal_id,
+    });
+    const stored = (await pool.query(
+      "SELECT status, total_scanned, total_findings, last_report_artifact_id, last_packet_proposal_id FROM memory_maintenance_jobs WHERE id = $1",
+      [created.id],
+    )).rows[0];
+    expect(stored).toMatchObject({ status: "completed", total_scanned: 2, total_findings: 1 });
+    expect((await pool.query("SELECT owner_user_id, visibility FROM artifacts WHERE id = $1", [stored.last_report_artifact_id])).rows)
+      .toEqual([{ owner_user_id: "user-1", visibility: "private" }]);
+    expect((await pool.query("SELECT proposal_type, status FROM proposals WHERE id = $1", [stored.last_packet_proposal_id])).rows)
+      .toEqual([{ proposal_type: "memory_maintenance_packet", status: "pending" }]);
+    // The owner's own reads are counted on the Memory rows; no other viewer is audited.
+    expect((await pool.query("SELECT id, access_count FROM memory_entries WHERE space_id = 'space-1' ORDER BY id")).rows)
+      .toEqual([{ id: "memory-1", access_count: 1 }, { id: "memory-2", access_count: 1 }]);
   });
 });

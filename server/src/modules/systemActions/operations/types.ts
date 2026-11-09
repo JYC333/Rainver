@@ -11,26 +11,36 @@ export interface ResolvedOperation {
   resourceType: string;
   resourceId: string|null;
 }
+/** Host-authored invocation identity; never read from a business input. */
+export interface OperationInvocation {
+  readonly requestId: string;
+  readonly idempotencyKey: string | null;
+}
 export interface OperationRegistration {
   definition: SystemActionDefinition;
   readKind?: 'metadata' | 'content';
   /** Access-owned Personal/Project placement, for human new-content drafts and the named Monitor creation command.
    * Never accepts a target Space from input and never moves existing content. */
   userContentCreation?: true;
+  /** The host admits this complete Run closure before domain locks. A child
+   * receives no preparation flag or host client and cannot extend the set. */
+  runTerminalOwner?: {
+    discover(db:Queryable,input:unknown,actor:OperationActor):Promise<readonly {space_id:string;id:string}[]>;
+  };
   successStatus?: 200 | 201 | 202;
   resolve(db: Queryable, input: unknown, actor: OperationActor): Promise<ResolvedOperation>;
   /** Pure normalization after stable target binding; never includes observed mutable versions. */
   normalizeInput?(input: unknown, scope: ResolvedOperation): unknown;
   authorize(db: Queryable, input: unknown, actor: OperationActor, scope: ResolvedOperation): Promise<void>;
   authorizeResult?(db: Queryable, output: unknown, actor: OperationActor): Promise<void>;
-  execute(db: Queryable, input: unknown, actor: OperationActor): Promise<unknown>;
+  execute(db: Queryable, input: unknown, actor: OperationActor, invocation?: Readonly<OperationInvocation>): Promise<unknown>;
   /** Explicit safe allowlist only: never reflect arbitrary HttpError messages/bodies.
    * Deterministic 409/422 errors are rolled back to the domain savepoint and cached.
    */
   classifyError?(error: unknown): OperationBusinessError | undefined;
   /** Rebuildable notifications only; required work must already be a transactional Job intent. */
   afterCommit?(output: unknown, actor: OperationActor): Promise<void>;
-  policyContext?(input: unknown, actor: OperationActor): PolicyCheckRequest['context'];
+  policyContext?(input: unknown, actor: OperationActor, scope: ResolvedOperation): PolicyCheckRequest['context'];
   /** Separate host audit port, invoked before releasing query content; never a writable data transaction. */
   readAudit?(audit: OperationReadAuditPort, input: unknown, output: unknown, actor: OperationActor): Promise<void>;
   approval?: {

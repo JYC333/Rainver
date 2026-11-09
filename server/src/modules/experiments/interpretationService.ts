@@ -1,3 +1,4 @@
+import { ExperimentMutationError } from './operationErrors.js';
 import { randomUUID } from "node:crypto";
 import {
   HttpError,
@@ -79,12 +80,12 @@ export class ExperimentInterpretationService {
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const verdict = requiredString(body.verdict, "verdict");
-    if (!VERDICTS.has(verdict)) throw new HttpError(422, `verdict must be one of ${[...VERDICTS].join(", ")}`);
+    if (!VERDICTS.has(verdict)) throw new ExperimentMutationError(422, `verdict must be one of ${[...VERDICTS].join(", ")}`);
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
       const runIds = [...new Set(stringArray(body.run_ids))];
-      if (runIds.length === 0) throw new HttpError(422, "run_ids must contain at least one Experiment Run");
+      if (runIds.length === 0) throw new ExperimentMutationError(422, "run_ids must contain at least one Experiment Run");
       const referencedRuns = await db.query<{ id: string }>(
         `SELECT r.id FROM experiment_runs r
            JOIN experiment_versions v ON v.id=r.version_id AND v.space_id=r.space_id
@@ -93,7 +94,7 @@ export class ExperimentInterpretationService {
         [identity.spaceId, definitionId, runIds],
       );
       if (referencedRuns.rows.length !== runIds.length) {
-        throw new HttpError(422, "run_ids must reference completed or failed Runs from this Experiment");
+        throw new ExperimentMutationError(422, "run_ids must reference completed or failed Runs from this Experiment");
       }
       const id = randomUUID();
       const now = new Date().toISOString();
@@ -132,7 +133,7 @@ export class ExperimentInterpretationService {
       // Project writer must not review what they cannot see (B: a visibility
       // rule applied only to lists is not a rule).
       await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, row.definition_id, identity.userId, db);
-      if (row.status !== "draft") throw new HttpError(409, `Interpretation already ${row.status}`);
+      if (row.status !== "draft") throw new ExperimentMutationError(409, `Interpretation already ${row.status}`);
       const now = new Date().toISOString();
       await db.query(
         `UPDATE experiment_interpretations SET status='reviewed', reviewed_by_user_id=$3, reviewed_at=$4, updated_at=$4 WHERE id=$1 AND space_id=$2`,
@@ -154,10 +155,10 @@ export class ExperimentInterpretationService {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const row = await this.row(db, identity.spaceId, projectId, interpretationId, true);
       if (!row) throw new HttpError(404, "Experiment Interpretation not found");
-      if (row.status !== "reviewed") throw new HttpError(409, "Only a reviewed Interpretation can be converted to an Evidence Signal");
+      if (row.status !== "reviewed") throw new ExperimentMutationError(409, "Only a reviewed Interpretation can be converted to an Evidence Signal");
       const definition = await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, row.definition_id, identity.userId, db);
       const threadId = definition.primary_hypothesis_thread_id;
-      if (!threadId) throw new HttpError(409, "This Experiment has no primary Hypothesis Thread to attach a Signal to");
+      if (!threadId) throw new ExperimentMutationError(409, "This Experiment has no primary Hypothesis Thread to attach a Signal to");
       const signal = await new InquirySignalService(db).createSignalFromReviewedExperiment(identity, projectId, threadId, interpretationId, {
         classification: VERDICT_TO_CLASSIFICATION[row.verdict],
         is_material: true,

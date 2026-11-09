@@ -199,7 +199,7 @@ immutable Run contract; `read` resolves to `read_only` at runtime admission,
 independent of risk, Folder defaults or saved vendor session permissions.
 Task titles and instruction prose never determine permissions.
 
-Different Agents' read-only children in the same Room are admitted together;
+For legacy contracts, different Agents' read-only children in the same Room are admitted together;
 a writer waits for earlier children, and later readers cannot overtake it.
 Same-Agent vendor threads and Host capacity retain their existing gates.
 The server Host and personal Linux Hosts reporting verified `bwrap-v1` support
@@ -214,7 +214,8 @@ outputs, while source diff collection is disabled for read-only Runs.
 The coordinator creates every independent reader before yielding with
 `agent.wait_for_results`; children start only after the parent's execution
 has yielded or finished. Delegation tool results expose `workspace_access`
-and `workspace_concurrency` (`shared_read` or `exclusive_write`), and
+and `workspace_concurrency` (`isolated_workspace` for version-1 isolated Run
+contracts, otherwise `shared_read` or `exclusive_write`), and
 `agent.list_runs` reads each authorized Run's immutable contract and current
 queue/parent/Host wait evidence. `waiting_for_parent` means the parent has not
 released execution; `waiting_for_delegation_admission` means the jobless child
@@ -1184,3 +1185,21 @@ cross-session and cross-CLI queue serialization, while conversation dispatch
 locks, host capacity (`BUILTIN_HOST_MAX_CONCURRENT_RUNS`) and checkout write
 leases remain independent protections. A host waiting for capacity or a shared
 checkout can still queue; separate vendor sessions do not isolate shared files.
+
+### Isolated Conversation and delegation execution
+
+ADR 0029 adds `execution_workspace_version:1` to new Project-Location contracts.
+Host capability version 2 is required. Conversation owners and delegation owners
+are independent of individual Runs; same-Conversation prompts still remain
+ordered. After a parent checkpoint, independent children use distinct workspaces
+and vendor threads, including repeated delegation to the same Agent. Existing
+admission, budget, subscription quota and Host capacity gates remain authoritative.
+The parent resumes only after child results have been adopted at a safe boundary;
+only its completed result publishes to the original target.
+
+Verification consumes execution refs, canonical cwd scope and private attachment
+mounts. Candidate verification uses frozen read-only mirrors for the other
+repositories. Host checkpoint order is persisted; a late reply cannot replace a
+newer workspace head. Runtime profile cache identity is Agent × workspace UUID,
+or Agent × integration-attempt UUID for bounded repair. Failed work is saved and
+kept private; terminal Run status alone never publishes changes.

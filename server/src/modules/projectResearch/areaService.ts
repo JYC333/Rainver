@@ -1,3 +1,5 @@
+import {recordDetailRead} from '../contentAccess/audit.js';
+import {ResearchContentReadAuditError} from './workspaceErrors.js';
 import {assertResearchReportCallReadable} from './reportAccess.js';
 import {ProjectResearchReportRepository} from "./reportRepository.js";
 import { RESEARCH_STAGES } from "./researchStages.js";
@@ -5,12 +7,17 @@ import { randomUUID } from "node:crypto";
 import { HttpError, objectValue, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
-import { assertProjectReadable, assertProjectWriter, canWriteProject, lockActiveProjectForMutation } from "../projects/access.js";
+import { assertProjectReadable, assertProjectWriter, canWriteProject, lockActiveProjectForMutation, lockProjectAudience } from "../projects/access.js";
 import { ProjectCorpusRepository } from "../projects/corpusRepository.js";
 import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
 import type { ServerConfig } from "../../config.js";
 import { ProjectResearchExecutionProfileService } from "./executionProfileService.js";
-import { runBoundedProviderTask } from "../runs/boundedProviderTaskRun.js";
+import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
+import {canonicalRunOutput} from '../runs/orchestrationResults.js';
+import {NotebookChatMutationError,NotebookChatBudgetError} from './notebookChatErrors.js';
+import {authorizeNotebookChatAttempt} from './notebookChatAdmission.js';
+import {authorizeResearchAdhocAttempt} from './adhocOperation.js';
+import {assertResearchProviderSourceEgress,assertResearchNoteSourceAudience,assertResearchProjectSourceAudience} from './providerSourceAccess.js';
 import { enqueueProviderTaskRunJob, providerTaskRunPreparers } from "../runs/providerTaskRunHandler.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { withQueryableTransaction } from "../routeUtils/common.js";
@@ -132,11 +139,10 @@ export class ProjectResearchAreaService {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const folder = await this.db.query<{ id: string }>(`SELECT id FROM note_collections WHERE space_id=$1 AND project_id=$2`, [identity.spaceId, projectId]);
     if (!folder.rows[0]) throw new HttpError(404, "Research Area not initialized");
-    const [notes, checklist, reports] = await Promise.all([
-      this.listProjectNotes(identity, projectId),
-      this.db.query(`SELECT * FROM research_checklist_items WHERE space_id=$1 AND project_id=$2 ORDER BY sort_order,id`, [identity.spaceId, projectId]),
-      new ProjectResearchReportRepository(this.db).list(identity,projectId).then(rows=>({rows})),
-    ]);
+    // This service also joins a core-owned transaction port (one PG client).
+    const notes=await this.listProjectNotes(identity,projectId);
+    const checklist=await this.db.query(`SELECT * FROM research_checklist_items WHERE space_id=$1 AND project_id=$2 ORDER BY sort_order,id`,[identity.spaceId,projectId]);
+    const reports={rows:await new ProjectResearchReportRepository(this.db).list(identity,projectId)};
     return { notes_collection_id: folder.rows[0].id, notes, checklist: checklist.rows, reports: reports.rows };
   }
 
@@ -193,6 +199,17 @@ export class ProjectResearchAreaService {
   // knowledge note endpoints: /api/v1/knowledge/notes/:noteId
   // (+/revisions, +/rollback). A project's notes are ordinary Notes.
 
+  async getEvidenceCard(identity:SpaceUserIdentity,projectId:string,sourceItemId:string){
+    return withQueryableTransaction(this.db,async db=>{
+      await assertProjectReadable(db,identity.spaceId,projectId,identity.userId);
+      const row=(await db.query(`SELECT card.* FROM research_evidence_cards card JOIN source_items si ON si.id=card.source_item_id AND si.space_id=card.space_id WHERE card.space_id=$1 AND card.project_id=$2 AND card.source_item_id=$3 AND si.deleted_at IS NULL AND EXISTS(SELECT 1 FROM project_corpus_items pci JOIN project_corpus_item_sources pcis ON pcis.corpus_item_id=pci.id AND pcis.space_id=pci.space_id WHERE pci.space_id=card.space_id AND pci.project_id=card.project_id AND pcis.source_item_id=si.id AND pci.status='active') AND ${sourceItemReadableClause('si','$4',false)}`,[identity.spaceId,projectId,sourceItemId,identity.userId])).rows[0];
+      if(!row)throw new HttpError(404,'Project material not found');
+      try{await recordDetailRead(db,{spaceId:identity.spaceId,viewerUserId:identity.userId,resourceType:'source_item',resourceId:sourceItemId});}
+      catch{throw new HttpError(503,'Content read audit unavailable');}
+      return row;
+    });
+  }
+
   async upsertEvidenceCard(identity: SpaceUserIdentity, projectId: string, sourceItemId: string, body: Record<string, unknown>) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const now = new Date().toISOString();
@@ -209,6 +226,12 @@ export class ProjectResearchAreaService {
     );
     if (!result.rows[0]) throw new HttpError(404, "Project material not found");
     return result.rows[0];
+  }
+
+  async getChecklistItem(identity:SpaceUserIdentity,projectId:string,itemId:string){
+    await assertProjectReadable(this.db,identity.spaceId,projectId,identity.userId);
+    const row=(await this.db.query('SELECT * FROM research_checklist_items WHERE id=$1 AND space_id=$2 AND project_id=$3',[itemId,identity.spaceId,projectId])).rows[0];
+    if(!row)throw new HttpError(404,'Checklist item not found');return row;
   }
 
   async createChecklistItem(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>) {
@@ -237,7 +260,18 @@ export class ProjectResearchAreaService {
   }
 
   async askAi(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>) {
+    return withQueryableTransaction(this.db,db=>new ProjectResearchAreaService(db,this.config).askAiInTransaction(identity,projectId,body));
+  }
+
+  /** Pure target discovery for core admission; a hidden reserved role cannot be replaced. */
+  async resolveAdhocNoteId(identity:SpaceUserIdentity,projectId:string,section:string):Promise<string|null>{
+    if(isNoteProjectRole(section)){const note=await resolveNotebookNote(this.db,identity.spaceId,projectId,section,null);return note.present?note.note.id:null;}
+    return (await this.resolveProjectNoteByExactTitle(identity,projectId,section))?.id??null;
+  }
+
+  private async askAiInTransaction(identity:SpaceUserIdentity,projectId:string,body:Record<string,unknown>){
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
+    await lockActiveProjectForMutation(this.db,identity.spaceId,projectId);
     if (!this.config) throw new HttpError(500, "Research execution is unavailable");
     const prompt = text(body.prompt, 4000);
     if (!prompt) throw new HttpError(422, "prompt is required");
@@ -250,7 +284,7 @@ export class ProjectResearchAreaService {
     const title = role ? SECTION_LABELS[role] : requested;
     const used = await this.adhocRunsUsedToday(identity.spaceId, projectId);
     if (used >= RESEARCH_ADHOC_DAILY_RUN_LIMIT) {
-      throw new HttpError(429, `The ad-hoc research budget of ${RESEARCH_ADHOC_DAILY_RUN_LIMIT} runs per day is spent for this project; try again tomorrow`);
+      throw new NotebookChatBudgetError(429, `The ad-hoc research budget of ${RESEARCH_ADHOC_DAILY_RUN_LIMIT} runs per day is spent for this project; try again tomorrow`);
     }
     const { folderId } = await withNoteWrites(this.db, (scope) =>
       new ProjectResearchAreaService(scope.db, this.config).ensureArea(scope, identity.spaceId, projectId));
@@ -282,8 +316,8 @@ export class ProjectResearchAreaService {
     const baseVersion = note.version;
     const blocks = pmBlocksText(note.content_json ?? { type: "doc", content: [] });
     const materialIds = (Array.isArray(body.source_item_ids) ? body.source_item_ids : []).filter((v): v is string => typeof v === "string").slice(0, 20);
-    const material = materialIds.length ? await this.db.query<{ title: string; excerpt: string | null; why_md: string | null; how_md: string | null; what_md: string | null }>(
-      `SELECT si.title,si.excerpt,pc.why_md,pc.how_md,pc.what_md
+    const material = materialIds.length ? await this.db.query<{ id:string; title: string; excerpt: string | null; why_md: string | null; how_md: string | null; what_md: string | null }>(
+      `SELECT si.id,si.title,si.excerpt,pc.why_md,pc.how_md,pc.what_md
          FROM project_corpus_items pci
          JOIN project_corpus_item_sources pcis ON pcis.corpus_item_id=pci.id AND pcis.space_id=pci.space_id
          JOIN source_items si ON si.id=pcis.source_item_id AND si.space_id=pcis.space_id AND si.deleted_at IS NULL
@@ -295,6 +329,14 @@ export class ProjectResearchAreaService {
     const execution = objectValue(body.execution);
     const resolved = await new ProjectResearchExecutionProfileService(this.db, this.config)
       .resolveProvider(identity, { modelProviderId: optionalString(execution.model_provider_id), modelName: optionalString(execution.model_name) });
+    const copiedMaterialIds=[...new Set(material.rows.map(row=>row.id))];
+    await lockProjectAudience(this.db,identity.spaceId,projectId);
+    await assertResearchProviderSourceEgress(this.db,this.config,identity,{providerId:resolved.modelProviderId,modelName:resolved.modelName},copiedMaterialIds,[note.id]);
+    await assertResearchNoteSourceAudience(this.db,identity,note.id,copiedMaterialIds);
+    try{
+      await recordDetailRead(this.db,{spaceId:identity.spaceId,viewerUserId:identity.userId,resourceType:'space_object',resourceId:note.id});
+      for(const id of copiedMaterialIds)await recordDetailRead(this.db,{spaceId:identity.spaceId,viewerUserId:identity.userId,resourceType:'source_item',resourceId:id});
+    }catch{throw new ResearchContentReadAuditError();}
     const instruction = adhocAnalysisInstruction({
       prompt, title, baseVersion, blocks,
       material: material.rows.map((item) => JSON.stringify(item)),
@@ -314,10 +356,11 @@ export class ProjectResearchAreaService {
         instruction,
         project_id: projectId,
         capability_id: RESEARCH_ADHOC_STAGE_ID,
+        visibility:'private',
         contract_snapshot: {
           source: { kind: "direct", id: note.id }, project_id: projectId,
           policy_context_json: createManagedExecutionPolicy("project_research", true),
-          workflow_input_json: { research_adhoc: { note_id: note.id, base_version: baseVersion, source_item_ids: materialIds } },
+          workflow_input_json: { research_adhoc: { note_id: note.id, base_version: baseVersion, source_item_ids: copiedMaterialIds } },
           structured_output_json: ADHOC_OUTPUT_CONTRACT,
           route_hints_json: {
             owner_domain: "projectResearch",
@@ -335,6 +378,7 @@ export class ProjectResearchAreaService {
     return {
       run_id: queued.run.id,
       job_id: queued.job.id,
+      note_id:note.id,
       status: "queued",
       daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT,
       daily_used: used + 1,
@@ -342,22 +386,27 @@ export class ProjectResearchAreaService {
   }
 
   /**
-   * Synchronous multi-turn conversation grounded in the whole notebook +
+   * Queued multi-turn conversation grounded in the whole notebook +
    * selected material. Reuses the generic sessions store (project_id-scoped)
    * for history; when the model's reply includes a notebook_update it is
-   * applied immediately (same ai_adhoc direct-write + revision model as
+   * applied by the existing provider-task worker (same ai_adhoc direct-write + revision model as
    * askAi), and the applied/attempted edit is attached to the assistant
    * message so the client can render an inline undo affordance and reload
    * it from session history later.
    */
   async notebookChat(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>) {
+    return withQueryableTransaction(this.db,async db=>new ProjectResearchAreaService(db,this.config).queueNotebookChat(identity,projectId,body));
+  }
+
+  private async queueNotebookChat(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>) {
+    await lockActiveProjectForMutation(this.db,identity.spaceId,projectId);
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     if (!this.config) throw new HttpError(500, "Research execution is unavailable");
     const message = text(body.message, 4000);
-    if (!message) throw new HttpError(422, "message is required");
+    if (!message) throw new NotebookChatMutationError(422, "message is required");
     const used = await this.adhocRunsUsedToday(identity.spaceId, projectId);
     if (used >= RESEARCH_ADHOC_DAILY_RUN_LIMIT) {
-      throw new HttpError(429, `The ad-hoc research budget of ${RESEARCH_ADHOC_DAILY_RUN_LIMIT} runs per day is spent for this project; try again tomorrow`);
+      throw new NotebookChatBudgetError(429, `The ad-hoc research budget of ${RESEARCH_ADHOC_DAILY_RUN_LIMIT} runs per day is spent for this project; try again tomorrow`);
     }
     const { folderId } = await withNoteWrites(this.db, (scope) =>
       new ProjectResearchAreaService(scope.db, this.config).ensureArea(scope, identity.spaceId, projectId));
@@ -367,18 +416,24 @@ export class ProjectResearchAreaService {
       ? await sessions.getSession(identity.spaceId, identity.userId, requestedSessionId)
       : await sessions.createSession(identity.spaceId, identity.userId, { projectId, title: "Research notebook chat" });
     if (!session) throw new HttpError(404, "session not found in this space");
-    if ((session.project_id ?? null) !== projectId) throw new HttpError(409, "session belongs to a different project");
+    if ((session.project_id ?? null) !== projectId) throw new NotebookChatMutationError(409, "session belongs to a different project");
     const userMessage = await sessions.addMessage(identity.spaceId, identity.userId, session.id, { role: "user", content: message });
     if (!userMessage) throw new HttpError(404, "session not found in this space");
 
     const history = (await sessions.listRecentMessagesForContext(identity.spaceId, identity.userId, session.id, 20)) ?? [];
+    // Prior answers retain the context that produced them. A follow-up must
+    // not resend those words after their Source/Note authority was withdrawn.
+    const historyRuns=[...new Set(history.flatMap(message=>message.run_id?[message.run_id]:[]))];
+    const priorContexts=(await this.db.query<{contract_snapshot_json:unknown}>("SELECT contract_snapshot_json FROM runs WHERE id=ANY($1::varchar[]) AND space_id=$2 AND project_id=$3 AND session_id=$4 AND instructed_by_user_id=$5 AND capability_id=$6 ORDER BY id",[historyRuns,identity.spaceId,projectId,session.id,identity.userId,RESEARCH_STAGES.ask])).rows.map(run=>objectValue(objectValue(objectValue(run.contract_snapshot_json).workflow_input_json).notebook_chat));
+    const priorSourceIds=new Set(priorContexts.flatMap(context=>Array.isArray(context.source_item_ids)?context.source_item_ids.filter((id):id is string=>typeof id==='string'):[]));
+    const priorNoteRefs=priorContexts.flatMap(context=>Array.isArray(context.note_refs)?context.note_refs.flatMap(ref=>ref&&typeof ref==='object'&&typeof ref.id==='string'&&Number.isInteger(ref.version)?[{id:ref.id as string,version:ref.version as number}]:[]):[]);
     const historyBlock = history.length > 1
       ? `Conversation so far:\n${history.slice(0, -1).map((m) => `${m.role}: ${m.content}`).join("\n")}`
       : "";
 
     const materialIds = (Array.isArray(body.source_item_ids) ? body.source_item_ids : []).filter((v): v is string => typeof v === "string").slice(0, 20);
-    const material = materialIds.length ? await this.db.query<{ title: string; excerpt: string | null; why_md: string | null; how_md: string | null; what_md: string | null }>(
-      `SELECT si.title,si.excerpt,pc.why_md,pc.how_md,pc.what_md
+    const material = materialIds.length ? await this.db.query<{ id:string; title: string; excerpt: string | null; why_md: string | null; how_md: string | null; what_md: string | null }>(
+      `SELECT si.id,si.title,si.excerpt,pc.why_md,pc.how_md,pc.what_md
          FROM project_corpus_items pci
          JOIN project_corpus_item_sources pcis ON pcis.corpus_item_id=pci.id AND pcis.space_id=pci.space_id
          JOIN source_items si ON si.id=pcis.source_item_id AND si.space_id=pcis.space_id AND si.deleted_at IS NULL
@@ -412,33 +467,49 @@ export class ProjectResearchAreaService {
       "Never rewrite blocks you are not changing. Use refs for source_item ids you relied on.",
     ].filter(Boolean).join("\n\n");
 
-    const task = await runBoundedProviderTask(this.db, this.config, {
-      completion: "structured",
-      runType: "agent", triggerOrigin: "manual",
-      spaceId: identity.spaceId, userId: identity.userId, projectId,
-      task: RESEARCH_NOTEBOOK_CHAT_TASK, capabilityId: RESEARCH_STAGES.ask,
-      providerId: resolved.modelProviderId, model: resolved.modelName,
-      system: RESEARCH_BOUNDED_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: instruction }],
-      outputFormat: NOTEBOOK_CHAT_OUTPUT_CONTRACT,
-      prompt: message, instruction,
-      contractSnapshot: {
-        source: { kind: "direct", id: folderId }, project_id: projectId,
-        policy_context_json: createManagedExecutionPolicy("project_research", true),
-        workflow_input_json: {},
-        structured_output_json: NOTEBOOK_CHAT_OUTPUT_CONTRACT,
-        route_hints_json: { owner_domain: "projectResearch", stage: "research_notebook_chat" },
-      },
-      spend: { kind: "person", user_id: identity.userId },
+    const frozenNotes=new Map(notes.map(note=>[note.id,{id:note.id,version:note.version}]));
+    for(const ref of priorNoteRefs)if(!frozenNotes.has(ref.id))frozenNotes.set(ref.id,ref);
+    const frozenSourceIds=[...new Set([...material.rows.map(item=>item.id),...priorSourceIds])];
+    const queued = await withQueryableTransaction(this.db, async db => {
+      const run = await new PgRunRepository(db).createQueuedProviderTaskRun({
+        space_id:identity.spaceId,user_id:identity.userId,project_id:projectId,session_id:session.id,
+        trigger_origin:'manual',run_type:'agent',task:RESEARCH_NOTEBOOK_CHAT_TASK,
+        capability_id:RESEARCH_STAGES.ask,visibility:'private',prompt:message,instruction,
+        contract_snapshot:{source:{kind:'direct',id:folderId},project_id:projectId,
+          policy_context_json:createManagedExecutionPolicy('project_research',true),
+          workflow_input_json:{notebook_chat:{folder_id:folderId,session_id:session.id,note_refs:[...frozenNotes.values()],source_item_ids:frozenSourceIds,provider_id:resolved.modelProviderId,model_name:resolved.modelName,daily_used:used+1}},
+          structured_output_json:NOTEBOOK_CHAT_OUTPUT_CONTRACT,
+          route_hints_json:{owner_domain:'projectResearch',stage:'research_notebook_chat',provider_id:resolved.modelProviderId,model:resolved.modelName}},
+      });
+      await new PgSessionRepository(db).attachRunToUserMessage({space_id:identity.spaceId,user_id:identity.userId,session_id:session.id,message_id:userMessage.id,run_id:run.id});
+      const job=await enqueueProviderTaskRunJob(db,{run_id:run.id,space_id:identity.spaceId,user_id:identity.userId,max_attempts:1});
+      return {run,job};
     });
-    if (!task.ok) {
-      const errorText = task.error || "The notebook chat task did not complete successfully.";
-      await sessions.addMessage(identity.spaceId, identity.userId, session.id, { role: "assistant", content: errorText, ...(task.runId ? { run_id: task.runId } : {}), metadata: { error: true } });
-      return { session_id: session.id, run_id: task.runId, ok: false, error: errorText, daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT, daily_used: used + 1 };
-    }
-    const runId = task.runId;
+    return {session_id:session.id,run_id:queued.run.id,job_id:queued.job.id,status:'queued',daily_limit:RESEARCH_ADHOC_DAILY_RUN_LIMIT,daily_used:used+1};
+  }
 
-    const output = task.output;
+  /** Finalize the answer, optional canonical Note writes and terminal Run in one owner transaction. */
+  async publishNotebookChatCompletion(spaceId:string,runId:string,output:Record<string,unknown>):Promise<void>{
+    await withRunTerminalOwner(this.db,async()=>[{space_id:spaceId,id:runId}],async db=>{
+      await withQueryableTransaction(db,async tx=>{
+        const run=(await tx.query<{project_id:string;instructed_by_user_id:string;status:string;contract_snapshot_json:unknown}>('SELECT project_id,instructed_by_user_id,status,contract_snapshot_json FROM runs WHERE id=$1 AND space_id=$2 FOR UPDATE',[runId,spaceId])).rows[0];
+        if(!run||['succeeded','degraded','failed','cancelled','orphaned'].includes(run.status))return;
+        const contract=objectValue(objectValue(objectValue(run.contract_snapshot_json).workflow_input_json).notebook_chat),identity={spaceId,userId:run.instructed_by_user_id};
+        await authorizeNotebookChatAttempt(tx,this.config!,identity,run.project_id,contract);
+        await new ProjectResearchAreaService(tx,this.config).appendNotebookChatReply(identity,run.project_id,runId,contract,output);
+        await new PgRunRepository(tx).markRunTerminal({space_id:spaceId,run_id:runId,status:'succeeded',output_json:canonicalRunOutput({success:true,outputText:'',outputJson:output}),completed_at:new Date().toISOString()});
+      });
+    });
+  }
+
+  private async appendNotebookChatReply(identity:SpaceUserIdentity,projectId:string,runId:string,contract:Record<string,unknown>,output:Record<string,unknown>){
+    const sessionId=String(contract.session_id),folderId=String(contract.folder_id),sessions=new PgSessionRepository(this.db);
+    await this.db.query('SELECT id FROM sessions WHERE id=$1 AND space_id=$2 FOR UPDATE',[sessionId,identity.spaceId]);
+    if(!(await sessions.getSession(identity.spaceId,identity.userId,sessionId)))throw new HttpError(404,'Session not found');
+    if((await this.db.query("SELECT id FROM messages WHERE session_id=$1 AND space_id=$2 AND run_id=$3 AND role='assistant'",[sessionId,identity.spaceId,runId])).rows.length)return;
+    const notes=Array.isArray(contract.note_refs)?contract.note_refs as Array<{id:string;version:number}>:[];
+    const materialIds=Array.isArray(contract.source_item_ids)?contract.source_item_ids.filter((id):id is string=>typeof id==='string'):[];
+    await lockProjectAudience(this.db,identity.spaceId,projectId);
     const answer = text(output.answer, 8000) || "(no answer returned)";
     const notebookUpdate = objectValue(output.notebook_update);
     let notebookEdit: { note_id: string; version: number; conflict: boolean } | null = null;
@@ -452,8 +523,10 @@ export class ProjectResearchAreaService {
         // is not permission to have the model rewrite it. A note the person
         // cannot write leaves the edit undone and the answer standing: the
         // Run is already spent, and a 404 here would lose the reply with it.
-        const writable = await assertWritableSpaceObject(this.db, identity, targetNote.id, "Note not found")
-          .then(() => true, (error: unknown) => {
+        const writable = await (async()=>{
+          await assertWritableSpaceObject(this.db, identity, targetNote.id, "Note not found");
+          await assertResearchNoteSourceAudience(this.db,identity,targetNote.id,materialIds,notes.map(note=>note.id));
+        })().then(() => true, (error: unknown) => {
             if (error instanceof HttpError && (error.statusCode === 404 || error.statusCode === 403)) return false;
             throw error;
           });
@@ -463,7 +536,7 @@ export class ProjectResearchAreaService {
           }));
           if (applied) notebookEdit = { note_id: targetNote.id, version: applied.note.version, conflict: applied.conflict };
         }
-      } else {
+      } else if(await assertResearchProjectSourceAudience(this.db,identity,projectId,materialIds,notes.map(note=>note.id)).then(()=>true,(error:unknown)=>{if(error instanceof HttpError&&(error.statusCode===403||error.statusCode===404))return false;throw error;})) {
         const newTitle = text(notebookUpdate.new_note_title, 200) || "Untitled";
         const now = new Date().toISOString();
         // One scope: a note created for an edit that then fails to apply is a
@@ -481,10 +554,43 @@ export class ProjectResearchAreaService {
         if (applied) notebookEdit = { note_id: applied.noteId, version: applied.note.version, conflict: applied.conflict };
       }
     }
-    await sessions.addMessage(identity.spaceId, identity.userId, session.id, {
-      role: "assistant", content: answer, run_id: runId, metadata: { notebook_edit: notebookEdit },
+    await sessions.addMessage(identity.spaceId,identity.userId,sessionId,{role:'assistant',content:answer,run_id:runId,metadata:{notebook_edit:notebookEdit}});
+  }
+
+  /** Terminal worker redelivery repairs only the missing answer message, never invokes the model. */
+  async reconcileNotebookChat(spaceId:string,runId:string):Promise<void>{
+    await withQueryableTransaction(this.db,async db=>{
+      const run=(await db.query<{project_id:string;instructed_by_user_id:string;status:string;output_json:unknown;contract_snapshot_json:unknown}>('SELECT project_id,instructed_by_user_id,status,output_json,contract_snapshot_json FROM runs WHERE id=$1 AND space_id=$2 FOR UPDATE',[runId,spaceId])).rows[0];
+      if(!run||!['succeeded','degraded','failed','cancelled','orphaned'].includes(run.status))return;
+      const contract=objectValue(objectValue(objectValue(run.contract_snapshot_json).workflow_input_json).notebook_chat),sessionId=optionalString(contract.session_id);
+      if(!sessionId)return;
+      const identity={spaceId,userId:run.instructed_by_user_id},sessions=new PgSessionRepository(db);
+      if(!(await sessions.getSession(spaceId,identity.userId,sessionId)))return;
+      if((await db.query("SELECT id FROM messages WHERE session_id=$1 AND space_id=$2 AND run_id=$3 AND role='assistant'",[sessionId,spaceId,runId])).rows.length)return;
+      // New success publication is atomic; a historical missing answer is recovered as text only.
+      // Never apply a notebook edit to a terminal Run outside its committed finalizer.
+      const success=['succeeded','degraded'].includes(run.status),answer=success?text(runOutputResult(run.output_json).answer,8000):'The notebook reply could not be prepared.';
+      await sessions.addMessage(spaceId,identity.userId,sessionId,{role:'assistant',content:answer||'(no answer returned)',run_id:runId,metadata:{notebook_edit:null,...(!success?{error:true}:{})}});
     });
-    return { session_id: session.id, run_id: runId, ok: true, reply: answer, notebook_edit: notebookEdit, daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT, daily_used: used + 1 };
+  }
+
+  async assertNotebookChatReceipt(identity:SpaceUserIdentity,projectId:string,runId:string,sessionId:string){
+    const session=await new PgSessionRepository(this.db).getSession(identity.spaceId,identity.userId,sessionId);
+    const run=await new PgRunRepository(this.db).getRun(identity.spaceId,runId);
+    if(!session||session.project_id!==projectId||!run||run.instructed_by_user_id!==identity.userId||run.project_id!==projectId||run.session_id!==sessionId||run.capability_id!==RESEARCH_STAGES.ask)throw new HttpError(404,'Notebook reply not found');
+  }
+
+  async notebookChatResult(identity:SpaceUserIdentity,projectId:string,runId:string){
+    await assertProjectReadable(this.db,identity.spaceId,projectId,identity.userId);
+    const run=(await this.db.query<{status:string;contract_snapshot_json:unknown}>("SELECT status,contract_snapshot_json FROM runs WHERE id=$1 AND space_id=$2 AND project_id=$3 AND instructed_by_user_id=$4 AND capability_id=$5",[runId,identity.spaceId,projectId,identity.userId,RESEARCH_STAGES.ask])).rows[0];
+    if(!run)throw new HttpError(404,'Notebook reply not found');
+    const contract=objectValue(objectValue(objectValue(run.contract_snapshot_json).workflow_input_json).notebook_chat),sessionId=optionalString(contract.session_id);
+    if(!sessionId||!(await new PgSessionRepository(this.db).getSession(identity.spaceId,identity.userId,sessionId)))throw new HttpError(404,'Notebook reply not found');
+    const message=(await this.db.query<{content:string;metadata_json:unknown}>("SELECT content,metadata_json FROM messages WHERE space_id=$1 AND session_id=$2 AND run_id=$3 AND role='assistant' ORDER BY created_at LIMIT 1",[identity.spaceId,sessionId,runId])).rows[0];
+    const base={session_id:sessionId,run_id:runId,daily_limit:RESEARCH_ADHOC_DAILY_RUN_LIMIT,daily_used:Number(contract.daily_used)};
+    if(message){const metadata=objectValue(message.metadata_json);return {...base,pending:false as const,ok:!metadata.error,...(metadata.error?{error:message.content}:{reply:message.content,notebook_edit:metadata.notebook_edit??null})};}
+    if(['failed','cancelled','orphaned'].includes(run.status))return {...base,pending:false as const,ok:false,error:'The notebook reply could not be prepared.'};
+    return {...base,pending:true as const,status:run.status};
   }
 
   /**
@@ -522,6 +628,10 @@ export class ProjectResearchAreaService {
     contract: Record<string, unknown>;
     update: Record<string, unknown>;
   }): Promise<void> {
+    return withQueryableTransaction(this.db,db=>new ProjectResearchAreaService(db,this.config).applyAdhocNotebookUpdateInTransaction(input));
+  }
+
+  private async applyAdhocNotebookUpdateInTransaction(input:{spaceId:string;runId:string;contract:Record<string,unknown>;update:Record<string,unknown>}):Promise<void>{
     const noteId = optionalString(input.contract.note_id);
     const baseVersion = Number(input.contract.base_version);
     if (!noteId || !Number.isInteger(baseVersion)) return;
@@ -530,6 +640,8 @@ export class ProjectResearchAreaService {
       [noteId, input.runId],
     );
     if (applied.rows[0]) return;
+    if(!this.config)throw new HttpError(500,'Research execution is unavailable');
+    await authorizeResearchAdhocAttempt(this.db,this.config,input.runId);
     const rawOps: unknown[] = Array.isArray(input.update.ops) ? input.update.ops : [];
     if (rawOps.length === 0) {
       throw new Error("Ad-hoc research run output does not contain a valid notebook_update");
@@ -839,6 +951,18 @@ function adhocAnalysisInstruction(input: {
  * what a queued Run runs on.
  */
 export function registerResearchProviderTaskRuns(): void {
+  providerTaskRunPreparers.register(RESEARCH_STAGES.ask,async({db,config,run})=>{
+    const contract=objectValue(run.contract_snapshot_json),hints=objectValue(contract.route_hints_json),chat=objectValue(objectValue(contract.workflow_input_json).notebook_chat),providerId=optionalString(hints.provider_id),userId=optionalString(run.instructed_by_user_id);
+    if(!providerId||!userId||!run.project_id||!chat.session_id)throw new Error('Notebook chat Run is missing its frozen authority');
+    const identity={spaceId:run.space_id,userId};
+    return {completion:'structured',outputFormat:NOTEBOOK_CHAT_OUTPUT_CONTRACT,spaceId:run.space_id,userId,projectId:run.project_id,
+      task:RESEARCH_NOTEBOOK_CHAT_TASK,capabilityId:RESEARCH_STAGES.ask,providerId,model:optionalString(hints.model),
+      system:RESEARCH_BOUNDED_SYSTEM_PROMPT,messages:[{role:'user',content:run.instruction??run.prompt??''}],prompt:run.prompt??'',instruction:run.instruction??null,
+      runType:run.run_type??'agent',triggerOrigin:run.trigger_origin??'manual',spend:{kind:'person',user_id:userId},
+      authorizeAttempt:async attemptDb=>authorizeNotebookChatAttempt(attemptDb,config,identity,run.project_id!,chat),
+      finalize:async(completion,runId)=>{await new ProjectResearchAreaService(db,config).publishNotebookChatCompletion(run.space_id,runId,completion.output??{});return null;}};
+  });
+
   providerTaskRunPreparers.register(RESEARCH_ADHOC_STAGE_ID, async ({ db, config, run }) => {
     const contract = objectValue(run.contract_snapshot_json);
     const hints = objectValue(contract.route_hints_json);
@@ -847,6 +971,7 @@ export function registerResearchProviderTaskRuns(): void {
     if (!providerId || !userId) {
       throw new Error("Ad-hoc research Run is missing its provider binding or instructing user");
     }
+    await authorizeResearchAdhocAttempt(db,config,run.id);
     const adhoc = objectValue(objectValue(contract.workflow_input_json).research_adhoc);
     const service = new ProjectResearchAreaService(db, config);
     return {

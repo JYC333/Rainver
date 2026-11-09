@@ -58,6 +58,12 @@ export class SyntheticAcpHost {
 
   private receive(frame: Record<string, unknown>): void {
     const runId = String(frame.run_id ?? "");
+    if(frame.type==='workspace_scope'){
+      const workspace=frame.workspace as {workspace_location_id:string};
+      queueMicrotask(()=>this.registry.receiveTaskBranchResult(this.hostId,'workspace_scope_result',String(frame.request_id),{ok:true,error:null,root_location_id:workspace.workspace_location_id,cwd_subpath:''}));
+      return;
+    }
+
     if (frame.type === "launch") {
       const launchId = String(frame.launch_id);
       this.launches.set(runId, launchId);

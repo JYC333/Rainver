@@ -492,7 +492,7 @@ export const MODULE_REGISTRY: Module[] = [
     component: lazy(() => import('./providers/ModelProvidersPage')),
   },
   {
-    id: 'usage', label: 'Token Usage', path: '/usage',
+    id: 'usage', label: 'Usage', path: '/usage',
     section: 'dev', group: 'system', icon: 'bar-chart-3',
     description: 'Inspect model token usage, accuracy, platform attribution, sessions, dimensions, and local CLI history imports.',
     source: 'built_in',

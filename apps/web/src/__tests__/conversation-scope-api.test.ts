@@ -272,3 +272,7 @@ it('encodes Candidate and packet follow-up GET segments without changing operati
   const calls=vi.mocked(fetch).mock.calls;expect(JSON.parse(calls[0]![1]?.body as string).project_id).toBe(project);expect(calls[1]![0]).toBe(`/api/v1/projects/${encodeURIComponent(project)}/${kind==='decide'||kind==='reopen'?'knowledge-candidates':'knowledge-candidate-review-packets'}/${encodeURIComponent(id)}`);expect(new Headers(calls[1]![1]?.headers).get('X-Rainver-Space-Id')).toBe('original');expect(fetch).toHaveBeenCalledTimes(2);
  }
 });
+
+it('queues extraction with an explicit event key and keeps the receipt as queued, without a second legacy request',async()=>{
+ const receipt={run_id:'run',space_id:'original',status:'queued'};vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({status:'succeeded',data:receipt}),{status:202,headers:{'Content-Type':'application/json'}}));expect(await knowledgePromotionApi.extract('project',{source_kind:'note',source_id:'note',agent_id:'agent'},'extraction-key')).toEqual(receipt);const [url,init]=vi.mocked(fetch).mock.calls[0]!;expect(url).toBe('/api/v1/actions/knowledge.candidate.extract');expect(new Headers(init?.headers).get('Idempotency-Key')).toBe('extraction-key');expect(JSON.parse(init?.body as string)).toEqual({project_id:'project',source_kind:'note',source_id:'note',agent_id:'agent'});expect(fetch).toHaveBeenCalledTimes(1);
+});

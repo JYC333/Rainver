@@ -808,7 +808,7 @@ describe("hosts routes", () => {
     expect(probes.map((probe) => probe.runtime).sort()).toEqual(["claude", "codex", "opencode"]);
     expect(probes.find((probe) => probe.runtime === "opencode")).toMatchObject({
       runtime_key: "opencode",
-      argv: ["opencode", "acp", "--cwd", "rainver:remote-workspace-cwd"],
+      argv: ["opencode", "acp"],
       login: { command: ["opencode", "auth", "login"] },
       state: { home_subdir: ".local/share/opencode", credential_file: "auth.json" },
       // A paired Host installs what the ACP registry publishes, never the

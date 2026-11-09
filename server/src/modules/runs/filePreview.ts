@@ -1,3 +1,10 @@
+import {runOutputResult} from './orchestrationResults.js';
+import {LaunchWorkspaceSchema} from '@rainver/protocol';
+import {randomUUID} from 'node:crypto';
+import {isolatedWorkspaceContract,workspaceReference,type ExecutionWorkspaceRow} from '../projectFolders/executionWorkspaces.js';
+import {workspaceLocationFrame} from '../hosts/workspaceLocation.js';
+import {sharedHostConnectionRegistry} from '../hosts/connectionRegistry.js';
+import {workspaceRetentionSettings} from '../hosts/workspaceRetention.js';
 import { RUN_OUTPUT_LINK_PREFIX, PREVIEW_MAX_BYTES, rasterImageMime, type RunFilePreview } from '@rainver/protocol';
 import { isAbsolute, relative } from 'node:path';
 import type { ServerConfig } from '../../config.js';
@@ -44,6 +51,48 @@ export async function readRunFilePreview(db: Queryable, config: ServerConfig, id
     if (Buffer.byteLength(artifact.content) > PREVIEW_MAX_BYTES) throw new HttpError(413, 'Preview too large');
     return { kind: 'text', name, content: artifact.content };
   }
+  if(isolatedWorkspaceContract(run.contract_snapshot_json)){
+    const frozen=LaunchWorkspaceSchema.safeParse(runOutputResult(run.output_json).execution_workspace_location);
+    const primary=frozen.success&&frozen.data.kind==='location'&&frozen.data.execution_workspace?frozen.data:null;
+    if(!isAbsolute(path)&&!primary)throw new HttpError(404,'Captured primary workspace is unavailable');
+    const rows=(await db.query<ExecutionWorkspaceRow & {checkpoint_commit:string|null;checkpoint_state:string;host_kind:string;host_owner:string|null;retention_json:Record<string,unknown>|null}>(`SELECT w.*,b.checkpoint_commit,b.checkpoint_state,h.kind AS host_kind,h.owner_user_id AS host_owner
+      FROM execution_workspace_runs b JOIN execution_workspaces w ON w.id=b.workspace_id JOIN hosts h ON h.id=w.execution_host_id
+      WHERE b.run_id=$1 AND b.space_id=$2 ORDER BY w.created_at`,[runId,identity.spaceId])).rows;
+    let pending=false,failed=false,expired:RunFilePreview|null=null;
+    for(const w of rows){
+      if(w.project_id!==run.project_id||w.host_kind==='remote'&&w.host_owner!==identity.userId)continue;
+      if(!isAbsolute(path)&&(!primary||w.workspace_location_id!==primary.workspace_location_id||w.id!==primary.execution_workspace!.id||w.generation!==primary.execution_workspace!.generation))continue;
+      if(w.checkpoint_state!=='saved'||!w.checkpoint_commit){pending=true;continue;}
+      const response=await sharedHostConnectionRegistry.requestTaskBranch(w.execution_host_id,'execution_workspace_command',{
+        workspace:await workspaceLocationFrame(db,w,workspaceReference(w),config.workspaceRoot),action:'read',path:!isAbsolute(path)&&primary?.execution_workspace?.cwd_subpath?`${primary.execution_workspace.cwd_subpath}/${path}`:path,
+        expected_commit:w.checkpoint_commit,operation_id:randomUUID(),retain_branch:true});
+      if(!response.ok||!response.file){
+        // After a proven branch release the exact Run version is read through
+        // its run-history ref until the history retention ends. Only the Host's
+        // answer that this exact version is gone, after an explicit retention
+        // end, means expired. A missing path in a present version, a refused
+        // read, or a temporary/offline Host never counts as expiry.
+        // A Host that could not read its object store (permissions, corruption)
+        // answered nothing about the version: that is never expiry, here or for another row.
+        if(response.error==='workspace_file_read_failed')failed=true;
+        if(response.error==='workspace_file_version_unavailable'){
+          const until=historyRetentionEnd(w.retention_json??{});
+          if(until&&Date.parse(until)<=Date.now())expired={kind:'expired',name:path,expired_at:until};
+        }
+        continue;
+      }
+      const bytes=Buffer.from(response.file.content_base64,'base64');
+      if(bytes.length>PREVIEW_MAX_BYTES||bytes.toString('base64')!==response.file.content_base64)throw new HttpError(413,'Preview too large');
+      const mime=rasterImageMime(bytes);
+      if(mime)return {kind:'image',name:response.file.path,mime_type:mime,content_base64:response.file.content_base64};
+      if(bytes.includes(0))throw new HttpError(415,'Unsupported file encoding');
+      try{return {kind:'text',name:response.file.path,content:new TextDecoder('utf-8',{fatal:true}).decode(bytes)};}
+      catch{throw new HttpError(415,'Unsupported file encoding');}
+    }
+    if(failed&&!pending)throw new HttpError(503,'The workspace version could not be read on its Host');
+    if(expired&&!pending)return expired;
+    throw new HttpError(pending?409:404,pending?'Workspace checkpoint is pending':'Captured workspace file is unavailable');
+  }
   // A legacy absolute path may only locate this Run's registered primary
   // Folder, on its original Location. /tmp and unrelated host paths never read.
   if (!run.project_folder_id || !run.project_id || !run.workspace_location_id) throw new HttpError(404, 'File is not in this Run’s workspace');
@@ -64,4 +113,15 @@ export async function readRunFilePreview(db: Queryable, config: ServerConfig, id
     return { kind: 'image', name: rel, mime_type: mime, content_base64: bytes.toString('base64') };
   }
   return { kind: 'workspace', project_id: run.project_id, folder_id: run.project_folder_id, path: rel, ...(line ? { line } : {}) };
+}
+
+/**
+ * When a released generation's exact Run versions stop being kept: the recorded
+ * history end, or (no history ref was needed: every version was target history)
+ * the release time plus the history retention. Never released: no end.
+ */
+export function historyRetentionEnd(retention:Record<string,unknown>):string|null{
+  if(typeof retention.history_until==='string')return retention.history_until;
+  const released=typeof retention.reclaimed_at==='string'?Date.parse(retention.reclaimed_at):NaN;
+  return Number.isFinite(released)?new Date(released+workspaceRetentionSettings.runHistoryRetentionMs).toISOString():null;
 }

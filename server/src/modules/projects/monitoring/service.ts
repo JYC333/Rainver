@@ -1,3 +1,4 @@
+import {MonitoringControlError} from './operationErrors.js';
 import {lockProposalTransitions} from '../../systemActions/operations/proposalTransitions.js';
 import { SourceBackfillExecutionService } from '../../sources/sourceBackfillExecutionService.js';
 import { localMonitoringDate } from './budget.js';
@@ -256,10 +257,10 @@ export class ProjectMonitoringService {
       const p = await tx.query<{
         active_information_monitoring_version_id: string;
       }>(`SELECT active_information_monitoring_version_id FROM projects WHERE id=$1 AND space_id=$2`, [projectId, identity.spaceId]);
-      if (p.rows[0]?.active_information_monitoring_version_id !== body.expected_version_id) throw new HttpError(409, 'Monitoring version changed');
+      if (p.rows[0]?.active_information_monitoring_version_id !== body.expected_version_id) throw new MonitoringControlError(409, 'Monitoring version changed');
       const row = await getVersion(tx, identity.spaceId, projectId, body.expected_version_id);
       const cfg = versionOut(row).config;
-      for (const dimension of ['batch', 'daily'] as const) if (body[dimension]) for (const key of ['candidates', 'pages', 'source_requests', 'model_runs'] as const) if (body[dimension]![key] > cfg[dimension][key]) throw new HttpError(422, 'Details cannot increase execution limits');
+      for (const dimension of ['batch', 'daily'] as const) if (body[dimension]) for (const key of ['candidates', 'pages', 'source_requests', 'model_runs'] as const) if (body[dimension]![key] > cfg[dimension][key]) throw new MonitoringControlError(422, 'Details cannot increase execution limits');
       const {
         expected_version_id: _,
         ...changes
@@ -385,7 +386,7 @@ export class ProjectMonitoringService {
       await assertProjectWriter(tx, identity.spaceId, projectId, identity.userId);
       await lockActiveProjectForMutation(tx, identity.spaceId, projectId);
       const r = await tx.query(`UPDATE projects SET information_monitoring_paused=$4,updated_at=now() WHERE id=$1 AND space_id=$2 AND active_information_monitoring_version_id=$3 RETURNING id`, [projectId, identity.spaceId, expected, paused ? 1 : 0]);
-      if (!r.rows[0]) throw new HttpError(409, 'Monitoring version changed');
+      if (!r.rows[0]) throw new MonitoringControlError(409, 'Monitoring version changed');
       const version = await getVersion(tx, identity.spaceId, projectId, expected);
       await tx.query(`UPDATE scheduler_tasks SET status=$4,metadata_json=(metadata_json-'retry_after')||'{"blocked_reason":null}'::jsonb,updated_at=now() WHERE task_type=$1 AND task_key=$2 AND space_id=$3`, [MONITORING_TASK, projectId, identity.spaceId, paused || !versionOut(version).config.schedule ? 'paused' : 'active']);
       return {

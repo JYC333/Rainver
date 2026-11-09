@@ -1,3 +1,5 @@
+import {isolatedWorkspaceContract} from '../projectFolders/executionWorkspaces.js';
+import {workspaceChangesForRun} from '../projectFolders/workspaceReadModel.js';
 import {OperationToolResponse} from "../systemActions/operations/agentResult.js";
 import { stateChangingReadAllowed } from "../../gateway/csrfOrigin.js";
 import { readRunFilePreview } from "./filePreview.js";
@@ -684,18 +686,20 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/runs/:runId", async (request, reply) => {
     const result = await visibleRun(context, request, reply);
     if (!result) return reply;
-    const [runOut, invocationSnapshots, linkedTasks, workSkillContentHash] = await Promise.all([
+    const [runOut, invocationSnapshots, linkedTasks, workSkillContentHash, workspaceChanges] = await Promise.all([
       runToOutWithProvider(result.repository, result.run),
       new InvocationSnapshotService(dbPool(context.config))
         .listSafeForInvocation(result.run.space_id, result.run.id),
       result.repository.linkedTasksForViewer(result.run.space_id, result.run.id, result.identity.userId),
       new PgRunToolIdentityRepository(result.repository.queryable)
         .workSkillContentHash(result.run.space_id, result.run.id),
+      !isolatedWorkspaceContract(result.run.contract_snapshot_json)||bodyWithheld(result.run.effective_access_level)?Promise.resolve([]):workspaceChangesForRun(dbPool(context.config),result.run,result.identity.userId),
     ]);
     return reply.send({
       ...runOut,
       invocation_snapshots: invocationSnapshots,
       linked_tasks: linkedTasks,
+      workspace_changes: workspaceChanges,
       // A hash of code-owned Skill text, not Run content, so a summary viewer
       // sees it too.
       work_skill: workSkillContentHash ? { content_hash: workSkillContentHash } : null,

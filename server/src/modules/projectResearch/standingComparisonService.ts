@@ -1,3 +1,4 @@
+import {ResearchWorkspaceMutationError} from './workspaceErrors.js';
 import { RESEARCH_STAGES } from "./researchStages.js";
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
@@ -316,7 +317,7 @@ export class ProjectResearchStandingComparisonService {
       }
       if (batch.status === "pending" || batch.status === "running") return batchOut(batch);
       if (!["blocked_baseline", "failed", "budget_exhausted"].includes(batch.status)) {
-        throw new HttpError(409, "Standing comparison batch cannot be retried");
+        throw new ResearchWorkspaceMutationError(409, "Standing comparison batch cannot be retried");
       }
       // One pending batch per Project (`uq_project_research_standing_batches_open_project`):
       // material that arrived since opened its own, which runs first.
@@ -326,7 +327,7 @@ export class ProjectResearchStandingComparisonService {
         [identity.spaceId, projectId, batchId],
       );
       if (pending.rows[0]) {
-        throw new HttpError(409, "Another standing comparison batch is already pending for this Project; retry once it has been dispatched");
+        throw new ResearchWorkspaceMutationError(409, "Another standing comparison batch is already pending for this Project; retry once it has been dispatched");
       }
       await db.query(
         `UPDATE project_research_standing_batches

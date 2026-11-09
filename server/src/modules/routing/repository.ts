@@ -89,6 +89,9 @@ export class PgRouteDecisionRepository {
     // shared Conversation thread; only a Run without that host-bound pin is
     // required to reference a Task-owned thread here.
     const taskThreadRun = !hostBoundRun && Boolean(run.host_task_thread_id);
+    const integrationContract=contractRecord(run.contract_snapshot_json);
+    const integrationId=typeof integrationContract.workspace_integration_id==='string'?integrationContract.workspace_integration_id:null;
+    const integrationAttempt=typeof integrationContract.workspace_integration_attempt_id==='string'?integrationContract.workspace_integration_attempt_id:null;
     const pinnedHostThread = hostBoundRun || taskThreadRun
       ? (await this.db.query<{
           execution_host_id: string;
@@ -117,6 +120,16 @@ export class PgRouteDecisionRepository {
                      WHERE thread_agent.id = host_threads.agent_id AND thread_agent.space_id = $2
                   ))
                 ))
+                OR (task_id IS NULL AND container_kind IS NULL AND agent_id IS NULL AND session_id IS NULL AND EXISTS (
+                  SELECT 1 FROM task_merges m JOIN execution_workspaces w ON w.id=m.workspace_id AND w.space_id=m.space_id
+                   JOIN workspace_change_sets c ON c.id=m.change_set_id AND c.workspace_id=w.id
+                  WHERE m.id=$6 AND m.attempt_id=$7 AND m.resolution_run_id=$5 AND m.space_id=$2
+                    AND m.status='resolving' AND m.generation=w.generation AND w.project_id=$8
+                    AND m.requested_by_user_id=$4 AND host_threads.created_by_user_id=$4
+                    AND host_threads.execution_host_id=w.execution_host_id
+                    AND host_threads.workspace_location_id=w.workspace_location_id
+                    AND c.state='integrating' AND w.state<>'blocked'
+                ))
                 OR (task_id IS NOT NULL AND EXISTS (
                   SELECT 1
                     FROM task_runs task_run
@@ -128,7 +141,7 @@ export class PgRouteDecisionRepository {
               )
             LIMIT 1`,
           [run.host_task_thread_id ?? hostThread.thread_id, run.space_id, run.session_id,
-            run.owner_user_id ?? run.instructed_by_user_id ?? null, run.id],
+            run.owner_user_id ?? run.instructed_by_user_id ?? null, run.id,integrationId,integrationAttempt,run.project_id],
         )).rows[0] ?? null
       : null;
     const pinnedThreadUnavailable = !pinnedHostThread || pinnedHostThread.status === "closed";
@@ -192,15 +205,23 @@ export class PgRouteDecisionRepository {
         "The pinned Conversation model provider is unavailable; the Run cannot be dispatched.",
       );
     }
+    // A dedicated repair thread is accepted only through the current durable
+    // integration-attempt owner above. Its authorized candidate Location may
+    // differ from the original Profile's primary (for example an attachment).
+    const repairThread=Boolean(integrationId&&integrationAttempt&&pinnedHostThread&&pinnedHostThread.container_kind===null&&!pinnedHostThread.task_id);
+    const scopedCandidates=repairThread?rawCandidates.map(candidate=>
+      candidate.runtime_profile_id===run.requested_runtime_profile_id
+        &&candidate.execution_host_id===pinnedHostThread!.execution_host_id
+        ?{...candidate,workspace_mode:pinnedHostThread!.workspace_mode,workspace_location_id:pinnedHostThread!.workspace_location_id}:candidate):rawCandidates;
     const allCandidates = conversationSnapshot
-      ? rawCandidates.map((candidate) => candidate.runtime_profile_id === conversationSnapshot.runtime_profile_id
+      ? scopedCandidates.map((candidate) => candidate.runtime_profile_id === conversationSnapshot.runtime_profile_id
           ? applyConversationSnapshot(
               candidate,
               conversationSnapshot,
               run.owner_user_id ?? run.instructed_by_user_id ?? null,
             )
           : candidate)
-      : rawCandidates;
+      : scopedCandidates;
     if (taskThreadRun && (
       !pinnedHostThread?.task_id
       || pinnedHostThread.workspace_location_id !== run.workspace_location_id

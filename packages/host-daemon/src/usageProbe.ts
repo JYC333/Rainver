@@ -8,13 +8,14 @@ import { join } from "node:path";
 import type { HostUsageQuota, RuntimeLoginSpec, RuntimeStateBoundary } from "@rainver/protocol";
 import { OWN_INSTALLATION, readToolManifestSync, type ToolManifest } from "./tools.js";
 import { sanitizeFailure } from "./ambientRedaction.js";
+import { claudeSubscriptionIdentity, codexRpcSubscriptionIdentity, claudeSubscriptionDisplay, codexSubscriptionDisplay, loginFileFingerprint } from "./subscriptionIdentity.js";
 
 /**
  * What one copy's subscription has left, read on the host that holds it.
  *
  * Credentials live with the copy (ADR 0016 §7), so the control plane cannot
  * read the quota itself. Vendor-specific by necessity. What crosses back is
- * percentages and reset times; the token is read here, spent against the
+ * opaque account scope, whitelisted login email/workspace, percentages and reset times; the token is read here, spent against the
  * vendor's own endpoint, and never returned, logged, or written anywhere else.
  */
 const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -203,6 +204,22 @@ async function probeClaude(home: string, state: RuntimeStateBoundary | null, tim
         ? "Claude usage API did not answer in time."
         : "Claude usage API returned a response this host could not read.");
     }
+    // Optional identity enrichment shares this token and deadline. A profile
+    // failure must not discard valid quota or guess from an unrelated config.
+    quota.account = null;
+    if (quota.available) {
+      try {
+        const profile = await fetch("https://api.anthropic.com/api/oauth/profile", {
+          redirect: "error", signal: AbortSignal.any([abort.signal, AbortSignal.timeout(2000)]),
+          headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` },
+        });
+        if (profile.ok) {
+          const value = await profile.json();
+          quota.account = claudeSubscriptionIdentity(value);
+          quota.account_display = claudeSubscriptionDisplay(value);
+        }
+      } catch { /* Keep the measured quota, unidentified and unmerged. */ }
+    }
     return quota.available ? quota : failed("Claude usage API returned no quota windows.");
   } finally {
     clearTimeout(timer);
@@ -389,6 +406,11 @@ function probeCodex(home: string, manifest: ToolManifest | null, timeoutSeconds:
     let settled = false;
     let buffer = "";
     let stderr = "";
+    let account: HostUsageQuota["account"] = null;
+    let accountDisplay: HostUsageQuota["account_display"] = null;
+    let identityRead = false;
+    let accountChanged = false;
+    let pendingQuota: HostUsageQuota | null = null;
     const finish = (quota: HostUsageQuota) => {
       if (settled) return;
       settled = true;
@@ -437,9 +459,44 @@ function probeCodex(home: string, manifest: ToolManifest | null, timeoutSeconds:
         // message that said what was wrong, and the probe times out naming
         // nothing. Errors are read whatever id they carry.
         if (!message) continue;
+        if (message.method === "account/updated" && identityRead) {
+          accountChanged = true;
+          continue;
+        }
         const error = asRecord(message.error);
+        if (message.id === 4 && pendingQuota) {
+          const after = error ? null : codexRpcSubscriptionIdentity(message.result);
+          const display = error ? null : codexSubscriptionDisplay(message.result);
+          if (JSON.stringify(account) !== JSON.stringify(after) || accountDisplay?.email !== display?.email || (accountChanged && !after)) {
+            finish({ ...failed("The Codex account changed during this check. Refresh usage again."), account: null });
+          } else {
+            pendingQuota.account = after;
+            pendingQuota.account_display = display;
+            finish(pendingQuota);
+          }
+          return;
+        }
+        if (message.id === 3) {
+          // Older servers may lack routing/identity fields or reject this
+          // read. Quota remains useful but cannot be assigned a guessed identity.
+          if (!error) {
+            account = codexRpcSubscriptionIdentity(message.result);
+            accountDisplay = codexSubscriptionDisplay(message.result);
+          }
+          identityRead = true;
+          child.stdin?.write(`${JSON.stringify({ id: 2, method: "account/rateLimits/read", params: {} })}\n`);
+          continue;
+        }
         if (!error && message.id !== 1 && message.id !== 2) continue;
         if (error) {
+          if (message.id === 2 && typeof error.message === "string") {
+            const recovered = quotaFromRefusal(error.message);
+            if (recovered.available) {
+              pendingQuota = recovered;
+              child.stdin?.write(`${JSON.stringify({ id: 4, method: "account/read", params: { refreshToken: false } })}\n`);
+              continue;
+            }
+          }
           // Checked before the handshake branch. An `initialize` that fails is
           // the real reason. Do not continue past it. The probe times out
           // naming the wrong thing.
@@ -450,16 +507,17 @@ function probeCodex(home: string, manifest: ToolManifest | null, timeoutSeconds:
         }
         if (message.id === 1) {
           child.stdin?.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
-          child.stdin?.write(`${JSON.stringify({ id: 2, method: "account/rateLimits/read", params: {} })}\n`);
+          child.stdin?.write(`${JSON.stringify({ id: 3, method: "account/read", params: { refreshToken: false } })}\n`);
           continue;
         }
         const quota = quotaFromRateLimitsResult(message.result);
-        finish(quota.available ? quota : failed("Codex reported no rate-limit windows."));
-        return;
+        if (!quota.available) { finish(failed("Codex reported no rate-limit windows.")); return; }
+        pendingQuota = quota;
+        child.stdin?.write(`${JSON.stringify({ id: 4, method: "account/read", params: { refreshToken: false } })}\n`);
       }
     });
     child.stdin?.on("error", () => finish(failed("Codex closed its input before the rate-limit request was sent.")));
-    child.stdin?.write(`${JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "rainver", version: "0.0.0" } } })}\n`);
+    child.stdin?.write(`${JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "rainver", version: "0.0.0" }, capabilities: { experimentalApi: true } } })}\n`);
   });
 }
 
@@ -477,8 +535,22 @@ export async function probeUsage(frame: UsageProbeFrame): Promise<HostUsageQuota
   const copy = copyHome(frame.runtime_key, frame.installation);
   if (!copy) return failed(`This host does not have ${frame.runtime_key} ${frame.installation} installed.`);
   if (frame.runtime_key === "acp_antigravity_acp") return probeAntigravity(copy.home, frame.state ?? null, frame.timeout_seconds, copy.manifest?.command ?? "agy", copy.manifest?.entry_args ?? []);
-  if (frame.runtime_key === "claude_code") return probeClaude(copy.home, frame.state ?? null, frame.timeout_seconds);
-  if (frame.runtime_key === "codex_cli") return probeCodex(copy.home, copy.manifest, frame.timeout_seconds);
+  if (frame.runtime_key === "claude_code") {
+    const path = join(copy.home, frame.state?.home_subdir ?? ".claude", frame.state?.credential_file ?? ".credentials.json");
+    const before = await loginFileFingerprint(path);
+    const quota = await probeClaude(copy.home, frame.state ?? null, frame.timeout_seconds);
+    if (before !== await loginFileFingerprint(path)) return { ...failed("The Claude login changed during this check. Refresh usage again."), account: null };
+    return quota;
+  }
+  if (frame.runtime_key === "codex_cli") {
+    const path = join(copy.home, ".codex", "auth.json");
+    const before = await loginFileFingerprint(path);
+    const quota = await probeCodex(copy.home, copy.manifest, frame.timeout_seconds);
+    const after = await loginFileFingerprint(path);
+    // A login/token replacement during the RPC makes its account ambiguous.
+    if (before !== after) return { ...failed("The Codex login changed during this check. Refresh usage again."), account: null };
+    return quota;
+  }
   // OpenCode bills through whichever provider it is pointed at, and a registry
   // Agent's limits are its own product's business. Neither has a subscription
   // quota this host could read; saying so beats an empty panel that reads as a

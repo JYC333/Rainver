@@ -37,6 +37,9 @@ keep in step.
 | `claude_code` | implemented | managed `claude-agent-acp` distribution | Host-native login |
 | `codex_cli` | implemented | managed `codex-acp` distribution | Host-native login |
 
+OpenCode launches without a CLI working-directory flag. Both capability probes
+and Runs set the process working directory and pass `cwd` in ACP session requests.
+
 Beside these builtins, each ACP registry agent an instance admin enables in
 `modules/acpAgents` is published as a dynamic adapter `acp_<id>`
 (`runtimeAdapters/dynamicSpecs.ts`): implemented, ACP, `remote_host_only`, and

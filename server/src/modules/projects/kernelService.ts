@@ -1,3 +1,4 @@
+import {ProjectManagementMutationError} from './managementErrors.js';
 import { randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
@@ -210,7 +211,7 @@ export class ProjectKernelService {
            published_at=CASE WHEN $1::varchar='published' THEN $3::timestamptz ELSE published_at END
          WHERE id=$4 AND project_id=$5 AND space_id=$6 AND status=$7
          RETURNING *`, [to, userId, now, versionId, projectId, spaceId, from]);
-      if (!result.rows[0]) throw new HttpError(409, `Brief version must be ${from}`);
+      if (!result.rows[0]) throw new ProjectManagementMutationError(409, `Brief version must be ${from}`);
       if (activate) await db.query(`UPDATE projects SET active_brief_version_id=$1, updated_at=$2 WHERE id=$3 AND space_id=$4`, [versionId, now, projectId, spaceId]);
       return result.rows[0];
     });
@@ -251,7 +252,7 @@ export class ProjectKernelService {
       if (publish) await assertNewerProjectContextVersion(db, "project_instruction_versions", projectId, identity.spaceId, versionId, "Instruction");
       if (publish) await db.query(`UPDATE project_instruction_versions SET status='archived' WHERE project_id=$1 AND space_id=$2 AND status='published'`, [projectId, identity.spaceId]);
       const result = await db.query<InstructionVersionRow>(`UPDATE project_instruction_versions SET status=$1::varchar, reviewed_by_user_id=CASE WHEN $1::varchar='published' THEN $2::varchar ELSE reviewed_by_user_id END, reviewed_at=CASE WHEN $1::varchar='published' THEN $3::timestamptz ELSE reviewed_at END, published_by_user_id=CASE WHEN $1::varchar='published' THEN $2::varchar ELSE published_by_user_id END, published_at=CASE WHEN $1::varchar='published' THEN $3::timestamptz ELSE published_at END WHERE id=$4 AND project_id=$5 AND space_id=$6 AND status=$7 RETURNING *`, [to, identity.userId, now, versionId, projectId, identity.spaceId, from]);
-      if (!result.rows[0]) throw new HttpError(409, `Instruction version must be ${from}`);
+      if (!result.rows[0]) throw new ProjectManagementMutationError(409, `Instruction version must be ${from}`);
       if (publish) await db.query(`UPDATE projects SET active_instruction_version_id=$1, updated_at=$2 WHERE id=$3 AND space_id=$4`, [versionId, now, projectId, identity.spaceId]);
       return instructionVersionToOut(result.rows[0]);
     });
@@ -279,13 +280,13 @@ async function assertNewerProjectContextVersion(
   const row = result.rows[0];
   if (!row) throw new HttpError(404, `${label} version not found`);
   if (row.active_version && versionOrdinal(row.candidate_version) <= versionOrdinal(row.active_version)) {
-    throw new HttpError(409, `Cannot publish a stale ${label} version; use an explicit rollback flow`);
+    throw new ProjectManagementMutationError(409, `Cannot publish a stale ${label} version; use an explicit rollback flow`);
   }
 }
 
 function versionOrdinal(value: string): number {
   const match = /^v([1-9][0-9]*)$/.exec(value);
-  if (!match) throw new HttpError(409, `Invalid Project context version: ${value}`);
+  if (!match) throw new ProjectManagementMutationError(409, `Invalid Project context version: ${value}`);
   return Number(match[1]);
 }
 

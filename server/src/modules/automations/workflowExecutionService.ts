@@ -44,6 +44,8 @@ interface WorkflowExecutionStartInput {
   triggerContext?: Record<string, unknown> | null;
   budgetSources: RunBudgetSource[];
   researchOperationId?: string | null;
+  /** A caller may narrow all execution Runs; recovery uses this frozen value. */
+  runVisibility?: 'private' | 'space_shared';
   beforeSchedule?: (executionId: string) => Promise<void>;
 }
 
@@ -73,7 +75,7 @@ export class WorkflowExecutionService {
                  $9::jsonb, $10::jsonb, $11, $12, $13, $13)`,
       [executionId, input.identity.spaceId, input.automation.id, input.target.versionId, input.triggerType,
         JSON.stringify(input.inputJson), JSON.stringify(input.target.contentJson), JSON.stringify(input.target.resolutionTrace),
-        JSON.stringify(automationContractSnapshot(input.automation)), JSON.stringify({ sources: input.budgetSources }),
+        JSON.stringify({...automationContractSnapshot(input.automation),...(input.runVisibility?{run_visibility:input.runVisibility}:{})}), JSON.stringify({ sources: input.budgetSources }),
         input.researchOperationId ?? null, input.identity.userId, now],
     );
     const root = await new PgRunRepository(input.db).createCoordinatorRun({
@@ -84,6 +86,7 @@ export class WorkflowExecutionService {
       mode: "live",
       run_type: "workflow",
       trigger_origin: input.triggerOrigin,
+      ...(input.runVisibility?{visibility:input.runVisibility}:{}),
       project_folder_id: input.automation.project_folder_id,
       project_id: input.automation.project_id,
       prompt: input.prompt ?? input.automation.name,
@@ -184,11 +187,11 @@ export class WorkflowExecutionService {
       budget_snapshot_json: unknown; project_id: string | null; project_folder_id: string | null; agent_id: string;
       research_operation_id: string | null; responsible_user_id: string;
       name: string; description: string | null; config_json: Record<string, unknown> | null;
-      automation_status: string;
+      automation_status: string; contract_snapshot_json: unknown;
     }>(
       `SELECT e.id, e.automation_id, e.workflow_version_id, e.root_run_id, e.status,
               e.input_json, e.definition_json, e.resolution_trace_json, e.budget_snapshot_json,
-              e.research_operation_id, e.responsible_user_id,
+              e.research_operation_id, e.responsible_user_id,e.contract_snapshot_json,
               a.project_id, a.project_folder_id, a.agent_id, a.name, a.description, a.config_json,
               a.status AS automation_status
          FROM workflow_executions e JOIN automations a ON a.id = e.automation_id AND a.space_id = e.space_id
@@ -273,6 +276,7 @@ export class WorkflowExecutionService {
       inputJson: execution.input_json ?? {},
       preflightSnapshot: {},
       budgetSources: budgetSourcesFromSnapshot(execution.budget_snapshot_json),
+      ...(executionRunVisibility(execution.contract_snapshot_json)?{runVisibility:executionRunVisibility(execution.contract_snapshot_json)}:{}),
     }, { executionId, rootRunId: execution.root_run_id, nodeIds });
     return { workflow_execution_id: executionId, status: "running", scheduled_node_ids: scheduledNodeIds };
   }
@@ -378,6 +382,7 @@ export class WorkflowExecutionService {
         mode: "live",
         run_type: "workflow",
         trigger_origin: "job",
+        ...(input.runVisibility?{visibility:input.runVisibility}:{}),
         parent_run_id: context.rootRunId,
         root_run_id: context.rootRunId,
         project_folder_id: input.automation.project_folder_id,
@@ -631,6 +636,13 @@ function workflowContract(value: Record<string, unknown>): Record<string, unknow
 function automationContractSnapshot(auto: AutomationRow): Record<string, unknown> {
   const config = recordValue(auto.config_json);
   return { source: { kind: "automation", id: auto.id }, project_id: auto.project_id, project_folder_id: auto.project_folder_id, contract_json: recordValue(config.contract_json ?? config.contract) };
+}
+
+function executionRunVisibility(snapshot:unknown):'private'|'space_shared'|undefined{
+ const contract=recordValue(snapshot);
+ if(!Object.hasOwn(contract,'run_visibility'))return undefined;
+ if(contract.run_visibility==='private'||contract.run_visibility==='space_shared')return contract.run_visibility;
+ throw new HttpError(409,'Workflow Execution Run visibility requires reconciliation');
 }
 
 function recordValue(value: unknown): Record<string, unknown> {

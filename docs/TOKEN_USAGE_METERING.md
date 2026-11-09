@@ -50,6 +50,17 @@ It intentionally stays off the primary rail. The default view is `Mine`;
 `Shared in space` includes only visible `space_shared` events; `All visible`
 combines owned, shared, and selected-user-granted events.
 
+The page opens on **Subscription quotas**; **Recorded consumption** contains
+the ledger dashboard and its default `Mine` view described above. Subscription
+quotas are an independent Host read projection, not Token accounting: a vendor
+account's limits may include work outside Rainver. Command Center's CLI links
+open `/usage?tab=quotas&pool=…`; unmeasured/older connections instead identify
+the Host/runtime/installation until their identity is learned. Same-account
+connections share a card only within the viewer's existing Host quota access.
+Unknown identities are not merged, expired measured windows do not become zero,
+and connection errors are distinct from a measured account window. See
+[Credentials](../.agent/modules/credentials.md) for identity and refresh rules.
+
 The repository applies the canonical `token_usage_event` SQL predicate before
 token or cost aggregation. Workspace/Project scope is evaluated independently
 from visibility. Owners always receive full access. Non-owner `summary` access
@@ -104,3 +115,10 @@ Instance operations have only the de-identified totals route.
 Schema authoring lives in `server/src/db/schema/usage.ts`. A change is appended
 to `server/migrations/` with `pnpm run schema:generate -- --name <name>` from
 `server/`; the usage tables are in `0000_baseline.sql`.
+
+CLI subscription cards show the full authenticated login email and available
+organization/workspace name in Command Center and Usage. This display metadata
+is independent of quota grouping and uses the existing Host-owner/server-admin
+read permissions. Claude, Codex and Antigravity provide it; OpenCode has no
+independent subscription quota probe. Older Host caches fall back to the account
+handle until the Host is updated and quota refreshed.

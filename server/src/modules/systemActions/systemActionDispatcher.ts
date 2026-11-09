@@ -1,4 +1,6 @@
 import { operationPluginEnabled } from "../plugins/operationEnablement.js";
+import {operationRuntime} from './operations/runtime.js';
+import {dispatchRunOperation} from '../runs/operationToolDispatch.js';
 import {OperationError} from "./operations/errors.js";
 import {defaultActionEventSink} from '../runs/actionEvents.js';
 import { createHash, randomUUID } from "node:crypto";
@@ -55,6 +57,9 @@ const NOT_GRANTED_MESSAGE = "This system action is not granted to the Run.";
 export class SystemActionDispatcher {
   private constructor(
     private readonly run: AgentRunRecord,
+    private readonly config: ServerConfig,
+    private readonly definitions: ReadonlyMap<string,SystemActionDefinition>,
+    private readonly actionEvents: SystemActionDispatcherDeps['actionEventSink'],
     private readonly gateway: SystemActionGateway,
     private readonly recordRefusedAction: (
       call: CanonicalToolCall,
@@ -239,6 +244,9 @@ export class SystemActionDispatcher {
 
     return new SystemActionDispatcher(
       run,
+      config,
+      registry,
+      actionEvents,
       gateway,
       recordRefusedAction,
       // The permitted set, not the raw grants: `list`/`describe` show what
@@ -291,6 +299,14 @@ export class SystemActionDispatcher {
       input = {};
     }
     try {
+      const definition=this.definitions.get(call.name);
+      if(definition?.execution){
+        const runtime=await operationRuntime(this.config);
+        const result=await dispatchRunOperation(this.config,this.run,
+          {id:call.id,name:call.name,arguments:input},definition,
+          actor=>runtime.execute(call.name,input,actor,call.id,call.id),this.actionEvents);
+        return {modelResult:result.body,summary:result.summary};
+      }
       const dispatched = await this.gateway.dispatch(call.name, input, {
         actor: { type: "agent", space_id: this.run.space_id, agent_id: this.run.agent_id, user_id: this.run.instructed_by_user_id, run_id: this.run.id },
         visibility: "agent_tool",

@@ -18,6 +18,7 @@ import { contentReadSql } from "../access/contentAccessSql.js";
 import { sourceItemReadableClause, sourceSnapshotReadableForEvidenceClause } from "../sources/sourceItemAccess.js";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "./access.js";
 import { materializePassingProjectCorpusItems } from "./corpusMaterialization.js";
+import {ProjectCorpusMutationError,ProjectCorpusReferenceUnavailable} from './corpusMutationError.js';
 
 type ProjectCorpusRole = "candidate" | "reference" | "primary" | "related" | "background";
 type ProjectCorpusStatus = "active" | "archived";
@@ -159,6 +160,11 @@ interface ProjectCorpusBackfillResult {
 
 export class ProjectCorpusRepository {
   constructor(private readonly db: Queryable) {}
+
+  /** Reuse canonical reference validation for core admission and replay. */
+  async assertCommandTarget(identity:SpaceUserIdentity,projectId:string,body:Record<string,unknown>):Promise<void>{
+    await this.resolveTarget(identity,projectId,body);
+  }
 
   /**
    * Public owning-domain access boundary for Project Corpus references.
@@ -577,9 +583,10 @@ export class ProjectCorpusRepository {
     const evidenceId = optionalString(body.evidence_id);
     const sourceDecisionId = optionalString(body.source_decision_id);
     if ([objectId, sourceItemId, evidenceId].filter(Boolean).length !== 1) {
-      throw new HttpError(422, "exactly one of object_id, source_item_id, or evidence_id is required");
+      throw new ProjectCorpusMutationError(422, "exactly one of object_id, source_item_id, or evidence_id is required");
     }
-    let sourceConnectionId = optionalString(body.source_connection_id);
+    const requestedConnectionId = optionalString(body.source_connection_id);
+    let sourceConnectionId: string | null = null;
     let targetSourceItemId = sourceItemId;
     if (objectId) {
       const object = await this.db.query<{ id: string }>(
@@ -592,25 +599,32 @@ export class ProjectCorpusRepository {
           LIMIT 1`,
         [identity.spaceId, objectId, identity.userId],
       );
-      if (!object.rows[0]) throw new HttpError(422, "object_id is not readable by this user");
-      const linkedSource = await this.db.query<{ source_item_id: string; source_connection_id: string | null }>(
-        `SELECT psil.source_item_id, COALESCE(psil.source_connection_id, si.connection_id) AS source_connection_id
+      if (!object.rows[0]) throw new ProjectCorpusReferenceUnavailable("object_id is not readable by this user");
+      const origins = await this.db.query<{ source_item_id: string; source_connection_id: string | null; linked: boolean; readable: boolean }>(
+        `SELECT si.id AS source_item_id, COALESCE(si.connection_id, psil.source_connection_id) AS source_connection_id,
+                psil.id IS NOT NULL AS linked,
+                (si.deleted_at IS NULL AND ${sourceItemReadableClause('si','$4',false,{includeOversight:false})}) AS readable
            FROM source_item_references sir
-           JOIN project_source_item_links psil
+           LEFT JOIN project_source_item_links psil
              ON psil.space_id = sir.space_id
             AND psil.project_id = $3
             AND psil.source_item_id = sir.source_item_id
             AND psil.status = 'active'
            JOIN source_items si
-             ON si.id = sir.source_item_id AND si.space_id = sir.space_id AND si.deleted_at IS NULL
+             ON si.id = sir.source_item_id AND si.space_id = sir.space_id
           WHERE sir.space_id = $1 AND sir.reference_object_id = $2
-            AND ${sourceItemReadableClause("si", "$4", false)}
-          ORDER BY psil.matched_at DESC, psil.id ASC
-          LIMIT 1`,
+          ORDER BY (psil.id IS NULL),psil.matched_at DESC NULLS LAST,psil.id ASC NULLS LAST,si.last_seen_at DESC,si.id`,
         [identity.spaceId, objectId, projectId, identity.userId],
       );
-      targetSourceItemId = linkedSource.rows[0]?.source_item_id ?? null;
-      sourceConnectionId ??= linkedSource.rows[0]?.source_connection_id ?? null;
+      // Missing routing is not missing provenance. Do not filter every
+      // unreadable real origin away and then accept a caller's manual label.
+      // Conversely an unreadable alternative must not block a readable origin,
+      // and an explicit label can choose any readable actual Source origin.
+      const readableOrigins=origins.rows.filter(origin=>origin.readable);
+      if(origins.rows.length&&!readableOrigins.length)throw new ProjectCorpusReferenceUnavailable('object_id Source origin is not readable by this user');
+      const selected=(requestedConnectionId?readableOrigins.find(origin=>origin.source_connection_id===requestedConnectionId):null)??readableOrigins[0];
+      targetSourceItemId = selected?.linked ? selected.source_item_id : null;
+      sourceConnectionId = selected?.source_connection_id ?? null;
     }
     if (sourceItemId) {
       const requestedSourceItemId = sourceItemId;
@@ -639,11 +653,11 @@ export class ProjectCorpusRepository {
           LIMIT 1`,
         [identity.spaceId, sourceItemId, identity.userId],
       );
-      if (!item.rows[0]) throw new HttpError(422, "source_item_id is not readable by this user");
+      if (!item.rows[0]) throw new ProjectCorpusReferenceUnavailable("source_item_id is not readable by this user");
       sourceConnectionId ??= item.rows[0].connection_id;
       if (item.rows[0].reference_object_id) {
         if (!item.rows[0].reference_readable) {
-          throw new HttpError(422, "source_item_id materializes to an object that is not readable by this user");
+          throw new ProjectCorpusReferenceUnavailable("source_item_id materializes to an object that is not readable by this user");
         }
         objectId = item.rows[0].reference_object_id;
         sourceItemId = null;
@@ -653,10 +667,11 @@ export class ProjectCorpusRepository {
     if (evidenceId) {
       const evidence = await this.db.query<{ source_item_id: string | null; source_item_connection_id: string | null }>(
         `SELECT COALESCE(ev.source_item_id, ev.origin_source_item_id) AS source_item_id,
-                si.connection_id AS source_item_connection_id
+                COALESCE(si.connection_id,ss.connection_id,snapshot_source.connection_id) AS source_item_connection_id
            FROM extracted_evidence ev
            LEFT JOIN source_items si ON si.id = COALESCE(ev.source_item_id, ev.origin_source_item_id) AND si.space_id = ev.space_id
            LEFT JOIN source_snapshots ss ON ss.id=ev.source_snapshot_id AND ss.space_id=ev.space_id
+           LEFT JOIN source_items snapshot_source ON snapshot_source.id=ss.source_item_id AND snapshot_source.space_id=ss.space_id
            LEFT JOIN space_objects so ON so.id = ev.source_object_id AND so.space_id = ev.space_id
           WHERE ev.space_id = $1
             AND ev.id = $2
@@ -688,7 +703,7 @@ export class ProjectCorpusRepository {
           LIMIT 1`,
         [identity.spaceId, evidenceId, identity.userId],
       );
-      if (!evidence.rows[0]) throw new HttpError(422, "evidence_id is not readable by this user");
+      if (!evidence.rows[0]) throw new ProjectCorpusReferenceUnavailable("evidence_id is not readable by this user");
       targetSourceItemId = evidence.rows[0].source_item_id;
       sourceConnectionId ??= evidence.rows[0].source_item_connection_id;
     }
@@ -697,15 +712,15 @@ export class ProjectCorpusRepository {
         `SELECT sc.id AS source_connection_id, d.source_item_id
            FROM source_post_processing_item_decisions d
            LEFT JOIN source_channels ch ON ch.id = d.source_channel_id AND ch.space_id = d.space_id
-           LEFT JOIN source_connections sc ON sc.id = ch.source_connection_id
+           LEFT JOIN source_connections sc ON sc.id = ch.source_connection_id AND sc.space_id=d.space_id
          WHERE d.space_id = $1 AND d.project_id = $2 AND d.id = $3
           LIMIT 1`,
         [identity.spaceId, projectId, sourceDecisionId],
       );
       const row = decision.rows[0];
-      if (!row) throw new HttpError(422, "source_decision_id does not reference this project");
+      if (!row) throw new ProjectCorpusMutationError(422, "source_decision_id does not reference this project");
       if (targetSourceItemId && row.source_item_id !== targetSourceItemId) {
-        throw new HttpError(422, "source_decision_id must match the Corpus target's SourceItem");
+        throw new ProjectCorpusMutationError(422, "source_decision_id must match the Corpus target's SourceItem");
       }
       if (objectId && !targetSourceItemId) {
         const reference = await this.db.query<{ found: boolean }>(
@@ -716,14 +731,31 @@ export class ProjectCorpusRepository {
           [identity.spaceId, objectId, row.source_item_id],
         );
         if (!reference.rows[0]) {
-          throw new HttpError(422, "source_decision_id must originate from a SourceItem materialized as object_id");
+          throw new ProjectCorpusMutationError(422, "source_decision_id must originate from a SourceItem materialized as object_id");
         }
         targetSourceItemId = row.source_item_id;
       } else if (!targetSourceItemId) {
-        throw new HttpError(422, "source_decision_id requires a Corpus target with SourceItem provenance");
+        throw new ProjectCorpusMutationError(422, "source_decision_id requires a Corpus target with SourceItem provenance");
       }
       sourceConnectionId ??= row.source_connection_id;
     }
+    // A caller may label a manual target, but cannot replace its actual
+    // Source origin or bind a private, retired or foreign-Space connection.
+    // Keep the canonical live, non-oversight reader gate rather than treating
+    // a discovered row or a valid FK as authorization.
+    for (const connectionId of new Set([requestedConnectionId,sourceConnectionId].filter((id):id is string=>!!id))) {
+      if (!(await this.db.query(
+        `SELECT connection.id FROM source_connections connection
+          WHERE connection.id=$1 AND connection.space_id=$2
+            AND connection.deleted_at IS NULL AND connection.status<>'archived'
+            AND ${contentReadSql('source_connection','connection','$3',{includeOversight:false})}`,
+        [connectionId,identity.spaceId,identity.userId],
+      )).rows.length) throw new ProjectCorpusReferenceUnavailable('source_connection_id is not readable by this user');
+    }
+    if (requestedConnectionId && sourceConnectionId && requestedConnectionId !== sourceConnectionId) {
+      throw new ProjectCorpusMutationError(422,'source_connection_id must match the Corpus target’s Source origin');
+    }
+    sourceConnectionId ??= requestedConnectionId;
     return {
       objectId,
       sourceItemId,
@@ -1610,35 +1642,35 @@ function conflictClause(target: { objectId: string | null; evidenceId: string | 
 function roleValue(value: unknown): ProjectCorpusRole | null {
   const text = optionalString(value);
   if (!text) return null;
-  if (!ROLES.has(text as ProjectCorpusRole)) throw new HttpError(422, "role is invalid");
+  if (!ROLES.has(text as ProjectCorpusRole)) throw new ProjectCorpusMutationError(422, "role is invalid");
   return text as ProjectCorpusRole;
 }
 
 function statusValue(value: unknown): ProjectCorpusStatus | null {
   const text = optionalString(value);
   if (!text) return null;
-  if (!STATUSES.has(text as ProjectCorpusStatus)) throw new HttpError(422, "status must be active or archived");
+  if (!STATUSES.has(text as ProjectCorpusStatus)) throw new ProjectCorpusMutationError(422, "status must be active or archived");
   return text as ProjectCorpusStatus;
 }
 
 function triageStatusValue(value: unknown): ProjectCorpusTriageStatus | null {
   const text = optionalString(value);
   if (!text) return null;
-  if (!TRIAGE_STATUSES.has(text as ProjectCorpusTriageStatus)) throw new HttpError(422, "triage_status is invalid");
+  if (!TRIAGE_STATUSES.has(text as ProjectCorpusTriageStatus)) throw new ProjectCorpusMutationError(422, "triage_status is invalid");
   return text as ProjectCorpusTriageStatus;
 }
 
 function readStatusValue(value: unknown): ProjectCorpusReadStatus | null {
   const text = optionalString(value);
   if (!text) return null;
-  if (!READ_STATUSES.has(text as ProjectCorpusReadStatus)) throw new HttpError(422, "read_status is invalid");
+  if (!READ_STATUSES.has(text as ProjectCorpusReadStatus)) throw new ProjectCorpusMutationError(422, "read_status is invalid");
   return text as ProjectCorpusReadStatus;
 }
 
 function relevanceValue(value: unknown): ProjectCorpusRelevance | null {
   const text = optionalString(value);
   if (!text) return null;
-  if (!RELEVANCES.has(text as ProjectCorpusRelevance)) throw new HttpError(422, "relevance is invalid");
+  if (!RELEVANCES.has(text as ProjectCorpusRelevance)) throw new ProjectCorpusMutationError(422, "relevance is invalid");
   return text as ProjectCorpusRelevance;
 }
 
@@ -1646,7 +1678,7 @@ function confidenceValue(value: unknown): number | null {
   if (value === undefined || value === null) return null;
   const confidence = numberValue(value);
   if (confidence === null) return null;
-  if (confidence < 0 || confidence > 1) throw new HttpError(422, "confidence must be between 0 and 1");
+  if (confidence < 0 || confidence > 1) throw new ProjectCorpusMutationError(422, "confidence must be between 0 and 1");
   return confidence;
 }
 

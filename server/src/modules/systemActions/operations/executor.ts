@@ -1,4 +1,6 @@
 import { resolveUserCreationActor } from './userContentCreation.js';
+import {prepareOperationRunTerminalOwner} from './proposalTransitions.js';
+import {withPolicyAuditRecovery} from '../../policy/auditWriter.js';
 import { getOperationAuditPool } from "../../../db/pool.js";
 import { ContentAccessAuditService } from "../../contentAccess/audit.js";
 import type { Pool } from '../../../db/pool.js';
@@ -24,6 +26,7 @@ export class OperationExecutor {
       if (map.has(d.id) || !d.execution || d.execution.tx !== 'core_owned' || d.execution.kind === 'query' && (d.side_effects !== 'none' || d.idempotency_required || d.gate_class !== null || d.proposal_type !== null || !item.readKind || item.readKind === 'content' && !item.readAudit || !!item.afterCommit) || item.approval?.gate.kind === 'hard_gate' && item.approval.gate.gate_class !== d.gate_class) throw new Error('Invalid migrated operation registration');
       if (item.approval && (d.execution.kind !== 'command' || item.approval.atomicStatusWritersVerified !== true || !item.approval.proposalType || item.approval.mode === 'blocked_command' && !item.approval.gate.policy_rule_id)) throw new Error('Approval mapping has not passed canonical transition enablement');
       if (item.userContentCreation && (d.execution.kind !== 'command' || (d.side_effects !== 'draft' && !(d.id === 'source.channel.create' && d.side_effects === 'durable')) || d.allowed_actor_types.length !== 1 || d.allowed_actor_types[0] !== 'user' || d.grantable || d.gate_class !== null || d.proposal_type !== null || item.approval || [...d.visibility].some(surface => surface !== 'public_api'))) throw new Error('Human content creation requires an ungrantable user-only draft or canonical Monitor creation command');
+      if(item.runTerminalOwner&&(d.execution.kind!=='command'||item.approval||item.userContentCreation))throw new Error('Run terminal preparation requires a direct command transaction owner');
       map.set(d.id, item);
     }
     this.registrations = map;
@@ -58,9 +61,10 @@ export class OperationExecutor {
       const command = d.execution!.kind === 'command';
       if (command && (!key || key.length > 256 || !/^[\x21-\x7e]+$/.test(key))) throw new OperationError('idempotency_key_required', 422);
       const requestActor = actor;
-      const committed = await withTransaction(this.pool, async client => {
+      const transaction = () => withTransaction(this.pool, async client => {
         if (!command) await client.query('SET TRANSACTION READ ONLY');
         const tx = operationTransaction(client);
+        let terminalOwner:Awaited<ReturnType<typeof prepareOperationRunTerminalOwner>>|undefined;
         try {
           if (item.userContentCreation) actor = await resolveUserCreationActor(tx.db, input, requestActor,id);
           const scope = await runOperationWork(()=>item.resolve(tx.db, input, actor));
@@ -78,6 +82,10 @@ export class OperationExecutor {
           }
           await assertCurrentActor(tx.db, actor, command);
           await assertOperationGrant(tx.db, actor, id);
+          if(item.runTerminalOwner&&!previous){
+            terminalOwner=await runOperationWork(()=>prepareOperationRunTerminalOwner(client,tx.db,actor.space_id,
+              db=>item.runTerminalOwner!.discover(db,input,actor)));
+          }
           await runOperationWork(()=>item.authorize(tx.db, input, actor, scope));
           const policyRequest: PolicyCheckRequest = {
             action: d.policy_action,
@@ -90,7 +98,7 @@ export class OperationExecutor {
             resource_id: scope.resourceId,
             run_id: actor.run_id,
             context: {
-              ...item.policyContext?.(input, actor),
+              ...item.policyContext?.(input, actor, scope),
               action_id: id,
               trigger_origin: actor.effective_origin,
               instructed_by_user_id: actor.on_behalf_of_user_id
@@ -154,7 +162,8 @@ export class OperationExecutor {
           }
           if (command) await client.query('SAVEPOINT operation_work');
           try {
-            const output = await runOperationWork(() => item.execute(tx.db, input, actor));
+            const output = await runOperationWork(() => item.execute(tx.db, input, actor,
+              Object.freeze({requestId,idempotencyKey:key??null})));
             const validated = d.output_schema.safeParse(output);
             if (!validated.success) throw new OperationError('operation_invalid_output', 500);
             await runOperationWork(async()=>item.authorizeResult?.(tx.db, validated.data, actor));
@@ -176,6 +185,7 @@ export class OperationExecutor {
               data: validated.data
             };
             if (identity) await record(client, identity, d.version, hash, 'succeeded', body, item.successStatus ?? 200);
+            await terminalOwner?.finish();
             if (command && item.afterCommit) notification = () => item.afterCommit!(validated.data, actor);
             return finish(response(body, item.successStatus ?? 200));
           } catch (caught) {
@@ -190,9 +200,11 @@ export class OperationExecutor {
             throw error;
           }
         } finally {
+          terminalOwner?.close();
           tx.close();
         }
       });
+      const committed=await(item.runTerminalOwner?withPolicyAuditRecovery(this.config.databaseUrl,transaction):transaction());
       try {
         await notification?.();
       } catch {/* Notifications are rebuildable; never turn committed business work into failure. */}

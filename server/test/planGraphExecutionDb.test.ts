@@ -879,7 +879,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect(automationRuns + planNodeRuns).toBe(1);
   });
 
-  it("executes a fixed Workflow through Workflow Execution without creating a Plan", async () => {
+  it.each([undefined,'private'] as const)("executes a fixed Workflow without a Plan and preserves frozen Run visibility on recovery (%s)", async runVisibility => {
     if (!db.available) return;
     const now = new Date().toISOString();
     await db.pool.query(
@@ -946,7 +946,9 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       inputJson: {},
       preflightSnapshot: { executable: true },
       budgetSources: [],
+      ...(runVisibility?{runVisibility}:{}),
     });
+    expect((await db.pool.query('SELECT visibility FROM runs WHERE id=$1',[execution.rootRunId])).rows[0]?.visibility).toBe(runVisibility??'space_shared');
     expect((await db.pool.query(`SELECT count(*)::int AS count FROM plans WHERE space_id = $1`, [SPACE])).rows[0]?.count).toBe(0);
     expect((await db.pool.query<{
       run_role: string;
@@ -984,6 +986,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       [SPACE, execution.workflowExecutionId],
     )).rows[0];
     expect(work).toBeTruthy();
+    expect((await db.pool.query('SELECT visibility FROM runs WHERE id=$1',[work!.run_id])).rows[0]?.visibility).toBe(runVisibility??'space_shared');
     const runs = new PgRunRepository(db.pool);
     const artifactId = randomUUID();
     await db.pool.query(
@@ -1020,6 +1023,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       [SPACE, execution.workflowExecutionId],
     )).rows[0];
     expect(consume).toBeTruthy();
+    expect((await db.pool.query('SELECT visibility FROM runs WHERE id=$1',[consume!.run_id])).rows[0]?.visibility).toBe(runVisibility??'space_shared');
     expect((await db.pool.query<{ count: number }>(
       `SELECT count(*)::int AS count
          FROM workflow_execution_node_runs wr

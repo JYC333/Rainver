@@ -1,8 +1,8 @@
+import {DecisionMutationError} from './mutationError.js';
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { assertLinkTypeAllowed } from "../ontology/validation.js";
 import { randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool.js";
 import {
   HttpError,
   dateIso,
@@ -99,7 +99,21 @@ function commitmentToOut(row: CommitmentRow): Record<string, unknown> {
  * actions, never a copy of the source into this module's own tables.
  */
 export class DecisionCaseService {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Queryable) {}
+
+  /** Domain-owned content/aggregate admission, shared by execution and historical receipt replay. */
+  async authorizeMutation(identity: SpaceUserIdentity, projectId: string, targets: {caseId?: string; sourceThreadIds?: string[]}): Promise<void> {
+    const ids = [...new Set([targets.caseId, ...targets.sourceThreadIds ?? []].filter((id): id is string => !!id))].sort();
+    if (ids.length) {
+      await this.pool.query('SELECT id FROM space_objects WHERE space_id=$1 AND id=ANY($2::varchar[]) ORDER BY id FOR UPDATE', [identity.spaceId,ids]);
+      await this.pool.query('SELECT id FROM content_access_grants WHERE space_id=$1 AND resource_id=ANY($2::varchar[]) ORDER BY id FOR SHARE', [identity.spaceId,ids]);
+    }
+    for (const thread of targets.sourceThreadIds ?? []) await assertThreadReadable(this.pool,identity,projectId,thread,'change');
+    if (targets.caseId) {
+      await this.requireCase(this.pool,identity.spaceId,projectId,targets.caseId,identity.userId);
+      await this.pool.query('SELECT object_id FROM decision_cases WHERE object_id=$1 AND space_id=$2 AND project_id=$3 FOR UPDATE', [targets.caseId,identity.spaceId,projectId]);
+    }
+  }
 
   async createCase(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.pool, identity.spaceId, projectId, identity.userId);
@@ -216,7 +230,7 @@ export class DecisionCaseService {
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const decisionCase = await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
-      if (decisionCase.status !== "open") throw new HttpError(409, "Options can only be added to an open Decision Case");
+      if (decisionCase.status !== "open") throw new DecisionMutationError(409, "Options can only be added to an open Decision Case");
       const id = randomUUID();
       await db.query(
         `INSERT INTO decision_options (id, space_id, project_id, decision_case_id, title, description, status, created_by_user_id, created_at)
@@ -237,7 +251,7 @@ export class DecisionCaseService {
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const decisionCase = await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
-      if (decisionCase.status !== "open") throw new HttpError(409, "Criteria can only be added to an open Decision Case");
+      if (decisionCase.status !== "open") throw new DecisionMutationError(409, "Criteria can only be added to an open Decision Case");
       const id = randomUUID();
       await db.query(
         `INSERT INTO decision_criteria (id, space_id, project_id, decision_case_id, name, weight, created_by_user_id, created_at)
@@ -295,10 +309,10 @@ export class DecisionCaseService {
       );
       const decisionCase = lockedCase.rows[0];
       if (!decisionCase) throw new HttpError(404, "Decision Case not found");
-      if (decisionCase.status !== "open") throw new HttpError(409, `Decision Case already ${decisionCase.status}`);
+      if (decisionCase.status !== "open") throw new DecisionMutationError(409, `Decision Case already ${decisionCase.status}`);
       const option = await db.query<{ status: string }>(`SELECT status FROM decision_options WHERE id=$1 AND decision_case_id=$2 AND space_id=$3`, [optionId, caseId, identity.spaceId]);
       if (!option.rows[0]) throw new HttpError(404, "Option not found in this Decision Case");
-      if (option.rows[0].status !== "active") throw new HttpError(409, "Only an active Option can be decided");
+      if (option.rows[0].status !== "active") throw new DecisionMutationError(409, "Only an active Option can be decided");
       await db.query(
         `UPDATE decision_cases SET status='decided', decided_option_id=$3, decided_at=$4, decided_by_user_id=$5
          WHERE object_id=$1 AND space_id=$2`,
@@ -322,7 +336,7 @@ export class DecisionCaseService {
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const decisionCase = await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
-      if (decisionCase.status !== "decided") throw new HttpError(409, "A Commitment requires a decided Decision Case");
+      if (decisionCase.status !== "decided") throw new DecisionMutationError(409, "A Commitment requires a decided Decision Case");
       const id = randomUUID();
       await db.query(
         `INSERT INTO decision_commitments (id, space_id, project_id, decision_case_id, statement, committed_by_user_id, committed_at, created_at, updated_at)
@@ -354,7 +368,7 @@ export class DecisionCaseService {
       );
       const row = commitment.rows[0];
       if (!row) throw new HttpError(404, "Commitment not found");
-      if (row.created_delivery_task_id) throw new HttpError(409, "Delivery already created for this Commitment");
+      if (row.created_delivery_task_id) throw new DecisionMutationError(409, "Delivery already created for this Commitment");
 
       const task = await new PgTaskRepository(this.pool).createTask(identity, {
         project_id: projectId,

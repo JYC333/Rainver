@@ -32,6 +32,7 @@ export interface ExecutionContextRow {
   initialized_by_user_id: string | null;
   dispatch_lock_id: string | null;
   queue_paused_at: string | null;
+  workspace_baseline?: "committed"|"snapshot"|null;
   git_branch: string | null;
   git_head: string | null;
   git_dirty: boolean | null;
@@ -42,6 +43,7 @@ export interface ExecutionContextRow {
 }
 
 interface ExecutionAttachmentRow {
+  git_dirty?:boolean|null;
   id: string;
   space_id: string;
   session_id: string;
@@ -120,12 +122,12 @@ interface ConversationRuntimeThreadRow {
 const CONTEXT_COLUMNS = `id, space_id, session_id, execution_host_id,
   primary_workspace_mode, primary_project_folder_id, primary_workspace_location_id,
   state, initialized_at, initialized_by_user_id, dispatch_lock_id, queue_paused_at,
-  git_branch, git_head, git_dirty, git_execution_ready, git_observed_at,
+  workspace_baseline,git_branch, git_head, git_dirty, git_execution_ready, git_observed_at,
   created_at, updated_at`;
 
 const ATTACHMENT_COLUMNS = `grant_row.id, grant_row.space_id, grant_row.session_id,
   grant_row.project_folder_id, grant_row.workspace_location_id,
-  folder.name AS folder_name, location.display_path,
+  folder.name AS folder_name, location.display_path,location.dirty AS git_dirty,
   grant_row.access_mode, grant_row.status, grant_row.granted_by_user_id,
   grant_row.granted_at, grant_row.updated_at, grant_row.revoked_at,
   grant_row.revoked_by_user_id`;
@@ -212,6 +214,7 @@ export class PgConversationExecutionContextRepository {
     projectFolderId: string | null;
     locationId: string | null;
     userId: string;
+    workspaceBaseline?:"committed"|"snapshot"|null;
     git: {
       branch: string | null;
       commitSha: string | null;
@@ -234,10 +237,11 @@ export class PgConversationExecutionContextRepository {
               git_dirty = $10,
               git_execution_ready = $11,
               git_observed_at = $12,
+              workspace_baseline=$13,
               updated_at = now()
         WHERE space_id = $1 AND session_id = $2 AND state = 'draft'
         RETURNING ${CONTEXT_COLUMNS}`,
-      [input.spaceId, input.sessionId, input.hostId, input.primaryMode, input.projectFolderId, input.locationId, input.userId, input.git.branch, input.git.commitSha, input.git.dirty, input.git.executionReady, input.git.observedAt],
+      [input.spaceId, input.sessionId, input.hostId, input.primaryMode, input.projectFolderId, input.locationId, input.userId, input.git.branch, input.git.commitSha, input.git.dirty, input.git.executionReady, input.git.observedAt,input.workspaceBaseline??null],
     );
     const context = result.rows[0];
     if (!context) {
@@ -246,6 +250,14 @@ export class PgConversationExecutionContextRepository {
       return existing;
     }
     return context;
+  }
+
+  async hasOpenIsolatedWorkspace(spaceId:string,sessionId:string,locationId:string):Promise<boolean>{
+    return Boolean((await this.db.query(`SELECT 1 FROM execution_workspaces w JOIN workspace_change_sets c ON c.workspace_id=w.id WHERE w.space_id=$1 AND w.session_id=$2 AND w.workspace_location_id=$3 AND w.base_commit IS NOT NULL AND c.state='open' LIMIT 1`,[spaceId,sessionId,locationId])).rowCount);
+  }
+
+  async selectWorkspaceBaseline(spaceId:string,sessionId:string,mode:'committed'|'snapshot'){
+    await this.db.query('UPDATE conversation_execution_contexts SET workspace_baseline=$3,updated_at=now() WHERE space_id=$1 AND session_id=$2',[spaceId,sessionId,mode]);
   }
 
   async listHosts(userId: string): Promise<ExecutionHostRow[]> {
@@ -463,7 +475,7 @@ export class PgConversationExecutionContextRepository {
                 WHERE last_run.space_id = thread.space_id AND last_run.id = thread.last_run_id) AS last_run_ended_at
          FROM host_threads thread
         WHERE thread.space_id = $1 AND thread.session_id = $2 AND thread.agent_id = $3
-          AND thread.container_kind = 'conversation' AND thread.status IN ('active', 'session_reset')
+          AND thread.container_kind = 'conversation' AND thread.delegation_id IS NULL AND thread.status IN ('active', 'session_reset')
         LIMIT 1`,
       [spaceId, sessionId, agentId],
     );
@@ -630,6 +642,7 @@ export function hostSummary(host: ExecutionHostRow, sessionId: string): Conversa
     host_name: host.name,
     host_kind: host.kind,
     online: hostIsOnline(host),
+    isolated_workspaces_available:(host.capabilities_json as {execution_workspaces?:{version:number}}|null)?.execution_workspaces?.version===2,
     managed_workspace_available: hostIsOnline(host) || hasConversationWorkspace(host.managed_workspaces_json, sessionId),
     daemon_last_heartbeat_at: host.last_heartbeat_at ? dateIso(host.last_heartbeat_at) : null,
   };
@@ -648,6 +661,7 @@ export function attachmentSummary(row: ExecutionAttachmentRow): ConversationAtta
     project_folder_id: row.project_folder_id,
     workspace_location_id: row.workspace_location_id,
     folder_name: row.folder_name,
+    git_dirty:row.git_dirty??null,
     display_path: row.display_path,
     access_mode: row.access_mode,
     status: row.status,

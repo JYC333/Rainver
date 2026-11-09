@@ -586,6 +586,7 @@ with explicit registration when implemented, not arbitrary exception strings.
 | `operation_approval_superseded` | 409 | false | replay terminal superseded |
 | `operation_result_unavailable` | 410 | false | terminal body removed; do not execute again |
 | registered deterministic domain error | registered 409/422 | false | yes, after savepoint rollback |
+| `operation_limit_exceeded` | 429 | false | no; bounded admission refusal, full rollback |
 | `operation_invalid_output` | 500 | false | no; full rollback |
 | `operation_audit_unavailable` | 503 | true | no; full rollback/no content |
 | `operation_temporarily_unavailable` | 503 | true | no; DB/Job/COMMIT uncertainty |
@@ -638,6 +639,15 @@ and the complete affected writer closure. Source pause/resume was not selected
 as a second pilot. Broader migration and plugin work remain program Plans 5/2.
 
 ### Public adapter and recovery invariants
+
+The core supplies an immutable, host-authored invocation context to direct
+registration execution: request correlation ID and the validated transport
+idempotency key (null for an unkeyed query). This optional fourth service-port
+argument is not a business DTO, model field, authority token or new key source.
+An Agent command needing trusted call provenance must require that context,
+combine it with the already verified Run/attempt identity in its owning service,
+and retain any separate domain producer keys. Replay never calls the writer
+again. Registrations that do not need invocation identity ignore the argument.
 
 Outer transaction control remains host-only. Branded ports may translate domain
 SAVEPOINT/ROLLBACK TO/RELEASE labels into private host-owned savepoints, retaining
@@ -726,6 +736,24 @@ locks. Canonical fresh Run insertion records transaction-local membership and
 its terminal writer requires it still unlinked. This does not authorize late
 key admission, copying a receipt/approval, production mapping or public decision
 permission. Evolution now reuses the same complete sorted admission for its Bundle DB owner.
+Core-owned Project update/archive and Research report-snapshot commands declare
+`runTerminalOwner.discover`. For a new request the executor prepares the exact
+Run set before domain locks, using the real host client paired with its branded
+port; a child cannot manufacture this authority. It validates output and records
+the request before finishing linked transitions once, then expires the owner.
+Cached replay does not prepare an owner or retire newly created work. Scope growth
+is a rollback/conflict, and mandatory audit recovery remains outside the failed
+transaction. This seam supplies no Proposal-decision owner or approval mapping.
+
+The same Project continuation moves Folder create/scan/save/restore behind
+private durable intents and required Jobs. Core success is an accepted intent
+receipt (HTTP 202), not an assertion that external IO has completed. Only the
+owning user with current Project/Folder/Host access can read its status/result.
+Workers persist preimages and write intent before IO, recover an uncertain
+acknowledgement by comparing exact hashes, and refuse independent changes.
+`needs_attention` blocks a fresh same-scope intent. Current authority and policy
+are checked again before the final short domain/result transaction. Safe
+terminal cleanup must not extend the original draft/revision body retention.
 An approved code-patch selection first commits a frozen intent and required Job,
 executes effects without a DB transaction and commits all canonical member results
 plus the receipt atomically. The private receipt is not caller input. Applying/

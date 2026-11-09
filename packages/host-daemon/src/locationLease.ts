@@ -63,6 +63,14 @@ interface Attempt {
 const leases = new Map<string, LocationLease>();
 /** Attempts between asking for their leases and holding all of them, by launch id. */
 const acquiring = new Map<string, Attempt>();
+const launchOwners = new Map<string, string>();
+
+/** Live workspace operations may cooperate only with their own exclusive launch. */
+export function leaseOwnedByRun(key:string,runId:string):boolean {
+  const lease=leases.get(key);
+  return lease?.mode==='exclusive'&&lease.holders.size===1
+    &&launchOwners.get([...lease.holders][0]!)===runId;
+}
 
 /** What `acquireLocationLeases` answers: every lease is held, or the wait was cancelled and none is. */
 type LeaseOutcome = "acquired" | "cancelled";
@@ -84,6 +92,7 @@ export async function acquireLocationLeases(
   const ids = [...new Set([...locationIds, ...sharedIds])].sort();
   const state: Attempt = { ...attempt, ids, cancelled: false, cancelWait: null };
   acquiring.set(attempt.launchId, state);
+  launchOwners.set(attempt.launchId,attempt.runId);
   const held: string[] = [];
   let notified = false;
   const queued = () => {
@@ -104,6 +113,7 @@ export async function acquireLocationLeases(
     return "acquired";
   } finally {
     acquiring.delete(attempt.launchId);
+    if(![...leases.values()].some(lease=>lease.holders.has(attempt.launchId)))launchOwners.delete(attempt.launchId);
   }
 }
 
@@ -197,6 +207,7 @@ export function releaseLocationLeases(locationIds: readonly string[], launchId: 
     if (!held || !held.holders.delete(launchId)) continue;
     admitWaiting(locationId);
   }
+  if(![...leases.values()].some(lease=>lease.holders.has(launchId))&&!acquiring.has(launchId))launchOwners.delete(launchId);
 }
 
 /**

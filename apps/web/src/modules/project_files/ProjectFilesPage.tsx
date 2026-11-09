@@ -20,6 +20,7 @@ import type { DraftMutationInput } from './draftController'
 import { CreateProjectFolderDialog } from './CreateProjectFolderDialog'
 import { useProjectFolderConversation } from '../projects/ProjectFolderConversationContext'
 import { subscribeProjectFolderContentChanged } from '../../core/projectFolderEvents'
+import { useAppTranslation } from '../../i18n'
 
 type CenterView =
   | { mode: 'empty' }
@@ -49,8 +50,10 @@ function relativeLastSeen(value: string | null | undefined): string {
 
 /** The unregister refusal carries counts that `ApiErrorDetails` does not model. */
 function activeDraftConfirmation(error: unknown): { activeDraftCount: number; affectedUserCount: number } | null {
-  if (errBody(error)?.code !== 'active_drafts_require_confirmation') return null
-  const payload = (error as { payload?: Record<string, unknown> }).payload ?? {}
+  const body=(error as {payload?:Record<string,unknown>}|null)?.payload??{}
+  const operation=body.error as {metadata?:Record<string,unknown>}|undefined
+  const payload=operation?.metadata??body
+  if(payload.code!=='active_drafts_require_confirmation')return null
   return {
     activeDraftCount: Number(payload.active_draft_count ?? 0),
     affectedUserCount: Number(payload.affected_user_count ?? 0),
@@ -88,6 +91,7 @@ function ReadErrorState({ error, onRetry }: { error: ReadError; onRetry: () => v
 
 export default function ProjectFilesPage() {
   const { theme } = useTheme()
+  const { t } = useAppTranslation()
   const { projectId = '' } = useParams<{ projectId: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
   const preselectedId = searchParams.get('folder')
@@ -534,7 +538,8 @@ export default function ProjectFilesPage() {
       const generation = readGeneration.current
       if (isCurrent(selectedFolder.id, generation)) {
         setReadError(null)
-        if (result.draft_deleted) setFileDraft(null)
+        if('current_draft' in result)setFileDraft(result.current_draft??null)
+        else if (result.draft_deleted) setFileDraft(null)
         fileCache.current.set(fileCacheKey(selectedFolder.id, result.file.path), result.file)
         setCenterView({ mode: 'file', data: result.file })
         setSelectedFilePath(result.file.path)
@@ -653,6 +658,16 @@ export default function ProjectFilesPage() {
     />
   )
 
+  // Secondary entry: Agent workspaces are execution records, not Project Folders.
+  const agentWorkspacesEntry = (
+    <Button size="sm" variant="ghost" className="w-full justify-start gap-1.5" asChild>
+      <Link to={`/projects/${projectId}/files/workspaces`}>
+        <GitBranch className="size-3.5" aria-hidden="true" />
+        {t('agent_workspaces_ui.entry')}
+      </Link>
+    </Button>
+  )
+
   if (!foldersLoading && folders.length === 0) {
     return (
       <>
@@ -661,7 +676,10 @@ export default function ProjectFilesPage() {
           <EmptyState
             title="No Project Folders yet"
             description="Create a managed Folder, clone a repository, or connect an allowed existing directory. Chat and non-file workflows remain available without a Folder."
-            action={<Button onClick={() => setCreateFolderOpen(true)}>Create or connect Folder</Button>}
+            action={<div className="flex flex-wrap justify-center gap-2">
+              <Button onClick={() => setCreateFolderOpen(true)}>Create or connect Folder</Button>
+              {agentWorkspacesEntry}
+            </div>}
           />
         </div>
       </>
@@ -813,6 +831,9 @@ export default function ProjectFilesPage() {
                   )}
                 </TabsTrigger>
               </TabsList>
+              {/* Secondary entry beside the Folder's own Files/Changes: Agent
+                  workspaces are execution records, not another Project Folder. */}
+              <div className="mt-1">{agentWorkspacesEntry}</div>
             </div>
 
             <TabsContent value="files" className="flex-1 overflow-y-auto mt-0 px-1 py-1">

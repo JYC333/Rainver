@@ -1,3 +1,4 @@
+import {isolatedWorkspaceContract} from '../projectFolders/executionWorkspaces.js';
 import { contractWorkspaceAccess } from "../runs/contractSnapshot.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
@@ -281,6 +282,18 @@ export class AgentGroupRunLifecycleProjector {
       if (child.status !== "queued") continue;
       if (await childAdmitted(input.client, child)) active.push(child);
       else queued.push(child);
+    }
+    // Each version-1 delegation has an independent branch and vendor session.
+    // Legacy/shared-cwd children keep the existing reader/writer FIFO below.
+    const isolated = (run: RunRecord) => isolatedWorkspaceContract(run.contract_snapshot_json)
+      && Boolean(run.workspace_location_id && run.delegation_id);
+    if (queued.length > 0 && [...active, ...queued].every(isolated)) {
+      const owed = (await input.client.query(`SELECT 1 FROM execution_workspace_runs
+        WHERE run_id=$1 AND space_id=$2 AND (checkpoint_state<>'saved' OR checkpoint_commit IS NULL) LIMIT 1`,
+        [input.parent.id,input.parent.space_id])).rowCount;
+      if (owed) return;
+      for (const child of queued) await this.admitDelegatedChild(input.client,input.parent,child);
+      return;
     }
     const reads = (run: RunRecord) => contractWorkspaceAccess(run.contract_snapshot_json) === "read";
     const admit: RunRecord[] = [];
@@ -626,6 +639,11 @@ async function queueWaitingDependencyRunIfReady(input: {
   for (const runId of waiting.depends_on_run_ids) {
     const dependency = await input.runs.getRun(input.waitingRun.space_id, runId);
     if (!dependency || !isTerminalRunStatus(dependency.status)) return;
+    if(isolatedWorkspaceContract(dependency.contract_snapshot_json)&&dependency.workspace_location_id){
+      const owed=await input.db.query(`SELECT 1 FROM execution_workspace_runs b JOIN workspace_change_sets c ON c.id=b.change_set_id
+        WHERE b.run_id=$1 AND b.space_id=$2 AND c.state IN ('ready','integrating') LIMIT 1`,[dependency.id,dependency.space_id]);
+      if(owed.rowCount)return;
+    }
     dependencyRuns.push(dependency);
   }
   const groupId = input.waitingRun.run_group_id;

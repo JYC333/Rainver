@@ -1466,26 +1466,26 @@
   {
     "method": "POST",
     "path": "/api/v1/projects",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.create"
   },
   {
     "method": "PATCH",
     "path": "/api/v1/projects/:projectId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.update"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/archive",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.archive"
   },
   {
     "method": "PUT",
     "path": "/api/v1/projects/:projectId/attention/:sourceType/:sourceId/state",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.attention.set_state"
   },
   {
     "method": "PUT",
@@ -1496,32 +1496,32 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/brief-versions",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.brief.create"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/brief-versions/:versionId/publish",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.brief.publish"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/brief-versions/:versionId/submit-review",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.brief.submit_review"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/corpus",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.corpus.upsert"
   },
   {
     "method": "PATCH",
     "path": "/api/v1/projects/:projectId/corpus/:corpusItemId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.corpus.update"
   },
   {
     "method": "POST",
@@ -1532,194 +1532,194 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/decision-cases",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for decision.case.create"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/decision-cases/:caseId/commitments",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for decision.commitment.add"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/decision-cases/:caseId/commitments/:commitmentId/deliver",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for decision.commitment.deliver"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/decision-cases/:caseId/criteria",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for decision.criterion.add"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/decision-cases/:caseId/decide",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for decision.case.decide"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/decision-cases/:caseId/options",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for decision.option.add"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/decision-cases/:caseId/scores",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for decision.option.score"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/experiments/definitions",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for experiment.definition.create"
   },
   {
     "method": "PATCH",
     "path": "/api/v1/projects/:projectId/experiments/definitions/:definitionId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for experiment.definition.update"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/experiments/definitions/:definitionId/interpretations",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for experiment.interpretation.create"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/experiments/definitions/:definitionId/runs/:runId/complete",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for experiment.run.complete"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/experiments/definitions/:definitionId/runs/:runId/observations",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for experiment.observation.record"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/experiments/definitions/:definitionId/versions",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for experiment.version.create"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/experiments/definitions/:definitionId/versions/:versionId/approve",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for experiment.version.approve"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/experiments/definitions/:definitionId/versions/:versionId/runs",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for experiment.run.create"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/experiments/definitions/:definitionId/versions/:versionId/runs/launch",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for experiment.run.launch"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/experiments/interpretations/:interpretationId/convert-to-signal",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for experiment.interpretation.convert"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/experiments/interpretations/:interpretationId/review",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for experiment.interpretation.review"
   },
   {
     "method": "PUT",
     "path": "/api/v1/projects/:projectId/focus-area",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.focus_area.set"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/folders",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.create"
   },
   {
     "method": "DELETE",
     "path": "/api/v1/projects/:projectId/folders/:folderId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.archive"
   },
   {
     "method": "PATCH",
     "path": "/api/v1/projects/:projectId/folders/:folderId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.update"
   },
   {
     "method": "PATCH",
     "path": "/api/v1/projects/:projectId/folders/:folderId/execution-config",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.execution_config.update"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/folders/:folderId/execution-config",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.execution_config.create"
   },
   {
     "method": "PUT",
     "path": "/api/v1/projects/:projectId/folders/:folderId/file/draft",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.draft.upsert"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/folders/:folderId/file/draft/discard",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.draft.discard"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/folders/:folderId/file/draft/rebase",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.draft.upsert"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/folders/:folderId/file/draft/save",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.draft.save"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/folders/:folderId/file/revisions/restore-as-draft",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.revision.restore"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/folders/:folderId/locations/:locationId/activate",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.location.activate"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/folders/:folderId/unregister",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.unregister"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/folders/scan",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.scan"
   },
   {
     "method": "POST",
@@ -1730,8 +1730,8 @@
   {
     "method": "PATCH",
     "path": "/api/v1/projects/:projectId/information-monitoring/details",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.monitoring.details.update"
   },
   {
     "method": "POST",
@@ -1766,56 +1766,56 @@
   {
     "method": "PATCH",
     "path": "/api/v1/projects/:projectId/information-monitoring/state",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.monitoring.state.update"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/candidates/:candidateId/decision",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.candidate.decide"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/candidates/:candidateId/reopen",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.candidate.reopen"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/delta-briefs",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.delta_brief.generate"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/relations",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.relation.add"
   },
   {
     "method": "DELETE",
     "path": "/api/v1/projects/:projectId/inquiry/relations/:relationId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.relation.remove"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/review-packets",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.review_packet.open"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/review-packets/:packetId/close",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.review_packet.close"
   },
   {
     "method": "PUT",
     "path": "/api/v1/projects/:projectId/inquiry/settings/shared-focus-wip-limit",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.shared_focus.configure"
   },
   {
     "method": "POST",
@@ -1826,80 +1826,80 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/threads/:threadId/definition-revisions",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.definition.revise"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/threads/:threadId/iterations",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.iteration.record"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/threads/:threadId/lifecycle-transitions",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.lifecycle.transition"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/threads/:threadId/notes",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.note.link"
   },
   {
     "method": "DELETE",
     "path": "/api/v1/projects/:projectId/inquiry/threads/:threadId/notes/:noteObjectId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.note.unlink"
   },
   {
     "method": "PUT",
     "path": "/api/v1/projects/:projectId/inquiry/threads/:threadId/personal-focus",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.personal_focus.set"
   },
   {
     "method": "PUT",
     "path": "/api/v1/projects/:projectId/inquiry/threads/:threadId/primary-parent",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.thread.set_primary_parent"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/threads/:threadId/problem/close-round",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.problem.close_round"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/threads/:threadId/problem/work",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.problem.record_work"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/threads/:threadId/signals",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.signal.create"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/threads/:threadId/tasks",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.task.link"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/inquiry/threads/:threadId/tasks/:taskId/reference-result",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.task.reference_result"
   },
   {
     "method": "PATCH",
     "path": "/api/v1/projects/:projectId/inquiry/threads/:threadId/work-state",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for inquiry.work.update"
   },
   {
     "method": "POST",
@@ -1910,26 +1910,26 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/instruction-versions",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.instruction.create"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/instruction-versions/:versionId/publish",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.instruction.publish"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/instruction-versions/:versionId/submit-review",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.instruction.submit_review"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/knowledge-candidate-extractions",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for knowledge.candidate.extract"
   },
   {
     "method": "POST",
@@ -1976,20 +1976,20 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/members",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.member.add"
   },
   {
     "method": "DELETE",
     "path": "/api/v1/projects/:projectId/members/:userId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.member.remove"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/notebook-chat",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.notebook.chat"
   },
   {
     "method": "POST",
@@ -2006,8 +2006,8 @@
   {
     "method": "PUT",
     "path": "/api/v1/projects/:projectId/public-summary",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.public_summary.save"
   },
   {
     "method": "POST",
@@ -2018,14 +2018,14 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/public-summary/publish",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.public_summary.publish"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/public-summary/revoke",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.public_summary.revoke"
   },
   {
     "method": "POST",
@@ -2036,44 +2036,44 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/research/area",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.area.initialize"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/research/ask-ai",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.ask_ai"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/research/checklist",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.checklist.create"
   },
   {
     "method": "DELETE",
     "path": "/api/v1/projects/:projectId/research/checklist/:itemId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.checklist.delete"
   },
   {
     "method": "PATCH",
     "path": "/api/v1/projects/:projectId/research/checklist/:itemId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.checklist.update"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/research/claims",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.claim.link"
   },
   {
     "method": "PATCH",
     "path": "/api/v1/projects/:projectId/research/claims/:claimLinkId",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.claim.update"
   },
   {
     "method": "POST",
@@ -2084,8 +2084,8 @@
   {
     "method": "PUT",
     "path": "/api/v1/projects/:projectId/research/initial-intake",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.intake.draft"
   },
   {
     "method": "POST",
@@ -2096,8 +2096,8 @@
   {
     "method": "PUT",
     "path": "/api/v1/projects/:projectId/research/item-limit",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.intake.limit"
   },
   {
     "method": "POST",
@@ -2144,8 +2144,8 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/research/question/assessment/confirm",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.question.assessment.confirm"
   },
   {
     "method": "POST",
@@ -2162,14 +2162,14 @@
   {
     "method": "PUT",
     "path": "/api/v1/projects/:projectId/research/reading-list/:sourceItemId/card",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.evidence_card.update"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/research/reports",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.report.snapshot"
   },
   {
     "method": "POST",
@@ -2180,8 +2180,8 @@
   {
     "method": "PUT",
     "path": "/api/v1/projects/:projectId/research/screening-criteria",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.screening.configure"
   },
   {
     "method": "POST",
@@ -2192,14 +2192,14 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/research/standing/advice/:adviceId/dismiss",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.standing.dismiss"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/research/standing/batches/:batchId/retry",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.standing.retry"
   },
   {
     "method": "POST",
@@ -2216,8 +2216,8 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/research/workflow/:workflowId/stages/:stageKey/run",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for research.workflow.stage.record"
   },
   {
     "method": "POST",
@@ -2228,8 +2228,8 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/review-sessions",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.review_session.open"
   },
   {
     "method": "POST",
@@ -2258,8 +2258,8 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/sources/bindings/:bindingId/propose-backfill",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.source.propose_backfill"
   },
   {
     "method": "POST",
@@ -2276,14 +2276,14 @@
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/updates",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.update.report"
   },
   {
     "method": "POST",
     "path": "/api/v1/projects/:projectId/updates/:eventId/undo",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.update.undo"
   },
   {
     "method": "POST",
@@ -2474,6 +2474,12 @@
   {
     "method": "DELETE",
     "path": "/api/v1/providers/:configId/grants/:spaceId",
+    "classification": "legacy_business",
+    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/providers/:configId/plan-usage",
     "classification": "legacy_business",
     "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
   },

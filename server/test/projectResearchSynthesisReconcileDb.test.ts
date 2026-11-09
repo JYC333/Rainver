@@ -1263,7 +1263,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       plainText: "Old claim\n\nKept block",
       version: 3,
     });
-    const adhocContract = (baseVersion: number) => ({ workflow_input_json: { research_adhoc: {
+    const adhocContract = (baseVersion: number) => ({ route_hints_json: { owner_domain: 'projectResearch', stage: 'research_adhoc', provider_id: PROVIDER, model: 'test-model' }, workflow_input_json: { research_adhoc: {
       note_id: understandingId, base_version: baseVersion, source_item_ids: [],
     } } });
     const output = canonicalRunOutput({

@@ -102,6 +102,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
     const response = await app.inject({
       method: "POST",
       url: `/api/v1/projects/${PROJECT}/research/question/assessment/confirm`,
+      headers:{"idempotency-key":randomUUID()},
       payload: {
         thread_id: THREAD,
         refinement: { ...refinementOutput, sub_questions: ["x".repeat(250)] },
@@ -109,7 +110,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
       },
     });
     expect(response.statusCode).toBe(422);
-    expect(response.json()).toMatchObject({ code: "question_refinement_input_invalid" });
+    expect(response.json()).toMatchObject({error:{code:"operation_invalid_input"}});
   });
 
   it("returns an actionable structured assessment for an unanswerable query", async () => {
@@ -296,6 +297,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
     const confirmation = await app.inject({
       method: "POST",
       url: `/api/v1/projects/${PROJECT}/research/question/assessment/confirm`,
+      headers:{"idempotency-key":randomUUID()},
       payload: {
         thread_id: THREAD,
         refinement: {
@@ -306,19 +308,16 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
       },
     });
     expect(confirmation.statusCode).toBe(201);
-    expect(confirmation.json()).toMatchObject({
-      research_context_version_id: expect.any(String),
-      scope: { in: ["tool-using coding agents", "Managed API runtimes"], out: [] },
-      confirmation: {
-        question: refinementOutput.recommended_question,
-        manually_adjusted: true,
-      },
-    });
-    const confirmedId = confirmation.json().confirmation.id;
+    expect(confirmation.json()).toMatchObject({status:'succeeded',data:{id:expect.any(String),thread_id:THREAD,project_id:PROJECT,space_id:SPACE}});
+    expect(confirmation.body).not.toContain(refinementOutput.recommended_question);
+    const confirmedId = confirmation.json().data.id;
+    const currentAssessment=await app.inject({method:'GET',url:`/api/v1/projects/${PROJECT}/research/question/assessment?thread_id=${THREAD}`});
+    expect(currentAssessment.json()).toMatchObject({latest_refinement:{research_context_version_id:confirmedId,scope:{in:['tool-using coding agents','Managed API runtimes'],out:[]}}});
 
     const repeatedConfirmation = await app.inject({
       method: "POST",
       url: `/api/v1/projects/${PROJECT}/research/question/assessment/confirm`,
+      headers:{"idempotency-key":randomUUID()},
       payload: {
         thread_id: THREAD,
         refinement: {
@@ -329,10 +328,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
       },
     });
     expect(repeatedConfirmation.statusCode).toBe(201);
-    expect(repeatedConfirmation.json()).toMatchObject({
-      research_context_version_id: confirmedId,
-      confirmation: { id: confirmedId },
-    });
+    expect(repeatedConfirmation.json()).toMatchObject({status:'succeeded',data:{id:confirmedId}});
 
     const history = await app.inject({
       method: "GET",

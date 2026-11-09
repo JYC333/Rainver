@@ -10,7 +10,7 @@ import { commandCenterRuntimePath } from '../command_center/hostLinks'
 import { runtimeFailure } from './runtimeFailure'
 
 /** Guidance only. Login and retries retain their existing permissioned owners. */
-export function RuntimeFailureNotice({ run }: { run: Run }) {
+export function RuntimeFailureNotice({ run, flat = false }: { run: Run; flat?: boolean }) {
   const { t } = useAppTranslation()
   const scope = useConversationScope()
   const failure = runtimeFailure(run)
@@ -49,7 +49,7 @@ export function RuntimeFailureNotice({ run }: { run: Run }) {
   }
 
   if (!failure || (scope.spaceId && scope.spaceId !== run.space_id)) return null
-  return <section className="min-w-0 space-y-2 rounded-md border border-border bg-muted/30 p-3 text-sm" aria-label={t('runtime_failure_ui.guidance')} data-testid={`runtime-failure-${run.id}`}>
+  return <section className={flat ? 'min-w-0 space-y-2 text-sm' : 'min-w-0 space-y-2 rounded-md border border-border bg-muted/30 p-3 text-sm'} aria-label={t('runtime_failure_ui.guidance')} data-testid={`runtime-failure-${run.id}`}>
     <p className="font-medium">{t(`runtime_failure_ui.cause.${failure.cause}`)}</p>
     <p className="text-xs text-muted-foreground">{t(`runtime_failure_ui.advice.${failure.cause}`)}</p>
     {failure.evidence?.phase && <p className="text-xs text-muted-foreground">{t('runtime_failure_ui.failed_during', { phase: t(`runtime_failure_ui.phase.${failure.evidence.phase}`) })}</p>}

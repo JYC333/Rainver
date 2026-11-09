@@ -62,7 +62,7 @@ export const RAIL_ITEMS: RailItem[] = [
   { id: 'evolution',  label: 'Evolution',  to: '/evolution',   icon: GitBranch,   scope: 'home' },
   { id: 'instance-settings', label: 'Instance Settings', to: '/instance-settings', icon: ServerCog, scope: 'home', footer: true, requiresInstanceAdmin: true },
   { id: 'space-settings', label: 'Space Settings', to: '/space-settings', icon: Building2, scope: 'space', footer: true, requiresSpaceAdmin: true, activePaths: ['/network-profiles', '/plugins', '/retrieval-settings', '/prompts'] },
-  { id: 'settings',   label: 'Settings',   to: '/settings',    icon: Settings,    scope: 'home',  footer: true },
+  { id: 'settings',   label: 'Settings',   to: '/settings',    icon: Settings,    scope: 'home',  footer: true, activePaths: ['/providers', '/usage'] },
 ]
 
 /** Narrow-viewport primary destinations, followed by the More menu. */
@@ -249,4 +249,21 @@ export function sceneForPath(pathname: string): Scene | null {
  */
 export function routeScopeForPath(pathname: string): RouteScope {
   return pathname.startsWith('/spaces/') ? 'space' : 'home'
+}
+
+/** Settings ownership also applies to direct links and nested module routes. */
+export function settingsSectionForPath(pathname: string): RailItem | null {
+  const logical = stripSpacePrefix(pathname)
+  return RAIL_ITEMS.find(item => ['settings', 'instance-settings', 'space-settings'].includes(item.id) &&
+    [item.to, ...(item.activePaths ?? [])].some(path => logical === path || logical.startsWith(`${path}/`))) ?? null
+}
+
+/** One active-route rule for desktop rail and mobile More. */
+export function railItemActive(item: RailItem, pathname: string): boolean {
+  const logical = stripSpacePrefix(pathname)
+  if (item.id === 'home') return logical === '/' || logical === '/home' || logical.startsWith('/home/')
+  const scene = sceneForPath(pathname)
+  if (scene?.id === item.id) return true
+  if (item.activePaths?.some(path => logical === path || logical.startsWith(`${path}/`))) return true
+  return logical === item.to || logical.startsWith(`${item.to}/`)
 }

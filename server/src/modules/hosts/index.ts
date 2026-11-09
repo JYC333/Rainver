@@ -2,6 +2,7 @@ import type { ServerModule } from "../../gateway/routeRegistry.js";
 import { registerRoutes } from "./routes.js";
 import { registerOrdinaryToolRoutes } from "./ordinaryToolRoutes.js";
 import { registerOrdinaryToolAccountRoutes } from "./ordinaryToolAccountRoutes.js";
+import { registerSubscriptionUsageRoutes } from "./subscriptionUsageRoutes.js";
 
 export const hostsModule: ServerModule = {
   name: "hosts",
@@ -9,6 +10,7 @@ export const hostsModule: ServerModule = {
     registerRoutes(app, context);
     registerOrdinaryToolRoutes(app, context);
     registerOrdinaryToolAccountRoutes(app, context);
+    registerSubscriptionUsageRoutes(app, context);
   },
 };
 

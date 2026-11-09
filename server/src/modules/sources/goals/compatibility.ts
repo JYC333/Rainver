@@ -1,3 +1,4 @@
+import {lockSourceChannelReference} from '../sourceMonitorParent.js';
 import {computeNextCheckAt} from '../sourceScanCadence.js';
 import {pauseTransfer,restoreTransfer,assertTransferUnchanged,type TransferState} from './transferState.js';
 import {upsertSourceChannelScanTask,getSourceChannelScanTask} from '../sourceConnectionScheduler.js';
@@ -14,7 +15,11 @@ import {requireGoal,requireLegacyGoalSource} from './access.js';
  * subscriptions and items remain authoritative; mapping itself sends nothing. */
 export async function mapLegacyGoal(db:Pool,identity:SpaceUserIdentity,channelId:string,dryRun=false){
  return withDbTransaction(db,async tx=>{
-  const r=await tx.query(`SELECT ch.*,sc.owner_user_id,sc.project_id,sc.name AS source_name FROM source_channels ch JOIN source_connections sc ON sc.id=ch.source_connection_id AND sc.space_id=ch.space_id WHERE ch.id=$1 AND ch.space_id=$2 AND sc.deleted_at IS NULL FOR UPDATE OF ch`,[channelId,identity.spaceId]);const c=r.rows[0];if(!c || c.owner_user_id!==identity.userId)throw new HttpError(404,'Source not found');
+  const discover=()=>tx.query(`SELECT ch.*,sc.owner_user_id,sc.project_id,sc.name AS source_name FROM source_channels ch JOIN source_connections sc ON sc.id=ch.source_connection_id AND sc.space_id=ch.space_id WHERE ch.id=$1 AND ch.space_id=$2 AND sc.deleted_at IS NULL`,[channelId,identity.spaceId]);
+  const before=(await discover()).rows[0];if(!before || before.owner_user_id!==identity.userId)throw new HttpError(404,'Source not found');
+  if(before.project_id)await tx.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR UPDATE',[before.project_id,identity.spaceId]);
+  if(await lockSourceChannelReference(tx,identity.spaceId,channelId,true)!==before.source_connection_id)throw new HttpError(409,'Source context changed');
+  const c=(await discover()).rows[0];if(!c || c.project_id!==before.project_id || c.owner_user_id!==before.owner_user_id)throw new HttpError(409,'Source context changed');
   await assertSourceConnectionManageable(tx,identity,String(c.source_connection_id));await resolveContentCreationContext(tx,{userId:identity.userId,requestSpaceId:identity.spaceId,projectId:c.project_id as string|null});if(await contentDecisionFromDb(tx,identity,'source_connection',String(c.source_connection_id),{includeOversight:false})!=='full')throw new HttpError(403,'Source content unavailable');
   const existing=await tx.query('SELECT * FROM source_goals WHERE space_id=$1 AND legacy_channel_id=$2',[identity.spaceId,channelId]);
   await assertLegacySourceOwner(tx,identity.spaceId,channelId,existing.rows[0]?.id);
@@ -31,7 +36,7 @@ export async function takeGoalSchedulingOwnership(db:Queryable,goalId:string,spa
  const g=(await db.query<{legacy_channel_id:string;compatibility_json:Record<string,unknown>;project_id:string|null;active_version_id:string|null}>('SELECT * FROM source_goals WHERE id=$1 AND space_id=$2',[goalId,spaceId])).rows[0];if(!g)throw new HttpError(404,'Goal unavailable');
 
  if(g.project_id)await db.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR UPDATE',[g.project_id,spaceId]);
- await db.query('SELECT id FROM source_channels WHERE id=$1 AND space_id=$2 FOR UPDATE',[channelId,spaceId]);
+ if(!await lockSourceChannelReference(db,spaceId,channelId,true))throw new HttpError(404,'Source unavailable');
 
  const competing=await db.query(`SELECT 1 FROM source_goals g JOIN source_goal_bindings b ON b.goal_id=g.id WHERE g.space_id=$1 AND g.id<>$2 AND b.spec_json->>'source_channel_id'=$3 AND g.status<>'deleted' AND g.active_version_id IS NOT NULL`,[spaceId,goalId,channelId]);if(competing.rows.length)throw new HttpError(409,'Source already has scheduling owner');
  const previous=(g.compatibility_json?.transfers as Record<string,TransferState>|undefined)?.[channelId];
@@ -51,7 +56,13 @@ export async function rollbackGoalCompatibility(db:Pool,identity:SpaceUserIdenti
   const transfers=(g.compatibility_json?.transfers??{}) as Record<string,TransferState>;
   if(!Object.keys(transfers).length)throw new HttpError(409,'source_goal_transfer_changed');
   if(g.project_id)await tx.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR UPDATE',[g.project_id,identity.spaceId]);
+  // All parent rows precede any child row, also for a multi-channel rollback.
+  const parents=(await tx.query<{id:string;source_connection_id:string}>('SELECT id,source_connection_id FROM source_channels WHERE space_id=$1 AND id=ANY($2::varchar[])',[identity.spaceId,Object.keys(transfers)])).rows;
+  if(parents.length!==Object.keys(transfers).length)throw new HttpError(404,'Source unavailable');
+  await tx.query('SELECT id FROM source_connections WHERE space_id=$1 AND id=ANY($2::varchar[]) ORDER BY id FOR UPDATE',[identity.spaceId,[...new Set(parents.map(row=>row.source_connection_id))]]);
   for(const [channelId,transfer] of Object.entries(transfers).sort(([a],[b])=>a.localeCompare(b))){
+   const parent=parents.find(row=>row.id===channelId)!.source_connection_id;
+   if(!(await tx.query('SELECT id FROM source_channels WHERE id=$1 AND space_id=$2 AND source_connection_id=$3 FOR UPDATE',[channelId,identity.spaceId,parent])).rows.length)throw new HttpError(409,'Source context changed');
    const source=(await tx.query('SELECT source_connection_id FROM source_channels WHERE id=$1 AND space_id=$2',[channelId,identity.spaceId])).rows[0];if(!source)throw new HttpError(404,'Source unavailable');await assertSourceConnectionManageable(tx,identity,String(source.source_connection_id));
    await restoreTransfer(tx,identity.spaceId,channelId,g.project_id,transfer);
   }
@@ -63,8 +74,9 @@ export async function rollbackGoalCompatibility(db:Pool,identity:SpaceUserIdenti
 
 export async function setLegacyGoalPaused(db:Queryable,identity:SpaceUserIdentity,goalId:string,paused:boolean,config:ServerConfig){
  const g=await requireGoal(db,identity,goalId,true);if(!g.legacy_channel_id || g.compatibility_json?.scheduler_owner!=='legacy')return false;
- await requireLegacyGoalSource(db,config,identity,g,true);
  if(g.project_id)await db.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR UPDATE',[g.project_id,identity.spaceId]);
+ if(!await lockSourceChannelReference(db,identity.spaceId,g.legacy_channel_id,true))throw new HttpError(404,'Source unavailable');
+ await requireLegacyGoalSource(db,config,identity,g,true);
  const channel=(await db.query('SELECT * FROM source_channels WHERE id=$1 AND space_id=$2 FOR UPDATE',[g.legacy_channel_id,identity.spaceId])).rows[0];if(!channel)throw new HttpError(404,'Source unavailable');
  // A stale compatibility alias can be stopped/deleted without touching the
  // channel now owned by another Following. Resuming it must not double-schedule.

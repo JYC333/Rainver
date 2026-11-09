@@ -12,12 +12,15 @@ export type HostRequestPayload<T extends HostServerFrame["type"]> = Omit<HostSer
  * machine runs no proxy, and a Run that touched no network has nothing to
  * report.
  */
-export type HostRunCompletion = Pick<HostDaemonFrameOf<"complete">, "exit_code" | "timed_out" | "error" | "egress" | "task_worktree" | "time_zone" | "native_runtime_version">;
+export type HostRunCompletion = Pick<HostDaemonFrameOf<"complete">, "exit_code" | "timed_out" | "error" | "egress" | "task_worktree" | "time_zone" | "native_runtime_version" | "execution_workspace" | "execution_workspace_reports">;
 /**
  * A Task branch request (settle, branch delete, the merge steps) and the reply
  * frame that answers it, whole. Prepare and continue share one reply shape.
  */
 const TASK_BRANCH_REPLIES = {
+  workspace_scope:"workspace_scope_result",
+  workspace_integration: "workspace_integration_result",
+  execution_workspace_command: "execution_workspace_result",
   task_run_settle: "task_run_settle_result",
   task_branch_delete: "task_branch_delete_result",
   task_merge_prepare: "task_merge_step_result",
@@ -34,6 +37,9 @@ type AnyTaskBranchReply = ReplyOf<HostDaemonFrameOf<TaskBranchReplyType>>;
 /** A transport failure, reported in the reply's own shape. */
 function failedTaskBranchRequest(type: TaskBranchRequestType, error: string): AnyTaskBranchReply {
   switch (TASK_BRANCH_REPLIES[type]) {
+    case "workspace_scope_result":return {ok:false,error,root_location_id:null,cwd_subpath:null};
+    case "workspace_integration_result": return {ok:false,outcome:null,main_branch:null,onto_commit:null,candidate_commit:null,conflicted_files:[],error};
+    case "execution_workspace_result": return {ok:false,branch:null,commit:null,error};
     case "task_run_settle_result": return { ok: false, branch: null, commit: null, error };
     case "task_branch_delete_result": return { ok: false, deleted: false, error };
     case "task_merge_step_result":

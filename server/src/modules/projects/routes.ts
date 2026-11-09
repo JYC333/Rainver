@@ -1,3 +1,6 @@
+import {registerProjectSourceProposalOperationRoutes} from './sourceProposalOperationRoutes.js';
+import {registerProjectCorpusOperationRoutes} from './corpusOperationRoutes.js';
+import {registerProjectManagementOperationRoutes} from './managementOperationRoutes.js';
 import {registerProjectSourceOperationRoutes} from './projectSourceOperationRoutes.js';
 import { NO_STORE_CACHE_CONTROL } from '../../gateway/cacheControl.js';
 import { introspectIdentity } from '../auth/identity.js';
@@ -10,8 +13,6 @@ import type { FastifyInstance } from "fastify";
 import * as protocol from "@rainver/protocol";
 import type {
   ProjectPublicSummaryDraftRequest,
-  ProjectPublicSummaryPublishRequest,
-  ProjectPublicSummaryUpsertRequest,
   RetrievalBriefRequest,
   RetrievalFeedbackRequest,
   RetrievalSearchRequest,
@@ -39,7 +40,6 @@ import { readSpaceRetrievalSettings, resolveRetrievalSearchControls } from "../r
 import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker.js";
 import { ProviderQueryRewriter } from "../retrieval/queryRewriteProvider/providerQueryRewriter.js";
 import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder.js";
-import { enqueueRetrievalEmbeddingBackfill } from "../retrieval/embedding/job.js";
 import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer.js";
 import { resolveProviderCommandStore } from "../providers/commands/store.js";
 import { projectRetrievalRegistry } from "./retrievalAdapter.js";
@@ -55,6 +55,9 @@ import { enforceSources } from "../sources/enforceSources.js";
 import { ProjectOperationService } from "./projectOperationService.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerProjectCorpusOperationRoutes(app,context);
+  registerProjectSourceProposalOperationRoutes(app,context);
+  registerProjectManagementOperationRoutes(app,context,'projects');
   registerProjectSourceOperationRoutes(app,context);
   registerMonitoringRoutes(app, context);
   const repository = () => PgProjectRepository.fromConfig(context.config);
@@ -150,7 +153,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-
   app.post("/api/v1/projects/:projectId/sources/propose-bind", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -181,20 +183,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
 
 
-
-  app.post("/api/v1/projects/:projectId/sources/bindings/:bindingId/propose-backfill", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "source.backfill.plan", "source_backfill_plan");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      const p = params(request);
-      return reply.code(201).send(await sourceProposals().proposeBackfill(identity, requiredString(p.projectId, "project_id"), requiredString(p.bindingId, "binding_id"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
   app.get("/api/v1/projects", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -206,16 +194,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         return reply.code(422).send({ detail: "status must be active or archived" });
       }
       return reply.send(await repository().list(identity, { status, limit, offset }));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/projects", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(201).send(await repository().create(identity, jsonBody(request)));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -467,61 +445,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.put("/api/v1/projects/:projectId/public-summary", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = parseBodyWith<ProjectPublicSummaryUpsertRequest>(
-        protocol.ProjectPublicSummaryUpsertRequestSchema,
-        jsonBody(request),
-      );
-      return reply.send(await repository().upsertPublicSummary(identity, params(request).projectId ?? "", body));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/public-summary/publish", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = parseBodyWith<ProjectPublicSummaryPublishRequest>(
-        protocol.ProjectPublicSummaryPublishRequestSchema,
-        jsonBody(request),
-      );
-      const published = await repository().publishPublicSummary(
-        identity,
-        params(request).projectId ?? "",
-        body.draft_version,
-      );
-      // Best-effort: publishing recreates the chunk with embedding=NULL, so
-      // enqueue a backfill to embed it for the vector arm (matches knowledge/memory).
-      await enqueueRetrievalEmbeddingBackfill(context.config, {
-        spaceId: identity.spaceId,
-        userId: identity.userId,
-        trigger: "project_public_summary_publish",
-      }).catch((error) => {
-        process.stderr.write(
-          `[projects.retrieval] embedding backfill enqueue failed: ${String((error as Error)?.message ?? error)}\n`,
-        );
-        return null;
-      });
-      return reply.send(published);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/public-summary/revoke", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      await repository().revokePublicSummary(identity, params(request).projectId ?? "");
-      return reply.code(204).send();
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
+
+
 
   app.post("/api/v1/projects/:projectId/public-summary/draft", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -544,27 +472,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.patch("/api/v1/projects/:projectId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await repository().update(identity, params(request).projectId ?? "", jsonBody(request)),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/archive", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await repository().archive(identity, params(request).projectId ?? ""));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
+
 
   app.get("/api/v1/projects/:projectId/summary", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -596,17 +506,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/corpus", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(201).send(
-        await corpusRepository().upsert(identity, params(request).projectId ?? "", jsonBody(request)),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   app.post("/api/v1/projects/:projectId/corpus/backfill-source-items", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -618,22 +518,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.patch("/api/v1/projects/:projectId/corpus/:corpusItemId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await corpusRepository().update(
-          identity,
-          params(request).projectId ?? "",
-          params(request).corpusItemId ?? "",
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   // Project membership = the project-level memory access ACL. List is open to
   // any space member; add/remove require the project owner or a space owner/admin.
@@ -674,33 +559,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/members", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(201).send(
-        await repository().addMember(identity, params(request).projectId ?? "", parseBodyWith(protocol.ProjectMemberInputSchema, jsonBody(request))),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.delete("/api/v1/projects/:projectId/members/:userId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      await repository().removeMember(
-        identity,
-        params(request).projectId ?? "",
-        params(request).userId ?? "",
-      );
-      return reply.code(204).send();
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
   // Folder listing/creation/update/deletion all live in the projectFolders
   // module under this same `/api/v1/projects/:projectId/folders` path.
 
@@ -731,29 +589,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/brief-versions", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = requiredString(params(request).projectId, "project_id");
-      return reply.code(201).send(await kernel().createBriefVersion(identity, projectId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/projects/:projectId/brief-versions/:versionId/submit-review", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
-    try { const p = params(request); return reply.send(await kernel().submitBriefForReview(identity, requiredString(p.projectId, "project_id"), requiredString(p.versionId, "version_id"))); }
-    catch (error) { return sendRouteError(reply, error); }
-  });
-
-  app.post("/api/v1/projects/:projectId/brief-versions/:versionId/publish", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
-    try { const p = params(request); return reply.send(await kernel().publishBrief(identity, requiredString(p.projectId, "project_id"), requiredString(p.versionId, "version_id"))); }
-    catch (error) { return sendRouteError(reply, error); }
-  });
-
   app.get("/api/v1/projects/:projectId/instruction-versions", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try { return reply.send(await kernel().listInstructionVersions(identity, requiredString(params(request).projectId, "project_id"))); }
@@ -766,47 +601,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     catch (error) { return sendRouteError(reply, error); }
   });
 
-  app.post("/api/v1/projects/:projectId/instruction-versions", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
-    try { return reply.code(201).send(await kernel().createInstructionVersion(identity, requiredString(params(request).projectId, "project_id"), jsonBody(request))); }
-    catch (error) { return sendRouteError(reply, error); }
-  });
-
-  for (const [path, publish] of [["submit-review", false], ["publish", true]] as const) {
-    app.post(`/api/v1/projects/:projectId/instruction-versions/:versionId/${path}`, async (request, reply) => {
-      const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
-      try { const p = params(request); return reply.send(await kernel().transitionInstruction(identity, requiredString(p.projectId, "project_id"), requiredString(p.versionId, "version_id"), publish)); }
-      catch (error) { return sendRouteError(reply, error); }
-    });
-  }
-
   app.get("/api/v1/projects/:projectId/attention", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
       const projectId = requiredString(params(request).projectId, "project_id");
       return reply.send(await attention().listAttentionItems(identity, projectId));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.put("/api/v1/projects/:projectId/attention/:sourceType/:sourceId/state", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const projectId = requiredString(p.projectId, "project_id");
-      const sourceType = requiredString(p.sourceType, "source_type");
-      const sourceId = requiredString(p.sourceId, "source_id");
-      const body = jsonBody(request);
-      const patch: { seen_at?: string | null; snoozed_until?: string | null; pinned_at?: string | null } = {};
-      if (Object.prototype.hasOwnProperty.call(body, "seen_at")) patch.seen_at = optionalString(body.seen_at) ?? null;
-      if (Object.prototype.hasOwnProperty.call(body, "snoozed_until")) patch.snoozed_until = optionalString(body.snoozed_until) ?? null;
-      if (Object.prototype.hasOwnProperty.call(body, "pinned_at")) patch.pinned_at = optionalString(body.pinned_at) ?? null;
-      return reply.send(
-        await attention().setUserState(identity, projectId, sourceType, sourceId, patch),
-      );
     } catch (error) {
       return sendRouteError(reply, error);
     }

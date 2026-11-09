@@ -3,10 +3,11 @@ import { ResearchOperationMetadataSchema } from "@rainver/protocol";
 import { dateIso } from "../routeUtils/common.js";
 import { contentReadSql,contentAccessLevelSql,runInheritedReadSql } from "../access/contentAccessSql.js";
 import { threadReadableSql } from "../inquiry/threadAccess.js";
+import {researchSnapshotWorkflowReadableSql} from './snapshotAccess.js';
 /** Source-independent permission for call identity/status, never its body. */
 export function researchMetadataReadableSql(alias:string,user:string,includeOversight?:boolean):string{
  const threadGate=includeOversight===false?`(${contentReadSql("space_object","metadata_thread",user,{includeOversight:false})} AND ${contentAccessLevelSql({definition:contentResourceDefinition("space_object")!,alias:"metadata_thread",userExpr:user,includeOversight:false})}='full')`:threadReadableSql("metadata_thread",user,"read_content");
- return `(${alias}.research_call_json IS NULL OR (EXISTS(SELECT 1 FROM space_objects metadata_thread WHERE metadata_thread.id=${alias}.research_call_json->>'thread_id' AND metadata_thread.space_id=${alias}.space_id AND metadata_thread.primary_project_id=${alias}.project_id AND ${threadGate}) AND ${runInheritedReadSql(`${alias}.research_call_json->>'requested_by_run_id'`,`${alias}.space_id`,user,{includeOversight})}))`;
+ return `((${alias}.research_call_json IS NULL AND ${researchSnapshotWorkflowReadableSql(alias,user,includeOversight)}) OR (EXISTS(SELECT 1 FROM space_objects metadata_thread WHERE metadata_thread.id=${alias}.research_call_json->>'thread_id' AND metadata_thread.space_id=${alias}.space_id AND metadata_thread.primary_project_id=${alias}.project_id AND ${threadGate}) AND ${runInheritedReadSql(`${alias}.research_call_json->>'requested_by_run_id'`,`${alias}.space_id`,user,{includeOversight})}))`;
 }
 /** Deliberate allowlist: no spread of operation, call, payload or diagnostics. */
 export function researchOperationMetadata(row:Record<string,unknown>){

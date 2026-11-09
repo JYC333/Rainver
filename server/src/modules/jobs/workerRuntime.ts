@@ -1,5 +1,8 @@
-import {registerProjectFolderIoHandler} from '../projectFolders/ioWorker.js';
+import {registerExecutionWorkspaceJobs} from "../hosts/executionWorkspaceJobs.js";
+
 import {registerCodePatchDecisionHandler,recoverCodePatchDecisions} from '../projectFolders/codePatchDecision.js';
+import {registerProjectFolderForgetHandler} from '../projectFolders/forgetWorkspaceJob.js';
+import {registerProjectFolderIoHandler} from '../projectFolders/ioWorker.js';
 import {registerBundleDecisionHandler,recoverBundleDecisionJobs} from '../evolution/bundleDecisionJob.js';
 import {registerRunProposalPublication} from '../runs/proposalPublicationJob.js';
 import {registerProjectReadingJobs} from '../informationDigest/index.js';
@@ -101,7 +104,6 @@ export function buildJobHandlerRegistry(
   pluginHost?: PluginHost,
 ): JobHandlerRegistry {
   const registry = new JobHandlerRegistry();
-  registerProjectFolderIoHandler(registry, config);
   registerSourceGoalJob(registry,config);
   registerProjectReadingJobs(registry,config);
   registerAgentRunHandler(registry, config);
@@ -122,6 +124,7 @@ export function buildJobHandlerRegistry(
   registerProjectResearchHandler(registry, config);
   registerKnowledgeExtractionHandler(registry, config);
   registerExperimentReconcileHandler(registry, config);
+  registerExecutionWorkspaceJobs(registry,config);
   registerTaskBranchJobHandlers(registry, config);
   registerTaskMergeHandler(registry, config, { resolver: new TaskMergeResolutionDispatcher(config) });
   registerRoomConversationTitleHandler(registry, config);
@@ -131,6 +134,8 @@ export function buildJobHandlerRegistry(
   registerResearchAcquisitionPipelineHandler(registry, config);
   registerResearchOperationFailureNotifyHandler(registry, config);
   registerResearchOperationCancelHandler(registry, config);
+  registerProjectFolderForgetHandler(registry, config);
+  registerProjectFolderIoHandler(registry, config);
   // Plugin-contributed job handlers (enablement-gated by the host context).
   pluginHost?.applyJobHandlers(registry);
   deferWhileInstanceUpdates(config, registry);

@@ -1,3 +1,9 @@
+import {recordDetailRead} from '../contentAccess/audit.js';
+import {OperationError} from '../systemActions/operations/errors.js';
+import {CandidateMutationError} from './candidateErrors.js';
+import {contentDecisionFromDb} from '../access/contentAccessQuery.js';
+import {canWriteProject} from '../projects/access.js';
+import {JobDeferredError} from '../jobs/handlerRegistry.js';
 import { randomUUID } from "node:crypto";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import {
@@ -20,12 +26,22 @@ export class KnowledgeExtractionService {
   constructor(private readonly db: Queryable) {}
 
   async queue(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return withQueryableTransaction(this.db,db=>new KnowledgeExtractionService(db).queueInTransaction(identity,projectId,body));
+  }
+
+  private async queueInTransaction(identity:SpaceUserIdentity,projectId:string,body:Record<string,unknown>):Promise<Record<string,unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const sourceKind = requiredString(body.source_kind, "source_kind");
     const sourceId = requiredString(body.source_id, "source_id");
     const agentId = requiredString(body.agent_id, "agent_id");
     const runtimeProfileId = optionalString(body.runtime_profile_id);
+    if(await contentDecisionFromDb(this.db,identity,'agent',agentId,{includeOversight:false})!=='full')throw new HttpError(404,'Agent not found');
+    if(sourceKind!=='experiment_interpretation'&&!await this.currentSourceAccess(this.db,identity,sourceKind,sourceId,projectId))throw new HttpError(404,'Source not found');
     const source = await this.resolveSource(identity, projectId, sourceKind, sourceId);
+    if(sourceKind!=='experiment_interpretation'){
+      try{await recordDetailRead(this.db,{spaceId:identity.spaceId,viewerUserId:identity.userId,resourceType:'space_object',resourceId:sourceId});}
+      catch{throw new OperationError('operation_audit_unavailable',503,true);}
+    }
     const prompt = [
       "Extract durable learning candidates from the immutable source below.",
       "Return JSON with key knowledge_candidates, an array of at most 10 objects.",
@@ -42,6 +58,7 @@ export class KnowledgeExtractionService {
         space_id: identity.spaceId,
         user_id: identity.userId,
         mode: "live",
+        ...(source.visibility!=="space_shared"?{visibility:"private" as const}:{}),
         run_type: "agent",
         trigger_origin: "manual",
         project_id: projectId,
@@ -80,25 +97,60 @@ export class KnowledgeExtractionService {
   }
 
   async reconcile(spaceId: string, runId: string): Promise<number> {
-    return withQueryableTransaction(this.db, async (db) => {
+    try { return await withQueryableTransaction(this.db, async (db) => {
+      // Reuse the canonical event writer gate before any domain row. Never wait
+      // for a Run/source row while holding it: the existing Job defer owns retry.
+      const gate=(await db.query<{locked:boolean}>("SELECT pg_try_advisory_xact_lock(hashtextextended('run_events:' || $1::text,0)) AS locked",[runId])).rows[0];
+      if(!gate?.locked)throw new JobDeferredError('Knowledge publication is busy',1000);
+      const prior=(await db.query<{metadata_json:{created_count:number}}>("SELECT metadata_json FROM run_events WHERE space_id=$1 AND run_id=$2 AND event_type='action_completed' AND actor_id IS NULL AND metadata_json->>'action_name'='knowledge.candidate.extraction.publish' ORDER BY event_index LIMIT 1",[spaceId,runId])).rows[0];
+      if(prior)return prior.metadata_json.created_count;
+      const initial=(await db.query<{project_id:string|null;contract_snapshot_json:unknown;instructed_by_user_id:string|null;owner_user_id:string|null;agent_id:string|null}>('SELECT project_id,contract_snapshot_json,instructed_by_user_id,owner_user_id,agent_id FROM runs WHERE id=$1 AND space_id=$2',[runId,spaceId])).rows[0];
+      if(!initial)return 0;
+      const initialUser=initial.instructed_by_user_id??initial.owner_user_id;
+      const binding=objectValue(objectValue(initial.contract_snapshot_json).workflow_input_json);
+      if(binding.kind!=='knowledge_candidate_extraction')return 0;
+      const sourceTable=binding.source_kind==='experiment_interpretation'?'experiment_interpretations':'space_objects';
+      const sourceProjectColumn=sourceTable==='space_objects'?'primary_project_id':'project_id';
+      const sourceParent=(await db.query<{project_id:string|null}>(`SELECT ${sourceProjectColumn} AS project_id FROM ${sourceTable} WHERE id=$1 AND space_id=$2`,[binding.source_id,spaceId])).rows[0]?.project_id??null;
+      const projects=[...new Set([initial.project_id,sourceParent].filter((p):p is string=>!!p))].sort();
+      for(const project of projects)await db.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR SHARE NOWAIT',[project,spaceId]);
+      await db.query('SELECT id FROM project_members WHERE space_id=$1 AND user_id=$2 AND project_id=ANY($3::varchar[]) ORDER BY id FOR SHARE NOWAIT',[spaceId,initialUser,projects]);
+      await db.query('SELECT id FROM space_memberships WHERE space_id=$1 AND user_id=$2 ORDER BY id FOR SHARE NOWAIT',[spaceId,initialUser]);
+      await db.query("SELECT id FROM content_access_grants WHERE space_id=$1 AND grantee_user_id=$2 AND resource_id=ANY($3::varchar[]) ORDER BY id FOR SHARE NOWAIT",[spaceId,initialUser,[String(binding.source_id),initial.agent_id].filter(Boolean)]);
+      await db.query('SELECT id FROM agents WHERE id=$1 AND space_id=$2 FOR SHARE NOWAIT',[initial.agent_id,spaceId]);
+      await db.query(`SELECT id FROM ${sourceTable} WHERE id=$1 AND space_id=$2 FOR SHARE NOWAIT`,[binding.source_id,spaceId]);
+      if(((await db.query<{project_id:string|null}>(`SELECT ${sourceProjectColumn} AS project_id FROM ${sourceTable} WHERE id=$1 AND space_id=$2`,[binding.source_id,spaceId])).rows[0]?.project_id??null)!==sourceParent)throw new JobDeferredError('Knowledge source scope changed',1000);
       const result = await db.query<{
         id: string; project_id: string | null; instructed_by_user_id: string | null;
-        owner_user_id: string | null; status: string; output_json: unknown; contract_snapshot_json: unknown;
+        owner_user_id: string | null; agent_id: string | null; status: string; output_json: unknown; contract_snapshot_json: unknown;
       }>(
-        `SELECT id,project_id,instructed_by_user_id,owner_user_id,status,output_json,contract_snapshot_json
-           FROM runs WHERE id=$1 AND space_id=$2 FOR UPDATE`,
+        `SELECT id,project_id,instructed_by_user_id,owner_user_id,agent_id,status,output_json,contract_snapshot_json
+           FROM runs WHERE id=$1 AND space_id=$2 FOR UPDATE NOWAIT`,
         [runId, spaceId],
       );
       const run = result.rows[0];
       if (!run || run.status !== "succeeded" || !run.project_id) return 0;
       const workflowInput = objectValue(objectValue(run.contract_snapshot_json).workflow_input_json);
       if (workflowInput.kind !== "knowledge_candidate_extraction") return 0;
+      if(run.project_id!==initial.project_id||run.agent_id!==initial.agent_id||(run.instructed_by_user_id??run.owner_user_id)!==initialUser||JSON.stringify(objectValue(objectValue(run.contract_snapshot_json).workflow_input_json))!==JSON.stringify(binding))throw new JobDeferredError('Knowledge extraction binding changed',1000);
+      const receipt=async(count:number,reason:string)=>{
+        const event=await new PgRunRepository(db).appendRunEvent({space_id:spaceId,run_id:runId,event_type:'action_completed',status:reason==='published'?'succeeded':'skipped',metadata_json:{action_name:'knowledge.candidate.extraction.publish',instructed_by_user_id:run.instructed_by_user_id,created_count:count,disposition:reason}});
+        if(!event)throw new Error('Knowledge publication receipt unavailable');return count;
+      };
       const existing = await db.query<{ count: number }>(
         `SELECT count(*)::int AS count FROM knowledge_promotion_candidates
           WHERE space_id=$1 AND source_ref_json->>'extraction_run_id'=$2`,
         [spaceId, runId],
       );
-      if ((existing.rows[0]?.count ?? 0) > 0) return existing.rows[0]!.count;
+      if ((existing.rows[0]?.count ?? 0) > 0) return receipt(existing.rows[0]!.count,'published');
+      const who=run.instructed_by_user_id??run.owner_user_id;
+      const identity={spaceId,userId:who??''};
+      const active=(await db.query("SELECT 1 FROM users u JOIN space_memberships m ON m.user_id=u.id WHERE u.id=$1 AND u.status='active' AND m.space_id=$2 AND m.status='active'",[who,spaceId])).rows.length>0;
+      const project=(await db.query("SELECT status FROM projects WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL",[run.project_id,spaceId])).rows[0];
+      if(!active||project?.status!=='active'||!await canWriteProject(db,spaceId,run.project_id,who??''))return receipt(0,'authority_revoked');
+      if(!initial.agent_id||!(await db.query("SELECT id FROM agents WHERE id=$1 AND space_id=$2 AND status='active'",[initial.agent_id,spaceId])).rows.length||await contentDecisionFromDb(db,identity,'agent',initial.agent_id,{includeOversight:false})!=='full')return receipt(0,'agent_unavailable');
+      const current=await this.currentSourceAccess(db,identity,String(workflowInput.source_kind),String(workflowInput.source_id),run.project_id);
+      if(!current)return receipt(0,'source_unavailable');
       const candidates = Array.isArray(runOutputResult(run.output_json).knowledge_candidates)
         ? runOutputResult(run.output_json).knowledge_candidates as unknown[]
         : [];
@@ -108,8 +160,9 @@ export class KnowledgeExtractionService {
       // Only an explicitly shared source yields shared candidates; anything
       // else (private, or shared with selected people whose grants do not
       // travel) stays with the source's owner.
-      const visibility = workflowInput.source_visibility === "space_shared" ? "space_shared" : "private";
-      const ownerUserId = optionalString(workflowInput.source_owner_user_id)
+      const visibility = workflowInput.source_visibility === "space_shared" && current.visibility === "space_shared" ? "space_shared" : "private";
+      const ownerUserId = optionalString(current.owner_user_id)
+        ?? optionalString(workflowInput.source_owner_user_id)
         ?? run.instructed_by_user_id
         ?? run.owner_user_id;
       const now = new Date().toISOString();
@@ -135,8 +188,25 @@ export class KnowledgeExtractionService {
         );
         created += 1;
       }
-      return created;
-    });
+      return receipt(created,'published');
+    }); }catch(error){if((error as {code?:string})?.code==='55P03')throw new JobDeferredError('Knowledge publication rows are busy',1000);throw error;}
+  }
+
+  async assertDispatch(run:Pick<import('../runs/repository.js').AgentRunRecord,'space_id'|'project_id'|'instructed_by_user_id'|'owner_user_id'|'agent_id'|'visibility'|'contract_snapshot_json'>):Promise<void>{
+    const binding=objectValue(objectValue(run.contract_snapshot_json).workflow_input_json);
+    if(binding.kind!=='knowledge_candidate_extraction')return;
+    const who=run.instructed_by_user_id??run.owner_user_id,identity={spaceId:run.space_id,userId:who??''};
+    const source=await this.currentSourceAccess(this.db,identity,String(binding.source_kind),String(binding.source_id),run.project_id??'');
+    const active=(await this.db.query("SELECT 1 FROM users u JOIN space_memberships m ON m.user_id=u.id WHERE u.id=$1 AND u.status='active' AND m.space_id=$2 AND m.status='active'",[who,run.space_id])).rows.length>0;
+    const project=(await this.db.query('SELECT status FROM projects WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL',[run.project_id,run.space_id])).rows[0];
+    const agent=(await this.db.query("SELECT id FROM agents WHERE id=$1 AND space_id=$2 AND status='active'",[run.agent_id,run.space_id])).rows[0];
+    if(!active||!source||project?.status!=='active'||!run.project_id||!await canWriteProject(this.db,run.space_id,run.project_id,identity.userId)||!agent||await contentDecisionFromDb(this.db,identity,'agent',String(run.agent_id),{includeOversight:false})!=='full'||source.visibility!=='space_shared'&&run.visibility!=='private')throw new HttpError(403,'Knowledge extraction authorization changed; start a new extraction');
+  }
+
+  private async currentSourceAccess(db:Queryable,identity:SpaceUserIdentity,kind:string,id:string,projectId:string):Promise<{visibility:string;owner_user_id:string|null}|null>{
+    if(kind==='experiment_interpretation')return (await db.query<{visibility:string;owner_user_id:null}>("SELECT 'space_shared' AS visibility,NULL::varchar AS owner_user_id FROM experiment_interpretations WHERE id=$1 AND space_id=$2 AND project_id=$3 AND status='converted'",[id,identity.spaceId,projectId])).rows[0]??null;
+    const row=(await db.query<{visibility:string;owner_user_id:string|null}>("SELECT visibility,owner_user_id FROM space_objects WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL",[id,identity.spaceId])).rows[0];
+    if(!row||await contentDecisionFromDb(db,identity,'space_object',id,{includeOversight:false})!=='full')return null;return row;
   }
 
   private async resolveSource(
@@ -211,7 +281,7 @@ export class KnowledgeExtractionService {
       );
       const value = row.rows[0];
       if (!value) throw new HttpError(404, "Experiment Interpretation not found");
-      if (value.status !== "converted") throw new HttpError(409, "Only a converted Interpretation can be extracted");
+      if (value.status !== "converted") throw new CandidateMutationError(409, "Only a converted Interpretation can be extracted");
       const text = JSON.stringify({
         verdict: value.verdict,
         conclusion: value.conclusion,

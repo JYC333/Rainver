@@ -123,6 +123,12 @@ export interface ServerConfig {
   customSourceGenerateRateLimitPerHour: number;
   customSourceArtifactRetentionEnabled: boolean;
   customSourceArtifactRetentionDays: number;
+  /** Isolated workspace: wait after the last Run exits before reclaiming a proven merged/unchanged source. */
+  workspaceReclaimGraceMinutes: number;
+  /** Isolated workspace: keep publication-time local-change preimage refs this long. */
+  workspaceLocalPreimageRetentionDays: number;
+  /** Isolated workspace: keep exact past-Run versions (run-history refs) after a branch release this long. */
+  workspaceRunHistoryRetentionDays: number;
   customSourceArtifactRetentionIntervalSeconds: number;
   /** Older env files may still set this. The active gate is `retrieval.space.settings`. */
   retrievalRerankEnabled: boolean;
@@ -212,6 +218,9 @@ const KNOWN_ENV_KEYS = new Set([
   "SERVER_CUSTOM_SOURCE_GENERATE_RATE_LIMIT_PER_HOUR",
   "SERVER_CUSTOM_SOURCE_ARTIFACT_RETENTION_ENABLED",
   "SERVER_CUSTOM_SOURCE_ARTIFACT_RETENTION_DAYS",
+  "SERVER_WORKSPACE_RECLAIM_GRACE_MINUTES",
+  "SERVER_WORKSPACE_LOCAL_PREIMAGE_RETENTION_DAYS",
+  "SERVER_WORKSPACE_RUN_HISTORY_RETENTION_DAYS",
   "SERVER_CUSTOM_SOURCE_ARTIFACT_RETENTION_INTERVAL_SECONDS",
   "RAINVER_ENV",
   "APP_VERSION",
@@ -716,6 +725,27 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     1,
     3650,
   );
+  const workspaceReclaimGraceMinutes = parseBoundedInt(
+    env.SERVER_WORKSPACE_RECLAIM_GRACE_MINUTES,
+    10,
+    "SERVER_WORKSPACE_RECLAIM_GRACE_MINUTES",
+    0,
+    7 * 24 * 60,
+  );
+  const workspaceLocalPreimageRetentionDays = parseBoundedInt(
+    env.SERVER_WORKSPACE_LOCAL_PREIMAGE_RETENTION_DAYS,
+    7,
+    "SERVER_WORKSPACE_LOCAL_PREIMAGE_RETENTION_DAYS",
+    1,
+    365,
+  );
+  const workspaceRunHistoryRetentionDays = parseBoundedInt(
+    env.SERVER_WORKSPACE_RUN_HISTORY_RETENTION_DAYS,
+    30,
+    "SERVER_WORKSPACE_RUN_HISTORY_RETENTION_DAYS",
+    1,
+    3650,
+  );
   const customSourceArtifactRetentionIntervalSeconds = parseBoundedInt(
     env.SERVER_CUSTOM_SOURCE_ARTIFACT_RETENTION_INTERVAL_SECONDS,
     3600,
@@ -811,6 +841,9 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     customSourceArtifactRetentionEnabled,
     customSourceArtifactRetentionDays,
     customSourceArtifactRetentionIntervalSeconds,
+    workspaceReclaimGraceMinutes,
+    workspaceLocalPreimageRetentionDays,
+    workspaceRunHistoryRetentionDays,
     retrievalRerankEnabled,
     retrievalQueryRewriteEnabled,
     rainverEnv,

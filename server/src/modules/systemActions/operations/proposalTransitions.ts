@@ -185,6 +185,36 @@ export function preparedRunTerminalOwner(db:Queryable,spaceId:string,runId:strin
  owner.assertRun(spaceId,runId);
  return {assertRun:(space,id)=>owner.assertRun(space,id)};
 }
+/** Core-host lifecycle for a new command. The raw owner client must match the
+ * branded domain port; passing a child port in its place cannot prepare an owner.
+ * Reuses the canonical Run transition admission and exact-set membership. */
+export async function prepareOperationRunTerminalOwner(
+ host:Queryable,db:Queryable,spaceId:string,
+ discover:(db:Queryable)=>Promise<readonly RunRef[]>,
+):Promise<{finish():Promise<void>;close():void}>{
+ if(!isOperationTransaction(db)||operationTransactionHost(db)!==host||runOwner(db))throw inconsistent();
+ const runs=await discover(db);
+ if(runs.some(run=>run.space_id!==spaceId||!run.id))throw inconsistent();
+ const admitted=new Set(runs.map(run=>canonical([run.space_id,run.id]))),fresh=new Set<string>();
+ const transitions=await lockRunProposalTransitions(db,runs);
+ let active=true;
+ const scope:InternalRunOwnerScope={fresh,createdRun(space,id){
+  if(!active||space!==spaceId)throw inconsistent();
+  const key=canonical([space,id]);fresh.add(key);admitted.add(key);
+ },assertRun(space,id){
+  if(!active)throw inconsistent();
+  if(!admitted.has(canonical([space,id])))throw conflict();
+ }};
+ runTerminalOwners.set(db,scope);
+ const close=()=>{active=false;runTerminalOwners.delete(db);};
+ try{for(const run of await discover(db))scope.assertRun(run.space_id,run.id);}
+ catch(error){close();throw error;}
+ return {async finish(){
+  if(!active)throw inconsistent();
+  for(const run of await discover(db))scope.assertRun(run.space_id,run.id);
+  await transitions.finish();
+ },close};
+}
 /** Root owner admits its whole set before work. Unprepared composed clients retain
  * the existing linked refusal; only their real outer owner may prepare keys.
  */

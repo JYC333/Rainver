@@ -1,3 +1,4 @@
+import {ResearchWorkspaceMutationError} from './workspaceErrors.js';
 import {assertResearchReportCallReadable} from './reportAccess.js';
 import { randomUUID } from "node:crypto";
 import {
@@ -461,7 +462,7 @@ export class ProjectResearchRepository {
   ): Promise<Record<string, unknown>> {
     const row = await this.workflowRow(identity.spaceId, projectId, workflowId);
     if (!row) throw new HttpError(404, "Research workflow not found");
-    if (row.status !== "active") throw new HttpError(422, `Cannot run a stage on a workflow with status ${row.status}`);
+    if (row.status !== "active") throw new ResearchWorkspaceMutationError(422, `Cannot run a stage on a workflow with status ${row.status}`);
     const runId = optionalString(body.run_id);
     const now = new Date().toISOString();
     const stageEntry = { status: runId ? "running" : "recorded", run_id: runId, updated_at: now };
@@ -1080,7 +1081,7 @@ export class ProjectResearchRepository {
   async createClaimLink(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const claimId = optionalString(body.claim_id);
-    if (!claimId) throw new HttpError(422, "claim_id is required");
+    if (!claimId) throw new ResearchWorkspaceMutationError(422, "claim_id is required");
     const claimExists = await this.db.query<{ object_id: string }>(
       `SELECT c.object_id
          FROM claims c
@@ -1095,12 +1096,12 @@ export class ProjectResearchRepository {
         LIMIT 1`,
       [claimId, identity.spaceId, identity.userId],
     );
-    if (!claimExists.rows[0]) throw new HttpError(422, "claim_id is not readable by this user");
+    if (!claimExists.rows[0]) throw new ResearchWorkspaceMutationError(422, "claim_id is not readable by this user");
     const existingLink = await this.db.query<{ id: string }>(
       `SELECT id FROM project_research_claim_links WHERE space_id = $1 AND project_id = $2 AND claim_id = $3 LIMIT 1`,
       [identity.spaceId, projectId, claimId],
     );
-    if (existingLink.rows[0]) throw new HttpError(409, "This claim is already linked to the project");
+    if (existingLink.rows[0]) throw new ResearchWorkspaceMutationError(409, "This claim is already linked to the project");
     const workflowId = optionalString(body.workflow_id);
     if (workflowId) await this.requireWorkflow(identity.spaceId, projectId, workflowId);
     const supportStatus = enumValue(body.support_status, SUPPORT_STATUSES, "support_status") ?? "unsupported";
@@ -1388,7 +1389,7 @@ export class ProjectResearchRepository {
     const dateRangeStart = optionalString(body.date_range_start);
     const dateRangeEnd = optionalString(body.date_range_end);
     if (dateRangeStart && dateRangeEnd && dateRangeStart > dateRangeEnd) {
-      throw new HttpError(422, "date_range_start must be before date_range_end");
+      throw new ResearchWorkspaceMutationError(422, "date_range_start must be before date_range_end");
     }
     const now = new Date().toISOString();
     const id = randomUUID();
@@ -1471,7 +1472,7 @@ export class ProjectResearchRepository {
     const criteria: Record<string, string[]> = {};
     for (const key of keys) {
       if (!legal.has(key)) {
-        throw new HttpError(
+        throw new ResearchWorkspaceMutationError(
           422,
           legal.size === 0
             ? `No source bound to this project declares domain criteria, so ${key} cannot be screened on`

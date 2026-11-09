@@ -45,6 +45,16 @@ existing recovery after rollback/release. Raw or branded composed clients join
 their existing transaction and retain linked refusal unless their actual parent
 prepared that same port. This is not approval mapping authority.
 
+Core commands declare a purpose-specific `runTerminalOwner.discover` when their
+canonical service may retire or reconcile Runs. After reserving a new request,
+the executor prepares that same owner with its raw transaction client and branded
+domain port, before domain admission locks. The host identity must match; a child
+port cannot prepare itself. Cached replay skips preparation. The executor finishes
+linked transitions after domain/output/request validation and closes the owner on
+every exit; audit recovery runs after rollback and release. Project update/archive
+and Research report snapshots reuse this seam. Scope growth returns a conflict;
+the caller may explicitly retry with a freshly discovered set.
+
 ## Transaction Ownership Rules
 
 - API routes may open or receive a transaction helper, but must not scatter

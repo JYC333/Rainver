@@ -1,8 +1,10 @@
+import {isOperationTransaction} from "../../db/operationTransaction.js";
+import {InquiryMutationError} from "./operationErrors.js";
 import { problemSummaries } from "./problemReadModel.js";
 import { contextReadableSql, referenceReadableSql, assertProblemReferences } from "./problemReferences.js";
 import { problemCommandKey } from "./problemFacts.js";
 import { ProblemWorkRequestSchema, ProblemCloseRoundRequestSchema, PROBLEM_STAGES, PROBLEM_STAGE_DEFINITIONS } from "@rainver/protocol";
-import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectReadable,canWriteProject } from "../projects/access.js";
 import { assertThreadReadable,readableThreadIds } from "./threadAccess.js";
 import { checkProblemVersion, closeRoundFact, lockProblem, problemRound, refreshProblem, replayProblemCommand, saveProblemCommand, startPrimary } from "./problemFacts.js";
@@ -19,7 +21,7 @@ function parse<T>(schema: {
   };
 }, body: unknown): T {
   const r = schema.safeParse(body);
-  if (!r.success) throw new HttpError(422, r.error.message);
+  if (!r.success) throw new InquiryMutationError(422, r.error.message);
   return r.data;
 }
 export class InquiryProblemEngineService {
@@ -29,7 +31,7 @@ export class InquiryProblemEngineService {
     before_step?: number;
     before_closeout?: number;
   } = {}): Promise<Record<string, unknown>> {
-    const ownsTransaction = typeof (this.db as {
+    const ownsTransaction = !isOperationTransaction(this.db) && typeof (this.db as {
       release?: unknown;
     }).release !== "function";
     return withQueryableTransaction(this.db, async db => {
@@ -47,8 +49,8 @@ export class InquiryProblemEngineService {
   } = {}): Promise<Record<string, unknown>> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     await assertThreadReadable(this.db, identity, projectId, threadId, "read_content");
-    if (options.limit !== undefined && (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100)) throw new HttpError(422, "limit must be 1..100");
-    for (const cursor of [options.before_step, options.before_closeout]) if (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor < 1)) throw new HttpError(422, "Invalid history cursor");
+    if (options.limit !== undefined && (!Number.isInteger(options.limit) || options.limit < 1 || options.limit > 100)) throw new InquiryMutationError(422, "limit must be 1..100");
+    for (const cursor of [options.before_step, options.before_closeout]) if (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor < 1)) throw new InquiryMutationError(422, "Invalid history cursor");
     const limit = Math.min(Math.max(Math.trunc(options.limit ?? 50), 1), 100);
     const summary = (await problemSummaries(this.db, identity, projectId, [threadId])).get(threadId)!;
     const safeContext = contextReadableSql("s.context_refs", "$4", "s.space_id", "s.project_id");
@@ -104,12 +106,12 @@ export class InquiryProblemEngineService {
         ...(await new InquiryProblemEngineService(db).projection(identity, projectId, threadId))
       };
       checkProblemVersion(thread, input);
-      if (thread.blocked_reason) throw new HttpError(409, "Unblock the Thread before starting work");
+      if (thread.blocked_reason) throw new InquiryMutationError(409, "Unblock the Thread before starting work");
       const round = await problemRound(db, identity.spaceId, threadId),
         stepId = await startPrimary(db, identity, projectId, threadId, input, round, input);
       if(resultSource){
        const bound=await db.query(`SELECT id FROM project_operations WHERE id=$1 AND space_id=$2 AND project_id=$3 AND research_call_json->>'thread_id'=$4 AND research_attempt=$5 AND current_execution_id IS NOT DISTINCT FROM $6::varchar AND status IN ('completed','failed','cancelled') FOR SHARE`,[resultSource.operation_id,identity.spaceId,projectId,threadId,resultSource.attempt,resultSource.execution_id]);
-       if(bound.rowCount!==1)throw new HttpError(409,"Research result attempt changed before assessment");
+       if(bound.rowCount!==1)throw new InquiryMutationError(409,"Research result attempt changed before assessment");
        await db.query(`UPDATE inquiry_thread_steps SET target_ref_kind='research_operation',target_ref_id=$2 WHERE id=$1`,[stepId,resultSource.operation_id]);
       }
       await refreshProblem(db, identity.spaceId, threadId);
@@ -152,7 +154,7 @@ export class InquiryProblemEngineService {
         projection: await new InquiryProblemEngineService(db).projection(identity, projectId, threadId)
       };
       checkProblemVersion(thread, input);
-      if (input.start_next_primary && thread.blocked_reason) throw new HttpError(409, "Unblock the Thread before starting work");
+      if (input.start_next_primary && thread.blocked_reason) throw new InquiryMutationError(409, "Unblock the Thread before starting work");
       const closeout = await closeRoundFact(db, identity, projectId, thread, {
         ...input,
         input_refs: input.input_refs

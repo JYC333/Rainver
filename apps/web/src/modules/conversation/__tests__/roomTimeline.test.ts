@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { roomLiveRunAnchors } from '../roomTimeline'
+import { roomLiveRunAnchors, roomTurnGroups } from '../roomTimeline'
 import type { RoomMessage } from '../../../types/api'
 const request = (id: string, roots: string[], children: string[] = []) => ({ id, role: 'user', metadata_json: { run_ids: roots, delegated_run_ids: children } }) as RoomMessage
 const reply = (id: string, run_id: string) => ({ id, role: 'assistant', run_id }) as RoomMessage
@@ -43,5 +43,45 @@ describe('live delegation groups on the visible timeline', () => {
     const announcement = { ...reply('parent-reply', 'parent'), metadata_json: { delegated_run_ids: ['a', 'b'] } } as RoomMessage
     expect([...roomLiveRunAnchors([request('start', ['parent']), announcement], runs)])
       .toEqual([['parent-reply', ['a', 'b']]])
+  })
+})
+
+describe('turn groups for one workspace summary per request', () => {
+  it('anchors a request and its explicit delegations under the main Agent final reply, never a child result', () => {
+    const messages = [request('start', ['parent'], ['a', 'b', 'c']), reply('a-result', 'a'), reply('progress', 'parent'), reply('c-result', 'c'), reply('final', 'parent')]
+    expect(roomTurnGroups(messages, runs)).toEqual([{ anchorMessageId: 'final', runIds: ['parent', 'a', 'b', 'c'] }])
+  })
+  it('keeps serially queued turns apart: parent_run_id without an explicit delegation is not a group', () => {
+    const serial = { first: { parent_run_id: null }, second: { parent_run_id: 'first' } }
+    const messages = [request('one', ['first']), reply('first-reply', 'first'), request('two', ['second']), reply('second-reply', 'second')]
+    expect(roomTurnGroups(messages, serial)).toEqual([
+      { anchorMessageId: 'first-reply', runIds: ['first'] },
+      { anchorMessageId: 'second-reply', runIds: ['second'] },
+    ])
+  })
+  it('falls back to the latest touched message when the turn wrote no reply, and keeps fan-out recipients together', () => {
+    const messages = [request('ask', ['x', 'y']), reply('y-reply', 'y'), request('later', ['z'])]
+    expect(roomTurnGroups(messages, {})).toEqual([
+      { anchorMessageId: 'y-reply', runIds: ['x', 'y'] },
+      { anchorMessageId: 'later', runIds: ['z'] },
+    ])
+    expect(roomTurnGroups([request('failed', ['f'])], {})).toEqual([{ anchorMessageId: 'failed', runIds: ['f'] }])
+  })
+})
+
+describe('explicit delegation recorded by the server', () => {
+  it('groups a child reply with the parent final reply when the announcing message is on an earlier page', () => {
+    const loaded = { parent: { parent_run_id: null }, child: { parent_run_id: 'parent', delegation_id: 'd1' } }
+    // Only the child's reply and the parent's final reply are on this page.
+    const messages = [reply('child-result', 'child'), reply('final', 'parent')]
+    expect(roomTurnGroups(messages, loaded)).toEqual([{ anchorMessageId: 'final', runIds: ['child', 'parent'] }])
+    expect([...roomLiveRunAnchors(messages, loaded)]).toEqual([])
+  })
+  it('still keeps a serially queued Run apart: parent_run_id without a delegation record', () => {
+    const serial = { first: { parent_run_id: null }, second: { parent_run_id: 'first', delegation_id: null } }
+    expect(roomTurnGroups([reply('first-reply', 'first'), reply('second-reply', 'second')], serial)).toEqual([
+      { anchorMessageId: 'first-reply', runIds: ['first'] },
+      { anchorMessageId: 'second-reply', runIds: ['second'] },
+    ])
   })
 })

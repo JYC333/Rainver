@@ -5,11 +5,10 @@ import type { SystemActionId } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import type { SystemActionExecutor } from "../systemActions/gateway.js";
-import { PgRunRepository, type RunRecord } from "../runs/repository.js";
+import { type RunRecord } from "../runs/repository.js";
 import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
 import { lockActiveProjectForMutation } from "../projects/access.js";
 import { InquiryThreadService } from "./threadService.js";
-import { InquiryIterationService } from "./iterationService.js";
 import {
   THREAD_FAN_OUT_PER_TURN,
   countThreadsOpenedInTurn,
@@ -20,12 +19,12 @@ import {
 /**
  * Inquiry's Agent tool surface.
  *
- * `inquiry.create_thread` and `inquiry.record_conclusion` write directly
+ * `inquiry.create_thread` writes directly
  * ([ADR 0017](../../../../.agent/decisions/0017-authorization-by-cost-not-authorship.md)
  * §2). A person asking in the turn is the authorization. The gates are the
  * trigger origin, the per-turn fan-out bound, and the Project's updates,
  * where every write here can be undone. Do not put a proposal gate on these
- * two.
+ * entry.
  * `inquiry.promote_knowledge` is still a proposal — promoting leaves the
  * Project for Space-level Knowledge, which is a change in reach.
  */
@@ -38,25 +37,12 @@ export function registerInquirySystemActionExecutors(
   const identity = { spaceId: run.space_id, userId: run.instructed_by_user_id! };
 
   const taskAssociations=new InquiryTaskAssociationService(db);
-  for(const action of ["inquiry.link_task","inquiry.list_tasks","inquiry.reference_task_result"] as const){
-    executors.set(action as SystemActionId,async(input,dispatch)=>{
-      if(!run.project_id)throw new HttpError(422,"A Project Run is required");
-      const {thread_id,task_id,after_task_id,...body}=input as Record<string,unknown>;
-      const provenance={runId:run.id,agentId:run.agent_id};
-      if(action==="inquiry.list_tasks"){
-        const page=await taskAssociations.tasks(identity,run.project_id,String(thread_id),after_task_id as string|undefined);
-        return {modelResult:{ok:true,...page},summary:{tool_name:action,ok:true}};
-      }
-      if(!dispatch.idempotency_key)throw new HttpError(422,"A canonical call identity is required");
-      // The call id is a per-process counter that restarts on a Supervisor retry
-      // of the same Run, so the receipt identity includes the attempt.
-      const attempt=(await new PgRunRepository(db).getLatestRunAttempt(run.space_id,run.id))?.attempt_number??1;
-      const trustedCall=`${attempt}:${dispatch.idempotency_key}`;
-      const result=action==='inquiry.link_task'?await taskAssociations.link(identity,run.project_id,String(thread_id),{...body,...(task_id?{task_id}:{}),idempotency_key:dispatch.idempotency_key},provenance,trustedCall)
-        :await taskAssociations.referenceResult(identity,run.project_id,String(thread_id),String(task_id),{...body,idempotency_key:dispatch.idempotency_key},provenance,trustedCall);
-      return {modelResult:{ok:true,...result},summary:{tool_name:action,ok:true}};
-    });
-  }
+  executors.set("inquiry.list_tasks",async input=>{
+    if(!run.project_id)throw new HttpError(422,"A Project Run is required");
+    const {thread_id,after_task_id}=input as {thread_id:string;after_task_id?:string};
+    const page=await taskAssociations.tasks(identity,run.project_id,thread_id,after_task_id);
+    return {modelResult:{ok:true,...page},summary:{tool_name:"inquiry.list_tasks",ok:true}};
+  });
   executors.set("inquiry.list_threads" as SystemActionId, async (input) => {
     if (!run.project_id) throw new Error("inquiry.list_threads requires a project-scoped run");
     const page=await problemThreadPage(db,identity,run.project_id,input as {kind?:string;limit?:number;after_thread_id?:string});
@@ -117,37 +103,6 @@ export function registerInquirySystemActionExecutors(
     };
   });
 
-  for(const [action,method] of [["inquiry.record_work","recordWork"],["inquiry.close_round","closeRound"]] as const) {
-    executors.set(action,async input=>{
-      if(!run.project_id)throw new Error(`${action} requires a Project`);
-      const {thread_id,...body}=input as Record<string,unknown>;
-      const result=await new InquiryProblemEngineService(db)[method](identity,run.project_id,String(thread_id),body,{runId:run.id,agentId:run.agent_id});
-      return {modelResult:{ok:true,tool:action,...result},summary:{tool_name:action,ok:true,thread_id}};
-    });
-  }
-  executors.set("inquiry.record_conclusion" as SystemActionId, async (input) => {
-    if (!run.project_id) throw new Error("inquiry.record_conclusion requires a project-scoped run");
-    const body = input as { thread_id: string } & Record<string, unknown>;
-    const cognitiveKeys=["answer_state","current_answer_summary","known_gaps","answerability","evaluation_state","confidence","confidence_method"];
-    if(body.method_version==="problem_solving.v1" && body.round_intent==="close_round" && !cognitiveKeys.some(key=>Object.hasOwn(body,key))) {
-      const result=await new InquiryProblemEngineService(db).closeRound(identity,run.project_id,String(body.thread_id),{
-        method_version:body.method_version,expected_version:body.expected_version,expected_revision:body.expected_revision,idempotency_key:body.idempotency_key,
-        summary:body.change_summary,input_refs:body.input_refs??[],...(body.start_next_primary?{start_next_primary:body.start_next_primary}:{}),
-      },{runId:run.id,agentId:run.agent_id});
-      return {modelResult:{ok:true,tool:"inquiry.record_conclusion",...result},summary:{tool_name:"inquiry.record_conclusion",ok:true,thread_id:body.thread_id}};
-    }
-    const result = await new InquiryIterationService(db).recordIteration(
-      identity,
-      run.project_id,
-      String(body.thread_id),
-      { ...body, trigger_kind: "agent_conclusion", trigger_ref: run.id },
-      { runId: run.id, agentId: run.agent_id },
-    );
-    return {
-      modelResult: { ok: true, tool: "inquiry.record_conclusion", thread_id: body.thread_id, iteration_id: (result as { id?: string }).id },
-      summary: { tool_name: "inquiry.record_conclusion", ok: true, thread_id: body.thread_id },
-    };
-  });
 }
 
 interface ActiveThreadRef {

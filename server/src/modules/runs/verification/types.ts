@@ -63,6 +63,7 @@ export interface ValidationRecipePlan {
  * built-in host and a paired one. Do not carry a server path here.
  */
 export interface VerificationTarget {
+  workspace_access?:import("@rainver/protocol").HostLaunchWorkspaceAccess[];
   host_id: string;
   workspace_location_id?: string | null;
   workspace?: LaunchWorkspace;
@@ -72,6 +73,8 @@ export interface VerificationTarget {
 }
 
 export interface VerificationInput {
+  /** These checks are deferred to the sealed integration candidate in the same Run. */
+  workspace_publication_pending?:boolean;
   run: RunRecord;
   execution_target: VerificationTarget | null;
   base_commit_sha: string | null;

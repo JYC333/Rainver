@@ -40,8 +40,7 @@ export async function loadProjectScreeningCriteria(
   spaceId: string,
   projectId: string,
 ): Promise<ProjectScreeningCriteria> {
-  const [stored, available] = await Promise.all([
-    db.query<{
+  const stored=await db.query<{
       include_keywords_json: unknown;
       exclude_keywords_json: unknown;
       domain_criteria_json: unknown;
@@ -57,9 +56,8 @@ export async function loadProjectScreeningCriteria(
         WHERE space_id = $1 AND project_id = $2
         LIMIT 1`,
       [spaceId, projectId],
-    ),
-    availableProjectDomainCriteria(db, spaceId, projectId),
-  ]);
+    );
+  const available=await availableProjectDomainCriteria(db,spaceId,projectId);
   const row = stored.rows[0];
   if (!row) {
     return {

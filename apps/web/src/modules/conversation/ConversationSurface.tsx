@@ -1,4 +1,8 @@
-import { messageRunIds, delegatedRunIds, roomLiveRunAnchors } from './roomTimeline'
+import { messageRunIds, delegatedChildren, isTerminalRunStatus, roomLiveRunAnchors, roomTurnGroups } from './roomTimeline'
+import { planTurnSummaries, usePresentedChanges } from './turnWorkspacePresentation'
+import { TurnWorkspaceSummary } from './TurnWorkspaceSummary'
+import { ConversationPendingWork } from './ConversationPendingWork'
+import {WorkspaceIntegrationNotice,isWorkspaceIntegrationNotice} from './WorkspaceIntegrationNotice'
 import { ConversationFilePreview } from "./ConversationFilePreview"
 import { useAttentionViewing } from '../agent_work/AgentAttentionProvider'
 import { mergeAbortSignals } from '../../lib/mergeAbortSignals'
@@ -119,6 +123,7 @@ function sameCurrentFilePart(part: ConversationInputPart, current: CurrentFileAt
 }
 
 interface ConversationSurfaceProps {
+  pendingControls?: ReactNode
   /** Read an authorized transcript without offering conversation mutations. */
   readOnly?: boolean
   /** Post-render evidence only; consumers decide which source revisions to acknowledge. */
@@ -186,13 +191,18 @@ interface ConversationSurfaceProps {
 }
 
 export function ConversationSurface(props: ConversationSurfaceProps) {
+  const { userId, spaces, activeSpaceId } = useSpace()
+  const inherited = useConversationScope()
+  const actionSpaceId = props.spaceId ?? inherited.spaceId ?? activeSpaceId
+  const actionRole = spaces?.find(space => space.id === actionSpaceId)?.role
+    ?? (inherited.spaceId === actionSpaceId ? inherited.actionRole : undefined) ?? 'member'
   const [destination, setDestination] = useState({ id: props.conversationId, epoch: 0 })
   if (destination.id !== props.conversationId) {
     // Explicit setup binds the unsent draft to its first Session without losing text/picks.
     const openingDraft = destination.id === null && props.conversationId !== null
     setDestination({ id: props.conversationId, epoch: destination.epoch + (openingDraft ? 0 : 1) })
   }
-  return <ConversationScope key={`${props.spaceId ?? ''}:${props.roomId}:${destination.epoch}`} spaceId={props.spaceId}>
+  return <ConversationScope key={`${props.spaceId ?? ''}:${props.roomId}:${destination.epoch}`} spaceId={props.spaceId} actionUserId={userId} actionRole={actionRole}>
     <ConversationSurfaceContent {...props} />
   </ConversationScope>
 }
@@ -213,6 +223,7 @@ function ConversationSurfaceContent({
   onBeforeContinue,
   runSettings,
   executionPreflight,
+  pendingControls,
   inputFileSources,
   implicitInputResource = null,
   composerAttachments,
@@ -581,7 +592,7 @@ function ConversationSurfaceContent({
   // A later discussion wave is started by a hidden internal message, so its
   // live turn is rendered from the discussion detail until its reply lands.
   const anchoredRunIds = new Set(messages.flatMap(message => messageRunIds(message)))
-  const allDelegatedRunIds = new Set(messages.flatMap(message => delegatedRunIds(message)))
+  const allDelegatedRunIds = delegatedChildren(messages, runs)
 
   useEffect(() => {
     // A terminal Run this surface never streamed — it failed, was cancelled
@@ -970,6 +981,12 @@ function ConversationSurfaceContent({
 
   const compact = variant === 'panel'
   const liveRunAnchors = roomLiveRunAnchors(messages, runs)
+  // One workspace summary per request group, under its main Agent's final
+  // reply, once every Run in it has settled; each batch once (see
+  // planTurnSummaries). Pending work leaves out only what a summary displays.
+  const summaryByAnchor = planTurnSummaries(roomTurnGroups(messages, runs), runs)
+  const { presented: presentedChangeSetIds, report: reportPresented } = usePresentedChanges()
+  const settledRunCount = Object.values(runs).filter(run => isTerminalRunStatus(run.status)).length
   const timelineItems = groupDiscussionMessages(messages, discussions)
   const lastSegment = new Map(timelineItems.flatMap(item =>
     item.kind === 'discussion' ? [[item.discussionId, item.segment] as const] : []))
@@ -999,6 +1016,16 @@ function ConversationSurfaceContent({
         projectId={detail?.room.project_id ?? null}
       />
     )
+    const group = summaryByAnchor.get(message.id)
+    const summary = group && (
+      <TurnWorkspaceSummary
+        runs={group.runs}
+        exclude={group.exclude}
+        onPresented={ids => reportPresented(message.id, ids)}
+        projectId={detail?.room.project_id ?? null}
+        agentName={run => agentNameForRun(run.id)}
+      />
+    )
     return (
       <Fragment key={message.id}>
         <RoomMessageView
@@ -1021,6 +1048,7 @@ function ConversationSurfaceContent({
           projectId={detail?.room.project_id ?? null}
           onRetry={readOnly ? undefined : retryRun}
           onActionDecision={readOnly ? undefined : continueAfterDecision}
+          footer={message.role === 'assistant' && summary ? summary : undefined}
         />
         {/*
           Pending turns in one explicit delegation group share the latest
@@ -1046,6 +1074,8 @@ function ConversationSurfaceContent({
               onRetry={readOnly || allDelegatedRunIds.has(runId) ? undefined : retryRun}
             />
           ))}
+        {/* A turn that wrote no main reply (it failed) keeps its summary after its own turn. */}
+        {summary && message.role !== 'assistant' && <div className="flex w-full justify-start pr-6">{summary}</div>}
       </Fragment>
     )
   }
@@ -1124,6 +1154,14 @@ function ConversationSurfaceContent({
                 ))}
             </DiscussionGroup>
           ))}
+        {conversationId && detail?.room.project_id && !messagesLoading && (
+          <ConversationPendingWork
+            conversationId={conversationId}
+            presented={presentedChangeSetIds}
+            refreshToken={`${messages.length}:${settledRunCount}`}
+            agentName={agentId => labelAgents.find(agent => agent.id === agentId)?.name}
+          />
+        )}
         {queued.map(item => (
           <QueuedMessageCard
             key={item.id}
@@ -1151,6 +1189,7 @@ function ConversationSurfaceContent({
             else void sendMessage(confirmUserIds)
           }}
         />
+          {pendingControls}
         </ConversationContent>
         <ConversationScrollButton className="absolute bottom-3 left-1/2 -translate-x-1/2" />
       </Conversation>
@@ -1298,7 +1337,7 @@ function ConversationSurfaceContent({
 
 function RoomMessageView({
   message, compact, picked, pickable, onPickedChange,
-  viewerUserId, agents, humans, turn, runIds, delegatedRunIds, runs, projectId, onRetry, onActionDecision,
+  viewerUserId, agents, humans, turn, runIds, delegatedRunIds, runs, projectId, onRetry, onActionDecision, footer,
 }: {
   message: RoomMessage
   compact: boolean
@@ -1323,6 +1362,8 @@ function RoomMessageView({
   delegatedRunIds: string[]
   onRetry?: (runId: string) => Promise<void>
   onActionDecision?: (preview: ChatActionPreview, action: ActionDecision) => Promise<void>
+  /** The request group's workspace summary, in this reply's own column. */
+  footer?: ReactNode
 }) {
   const { t } = useAppTranslation()
   const mine = message.role === 'user'
@@ -1333,7 +1374,8 @@ function RoomMessageView({
     : mine
     ? (human?.display_name ?? human?.email ?? (message.user_id === viewerUserId ? t('conversation_ui.surface.you') : t('conversation_ui.surface.person')))
     : agents.find(agent => agent.id === message.sender_agent_id)?.name ?? t('conversation_ui.surface.agent')
-  const delegated = message.role === 'assistant' && runIds.some(id => delegatedRunIds.includes(id) || runs[id]?.parent_run_id)
+  // Explicit delegation only: parent_run_id alone also marks serial queueing.
+  const delegated = message.role === 'assistant' && runIds.some(id => delegatedRunIds.includes(id))
   // Only a successful, settled specialist reply folds. Questions, failures,
   // live progress and blocked turns stay visible, as do action cards below.
   const unsuccessful = runIds.some(id => ['failed', 'cancelled', 'orphaned'].includes(runs[id]?.status))
@@ -1343,7 +1385,7 @@ function RoomMessageView({
   const previewRunId = message.run_id ?? (runIds.length === 1 ? runIds[0] : null)
   const reply = <>
     <ConversationInputPartsView parts={message.input_parts} text={message.content} />
-    {turn
+    {isWorkspaceIntegrationNotice(message)?<WorkspaceIntegrationNotice message={message}/>:turn
       ? <ConversationTurn turn={settledTurn(turn, turn.state, message.content)!} runHref={`/runs/${turn.run_id}`} className="max-w-none" />
       : message.content && (previewRunId && !mine && !system ? <ConversationFilePreview key={previewRunId} runId={previewRunId}><MessageResponse>{message.content}</MessageResponse></ConversationFilePreview> : <MessageResponse>{message.content}</MessageResponse>)}
   </>
@@ -1409,11 +1451,13 @@ function RoomMessageView({
             projectId={projectId}
             onRetry={delegatedRunIds.includes(runId) ? undefined : onRetry}
             showStatus={false}
+            workspaceSummary={false}
             // If a saved Agent reply ever names several Runs, keep each
             // reply-side control explicitly attributed to its Agent.
             agentLabel={runIds.length > 1 ? agents.find(agent => agent.id === runs[runId]?.agent_id)?.name ?? t('conversation_ui.surface.agent') : undefined}
           />
         ))}
+        {footer && <div className="mt-2">{footer}</div>}
       </div>
     </div>
   )
@@ -1449,7 +1493,7 @@ function RoomAgentTurn({ runId, turn, agentName, delegatedBy, run, projectId, on
           : turn
             ? <ConversationTurn turn={turn} runHref={`/runs/${runId}`} className="max-w-none" />
             : <p className="text-sm text-muted-foreground">{run && ['failed', 'succeeded', 'degraded', 'cancelled', 'orphaned'].includes(run.status) ? t('conversation_ui.surface.loading_result') : t('conversation_ui.surface.starting')}</p>}
-        {run && <ConversationRunControls runId={runId} run={run} projectId={projectId} onRetry={onRetry} showStatus={false} />}
+        {run && <ConversationRunControls runId={runId} run={run} projectId={projectId} onRetry={onRetry} showStatus={false} workspaceSummary={false} />}
       </div>
     </div>
   )
@@ -1482,10 +1526,6 @@ function ProposalContinuationStatus({ continuation, turns }: {
       </div>
     </div>
   )
-}
-
-function isTerminalRunStatus(status: string): boolean {
-  return ['succeeded', 'failed', 'degraded', 'cancelled', 'orphaned', 'waiting_for_review'].includes(status)
 }
 
 /**

@@ -1,4 +1,19 @@
+import {RESEARCH_EXECUTION_SCHEMAS,RESEARCH_EXECUTION_TITLES} from './researchExecutionOperations.js';
+import {ResearchAdhocInputSchema,ResearchAdhocReceiptSchema} from './researchAdhocOperation.js';
+import {PROJECT_SOURCE_PROPOSAL_SCHEMAS,PROJECT_SOURCE_PROPOSAL_TITLES} from './projectSourceProposalOperations.js';
+import {PROJECT_CORPUS_SCHEMAS,PROJECT_CORPUS_TITLES} from './projectCorpusOperations.js';
+import {INQUIRY_AGENT_OPERATION_SCHEMAS} from './inquiryAgentOperations.js';
+import {PROJECT_FOLDER_SCHEMAS,PROJECT_FOLDER_TITLES} from './projectFolderOperations.js';
 import {PROJECT_FOLDER_IO_SCHEMAS,PROJECT_FOLDER_IO_TITLES} from './projectFolderIoOperations.js';
+import {PROJECT_INGRESS_SCHEMAS,PROJECT_INGRESS_TITLES} from './projectIngressOperations.js';
+import {PROJECT_EXECUTION_SCHEMAS,PROJECT_EXECUTION_TITLES} from './projectExecutionOperations.js';
+import {PROJECT_MANAGEMENT_SCHEMAS,PROJECT_MANAGEMENT_TITLES} from './projectManagementOperations.js';
+import {INQUIRY_OPERATION_SCHEMAS,INQUIRY_OPERATION_TITLES} from './inquiryOperations.js';
+import {TaskCreateInputSchema} from './taskCreateInput.js';
+export {TaskCreateInputSchema,ProblemTaskLinkRequestSchema} from './taskCreateInput.js';
+import {RESEARCH_WORKSPACE_SCHEMAS,RESEARCH_WORKSPACE_TITLES} from './researchWorkspaceOperations.js';
+import {KnowledgeExtractionInputSchema,KnowledgeExtractionReceiptSchema} from './knowledgeExtractionOperation.js';
+import {WorkspaceVerificationGetInputSchema,WorkspaceVerificationConfigureInputSchema,WorkspaceVerificationViewSchema,WorkspaceChangeStatusSchema,WorkspaceChangeGetInputSchema,WorkspaceChangeCompleteInputSchema,WorkspaceChangeReceiptSchema,WorkspaceIntegrationRetryInputSchema,WorkspaceChangeAbandonInputSchema,WorkspaceRetentionUpdateInputSchema,WorkspaceRetentionReceiptSchema} from "./executionWorkspaces.js";
 import {KNOWLEDGE_REVIEW_SCHEMAS,KNOWLEDGE_REVIEW_TITLES} from './knowledgeReviewOperations.js';
 import {KNOWLEDGE_OBJECT_SCHEMAS} from './knowledgeObjectOperations.js';
 import {NOTE_OBJECT_SCHEMAS,NOTE_OBJECT_TITLES} from './noteObjectOperations.js';
@@ -15,9 +30,7 @@ import {BoardConfigureOperationInputSchema,BoardConfigureOperationOutputSchema,T
 import {ProjectOperationCreateInputSchema, ProjectOperationCancelInputSchema, ProjectOperationCommandOutputSchema} from './operations.js';
 import {CollaborationParticipantsInputSchema,CollaborationParticipantsOutputSchema,ActionCatalogInputSchema,ActionCatalogOutputSchema,ActionGrantCreateInputSchema,ActionGrantRevokeInputSchema,ActionGrantOutputSchema} from "./operations.js";
 import { PROJECT_READING_RECORD_LIMITS } from './reader.js';
-import { BoardColumnSelectionSchema } from "./projectWork.js";
 import { ResearchResultAdoptionSchema } from "./researchCalls.js";
-import { ProblemWorkRequestSchema, ProblemCloseRoundRequestSchema, validateProblemWorkSelection } from "./problemEngine.js";
 import {SourceMaterialSubmissionSchema,SourceMaterialInvestigationSchema} from './sourceMaterials.js';
 import {SourceGoalVersionWriteSchema,SourceGoalRepairSchema} from './sourceGoals.js';
 import { ProposeProjectMonitoringSchema } from "./projectInformationMonitoring.js";
@@ -220,38 +233,6 @@ const objectInput = z.record(z.string(), z.unknown());
 const objectOutput = z.record(z.string(), z.unknown());
 const proposalOutput = z.object({ modelResult: z.record(z.string(), z.unknown()), summary: z.record(z.string(), z.unknown()) }).passthrough();
 export const TASK_CREATE_BATCH_MAX_ITEMS = 100;
-export const TaskCreateInputSchema = z.object({
-  /**
-   * Optional, and only ever the Run's own Project. It is accepted so a model
-   * can state what it believes it is doing and be told when that disagrees,
-   * rather than silently writing somewhere else.
-   */
-  project_id: z.string().min(1).optional(),
-  board_column: BoardColumnSelectionSchema.optional(),
-  title: z.string().trim().min(1).max(512),
-  description: z.string().trim().max(20_000).nullable().optional(),
-  acceptance_criteria_json: z.record(z.string(), z.unknown()).nullable().optional(),
-  definition_of_done: z.string().trim().max(4_000).nullable().optional(),
-  required_outputs: z.array(z.string().trim().min(1).max(64)).max(20).optional().describe("Only concrete file Artifact type labels that must be collected as deliverables. Do not use for a reply, report, check result, workspace edit, or filename; omit it for those Tasks."),
-  priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
-  risk_level: z.enum(["low", "medium", "high", "critical"]).optional(),
-  /** The scheduling fields; timing the person gave belongs here, not in the description. */
-  due_at: z.string().trim().min(1).max(64).nullable().optional().describe("When the Task is due, as an ISO 8601 date or datetime."),
-  start_after: z.string().trim().min(1).max(64).nullable().optional().describe("The earliest the Task should start, as an ISO 8601 date or datetime."),
-  links: z.array(z.object({
-    entity_type: z.string().trim().min(1).max(32),
-    entity_id: z.string().min(1),
-    role: z.enum(["executes", "investigates", "prepares", "references"]),
-  })).max(20).optional(),
-}).strict();
-
-export const ProblemTaskLinkFieldsSchema=z.object({
- idempotency_key:z.string().min(1).max(100),reason:z.string().trim().min(1).max(4000),
- role:z.enum(["executes","investigates","prepares","references"]),
- task_id:z.string().min(1).optional(),task:TaskCreateInputSchema.optional(),
-}).strict();
-export const ProblemTaskLinkRequestSchema=ProblemTaskLinkFieldsSchema.refine(v=>Boolean(v.task_id)!==Boolean(v.task),"Supply exactly one existing task_id or new task");
-
 const proposalInputs:Record<string,z.ZodType>={
   /**
    * A person deciding, in words, a proposal this conversation produced.
@@ -272,9 +253,7 @@ const proposalInputs:Record<string,z.ZodType>={
   }).passthrough(),
   // The dispatcher's call identity is the receipt key; a model-supplied key
   // would be ignored, so these agent inputs do not ask for one.
-  "inquiry.link_task": ProblemTaskLinkFieldsSchema.omit({idempotency_key:true}).extend({thread_id:z.string().min(1)}).refine(v=>Boolean(v.task_id)!==Boolean(v.task),"Supply exactly one Task"),
   "inquiry.list_tasks": z.object({thread_id:z.string().min(1),after_task_id:z.string().optional()}).strict(),
-  "inquiry.reference_task_result": ProblemWorkRequestSchema.innerType().omit({idempotency_key:true}).extend({thread_id:z.string().min(1),task_id:z.string().min(1)}).superRefine(validateProblemWorkSelection),
   "task.create": TaskCreateInputSchema,
   "task.create_batch": z.object({
     request_summary: z.string().trim().min(1).max(2000).describe("The person's explicit request to create this bounded list. Never use this action for unsolicited task suggestions."),
@@ -302,6 +281,13 @@ const proposalInputs:Record<string,z.ZodType>={
   "task.place_in_space_board": TaskSpacePlacementInputSchema,
   "task.delete": TaskDeleteInputSchema,
   "task.set_status": TaskStatusInputSchema,
+  "workspace.change.get":WorkspaceChangeGetInputSchema,
+  "workspace.change.complete": WorkspaceChangeCompleteInputSchema,
+  "workspace.integration.verification.get":WorkspaceVerificationGetInputSchema,
+  "workspace.integration.verification.configure":WorkspaceVerificationConfigureInputSchema,
+  "workspace.integration.retry":WorkspaceIntegrationRetryInputSchema,
+  "workspace.change.abandon":WorkspaceChangeAbandonInputSchema,
+  "workspace.retention.update":WorkspaceRetentionUpdateInputSchema,
   "task.complete": TaskCompleteInputSchema,
   "task.request_review": TaskReviewInputSchema,
   "task.plan.propose": z.object({
@@ -394,32 +380,6 @@ const proposalInputs:Record<string,z.ZodType>={
     kind: z.enum(["question", "hypothesis"]).optional(),
   }).strict(),
   "inquiry.read_problem": z.object({thread_id:z.string().min(1),limit:z.number().int().min(1).max(100).optional(),before_step:z.number().int().positive().optional(),before_closeout:z.number().int().positive().optional()}).strict(),
-  "inquiry.record_work": ProblemWorkRequestSchema.innerType().extend({thread_id:z.string().min(1)}).superRefine(validateProblemWorkSelection),
-  "inquiry.close_round": ProblemCloseRoundRequestSchema.extend({thread_id:z.string().min(1)}),
-  "inquiry.record_conclusion": z.object({
-    method_version: z.literal("problem_solving.v1"),
-    round_intent: z.enum(["position_only","close_round"]),
-    expected_version: z.number().int().positive(),
-    expected_revision: z.number().int().nonnegative(),
-    idempotency_key: z.string().min(1).max(128),
-    thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one from the statement."),
-    change_summary: z.string().min(1),
-    reasoning_summary: z.string().min(1).optional(),
-    // Question-kind cognitive fields.
-    answer_state: z.enum(["open", "partial", "answered", "unanswerable"]).optional(),
-    current_answer_summary: z.string().optional(),
-    known_gaps: z.string().optional(),
-    answerability: z.string().optional(),
-    // Hypothesis-kind cognitive fields.
-    evaluation_state: z.enum(["untested", "supported", "challenged", "contradicted", "inconclusive"]).optional(),
-    // Stored as an integer percentage and a 32-character method label; the
-    // contract says so, rather than letting the database refuse the whole
-    // conclusion after the fact.
-    confidence: z.number().int().min(0).max(100).optional(),
-    confidence_method: z.string().max(32).optional(),
-    // Shared.
-    unresolved_gaps: z.string().optional(),
-  }).passthrough(),
   "inquiry.promote_knowledge": z.object({
     thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one from the statement."),
     candidate_kind: z.enum(["concept", "lesson", "procedure", "decision", "summary"]),
@@ -487,7 +447,6 @@ const proposalInputs:Record<string,z.ZodType>={
 const visibility = (...values: SystemActionVisibility[]) => new Set(values);
 
 export const SYSTEM_ACTION_REGISTRY = [
-  ...Object.entries(PROJECT_FOLDER_IO_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_FOLDER_IO_SCHEMAS,PROJECT_FOLDER_IO_TITLES[id as keyof typeof PROJECT_FOLDER_IO_SCHEMAS],'projectFolders','Project Folder IO intent and Job owner',id==='project.folder.draft.save'?'project_folder.apply_patch':'project.folder.command','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
   { ...httpAction("system.actions.list", "List available operation entries", "systemActions", "OperationCatalog.list", "system.actions.list", "none"), input_schema:ActionCatalogInputSchema, output_schema:ActionCatalogOutputSchema, execution:{kind:"query",tx:"core_owned"} },
   { ...httpAction("room.collaboration.update_participants", "Change task collaboration participants", "agentGroups", "collaborationParticipantsOperation", "room.collaboration.manage", "durable"), input_schema: CollaborationParticipantsInputSchema, output_schema: CollaborationParticipantsOutputSchema, execution: {kind:"command",tx:"core_owned"} },
   agentAction("authorization.request", "Request authorization for a denied action", "policy", "AuthorizationRequestService.createFromDeniedDecision", "authorization.request.create", "durable", { resource_type: "authorization_request", resource_id_fallback: "run", check_action_approval_grant: false }),
@@ -562,9 +521,9 @@ export const SYSTEM_ACTION_REGISTRY = [
   // conversation's rendered history carries ids: a turn that must address an
   // existing object calls the matching list first.
   action("task.list", "List this Project's Tasks with their ids", "tasks", "PgTaskRepository.listTasks", "task.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, inputSchema: proposalInputs["task.list"] }),
-  agentAction("inquiry.link_task","Create or link a Task to an Inquiry Thread","inquiry","InquiryTaskAssociationService.link","inquiry.work.record","durable",{resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),
+  {...agentAction("inquiry.link_task","Create or link a Task to an Inquiry Thread","inquiry","InquiryTaskAssociationService.link","inquiry.work.record","durable",{resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),input_schema:INQUIRY_AGENT_OPERATION_SCHEMAS["inquiry.link_task"].input,output_schema:INQUIRY_AGENT_OPERATION_SCHEMAS["inquiry.link_task"].output,execution:{kind:"command" as const,tx:"core_owned" as const}},
   agentAction("inquiry.list_tasks","Read linked Tasks and their actual Board status","inquiry","InquiryTaskAssociationService.tasks","inquiry.problem.read","none",{resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),
-  agentAction("inquiry.reference_task_result","Reference a linked Task result in problem work","inquiry","InquiryTaskAssociationService.referenceResult","inquiry.work.record","durable",{resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),
+  {...agentAction("inquiry.reference_task_result","Reference a linked Task result in problem work","inquiry","InquiryTaskAssociationService.referenceResult","inquiry.work.record","durable",{resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),input_schema:INQUIRY_AGENT_OPERATION_SCHEMAS["inquiry.reference_task_result"].input,output_schema:INQUIRY_AGENT_OPERATION_SCHEMAS["inquiry.reference_task_result"].output,execution:{kind:"command" as const,tx:"core_owned" as const}},
   agentAction("task.create", "Create a Project Task", "tasks", "PgTaskRepository.createTask", "task.create", "durable", { resource_type: "project", resource_id_input_field: "project_id", resource_id_fallback: "project_or_run", check_action_approval_grant: false }),
   agentAction("task.create_batch", "Create an explicitly requested batch of Project Tasks", "tasks", "PgTaskRepository.createTask", "task.create", "durable", { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }),
   { ...agentAction("task.report", "Report on a Task", "projectWork", "ProjectWorkTaskActions.report", "task.report", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),input_schema:TaskReportInputSchema,output_schema:TaskReportOutputSchema,execution:{kind:"command",tx:"core_owned"} },
@@ -580,6 +539,14 @@ export const SYSTEM_ACTION_REGISTRY = [
   // person asking in the turn authorizes it, an autonomous wake-up must be
   // seen. It cannot skip the completion contract the manual close enforces,
   // and unlike a person it cannot override one.
+  {...agentAction("workspace.integration.verification.get","Read this integration's Folder verification commands and current retry revision","projectFolders","workspaceVerification.get","workspace.integration.verification.get","none",{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),input_schema:WorkspaceVerificationGetInputSchema,output_schema:WorkspaceVerificationViewSchema,idempotency_required:false,visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"query",tx:"core_owned"}},
+  {...agentAction("workspace.integration.verification.configure","Advanced legacy verification configuration. Native-session integration uses the Agent’s existing tools and does not require configuring these commands. Save real Folder test/build commands selected and run by the Agent for this legacy integration. Commands execute on its Host, directly without a shell. Read current config first and preserve meaningful checks. The assigned candidate setup Run may report no_project_checks with an explanation after repository inspection; finish that Run so the worker captures, verifies and publishes. Never ask the user to type commands.","projectFolders","workspaceVerification.configure","workspace.integration.verification.configure","durable",{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),input_schema:WorkspaceVerificationConfigureInputSchema,output_schema:WorkspaceVerificationViewSchema,visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"command",tx:"core_owned"}},
+  {...agentAction("workspace.integration.retry","Recover a saved integration in the current Agent session; read workspace.change.get and finish prepare/checkpoint/publish before replying. reconcile_only proves prior adoption without publishing.","projectFolders","workspace.integration.retry","workspace.integration.retry","durable",{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),input_schema:WorkspaceIntegrationRetryInputSchema,output_schema:WorkspaceChangeReceiptSchema,visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"command",tx:"core_owned"}},
+  {...agentAction("workspace.change.abandon","Abandon the isolated change without publishing","projectFolders","workspace.change.abandon","workspace.change.abandon","durable",{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),input_schema:WorkspaceChangeAbandonInputSchema,output_schema:WorkspaceChangeReceiptSchema,visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"command",tx:"core_owned"}},
+  // People manage source retention; Agents never reclaim or hold Git metadata.
+  {...agentAction("workspace.retention.update","Reclaim a proven merged/unchanged isolated workspace now, hold it, or retry its cleanup","projectFolders","workspace.retention.update","workspace.retention.update","durable",{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),input_schema:WorkspaceRetentionUpdateInputSchema,output_schema:WorkspaceRetentionReceiptSchema,visibility:visibility("public_api"),allowed_actor_types:["user"],execution:{kind:"command",tx:"core_owned"}},
+  {...agentAction("workspace.change.get","Read the actual state of this workspace integration. Wait for pending operations; resolve conflicts and run checks in your current worktree. Only merged/no_changes means publication completed.","projectFolders","workspaceChangeGet","workspace.change.get","none",{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),input_schema:WorkspaceChangeGetInputSchema,output_schema:WorkspaceChangeStatusSchema,idempotency_required:false,visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"query",tx:"core_owned"}},
+  {...agentAction("workspace.change.complete","Save privately with checkpoint alone, or integrate in this active Agent session: prepare, fix conflicts and check the saved version in your current worktree, then publish with your verification. Read workspace.change.get for each actual result; finish before answering. No verification configuration or separate Agent is needed.","projectFolders","workspaceChangeComplete","workspace.change.complete","durable",{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),input_schema:WorkspaceChangeCompleteInputSchema,output_schema:WorkspaceChangeReceiptSchema,visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"command",tx:"core_owned"}},
   { ...agentAction("task.complete", "Say a Task's work is finished", "projectWork", "ProjectWorkTaskActions.complete", "task.complete", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),input_schema:TaskCompleteInputSchema,output_schema:TaskCompleteOutputSchema,execution:{kind:"command",tx:"core_owned"} },
   { ...agentAction("task.request_review", "Ask a person to decide", "projectWork", "ProjectWorkTaskActions.requestReview", "task.request_review", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),input_schema:TaskReviewInputSchema,output_schema:TaskStatusOutputSchema,execution:{kind:"command",tx:"core_owned"} },
   // Append-only like `task.report`, and ungated at any origin for the same
@@ -601,6 +568,18 @@ export const SYSTEM_ACTION_REGISTRY = [
   ...Object.entries(NOTE_OBJECT_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof NOTE_OBJECT_SCHEMAS,NOTE_OBJECT_TITLES[id as keyof typeof NOTE_OBJECT_SCHEMAS],'knowledge','PgKnowledgeRepository / NoteWriteScope','note.edit',id==='knowledge.note.create'?'draft':'durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
   {...httpAction("knowledge.note.rollback", "Restore a Note revision", "knowledge", "PgKnowledgeRepository.rollbackNote", "note.edit", "durable"),input_schema:NoteRollbackInputSchema,output_schema:NoteControlReceiptSchema,execution:{kind:'command',tx:'core_owned'}},
   {...httpAction("knowledge.note.delete", "Move a Note to trash", "knowledge", "PgKnowledgeRepository.deleteNote", "note.edit", "durable"),input_schema:NoteControlTargetSchema,output_schema:NoteControlReceiptSchema,execution:{kind:'command',tx:'core_owned'}},
+  ...Object.entries(INQUIRY_OPERATION_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof INQUIRY_OPERATION_SCHEMAS,INQUIRY_OPERATION_TITLES[id as keyof typeof INQUIRY_OPERATION_SCHEMAS],'inquiry','Inquiry domain services','inquiry.workspace.update','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(PROJECT_MANAGEMENT_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_MANAGEMENT_SCHEMAS,PROJECT_MANAGEMENT_TITLES[id as keyof typeof PROJECT_MANAGEMENT_SCHEMAS],'projects','Project workspace services','project.management.write','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(PROJECT_EXECUTION_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_EXECUTION_SCHEMAS,PROJECT_EXECUTION_TITLES[id as keyof typeof PROJECT_EXECUTION_SCHEMAS],'experiments','ExperimentDefinitionService / ExperimentRunService / ExperimentInterpretationService','experiment.command','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(PROJECT_INGRESS_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_INGRESS_SCHEMAS,PROJECT_INGRESS_TITLES[id as keyof typeof PROJECT_INGRESS_SCHEMAS],'projects','ProjectMonitoringService','project.monitoring.configure','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(PROJECT_FOLDER_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_FOLDER_SCHEMAS,PROJECT_FOLDER_TITLES[id as keyof typeof PROJECT_FOLDER_SCHEMAS],'projectFolders','PgProjectFolderRepository / ProjectFolderExecutionConfigRepository','project.folder.command','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(PROJECT_FOLDER_IO_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_FOLDER_IO_SCHEMAS,PROJECT_FOLDER_IO_TITLES[id as keyof typeof PROJECT_FOLDER_IO_SCHEMAS],'projectFolders','Project Folder IO intent and Job owner',id==='project.folder.draft.save'?'project_folder.apply_patch':'project.folder.command','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(PROJECT_CORPUS_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_CORPUS_SCHEMAS,PROJECT_CORPUS_TITLES[id as keyof typeof PROJECT_CORPUS_SCHEMAS],'projects','ProjectCorpusRepository','project.corpus.update','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(PROJECT_SOURCE_PROPOSAL_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_SOURCE_PROPOSAL_SCHEMAS,PROJECT_SOURCE_PROPOSAL_TITLES[id as keyof typeof PROJECT_SOURCE_PROPOSAL_SCHEMAS],'projects','ProjectSourceProposalService.proposeBackfill','source.backfill.plan','proposal'),proposal_type:'source_backfill_start',gate_class:'money' as const,input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  {...httpAction('research.ask_ai','Queue a bounded Research notebook analysis','projectResearch','ProjectResearchAreaService.askAi','research.workspace.update','durable'),input_schema:ResearchAdhocInputSchema,output_schema:ResearchAdhocReceiptSchema,execution:{kind:'command' as const,tx:'core_owned' as const}},
+  ...Object.entries(RESEARCH_EXECUTION_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof RESEARCH_EXECUTION_SCHEMAS,RESEARCH_EXECUTION_TITLES[id as keyof typeof RESEARCH_EXECUTION_SCHEMAS],'projectResearch','ProjectResearchOrchestrator','research.workspace.update','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(RESEARCH_WORKSPACE_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof RESEARCH_WORKSPACE_SCHEMAS,RESEARCH_WORKSPACE_TITLES[id as keyof typeof RESEARCH_WORKSPACE_SCHEMAS],'projectResearch','ProjectResearchRepository / ProjectResearchAreaService','research.workspace.update','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  {...httpAction('knowledge.candidate.extract','Queue Knowledge Candidate extraction','knowledgePromotion','KnowledgeExtractionService.queue','inquiry.knowledge.promote','durable'),input_schema:KnowledgeExtractionInputSchema,output_schema:KnowledgeExtractionReceiptSchema,execution:{kind:'command' as const,tx:'core_owned' as const}},
   ...Object.entries(KNOWLEDGE_REVIEW_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof KNOWLEDGE_REVIEW_SCHEMAS,KNOWLEDGE_REVIEW_TITLES[id as keyof typeof KNOWLEDGE_REVIEW_SCHEMAS],'knowledgePromotion','KnowledgePromotionCandidateService / PgKnowledgeRepository',id==='knowledge.candidate.decide'?'proposal.create':id.startsWith('knowledge.evidence.')?'source.item_update':'inquiry.knowledge.promote','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
   ...Object.entries(KNOWLEDGE_OBJECT_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof KNOWLEDGE_OBJECT_SCHEMAS,({'note.promote_to_knowledge':'Promote a passage to a Knowledge Item','knowledge.source.create':'Create an evidence Source','knowledge.source.update':'Edit an evidence Source','knowledge.source.archive':'Archive an evidence Source'} as Record<string,string>)[id]!,'knowledge','PgKnowledgeRepository',id==='note.promote_to_knowledge'?'proposal.create':id==='knowledge.source.create'?'source.item_create':'source.item_update',id==='note.promote_to_knowledge'?'proposal':id==='knowledge.source.create'?'draft':'durable'),...(id==='note.promote_to_knowledge'?{applies_to:['note'],proposal_type:'knowledge_create',gate_class:'exposure' as const}:{}),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
   {...httpAction("inquiry.thread.create", "Create an Inquiry Thread", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable"),input_schema:InquiryThreadCreateInputSchema,output_schema:InquiryThreadCreateReceiptSchema,execution:{kind:'command',tx:'core_owned'}},
@@ -630,9 +609,9 @@ export const SYSTEM_ACTION_REGISTRY = [
   // position it replaced, so it is recorded and revertible rather than
   // pre-approved.
   agentAction("inquiry.read_problem","Read bounded problem history","inquiry","InquiryProblemEngineService.projection","inquiry.problem.read","none",{resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),
-  agentAction("inquiry.record_work", "Record problem work or select a method", "inquiry", "InquiryProblemEngineService.recordWork", "inquiry.work.record", "durable", {resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),
-  agentAction("inquiry.close_round", "Close a problem round without changing judgment", "inquiry", "InquiryProblemEngineService.closeRound", "inquiry.round.close", "durable", {resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),
-  agentAction("inquiry.record_conclusion", "Record an Inquiry Thread conclusion", "inquiry", "InquiryIterationService.recordIteration", "inquiry.iteration.record", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  {...agentAction("inquiry.record_work", "Record problem work or select a method", "inquiry", "InquiryProblemEngineService.recordWork", "inquiry.work.record", "durable", {resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),input_schema:INQUIRY_AGENT_OPERATION_SCHEMAS["inquiry.record_work"].input,output_schema:INQUIRY_AGENT_OPERATION_SCHEMAS["inquiry.record_work"].output,execution:{kind:"command" as const,tx:"core_owned" as const}},
+  {...agentAction("inquiry.close_round", "Close a problem round without changing judgment", "inquiry", "InquiryProblemEngineService.closeRound", "inquiry.round.close", "durable", {resource_type:"inquiry_thread",resource_id_input_field:"thread_id",resource_id_fallback:"run",check_action_approval_grant:false}),input_schema:INQUIRY_AGENT_OPERATION_SCHEMAS["inquiry.close_round"].input,output_schema:INQUIRY_AGENT_OPERATION_SCHEMAS["inquiry.close_round"].output,execution:{kind:"command" as const,tx:"core_owned" as const}},
+  {...agentAction("inquiry.record_conclusion", "Record an Inquiry Thread conclusion", "inquiry", "InquiryIterationService.recordIteration", "inquiry.iteration.record", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }),input_schema:INQUIRY_AGENT_OPERATION_SCHEMAS["inquiry.record_conclusion"].input,output_schema:INQUIRY_AGENT_OPERATION_SCHEMAS["inquiry.record_conclusion"].output,execution:{kind:"command" as const,tx:"core_owned" as const}},
   // Runtime `proposal_type` is `knowledge_create` or `knowledge_update`
   // (revalidation branch) depending on `supersedes_knowledge_item_id`;
   // `knowledge_create` here is descriptive metadata only — nothing currently

@@ -142,7 +142,7 @@ export class PgHostThreadRepository {
          id, space_id, execution_host_id, workspace_location_id, workspace_mode, session_id, agent_id, container_kind,
          runtime_key, runtime_installation, status, created_by_user_id, created_at, updated_at
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'conversation', $8, $9, 'active', $10, $11, $11)
-       ON CONFLICT (session_id, agent_id) WHERE container_kind = 'conversation' AND status IN ('active', 'session_reset') AND session_id IS NOT NULL DO NOTHING
+       ON CONFLICT (session_id, agent_id) WHERE container_kind = 'conversation' AND status IN ('active', 'session_reset') AND session_id IS NOT NULL AND delegation_id IS NULL DO NOTHING
        RETURNING ${COLUMNS}`,
       [id, input.spaceId, input.executionHostId, input.workspaceLocationId ?? null, input.workspaceMode, input.sessionId, input.agentId, input.runtimeKey, input.runtimeInstallation ?? "own", input.createdByUserId, now],
     );
@@ -155,12 +155,34 @@ export class PgHostThreadRepository {
   async getForConversationAgent(spaceId: string, sessionId: string, agentId: string): Promise<HostThread | null> {
     const result = await this.db.query<HostThread>(
       `SELECT ${COLUMNS} FROM host_threads
-        WHERE space_id = $1 AND session_id = $2 AND agent_id = $3 AND container_kind = 'conversation'
+        WHERE space_id = $1 AND session_id = $2 AND agent_id = $3 AND container_kind = 'conversation' AND delegation_id IS NULL
           AND status IN ('active', 'session_reset')
         LIMIT 1`,
       [spaceId, sessionId, agentId],
     );
     return result.rows[0] ?? null;
+  }
+
+  /** A delegation never borrows the ordinary Conversation × Agent vendor session. */
+  async getOrCreateForDelegation(input: {
+    delegationId: string; executionHostId: string; workspaceLocationId: string;
+    spaceId: string; sessionId: string; agentId: string; runtimeKey: string;
+    runtimeInstallation?: string; createdByUserId: string;
+  }): Promise<HostThread> {
+    const result = await this.db.query<HostThread>(
+      `INSERT INTO host_threads (id,space_id,execution_host_id,workspace_location_id,workspace_mode,
+         session_id,agent_id,container_kind,delegation_id,runtime_key,runtime_installation,status,created_by_user_id,created_at,updated_at)
+       VALUES($1,$2,$3,$4,'location',$5,$6,'conversation',$7,$8,$9,'active',$10,now(),now())
+       ON CONFLICT (delegation_id) WHERE delegation_id IS NOT NULL AND status IN ('active','session_reset')
+       DO UPDATE SET updated_at=host_threads.updated_at
+       WHERE host_threads.space_id=EXCLUDED.space_id AND host_threads.session_id=EXCLUDED.session_id
+         AND host_threads.agent_id=EXCLUDED.agent_id AND host_threads.execution_host_id=EXCLUDED.execution_host_id
+         AND host_threads.workspace_location_id=EXCLUDED.workspace_location_id
+       RETURNING ${COLUMNS}`,
+      [randomUUID(),input.spaceId,input.executionHostId,input.workspaceLocationId,input.sessionId,input.agentId,
+       input.delegationId,input.runtimeKey,input.runtimeInstallation??'own',input.createdByUserId]);
+    if(!result.rows[0])throw new Error('Delegation thread scope changed');
+    return result.rows[0];
   }
 
   async getOrCreateForDirect(input: {
@@ -355,7 +377,7 @@ export class PgHostThreadRepository {
               handoff_artifact_id = NULL,
               updated_at = now()
         WHERE id = $1 AND session_id IS NOT NULL AND agent_id IS NOT NULL
-          AND container_kind = 'conversation'
+          AND container_kind = 'conversation' AND delegation_id IS NULL
           AND status IN ('active', 'session_reset')
         RETURNING ${COLUMNS}`,
       [threadId],
@@ -475,6 +497,7 @@ export class PgHostThreadRepository {
    */
   async listPendingManagedWorkspaceArchives(hostId: string): Promise<Array<{
     id: string;
+    space_id:string|null;execution_workspace_json:{id:string;generation:number;profile_container_id?:string}|null;
     agent_id: string;
     container_kind: "direct" | "conversation";
     container_id: string;
@@ -482,12 +505,13 @@ export class PgHostThreadRepository {
   }>> {
     const result = await this.db.query<{
       id: string;
+    space_id:string|null;execution_workspace_json:{id:string;generation:number;profile_container_id?:string}|null;
       agent_id: string;
       container_kind: "direct" | "conversation";
       container_id: string;
       include_workspace: boolean;
     }>(
-      `SELECT thread.id, thread.agent_id, thread.container_kind,
+      `SELECT thread.id,thread.space_id,thread.execution_workspace_json,thread.agent_id, thread.container_kind,
               CASE WHEN thread.container_kind = 'direct' THEN thread.container_user_id
                    ELSE thread.session_id END AS container_id,
               (

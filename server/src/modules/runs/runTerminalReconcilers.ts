@@ -60,6 +60,7 @@ export async function enqueueRunTerminalReconcilers(
     // Run that reached terminal without them — it is idempotent on the Run
     // and does nothing when the edit already landed.
     || input.workflow_input_json.research_adhoc !== undefined
+    || input.workflow_input_json.notebook_chat !== undefined
   ) {
     await queue.enqueue({
       job_type: "project_research_execution_nudge",

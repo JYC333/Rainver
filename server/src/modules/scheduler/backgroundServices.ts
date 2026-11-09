@@ -1,3 +1,5 @@
+import {configureWorkspaceRetention} from '../hosts/workspaceRetention.js';
+import {reconcileExecutionWorkspaces} from '../hosts/workspaceReconcile.js';
 import {pruneOperationRequests} from "../systemActions/operations/retention.js";
 import { SpaceAssistantService } from "../agents/spaceAssistantService.js";
 import type { ServerConfig } from "../../config.js";
@@ -119,6 +121,13 @@ export function startBackgroundServices(
   ];
 
   if (config.databaseUrl) {
+    let workspaceCursor:string|undefined;
+    configureWorkspaceRetention(config);
+    tasks.push({name:'execution_workspace_reconcile',intervalSeconds:60,runOnStart:true,awaitRunOnStart:false,run:async()=>{
+      const result=await reconcileExecutionWorkspaces(getDbPool(config.databaseUrl!),config.workspaceRoot,{after:workspaceCursor});
+      workspaceCursor=result.next;
+      if(result.failures.length)throw new Error(`Workspace reconciliation failed for ${result.failures.length} owner(s)`);
+    }});
     tasks.push({
       name: "auth_registration_intent_reconciliation",
       intervalSeconds: 300,

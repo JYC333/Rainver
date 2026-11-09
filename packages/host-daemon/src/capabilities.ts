@@ -64,11 +64,27 @@ export interface RuntimeLookup {
  * installations.
  */
 export interface DaemonCapabilities {
+  execution_workspaces?: {version:1|2;reclaim?:1|2|3|4};
+  native_workspace_integration?:true;
   workspace_read_only?:{supported:boolean;mechanism:"bwrap-v1";reason:string|null};
   runtimes: ProbedBinary[];
   versions: Partial<Record<ProbedBinary, string>>;
   /** Every copy of every runtime, keyed by runtime key. */
   installations: Record<string, RuntimeInstallation[]>;
+}
+
+/** Logical workspace keys currently become filenames containing colons. Native
+ * Windows cannot represent those resources, so it must refuse this capability. */
+export function executionWorkspaceCapability(platform:NodeJS.Platform=process.platform):DaemonCapabilities['execution_workspaces']{
+  // reclaim:1 = proof-checked branch release, owned-ref release, epoch and sequence-floor fences.
+  // reclaim:2 = journaled ref operations (a reply proves the operation ended), Run-history
+  // keeper epochs (renewal fence) and paged history inventory. The server releases only with 2.
+  // reclaim:3 = settling earlier ref operations (finished result, or cancelled for good) under the
+  // Task lease; the server resumes a deletion claimed before its source fence only through it.
+  // reclaim:4 = that settle first keeps every dependent commit under an independent keeper ref
+  // (refs/rainver/source-keepers/, which no release list can name), then settles and restores the
+  // shared name in the same operation; a shared `sources` ref is deleted only by a fence-marked request.
+  return platform==='win32'?undefined:{version:2,reclaim:4};
 }
 
 export function probeVersion(bin: string, timeoutMs = 4000, options: { args?: string[]; env?: NodeJS.ProcessEnv; cwd?: string } = {}): Promise<string | null> {
@@ -304,5 +320,6 @@ export async function detectCapabilities(
     runtimes.push(bin);
     versions[bin] = version;
   }
-  return { runtimes, versions, installations, workspace_read_only:await probeReadOnlyWorkspace() };
+  const workspaceCapability=executionWorkspaceCapability();
+  return { runtimes, versions, installations, ...(workspaceCapability?{execution_workspaces:workspaceCapability,native_workspace_integration:true}:{}), workspace_read_only:await probeReadOnlyWorkspace() };
 }

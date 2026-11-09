@@ -587,12 +587,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     executable: { command: "opencode", allow_path_override: true },
     distribution: { registry_id: "opencode" },
     invocation: {
-      headless_command_template: [
-        "{executable}",
-        "acp",
-        "--cwd",
-        "{sandbox_cwd}",
-      ],
+      headless_command_template: ["{executable}", "acp"],
       protocol: "acp",
     },
     credentials: {

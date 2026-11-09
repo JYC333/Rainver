@@ -1,3 +1,5 @@
+import {checkpointWorkspaceRun} from "../hosts/executionWorkspaceJobs.js";
+import {ExecutionWorkspaceRefSchema} from "@rainver/protocol";
 import { readOnlyWorkspaceHostRefusal } from "./workspaceAccessPolicy.js";
 import { isAbsolute, relative as relativePath, resolve, sep } from "node:path";
 import type {
@@ -396,6 +398,7 @@ export interface RunExecutionInput extends RunExecuteRequest {
   text_delta_sink?: (delta: string) => void;
   invocation_delivery?: InvocationDelivery;
   invocation_attempts?: RunInvocationAttemptLifecycle;
+  workspace_reply_sink?:(finish:(gate:{allowed:boolean;reason?:string;deadline_signal?:AbortSignal})=>Promise<RunAdapterResultEnvelope>,release?:()=>void)=>void;
   /** Canonical server-resolved attachment mounts for a server Host launch. */
   workspace_mounts?: Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }>;
   /** Set by `executeRun` from `preparedRuntime.execution_port`. `invokeAdapterUnbounded` reads it to send a `local_cli` run to `executeRemoteHostCliAdapter`. Do not add a server-process CLI executor for that run. */
@@ -478,7 +481,7 @@ export { verificationTarget as verificationTargetForTest };
 function verificationTarget(
   port: HostExecutionPort | null | undefined,
   run?: Pick<RunRecord, "runtime_key" | "model_override_json" | "runtime_profile_snapshot_json" | "contract_snapshot_json">
-    & Partial<Pick<RunRecord, "run_type" | "required_sandbox_level">>,
+    & Partial<Pick<RunRecord, "run_type" | "required_sandbox_level">> & {execution_workspace?:import("@rainver/protocol").ExecutionWorkspaceRef;execution_workspace_access?:import("@rainver/protocol").HostLaunchWorkspaceAccess[]},
 ): VerificationTarget | null {
   if (!port?.hostId) return null;
   // An execution Task Run's change is in its Task's worktree, which the daemon
@@ -487,9 +490,10 @@ function verificationTarget(
   const workspace = withTaskWorktree(workspaceForVerification(port) ?? undefined, port.workspaceLocationId ?? null, run ?? {});
   return {
     host_id: port.hostId,
+    ...(run?.execution_workspace_access?{workspace_access:run.execution_workspace_access}:{}),
     workspace_location_id: port.workspaceLocationId ?? null,
     ...(run?.runtime_key ? {
-      runtime_key: run.runtime_key,
+      runtime_tree_key: run.runtime_key,
       installation: dispatchInstallation(run),
     } : {}),
     // The same resolution the launch gets: a verifier asks its questions in
@@ -688,6 +692,7 @@ export class RunOrchestrationService {
     }
 
     let executionLockHeld = true;
+    let workspaceReplyClose:(()=>void)|undefined;
     let step: RunStepRecord | null = null;
     let preparedRuntime: PreparedRuntimeContext | null = null;
     let dependencyWaited = false;
@@ -884,6 +889,7 @@ export class RunOrchestrationService {
       await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,run);
       await (await import('../informationDigest/briefing/settlement.js')).assertBriefingDispatch(this.config, run);
       await (await import('../prompts/reading/dispatch.js')).assertReadingDispatch(this.config,run);
+      await (await import('../knowledgePromotion/extractionDispatch.js')).assertKnowledgeExtractionDispatch(this.config,run);
       const running = await this.repository.markRunRunning({
         run_id: run.id,
         space_id: run.space_id,
@@ -1039,6 +1045,7 @@ export class RunOrchestrationService {
       await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,effectiveRun);
       await (await import('../informationDigest/briefing/settlement.js')).assertBriefingDispatch(this.config, effectiveRun);
       await (await import('../prompts/reading/dispatch.js')).assertReadingDispatch(this.config,effectiveRun);
+      await (await import('../knowledgePromotion/extractionDispatch.js')).assertKnowledgeExtractionDispatch(this.config,effectiveRun);
       preparedRuntime = await this.prepareRuntimeContext(
         effectiveRun,
         effectiveInput,
@@ -1071,11 +1078,13 @@ export class RunOrchestrationService {
         });
         return { run_id: effectiveRun.id, status: "cancelled", error_code: "run_cancelled" };
       }
+      let workspaceReply:((gate:{allowed:boolean;reason?:string;deadline_signal?:AbortSignal})=>Promise<RunAdapterResultEnvelope>)|undefined;
       let adapterResult: RunAdapterResultEnvelope;
       try {
         await (await import('../sources/index.js')).assertMaterialProcessingDispatch(this.config,effectiveRun);
         await (await import('../informationDigest/briefing/settlement.js')).assertBriefingDispatch(this.config, effectiveRun);
       await (await import('../prompts/reading/dispatch.js')).assertReadingDispatch(this.config,effectiveRun);
+      await (await import('../knowledgePromotion/extractionDispatch.js')).assertKnowledgeExtractionDispatch(this.config,effectiveRun);
         adapterResult = await this.invokeAdapter(
           effectiveRun,
           {
@@ -1083,6 +1092,7 @@ export class RunOrchestrationService {
             invocation_delivery: preparedRuntime.invocation_delivery ?? undefined,
             invocation_attempts: preparedRuntime.invocation_attempts ?? undefined,
             execution_port: preparedRuntime.execution_port,
+            workspace_reply_sink:(finish,release)=>{workspaceReply=finish;workspaceReplyClose=release},
           },
         );
       } catch (error) {
@@ -1103,7 +1113,7 @@ export class RunOrchestrationService {
         throw error;
       }
       adapterResult = withCliUsageDiagnostics(adapterResult, preparedRuntime.invocation_delivery);
-      if (preparedRuntime.invocation_delivery && preparedRuntime.invocation_attempts) {
+      if (!workspaceReply&&preparedRuntime.invocation_delivery && preparedRuntime.invocation_attempts) {
         await preparedRuntime.invocation_attempts.acknowledge(preparedRuntime.invocation_delivery, adapterResult);
         await preparedRuntime.invocation_attempts.finalize(
           preparedRuntime.invocation_delivery,
@@ -1153,9 +1163,10 @@ export class RunOrchestrationService {
       }
       await this.appendRuntimeSemanticEvents(effectiveRun, adapterResult);
       const executionIdentity = input.job_id ?? step?.id ?? effectiveRun.id;
-      const completedAt = adapterResult.completed_at ?? new Date().toISOString();
-      const adapterTerminalStatus = terminalStatusFromAdapter(adapterResult);
+      let completedAt = adapterResult.completed_at ?? new Date().toISOString();
+      let adapterTerminalStatus = terminalStatusFromAdapter(adapterResult);
       const currentAfterAdapter = await this.repository.getRun(running.space_id, running.id);
+      if(workspaceReply&&currentAfterAdapter&&['waiting_for_review','waiting_for_dependency'].includes(currentAfterAdapter.status)&&preparedRuntime.invocation_delivery&&preparedRuntime.invocation_attempts){await preparedRuntime.invocation_attempts.acknowledge(preparedRuntime.invocation_delivery,adapterResult);await preparedRuntime.invocation_attempts.finalize(preparedRuntime.invocation_delivery,adapterResult.error_code??null);}
       // A parked turn is not a free turn. The ACP prompt that produced the
       // delegation or the authorization request spent tokens before the Run
       // stopped, and the Run resumes on the same cost cap and quota, so meter
@@ -1176,6 +1187,11 @@ export class RunOrchestrationService {
             vendor_session_id: parkedSession,
           });
         }
+      }
+      if ((currentAfterAdapter?.status === "waiting_for_review" || currentAfterAdapter?.status === "waiting_for_dependency")
+        && recordValue(adapterResult.metadata_json).execution_workspace && this.config.databaseUrl) {
+        // Freeze a yielded parent's actual files before any child is admitted.
+        await checkpointWorkspaceRun(getDbPool(this.config.databaseUrl), running.id, running.space_id,undefined,this.config.workspaceRoot);
       }
       // A tool call mid-run (e.g. `authorization.request`) can pause the Run
       // to `waiting_for_review` transactionally, independent of the adapter's
@@ -1210,6 +1226,7 @@ export class RunOrchestrationService {
           skip_reason: "run_waiting_for_dependency",
         };
       }
+      const workspaceRepair=Boolean(recordValue(effectiveRun.contract_snapshot_json).workspace_integration_id);
       let verificationResults: VerificationResultRecord[] = [];
       let semanticFailure = semanticRunFailure(adapterResult, []);
       let validationStarted = false;
@@ -1224,11 +1241,14 @@ export class RunOrchestrationService {
             context_taint_json: currentAfterAdapter.context_taint_json,
           }
         : effectiveRun;
+      const workspaceInfo=(recordValue(adapterResult.metadata_json).execution_workspace??recordValue(adapterResult.metadata_json).execution_workspace_ref) as {id?:unknown;generation?:unknown;start_commit?:string}|undefined;
+      const ref=workspaceInfo?ExecutionWorkspaceRefSchema.safeParse(workspaceInfo && {id:workspaceInfo.id,generation:workspaceInfo.generation,...((workspaceInfo as {integration_id?:string}).integration_id?{integration_id:(workspaceInfo as {integration_id?:string}).integration_id}:{})}):null;
+      if(ref?.success)Object.assign(materializationRun,{execution_workspace:ref.data,execution_workspace_access:recordValue(adapterResult.metadata_json).execution_workspace_access??[],execution_workspace_location:recordValue(adapterResult.metadata_json).execution_workspace_location});
       const materialization = { items: [], errors: [] } as {
         items: RunMaterializationItemSummary[];
         errors: string[];
       };
-      if (this.adapters.verificationEngine && adapterResult.success && !semanticFailure) {
+      if (this.adapters.verificationEngine && adapterResult.success && !semanticFailure && !workspaceRepair) {
         await this.appendRunEventBestEffort({
           run_id: running.id,
           space_id: running.space_id,
@@ -1240,15 +1260,16 @@ export class RunOrchestrationService {
         validationStarted = true;
         verificationResults = await this.adapters.verificationEngine.verify({
           run: materializationRun,
+          workspace_publication_pending:recordValue(adapterResult.metadata_json).workspace_publication_pending===true,
           execution_target: verificationTarget(preparedRuntime?.execution_port, materializationRun),
-          base_commit_sha: preparedRuntime?.base_commit_sha ?? taskWorktreeOf(adapterResult)?.start_commit ?? null,
+          base_commit_sha: preparedRuntime?.base_commit_sha ?? taskWorktreeOf(adapterResult)?.start_commit ?? workspaceInfo?.start_commit ?? null,
           output_json: adapterResult.output_json,
           materialization_items: [],
           host_kind: preparedRuntime?.execution_port?.hostKind,
         }, "pre_materialization");
         semanticFailure = semanticRunFailure(adapterResult, verificationResults);
       }
-      if (adapterResult.success && !semanticFailure) {
+      if (adapterResult.success && !semanticFailure && !workspaceRepair) {
         if (this.adapters.materializer) {
           const persisted = await this.adapters.materializer.materializeAdapterResult({
             run: materializationRun,
@@ -1273,8 +1294,9 @@ export class RunOrchestrationService {
         if (this.adapters.verificationEngine) {
           const postMaterialization = await this.adapters.verificationEngine.verify({
             run: materializationRun,
+            workspace_publication_pending:recordValue(adapterResult.metadata_json).workspace_publication_pending===true,
             execution_target: verificationTarget(preparedRuntime?.execution_port, materializationRun),
-            base_commit_sha: preparedRuntime?.base_commit_sha ?? taskWorktreeOf(adapterResult)?.start_commit ?? null,
+            base_commit_sha: preparedRuntime?.base_commit_sha ?? taskWorktreeOf(adapterResult)?.start_commit ?? workspaceInfo?.start_commit ?? null,
             output_json: adapterResult.output_json,
             materialization_items: materialization.items,
             host_kind: preparedRuntime?.execution_port?.hostKind,
@@ -1322,8 +1344,18 @@ export class RunOrchestrationService {
         };
       }
       const toolDegradation = adapterResult.success
-        ? await this.governedToolDegradation(running)
+        ? await this.governedToolDegradation(running,Boolean(workspaceReply)&&recordValue(adapterResult.metadata_json).workspace_native_settled===true)
         : null;
+      if(workspaceReply){
+        // Tool degradation and partial materialization do not withhold the
+        // answer: the Run settles as `degraded` below, exactly as a Run without
+        // a workspace reply does, and the person still receives the reply.
+        const finished=await workspaceReply({allowed:adapterResult.success&&!semanticFailure,reason:semanticFailure?.error_code??adapterResult.error_code??undefined});
+        adapterResult={...finished,output_json:{...recordValue(adapterResult.output_json),...recordValue(finished.output_json)} as RunAdapterResultEnvelope['output_json']};
+        completedAt=adapterResult.completed_at??new Date().toISOString();adapterTerminalStatus=terminalStatusFromAdapter(adapterResult);
+        if(Array.isArray(recordValue(adapterResult.metadata_json).workspace_integrations)&&this.config.databaseUrl)verificationResults=await new PgRunRepository(getDbPool(this.config.databaseUrl)).listVerificationResults(running.space_id,running.id);
+        if(preparedRuntime.invocation_delivery&&preparedRuntime.invocation_attempts){await preparedRuntime.invocation_attempts.acknowledge(preparedRuntime.invocation_delivery,adapterResult);await preparedRuntime.invocation_attempts.finalize(preparedRuntime.invocation_delivery,adapterResult.error_code??null);}
+      }
       const terminalStatus = semanticFailure
         ? "failed"
         : adapterResult.success && (materialization.errors.length > 0 || toolDegradation)
@@ -1402,6 +1434,11 @@ export class RunOrchestrationService {
               verificationResults,
             )),
             ...(taskBranch ? { task_branch: taskBranch } : {}),
+            ...(workspaceInfo ? { execution_workspace: workspaceInfo } : {}),
+            ...(recordValue(effectiveRun.contract_snapshot_json).execution_workspace_version===1?{
+              execution_workspace_location:recordValue(adapterResult.metadata_json).execution_workspace_location??null,
+              execution_workspace_access:recordValue(adapterResult.metadata_json).execution_workspace_access??[],
+            }:{}),
           },
         }),
         error_json: semanticFailureErrorJson(adapterResult, semanticFailure),
@@ -1643,6 +1680,7 @@ export class RunOrchestrationService {
         error: message,
       };
     } finally {
+      workspaceReplyClose?.();
       await releaseExecutionAuthority();
       if (dependencyWaited) {
         try {
@@ -2418,18 +2456,26 @@ export class RunOrchestrationService {
     // no process registered for it to reach; the invocation's own cancel
     // signal is what keeps that dispatch from launching afterwards.
     const invocation = this.adapters.processRegistry?.openInvocation?.(run.id);
-    const cancellable = { ...input, cancel_signal: invocation?.signal };
+    const started=Date.now(),limit=explicitRunTimeLimit(run.contract_snapshot_json,input.timeout_ms);
+    let deferred=false;
+    const cancellable:RunExecutionInput={...input,cancel_signal:invocation?.signal,
+      workspace_reply_sink:input.workspace_reply_sink?(finish)=>{
+        deferred=true;
+        input.workspace_reply_sink!(async gate=>{
+          if(!limit)return finish(gate);
+          const remaining=Math.max(1,limit.ms-(Date.now()-started));
+          return invokeWithinTimeLimit({run,limit:{...limit,ms:remaining,seconds:Math.max(1,Math.ceil(remaining/1000))},invoke:deadline=>finish({...gate,deadline_signal:deadline}),stop:()=>this.executionControl.stop(run)});
+        },()=>invocation?.close());
+      }:undefined};
     try {
-      const limit = explicitRunTimeLimit(run.contract_snapshot_json, input.timeout_ms);
       if (!limit) return await this.invokeAdapterUnbounded(run, cancellable);
       return await invokeWithinTimeLimit({
-        run,
-        limit,
+        run,limit,
         invoke: (deadline) => this.invokeAdapterUnbounded(run, { ...cancellable, deadline_signal: deadline }),
         stop: () => this.executionControl.stop(run),
       });
     } finally {
-      invocation?.close();
+      if(!deferred)invocation?.close();
     }
   }
 
@@ -2464,6 +2510,7 @@ export class RunOrchestrationService {
           deadline_signal: input.deadline_signal,
           cancel_signal: input.cancel_signal,
           runtime_event_sink: input.runtime_event_sink,
+          workspace_reply_sink:input.workspace_reply_sink,
           // Persisted as frames arrive, not batched. The thread's live read model.
           // Serialized per run (see createSerializedThreadEventSink) since stdout
           // and stderr chunks can arrive back-to-back through un-awaited
@@ -2649,6 +2696,11 @@ export class RunOrchestrationService {
     adapterResult: RunAdapterResultEnvelope,
     terminalStatus: "succeeded" | "failed" | "degraded" | "cancelled" | "orphaned",
   ): Promise<TaskBranchRecord | null> {
+    if(recordValue(run.contract_snapshot_json).workspace_integration_id)return null;
+    if(recordValue(adapterResult.metadata_json).execution_workspace && this.config.databaseUrl){
+      await checkpointWorkspaceRun(getDbPool(this.config.databaseUrl),running.id,running.space_id,undefined,this.config.workspaceRoot).catch(error=>this.appendRunEventBestEffort({run_id:running.id,space_id:running.space_id,event_type:'warning',status:'warning',summary:'Workspace checkpoint is pending durable retry',error_message:String(error)}));
+      return null;
+    }
     const settler = this.adapters.taskRunSettler;
     const taskId = executionTaskId(run);
     const target = verificationTarget(port, run);
@@ -2833,6 +2885,7 @@ export class RunOrchestrationService {
    */
   private async governedToolDegradation(
     run: RunRecord,
+    recoveredWorkspaceOperation=false,
   ): Promise<{ tool_names: string[]; error_codes: string[] } | null> {
     const listRunEvents = this.repository.listRunEvents?.bind(this.repository);
     if (!listRunEvents) return null;
@@ -2846,7 +2899,14 @@ export class RunOrchestrationService {
     const refused = events.filter((event) =>
       event.event_type === "action_completed"
       && event.status === "failed"
-      && (event.attempt_number ?? 0) === latestAttempt);
+      && (event.attempt_number ?? 0) === latestAttempt
+      // Revision/input mistakes (a stale revision, a bad input, a change set
+      // id this Run cannot see) are ordinary Agent recovery only after the
+      // same native session actually completed the requested workspace effect.
+      // Permission denials and unrelated failures remain governance failures.
+      && !(recoveredWorkspaceOperation
+        && ['workspace.change.get','workspace.change.complete','workspace.integration.retry','workspace.integration.verification.configure'].includes(String(recordValue(event.metadata_json).action_id))
+        && ['operation_conflict','operation_invalid_input','operation_not_found'].includes(String(event.error_code??recordValue(event.metadata_json).error_code))));
     if (refused.length === 0) return null;
     const unique = (values: unknown[]): string[] =>
       [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))];

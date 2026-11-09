@@ -1,3 +1,4 @@
+import {ProjectManagementMutationError} from './managementErrors.js';
 import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
@@ -555,7 +556,7 @@ export class PgProjectRepository {
    * authority only. The draft row is locked and its version compared inside
    * the transaction, so a draft saved after the approver read it is a 409
    * rather than content nobody reviewed going public. The retrieval
-   * projection is refreshed after commit from the new snapshot.
+   * projection is refreshed in the same transaction as the publication.
    */
   async publishPublicSummary(
     identity: SpaceUserIdentity,
@@ -575,7 +576,7 @@ export class PgProjectRepository {
       const row = draft.rows[0];
       if (!row) throw new HttpError(404, "Project public summary draft not found");
       if (Number(row.draft_version) !== draftVersion) {
-        throw new HttpError(409, "The draft changed since it was reviewed; reload and review the current draft", {
+        throw new ProjectManagementMutationError(409, "The draft changed since it was reviewed; reload and review the current draft", {
           detail: "The draft changed since it was reviewed; reload and review the current draft",
           code: "project_public_summary_draft_changed",
           current_draft_version: Number(row.draft_version),
@@ -619,16 +620,16 @@ export class PgProjectRepository {
           now,
         ],
       );
+      await new PgProjectRepository(tx).reindexPublicSummary(identity.spaceId, projectId);
       return result.rows[0]!;
     });
-    await this.reindexPublicSummary(identity.spaceId, projectId);
     return projectPublicSummaryToOut(published);
   }
 
   /**
    * Takes the snapshot down. Owner-level authority only. The draft is left
    * where it is, so a later publish can start from it; the projection row is
-   * removed after commit, so search and the assistant stop serving it.
+   * removed in that same transaction, so search and the assistant stop serving it.
    */
   async revokePublicSummary(identity: SpaceUserIdentity, projectId: string): Promise<void> {
     await withQueryableTransaction(this.db, async (tx) => {
@@ -638,8 +639,8 @@ export class PgProjectRepository {
         [identity.spaceId, projectId],
       );
       if ((removed.rowCount ?? 0) === 0) throw new HttpError(404, "Project public summary is not published");
+      await new PgProjectRepository(tx).reindexPublicSummary(identity.spaceId, projectId);
     });
-    await this.reindexPublicSummary(identity.spaceId, projectId);
   }
 
   private async loadDraft(spaceId: string, projectId: string): Promise<ProjectPublicSummaryDraftRow | null> {
@@ -683,31 +684,29 @@ export class PgProjectRepository {
     return rows.rows.map(projectMemberToOut);
   }
 
+  /** Live roster admission shared by the command and replay paths. Caller holds the audience fence. */
+  async authorizeMemberChange(identity: SpaceUserIdentity, projectId: string, userId: string, role?: string): Promise<void> {
+    const project = await this.requireProjectRow(identity.spaceId, projectId);
+    await this.requireProjectAdmin(identity, project);
+    if (role !== undefined) assertCanGrantRole(PROJECT_ROLE_LADDER, await this.grantableProjectRole(identity, project), role);
+    await this.assertMayReplaceRole(identity, project, userId);
+    if (role !== undefined && !(await this.db.query("SELECT id FROM space_memberships WHERE space_id=$1 AND user_id=$2 AND status='active' FOR SHARE", [identity.spaceId,userId])).rows.length)
+      throw new ProjectManagementMutationError(422, "user is not an active member of this space");
+  }
+
   async addMember(
     identity: SpaceUserIdentity,
     projectId: string,
     body: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    const project = await this.requireProjectRow(identity.spaceId, projectId);
-    await this.requireProjectAdmin(identity, project);
     const userId = requiredString(body.user_id, "user_id");
     const role = optionalString(body.role) ?? "member";
-    assertCanGrantRole(PROJECT_ROLE_LADDER, await this.grantableProjectRole(identity, project), role);
-    // Changing someone's role gives up their current one, so it takes the same
-    // standing: a Space admin does not demote the Project's owner.
-    await this.assertMayReplaceRole(identity, project, userId);
-    // Only an active member of the space can be added to one of its projects.
-    const member = await this.db.query<{ one: number }>(
-      `SELECT 1 AS one FROM space_memberships
-        WHERE space_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
-      [identity.spaceId, userId],
-    );
-    if (!member.rows[0]) throw new HttpError(422, "user is not an active member of this space");
     const now = new Date().toISOString();
     // A membership change is serialized with any decision resting on the
     // Project's whole current audience (`lockProjectAudience`).
     const result = await withQueryableTransaction(this.db, async (tx) => {
       await lockProjectAudienceForChange(tx, identity.spaceId, projectId);
+      await new PgProjectRepository(tx).authorizeMemberChange(identity, projectId, userId, role);
       return tx.query<ProjectMemberRow>(
         `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, 'active', $6, $6)
@@ -721,13 +720,9 @@ export class PgProjectRepository {
   }
 
   async removeMember(identity: SpaceUserIdentity, projectId: string, userId: string): Promise<void> {
-    const project = await this.requireProjectRow(identity.spaceId, projectId);
-    await this.requireProjectAdmin(identity, project);
-    // Removing someone gives up the role they hold, so it takes the standing to
-    // grant it — otherwise remove-and-re-add would demote anyone.
-    await this.assertMayReplaceRole(identity, project, userId);
     await withQueryableTransaction(this.db, async (tx) => {
       await lockProjectAudienceForChange(tx, identity.spaceId, projectId);
+      await new PgProjectRepository(tx).authorizeMemberChange(identity, projectId, userId);
       await tx.query(
         `DELETE FROM project_members WHERE space_id = $1 AND project_id = $2 AND user_id = $3`,
         [identity.spaceId, projectId, userId],
@@ -953,14 +948,7 @@ export class PgProjectRepository {
   }
 
   private async reindexPublicSummary(spaceId: string, projectId: string): Promise<void> {
-    try {
-      await new RetrievalProjectionService(this.db, projectRetrievalRegistry)
-        .reindex(spaceId, "project_public_summary", projectId);
-    } catch (error) {
-      process.stderr.write(
-        `[projects.retrieval] public summary reindex failed: ${String((error as Error)?.message ?? error)}\n`,
-      );
-    }
+    await new RetrievalProjectionService(this.db, projectRetrievalRegistry).reindex(spaceId, "project_public_summary", projectId);
   }
 
   private async countVisible(
@@ -1011,7 +999,7 @@ function canApproveProjectContext(ctx: WritableContext, userId: string, row: Pro
  */
 function rethrowActiveNameConflict(error: unknown): never {
   if (isUniqueViolation(error, "uq_projects_space_name_active")) {
-    throw new HttpError(409, "An active Project with this name already exists in this Space");
+    throw new ProjectManagementMutationError(409, "An active Project with this name already exists in this Space");
   }
   throw error;
 }
@@ -1149,7 +1137,7 @@ function stringArray(value: unknown): string[] {
 }
 
 /** Exact Workflow Run closure of Project archive, discovered before Project locks. */
-async function projectArchiveRunRefs(db:Queryable,spaceId:string,projectId:string){
+export async function projectArchiveRunRefs(db:Queryable,spaceId:string,projectId:string){
  return (await db.query<{id:string;space_id:string}>(`SELECT DISTINCT run_id AS id,$1::varchar AS space_id FROM (
    SELECT e.root_run_id AS run_id FROM workflow_executions e JOIN automations a ON a.id=e.automation_id AND a.space_id=e.space_id WHERE e.space_id=$1 AND a.project_id=$2
    UNION ALL SELECT link.run_id FROM workflow_execution_node_runs link JOIN workflow_execution_nodes n ON n.id=link.node_id AND n.space_id=link.space_id

@@ -253,3 +253,7 @@ it('declares curated evidence and Candidate commands as strict human-only core o
  expect(OPERATION_SCHEMA_TABLE['knowledge.evidence.add'].input.parse({item_id:'i',source_id:'s'})).toMatchObject({quote:null,note:null,locator:null,confidence:null});
  expect(OPERATION_SCHEMA_TABLE['knowledge.candidate.from_note'].input.safeParse({project_id:'p',note_id:'n',candidate_kind:'concept',proposed_title:'T',proposed_content:'C',visibility:'space_shared'}).success).toBe(false);
 });
+
+it('keeps Candidate extraction a strict human-only queued intent with no source body in its receipt',()=>{
+ const definition=SYSTEM_ACTION_REGISTRY.find(d=>d.id==='knowledge.candidate.extract')!;expect(definition.allowed_actor_types).toEqual(['user']);expect(definition.visibility.has('agent_tool')).toBe(false);expect(definition.execution?.tx).toBe('core_owned');const schema=OPERATION_SCHEMA_TABLE['knowledge.candidate.extract'];expect(schema.input.parse({project_id:'p',source_kind:'note',source_id:'n',agent_id:'a'})).toMatchObject({runtime_profile_id:null});expect(schema.input.safeParse({project_id:'p',source_kind:'note',source_id:'n',agent_id:'a',prompt:'untrusted'}).success).toBe(false);expect(schema.output.safeParse({run_id:'r',space_id:'s',status:'succeeded'}).success).toBe(false);
+});

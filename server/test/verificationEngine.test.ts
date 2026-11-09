@@ -81,6 +81,21 @@ class VerificationDb implements Queryable {
 }
 
 describe("verification engine", () => {
+  it("distinguishes a group of commands that could not start from failed tests", async () => {
+    const engine = new PgVerificationEngine(new VerificationDb(), undefined, {
+      async run() { return { returncode: 1, stdout: '', stderr: 'Managed runtime binding requires both runtime key and installation.', timed_out: false, failure_code: 'sandbox_runner_unavailable' as const }; },
+    });
+    const results = await engine.verify({
+      run: run({ contract_snapshot_json: { acceptance_criteria_json: { checks: [
+        { type: 'test', command: ['pnpm', 'test:unit'] }, { type: 'test', command: ['pnpm', 'test:integration'] },
+      ] } } }),
+      execution_target: { host_id: 'host-1' }, base_commit_sha: null, output_json: {}, materialization_items: [],
+    });
+    expect(results[0]).toMatchObject({ verifier_type: 'test', status: 'error' });
+    expect(results[0]!.summary).toContain('2/2 test checks could not run');
+    expect(results[0]!.summary).toContain('requires both runtime key and installation');
+  });
+
   it("normalizes contract checks and required outputs into deterministic declarations", () => {
     const current = run({
       contract_snapshot_json: {
@@ -447,4 +462,36 @@ describe("verification engine", () => {
     // file would turn an offline machine into a failing build.
     expect(results[0]).toMatchObject({ verifier_type: "file_exists", status: "error" });
   });
+});
+
+// Quoted verification program text is argv data, not a shell command chain.
+it('executes quoted Node verification code on a real process without shell interpretation',async()=>{
+ const {verifyTaskWorkspace}=await import('../src/modules/runs/verification/engine.js');
+ const code='const values=[1,2]; if(values.length!==2 || !(1 < 2 && 2 > 1)) process.exit(1); console.log("verified");';
+ const calls:string[][]=[];
+ const result=await verifyTaskWorkspace({getPlan:async()=>({...emptyPlan(),profile_test_commands:[process.execPath+" --input-type=module -e '"+code+"'"]})},{run:async input=>{calls.push(input.command);const [file,...args]=input.command;return {returncode:0,stdout:execFileSync(file,args,{encoding:'utf8'}),stderr:'',timed_out:false}}},{run:run(),target:{host_id:'host'},base_commit_sha:'a'.repeat(40)});
+ expect(result.status).toBe('passed');expect(calls).toEqual([[process.execPath,'--input-type=module','-e',code]]);
+});
+it.for([
+ ['node -e \"process.exit(0);\"',['node','-e','process.exit(0);']],
+ ['pnpm test --testNamePattern=\"two words\" --maxWorkers=1',['pnpm','test','--testNamePattern=two words','--maxWorkers=1']],
+ ['python -c \"print(\\\"ok\\\")\"',['python','-c','print(\"ok\")']],
+ ['pnpm test src/**/*.test.ts',['pnpm','test','src/**/*.test.ts']],
+] as const)('preserves quoted verification arguments: %s',async([input,expected])=>{const {verificationCommandArgv}=await import('../src/modules/runs/verification/commandArgv.js');expect(verificationCommandArgv(input)).toEqual(expected)});
+it.for(['pnpm test && pnpm build','pnpm test; pnpm build','pnpm test | cat','pnpm test > result','pnpm test # ignored','MODE=test pnpm test','node -e \"$HOME\"','node -e \"$(id)\"','node -e \"unterminated',"node -e 'unterminated",'pnpm test -- -t \"\"','pnpm test\npnpm build'])('refuses shell interpretation and malformed verification: %s',async command=>{const {verificationCommandArgv}=await import('../src/modules/runs/verification/commandArgv.js');expect(verificationCommandArgv(command)).toBeNull()});
+it('keeps explicit argv literal, including JavaScript metacharacters',async()=>{const {verificationCommandArgv}=await import('../src/modules/runs/verification/commandArgv.js');const argv=['node','-e','console.log("$HOME; a && b | c < d > e");'];expect(verificationCommandArgv(argv)).toEqual(argv)});
+
+it('reports stdout errors ahead of stderr warnings and gives repairs bounded redacted output',async()=>{
+ const {verifyTaskWorkspace}=await import('../src/modules/runs/verification/engine.js');
+ const result=await verifyTaskWorkspace({getPlan:async()=>({...emptyPlan(),profile_test_commands:['pnpm test']})},{run:async()=>({returncode:1,stdout:'Scope: all projects\n[ERR_SQLITE_ERROR] unable to open database file\napi_key=super-secret-value\n',stderr:'[WARN] Directory contains the path delimiter character (:).',timed_out:false})},{run:run(),target:{host_id:'host'},base_commit_sha:'a'.repeat(40),include_diagnostics:true});
+ expect(result.checks[0].summary).toContain('[ERR_SQLITE_ERROR] unable to open database file');
+ expect(result.checks[0].summary).not.toContain('[WARN]');
+ expect(result.checks[0].diagnostics).toContain('stdout:');expect(result.checks[0].diagnostics).toContain('stderr:');
+ expect(result.checks[0].diagnostics).toContain('[REDACTED_SECRET]');expect(JSON.stringify(result)).not.toContain('super-secret-value');
+});
+
+it('keeps ordinary Task verification free of private command diagnostics',async()=>{
+ const {verifyTaskWorkspace}=await import('../src/modules/runs/verification/engine.js');
+ const result=await verifyTaskWorkspace({getPlan:async()=>({...emptyPlan(),profile_test_commands:['pnpm test']})},{run:async()=>({returncode:1,stdout:'Error: failed',stderr:'private command output',timed_out:false})},{run:run(),target:{host_id:'host'},base_commit_sha:'a'.repeat(40)});
+ expect(result.checks[0]).not.toHaveProperty('diagnostics');
 });

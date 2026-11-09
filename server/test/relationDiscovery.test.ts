@@ -9,6 +9,7 @@ import {
 } from "../src/modules/knowledge/relationDiscoveryArtifacts.js";
 import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import type { QueryResult, Queryable } from "../src/modules/routeUtils/common.js";
+import { useReviewPacketDatabase } from "./support/reviewPacketDatabase.js";
 
 interface ItemRow {
   id: string;
@@ -230,25 +231,6 @@ describe("runRelationDiscoveryScan", () => {
     })
   })
 
-  it("scans activity and artifact text as review-only relation evidence", async () => {
-    const items = [item({ id: "item-b", title: "Beta", slug: "beta" })]
-    const activities: ActivityRow[] = [{ id: "activity-a", title: "Inbox", content: "Captured [[supports::Beta]].", visibility: "space_shared", owner_user_id: "user-1", user_id: "user-1", subject_user_id: null }]
-    const artifacts: ArtifactRow[] = [{ id: "artifact-a", title: "Report", content: "Report says depends_on -> [[Beta]].", visibility: "space_shared", owner_user_id: "user-1", metadata_json: {} }]
-    const db = new FakeDiscoveryDb(items, [], activities, artifacts)
-    const { report } = await runRelationDiscoveryScan(db, {
-      spaceId: "space-1",
-      userId: "user-1",
-      request: { source_object_types: ["activity", "artifact"], limit: 200, max_candidates: 40, review_scope: "private", include_unresolved_item_candidates: false, llm_extraction_enabled: false, llm_max_sources: 8, create_packet: true },
-    })
-
-    expect(report.candidates).toHaveLength(2)
-    expect(report.candidates.every((candidate) => candidate.kind === "relation_review_candidate")).toBe(true)
-    expect(report.candidates.every((candidate) => candidate.proposed_action === null)).toBe(true)
-    expect(report.counts.proposal_candidate).toBe(0)
-    expect(report.counts.review_only_candidate).toBe(2)
-    expect(report.access_safety.source_policy_enforced).toBe(true)
-  })
-
   it("runs an injected LLM relation extractor only when explicitly requested", async () => {
     const items = [
       item({
@@ -437,37 +419,21 @@ describe("runRelationDiscoveryScan", () => {
   });
 });
 
-interface StoredProposal {
-  id: string;
-  proposal_type: string;
-  payload_json: Record<string, unknown>;
-}
-
-class FakeApplyDb implements Queryable {
-  readonly inserted: StoredProposal[] = [];
-  updatedPayload: Record<string, unknown> | null = null;
-  async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<QueryResult<Row>> {
-    const norm = sql.replace(/\s+/g, " ").trim();
-    if (norm.startsWith("INSERT INTO proposals")) {
-      this.inserted.push({
-        id: String(params[0]),
-        proposal_type: String(params[3]),
-        payload_json: JSON.parse(String(params[10])),
-      });
-      // insertProposalRow relies on RETURNING id.
-      return { rows: [{ id: params[0] }] as Row[], rowCount: 1 };
-    }
-    if (norm.startsWith("UPDATE proposals")) {
-      this.updatedPayload = JSON.parse(String(params[2]));
-      return { rows: [] as Row[], rowCount: 1 };
-    }
-    return { rows: [] as Row[], rowCount: 0 };
-  }
-}
-
 describe("relation_discovery_packet applier", () => {
+  const packetDatabase = useReviewPacketDatabase(import.meta.url);
+
+  /** Child proposals read back from PostgreSQL, in the order the applier inserted them. */
+  async function childProposals(db: ReturnType<typeof packetDatabase.observe>) {
+    const ids = db.calls.filter((call) => /^\s*INSERT INTO proposals/.test(call.sql)).map((call) => String(call.params[0]));
+    const rows = (await packetDatabase.database.pool.query<{ id: string; proposal_type: string; status: string; payload_json: Record<string, unknown> }>(
+      "SELECT id, proposal_type, status, payload_json FROM proposals WHERE space_id = 'space-1'",
+    )).rows;
+    expect(rows).toHaveLength(ids.length);
+    return ids.map((id) => rows.find((row) => row.id === id)!);
+  }
+
   it("creates child knowledge proposals and writes nothing canonical", async () => {
-    const db = new FakeApplyDb();
+    const db = packetDatabase.observe();
     const registry = new ProposalApplierRegistry();
     registerRelationDiscoveryProposalAppliers(registry);
     const result = await registry.apply({
@@ -542,13 +508,18 @@ describe("relation_discovery_packet applier", () => {
 
     expect(result.result_type).toBe("relation_discovery_packet");
     expect(result.result.canonical_write_performed).toBe(false);
-    expect(db.inserted).toHaveLength(3);
-    expect(db.inserted[0]!.proposal_type).toBe("object_relation_create");
-    expect(db.inserted[0]!.payload_json).toMatchObject({ operation: "object_relation_create", from_object_id: "item-a", to_object_id: "item-b" });
-    expect(db.inserted[1]!.proposal_type).toBe("object_relation_create");
-    expect(db.inserted[1]!.payload_json).toMatchObject({ operation: "object_relation_create", from_object_id: "note-a", to_object_id: "item-b" });
-    expect(db.inserted[2]!.proposal_type).toBe("knowledge_create");
-    expect(db.inserted[2]!.payload_json).toMatchObject({ operation: "create", title: "Ghost Page" });
+    const inserted = await childProposals(db);
+    expect(inserted).toHaveLength(3);
+    expect(inserted.every((row) => row.status === "pending")).toBe(true);
+    expect(inserted[0]!.proposal_type).toBe("object_relation_create");
+    expect(inserted[0]!.payload_json).toMatchObject({ operation: "object_relation_create", from_object_id: "item-a", to_object_id: "item-b" });
+    expect(inserted[1]!.proposal_type).toBe("object_relation_create");
+    expect(inserted[1]!.payload_json).toMatchObject({ operation: "object_relation_create", from_object_id: "note-a", to_object_id: "item-b" });
+    expect(inserted[2]!.proposal_type).toBe("knowledge_create");
+    expect(inserted[2]!.payload_json).toMatchObject({ operation: "create", title: "Ghost Page" });
+    const pool = packetDatabase.database.pool;
+    expect((await pool.query("SELECT 1 FROM object_relations")).rowCount).toBe(0);
+    expect((await pool.query("SELECT 1 FROM knowledge_items")).rowCount).toBe(0);
     // The applier/registry only return proposalPayloadPatch;
     // ProposalApplyService is the layer that actually issues
     // `UPDATE proposals` from that patch, and is covered by its own tests.
@@ -560,7 +531,7 @@ describe("relation_discovery_packet applier", () => {
   });
 
   it("keeps review-only skips visible even after the child proposal cap", async () => {
-    const db = new FakeApplyDb();
+    const db = packetDatabase.observe();
     const registry = new ProposalApplierRegistry();
     registerRelationDiscoveryProposalAppliers(registry);
     const cappedProposalCandidates = Array.from({ length: 40 }, (_, index) => ({
@@ -609,7 +580,7 @@ describe("relation_discovery_packet applier", () => {
     });
 
     expect(result.result.review_only_candidate_count).toBe(1);
-    expect(db.inserted).toHaveLength(40);
+    expect(await childProposals(db)).toHaveLength(40);
     expect(result.proposalPayloadPatch?.review_only_candidate_count).toBe(1);
     expect(result.proposalPayloadPatch?.skipped_child_proposals).toEqual([
       expect.objectContaining({

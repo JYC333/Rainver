@@ -30,11 +30,12 @@ export function researchWorkflowProjection(options: {
   workflowAlias?: string;
   objectAlias?: string;
   viewerPlaceholder?: string;
+  includeOversight?: boolean;
 } = {}): { from: string; columns: string; visibilityPredicate: string } {
   const workflow = options.workflowAlias ?? "w";
   const object = options.objectAlias ?? "workflow_object";
   const threadVisibility = options.viewerPlaceholder
-    ? `AND ${contentReadSql("space_object", "thread_object", options.viewerPlaceholder)}`
+    ? `AND ${contentReadSql("space_object", "thread_object", options.viewerPlaceholder, {includeOversight:options.includeOversight})}${options.includeOversight===false?` AND ${contentAccessLevelSql({definition:contentResourceDefinition("space_object")!,alias:"thread_object",userExpr:options.viewerPlaceholder,includeOversight:false})}='full'`:''}`
     : "";
   return {
     from: `project_research_workflows ${workflow}
@@ -61,7 +62,7 @@ export function researchWorkflowProjection(options: {
       ${workflow}.started_by_user_id,${workflow}.started_run_id,
       ${object}.created_at,${object}.updated_at`,
     visibilityPredicate: options.viewerPlaceholder
-      ? `(${contentReadSql("space_object", object, options.viewerPlaceholder)} AND ${contentAccessLevelSql({definition:contentResourceDefinition("space_object")!,alias:object,userExpr:options.viewerPlaceholder})}='full' AND NOT EXISTS(SELECT 1 FROM object_relations guard_relation JOIN space_objects guard_thread ON guard_thread.id=guard_relation.to_object_id AND guard_thread.space_id=guard_relation.space_id WHERE guard_relation.space_id=${workflow}.space_id AND guard_relation.from_object_id=${workflow}.object_id AND guard_relation.link_type='about' AND guard_relation.status='active' AND guard_relation.metadata_json->>'relation_role'='primary_inquiry_thread' AND NOT ${threadReadableSql("guard_thread",options.viewerPlaceholder,"read_content")}))`
+      ? `(${contentReadSql("space_object", object, options.viewerPlaceholder, {includeOversight:options.includeOversight})} AND ${contentAccessLevelSql({definition:contentResourceDefinition("space_object")!,alias:object,userExpr:options.viewerPlaceholder,includeOversight:options.includeOversight})}='full' AND NOT EXISTS(SELECT 1 FROM object_relations guard_relation JOIN space_objects guard_thread ON guard_thread.id=guard_relation.to_object_id AND guard_thread.space_id=guard_relation.space_id WHERE guard_relation.space_id=${workflow}.space_id AND guard_relation.from_object_id=${workflow}.object_id AND guard_relation.link_type='about' AND guard_relation.status='active' AND guard_relation.metadata_json->>'relation_role'='primary_inquiry_thread' AND NOT ${options.includeOversight===false?`(${contentReadSql("space_object","guard_thread",options.viewerPlaceholder,{includeOversight:false})} AND ${contentAccessLevelSql({definition:contentResourceDefinition("space_object")!,alias:"guard_thread",userExpr:options.viewerPlaceholder,includeOversight:false})}='full')`:threadReadableSql("guard_thread",options.viewerPlaceholder,"read_content")}))`
       : "TRUE",
   };
 }

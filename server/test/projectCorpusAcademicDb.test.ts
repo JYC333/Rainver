@@ -556,15 +556,14 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
       [randomUUID(), SPACE, PROJECT, bindingId, CONNECTION, privateSourceItemId, now],
     );
 
-    const added = await repo().upsert(identity, PROJECT, { object_id: sharedObjectId });
-    expect(added.source_item).toBeNull();
-    const provenance = await db.pool.query<{ total: number }>(
-      `SELECT count(*)::int AS total
-         FROM project_corpus_item_sources
-        WHERE corpus_item_id = $1`,
-      [added.id],
-    );
-    expect(provenance.rows[0]!.total).toBe(0);
+    // A materialized Reference cannot launder an unreadable Source origin.
+    // The P5 operation uses the same global-origin gate as this legacy entry.
+    await expect(repo().upsert(identity, PROJECT, { object_id: sharedObjectId }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    expect((await db.pool.query<{total:number}>(
+      'SELECT count(*)::int total FROM project_corpus_items WHERE project_id=$1 AND object_id=$2',
+      [PROJECT,sharedObjectId],
+    )).rows[0].total).toBe(0);
   });
 
   it("rejects an API write that supplies more than one Corpus target", async () => {

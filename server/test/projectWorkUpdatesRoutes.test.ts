@@ -94,7 +94,7 @@ afterEach(() => {
 });
 
 async function post(body: unknown) {
-  return app!.inject({ method: "POST", url: `/api/v1/projects/${PROJECT}/updates`, payload: body as never });
+  return app!.inject({ method: "POST", url: `/api/v1/projects/${PROJECT}/updates`, payload: body as never, headers: {"idempotency-key":randomUUID()} });
 }
 
 describe("project updates routes", () => {
@@ -103,7 +103,7 @@ describe("project updates routes", () => {
     asUser(OWNER);
     const created = await post({ summary: "Standing up the pilot" });
     expect(created.statusCode).toBe(201);
-    expect(JSON.parse(created.body).id).toEqual(expect.any(String));
+    expect(JSON.parse(created.body).data.id).toEqual(expect.any(String));
 
     const listed = await app!.inject({ method: "GET", url: `/api/v1/projects/${PROJECT}/updates` });
     const page = JSON.parse(listed.body);
@@ -120,7 +120,7 @@ describe("project updates routes", () => {
     expect(JSON.parse(listed.body).viewer_can_write).toBe(false);
     // …but not writable. Swapping the writer check for the read one here would
     // let any viewer append to the record the Project is judged by.
-    expect((await post({ summary: "Not mine to write" })).statusCode).toBe(403);
+    expect((await post({ summary: "Not mine to write" })).statusCode).toBe(404);
   });
 
   it("refuses a malformed body rather than storing an empty account", async (ctx) => {

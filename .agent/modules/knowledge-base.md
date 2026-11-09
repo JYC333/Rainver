@@ -1061,3 +1061,70 @@ Packet.open normalizes its existing service clamp1..20 before fingerprinting;
 omission still defaults10. Current Candidate/packet GET paths encode both Project
 and resource ids. Packet rereads remain bounded to the original reader semantics;
 no query optimization or knowledge_update ownership change is added here.
+
+### P5-5 Candidate extraction intent, dispatch and publication (basis5c407024)
+
+`knowledge.candidate.extract` is a human-only core command; the retained Project
+extraction POST and typed Review API use it with an explicit event key. Its202
+receipt contains only run_id/Space/status=queued. It never means Candidates or
+Knowledge already exist and contains no source text/ref or credentials. The
+existing queued toast and Candidate review destination are unchanged.
+
+The original KnowledgeExtractionService writes the same immutable source snapshot,
+Agent/Profile selections, queued Run and required agent_run Job in the command
+transaction with request/policy audit. Cross-owner registered source reads require
+B11 audit in that transaction. Project aggregate and current Agent/source ACLs are
+checked before domain work; bounded source scope is rechecked after waits. Private
+or selected-user input forces a private Run rather than inheriting a shared Agent's
+visibility. Current full personal source/Agent access excludes oversight; ordinary
+Run/profile/Host routing and accounting remain canonical. No external IO occurs
+in this transaction. Known converted-Interpretation/runtime validation errors are
+typed, not a generic HTTP409/422 whitelist.
+
+The existing orchestration dispatch checkpoints call a purpose-bound extraction
+guard before starting, preparing runtime context and invoking the adapter. It is
+a no-op for other Run kinds and rechecks live user/Project/Agent/source authority;
+a narrowed source cannot newly dispatch through a previously wider Run audience.
+These are admission checks, not a claim that an already-started external effect
+can be undone. Run execution/errors/output/cost history are never overwritten by
+publication refusal.
+
+Terminal publication still uses the existing knowledge_candidate_extraction_reconcile
+Job/handler. It takes the canonical Run event writer try-gate before sorted Project/
+role/grant/Agent/source/Run rows, uses NOWAIT and existing JobDeferredError for busy
+rows, and never waits for a domain row while retaining the event gate. The original
+Candidate batch and a required action_completed Run event (action_name=
+knowledge.candidate.extraction.publish, created_count/disposition) commit together.
+The event writer is reused; no new table, enum, retry engine or second writer exists.
+For a succeeded extraction Run only, a zero/denied publication gets a durable
+server receipt (actor_id NULL) too, preventing later duplicate
+Job delivery from silently republishing after permission restoration. Positive
+legacy batches are recognized without repeating them. Receipt failure rolls the
+batch back; Worker ACK loss replays the committed receipt. Current access is checked
+before a new publication; reach can narrow to the current source owner, never widen
+past the queued snapshot. This publication is reviewable Candidates only, not an
+accepted Knowledge/Memory write.
+
+Managed Source activation remains a separate owner family: Agent Channel activation
+creates a paused Channel plus proposal; human Recipe activation can apply within
+its existing envelope or produce a human approval proposal outside it. Those paths,
+consent/egress and material invalid-attempt semantics are unchanged by extraction.
+No production approval mapping, Agent tool/grant or public proposal.decide is enabled.
+
+Extraction authority also preserves the distinction between destination write and
+source read: a source Project viewer with an explicit full source grant is eligible;
+source Project writer is not added as a requirement, and a grant cannot bypass the
+canonical Project read reach. Queue admission pins relevant membership/grant rows
+and source Project context before authoritative full-read recheck. Publication's
+bounded lock discovery includes the current source Project, Agent and actual
+instructing human (with legacy owner fallback); binding growth defers rather than
+adding locks late. Pre-IO guards use the real optional AgentRunRecord shape and do
+not open a database for unrelated Run kinds. Existing Run event actor ids are not
+human-user ids: human attribution is stored in receipt metadata, never a forged FK.
+
+The Project total-package extraction review fix selects the actual source table
+(`experiment_interpretations` for that source kind; `space_objects` for Note and
+Thread), locks it FOR SHARE NOWAIT and rechecks its Project. It does not infer an
+interpretation scope from a missing root row. Shared PG tests exercise a held
+interpretation row and actual JobWorker deferral/recovery, plus terminal agent_run
+redelivery with a previously missing publication nudge and no new model steps.

@@ -1,3 +1,7 @@
+import {reconcileExecutionWorkspaces} from './workspaceReconcile.js';
+import {randomUUID} from 'node:crypto';
+import {workspaceProfileFrame} from './workspaceLocation.js';
+import {workspaceReference,type ExecutionWorkspaceRow} from '../projectFolders/executionWorkspaces.js';
 import { manageNativeCli } from "./managedCli.js";
 import { ownCliReleases } from "./ownCliReleases.js";
 import { AcpAgentService } from "../acpAgents/index.js";
@@ -27,7 +31,7 @@ import { hostProviderProxyBaseUrl } from "../runs/hostProviderProxyAddress.js";
 import { providerProxyLeases } from "../providers/proxy/lease.js";
 import { assertProjectWriter, assertProjectReadable } from "../projects/access.js";
 import { getDbPool } from "../../db/pool.js";
-import { hasSubscriptionQuota, listHostRuntimeChanges, readHostUsage, recordHostRuntimeChange, refreshHostUsage } from "./usageService.js";
+import { hasSubscriptionQuota, invalidateHostUsage, listHostRuntimeChanges, readHostUsage, recordHostRuntimeChange, refreshHostUsage } from "./usageService.js";
 import { getAgentRuntimeDefinition, getRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
 import { acpRuntimeProbe, acpRuntimeProbes, type ProbeHostKind } from "./runtimeProbes.js";
 import { hostInstallationAuthMethods, hostInstallationCliLoginAvailable, hostInstallationIds, normalizeHostCapabilities } from "./capabilities.js";
@@ -217,9 +221,31 @@ function daemonHelloInfo(frame: HostHelloInfo): DaemonHelloInfo {
   };
 }
 
-async function reconcilePendingManagedWorkspaceArchives(pool: Pool, hostId: string): Promise<void> {
+async function reconcilePendingManagedWorkspaceArchives(pool: Pool, hostId: string,workspaceRoot?:string): Promise<void> {
+  const failures:unknown[]=[];
+  // Reconciliation and profile archival are independent recoveries. An invalid
+  // Location may fail its inventory without preventing other caches retiring.
+  if(workspaceRoot){
+    try{const result=await reconcileExecutionWorkspaces(pool,workspaceRoot,{hostId});failures.push(...result.failures);}
+    catch(error){failures.push(error);}
+  }
   const pending = await new PgHostThreadRepository(pool).listPendingManagedWorkspaceArchives(hostId);
   for (const item of pending) {
+    try{
+    if(item.execution_workspace_json&&item.space_id){
+      const ref=item.execution_workspace_json;
+      const w=(await pool.query<ExecutionWorkspaceRow & {archive_actor_id:string}>(`SELECT w.*,t.created_by_user_id AS archive_actor_id FROM execution_workspaces w
+        JOIN host_threads t ON t.id=$5 AND t.execution_host_id=w.execution_host_id AND t.agent_id=$6
+        WHERE w.id=$1 AND w.space_id=$2 AND w.generation=$3 AND w.execution_host_id=$4
+         AND t.status='closed' AND t.pending_archive_at IS NOT NULL
+         AND t.execution_workspace_json->>'id'=w.id AND t.execution_workspace_json->>'generation'=w.generation::text`,[ref.id,item.space_id,ref.generation,hostId,item.id,item.agent_id])).rows[0];
+      if(!w)continue;
+      const result=await sharedHostConnectionRegistry.requestTaskBranch(hostId,'execution_workspace_command',{
+        workspace:await workspaceProfileFrame(pool,w,{...workspaceReference(w),...(ref.profile_container_id&&ref.profile_container_id!==ref.id?{integration_id:ref.profile_container_id}:{})},w.archive_actor_id),
+        action:'archive_profiles',operation_id:randomUUID(),profile_agents:[item.agent_id],retain_branch:true});
+      if(result.ok)await new PgHostThreadRepository(pool).acknowledgeManagedWorkspaceArchive(item.id);
+      continue;
+    }
     const result = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
       hostId,
       "managed_workspace_archive",
@@ -231,7 +257,9 @@ async function reconcilePendingManagedWorkspaceArchives(pool: Pool, hostId: stri
       },
     );
     if (result.ok) await new PgHostThreadRepository(pool).acknowledgeManagedWorkspaceArchive(item.id);
+    }catch(error){failures.push(error);}
   }
+  if(failures.length)throw new AggregateError(failures,'Host workspace recovery needs attention');
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
@@ -731,6 +759,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         detail: selectionDetail,
       });
     }
+    await invalidateHostUsage(resolved.pool, resolved.hostId, runtimeKey, installation);
     reply.raw.writeHead(200, sseResponseHeaders());
     const emit = (event: unknown) => {
       if (!reply.raw.destroyed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -1126,7 +1155,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               // closed the socket; no acknowledgement, no connection.
               if (!sharedHostConnectionRegistry.registerConnection(host.id, frameSink, frame.capabilities_json.sources_execution === "isolated-v1")) return;
               frameSink.send({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes(probeHostKind) });
-              void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), host.id)
+              void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), host.id,context.config.workspaceRoot)
                 .catch(() => undefined);
               void wakeTaskBranchJobs(getDbPool(context.config.databaseUrl!), host.id)
                 .catch(() => undefined);
@@ -1146,7 +1175,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             case "heartbeat": {
               await hosts.recordHeartbeat(upgradeHostId, daemonHelloInfo(frame));
               frameSink.send({ type: "heartbeat_ack", runtime_probes: acpRuntimeProbes(probeHostKind) });
-              void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), hostId)
+              void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), hostId,context.config.workspaceRoot)
                 .catch(() => undefined);
               // Standing consent on a Location is what makes a new terminal
               // conversation arrive without anyone pressing a button, and a
@@ -1183,6 +1212,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               return;
             case "task_run_settle_result":
             case "task_branch_delete_result":
+            case "workspace_scope_result":
+            case "workspace_integration_result":
+      case "execution_workspace_result":
             case "task_merge_step_result":
             case "task_merge_abort_result":
             case "task_merge_finish_result": {

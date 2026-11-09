@@ -35,6 +35,7 @@ export class HostCommandVerificationExecutor implements VerificationCommandExecu
       ...(input.target.runtime_tree_key ? { runtime_tree_key: input.target.runtime_tree_key } : {}),
       ...(input.target.installation ? { runtime_installation: input.target.installation } : {}),
       run_id: input.runId,
+      ...(input.target.workspace_access?{workspace_access:input.target.workspace_access}:{}),
       command: input.command,
       timeout_seconds: input.timeoutSeconds,
     });

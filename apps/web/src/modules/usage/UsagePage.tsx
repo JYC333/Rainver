@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/tabs'
+import SubscriptionQuotaPanel from './SubscriptionQuotaPanel'
 import {
   BarChart3,
   CheckCircle2,
@@ -342,6 +345,22 @@ function AccuracyMix({ item }: { item: UsageBreakdownItem }) {
 }
 
 export default function UsagePage() {
+  const { t } = useAppTranslation()
+  const { activeSpaceId } = useSpace()
+  const [params, setParams] = useSearchParams()
+  const tab = params.get('tab') === 'history' ? 'history' : 'quotas'
+  if (!activeSpaceId) return <div className="p-6"><p>{t('workspace_ui.usage.no_space')}</p></div>
+  return <Tabs value={tab} onValueChange={value => setParams({ tab: value })}>
+    <TabsList className="mx-6 mt-6" aria-label={t('workspace_ui.usage.title')}>
+      <TabsTrigger value="quotas">{t('subscription_usage.title')}</TabsTrigger>
+      <TabsTrigger value="history">{t('subscription_usage.history')}</TabsTrigger>
+    </TabsList>
+    <TabsContent value="quotas" className="p-6"><SubscriptionQuotaPanel /></TabsContent>
+    <TabsContent value="history"><TokenUsageDashboard /></TabsContent>
+  </Tabs>
+}
+
+function TokenUsageDashboard() {
   const { t } = useAppTranslation()
   const { activeSpaceId, activeSpaceName } = useSpace()
   const initialRange = useMemo(initialDateRange, [])

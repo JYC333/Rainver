@@ -395,6 +395,22 @@ Profile and credential boundaries.
 
 ### The runtime profile: one per Agent × container
 
+An explicit CLI or installation edit to the Profile already bound to a
+Conversation is adopted at the next authorized admission/reinitialization,
+provided its Host and Primary Workspace remain the same and the new installation
+is usable. `conversationRuntimeBindings.ts` reuses the Conversation lock, shared
+`executionRuntimeAvailability.ts`, canonical Profile snapshot writer and thread
+allocator. It closes the idle old thread, creates a fresh thread with no vendor
+session, and transfers only its execution-workspace reference. Historical Runs,
+old thread evidence, worktrees/files and conversation history remain intact.
+Busy claims/active Runs defer the switch; a late old outcome cannot populate the
+replacement thread. Changing CLI types clears vendor-specific session selections.
+A single execution system event records the transition. Read-only preflight uses
+the current bound Profile's choice and hides incompatible old occupancy, while
+ordinary managed upgrades/rollback keep their existing shared-HOME continuity.
+Unchanged Profile configuration snapshots and unrelated Profile defaults do not
+cause a runtime switch. Ordinary Conversation readers exclude delegated threads.
+
 `profile_key` is
 `agents/<agent_id>/<container_kind>/<container_id>/<runtime_key>/<provider_id|ambient>`,
 and the profile lives at
@@ -2832,10 +2848,13 @@ files a Run could write and git would obey:
    rebase or bisect of it in any worktree, a merge, cherry-pick or revert in
    progress in the checkout holding it. When the Location's checkout has the
    main branch checked out it takes the Location's lease (`location_busy`
-   defers), rechecks HEAD, waits while the person's uncommitted or untracked
-   files — or an existing file, ignored ones included, where the Task adds one,
-   or a file where the Task needs a directory, in either case one `onto_commit`
-   does not track — overlap the Task commit's files, then runs `merge --ff-only
+   defers), rechecks HEAD, carries the person's uncommitted edits on files the
+   Task commit also changes onto its content by a clean three-way merge per file
+   (`localChangeReconciliation.ts`, preimage kept under
+   `refs/rainver/local-preimages/`), waits while any such merge is not clean —
+   or an existing file, ignored ones included, where the Task adds different
+   content, or a file where the Task needs a directory, in either case one
+   `onto_commit` does not track — then runs `merge --ff-only
    --no-overwrite-ignore --no-autostash` and confirms the main branch moved;
    otherwise it moves the branch by compare-and-swap from `onto_commit`. The
    main branch checked out in another worktree is `main_checked_out_elsewhere`.
@@ -3357,15 +3376,34 @@ fallback when terminal authentication is available; the advertised arguments
 The host Agent list keeps one login entry per copy. Multiple advertised ACP
 authentication methods are selected in the shared dialog before starting a
 login; the active login also uses a dialog instead of expanding the card.
-Quota buttons show only the highest measured used percentage (or an explicit
-unchecked/unavailable state). Their non-modal anchored quota card opens on hover, focus or click and closes
-after the pointer leaves the trigger/card (while keyboard interaction remains
-available). It preserves named windows, progress bars, reset information and
-manual refresh without a modal overlay. Only reported model windows appear;
-there are no model-specific placeholders. A successful Claude refresh retains previously
-observed model windows only until their reported reset, unless the refresh
-supplies a replacement for the same window. Unknown
-windows have no progress bar, and read-only viewers cannot trigger probes.
+Each quota-capable copy instead links to **Usage → Subscription quotas**, displaying
+its opaque current account handle when known. Copies sharing an identified vendor
+account/product/organization point to the same pool; no percentages or progress
+bars are repeated on installation rows. Full, unexpired windows produce a compact
+account-level notice within the selected Host. Login and version actions remain
+beside their own installation.
+
+`hosts/subscriptionUsage.ts` owns the read projection at
+`GET /api/v1/hosts/subscription-usage`: Host-owner connections and, for instance
+admins only, the built-in Host's quota. Filtering precedes grouping, so another
+person's Host name, connection count and newer reading cannot leak through an
+account match. Removed copies and logged-out identities do not inherit a cached
+account. Unknown/old-daemon identities stay installation-scoped. The Usage card
+retains every measured window, original per-window capture times, reset text,
+connection status and manual refresh through an existing authorized online copy.
+No quota is inferred from login state. Account matching never changes dispatch,
+Room reserve rules, or credential authority.
+
+The existing `host_runtime_usage.quota_json` now also holds optional opaque
+identity and window clocks; no table migration is needed. Full probes replace
+identity; an account change cannot retain the old account's model windows. Partial
+Run updates advance only the measured window's clock. Starting login/logout
+invalidates cached/in-flight reads under the same per-login cache write lock.
+Claude refresh still retains omitted model windows only until their explicit
+reset and only for the same identified login (legacy unidentified reads remain
+connection-local). Antigravity identity comes from native statusLine `email`
+alongside quota, hashed locally and marked as email-based rather than a permanent
+Google subject; it imports no extra credential or browser state.
 
 Antigravity quota fractions retain measured precision in transport. Command
 Center formats usage below 1% with one decimal place and usage at or above 1%
@@ -3550,3 +3588,996 @@ changed is a Run no-op. Admission is limited to the snapshot's exact old
 reference; the authoritative locked recheck never cancels a replacement Run or
 acquires its keys late. The original parent give-back continues its existing
 Host/merge withdrawal behavior.
+
+
+## Isolated execution workspaces (ADR 0029)
+
+Host capability `execution_workspaces.version=2` accepts a logical
+`execution_workspace` reference on Location launches and command_run. The Host
+resolves its generation into a separate owned worktree and refuses a missing
+repository or implicit dirty baseline; it never falls back into the source
+checkout. `execution_workspace_command` supports inspect, checkpoint and fenced
+cleanup through the existing Host connection. Completion reports the actual
+workspace/generation, start commit and pinned target ref.
+
+The existing Task worktree implementation remains the canonical mechanical
+owner. Non-Task references use a disjoint `workspace:<uuid>:<generation>` owner
+key and `rainver/workspace-<uuid>-g<generation>` ref; these are not database
+Task ids or Task wire frames. The physical/journal roots retain their historical
+`task-worktrees`/`task-records` names during the migration. Legacy Task API and
+ref names retain their behavior. Commands and launches use the same owner key.
+Strict launches bind shared Git metadata read-only and their own verified Git
+entry writable; source target refs remain outside agent write authority.
+
+Checkpoint stores the branch result before physical-tree reclamation. Cleanup
+uses a durable operation journal, expected-ref fencing and the same maintenance
+lease. Uncheckpointed or quarantined work is not reported as cleaned. New Run contracts enable generic Conversation/delegation admission. Old Run
+contracts continue their legacy behavior and are never silently rewritten.
+
+
+### Generic workspace integration
+
+Hosts advertise version 2 plus the independent `native_workspace_integration:true` offer for active-session Git
+operations. `workspaceNativeIntegration.ts` cooperates with the exact live
+Run/workspace lease. Preparation snapshots the worktree and merges its delta from
+the batch base onto the target in that same worktree, retaining a preimage. It
+never cleans dependencies, changes the Agent profile or allocates an integration
+worktree. The original Agent resolves conflicts and related files, saves a
+version, runs checks using its ordinary tools, and requests publication before
+its final reply.
+
+The worktree is the batch bound to the requesting Run. An explicit commit
+(`submitted_commit`, with the recorded `submitted_base` or else its single
+parent in target history) publishes a recorded delta instead: an Agent-submitted
+independent commit, or a historical batch of the same workspace that is retried.
+A recorded delta the target already contains closes as `no_changes` without
+touching the worktree. Otherwise the worktree must hold no unsubmitted changes of
+the bound batch (`workspace_commit_requires_empty_change`); they are never
+overwritten or mixed into the other batch. No frozen-source flag exists.
+
+`workspace.change.complete` records prepare/checkpoint/publish/reconcile intents
+through Operation Core. Required Host work is a durable Job; the afterCommit kick
+is rebuildable. `workspace.change.get` supplies actual status/revision. Host I/O
+and Git run outside core transactions. Agent verification is recorded as
+`agent_attested.v1`; commands are not moved into a fresh HOME or rerun by a
+separate executor. Missing Folder command configuration is not a gate. Publish
+compares the exact checked tree, checks Git integrity and uses the existing
+short target lease/CAS via `publishWorkspaceCommit` in `taskMerge.ts`.
+
+Target movement, conflicts and repair stay with that same Agent. No fixed
+one-repair/300-second/path-list policy is imposed on native repair; ordinary Run
+budgets, cancellation, Project/Host authority and provenance still apply. Final
+answer handling launches the adapter once. The old same-Run phase driver and
+read-only summary invocation are removed. Legacy Task/candidate verification
+continues through `workspaceIntegrations.ts`; native records bypass that engine.
+
+`localChangeReconciliation.ts` carries the person's uncommitted edits on files the
+publication also changes onto the published content: a three-way merge per file
+(working copy, and a divergent staged copy) between the current target content
+and the published content, retained first under `refs/rainver/local-preimages/`.
+Unrelated staged and unstaged work is untouched; a file whose merge is not clean,
+a binary, symlink, mode change, local deletion or differing both-added file blocks
+publication for that file (`waiting_local_changes` names it). A
+publication also closes blocked batches of the same workspace whose recorded
+base/source/target delta it carried (`no_changes`, `adopted_by_integration_id`).
+Publication intent/receipts survive disconnects: target ancestry proves an
+already-applied publication after the original Run ends, without new execution.
+
+`workspaceRunReply.ts` fails the Run only for native work still open on exit: a
+pending request, or a prepared/conflicted/moved batch without a publish result.
+Merged, `no_changes`, a private checkpoint and a reported failure are facts the
+Agent already read through `workspace.change.get`; its own answer stands and the
+Run carries them as `workspace_integrations`. Legacy records publish after the
+Run through their own Job and notices.
+
+A delegated result publishes into the validated, yielded parent worktree under
+its own short lease. Parent checkpoints/adopted-child provenance and the existing
+parent reconciliation Job are updated before the manager resumes. Other
+conversations keep independent worktrees and only target publication serializes.
+Source worktrees persist after settlement; idle refresh synchronizes files and
+HEAD together while preserving ignored dependencies and newer private edits.
+
+Cleanup is a separate durable `execution_workspace_cleanup` Job with a versioned
+per-resource manifest in `execution_workspaces.cleanup_json`. An attempt has a
+unique resource key; operation id, generation and expected ref tip fence every
+request. Success/abandonment enqueue cleanup atomically with domain state;
+publication remains successful if cleanup needs retry. Failed candidate files
+are captured under a recovery ref before reclamation, and unpublished source
+branches are retained. Eight failed automatic cleanup requests block with the
+actual error. Lifecycle and periodic reconciliation are described with the
+version-1 workspace contract, not inferred from an empty directory.
+
+### Baselines, mounts and recovery
+
+`workspaceBaseline.ts` uses the shared PathPolicy/safe file handles, private Git
+index and unsigned `commit-tree` to capture two equal bounded observations.
+This detects changes during capture; it does not claim filesystem atomicity.
+Source HEAD, index, local edits and untracked files remain untouched. Denied
+untracked credential paths are never hashed. The sole project-config exception
+is a tracked root `.npmrc` of at most 4 KiB containing only `engine-strict=true`
+or `engine-strict=false`, blank lines and comments. Checkout validation reads
+the selected Git blob; snapshot capture revalidates the bytes from its held
+file handle before hashing. Auth/registry settings, interpolation, nested or
+untracked `.npmrc` files receive no exception. Ordinary Folder file reads still
+deny `.npmrc`. Configuration/path/symlink launch refusals expose fixed guidance
+and log the same safe reason without file contents or local paths.
+Other denied tracked paths, symlinks,
+unborn/non-Git/linked-root repositories fail closed. The initial limits are
+1,000 changed paths, 16 MiB per changed file, 64 MiB changed bytes and 512 MiB
+tracked checkout bytes. Snapshot publication applies only snapshot→source delta.
+Snapshot import uses its own file budget rather than the 1 MiB Folder preview
+cap, so generated migration metadata can be captured intact. File and aggregate
+overflows have distinct stable launch reasons with fixed recovery guidance;
+oversized files are not silently omitted.
+
+`workspace_scope` resolves root aliases and subdirectories against the Locations
+explicitly granted to the Run. A root grant is required for subdirectory use;
+overlapping read/write aliases are refused. A root chosen by an existing owner
+is preferred across attachment changes. Workspace refs can carry a validated
+`cwd_subpath`; physical roots and source paths stay Host-owned. Read-only mounts
+on a trusted personal Host use the existing verified bubblewrap/IPC boundary;
+there is no writable fallback. Verification mounts other repositories as pinned
+read-only mirrors with durable cleanup intent recorded before allocation.
+
+Run receipts are scoped to Run × workspace × generation, so attachments cannot
+overwrite the primary receipt. Persisted per-workspace launch sequence prevents
+late checkpoint replies from replacing a newer head or an adopted child result.
+Runtime caches use `agents/<agent>/profiles/workspace/<workspace UUID>/...`;
+repair caches use the attempt UUID. Legacy detached caches are archived by a
+separate manifest resource; retired source and completed repair caches archive
+without changing any source checkout.
+
+The existing cleanup Job records per-resource retries, archives profiles and
+checks physical directory, Git registration, task/merge records, branch policy
+and quarantine before accepting `cleaned`. Actual cleanup failures are
+persisted and bounded at eight attempts; offline/timeout/lease waits preserve that budget. Cleanup never reverses integration.
+`workspaceReconcile.ts` scans bounded pages on boot and every minute; reconnect
+also scans the Host's first page and wakes the normal Jobs. It restores missing
+checkpoint, completion, integration and cleanup delivery without inventing
+completion intent. Idle saved work can release its physical tree after 24 hours;
+unmerged source branches remain. A proven merged/unchanged source releases its
+branch too, after a short grace (see *Source retention and reclamation* below).
+Inspection exposes free disk bytes and quarantine counts
+through the authorized Run reader. Unrecognized/orphan ownership is preserved
+and logged by the Host sweep; automatic deletion requires verified ownership.
+
+Host sweep runs hourly. Ordinary settled legacy receipts and cleaned cleanup
+journals expire after 30 days. Generic identity/finished-merge receipts remain
+while their retained owner may still require recovery, including a long offline
+period; baseline and sequence metadata remain with that owner until a proven
+branch release reclaims them (the server keeps head/base, baseline and the
+launch-sequence floor). Retired captured
+quarantine follows the existing 30-day retention; unsaved whole quarantines have
+no automatic expiry. No dependency tree is copied from the source checkout:
+validation recipes must provision their dependencies in the candidate (subject
+to the existing offline/egress policy). Legacy Task frames remain adapters to
+the same worktree/merge implementation, not a second integration engine.
+
+After dev's durable code-patch decisions landed, root workspace publication also
+uses the canonical `code-patch-folder:<folder UUID>` session gate for the short
+Host finish step. Candidate construction/checks and private child→parent
+adoption remain independent. This prevents source fast-forward from racing the
+existing apply/compensation worker without a transaction across Host I/O.
+
+
+### Publication authority and recovery
+
+Repair launches derive their full `kind=location` workspace descriptor through
+`workspaceLocationFrame`, using the pinned candidate's authorized Location. They
+do not infer it from a possibly absent chat launch snapshot or remote relative
+path. This applies to both primary and attachment repositories; the actual
+outbound Host launch must satisfy the same protocol schema as ordinary Runs.
+Background integration does not reserve a conversation turn. Its frozen source,
+candidate lease, verification and cleanup remain independent of a new chat Run.
+
+Repair admission and terminal integration outcomes post safe structured facts to
+the source conversation through `workspaceIntegrationNotices.ts` and the existing
+session event writer. Completion/failure and the result message commit together;
+terminal Job replay can deliver a missing notice without repeating Host steps.
+Messages explicitly separate a successful repair process from verified target
+publication. Missing validation configuration reports that no checks ran and that
+the target was not updated; success and no-change outcomes also close the loop.
+Instructions and raw/private Host diagnostics remain outside public notices.
+
+Verification reads the canonical `run_output.v1.result` launch layout, preserving
+each mount alias and its own `cwd_subpath` (an explicit root clears any earlier
+subdirectory). A repository candidate uses its logical Folder's verification
+recipe; a different primary repository's contract checks are not reused. Other
+repositories, including the original primary when publishing an attachment, are
+pinned read-only mirrors. A missing frozen layout blocks publication.
+
+Dedicated repair threads are accepted only for the current resolving integration
+attempt, matching its resolution Run, requester, generation, Project and exact
+Host/Location. Only that Run's selected Profile may target the candidate Location.
+Automatic repair is refused for read-only contracts; its one-repair counter
+survives target movement. Operations and workers require full originating Run
+content access. Workers recheck completion/repair visibility, Host authority and
+all contributing Run/repair provenance before preparation, sealing and publication.
+Publication checks the frozen change set's Runs, explicitly adopted child change
+sets and its exact repair Run. The requester's own private context alone does
+not require egress review; other users' private inputs, personal-memory grants,
+missing provenance or a different instructing owner still fail closed. Run taint
+records remain intact. New change sets track adopted children in verification
+metadata; legacy or uncertain parent adoption conservatively includes integrated
+descendants rather than dropping their provenance.
+
+Project conversation and manager scenarios grant `workspace.integration.retry`.
+A later writable Run may recover an older failed batch only in the same
+conversation workspace, session, Project and on-behalf user, with full originating
+Run visibility and current Host/Project authority. Completion and abandonment
+retain their exact change-set binding. Launch instructions expose bounded,
+authorized integration IDs/revisions and frozen base/source/target metadata;
+retry preserves that delta and never merges private baseline history. An empty
+new batch is not a recovery of an older failed integration.
+
+A blocked conflict can receive a bounded `resolution` instruction on the existing
+`workspace.integration.retry`. Only the original requesting human can supply it;
+Agent callers cannot mint a human decision. The durable attempt records that user,
+instruction and original conflict paths. Changed paths require another decision.
+The Host's `repair` action with `repair_mode=user_resolution` prepares the existing
+conflict record for a restricted repair: an unchanged non-marker file can express
+an explicit keep-target choice, while markers, capture/branch guards and full
+candidate verification still block publication. Integration authorization includes Agent resolution of content/rename/deletion
+conflicts in the original task context. The worker prepares `agent_resolution`
+without requiring a separate human decision; bounded paths and marker guards remain. Legacy Hosts refuse unsupported
+resolution preparation instead of publishing. Workspace readers expose a repair
+Run ID only with full access to both the originating and repair Run.
+
+On legacy Hosts/records, an Agent can request candidate editing via `workspace.integration.retry` with
+`repair_instruction`. This records Agent-requested work, never a human decision.
+The command freezes the requesting Run and conflict paths; the worker repeats
+its current Project/workspace/person/grant checks even after that Run completes.
+The repair Run uses that requesting Run's runtime profile and lineage, allowing
+recovery after the original runtime is unavailable. Its instructions and the
+requesting Run's context provenance participate in publication review.
+Explicit Agent repair logs stay private to the requester, because the later
+chat's audience may be wider than the frozen source's audience.
+Shared progress omits raw human/Agent instructions and previous-attempt detail;
+the internal durable evidence and authorized private Run retain that context.
+`repair_mode=agent_resolution` prepares the same bounded conflict capture as an
+explicit human instruction. Both modes retain marker detection, unchanged
+source refs, path limits, exact candidate verification, sealing and target CAS.
+Target movement retains the instruction and provenance but never grants another
+automatic repair budget. Normal chat remains independent of background repair.
+
+Reconciliation records a sanitized per-owner failure and continues the page; the
+scheduler advances its cursor before reporting those failures. Retired owners
+with pending cleanup can recover their existing Jobs, without checkpointing,
+executing or reviving the owner. Profile archival is independently addressed by
+Agent and workspace/attempt identity, with current Host ownership checks, so an
+archived or unregistered source Location does not strand caches. Physical Git
+cleanup still requires the source Location and expected-tip checks. An inventory
+error on one owner does not stop independent profile archives or cleanup scans.
+
+Native Windows does not advertise execution-workspace capability v2: the current
+owned-resource filenames contain colons. Isolated launch therefore refuses on
+that platform until a compatible resource encoding is implemented. Linux/macOS
+retain the capability; their execution still requires the existing runtime and
+read-only sandbox capabilities.
+
+
+Checkpoint recovery advances each repository independently. A failed launch
+receipt recovery or checkpoint cannot strand other bindings of the same Run;
+the Job still reports the failure and retains its deferred/permanent retry
+classification. Delegated dispatch and completion continue to require all
+relevant checkpoints. Cleanup waiting on an active repair profile or Host lease
+preserves its failure budget and any completed profile archival. Only actual
+failed requests consume the eight-attempt cleanup limit.
+
+
+A blocked integration records candidate cleanup even if the Host cannot capture
+evidence immediately. Its durable cleanup resource retains the frozen capture
+inputs, then captures and persists the exact candidate tip before physical
+reclamation. A proven absent candidate may finish without allocating one; busy,
+unknown or quarantined resources stay protected. Repair Run identities are frozen
+in each profile cleanup resource, so replacing an integration attempt cannot
+archive a previous attempt's still-running profile. Source checkpoints and
+recovery refs remain retained.
+
+
+### Review recovery refinements (2026-11-07)
+
+Confirmed checkpoint safety violations (read-only modification,
+changed authority or generation) become blocked bindings and visible change-set attention.
+Unknown Host/IO failures and ordinary server errors instead consume bounded checkpoint
+Job attempts without tainting the workspace or changing pending bindings to blocked.
+Only explicit Host offline/disconnect/timeout or lease-busy replies defer without
+consuming attempts; mirror checkpoint movement blocks verification.
+Completion refuses blocked bindings, including a historical ready Job. Abandonment
+retains blocked binding/commit evidence and fenced cleanup intent, while active Runs
+and pending checkpoint outcomes still refuse it. Once the last unfinished change on
+a blocked owner is withdrawn, the old identity retires; a new turn uses a fresh
+generation without relabelling the failed checkpoint as saved.
+
+An absent launch receipt is operational: it uses bounded checkpoint recovery
+without marking the workspace as a permission violation. A new Run binding can
+allocate a fresh generation when the previous owner is blocked, has exhausted
+checkpoint recovery, or has a settled unsuccessful Run without a launch receipt
+and the generation has never recorded any successful launch and has no other
+unsettled bound Run. A later pre-launch
+failure alone preserves an already launched generation and its saved changes.
+The owner advisory lock serializes this allocation, so simultaneous new bindings
+reuse the same successor. The predecessor is neither reopened nor retired,
+abandoned, cleaned or copied; its failed bindings and private results remain.
+Replays of the old Run still refuse its blocked identity. New admission repeats
+current Project, Host, Location and delegated-parent checks, and the existing
+Host-thread binding resets vendor-session resume when the workspace changes.
+An unlaunched attachment continuation also resets vendor-session resume and
+explicitly tells the runtime that the old attachment changes remain separate.
+The new change set records `verification_json.continuation_from_workspace_id`;
+the runtime prompt and workspace card explain the separate retained changes.
+Completion/publication remains scoped to verified results in its own change set.
+
+Run detail reads exactly the change sets bound to that Run. A conversation's
+unfinished change sets (open/ready/integrating/blocked or cleanup-blocked,
+including delegated child workspaces forked from it) are read once through
+`GET /api/v1/sessions/:sessionId/workspace-changes`, which requires the
+conversation reader and still filters each row by full origin-Run visibility and
+current remote-Host ownership; mutation controls use current Project write
+authority. Thus a failed latest Run without a workspace binding still reaches the
+previous recovery controls (the conversation's pending-work entry, the original
+Run and Files & Code › Agent workspaces) without the same batch being repeated
+under every later Run. Retained-batch closure hints use the same conversation
+reader, limited to the conversation's own workspaces. Continuing the
+conversation does not require abandonment of the previous work.
+
+Source overlaps reported by Host finish become a blocked failed integration with
+preserved candidate evidence. Retry/abandon use the existing revision checks.
+Exhausted unexpected integration errors persist candidate capture inputs and
+attempt/profile cleanup identity transactionally, even after authority loss or
+disconnect. That path performs no additional Host execution; recovery still
+requires current Project/Host/Location authority before capture or removal.
+
+Ordinary Conversation source cleanup first looks after the configured grace
+(default 10 minutes) since the latest Run exit. A reclaimable source is released
+then; any other state keeps the 24-hour physical-only idle rule. Both refuse
+active Runs, pending checkpoints and unfinished integrations.
+Candidate and adopted-child cleanup keep their existing timing. A moved source tip
+is inspected and safely replaces the same-generation request with a fresh operation;
+the replacement checks the old operation under a row lock. Reconciliation can
+replace stale blocked source requests. Host leases, exact expected tip, generation
+and evidence/quarantine checks remain mandatory, including after abandonment.
+Snapshot path enumeration already uses Git diff --no-renames (D+A); porcelain status
+is only a stability observation. Real staged-renaming coverage protects both names
+and verifies the original index and HEAD stay unchanged.
+
+
+### Operational checkpoint recovery and late receipts
+
+A checkpoint Job that exhausts operational retries records
+verification_json.checkpoint_recovery.state = exhausted on the same blocked
+change set. Its binding remains pending, prior checkpoint/source commits and
+workspace identity remain intact, and the workspace does not become safety-blocked.
+The Run/Project attention reader exposes this record. Reconciliation does not
+silently refill the exhausted retry budget.
+
+After fixing the Host disk/index lock/IO or restoring the Location, invoke the
+existing workspace.change.complete operation with that change_set_id, its current
+expected_revision and a summary explaining the retry. The authorized Run reader
+supplies the id and revision. This is explicit completion intent: the operation
+transaction records ready, sets checkpoint_recovery to requested, creates fresh
+checkpoint Jobs for pending settled bindings, then queues completion. This entry
+also works when the first checkpoint has no saved source commit; it needs no
+integration id. Project/Host and full Run visibility gates are rechecked; active
+writers, safety-blocked bindings and blocked/retired owners refuse recovery.
+A frozen dependency-waiting manager has the checkpoint-only recovery path below.
+A new request identity fences obsolete Jobs. Successful checkpointing clears the
+recovery marker after all bindings are saved; integration still waits for saved
+checkpoints and verification of the exact candidate. No abandon/new generation is
+needed for an operational fault.
+
+Checkpoint success and safety blocking serialize on the workspace row. Success
+requires a pending binding with the same start commit and launch sequence, plus
+the current generation and an owner that is neither blocked nor retired. Only
+a successful binding CAS may update head/source commits. A positive safety
+violation retains its evidence even if a duplicate success was already saved.
+Complete/retry, completion Jobs, integration enqueue and publication independently
+check the owner/binding safety fence; an operational pending binding remains retryable.
+
+Cleanup observation, physical cleanup, evidence capture and profile archival use
+the same explicit transport/lease classifier. Those waits preserve attempts and
+any completed archival/capture work; permanent missing Location or changed identity
+remains bounded/visible. Reconciliation can recover an old transport-blocked manifest
+at the same tip with a fresh operation id, preserving capture/profile evidence and
+exact generation identity. Old operations cannot write that restored manifest.
+The 24-hour physical idle rule for retained sources, active Run/checkpoint/integration
+gates and Host lease/expected-tip CAS remain unchanged.
+
+
+### Frozen manager checkpoint recovery
+
+A manager parked by parkRunForDependencyResults can recover an exhausted
+operational checkpoint on the same change set. A dependency-wait status alone
+does not prove its process has exited: complete recovery, checkpoint Jobs and
+reconciliation share the predicate in workspacePolicy.ts. It requires the
+canonical waiting_for_results.status=waiting marker, a latest dependency-waiting
+attempt in the Run's group, and no run_execution_locks row. Queued/running/
+cancelling writers, incomplete park evidence, retained execution locks, changed
+authority and safety-blocked bindings/owners remain refused. Binding start commit,
+launch sequence, generation and recovery-request fencing are unchanged.
+
+For that yielded manager only, the existing complete recovery operation records
+checkpoint_recovery.checkpoint_only=true, reopens the change set and clears
+completion_basis. It queues checkpoint recovery without a completion Job or
+publication intent. A lost recovery Job can be recreated by reconciliation with
+the same request identity. After saving the checkpoint, the existing
+queueDelegatedChildren path admits children from that exact frozen commit. The
+parent remains waiting while children work; the ordinary dependency projector
+queues the same parent Run after its dependencies finish. Recovery itself neither
+ends the manager nor publishes its unfinished change set. Terminal-Run complete
+recovery keeps the previous ready/completion-Job behavior.
+
+Operational retry diagnostics no longer increment change-set revision on every
+attempt; exhausting the budget still increments it when the state becomes blocked.
+A refused integration enqueue is reported from actual state (or immediately
+blocked with workspace_integration_not_enqueued), never as a new integration with
+a null id. Retired owners with old temporary-blocked cleanup resources also enter
+reconciliation; only that fenced cleanup is restored, with no owner resurrection
+or new checkpoint/execution work.
+
+### Subscription quota display metadata
+
+Subscription quota observations also whitelist `account_display`: full login email
+and optional organization/workspace name from the same measured login. Command
+Center displays this beside View quota; Usage displays it in the pool heading.
+It does not affect grouping or grant access. Missing/older observations fall back
+to the opaque handle; a known email without a reliable pool identity stays
+connection-scoped. Claude, Codex and Antigravity support this; OpenCode has no
+independent subscription account/quota probe.
+
+
+### Workspace publication recovery
+
+The existing completion command can admit one explicit independent `commit`
+from published target history, and integration retry supports a non-publishing
+`reconcile_only` check. Both use Operation Core and existing Jobs, not a second
+merge channel. Host commit reads and temporary-index Git adoption proofs never
+run inside core transactions or mutate the user's index. Exact candidates still
+require verification and CAS before publication. See
+[Project Files](project-files.md) for intake, permissions, no-change settlement and UI behavior.
+
+### Integration before the current Run replies
+
+Native integration happens through tools while the original ACP invocation is
+still active. `workspaceRunReply.ts` calls the adapter once and holds final
+answer/status delivery only to check durable completion facts and ordinary output
+validation. It does not drive Git phases or start another CLI/summary call.
+Runtime Context Delivery, native context, profile, cwd, cancellation and usage
+remain those of the original invocation. Only merged/no_changes is complete.
+Prepared/pending/failed work cannot become an accepted/queued final answer that
+silently starts another Agent. Historical candidate controls remain legacy-only.
+
+Source settlement keeps its physical tree and ignored dependencies. The durable
+idle cleanup Job reclaims it after active Run/checkpoint guards pass; original
+conversation profiles/sessions survive that physical cleanup. Completed native
+Host receipts are reclaimed then, while unfinished evidence remains retained.
+
+
+### Source retention and reclamation (2026-11-08)
+
+Finished worktrees, managed branches and recovery refs no longer accumulate for
+work that is already in the target. `hosts/workspaceRetention.ts` (server) and
+`workspaceRetention.ts` (Host) own this; they reuse the existing
+`execution_workspace_cleanup` Job, cleanup manifest, reconciliation scan and
+Operation Core. No dependency, scheduler or Git implementation was added.
+
+**Assessment (server facts).** `assessWorkspaceRetention` reads one snapshot of
+durable facts for a workspace generation and returns a visible state and stable
+reason, persisted in `execution_workspaces.retention_json`:
+
+| State | Reasons | Effect |
+|---|---|---|
+| `active` | `run_active`, `checkpoint_pending`, `integration_pending`, `dependent_cleanup` | Nothing released; existing guards apply. |
+| `retained` | `safety_review`, `child_workspace_dependency`, `blocked_changes`, `unpublished_changes`, `kept_without_merging`, `private_baseline`, `quarantined`, `unmerged_source`, `host_upgrade_required` | Branch and refs kept with **no automatic expiry**; only the physical tree follows the 24-hour idle rule. |
+
+| `held` | `held_by_user` | Kept until `hold_until`. A hold never masks a stronger `active`/`retained` reason; it is stored and applies once the source is otherwise eligible. |
+| `grace` | `merged`, `no_changes` | Released after `reclaim_after` (last Run exit / batch update + grace). |
+| `reclaimable` → `reclaiming` → `reclaimed` | `merged`, `no_changes`; `releasing_refs` while further ref pages run | Branch, owned refs and receipts released. |
+
+For a delegated checkpoint adopted through native Git rather than a child
+integration, reconciliation checks its saved delta against an actual merged
+commit of its parent in the same Space, Project, Host and Location. Only when
+all changed paths (including modes and deletions) match that publication does
+the open child batch close as `no_changes`, recording the parent batch and
+published commit. Active Runs, pending checkpoints, changed tips/revisions and
+blocked or integrating batches prevent closure. The proof is bounded to 500
+safe paths and one recent parent publication per pass; missing Git objects,
+transport failures or later edits to those paths retain the child. Completion
+of the delegation alone is never adoption evidence. Existing grace periods,
+holds, private-baseline protection and Host Git release proofs still govern
+physical, branch and ref cleanup; this does not bypass them or publish code.
+
+A source is reclaimable only when every batch of the generation is
+`integrated`/`no_changes` (or withdrawn without any saved difference), no Run is
+queued/running/waiting, every checkpoint is saved, no integration or integration
+cleanup (verification mirror, attempt profile) is pending, and no delegated child
+still has open/blocked work or an active Run. The server itself retains a
+generation whose baseline is a snapshot (`private_baseline`: the branch may be
+the only committed copy of the person's uncommitted source edits) or whose last
+inventory reports a quarantined whole tree (`quarantined`); neither is ever sent
+for release. Age never makes unmerged, blocked,
+kept-without-merging, quarantined or safety-blocked work reclaimable; "Keep
+without merging" stays a retention, never a discard.
+
+**Grace and configuration.** `SERVER_WORKSPACE_RECLAIM_GRACE_MINUTES` (default
+10, 0–10080) sets the wait after the last Run exits.
+`SERVER_WORKSPACE_LOCAL_PREIMAGE_RETENTION_DAYS` (default 7, 1–365) sets how long
+publication-time local-change preimages are kept.
+`SERVER_WORKSPACE_RUN_HISTORY_RETENTION_DAYS` (default 30, 1–3650) sets how long
+exact past-Run versions stay readable after a branch release (see *Run history*).
+
+**Scheduling.** A source Job first looks after the grace. `reclaim_now` and an
+already-eligible offer schedule it immediately. A source Job parked on an older
+timer (a hold, the 24-hour idle rule of a then-retained source) is replaced with
+a fresh operation id when eligibility or the hold changes (release_hold,
+reclaim_now, reconciliation, including reconciliation's idle-tree cleanup), which
+fences the parked Job. A running request, or a release already issued (epoch
+raised), is never replaced. The one exception is a request the Host blocked with
+`workspace_quarantined`: the Host refuses every release side effect beside a
+whole-tree quarantine, so it removed nothing and a fresh request may follow it
+once the quarantine is resolved.
+
+**Release (Host proof).** Hosts advertise `execution_workspaces.reclaim = 4`
+(2: journaled ref operations, Run-history keeper epochs, paged history; 3:
+settling earlier ref operations, never asked to settle; 4: keeper-first settle
+with in-operation restoration, and shared `sources` deletion only for a
+fence-marked request; see *Ref operations*). Releases need 2. Only then does the cleanup Job, after the grace, re-assess under the workspace
+row lock, raise `materialization_epoch` and send `retain_branch:false` with:
+`reclaim_proof` (this generation's merge facts: `merged_commit`/`task_commit` of
+merged integrations, `onto_commit`/`already_present_at` of no-change ones) and an
+exact `release_refs` list. Under the Task lease and expected-tip CAS the Host
+accepts the release only if the tip is target history, the tip's tree equals
+a proof commit that is target history, or the tip's whole delta from a common
+base reverse-applies to the actual target tree (`workspaceDeltaAlreadyApplied`,
+the same proof as integration adoption). Candidate bases are the Host's own
+`merge-base` and recorded batch bases (`reclaim_bases`); a base is used only if
+it is history of both the tip and the target, so a wrong server nomination can
+only fail the proof. This accepts the same change applied by another commit
+while the target also gained other edits. A native publication writes a new
+commit, so ancestry of the tip alone is not the only proof. A refused proof keeps
+the branch and reports `branch_retained_reason` (`unmerged_source`); no ref is
+released then. The refused tip is recorded (`proof_refused_tip`,
+`proof_refused_at`); the owner stays retained until its tip changes, a later
+integration on the same Location completes (the target moved), or a person asks
+`reclaim_now`, which clears the refusal so the Host proves again.
+Older Hosts (no level, or `reclaim = 1`) keep the previous physical-only behaviour (`host_upgrade_required`); level 1 still gets the launch epoch and sequence-floor fences.
+
+**Same identity after a cold reclaim.** The conversation keeps its workspace id
+and generation, so the native session, cwd and profile caches survive. The next
+launch omits `base_commit`, sets `sync_to_target` and rebuilds from the target;
+the released tip's content is already there. Launch references carry
+`materialization_epoch` and `launch_sequence_floor` (max of `head_sequence` and
+bound launch sequences), so a reclaimed sequence receipt cannot make a later
+checkpoint look older. The epoch is raised *before* a release is sent: any launch
+admitted afterwards carries the newer epoch, the Host records the newest launch
+epoch, and a cleanup for an older epoch is refused (`workspace_materialization_moved`)
+even at the same tip. The server marks such a request `superseded`. A launch
+carrying an epoch older than the Host's record is refused
+(`workspace_materialization_stale`).
+
+All of a Host cleanup — the epoch fence, proof, tree and branch removal,
+run-history refs, ref release, receipt removal and the epoch/completion record —
+runs as one critical section in this order: replay of a finished release, epoch
+fence, whole-tree-quarantine refusal, side-effect-free proof, dirty-tree refusal
+and tree removal, run-history refs, then the branch delete (skipped if the tree
+removal had to quarantine), refs, receipts and the fence. It runs under the Task lease (`withTaskHeld` +
+`deleteTaskBranchHeld`). A launch admits its epoch and prepares under the same
+lease (the Run's exclusive Task lease), so a release of epoch N and a launch of
+N+1 are strictly ordered; a cleanup that finds the lease held returns
+`task_busy` and changes nothing.
+
+While a release is in flight (`reclaiming`, reply not yet back) the next launch
+is treated like one after `reclaimed`: no `base_commit`, `sync_to_target`. If the
+release ran first the Host rebuilds from the target; otherwise it syncs the
+still-present branch to the target (old tip kept as a recovery ref) and the
+newer epoch fences the release. `recordWorkspaceLaunch` then sets the
+workspace's `base_commit`/`head_commit` to the launch's start, so no released tip
+stays recorded as head. A late reply of the older release sees the state is no
+longer its own `reclaiming` and only finishes its own bookkeeping (preimage/history
+release Jobs, counts); it never overwrites `active`. Raising the epoch records the
+release's identity in the retention (`release_epoch` and a `release_id` fixed for
+that release; **Retry cleanup** keeps it under a new operation id). The reply and
+the release's last page finish the visible state only when the retention is
+`reclaiming` with both of them equal, so a page of an older release can never mark
+a newer release of the same workspace `reclaimed`.
+
+**Owned and shared refs.**
+
+| Ref | Owner / dependency check | Retention |
+|---|---|---|
+| `refs/heads/rainver/workspace-<id>-g<n>` | the workspace generation | Released with proof as above. |
+| `refs/rainver/recovery/<workspace>/<commit>` (idle sync) | named workspace; commit must be a closed batch's recorded source/base | Released with the branch; otherwise counted as retained. |
+| `refs/rainver/native-preimages/<workspace>/g<n>/<op>` | named workspace generation | Released with the branch. |
+| `refs/rainver/run-history/<workspace>/g<n>/<commit>` | named workspace generation | Created at release; released after the Run-history retention. |
+| `refs/rainver/recovery/<integration>` | that integration | Released when it is `merged`/`no_changes`. |
+| `refs/rainver/sources/<commit>` (shared, content-addressed) | any integration or batch on the same Host referencing the commit | Never in the planned first frame: sent only by release pages as a claimed ref operation, proven free of dependents under the per-(Host, commit) lock and fenced by a durable deletion intent until the Host confirms the operation; the `workspace_source_release_fence` trigger refuses new dependents meanwhile. CAS on the named commit. |
+| `refs/rainver/local-preimages/<commit>[-index]` | the publication of that commit | Released by a separate `local-preimages-g<n>` resource after the configured days (they back up carried-over edits; the working file keeps the merged result). |
+
+The Host deletes only names it can attribute (`releasableRef`) and only by CAS
+on the current oid; anything else returns `ref_release_refused`, a moved ref
+`ref_moved`.
+
+**Quarantine.** A release never deletes the branch, refs or receipts, nor
+raises the fence, beside a whole-tree quarantine (one already present, or one
+this cleanup's tree removal produced); the reply is `blocked`
+(`workspace_quarantined`) and the retention `retained`/`quarantined`. On the
+server, an issued release resumes past its guards only when the inspection
+proves the branch already gone; if the branch is still there (the release never
+reached the Host: busy, timeout) and a quarantine appeared, it becomes a
+physical-only request (its raised epoch is harmless).
+
+**Request identity.** The Host's cleanup journal and the release record hold a
+stable SHA-256 digest of the whole request (`releaseRequestDigest` v2: identity,
+location, integration id, expected tip, `retain_branch`, epoch, `target_ref`, and
+the sets of history commits, proof and base commits and exact release refs with
+their `kept_epoch`; order and duplicates do not change it). Only the same digest
+replays. A `release_refs` journal likewise binds, from v2, the workspace id,
+generation, Location, integration id and materialization epoch besides its lists
+and flags (`refOperationDigest`), so the same operation id for another
+workspace or epoch answers `workspace_ref_operation_conflict`. Records written
+from v2 carry `digest_version: 2` and match only the v2 digest; a record
+without it (an older Host's) is recognised by its v1 digest, so a crash-retried
+release, a later page or a legacy settle continues after the upgrade. The
+first request the new Host accepts for a legacy record binds it to that
+request's full v2 digest in one atomic durable write before any answer: a
+cleanup journal (whatever its state, before a replay, refusal or run), a
+`release_refs` journal, and a completed-release record in the materialization
+file (fence and admission kept), which binds across operation ids, so a later
+request differing only in a field v1 lacked (such as `kept_epoch`) is refused,
+never replayed (limit: those fields cannot be checked for that first
+acceptance). The same operation
+id with other content answers `workspace_cleanup_identity_conflict`; a finished
+release's identity and epoch with other content answers
+`workspace_release_request_conflict` (both `blocked`, nothing done), unless a
+newer launch already rebuilt and the epoch fence answers it as moved. The
+server sends one fixed request per epoch, so its retries, reconciliation's fresh
+operation id and **Retry cleanup** carry the same digest; release pages use
+`release_refs`, which has no such journal. A quarantine refusal had no side
+effects, so its operation may become a physical-only request. A record written
+before the digest existed still replays.
+
+**Crash recovery.** Release progress is keyed by workspace identity and epoch,
+not by operation id: until a release has finished its refs, receipts and epoch
+record, the Host's recorded epoch is not past the released one. The fence and
+the release's result (history refs, retained refs, final inventory) are one
+atomic write of the materialization record; a re-delivery of that same release
+(same identity, epoch and expected tip) replays the result before the epoch
+fence is checked, so a crash after the fence never turns into `superseded` and
+the server still schedules its history, later pages and preimages. If the Host fails
+after the branch update, the request ends `retry_wait`; a re-delivery of the same release — the Job's own retry, reconciliation's fresh
+operation id, or the person's **Retry cleanup** (which keeps `release_epoch`,
+proof and plan) — resumes the remaining work. A release whose branch is already
+absent is still sent (nothing to prove) so refs, receipts and preimages are
+finished; only a physical-only request may be marked cleaned from an inspection.
+
+**Paging.** Owned refs are inventoried in sorted pages of 200
+(`owned_refs_next` cursor; `inspect` accepts `list_after`) and a release frame
+carries at most 200 refs. The first frame carries the first page; the rest of
+the plan, every shared `sources` candidate and the owned-ref cursor continue in a
+`refs-g<n>-e<epoch>` (`ref_pages`) resource of that release immediately, page by
+page; a later release of the same generation gets its own resource and a repeated
+report of the same release changes nothing. Shared `sources` refs follow the ref-operation protocol below; no writer of a
+dependency takes a lock. Older-epoch pages are not
+superseded by a newer launch (the Host keeps what the rebuild may own). The retention stays `reclaiming`
+(`releasing_refs`) and the cleanup summary `pending` until the last page is done.
+A preimage family is exactly its releasable members (`<commit>`,
+`<commit>-index`), looked up by name, so unrelated names sorting first can never
+cut a member off. Any `ref_release_truncated` is unfinished, not released: the
+Host answers `ok:false`, and the page resource re-sends that family (its
+deleted members are gone) without spending attempts. Each `ref_pages` frame
+carries its release's `materialization_epoch`; under the Task lease, once a
+launch was admitted after that release, the Host keeps names attributable only
+by workspace id (`recovery/<workspace>/…`, `native-preimages/<workspace>/…`) as
+`ref_owner_rebuilt` for the rebuild's own next release, while the old release
+still clears what it owns by closed merge facts (its integrations' recovery
+refs, and sources no unfinished integration or batch on the Host references). The last
+page records `reclaimed` with the release's `merged`/`no_changes` reason; after a
+rebuild it only updates counts. Inventory (`inspect`/
+cleanup replies) includes the branch and the workspace's owned refs; `cleaned`
+requires the branch released (or a reported proof refusal) and the released
+refs absent. `retained_refs` counts shared refs the server kept for other
+dependents, Host refusals and owned refs the Host still lists.
+
+**Run history.** Before the branch goes, the server sends this generation's
+saved Run checkpoints (`history_commits`, newest 1000). Under the same lease the
+Host keeps each one the target cannot reach as an owned
+`refs/rainver/run-history/<workspace>/g<n>/<commit>` ref and reports them
+(`history_refs`); target-reachable versions need none. The refs are created
+only after the tree was safely removed and immediately before the branch delete
+(the proof itself has no side effects). The journal records the candidate list
+(`history_intent`) before the first ref is created, and every inventory reports
+the run-history refs actually present in Git for the generation, so a step that
+fails part-way still reports each ref it created; a resumed or branchless release
+re-derives the list from the intent, the journal and the refs. Every release
+reply that reports history (cleaned, retried, blocked or superseded) merges it
+into the generation's `run-history-g<n>` resource. Delayed resources
+(`run-history-g<n>`, `local-preimages-g<n>`) hold per-item `due_at` (never sent
+to the Host): a later release of the same generation merges into them,
+re-reporting is idempotent, each run sends only due items and waits for the
+earliest remaining one, and a merge issues a fresh operation id so an older or
+running Job cannot overwrite it (its unconfirmed operation is carried over).
+A local preimage keeps its own due time (it is never renewed). A Run-history
+item carries `kept_epoch`, the newest release epoch the Host reports
+(`history_epochs`) for that commit: it is renewed (new due, newer epoch) only
+when a later release really kept it again; a re-report without a newer epoch
+changes nothing. `history_until` is the latest due time held.
+
+Every inventory carries one sorted page of at most 1000 Run-history refs and
+`history_refs_next` (`inspect` accepts `history_after`). A release reply with a
+cursor stores it in the `run-history-g<n>` resource (`history_scan`, with the
+release's due time and epoch); that Job reads every remaining page from the
+cursor, merging each before anything is deleted, so no ref of a generation that
+accumulated more than 1000 across releases is left without an expiry. The branch is released fully. A past Run's file preview keeps reading
+its exact version by commit. After `SERVER_WORKSPACE_RUN_HISTORY_RETENTION_DAYS`
+a `run-history-g<n>` resource releases those refs by CAS. The preview returns
+`{kind:'expired'}` (an explicit expired state, without retry) only when the Host
+answers `workspace_file_version_unavailable` and the retention end has passed:
+`history_until`, or for a release that needed no history ref, `reclaimed_at` plus
+the retention. The Host answers that only when `git cat-file --batch-check`
+exits 0, uninterrupted and with no diagnostics at all, and reports exactly
+`<commit> missing`. Git answers `missing` also for a loose object it cannot open
+(permissions) or inflate (corruption), but then reports a diagnostic; any
+diagnostic, non-zero exit, signal or truncated output is
+`workspace_file_read_failed` (its text is never interpreted). The preview answers
+that as 503, also over another row's expiry. A missing path in a present version,
+a refused read, or an offline/temporary Host failure is never expiry either.
+
+A reclaimed workspace whose open batch no Run launched yet (the Run that opened
+it failed before launch) is still rebuilt from the target: joining that batch
+does not make the released tip a base again, and the launch moves every such
+unlaunched batch's base to the rebuilt start.
+
+**Ref operations (`release_refs`).** Every later page, delayed expiry and
+re-pin is a durable, fenced operation; an RPC timeout is never treated as its end.
+
+1. *Claim.* In one short transaction under the workspace row lock (no network
+   I/O) the round checks that its Job still owns the resource (operation id)
+   and that no earlier operation is unended, takes only items due in the
+   current row (a renewal that committed first wins), takes the per-(Host,
+   commit) advisory lock of every shared source candidate, re-checks them
+   against every dependent on the Host (`freeSourceCommits`), records a durable
+   deletion intent per sent commit in `workspace_source_releases` (one row per
+   Host × commit × operation; a commit any other unended operation fences is
+   handed to it), and stores the exact batch as `inflight` (marked `fence: 2`)
+   under that operation id. Only then is it sent, with `source_fence` when it
+   deletes shared sources: a reclaim-4 Host deletes no `refs/rainver/sources/`
+   ref without that mark (`ref_release_unfenced`; a branch release never
+   carries it).
+   A Host below the level the next step needs is sent nothing: the resource
+   waits as `retry_wait`/`host_upgrade_required` (`required_host_level`)
+   without spending attempts, its inflight claim and intents kept. A fenced
+   claim needs `reclaim` 2; settling an unfenced one (step 6) or any keeper
+   work needs 4.
+   Reconciliation resumes it once the Host reports that level and re-opens
+   resources exhausted against an older level (`blocked_host_level` below the
+   one needed); it re-reads the resource under the row lock and restores from
+   that current value, never from its scan, so a Job of the same operation that
+   advanced meanwhile (confirmed, claimed again, moved to a re-pin) is kept.
+2. *Execute.* The Host runs it under the identity's Task lease (also for
+   expiries without an epoch, so it is ordered against launches and branch
+   releases), journaled in `workspace-ref-operations/<op>.json`: a delivery
+   while the lease is held answers `task_busy` (leases never queue, so no
+   delivery runs later), and a re-delivery replays a finished result without
+   touching Git; other content under the same id is refused
+   (`workspace_ref_operation_conflict`).
+3. *Confirm.* Only a reply with `ref_operation` equal to the inflight id proves
+   the operation ended. Timeout, disconnect, busy or any other answer keeps
+   `inflight` and re-sends the same id (temporary failures do not spend
+   attempts), so a slow original can never act after its confirmation. A
+   resource replaced by a merge carries `inflight` along; the older Job can
+   neither write nor claim again.
+4. *Fence writers.* While any intent row for a commit exists, the
+   `workspace_source_release_fence` trigger (migrations 0019/0020) on
+   `task_merges` and `workspace_change_sets` refuses any new or changed
+   dependent of that commit on that Host. Which commits a row depends on has
+   one definition, `workspace_source_dependent_commits` /
+   `workspace_merge_dependent_commits`, read by the trigger, `freeSourceCommits`
+   and the Location ref inventory alike: batch launches/bases, checkpoints,
+   submitted commits, a native request's explicit commit
+   (`native_request.submitted_commit`), integrations, resolution and repair
+   progress, delegated adoption, a reopened closed batch. It is the one
+   registration gate, so no writer can bypass it. The trigger waits up to
+   10 s (`rainver.source_release_wait_ms`) without holding the lock, then takes
+   the same advisory lock and re-checks; past that it raises
+   `workspace_source_release_pending` (SQLSTATE 55P03: Operation Core answers a
+   retryable 503, Jobs defer without spending attempts, never a failed or
+   blocked state). A writer holding a lock the confirmation needs — a Run start
+   holds its workspace row — sets the wait to 0, rolls back and retries the
+   whole start outside any transaction (`retryOutsideSourceFence`, up to two
+   minutes) instead of failing the Run; a start that rebuilds a released
+   workspace registers no released tip at all (its new batch has no base until
+   the launch records the rebuilt start). Read committed only. A dependency
+   therefore never takes effect between the claim and the proven end of the
+   deletion, through timeouts, disconnects, lost replies or restarts.
+   Normal Git maintenance may prune an old unreachable object at once (prune
+   expiry is measured from object age), which is why nothing relies on
+   re-pinning after a deletion.
+5. *Clear.* The transaction that proves the end (step 3 or 6), holding the
+   commits' locks, deletes that operation's intents. Each of its commits that
+   has a dependent anyway and that no other unended operation still fences is
+   re-pinned under its shared name by a journaled `pin_sources` operation; a
+   commit another operation still fences is protected when the last one ends.
+   For a fenced deletion this finds nothing (the fence refused every new
+   dependent); it remains only as a last guard. A settle (step 6) never
+   relies on it: its protection happens inside the settle operation.
+   A same-name pin is therefore issued only when no deletion of that ref can
+   run any more. A pin the Host reports missing keeps that pin operation
+   claimed under a fresh id, retries with backoff and ends `blocked` with
+   `workspace_source_repin_missing` — never `cleaned`, never `reclaimed`.
+   A dependent registered after a deletion pins its commit before using it:
+   a submission's freeze and a native request's explicit commit (an
+   Agent-submitted one or a historical batch's recorded source, before
+   `native_prepare`) pin `refs/rainver/sources/<c>` on the Host (CAS on absence)
+   and prove the object present; a pruned object is refused
+   (`workspace_commit_unavailable`). Integrations still pin their source at
+   their own Host step. These pins are ordinary shared refs: later releases
+   judge them like any other.
+6. *Settle an unfenced deletion.* A claim without the `fence: 2` mark (made
+   before 0019, or under 0019, which neither covered native requests nor kept
+   more than one intent per commit) may have gained a dependent meanwhile, so
+   it is never re-sent. Its intents are kept (0020 backfills one row for every
+   unconfirmed claim in a cleanup resource; the settle claim re-adds any
+   missing one under the commits' locks), so no new dependent can register
+   until the settle is confirmed. That claim decides, under the locks, which
+   of its commits have a dependent (`keep`) and which of those no other
+   unended operation fences (`pins`/`release_keepers`). One journaled
+   operation under the identity's Task lease (reclaim 4) then, in order:
+   (a) keeps each `keep` commit whose object is present under
+   `refs/rainver/source-keepers/<workspace>/g<n>/<c>` (CAS on absence) — a
+   namespace `releasableRef` refuses in every Host version, so no earlier,
+   late or cancelled release list can delete it; (b) settles the earlier
+   operation: `finished` (its recorded result) or recorded `cancelled`, so no
+   later delivery of it can touch Git (`workspace_ref_operation_cancelled`);
+   (c) re-creates `refs/rainver/sources/<c>` for `pins`; (d) drops each
+   keeper whose shared name now holds the commit; and reports `kept_sources`.
+   Protection, settle and shared restoration are therefore one Host call: no
+   reply, Job or retry sits between the end of the earlier deletion and the
+   commit's protection, and a lost reply replays the same journaled result.
+   A delivery of the earlier operation still running holds the lease (the
+   settle answers busy and is re-sent with its id); one arriving late runs
+   on a reclaim-4 Host only without the `source_fence` mark, so it deletes no
+   shared source (`ref_release_unfenced`, kept listed and claimed again,
+   fenced). A keeper whose shared name another unended operation still
+   fences stays recorded on the resource (`keepers`); the resource owns it,
+   is never `cleaned` while it remains (`workspace_source_keeper_waiting`),
+   and a later operation restores the shared name and drops the keeper once
+   no other operation fences it. Keepers are attributed to their workspace
+   in the Location ref inventory. A finished earlier operation is bookkept
+   like a confirmation; a cancelled one changes no bookkeeping (its refs are
+   claimed again, fenced). A commit with a dependent that got neither a
+   keeper nor its shared name had no object when the settle first reached it:
+   it was lost to an unfenced deletion before this mechanism (before the Host
+   upgrade), and the resource is `blocked` with
+   `workspace_source_lost_before_fence` (`lost_sources`), never `cleaned`.
+   A reply without the settle result (a Host that does not know it ran an
+   empty operation) proves nothing: the settle gets a fresh id and waits for
+   the upgrade.
+   Settles are marked `keeper_first`. A settle an earlier server persisted
+   without that mark (round 6/7 shapes: no keepers, or a confirmation that
+   skipped the re-pin), and any wrapper nested around one, is never re-sent
+   or edited in place (its id may already have a Host journal of other
+   content): the claim builds a new operation under a fresh id whose `settle`
+   is the whole persisted chain, keeps every dependent commit (plus anything
+   an earlier wrapper planned to keep), and sends `settle_operations` for
+   every wrapper and the deletion, after the keepers. The deletion's result
+   (innermost id) is the one bookkept; every chain id's intents are cleared at
+   confirmation. A deletion that already ran therefore still leaves each
+   dependent commit referenced (keeper, then shared name) if its object
+   survives; otherwise `workspace_source_lost_before_fence`. A chain deeper
+   than 16 blocks (`workspace_ref_settle_chain_too_deep`).
+   Keeper and shared-name writes are CAS on absence and verified from Git
+   afterwards. Only Git's clean "object missing" answer (`versionPresence`)
+   is a loss; a failed `update-ref` (a short ref-lock conflict, I/O,
+   permission) or an unreadable object store is retried briefly, then the
+   Host throws before any later step of the operation (no settle, restore or
+   deletion), leaves its journal unfinished and replies
+   `workspace_source_ref_write_failed` without `ref_operation`; the server
+   keeps the claim and its intents and re-sends the same id with backoff,
+   never `blocked` as lost and never `cleaned`.
+
+**Durable Host records.** The records a Host acknowledges for workspace
+retention — ref-operation journals (`workspace-ref-operations/`: running,
+done, cancelled), release journals (`workspace-cleanup/`), materialization
+epoch/release records and Run-history keeper epochs — are written by
+`writeJsonDurable` (`host-daemon/src/durableFile.ts`): fsync of the temporary
+file, rename, fsync of the parent directory, and every directory between the
+record and the config directory (the trusted, pre-existing boundary; nothing
+above it) fsynced in its parent. That chain is synced on each write and replay
+until it once succeeded in this process for the same directory inode — not only
+when the write created it, since a failed earlier attempt may have left a
+directory whose entry is not durable. Any failed step throws, so no reply
+(`ref_operation`, `cleaned`) is sent for a record that may not survive power
+loss. No idempotent path trusts what is visible: a replay, an unchanged keeper
+epoch, an equal admission, a cleaned journal and the keeper epochs and epoch
+fence an inventory reports are first fsynced (`syncExistingDurable`: file,
+chain, directory); a legacy record matched by its v1 digest is rewritten.
+Other Host receipts keep the plain atomic `writeJson` (crash-safe, not
+power-safe).
+
+Protecting refs (keepers, re-pinned shared names, Run history) get the same
+barrier in Git (`host-daemon/src/durableRef.ts`): Git fsyncs a ref file only
+with `core.fsync=reference` (2.36+, passed on each write) and never its
+directories, and it does not rewrite a ref that already holds the oid. So a
+ref that is present already (an earlier failed attempt, an older Host) or just
+written is synced from its actual storage — the loose file and each directory
+up to the common Git directory, or `packed-refs` and that directory, or every
+reftable table — and re-read, before it is reported (`kept_sources`,
+`pinned_sources`, `history_refs`) or anything is deleted on its strength (a
+keeper is dropped only after its restored shared name is durable; the branch
+only after its Run-history refs are). Ref reads distinguish absence from a
+fault (`readRef`: `for-each-ref` exit 0 with no line is absent; any exit,
+signal or diagnostic is `workspace_ref_read_failed`, retryable), so a read
+fault never counts as deleted, not kept or released. The commit must be
+present as a commit (`versionPresence`); the object store is not fsynced here
+and follows Git's own `core.fsync` (packs fsynced by default, loose objects
+not). Limits: durability relies on the filesystem honouring file and directory
+fsync; it is verified by observing the sync order and injecting failures at
+each step (each fixed path fails its test without its barrier), not by a real
+power cut.
+
+**Run-history reads.** Before the branch goes, each candidate is checked with
+`versionPresence`: a failed read throws `workspace_run_history_failed`
+(`retry_wait`; the branch stays and the journal stays running); a version Git
+cleanly reports missing (or not a commit) gets no ref and is reported in
+`history_unavailable` and the journal, never as kept, and its file read answers
+`workspace_file_version_unavailable`.
+
+**Ref inventory pages.** Owned refs (200), the Location inventory (500) and Run
+history (1000) page by streaming Git's sorted `for-each-ref` output (Git 2.43
+has no `--start-after`, added in 2.51): names up to the cursor are skipped
+without being kept and Git is stopped once a page and one more name were read,
+so memory and output stay bounded whatever the ref count. Names compare as
+UTF-8 bytes (Git's order); out-of-order output, an overlong line or a failed run
+is `workspace_ref_inventory_failed`, never a short page.
+
+Run history is renewed only on the Host's word: before (re)creating history
+refs, a release records each candidate's epoch in
+`workspace-history-keepers/<location>/<key>.json` under the same Task lease
+(kept with the epoch record, not removed with receipts). An expiry carries its
+item's `kept_epoch`, and the Host keeps a ref a newer release kept as
+`ref_renewed`, so an older or timed-out expiry never removes a renewed ref.
+An item renewed while its deletion was inflight stays listed with its new due
+time whatever the Host did.
+
+**Receipts.** After a proven release the Host removes the identity's sequence,
+baseline, launch and Run receipts and completed native receipts. It keeps a tiny
+`workspace-materializations/<location>/<key>.json` epoch record as the fence.
+Audit stays on the server (change sets, integrations, verification, retention).
+
+**Unclaimed legacy refs.** Reconciliation lists `refs/rainver/` per Location at
+most every six hours (`list_refs`, pages of 500, up to ten pages per pass; a
+longer scan resumes from its stored cursor next pass and is reported only after
+its last page) and attributes each ref to a known workspace, integration or
+recorded commit — integration commits, batch source and base commits
+(`classifyLocationRefs`). Refs with no owner are never deleted; their count and
+a five-name sample are stored as `unclaimed_refs`/`unclaimed_sample`; workspace
+rows show the count inside their collapsed technical details.
+Handling entry: on the Host, inspect with
+`git for-each-ref refs/rainver/ --format='%(refname) %(objectname)'` and
+`git log -1 <ref>`; if the content is not needed, the owner may remove one with
+`git update-ref -d <ref> <oid>`. Do this manually and only after verifying.
+
+**Objects and GC.** Rainver never runs `git gc --prune=now`, `git prune` or
+`git reflog expire` on a shared repository and never empties a user's reflog.
+Releasing a ref only makes objects unreachable; Git's own `gc --auto` /
+`git maintenance` later prunes them after the normal expiry (two weeks by
+default), so an in-flight rebuild can still read a just-released tip. Physical
+space for those objects is therefore recovered by ordinary Git maintenance.
+
+**Controls.** `workspace.retention.update` (user-only Operation Core command,
+policy action of the same name) accepts a visible change-set id and `action`:
+`reclaim_now` (skips the grace and a remembered proof refusal of an otherwise
+reclaimable source and schedules immediately; refuses otherwise, including while
+a release is in flight), `hold` with `hold_days` (1–90; the visible state stays
+the re-assessed one), `release_hold`, or `retry` (re-delivers blocked cleanup
+with a fresh operation id and budget, keeping a release's epoch and plan). It rechecks full origin Run
+visibility, remote-Host ownership and Project write authority, writes only intent
+and a Job in the core transaction, and never touches Git directly. Reconciliation
+also offers reclaimable owners, including retired ones, for release while their
+Host is online; offline Hosts wait without spending cleanup attempts.
+
+Delegated child workspaces are released against their parent branch as target,
+so a parent waits (`child_workspace_dependency`) until each launched child is
+reclaimed or closed without a branch; a retained child keeps its parent too.
+A reclaimed child that is later continued keeps its recorded base; continued
+children are uncommon and this is not rebuilt from the parent automatically.

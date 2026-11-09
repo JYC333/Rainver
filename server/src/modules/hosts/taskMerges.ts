@@ -1,3 +1,5 @@
+import {deferIfSourceReleasePending} from './workspaceSourceFence.js';
+import {advanceWorkspaceIntegration,failWorkspaceIntegration} from './workspaceIntegrations.js';
 import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
 import { createHash, randomUUID } from "node:crypto";
 import type { HostTaskWorkspace, TaskMergeBlockedOutcome, TaskMergeOutcome } from "@rainver/protocol";
@@ -373,15 +375,21 @@ export function registerTaskMergeHandler(
     const mergeId = typeof job.payload.merge_id === "string" ? job.payload.merge_id : null;
     if (!mergeId) throw new Error(`${TASK_MERGE_JOB} requires merge_id`);
     const db = getDbPool(config.databaseUrl!);
+    let generic=false;
     try {
+      generic=Boolean((await db.query('SELECT 1 FROM task_merges WHERE id=$1 AND space_id=$2 AND workspace_id IS NOT NULL',[mergeId,job.space_id])).rowCount);
+      if(generic)return await advanceWorkspaceIntegration(db,config,mergeId,job.space_id,{hosts:resolved.hosts,verify:deps.verify});
       return await advanceTaskMerge(db, config, resolved, mergeId, job.space_id);
     } catch (error) {
       if (error instanceof JobDeferredError) throw error;
+      deferIfSourceReleasePending(error);
       // The last attempt of a merge that keeps throwing stops it as `failed`
       // the way any other stop is made — the host gives the rebase back, the
       // person is told — so nobody finds a row stuck mid-way. The error
       // itself is the worker's to record, whatever stopping it runs into.
-      if (job.attempts >= job.max_attempts) {
+      if (job.attempts >= job.max_attempts && generic) {
+        await failWorkspaceIntegration(db,mergeId,job.space_id,error instanceof Error?error.message:String(error));
+      } else if (job.attempts >= job.max_attempts) {
         await stopAfterExhaustedAttempts(db, config, resolved, mergeId, job.space_id, error instanceof Error ? error.message : String(error))
           .catch(() => undefined);
       }

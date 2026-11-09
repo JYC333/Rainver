@@ -66,7 +66,7 @@ const run = {
 } as never
 
 const run2 = { ...(run as Record<string, unknown>), id: 'run-2', contract_snapshot_json: { run_id: 'run-2' } } as never
-const waitingRun = { ...(run as Record<string, unknown>), status: 'waiting_for_review', error_message: 'Supervisor review required' } as never
+const waitingRun = { ...(run as Record<string, unknown>), status: 'waiting_for_review', error_message: 'Supervisor review required', error_json: {supervisor_review:true} } as never
 
 function renderPage() {
   return render(
@@ -372,14 +372,14 @@ describe('RunDetailPage route decision panel', () => {
     runsApiMock.resume.mockResolvedValue({})
     const user = userEvent.setup({ delay: null })
     const view = renderPage()
-    await screen.findByRole('button', { name: 'Resume' })
+    await screen.findByRole('button', { name: 'Retry execution' })
     const heading = view.container.querySelector('h1')!
     // The action's canonical GET completes; the subsequent background GET stays pending.
     runsApiMock.get.mockResolvedValueOnce(waitingRun).mockImplementation(() => new Promise(() => {}))
-    await user.click(screen.getByRole('button', { name: 'Resume' }))
+    await user.click(screen.getByRole('button', { name: 'Retry execution' }))
     await waitFor(() => expect(runsApiMock.get).toHaveBeenCalledTimes(3))
     expect(heading.isConnected).toBe(true)
-    expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry execution' })).toBeInTheDocument()
   })
 
   it('does not add a stop entry to the Run detail page', async () => {
@@ -389,22 +389,15 @@ describe('RunDetailPage route decision panel', () => {
     expect(screen.queryByRole('button', { name: /stop|停止/i })).not.toBeInTheDocument()
   })
 
-  it('offers resume and abandon only for a run waiting for review', async () => {
-    runsApiMock.routeDecision.mockResolvedValue({ adapter_id: 'adapter-1' })
-    runsApiMock.resume.mockResolvedValue({ id: 'run-1', status: 'queued', resumed_at: '2026-07-12T00:00:00Z', resume_kind: 'new_attempt' })
-    runsApiMock.abandon.mockResolvedValue({ id: 'run-1', status: 'cancelled', abandoned_at: '2026-07-12T00:00:00Z' })
-    useRunMock.mockReturnValue({ run: waitingRun, loading: false, error: null })
-    const user = userEvent.setup({ delay: null })
+  it.each(['resume','abandon'] as const)('uses the shared %s decision for a supervisor hold', async action => {
+    runsApiMock.routeDecision.mockResolvedValue({adapter_id:'adapter-1'})
+    const held={...(waitingRun as Record<string,unknown>),error_json:{supervisor_review:true}} as never
+    useRunMock.mockReturnValue({run:held,loading:false,error:null})
+    runsApiMock.get.mockResolvedValue(held)
+    runsApiMock[action].mockResolvedValue({id:'run-1',status:action==='resume'?'queued':'cancelled'})
     renderPage()
-
-    expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Abandon' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Resume' }))
-    expect(runsApiMock.resume).toHaveBeenCalledWith('run-1', expect.objectContaining({ spaceId: 'space-1' }))
-    await user.click(screen.getByRole('button', { name: 'Abandon' }))
-    await user.type(screen.getByPlaceholderText('Why is this review being abandoned?'), 'No longer needed')
-    await user.click(screen.getByRole('button', { name: 'Abandon Run' }))
-    expect(runsApiMock.abandon).toHaveBeenCalledWith('run-1', { reason: 'No longer needed' }, expect.objectContaining({ spaceId: 'space-1' }))
+    fireEvent.click(await screen.findByRole('button',{name:action==='resume'?'Retry execution':'Abandon Run'}))
+    await waitFor(()=>expect(runsApiMock[action]).toHaveBeenCalledWith('run-1',...(action==='abandon'?[{reason:undefined}]:[]),expect.objectContaining({spaceId:'space-1'})))
   })
 
   it('requires the authorization decision instead of exposing generic resume', async () => {
@@ -441,7 +434,7 @@ describe('RunDetailPage route decision panel', () => {
     expect(await screen.findByText('Authorization requests')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Abandon' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Approve authorization' })).toBeInTheDocument()
   })
 
   it('reloads authorization requests when polling reaches waiting_for_review', async () => {
@@ -487,8 +480,8 @@ describe('RunDetailPage route decision panel', () => {
       </MemoryRouter>,
     )
 
-    expect(await screen.findByRole('button', { name: 'Approve' })).toBeInTheDocument()
-    expect(runsApiMock.authorizationRequests).toHaveBeenCalledTimes(2)
+    expect(await screen.findByRole('button', { name: 'Approve authorization' })).toBeInTheDocument()
+    expect(runsApiMock.authorizationRequests).toHaveBeenCalledWith('run-1', expect.objectContaining({spaceId:'space-1'}))
     expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
   })
 

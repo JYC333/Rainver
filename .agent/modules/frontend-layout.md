@@ -134,3 +134,10 @@ See [domain guide](../architecture/INQUIRY_PROBLEM_ENGINE.md#project-local-works
 The Problems header also opens the existing Project Standing panel at
 `section=standing`; old `research?tab=standing` links resolve there. Budget,
 source inflow, advice and retry remain reachable without creating a Thread.
+
+Only settings child pages have a compact, wrapping navigation row within the
+main scroller, before the page. It contains only the shared Button link back to
+the settings parent, without an additional icon or breadcrumb trail. The three settings
+roots have no extra navigation row or Home button.
+The mobile row remains available when Global Rail is hidden; desktop and mobile
+More use the same settings ownership/highlight rules.

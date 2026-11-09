@@ -34,7 +34,8 @@ export const conversationExecutionContexts = pgTable("conversation_execution_con
 	primaryWorkspaceMode: varchar("primary_workspace_mode", { length: 16 }),
 	primaryProjectFolderId: varchar("primary_project_folder_id", { length: 36 }),
 	primaryWorkspaceLocationId: varchar("primary_workspace_location_id", { length: 36 }),
-	state: varchar({ length: 16 }).notNull().default("draft"),
+	workspaceBaseline:varchar("workspace_baseline",{length:16}),
+ state: varchar({ length: 16 }).notNull().default("draft"),
 	initializedAt: timestamp("initialized_at", { withTimezone: true, mode: "string" }),
 	initializedByUserId: varchar("initialized_by_user_id", { length: 36 }),
 	dispatchLockId: varchar("dispatch_lock_id", { length: 36 }),
@@ -48,7 +49,8 @@ export const conversationExecutionContexts = pgTable("conversation_execution_con
 	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
-	index("ix_conversation_execution_contexts_space_id").on(table.spaceId),
+	check("ck_conversation_workspace_baseline",sql`workspace_baseline IS NULL OR workspace_baseline IN ('committed','snapshot')`),
+ index("ix_conversation_execution_contexts_space_id").on(table.spaceId),
 	index("ix_conversation_execution_contexts_host_id").on(table.executionHostId),
 	unique("uq_conversation_execution_contexts_session_space").on(table.sessionId, table.spaceId),
 	foreignKey({

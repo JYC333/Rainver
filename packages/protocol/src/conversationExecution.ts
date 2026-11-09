@@ -54,6 +54,7 @@ export const ConversationExecutionHostSummarySchema = z.object({
   host_kind: z.string().trim().min(1),
   online: z.boolean(),
   managed_workspace_available: z.boolean(),
+  isolated_workspaces_available:z.boolean().optional(),
   daemon_last_heartbeat_at: ISODateTimeSchema.nullable(),
 }).strict();
 export type ConversationExecutionHostSummary = z.infer<typeof ConversationExecutionHostSummarySchema>;
@@ -91,6 +92,7 @@ export const ConversationAttachmentSummarySchema = z.object({
   workspace_location_id: IdSchema,
   folder_name: z.string().trim().min(1),
   display_path: z.string().nullable(),
+  git_dirty:z.boolean().nullable().optional(),
   access_mode: ConversationAttachmentAccessModeSchema,
   status: ConversationAttachmentStatusSchema,
   granted_by_user_id: IdSchema,
@@ -127,6 +129,7 @@ export const ConversationExecutionSummarySchema = z.object({
   runtimes: z.array(ConversationPinnedRuntimeSchema).default([]),
   primary: ConversationPrimarySummarySchema.nullable(),
   git: ConversationGitSnapshotSchema.nullable().optional(),
+  workspace_baseline:z.enum(["committed","snapshot"]).nullable().optional(),
   attachments: z.array(ConversationAttachmentSummarySchema),
   dispatch_locked: z.boolean(),
   queue_paused_at: ISODateTimeSchema.nullable(),
@@ -178,6 +181,7 @@ export const ConversationExecutionPreflightResponseSchema = z.object({
 export type ConversationExecutionPreflightResponse = z.infer<typeof ConversationExecutionPreflightResponseSchema>;
 
 export const ConversationExecutionInitializeRequestSchema = z.object({
+  workspace_baseline:z.enum(["committed","snapshot"]).optional(),
   selection: ConversationExecutionSelectionSchema,
   runtime: ConversationRuntimeChoiceSchema,
   /** Explicit runtime pins for the other Agents in a Room conversation. */

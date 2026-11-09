@@ -1,3 +1,4 @@
+import {InquiryMutationError} from "./operationErrors.js";
 import {assertLinkableNote,InquiryCreationConflict} from './threadCreationAccess.js';
 import { problemThreadPage, problemSummaries } from "./problemReadModel.js";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
@@ -117,12 +118,12 @@ export class InquiryThreadService {
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const kind = requiredString(body.kind, "kind");
-    if (kind !== "question" && kind !== "hypothesis") throw new HttpError(422, "kind must be question or hypothesis");
+    if (kind !== "question" && kind !== "hypothesis") throw new InquiryMutationError(422, "kind must be question or hypothesis");
     const statement = requiredString(body.statement, "statement");
     const primaryParentId = optionalString(body.primary_parent_id);
     const producerIdempotencyKey = optionalString(body.producer_idempotency_key);
     if (producerIdempotencyKey && producerIdempotencyKey.length > 128) {
-      throw new HttpError(422, "producer_idempotency_key must be at most 128 characters");
+      throw new InquiryMutationError(422, "producer_idempotency_key must be at most 128 characters");
     }
     const now = new Date().toISOString();
     const threadId = randomUUID();
@@ -321,9 +322,9 @@ export class InquiryThreadService {
     const toThreadId = requiredString(body.to_thread_id, "to_thread_id");
     const relationKind = requiredString(body.relation_kind, "relation_kind");
     if (!THREAD_RELATION_KINDS.includes(relationKind as (typeof THREAD_RELATION_KINDS)[number])) {
-      throw new HttpError(422, `relation_kind must be one of: ${THREAD_RELATION_KINDS.join(", ")}`);
+      throw new InquiryMutationError(422, `relation_kind must be one of: ${THREAD_RELATION_KINDS.join(", ")}`);
     }
-    if (fromThreadId === toThreadId) throw new HttpError(422, "from_thread_id and to_thread_id must differ");
+    if (fromThreadId === toThreadId) throw new InquiryMutationError(422, "from_thread_id and to_thread_id must differ");
 
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
@@ -418,7 +419,7 @@ export class InquiryThreadService {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       await assertThreadReadable(db, identity, projectId, threadId, "change");
       if (parentThreadId) {
-        if (parentThreadId === threadId) throw new HttpError(422, "A Thread cannot be its own parent");
+        if (parentThreadId === threadId) throw new InquiryMutationError(422, "A Thread cannot be its own parent");
         await assertThreadReadable(db, identity, projectId, parentThreadId, "change");
         const cycle = await db.query(
           `WITH RECURSIVE descendants AS (
@@ -429,7 +430,7 @@ export class InquiryThreadService {
            ) SELECT 1 FROM descendants WHERE id=$4 LIMIT 1`,
           [threadId, identity.spaceId, projectId, parentThreadId],
         );
-        if (cycle.rows[0]) throw new HttpError(422, "primary_parent_id would create a cycle");
+        if (cycle.rows[0]) throw new InquiryMutationError(422, "primary_parent_id would create a cycle");
       }
       const before = await db.query<{ primary_parent_id: string | null }>(
         `SELECT primary_parent_id FROM inquiry_threads WHERE object_id=$1 AND space_id=$2`,
@@ -510,7 +511,7 @@ export class InquiryThreadService {
     const noteObjectId = requiredString(body.note_object_id, "note_object_id");
     const linkKind = optionalString(body.link_kind) ?? "linked_note";
     if (linkKind !== "primary_working_note" && linkKind !== "linked_note") {
-      throw new HttpError(422, "link_kind must be primary_working_note or linked_note");
+      throw new InquiryMutationError(422, "link_kind must be primary_working_note or linked_note");
     }
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
@@ -603,7 +604,7 @@ export class InquiryThreadService {
 
   async setSharedFocusWipLimit(identity: SpaceUserIdentity, projectId: string, limit: number): Promise<number> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
-    if (!Number.isInteger(limit) || limit < 1) throw new HttpError(422, "shared_focus_wip_limit must be a positive integer");
+    if (!Number.isInteger(limit) || limit < 1) throw new InquiryMutationError(422, "shared_focus_wip_limit must be a positive integer");
     const now = new Date().toISOString();
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);

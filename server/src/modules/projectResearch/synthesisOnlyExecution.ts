@@ -87,6 +87,7 @@ export async function startSynthesisOnlyExecution(
       preflightSnapshot: { executable: true },
       budgetSources: [],
       researchOperationId: operation.id,
+      runVisibility:'private',
       beforeSchedule: async (executionId) => {
         await tx.query(
           `UPDATE project_operations

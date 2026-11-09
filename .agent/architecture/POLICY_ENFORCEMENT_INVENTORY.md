@@ -511,12 +511,21 @@ policy denial or Proposal rejection. Current fixture tests cover the integration
 production operation/pilot and crash/cutover acceptance remain later-stage gates.
 
 
+Workspace version 1: `workspace.change.complete`, `workspace.integration.retry` and
+`workspace.change.abandon` are dedicated Project-scoped policy actions, enforced through Operation Core with a mandatory durable audit
+and current Run grant/Project writer/Host owner checks. It participates in the
+existing origin-gated Project writes; marking completion does not itself grant
+permission to publish, skip verification, or choose a different target ref.
+`workspace.retention.update` is a user-only Project-scoped policy action with the
+same origin-visibility, Host-owner and Project-writer checks; it cannot release
+unmerged work.
+
 Human Note history/trash core commands now enforce note.edit (wired_direct,
 low risk, audited fail_closed). This instruments the pre-existing canonical
 manual write capability; registration is user-only and ungrantable. It does
 not relax the reserved/default-deny note.link.create entry or authorize Note
 promotion, Memory, Agent mutation or purge. The protocol registry fixture adds
-only this policy, reaching123 entries.
+only this policy, reaching 126 entries together with the three dedicated workspace policies.
 
 P5-5 basis4cf62800: note.edit also covers the ordinary human Note draft/edit,
 collection/placement/reorder commands through noteObjectOperations. Default
@@ -544,3 +553,62 @@ Knowledge proposal. Existing canonical ProposalApplyService and accepted domain
 appliers retain their roles/provenance checks. Full citation reads record B11
 endpoint audits; mandatory storage failure withholds quotes. No policy default,
 Note-link decision or approval mapping is changed.
+
+Candidate extraction core enforcement: knowledgePromotion/extractionOperation.ts
+uses existing inquiry.knowledge.promote with mandatory transactional audit for the
+queued intent. B11 source-body reads, Run, required agent_run Job and request receipt
+share the transaction. Purpose-bound extractionDispatch checks existing live
+Project/user/Agent/source authority at orchestration's existing pre-dispatch seams.
+Publication rechecks authority before new Candidate rows and records its required
+Run-event receipt atomically; it never changes the original Run's paid execution
+or terminal output. No Source activation/consent/egress policy default or proposal
+approval/Agent authority is broadened by this migration.
+
+Project total-package Research workspace increment: `research.workspace.update`
+(policy.ts) is checked once per command/replay by OperationExecutor, with required
+transactional audit and current Project/content checks in workspaceOperations.ts.
+It covers the fourteen user-only workspace entries (including intake drafts,
+stage records, initial-limit, assessment confirmation and standing retry/dismiss), not other Research pipeline or
+Agent calls. No production approval mapping or Agent permission is added.
+
+The Project parallel migration adds human-only `inquiry.workspace.update`,
+`experiment.command`, `project.folder.command` and `project.management.write`
+registrations. Each uses one mandatory core transactional policy decision;
+the owning admission retains Thread/content, Project role, owner/member,
+version review, Host and referenced-resource checks. Personal Inquiry focus and
+Project attention retain their reader-only private-state semantics. These
+registrations are not grantable Agent tools and enable no production approval
+mapping. Five existing Inquiry Agent IDs separately migrate under their original
+inquiry.work.record / inquiry.round.close / inquiry.iteration.record policies,
+immutable grants and effective origin; legacy callbacks are retired. Direct
+Dispatcher and CLI both use the operation adapter, recording one core policy
+decision. Unattended calls remain failclosed without a production mapping.
+Other legacy Agent actions retain their explicitly pending status.
+
+Monitoring details and pause/resume use the existing
+`project.monitoring.configure` policy through monitoring/operations.ts. The
+core owns their CAS, lower-limit validation, version/scheduler writes, receipt
+and mandatory audit transaction. A successful old-key replay returns its
+original metadata without reapplying a later superseded edit or pause. Source
+setup, monitoring proposals, run/reconciliation and private feedback remain
+separate pending migration entries.
+
+The continuation adds two user-only Corpus commands under fail-closed-audit
+`project.corpus.update` and the composite binding history proposal under the
+existing `source.backfill.plan`. The latter retains its money gate and creates
+the existing pending owner Proposal; approval is not granted by command
+submission. Neither action is Agent-grantable. Project update/archive reuse the
+core host's exact Run terminal owner; replay does not retire work created after
+reactivation. Summary publication/revocation retain owner/version authority and
+commit the retrieval projection with the domain result; publication also stores
+its required embedding Job atomically.
+
+Folder IO commands store private frozen intents and required Jobs under the
+existing Folder authority. Draft save retains `project_folder.apply_patch` and
+its direct-user context; create/scan/restore use `project.folder.command`.
+Workers recheck live actor, Project, Folder, Location/Host and policy before IO
+and before the final short transaction. No filesystem/Host effect occurs in the
+core transaction. Unknown effects and independent file changes cannot be
+retried as a fresh same-scope write. Ask AI and Notebook similarly commit private
+Run/Job admission and recheck frozen Source/Note audience before dispatch and
+publication. None of these changes enables a production approval mapping.

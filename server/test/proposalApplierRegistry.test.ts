@@ -119,7 +119,7 @@ describe("proposal applier registry", () => {
     })).not.toThrow();
   });
 
-  it("blocks a project binding until its source activation dependency is accepted",async()=>{const db={query:async(sql:string)=>sql.includes("JOIN source_connections")?{rows:[],rowCount:0}:{rows:[],rowCount:0}};await expect(createDefaultProposalApplierRegistry().apply({config:loadConfig({SERVER_DATABASE_URL:"postgresql://server@db:5432/rainver",SERVER_INTERNAL_TOKEN:"internal-token"}),db:db as never,proposal:proposal({proposal_type:"project_source_bind",project_id:"project-1",payload_json:{proposal_type:"project_source_bind",action_id:"project.source.propose_bind",project_id:"project-1",source_channel_id:"channel-1",depends_on_proposal_id:"activation-1"}}),userId:"user-1"})).rejects.toMatchObject({statusCode:409});});
+  it("hides an unavailable source activation dependency",async()=>{const db={query:async(sql:string)=>sql.includes("JOIN source_connections")?{rows:[],rowCount:0}:{rows:[],rowCount:0}};await expect(createDefaultProposalApplierRegistry().apply({config:loadConfig({SERVER_DATABASE_URL:"postgresql://server@db:5432/rainver",SERVER_INTERNAL_TOKEN:"internal-token"}),db:db as never,proposal:proposal({proposal_type:"project_source_bind",project_id:"project-1",payload_json:{proposal_type:"project_source_bind",action_id:"project.source.propose_bind",project_id:"project-1",source_channel_id:"channel-1",depends_on_proposal_id:"activation-1"}}),userId:"user-1"})).rejects.toMatchObject({statusCode:404});});
 
   it("registers the Claim Candidate Packet applier", () => {
     expect(createDefaultProposalApplierRegistry().registeredTypes()).toContain(

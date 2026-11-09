@@ -283,9 +283,9 @@ Host, runtime and workspace being available, never about HEAD having moved.
 
 The shared conversation turn controls stop active Runs through the canonical
 Run stop route, retain partial output on cancellation, and show the exact
-per-Run `remote_diff` Artifact when a Host uploaded one. An empty diff has no
-Changes card; a missing upload remains visibly unavailable with a retry action,
-not mislabeled as no change. That Artifact is
+per-Run `remote_diff` Artifact when a Host uploaded one inside the turn group's
+single collapsed Changes summary. An empty diff adds nothing; a missing upload
+remains visibly unavailable with a retry action, not mislabeled as no change. That Artifact is
 this Run's own change: the daemon captures the working tree as a git tree
 object before the process starts and diffs it against the tree at exit,
 through a private index file, so a later recipient's diff does not repeat
@@ -1621,3 +1621,20 @@ It does not release another execution owner's lock or claim cancellation already
 completed. The no-lock path still publishes terminal/request state atomically.
 Query-only Room/Agent dispatch/managed-assistant helper signatures accept Queryable;
 no prepared port is cast to a PoolClient and no lifecycle methods are granted.
+
+
+### Isolated delegated execution
+
+Delegations of version-1 Location-backed Runs inherit the isolated contract.
+Each delegation owns a workspace and a Host thread (unique by delegation),
+even when several children select the same Agent. The ordinary Conversation ×
+Agent continuity index excludes these scoped threads. Human turns remain ordered.
+The group projector admits independent sibling writers together, preserving
+subscription quota and budget checks. Legacy children retain the reader/writer
+FIFO and never silently upgrade an old parent contract.
+
+Children start from the parent's actual saved checkpoint, and their target is
+the parent's workspace branch. A pending checkpoint delays fan-out; its durable
+Job re-evaluates admission on success. A waiting parent is not resumed while a
+child's completed changes still owe integration. Partial or failed child work
+is retained and is not implicitly published.

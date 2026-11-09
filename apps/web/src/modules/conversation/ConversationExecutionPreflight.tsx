@@ -73,6 +73,7 @@ function ConversationExecutionPreflightContent({
   const [attachLocationId, setAttachLocationId] = useState('')
   const [attachMode, setAttachMode] = useState<ConversationAttachmentAccessMode>('write')
   const [loading, setLoading] = useState(false)
+  const [baselineMode,setBaselineMode]=useState<'committed'|'snapshot'|''>('snapshot')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [executionDetailsOpen, setExecutionDetailsOpen] = useState(false)
@@ -89,6 +90,7 @@ function ConversationExecutionPreflightContent({
     setRuntimeProfileId('')
     setParticipantRuntimeProfileIds({})
     setAttachLocationId('')
+    setBaselineMode('snapshot')
     setError(null)
     setExecutionDetailsOpen(false)
     hostSelectionTouched.current = false
@@ -124,6 +126,7 @@ function ConversationExecutionPreflightContent({
       const next = await sessionsApi.executionContext(sessionId, scope)
       if (scope.signal?.aborted || sequence !== requestSequence.current) return
       setPreflight(next)
+      setBaselineMode(previous=>next.summary.workspace_baseline??(next.summary.state==='initialized'?'':previous))
       setProfiles(next.available_runtime_profiles ?? [])
       onSummaryChange?.(next.summary)
       // Said again here, not only when `ready` changes: a failed refresh
@@ -211,7 +214,7 @@ function ConversationExecutionPreflightContent({
       : participantChoices.find(choice => !choice.selected)
         ? t('conversation_ui.preflight.choose_cli_for_agent', { agent: participantChoices.find(choice => !choice.selected)!.member.agent_name })
         : null
-  const draftBlockedReason = initialized ? summary?.blocked_reason ?? null : draftReason({
+  const draftBlockedReason = initialized ? localizedWorkspaceReason(summary?.blocked_reason,t) ?? null : draftReason({
     host: selectedHost,
     primary: selectedPrimary,
     location: selectedLocation,
@@ -220,6 +223,9 @@ function ConversationExecutionPreflightContent({
     participantBlockReason,
   })
   const ready = Boolean(sessionId && initialized && summary?.can_send)
+  useEffect(()=>{if(!initialized)setBaselineMode('snapshot')},[primaryKey,hostId,initialized])
+  const baselineRequired=Boolean(!initialized&&selectedLocation?.git?.dirty&&!baselineMode)
+  const effectiveDraftBlockedReason=(selectedPrimary?.kind==='location'&&selectedHost?.isolated_workspaces_available===false?t('workspace_ui.execution.host_upgrade_required'):null)??draftBlockedReason??(baselineRequired?t('workspace_ui.execution.baseline_required'):null)
 
   useEffect(() => {
     if (initialized && (summary?.blocked_reason || error)) setExecutionDetailsOpen(true)
@@ -306,6 +312,19 @@ function ConversationExecutionPreflightContent({
     }
   }
 
+  async function chooseBaseline(mode:'committed'|'snapshot'){
+    if(!initialized){setBaselineMode(mode);return;}
+    if(!sessionId||!summary?.host||!summary.primary||!summary.runtime)return;
+    setBusy(true);setError(null)
+    try{
+      const primary=summary.primary.kind==='managed'?{kind:'managed' as const}:{kind:'location' as const,workspace_location_id:summary.primary.workspace_location_id}
+      await sessionsApi.initializeExecution(sessionId,{selection:{execution_host_id:summary.host.host_id,primary},runtime:summary.runtime,workspace_baseline:mode},scope)
+      if(scope.signal?.aborted)return;
+      setBaselineMode(mode);await reload()
+    }catch(e){if(!scope.signal?.aborted)setError(errMsg(e))}
+    finally{if(!scope.signal?.aborted)setBusy(false)}
+  }
+
   async function initialize(): Promise<void> {
     if (!sessionId || !selectedPrimary || !selectedProfile || !hostId) return
     setBusy(true)
@@ -329,9 +348,13 @@ function ConversationExecutionPreflightContent({
           runtime_key: choice.selected!.runtime_key,
           runtime_installation: choice.selected!.runtime_installation!,
         }))
+      const workspaceBaseline = baselineMode && (selectedLocation?.git?.dirty
+        || summary?.attachments.some(attachment => attachment.status === 'active' && attachment.git_dirty))
+        ? { workspace_baseline: baselineMode }
+        : {}
       await sessionsApi.initializeExecution(sessionId, additional_runtimes.length > 0
-        ? { selection, runtime, additional_runtimes }
-        : { selection, runtime }, scope)
+        ? { selection, runtime, additional_runtimes,...workspaceBaseline }
+        : { selection, runtime,...workspaceBaseline }, scope)
       await reload()
       toast.success(t('conversation_ui.preflight.initialized_toast'))
     } catch (cause) {
@@ -440,6 +463,13 @@ function ConversationExecutionPreflightContent({
       </div>
 
       {cacheNotice}
+      {(initialized?summary?.primary?.kind==='location':selectedPrimary?.kind==='location')&&<p className="text-xs text-muted-foreground">{t('workspace_ui.execution.isolation_preflight')}</p>}
+      {((initialized?summary?.git?.dirty:selectedLocation?.git?.dirty)||summary?.attachments.some(a=>a.status==='active'&&a.git_dirty))&&<div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
+        <p className="text-sm font-medium">{t('workspace_ui.execution.baseline_title')}</p>
+        <p className="text-xs text-muted-foreground">{t('workspace_ui.execution.baseline_description')}</p>
+        <div className="flex flex-wrap gap-2"><Button size="sm" variant={baselineMode==='committed'?'default':'outline'} disabled={busy} onClick={()=>void chooseBaseline('committed')}>{t('workspace_ui.execution.baseline_committed')}</Button><Button size="sm" variant={baselineMode==='snapshot'?'default':'outline'} disabled={busy} onClick={()=>void chooseBaseline('snapshot')}>{t('workspace_ui.execution.baseline_snapshot')}</Button></div>
+        {baselineMode&&<p className="text-xs text-muted-foreground">{t(`workspace_ui.execution.baseline_selected_${baselineMode}`)}</p>}
+      </div>}
       {initialized ? (
         <InitializedSummary summary={summary!} profiles={profiles} participants={participantMembers} />
       ) : (
@@ -492,9 +522,9 @@ function ConversationExecutionPreflightContent({
             {selectedHost && <Badge variant={selectedHost.online ? 'success' : 'destructive'}>{selectedHost.online ? t('conversation_ui.preflight.daemon_online') : t('conversation_ui.preflight.daemon_offline')}</Badge>}
             {selectedHost && !selectedHost.online && <span className="text-muted-foreground">{t('conversation_ui.preflight.browser_note')}</span>}
           </div>
-          {draftBlockedReason && <p className="text-xs text-destructive">{draftBlockedReason}</p>}
+          {effectiveDraftBlockedReason && <p className="text-xs text-destructive">{effectiveDraftBlockedReason}</p>}
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={busy || draftBlockedReason !== null} onClick={() => void initialize()}>{busy ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : null}{t('conversation_ui.preflight.confirm')}</Button>
+            <Button size="sm" disabled={busy || effectiveDraftBlockedReason !== null} onClick={() => void initialize()}>{busy ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : null}{t('conversation_ui.preflight.confirm')}</Button>
             {!manager && <Button size="sm" variant="outline" disabled={busy} onClick={() => void openDraft()}>{t('conversation_ui.preflight.retry_agent')}</Button>}
             {/* The Host chosen above, when there is one; otherwise the overview. */}
             <Link to={hostId ? commandCenterHostPath(hostId, 'runtime') : '/command-center'} className="inline-flex items-center text-xs underline">{t('conversation_ui.preflight.configure_host')}</Link>
@@ -568,7 +598,7 @@ function InitializedSummary({ summary, profiles, participants }: {
     <SummaryRow label={t('conversation_ui.preflight.host_label')} value={host ? `${host.host_name}${host.online ? t('conversation_ui.preflight.daemon_online_suffix') : t('conversation_ui.preflight.daemon_offline_suffix')}` : t('conversation_ui.preflight.unavailable_value')} tone={host?.online === false ? 'danger' : undefined} />
     <SummaryRow label={t('conversation_ui.preflight.primary_cwd')} value={primary?.display_path ?? (primary?.kind === 'managed' ? t('conversation_ui.preflight.managed_workspace') : t('conversation_ui.preflight.unavailable_value'))} />
     <ConversationGitContext snapshot={summary.git ?? null} />
-    {summary.blocked_reason && <p className="rounded bg-destructive/10 px-2 py-1 text-destructive">{summary.blocked_reason}</p>}
+    {summary.blocked_reason && <p className="rounded bg-destructive/10 px-2 py-1 text-destructive">{localizedWorkspaceReason(summary.blocked_reason,t)}</p>}
     {host?.online === false && <div className="flex items-center gap-1 text-muted-foreground"><Unplug className="size-3.5" />{t('conversation_ui.preflight.offline_note')}<Link to={commandCenterHostPath(host.host_id, 'connection')} className="underline">{t('conversation_ui.preflight.reconnect_host')}</Link></div>}
     {!runtime && <p className="text-muted-foreground">{t('conversation_ui.preflight.runtime_gone')}</p>}
   </div>
@@ -688,4 +718,11 @@ function draftReason(input: {
   if (!input.profile) return input.candidateProfileCount > 1 ? i18n.t('conversation_ui.preflight.reason.choose_cli') : i18n.t('conversation_ui.preflight.reason.no_cli')
   if (input.participantBlockReason) return input.participantBlockReason
   return null
+}
+
+
+function localizedWorkspaceReason(reason:string|null|undefined,t:(key:string)=>string){
+ if(reason==='waiting_for_baseline')return t('workspace_ui.execution.baseline_required');
+ if(reason==='execution_workspace_host_upgrade_required')return t('workspace_ui.execution.host_upgrade_required');
+ return reason;
 }

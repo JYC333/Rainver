@@ -9,6 +9,7 @@ import { Button } from '../../components/ui/button'
 import { spacePath } from '../../core/navigation'
 import { useConversationScope } from './ConversationScope'
 import { useAppTranslation } from '../../i18n'
+import { formatDate } from '../../i18n/format'
 
 type Preview = Exclude<RunFilePreview, { kind: 'workspace' }>
 
@@ -59,6 +60,7 @@ export function ConversationFilePreview({ runId, children }: { runId: string; ch
         {error ? <div role="alert" className="space-y-3"><p>{t('file_preview.unavailable')}</p><Button variant="outline" onClick={() => path && open(path)}>{t('file_preview.retry')}</Button></div>
           : preview?.kind === 'image' && imageUrl ? <img src={imageUrl} alt={preview.name} className="min-h-0 max-h-[75dvh] max-w-full object-contain" onError={() => setError(true)} />
           : preview?.kind === 'text' ? <pre className="overflow-auto whitespace-pre-wrap break-words text-sm">{preview.content}</pre>
+          : preview?.kind === 'expired' ? <p role="status" className="text-sm text-muted-foreground">{t('file_preview.expired', { date: preview.expired_at ? t('file_preview.expired_date', { date: formatDate(preview.expired_at) }) : '' })}</p>
           : <p role="status">{t('file_preview.loading')}</p>}
       </DialogContent>
     </Dialog>

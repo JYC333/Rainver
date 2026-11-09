@@ -72,44 +72,44 @@
     },
     {
       "idx": 10,
+      "tag": "0010_instance_registration_invitations",
       "version": "7",
       "when": 1793845932038,
-      "tag": "0010_instance_registration_invitations",
       "breakpoints": true
     },
     {
       "idx": 11,
+      "tag": "0011_operation_idempotency",
       "version": "7",
       "when": 1793902500797,
-      "tag": "0011_operation_idempotency",
       "breakpoints": true
     },
     {
       "idx": 12,
+      "tag": "0012_plugin_lifecycle",
       "version": "7",
       "when": 1793916729676,
-      "tag": "0012_plugin_lifecycle",
       "breakpoints": true
     },
     {
       "idx": 13,
+      "tag": "0013_evolution_bundle_decision_intent",
       "version": "7",
       "when": 1793971941204,
-      "tag": "0013_evolution_bundle_decision_intent",
       "breakpoints": true
     },
     {
       "idx": 14,
+      "tag": "0014_code_patch_decisions",
       "version": "7",
       "when": 1793990811917,
-      "tag": "0014_code_patch_decisions",
       "breakpoints": true
     },
     {
       "idx": 15,
+      "tag": "0015_host_tool_presentation",
       "version": "7",
       "when": 1794000443298,
-      "tag": "0015_host_tool_presentation",
       "breakpoints": true
     },
     {
@@ -117,6 +117,13 @@
       "tag": "0016_project_folder_io_intents",
       "version": "7",
       "when": 1794008468236,
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "tag": "0017_isolated_workspaces_and_retention",
+      "version": "7",
+      "when": 1794167006362,
       "breakpoints": true
     }
   ],

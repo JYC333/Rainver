@@ -155,7 +155,7 @@ describe('ConversationTurn states', () => {
     expect(screen.queryByText('Checking details.')).not.toBeInTheDocument()
   })
 
-  it('working: keeps active and failed tools visible while summarising successes', () => {
+  it('working: shows the latest tool and expands the consecutive activity in order', () => {
     show(<ConversationTurn turn={turn('working', [
       tool(0, 'inquiry.list_threads', 'succeeded'),
       tool(1, 'task.create', 'succeeded'),
@@ -164,8 +164,11 @@ describe('ConversationTurn states', () => {
       tool(4, 'write', 'failed'),
     ])} />)
     expect(screen.queryByText(/tool calls completed/)).not.toBeInTheDocument()
-    expect(screen.getByText('search')).toBeInTheDocument()
+    expect(screen.queryByText('search')).not.toBeInTheDocument()
     expect(screen.getByText('write')).toBeInTheDocument()
+    expect(screen.queryByText('task.create')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /write/ }))
+    expect(screen.getByText('search')).toBeInTheDocument()
     expect(screen.getByText('task.create')).toBeInTheDocument()
   })
 
@@ -211,10 +214,12 @@ describe('ConversationTurn states', () => {
     ])} />)
     expect(screen.getByText('Upstream refused.')).toBeInTheDocument()
     expect(screen.queryByText(/tool call completed/)).not.toBeInTheDocument()
-    expect(screen.getByText('inspect')).toBeInTheDocument()
+    expect(screen.queryByText('inspect')).not.toBeInTheDocument()
     expect(screen.getByText('write')).toBeInTheDocument()
     expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByText('write'))
+    expect(screen.getByText('inspect')).toBeInTheDocument()
+    fireEvent.click(screen.getAllByText('write')[1])
     expect(screen.getAllByText('Upstream refused.')).toHaveLength(2)
     expect(screen.queryByText('null')).not.toBeInTheDocument()
   })

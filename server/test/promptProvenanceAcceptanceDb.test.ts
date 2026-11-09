@@ -88,7 +88,7 @@ async function world(hostKind: "server" | "remote") {
        capabilities_json, last_heartbeat_at, created_at, updated_at)
      VALUES ($1, $2, $1, 'Provenance host', $3, $4, 'online', $5::jsonb, now(), now(), now())`,
     [hostId, hostKind === "remote" ? owner : null, hostKind, hostKind === "remote" ? "linux_native" : "server",
-      JSON.stringify({ runtimes: [], versions: {}, installations: { opencode: [{
+      JSON.stringify({ execution_workspaces:{version:2},runtimes: [], versions: {}, installations: { opencode: [{
         id: "managed:1.0.0", version: "1.0.0", logged_in: true, health_check_protocol: "acp",
         options: { config_options: [], prompt_capabilities: { image: true, embedded_context: false, resource_link: true } },
       }] } })],

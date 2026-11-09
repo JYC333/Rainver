@@ -470,6 +470,7 @@ export class PgRunRepository {
     prompt: string;
     instruction?: string | null;
     project_id?: string | null;
+    session_id?: string | null;
     /** The bounded task's capability identity; never a routing requirement. */
     capability_id?: string | null;
     contract_snapshot?: RunContractSnapshotInput;
@@ -483,6 +484,7 @@ export class PgRunRepository {
           "projects", input.project_id, input.space_id, "Project",
         );
       }
+      if(input.session_id)await new PgRunRepository(db).assertOptionalSpaceRef("sessions",input.session_id,input.space_id,"Session");
       const result = await db.query<{
         id: string;
         space_id: string;
@@ -494,19 +496,19 @@ export class PgRunRepository {
            run_type, trigger_origin, status, mode, prompt, instruction,
            instructed_by_user_id, owner_user_id, visibility, access_level,
            required_sandbox_level, contract_snapshot_json, project_id, capability_id,
-           created_at, updated_at
+           created_at, updated_at, session_id
          ) VALUES (
            $1, $2, NULL, NULL, 'provider_task',
            $3, $4, 'queued', 'live', $5, $6,
            $7, $7, $12, 'full',
            'none', $8::jsonb, $9, $10,
-           $11, $11
+           $11, $11, $13
          ) RETURNING id, space_id, execution_kind, status`,
         [
           randomUUID(), input.space_id, input.run_type, input.trigger_origin,
           input.prompt, input.instruction ?? null, input.user_id,
           JSON.stringify(contractSnapshot), input.project_id ?? null,
-          input.capability_id ?? null, now, input.visibility ?? "space_shared",
+          input.capability_id ?? null, now, input.visibility ?? "space_shared", input.session_id ?? null,
         ],
       );
       const row = result.rows[0];
@@ -2406,8 +2408,8 @@ export class PgRunRepository {
       `WITH updated AS (
          UPDATE runs
             SET status = 'waiting_for_review',
-                error_json = $3::jsonb,
-                error_message = $4,
+                error_json = COALESCE(error_json,'{}'::jsonb) || $3::jsonb || jsonb_build_object('supervisor_failure',COALESCE(error_json,'{}'::jsonb)),
+                error_message = COALESCE(error_message,$4),
                 updated_at = $5
           WHERE space_id = $1
             AND id = $2
@@ -2426,7 +2428,7 @@ export class PgRunRepository {
                 error_code = $6,
                 -- The outcome this attempt had before the hold, so the resume
                 -- that opens the next attempt can give it back.
-                error_json = $3::jsonb || jsonb_build_object('held_from_status', a.status),
+                error_json = COALESCE(a.error_json,'{}'::jsonb) || $3::jsonb || jsonb_build_object('held_from_status', a.status,'supervisor_failure',COALESCE(a.error_json,'{}'::jsonb)),
                 last_activity_at = $5,
                 updated_at = $5
            FROM updated u

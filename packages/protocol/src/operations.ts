@@ -1,4 +1,17 @@
+import {RESEARCH_EXECUTION_SCHEMAS} from './researchExecutionOperations.js';
+import {ResearchAdhocInputSchema,ResearchAdhocReceiptSchema} from './researchAdhocOperation.js';
+import {PROJECT_SOURCE_PROPOSAL_SCHEMAS} from './projectSourceProposalOperations.js';
+import {PROJECT_CORPUS_SCHEMAS} from './projectCorpusOperations.js';
+import {INQUIRY_AGENT_OPERATION_SCHEMAS} from './inquiryAgentOperations.js';
+import {PROJECT_FOLDER_SCHEMAS} from './projectFolderOperations.js';
 import {PROJECT_FOLDER_IO_SCHEMAS} from './projectFolderIoOperations.js';
+import {PROJECT_INGRESS_SCHEMAS} from './projectIngressOperations.js';
+import {PROJECT_EXECUTION_SCHEMAS} from './projectExecutionOperations.js';
+import {PROJECT_MANAGEMENT_SCHEMAS} from './projectManagementOperations.js';
+import {INQUIRY_OPERATION_SCHEMAS} from './inquiryOperations.js';
+import {RESEARCH_WORKSPACE_SCHEMAS} from './researchWorkspaceOperations.js';
+import {KnowledgeExtractionInputSchema,KnowledgeExtractionReceiptSchema} from './knowledgeExtractionOperation.js';
+import {WorkspaceVerificationGetInputSchema,WorkspaceVerificationConfigureInputSchema,WorkspaceVerificationViewSchema,WorkspaceChangeStatusSchema,WorkspaceChangeGetInputSchema,WorkspaceChangeCompleteInputSchema,WorkspaceChangeReceiptSchema,WorkspaceIntegrationRetryInputSchema,WorkspaceChangeAbandonInputSchema,WorkspaceRetentionUpdateInputSchema,WorkspaceRetentionReceiptSchema} from "./executionWorkspaces.js";
 import {KNOWLEDGE_REVIEW_SCHEMAS} from './knowledgeReviewOperations.js';
 import {KNOWLEDGE_OBJECT_SCHEMAS} from './knowledgeObjectOperations.js';
 import {NOTE_OBJECT_SCHEMAS} from './noteObjectOperations.js';
@@ -32,7 +45,7 @@ export const OperationActorSchema = z.object({
   space_id: z.string().min(1)
 }).strict();
 export type OperationActor = z.infer<typeof OperationActorSchema>;
-export const OPERATION_ERROR_CODES = ['authentication_required', 'operation_not_found', 'operation_version_unsupported', 'operation_invalid_input', 'idempotency_key_required', 'idempotency_key_reused', 'idempotency_in_progress', 'operation_approval_mapping_unavailable', 'operation_approval_state_inconsistent', 'operation_approval_rejected', 'operation_approval_expired', 'operation_approval_superseded', 'operation_result_unavailable', 'operation_invalid_output', 'operation_audit_unavailable', 'operation_temporarily_unavailable', 'operation_internal_error', 'operation_conflict'] as const;
+export const OPERATION_ERROR_CODES = ['authentication_required', 'operation_not_found', 'operation_version_unsupported', 'operation_invalid_input', 'idempotency_key_required', 'idempotency_key_reused', 'idempotency_in_progress', 'operation_approval_mapping_unavailable', 'operation_approval_state_inconsistent', 'operation_approval_rejected', 'operation_approval_expired', 'operation_approval_superseded', 'operation_result_unavailable', 'operation_invalid_output', 'operation_audit_unavailable', 'operation_temporarily_unavailable', 'operation_internal_error', 'operation_conflict', 'operation_limit_exceeded'] as const;
 export type OperationErrorCode = typeof OPERATION_ERROR_CODES[number];
 export const OperationErrorSchema = z.object({
   error: z.object({
@@ -145,7 +158,15 @@ export const CollaborationParticipantsOutputSchema = z.object({
   max_delegations: z.number().int().positive(),
 }).strict();
 export const OPERATION_SCHEMA_TABLE = {
-  ...PROJECT_FOLDER_IO_SCHEMAS,
+  'knowledge.candidate.extract':{input:KnowledgeExtractionInputSchema,output:KnowledgeExtractionReceiptSchema},
+  "workspace.integration.verification.get":{input:WorkspaceVerificationGetInputSchema,output:WorkspaceVerificationViewSchema},
+  "workspace.integration.verification.configure":{input:WorkspaceVerificationConfigureInputSchema,output:WorkspaceVerificationViewSchema},
+  "workspace.integration.retry":{input:WorkspaceIntegrationRetryInputSchema,output:WorkspaceChangeReceiptSchema},
+  "workspace.change.abandon":{input:WorkspaceChangeAbandonInputSchema,output:WorkspaceChangeReceiptSchema},
+  "workspace.retention.update":{input:WorkspaceRetentionUpdateInputSchema,output:WorkspaceRetentionReceiptSchema},
+  "workspace.change.get":{input:WorkspaceChangeGetInputSchema,output:WorkspaceChangeStatusSchema},
+  "workspace.change.complete":{input:WorkspaceChangeCompleteInputSchema,output:WorkspaceChangeReceiptSchema},
+
   'source.processing.rule.create':{input:SourceProcessingCreateSchema,output:SourceProcessingRuleSchema},
   'source.processing.rule.update':{input:SourceProcessingUpdateSchema,output:SourceProcessingRuleSchema},
   'source.processing.rule.dispatch':{input:SourceProcessingDispatchSchema,output:SourceDispatchReceiptSchema},
@@ -154,6 +175,18 @@ export const OPERATION_SCHEMA_TABLE = {
   ...NOTE_OBJECT_SCHEMAS,
   ...KNOWLEDGE_OBJECT_SCHEMAS,
   ...KNOWLEDGE_REVIEW_SCHEMAS,
+  ...RESEARCH_WORKSPACE_SCHEMAS,
+  ...RESEARCH_EXECUTION_SCHEMAS,
+  'research.ask_ai':{input:ResearchAdhocInputSchema,output:ResearchAdhocReceiptSchema},
+  ...PROJECT_SOURCE_PROPOSAL_SCHEMAS,
+  ...PROJECT_CORPUS_SCHEMAS,
+  ...PROJECT_FOLDER_SCHEMAS,
+  ...PROJECT_FOLDER_IO_SCHEMAS,
+  ...PROJECT_INGRESS_SCHEMAS,
+  ...PROJECT_EXECUTION_SCHEMAS,
+  ...PROJECT_MANAGEMENT_SCHEMAS,
+  ...INQUIRY_OPERATION_SCHEMAS,
+  ...INQUIRY_AGENT_OPERATION_SCHEMAS,
   'knowledge.note.rollback':{input:NoteRollbackInputSchema,output:NoteControlReceiptSchema},
   'knowledge.note.delete':{input:NoteControlTargetSchema,output:NoteControlReceiptSchema},
   'source.channel.update':{input:SourceMonitorUpdateSchema,output:SourceMonitorOutputSchema},

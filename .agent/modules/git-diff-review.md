@@ -10,10 +10,11 @@ workflow.
   including remote Locations via `hosts` / `@rainver/folder-read`.
 - Code-patch apply and rollback go through accepted `code_patch` proposals
   and `code_patch_snapshots`, not a git-commit review page.
-- Conversation turns add a read-only Changes card that queries the exact
-  `remote_diff` Artifact for the completed Host Run and links to Files & Code
-  for the current Project state. Managed and registered-Location Runs use the
-  same per-Run lookup; the card never mutates a workspace or approves a diff.
+- Conversation turns add one read-only, default-collapsed Changes summary per
+  request group that queries the exact `remote_diff` Artifact for each completed
+  Host Run and links to Files & Code for the current Project state. Managed and
+  registered-Location Runs use the same per-Run lookup; the summary never
+  mutates a workspace or approves a diff.
 
 ## Related Modules
 - [project-files.md](project-files.md)

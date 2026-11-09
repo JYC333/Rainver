@@ -1,13 +1,14 @@
+import {WorkspaceChangesCard} from './WorkspaceChangesCard'
 import { RunModelLabel } from '../conversation/RunModelLabel'
 import { ConversationScope, useConversationScope } from '../conversation/ConversationScope'
-import { hasRunAuthorizationPause, useRunActions } from './useRunActions'
+import { ConversationRunControls } from '../conversation/ConversationRunControls'
 import { RunQuotaRecoveryControls } from './RunQuotaRecoveryControls'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { RuntimeFailureNotice } from './RuntimeFailureNotice'
 import { runtimeFailure } from './runtimeFailure'
-import { ArrowLeft, ExternalLink, FileCode2, FlaskConical, Loader2, Save, ShieldCheck, UserRoundCheck, XCircle } from 'lucide-react'
+import { ArrowLeft, ExternalLink, FileCode2, FlaskConical, Loader2, Save, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import { artifactsApi, evolutionApi, runsApi, type SaveWorkflowFromRunResult } from '../../api/client'
 import { SavedWorkflowNotice } from './SavedWorkflowNotice'
@@ -92,8 +93,8 @@ function promptRefsForRun(run: Run): PromptRef[] {
 
 export default function RunDetailPage() {
   const { runId = '' } = useParams()
-  const { activeSpaceId } = useSpace()
-  return <ConversationScope key={`${activeSpaceId ?? ''}:${runId}`} spaceId={activeSpaceId ?? undefined}><RunDetailPageContent /></ConversationScope>
+  const { activeSpaceId, userId, spaces } = useSpace()
+  return <ConversationScope key={`${activeSpaceId ?? ''}:${runId}`} spaceId={activeSpaceId ?? undefined} actionUserId={userId} actionRole={spaces.find(space => space.id === activeSpaceId)?.role ?? 'member'}><RunDetailPageContent /></ConversationScope>
 }
 
 function RunDetailPageContent() {
@@ -103,8 +104,6 @@ function RunDetailPageContent() {
   const commandScope = useConversationScope()
   const [reloadKey, setReloadKey] = useState(0)
   const [executingRun, setExecutingRun] = useState(false)
-  const [abandonOpen, setAbandonOpen] = useState(false)
-  const [abandonReason, setAbandonReason] = useState('')
   const { run: polled, loading, error } = useRun(runId && activeSpaceId ? runId : null, reloadKey, activeSpaceId ?? undefined)
   const [activities, setActivities] = useState<ActivityInboxRecord[]>([])
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
@@ -317,29 +316,6 @@ function RunDetailPageContent() {
     }
   }
 
-  const actions = useRunActions(runId, commandScope, async () => {
-    setReloadKey(key => key + 1)
-    await loadSubs()
-  })
-  const recoveryBusy = actions.busy !== null
-  const authorizationBusyId = actions.busy && 'requestId' in actions.busy ? actions.busy.requestId : null
-
-  async function resumeWaitingRun() {
-    if (await actions.perform({ kind: 'resume' })) toast.success('Run resumed and queued')
-  }
-  async function abandonWaitingRun() {
-    if (await actions.perform({ kind: 'abandon', reason: abandonReason.trim() || undefined })) {
-      toast.success('Run abandoned')
-      setAbandonOpen(false)
-      setAbandonReason('')
-    }
-  }
-  async function decideAuthorization(requestId: string, decision: 'approve' | 'reject') {
-    if (await actions.perform({ kind: decision, requestId })) {
-      toast.success(decision === 'approve' ? 'Authorization granted' : 'Authorization request rejected')
-    }
-  }
-
   async function previewWorkflow() {
     if (!runId || !activeSpaceId) return
     const generation = workflowPreviewGeneration.current + 1
@@ -449,15 +425,13 @@ function RunDetailPageContent() {
   }
 
   const r: Run = polled
-  const executionSpace = spaces.find(s => s.id === r.space_id)
-  const canReviewAuthorization = executionSpace?.role === 'owner'
+  const executionSpace = spaces.find(space => space.id === r.space_id)
   const instructedBy = r.instructed_by_user_id
     ? 'User'
     : r.instructed_by_agent_id
       ? 'Agent'
       : '—'
   const promptRefs = promptRefsForRun(r)
-  const hasAuthorizationPause = hasRunAuthorizationPause(r, authorizationRequests)
 
   return (
     <>
@@ -470,7 +444,8 @@ function RunDetailPageContent() {
         <RunQuotaRecoveryControls run={r} scope={commandScope} canControl={r.owner_user_id === userId || r.instructed_by_user_id === userId} onChanged={() => setReloadKey(key => key + 1)} />
         <div className="flex flex-wrap items-start justify-between gap-3">
           <h1 className="text-xl font-semibold tracking-tight">{r.instruction ?? r.prompt ?? `${r.run_type} Run`}</h1>
-          <div className="flex flex-wrap items-center gap-2">{actions.error && <span role="alert" className="text-sm text-destructive">{actions.error}</span>}{actions.refreshError && <span role="status" className="text-sm text-muted-foreground">{t('conversation_ui.run.refresh_failed', { message: actions.refreshError })}</span>}<ContentAccessControl resourceType="run" resourceId={r.id} ownerUserId={r.owner_user_id ?? null} />{r.status === 'waiting_for_review' && !hasAuthorizationPause && <><Button size="sm" onClick={() => void resumeWaitingRun()} disabled={recoveryBusy}><UserRoundCheck className="size-3.5" /> Resume</Button><Button size="sm" variant="destructive" onClick={() => setAbandonOpen(true)} disabled={recoveryBusy}><XCircle className="size-3.5" /> Abandon</Button></>}{(r.status === 'succeeded' || r.status === 'degraded') && <Button size="sm" variant="outline" onClick={() => setWorkflowOpen(true)}><Save className="size-3.5" /> Save as workflow</Button>}</div>
+          <div className="flex flex-wrap items-center gap-2"><ContentAccessControl resourceType="run" resourceId={r.id} ownerUserId={r.owner_user_id ?? null} />{(r.status === 'succeeded' || r.status === 'degraded') && <Button size="sm" variant="outline" onClick={() => setWorkflowOpen(true)}><Save className="size-3.5" /> Save as workflow</Button>}</div>
+          {r.status === 'waiting_for_review' && <ConversationRunControls runId={r.id} run={r} reviewOnly onChanged={async () => { setReloadKey(key => key + 1); await loadSubs() }} />}
         </div>
         {savedWorkflow && savedWorkflow.scopeKey === `${activeSpaceId}:${runId}` && <SavedWorkflowNotice result={savedWorkflow.result} />}
         <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}</p>
@@ -600,19 +575,7 @@ function RunDetailPageContent() {
                 </div>
                 <p className="text-sm">{request.reason}</p>
                 <p className="text-xs text-muted-foreground">Requested {fmt(request.requested_at)}</p>
-                {request.status === 'pending' && canReviewAuthorization && (
-                  <div className="flex gap-2">
-                    <Button size="sm" onClick={() => void decideAuthorization(request.id, 'approve')} disabled={authorizationBusyId === request.id}>
-                      <ShieldCheck className="size-3.5" /> Approve
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => void decideAuthorization(request.id, 'reject')} disabled={authorizationBusyId === request.id}>
-                      Reject
-                    </Button>
-                  </div>
-                )}
-                {request.status === 'pending' && !canReviewAuthorization && (
-                  <p className="text-xs text-muted-foreground">A Space owner must review this request.</p>
-                )}
+
               </div>
             ))}
           </Card>
@@ -675,6 +638,7 @@ function RunDetailPageContent() {
         )}
       </div>
 
+      <WorkspaceChangesCard run={r} />
       <Tabs value={activeTab} onValueChange={value => setActiveTab(value as RunDetailTab)}>
         <TabsList>
           <TabsTrigger value="io">Input / output</TabsTrigger>
@@ -819,13 +783,7 @@ function RunDetailPageContent() {
       }}>
         <DialogContent className="max-w-3xl"><DialogHeader><DialogTitle>Save run as workflow</DialogTitle><DialogDescription>This creates a draft or a proposal depending on the source run's risk. Preview is read-only and uses the server's verified evidence.</DialogDescription></DialogHeader><div className="space-y-4"><div className="space-y-1.5"><Label>Display name</Label><Input value={workflowName} onChange={event => { invalidateWorkflowPreview(); setWorkflowName(event.target.value) }} placeholder="Saved workflow" /></div><div className="space-y-1.5"><Label>Description</Label><Textarea value={workflowDescription} onChange={event => { invalidateWorkflowPreview(); setWorkflowDescription(event.target.value) }} placeholder="What should this workflow be reused for?" /></div>{workflowPreview && workflowPreviewScopeKey === `${activeSpaceId}:${runId}` && <JsonBlock value={workflowPreview} />}</div><DialogFooter><Button variant="outline" onClick={() => void previewWorkflow()} disabled={workflowBusy}>{workflowBusy && <Loader2 className="size-3.5 animate-spin" />} Preview</Button><Button onClick={() => void saveWorkflow()} disabled={workflowBusy || workflowPreviewScopeKey !== `${activeSpaceId}:${runId}` || !workflowPreview}>{workflowBusy && <Loader2 className="size-3.5 animate-spin" />} Save workflow</Button></DialogFooter></DialogContent>
       </Dialog>
-      <Dialog open={abandonOpen} onOpenChange={open => { if (!recoveryBusy) setAbandonOpen(open) }}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Abandon waiting Run</DialogTitle><DialogDescription>This marks the Run cancelled and finalizes its audit record. It cannot be resumed afterwards.</DialogDescription></DialogHeader>
-          <div className="space-y-1.5"><Label>Reason (optional)</Label><Textarea value={abandonReason} onChange={event => setAbandonReason(event.target.value)} placeholder="Why is this review being abandoned?" /></div>
-          <DialogFooter><Button variant="ghost" onClick={() => setAbandonOpen(false)} disabled={recoveryBusy}>Cancel</Button><Button variant="destructive" onClick={() => void abandonWaitingRun()} disabled={recoveryBusy}>{recoveryBusy && <Loader2 className="size-3.5 animate-spin" />} Abandon Run</Button></DialogFooter>
-        </DialogContent>
-      </Dialog>
+
     </>
   )
 }

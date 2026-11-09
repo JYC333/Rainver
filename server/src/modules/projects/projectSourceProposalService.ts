@@ -1,3 +1,4 @@
+import {ProjectSourceMutationError} from './projectSourceMutationError.js';
 import {assertSourceBindingDependency} from './sourceBindingDependency.js';
 import {lockProposalDependencies} from '../systemActions/operations/proposalTransitions.js';
 import type { ServerConfig } from "../../config.js";
@@ -248,7 +249,7 @@ export class ProjectSourceProposalService {
     const row = existing.rows[0];
     if (!row) return null;
     if (row.project_source_binding_id !== bindingId || !row.project_operation_id || !row.proposal_id) {
-      throw new HttpError(409, "idempotency_key is already used with different backfill parameters or Project scope");
+      throw new ProjectSourceMutationError(409, "idempotency_key is already used with different backfill parameters or Project scope");
     }
     const priorOperation = await db.query<{ title: string }>(
       `SELECT title FROM project_operations WHERE id=$1 AND space_id=$2 AND project_id=$3`,
@@ -258,12 +259,12 @@ export class ProjectSourceProposalService {
       ? fingerprintOf({ binding_id: bindingId, source_channel_id: channelId, title: priorOperation.rows[0].title, strategy: row.strategy_json, quota_policy: row.quota_policy_json })
       : null;
     if (!priorOperation.rows[0] || priorFingerprint !== fingerprint) {
-      throw new HttpError(409, "idempotency_key is already used with different backfill parameters or Project scope");
+      throw new ProjectSourceMutationError(409, "idempotency_key is already used with different backfill parameters or Project scope");
     }
     const operation = await new ProjectOperationService(db).get(identity, projectId, row.project_operation_id);
     const plan = await planner.get(identity, channelId, row.id);
     const proposal = await db.query(`SELECT * FROM proposals WHERE id=$1 AND space_id=$2 AND project_id=$3`, [row.proposal_id, identity.spaceId, projectId]);
-    if (!proposal.rows[0]) throw new HttpError(409, "Existing backfill proposal is missing or belongs to another Project");
+    if (!proposal.rows[0]) throw new ProjectSourceMutationError(409, "Existing backfill proposal is missing or belongs to another Project");
     await new ProjectOperationService(db).link(identity.spaceId, projectId, row.project_operation_id, "proposal", row.proposal_id, "backfill_approval");
     return { operation, plan, proposal: proposal.rows[0] };
   }

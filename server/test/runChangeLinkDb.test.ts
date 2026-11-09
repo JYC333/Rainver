@@ -157,6 +157,7 @@ describe("a Run's change link on real Postgres", () => {
     const runId = randomUUID();
     const grant = conversationToolGrantInput({ room_id: "room", project_id: PROJECT });
     const toolGrants = await buildRunToolGrants(grant.capabilities_json, { allowed_tools: grant.scenario_tool_allowance });
+    expect(toolGrants).toEqual(expect.arrayContaining([expect.objectContaining({action_id:'workspace.integration.retry'})]));
     await insertRun({
       id: runId,
       session: ROOM_SESSION,

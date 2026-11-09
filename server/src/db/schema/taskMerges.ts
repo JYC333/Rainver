@@ -1,7 +1,8 @@
-import { pgTable, index, unique, check, foreignKey, varchar, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, unique, check, foreignKey, varchar, jsonb, integer, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { spaces } from "./spaces.js";
 import { tasks } from "./tasks.js";
+import {executionWorkspaces,workspaceChangeSets} from "./executionWorkspaces.js";
 import { workspaceLocations } from "./workspaceLocations.js";
 
 /**
@@ -24,7 +25,11 @@ import { workspaceLocations } from "./workspaceLocations.js";
 export const taskMerges = pgTable("task_merges", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	taskId: varchar("task_id", { length: 36 }).notNull(),
+	taskId: varchar("task_id", { length: 36 }),
+ workspaceId:varchar("workspace_id",{length:36}),changeSetId:varchar("change_set_id",{length:36}),
+ attemptId:varchar("attempt_id",{length:36}),
+ generation:integer(),revision:integer().notNull().default(1),
+ sourceCommit:varchar("source_commit",{length:64}),baseCommit:varchar("base_commit",{length:64}),targetRef:varchar("target_ref",{length:256}),
 	workspaceLocationId: varchar("workspace_location_id", { length: 36 }).notNull(),
 	basis: varchar({ length: 256 }).notNull(),
 	status: varchar({ length: 32 }).default('queued').notNull(),
@@ -40,7 +45,11 @@ export const taskMerges = pgTable("task_merges", {
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 	completedAt: timestamp("completed_at", { withTimezone: true, mode: 'string' }),
 }, (table): PgTableExtraConfigValue[] => [
-	unique("uq_task_merges_task_location_basis").on(table.taskId, table.workspaceLocationId, table.basis),
+	unique("uq_task_merges_change_set").on(table.changeSetId),
+ foreignKey({columns:[table.workspaceId,table.spaceId],foreignColumns:[executionWorkspaces.id,executionWorkspaces.spaceId]}),
+ foreignKey({columns:[table.changeSetId,table.spaceId],foreignColumns:[workspaceChangeSets.id,workspaceChangeSets.spaceId]}),
+ check("ck_task_merges_owner",sql`(task_id IS NOT NULL AND workspace_id IS NULL AND change_set_id IS NULL) OR (task_id IS NULL AND workspace_id IS NOT NULL AND change_set_id IS NOT NULL AND generation>0 AND source_commit IS NOT NULL AND base_commit IS NOT NULL AND target_ref IS NOT NULL)`),
+ unique("uq_task_merges_task_location_basis").on(table.taskId, table.workspaceLocationId, table.basis),
 	index("ix_task_merges_task").using("btree", table.spaceId.asc().nullsLast(), table.taskId.asc().nullsLast()),
 	index("ix_task_merges_location_status").using("btree", table.workspaceLocationId.asc().nullsLast(), table.status.asc().nullsLast()),
 	foreignKey({

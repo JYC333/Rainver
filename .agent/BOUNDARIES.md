@@ -283,7 +283,7 @@ launcher/control panel. See [ADR 0005](decisions/0005-desktop-runtime.md).
 
 **B18** — Sandboxes are short-lived execution areas. Long-term records are: artifacts, diffs, logs, and approved proposals. Sandbox directories may be cleaned up after artifact collection.
 
-**B19** — No Agent writes a real checkout beyond the authority its execution grants. A Run the server executes itself (a non-CLI Run in a server-side sandbox, `projectFolders/sandbox.ts`) never touches the checkout: read-only work uses an OS-enforced `read_only` namespace, and a change goes `logical Project Folder → server WorkspaceLocation → isolated clone → agent execution → validation → diff → code_patch proposal → approval → apply patch` (ADR 0017 §1, real checkout). An Agent run by an execution host (ADR 0016) — the built-in host or a paired one — writes its Location directly, bounded by Project write authority and the host's isolation (B63): a Conversation turn in place, a Task Run in its own worktree whose change reaches the checkout when the Task is done (ADR 0016 §11, B65).
+**B19** — No Agent writes a real checkout beyond the authority its execution grants. New isolated Host contracts use the worktree/integration rules of [ADR 0029](decisions/0029-isolated-execution-workspaces.md); the legacy execution paths below remain until each contract migrates. A Run the server executes itself (a non-CLI Run in a server-side sandbox, `projectFolders/sandbox.ts`) never touches the checkout: read-only work uses an OS-enforced `read_only` namespace, and a change goes `logical Project Folder → server WorkspaceLocation → isolated clone → agent execution → validation → diff → code_patch proposal → approval → apply patch` (ADR 0017 §1, real checkout). An Agent run by an execution host (ADR 0016) — the built-in host or a paired one — writes its Location directly, bounded by Project write authority and the host's isolation (B63): a Conversation turn in place, a Task Run in its own worktree whose change reaches the checkout when the Task is done (ADR 0016 §11, B65).
 
 **B19A** — Files & Code reads are policy-gated. `project_folder.read` is enforced for tree, file, git status, and git diff. Protected-Folder, external-root, restricted/protected, full-diff, and secret-like reads force durable audit records.
 
@@ -388,7 +388,9 @@ data, never used for access control, mount resolution, or identity. A Folder
 is logical and may have multiple Locations; no old Folder host/path column may
 be reintroduced.
 
-**B65** — On an execution host a change lands without a per-change approval.
+**B65** — New isolated Conversation/delegation contracts follow [ADR 0029](decisions/0029-isolated-execution-workspaces.md): execution is in a Host-owned worktree; completion intent, Agent checks on an exact saved tree and controlled integration precede its final answer, with independent durable cleanup. Native-session publication is an authorized Operation Core command completed by the active Agent; it does not require another CLI phase or Folder command configuration. Legacy contracts retain the following behavior.
+
+On an execution host a change lands without a per-change approval.
 A Conversation turn edits its Location in place. A Task Run's change reaches
 the main branch only when its Task is done — by automatic acceptance, a
 person, or its Agent — merged onto the main branch's tip and verified by the
@@ -573,10 +575,15 @@ a profile is filtered out of conversation backends and marked
 that would use its ambient login.
 
 **B47** — What the control plane learns about a CLI's login is exactly: whether
-it exists, the account ids and kinds a multi-account CLI reports, and
-subscription percentages with reset times. Never the credential, its contents,
-or its path (B64). The host reads it, spends it against the vendor's own
-endpoint, and returns numbers.
+it exists, the account ids and kinds a multi-account CLI reports, opaque vendor
+account/organization/product identifiers tied to the measured login, and
+subscription percentages with reset times, plus the measured login’s full email
+and optional organization/workspace display name under the existing quota read gate.
+Display metadata never defines pool identity or widens visibility. Native Antigravity status-line
+email may be hashed on the Host as an explicitly email-based identity; it is
+not an immutable Google account ID. Never the credential, its contents,
+or its path (B64). The host queries the vendor or its own native CLI;
+account matching never widens another Host's or user's read/spend authority.
 
 **B48** — A managed adapter's login, native history and user configuration live
 in its stable host-local HOME, outside versioned program directories. Upgrade,

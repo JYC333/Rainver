@@ -17,6 +17,7 @@ import { isStale } from "../hosts/liveness.js";
 import { hostInstallationIds, hostInstallationOptions, hostInstallationPromptCapabilities } from "../hosts/capabilities.js";
 import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { loadRuntimeProfileSnapshot, projectRuntimeProfileSnapshot } from "./runtimeProfileSnapshot.js";
+import {rebindConversationRuntime} from '../hosts/conversationRuntimeBindings.js';
 
 interface BackendRow {
   agent_kind: string;
@@ -354,6 +355,7 @@ export class PgConversationBackendRepository {
     requested?: { runtime_profile_id: string } | null;
   }): Promise<ResolvedConversationBackend> {
     const initialized = await this.isInitialized(input.space_id, input.session_id);
+    if(initialized)await rebindConversationRuntime(this.db,{spaceId:input.space_id,userId:input.user_id,sessionId:input.session_id,agentId:input.agent_id,requestedProfileId:input.requested?.runtime_profile_id});
     // Once initialized, the Conversation-scoped binding is authoritative.
     // Never let a member's user-scoped Room binding shadow the pinned runtime.
     const existing = initialized
@@ -381,7 +383,8 @@ export class PgConversationBackendRepository {
           409,
         );
       }
-      // An initialized Conversation never re-resolves mutable profile defaults
+      // Explicit CLI/copy changes have been reconciled above. An initialized
+      // Conversation never re-resolves mutable profile defaults
       // or silently switches to a fallback. Runtime dispatch will additionally
       // replace mutable workspace fields with the pinned Host thread snapshot.
       // ACP option metadata is read afresh because the installed Agent may

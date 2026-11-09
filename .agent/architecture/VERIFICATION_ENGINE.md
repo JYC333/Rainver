@@ -4,6 +4,14 @@ The engine is the completion authority for deterministic checks declared by a
 Run contract or a Project Folder validation plan. `RunEvaluation` remains the post-run classifier;
 it must consume verification facts rather than infer completion from exit code.
 
+Ordinary conversation Runs do not inherit the Folder's default recipe, test/build
+commands, required checks or artifact expectations. Explicit contract checks and
+named recipe references still apply, as do forbidden-path protections. Task
+execution and merge verification retain Folder defaults.
+Command startup errors are reported as checks that could not run, with the first
+specific cause retained in grouped summaries. Host commands carry the runtime
+tree identity together with the installation for namespace resolution.
+
 ## Ownership and lifecycle
 
 The Runs module owns the engine and the `verification_results` table. A run's

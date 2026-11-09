@@ -66,6 +66,7 @@ vi.mock('../../../api/client', async () => {
     setRetrievalSwitch: vi.fn(),
   },
   projectsApi: { mainlineRoom: vi.fn() },
+  agentWorkspacesApi: { conversationChanges: vi.fn(async () => ({ items: [], next_cursor: null })) },
   proposalsApi: { get: vi.fn(), accept: vi.fn(), reject: vi.fn() },
   runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn(), authorizationRequests: vi.fn().mockResolvedValue([]) },
   roomsApi: {
@@ -506,7 +507,8 @@ describe('Project chat sidecar', () => {
     // message list scrolls inside it instead of stretching the page.
     expect(aside.className).toContain('lg:sticky')
     expect(aside.className).toContain('lg:h-[var(--sidecar-h,100dvh)]')
-    expect(aside.querySelector('.overflow-y-auto')).not.toBeNull()
+    // Scrolling belongs to the shared conversation, not a second sidecar viewport.
+    await waitFor(() => expect(aside.querySelector('[role="log"]')).not.toBeNull())
 
     const handle = screen.getByRole('separator', { name: 'Resize Project chat' })
     expect(handle).toHaveAttribute('aria-valuenow', '352')

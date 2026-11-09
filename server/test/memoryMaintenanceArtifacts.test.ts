@@ -1,3 +1,4 @@
+import {useReviewPacketDatabase} from './support/reviewPacketDatabase.js';
 import { describe, expect, it } from "vitest";
 import type { MemoryMaintenanceReport } from "@rainver/protocol";
 import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
@@ -8,26 +9,10 @@ import {
   persistMemoryMaintenanceReportArtifact,
   registerMemoryMaintenanceProposalAppliers,
 } from "../src/modules/memory/maintenanceArtifacts.js";
-import type { Queryable } from "../src/modules/routeUtils/common.js";
 
-interface CapturedQuery {
-  sql: string;
-  params: readonly unknown[];
-}
 
-function fakeDb(): Queryable & { calls: CapturedQuery[] } {
-  const calls: CapturedQuery[] = [];
-  return {
-    calls,
-    async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []) {
-      calls.push({ sql, params });
-      // Every INSERT this fake handles (proposals, artifacts) puts the
-      // generated id first; echo it back so callers relying on
-      // `RETURNING id` (e.g. insertProposalRow) get a usable row.
-      return { rows: [{ id: params[0] }] as Row[], rowCount: 1 };
-    },
-  };
-}
+const packetDatabase=useReviewPacketDatabase(import.meta.url);
+const realDb=()=>packetDatabase.observe();
 
 function report(): MemoryMaintenanceReport {
   return {
@@ -62,7 +47,7 @@ function report(): MemoryMaintenanceReport {
 
 describe("Memory maintenance artifacts", () => {
   it("persists reports as owner-private artifacts", async () => {
-    const db = fakeDb();
+    const db = realDb();
     const artifactId = await persistMemoryMaintenanceReportArtifact(db, {
       spaceId: "space-1",
       ownerUserId: "user-1",
@@ -71,8 +56,9 @@ describe("Memory maintenance artifacts", () => {
     });
 
     expect(artifactId).toMatch(/[0-9a-f-]{36}/);
-    expect(db.calls).toHaveLength(1);
-    const params = db.calls[0]!.params;
+    const inserts=db.calls.filter(call=>/^INSERT INTO (artifacts|proposals)/.test(call.sql.trim()));
+    expect(inserts).toHaveLength(1);
+    const params = inserts[0]!.params;
     expect(params[1]).toBe("space-1");
     expect(params[4]).toBe(MEMORY_MAINTENANCE_REPORT_ARTIFACT_TYPE);
     expect(params[15]).toBe("user-1");
@@ -97,7 +83,7 @@ describe("Memory maintenance artifacts", () => {
   });
 
   it("creates a private memory maintenance packet proposal", async () => {
-    const db = fakeDb();
+    const db = realDb();
     const proposalId = await createMemoryMaintenanceProposalPacket(db, {
       spaceId: "space-1",
       ownerUserId: "user-1",
@@ -107,8 +93,9 @@ describe("Memory maintenance artifacts", () => {
     });
 
     expect(proposalId).toMatch(/[0-9a-f-]{36}/);
-    expect(db.calls).toHaveLength(1);
-    const params = db.calls[0]!.params;
+    const inserts=db.calls.filter(call=>/^INSERT INTO (artifacts|proposals)/.test(call.sql.trim()));
+    expect(inserts).toHaveLength(1);
+    const params = inserts[0]!.params;
     expect(params[1]).toBe("space-1");
     expect(params[3]).toBe(MEMORY_MAINTENANCE_PACKET_PROPOSAL_TYPE);
     expect(params[14]).toBe("user-1");
@@ -125,7 +112,7 @@ describe("Memory maintenance artifacts", () => {
   });
 
   it("accepts packets as acknowledgement only, without canonical Memory writes", async () => {
-    const db = fakeDb();
+    const db = realDb();
     const registry = new ProposalApplierRegistry();
     registerMemoryMaintenanceProposalAppliers(registry);
     const applier = registry.get(MEMORY_MAINTENANCE_PACKET_PROPOSAL_TYPE);
@@ -176,7 +163,7 @@ describe("Memory maintenance artifacts", () => {
   });
 
   it("accepting packets creates reviewed child Memory proposals without direct Memory writes", async () => {
-    const db = fakeDb();
+    const db = realDb();
     const registry = new ProposalApplierRegistry();
     registerMemoryMaintenanceProposalAppliers(registry);
     const applier = registry.get(MEMORY_MAINTENANCE_PACKET_PROPOSAL_TYPE);
@@ -280,7 +267,7 @@ describe("Memory maintenance artifacts", () => {
   });
 
   it("keeps packet acceptance private to the creator", async () => {
-    const db = fakeDb();
+    const db = realDb();
     const registry = new ProposalApplierRegistry();
     registerMemoryMaintenanceProposalAppliers(registry);
     const applier = registry.get(MEMORY_MAINTENANCE_PACKET_PROPOSAL_TYPE);

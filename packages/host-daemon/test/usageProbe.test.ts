@@ -158,6 +158,37 @@ describe("probing one copy on this host", () => {
     expect(fetchMock.mock.calls[0]?.[1]?.headers?.Authorization).toBe("Bearer secret-token");
   });
 
+  it.each(["same", "account", "workspace", "missing"])("binds Codex quota to its own RPC identity: %s", async scenario => {
+    const tree = join(configDir, "tools", "codex_cli", "1.0.0");
+    await mkdir(tree, { recursive: true });
+    const cli = join(tree, "fake-codex.cjs");
+    await writeFile(cli, `
+      const readline = require('node:readline');
+      readline.createInterface({ input: process.stdin }).on('line', line => {
+        const msg = JSON.parse(line);
+        if (!msg.id) return;
+        if (msg.method === 'initialize' && msg.params.capabilities.experimentalApi !== true) throw new Error('Workspace routing requires experimentalApi');
+        if (msg.method === 'account/read' && msg.params.refreshToken !== false) throw new Error('Identity reads must not request token refresh');
+        const result = msg.id === 1 ? {} : msg.id === 2
+          ? { rateLimits: { primary: { usedPercent: 42, windowDurationMins: 300 } } }
+          : { requiresOpenaiAuth: true, account: { type: 'chatgpt', email: ${JSON.stringify(scenario)} === 'missing' ? null : msg.id === 4 && ${JSON.stringify(scenario)} === 'account' ? 'other@example.test' : 'private@example.test', planType: 'pro' }, workspaceRouting: { chatgptAccountId: msg.id === 4 && ${JSON.stringify(scenario)} === 'workspace' ? 'workspace-b' : 'workspace-a', accountRoutingOverride: 'NO_CONSTRAINT', backendOrigin: 'https://chatgpt.com' } };
+        process.stdout.write(JSON.stringify({ id: msg.id, result })+'\\n');
+      });
+    `);
+    await writeFile(join(tree, "manifest.json"), JSON.stringify({ runtime_key: "codex_cli", version: "1.0.0", command: process.execPath, args: [cli], env: {},
+      home: join(configDir, "codex-home"), login_command: [process.execPath, cli, "login", "--device-auth"], login: { command: ["codex", "login", "--device-auth"] }, installed_at: "" }));
+    const result = await probeUsage({ runtime_key: "codex_cli", installation: "managed:1.0.0", login: null, timeout_seconds: 5 });
+    if (scenario === "account" || scenario === "workspace") {
+      expect(result).toMatchObject({ available: false, account: null });
+      expect(result.error).toContain("account changed");
+    } else {
+      expect(result).toMatchObject({ available: true, session_pct: 42, error: null,
+        account: scenario === "missing" ? null : { provider: "openai", product: "codex", identity_kind: "email" },
+        account_display: scenario === "missing" ? null : { email: "private@example.test" } });
+    }
+    expect(JSON.stringify(result)).not.toMatch(/workspace-a|workspace-b/);
+  });
+
   it("gives up on a response whose body never arrives within the budget it was given", async () => {
     await installClaude({ claudeAiOauth: { accessToken: "secret-token", expiresAt: Date.now() + 3_600_000, scopes: ["user:profile"] } });
     vi.useFakeTimers();
@@ -190,6 +221,31 @@ describe("probing one copy on this host", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("binds Claude quota to its authenticated profile without exposing its email or token", async () => {
+    await installClaude({ claudeAiOauth: { accessToken: "secret-token", expiresAt: Date.now()+3600000 } });
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/profile')
+      ? { account: { uuid: "person-a", email_address: "private@example.test" }, organization: { uuid: "org-a" } }
+      : { five_hour: { utilization: 42, resets_at: null } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await probeUsage({ runtime_key: "claude_code", installation: "managed:1.0.0", login: null, timeout_seconds: 5 });
+    expect(result.account).toMatchObject({ provider: "anthropic", product: "claude" });
+    expect(result.account?.account_id).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.account_display).toEqual({ email: "private@example.test" });
+    expect(JSON.stringify(result)).not.toMatch(/secret-token|person-a|org-a/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("discards a measurement if the CLI login changes while its profile is being read", async () => {
+    await installClaude({ claudeAiOauth: { accessToken: "old-token", expiresAt: Date.now()+3600000 } });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.endsWith('/profile')) await installClaude({ claudeAiOauth: { accessToken: "new-token", expiresAt: Date.now()+3600000 } });
+      return new Response(JSON.stringify(url.endsWith('/profile') ? { account: { uuid: "person-a" }, organization: { uuid: "org-a" } } : { five_hour: { utilization: 99 } }), { status: 200 });
+    }));
+    const result = await probeUsage({ runtime_key: "claude_code", installation: "managed:1.0.0", login: null, timeout_seconds: 5 });
+    expect(result).toMatchObject({ available: false, account: null });
+    expect(result.error).toContain("login changed");
   });
 
   it("says the login expired instead of spending a dead token", async () => {
