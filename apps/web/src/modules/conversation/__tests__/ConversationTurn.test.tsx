@@ -58,6 +58,37 @@ describe('ConversationTurn states', () => {
     expect(screen.queryByText('I will inspect the code.')).not.toBeInTheDocument()
   })
 
+  it('keeps live prose visible and tool details collapsed, then folds history even after opening a tool', () => {
+    const parts: TurnPart[] = [
+      { type: 'text', index: 0, text: 'Inspecting the code.' },
+      { ...tool(1, 'read_file', 'succeeded'), output: 'File contents.' },
+      { type: 'text', index: 2, text: 'Checking the result.' },
+      { ...tool(3, 'run_checks', 'running'), output: 'Check output.' },
+    ]
+    const live = { ...turn('working', parts), source: 'host_thread_events' as const }
+    const { rerender } = show(<ConversationTurn turn={live} />)
+    expect(screen.getByText('Inspecting the code.')).toBeInTheDocument()
+    expect(screen.getByText('Checking the result.')).toBeInTheDocument()
+    expect(screen.queryByText('File contents.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Check output.')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /read_file/ }))
+    expect(screen.getByText('File contents.')).toBeInTheDocument()
+    expect(screen.getByText('Inspecting the code.')).toBeInTheDocument()
+    const saved = settledTurn({ ...live, parts: [...parts,
+      { type: 'text', index: 4, text: 'Final conclusion.' },
+    ] }, 'done', 'Final conclusion.')!
+    rerender(<MemoryRouter><ConversationTurn turn={saved} /></MemoryRouter>)
+    expect(screen.getByText('Final conclusion.')).toBeInTheDocument()
+    expect(screen.queryByText('Inspecting the code.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Checking the result.')).not.toBeInTheDocument()
+    expect(screen.queryByText('File contents.')).not.toBeInTheDocument()
+    expect(screen.queryByText('read_file')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /show work/ }))
+    expect(screen.getByText('Inspecting the code.')).toBeInTheDocument()
+    expect(screen.getByText('Checking the result.')).toBeInTheDocument()
+    expect(screen.getByText('File contents.')).toBeInTheDocument()
+  })
+
   it('never hides the only remaining prose or guesses boundaries in a legacy combined reply', () => {
     const reply = 'Checking the code. Fixed. Tests passed.'
     show(<ConversationTurn turn={turn('done', [
@@ -270,3 +301,15 @@ describe('ConversationTurn states', () => {
     expect(screen.queryByRole('link', { name: /Open run/i })).not.toBeInTheDocument()
   })
 })
+
+it('shows only the final reply when buffered progress has no intervening tool',()=>{
+ const parts:TurnPart[]=[tool(0,'read','succeeded'),{type:'text',index:1,text:'Checking the first file.'},{type:'text',index:2,text:'Checking the second file.'},{type:'text',index:3,text:'Only the final answer.'}];
+ const saved=settledTurn({...turn('working',parts),source:'host_thread_events'},'done','Only the final answer.')!;
+ show(<ConversationTurn turn={saved}/>);
+ expect(screen.getByText('Only the final answer.')).toBeInTheDocument();
+ expect(screen.queryByText('Checking the first file.')).not.toBeInTheDocument();
+ expect(screen.queryByText('Checking the second file.')).not.toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:/show work/i}));
+ expect(screen.getByText('Checking the first file.')).toBeInTheDocument();
+ expect(screen.getByText('Checking the second file.')).toBeInTheDocument();
+});

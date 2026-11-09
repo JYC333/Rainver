@@ -71,7 +71,8 @@ export async function loadRunTurn(
   // this turn's, so folding it in would show work as still running that no
   // process is doing.
   const projection = row.host_task_thread_id
-    ? projectHostThreadTurn(await loadHostThreadRows(db, row.host_task_thread_id, input.runId))
+    ? projectHostThreadTurn(await loadHostThreadRows(db, row.host_task_thread_id, input.runId),
+        { replyText: await loadReplyText(db, input.spaceId, input.runId) })
     : projectRunEventTurn(
         await loadRunEventRows(db, input.spaceId, input.runId),
         { replyText: await loadReplyText(db, input.spaceId, input.runId) },

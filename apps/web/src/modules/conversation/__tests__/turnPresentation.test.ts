@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TurnPart } from '../../../types/api'
-import { presentConversationParts } from '../turnPresentation'
+import { presentConversationParts, progressTextIndexes } from '../turnPresentation'
 
 describe('permission audit presentation', () => {
   it('keeps technical logs separate from actionable errors without changing the recorded parts', () => {
@@ -14,3 +14,8 @@ describe('permission audit presentation', () => {
     expect(parts).toHaveLength(4)
   })
 })
+
+it('folds every earlier message, including buffered prose after the last tool',()=>{
+ const parts:TurnPart[]=[{type:'text',index:0,text:'First progress.'},{type:'text',index:1,text:'Second progress.'},{type:'text',index:2,text:'Final answer.'}];
+ expect([...progressTextIndexes(parts)]).toEqual([0,1]);
+});

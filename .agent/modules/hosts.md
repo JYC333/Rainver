@@ -4055,6 +4055,15 @@ run inside core transactions or mutate the user's index. Exact candidates still
 require verification and CAS before publication. See
 [Project Files](project-files.md) for intake, permissions, no-change settlement and UI behavior.
 
+### Checking adopted workspace changes
+
+“Check whether already integrated” compares the entire frozen change with its
+target without inference. The card polls the accepted check and explains an
+unmatched result; later edits or retired files can prevent exact adoption proof.
+After verifying that later commits adopted or superseded the work, the owner can
+use “Keep without merging” to close the old batch and retain its saved evidence.
+This is not a new successful publication and must not be labelled as one.
+
 ### Integration before the current Run replies
 
 Native integration happens through tools while the original ACP invocation is

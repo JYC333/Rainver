@@ -29,7 +29,19 @@ export async function executeWorkspaceRunReply(input:RemoteHostCliAdapterInput,h
  const held:ThreadEventDraft[]=[],sink=input.thread_event_sink;
  const result=await execute({...input,
   runtime_event_sink:event=>event.type==='assistant_message_completed'?undefined:input.runtime_event_sink?.(event),
-  thread_event_sink:async drafts=>{const visible=[];for(const d of drafts){if(d.event_type==='assistant_text')held.push(d);else if(!(d.event_type==='status'&&['run_succeeded','run_failed'].includes(d.status??'')))visible.push(d);}if(visible.length)await sink?.(visible);},
+  thread_event_sink:async drafts=>{
+   const visible:ThreadEventDraft[]=[];
+   for(const draft of drafts){
+    if(draft.event_type==='assistant_text')held.push(draft);
+    else if(!(draft.event_type==='status'&&['run_succeeded','run_failed'].includes(draft.status??''))){
+     // New work makes the preceding prose progress, not a candidate final reply.
+     // Late output/status updates alone do not establish that boundary.
+     if(draft.event_type==='tool_activity_started'||draft.event_type==='plan_updated')visible.push(...held.splice(0));
+     visible.push(draft);
+    }
+   }
+   if(visible.length)await sink?.(visible);
+  },
  },hostId,workspaceLocationId,deps);
  if(!result.success||objectValue(result.output_json).asked_user){await sink?.(held);await sink?.([{event_type:'status',status:result.success?'run_succeeded':'run_failed'}]);return result;}
  const db=deps.db??getDbPool(deps.config.databaseUrl);

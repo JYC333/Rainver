@@ -178,6 +178,8 @@ export class AcpController implements CliStdioController {
   private advertisedConfigOptions: Record<string, unknown>[] = [];
   private sessionId: string | null = null;
   private text = "";
+  private answerMessageId: string | null = null;
+  private answerInterrupted = false;
   private usage: CanonicalUsage | null = null;
   private modelUsage: CanonicalModelUsage[] = [];
   private selectedModel: string | null;
@@ -510,6 +512,8 @@ export class AcpController implements CliStdioController {
       } else if (this.promptIndex + 1 < this.promptCount()) {
         this.promptIndex += 1;
         this.text = "";
+        this.answerMessageId = null;
+        this.answerInterrupted = false;
         this.prompt(send);
       } else {
         const finish = () => {
@@ -554,6 +558,7 @@ export class AcpController implements CliStdioController {
         this.finishWhenIdle();
         return;
       }
+      if (update.sessionUpdate === "tool_call") this.answerInterrupted = true;
       this.captureSubscriptionQuota(params, update);
       const actualModel = stringField(record(update._meta), "_claude/model");
       if (actualModel && /^[\w./:[\]-]{1,256}$/.test(actualModel) && actualModel !== "default") {
@@ -586,6 +591,16 @@ export class AcpController implements CliStdioController {
           if (thought) {
             this.input.on_thought_delta?.(delta);
           } else {
+            // ACP chunks belong to a message, not one concatenated turn.
+            // Anonymous messages can only be separated at actual tool work.
+            const messageId = stringField(update, "messageId");
+            if (delta.trim() && (this.answerInterrupted || (messageId !== null && this.text.trim().length > 0 && messageId !== this.answerMessageId))) {
+              this.text = "";
+            }
+            if (delta.trim()) {
+              this.answerInterrupted = false;
+              this.answerMessageId = messageId;
+            }
             this.text += delta;
             this.input.on_text_delta?.(delta);
           }

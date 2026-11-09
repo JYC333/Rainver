@@ -206,3 +206,16 @@ describe("turn projection", () => {
     expect(projected.parts[1]).toMatchObject({ index: 1, action_id: "a1", proposal_id: "p1" });
   });
 });
+
+ it("separates buffered progress from the persisted final reply", () => {
+   const {parts}=projectHostThreadTurn([
+     hostRow({event_index:0,event_type:"tool_activity_started",tool_call_id:"read",tool_name:"Read"}),
+     hostRow({event_index:1,event_type:"assistant_text",text:"Checking now. Fixed and checked."}),
+   ],{replyText:"Fixed and checked."});
+   expect(parts.filter(p=>p.type==="text").map(p=>p.text)).toEqual(["Checking now. ","Fixed and checked."]);
+ });
+ it("uses the persisted reply without dropping earlier work or duplicating its final chunk",()=>{
+   const rows=[hostRow({event_index:0,event_type:"assistant_text",text:"Final answer."})];
+   expect(projectHostThreadTurn(rows,{replyText:"Final answer."}).parts).toHaveLength(1);
+   expect(projectHostThreadTurn(rows,{replyText:"Corrected answer."}).parts.filter(p=>p.type==="text").map(p=>p.text)).toEqual(["Final answer.","Corrected answer."]);
+ });

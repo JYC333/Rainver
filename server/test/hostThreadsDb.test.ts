@@ -2453,6 +2453,51 @@ describe('durable workspace integration',()=>{
    const next=await ensureExecutionWorkspace(db.pool,(await new PgRunRepository(db.pool).getRun(SPACE,nextId))!,HOST,LOCATION);expect(next.changeSetId).not.toBe(w.changeSetId);expect(next.workspace.id).toBe(w.workspace.id);
   });
  });
+ it.for(['tool', 'plan'] as const)('streams workspace progress before execution ends while gating the final reply: %s', async (boundary, ctx) => {
+  if (!db.available) return ctx.skip();
+  const { run } = await integration();
+  if (run.execution_kind !== 'agent') throw new Error('Expected an Agent Run');
+  const thread = await new PgHostThreadRepository(db.pool).getOrCreateForConversationAgent({
+   executionHostId: HOST, workspaceMode: 'location', workspaceLocationId: LOCATION,
+   spaceId: SPACE, sessionId: CONVERSATION, agentId: AGENT, runtimeKey: 'claude_code', createdByUserId: OWNER,
+  });
+  await db.pool.query("UPDATE runs SET host_task_thread_id=$2,status='running' WHERE id=$1", [run.id, thread.id]);
+  const { createSerializedThreadEventSink } = await import('../src/modules/hosts/threadEventRepository.js');
+  const { createThreadEventNormalizer } = await import('../src/modules/hosts/threadEventNormalization.js');
+  const { loadRunTurn } = await import('../src/modules/runs/turnReadModel.js');
+  const { executeWorkspaceRunReply } = await import('../src/modules/runs/workspaceRunReply.js');
+  const sink = createSerializedThreadEventSink(new PgHostThreadEventRepository(db.pool), thread.id, run.id, null);
+  const read = () => loadRunTurn(db.pool, { spaceId: SPACE, runId: run.id });
+  const prose = (turn: Awaited<ReturnType<typeof read>>) => turn!.parts.flatMap(part => part.type === 'text' ? [part.text] : []).join('');
+  let finish: Parameters<NonNullable<import('../src/modules/runs/remoteHostCliAdapter.js').RemoteHostCliAdapterInput['workspace_reply_sink']>>[0] | undefined;
+  const normalizer = createThreadEventNormalizer();
+  await executeWorkspaceRunReply({ run, prompt: '检查并合并', model: null, resume_session_id: null, thread_event_sink: sink,
+   workspace_reply_sink: callback => { finish = callback; },
+  }, HOST, LOCATION, { config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), db: db.pool }, async input => {
+   // Exercise actual ACP normalization too: this progress has no trailing newline.
+   await input.thread_event_sink!(normalizer.pushAcpTextDelta('正在检查消息显示。'));
+   const update = boundary === 'tool'
+    ? { sessionUpdate: 'tool_call', toolCallId: 'check', title: 'read_file', status: 'in_progress' }
+    : { sessionUpdate: 'plan', entries: [{ content: '检查显示', status: 'in_progress', priority: 'medium' }] };
+   await input.thread_event_sink!(normalizer.pushAcpProtocolEvent({ method: 'session/update', params: { update } }));
+   const live = await read();
+   expect(live!.state).toBe('working');
+   expect(prose(live)).toBe('正在检查消息显示。');
+   expect(live!.parts.map(part => part.type)).toEqual(['text', boundary === 'tool' ? 'tool_call' : 'plan']);
+   await input.thread_event_sink!(normalizer.pushAcpTextDelta('检查完成，最终结论。'));
+   await input.thread_event_sink!(normalizer.finish());
+   // A late tool result must not release the final candidate before validation.
+   await input.thread_event_sink!([{ event_type: 'tool_activity_finished', tool_call_id: 'check', status: 'succeeded' }]);
+   await input.thread_event_sink!([{ event_type: 'status', status: 'run_succeeded' }]);
+   expect(prose(await read())).toBe('正在检查消息显示。');
+   return { runtime_key: 'claude_code', adapter_kind: 'local_cli', success: true, output_text: '检查完成，最终结论。', exit_code: 0 };
+  });
+  // The adapter returned, but output validation/materialization has not released the reply.
+  expect(prose(await read())).toBe('正在检查消息显示。');
+  await finish!({ allowed: true });
+  expect(prose(await read())).toBe('正在检查消息显示。检查完成，最终结论。');
+ });
+
  it('defers workspace checks to the candidate while preserving output validation before publication',async ctx=>{
   if(!db.available)return ctx.skip();const {run}=await integration();
   const {PgVerificationEngine}=await import('../src/modules/runs/verification/engine.js');

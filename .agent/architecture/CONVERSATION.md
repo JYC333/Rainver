@@ -227,7 +227,10 @@ Two clients need a settled turn from a saved reply, and both go through
   Completed turns fold earlier prose followed by tools or plans into the existing
   work disclosure. The last prose block always stays visible, including when no
   closing reply followed the work. Active, failed and blocked turns keep progress
-  visible. This presentation never infers message boundaries from sentence text,
+  visible. Tool details default to collapsed while live prose stays visible; opening
+  a tool does not open the completed turn’s work disclosure. On successful
+  completion, earlier prose and tools fold even if a tool was opened while working.
+  This presentation never infers message boundaries from sentence text,
   exposes reasoning, or changes the durable assistant message.
 - `readBackTurnState(state, blockedOn)` settles a `working` turn read from
   history to `done`, since the message is written before `chat_completed` lands
@@ -904,9 +907,21 @@ withdrawal preserves the old binding and uses a fresh generation for future work
 An Agent's explicit completion/retry intent is fulfilled inside its current Run
 before its final answer. The adapter holds source/repair answer drafts and
 terminal status; activity remains on that Run's ordinary flat event stream.
+When a new tool call or plan follows buffered prose, the adapter releases that
+prose as progress before the new work, while execution is still running. Only
+the trailing candidate reply waits for final validation; late tool output and
+status updates do not release it.
 Output validation/materialization precede integration; project checks run on the
 exact candidate. The Run retains its turn until repair, verification and target
 CAS complete, then gives the actual final outcome. A native runtime may be
 re-entered for another candidate phase in the same Run, not a hidden successor.
 A stopped or blocked task reports its concrete blocker and does not later start
 another Agent Run. Legacy background records remain accessible as history.
+
+### Completed ACP reply boundaries
+
+ACP assistant chunks are joined within their message identity. A new message,
+or anonymous prose after a tool call, replaces the candidate final reply; progress
+still streams separately. On reload the persisted assistant reply is authoritative:
+buffered earlier prose remains work history and only the last reply stays visible
+when work is folded. Usage and other metadata notifications do not split prose.

@@ -24,7 +24,7 @@ const messages = [
 const pageOf = items => ({ items, total: items.length, limit: 100, offset: 0 })
 const definition = { runtime_key: 'claude_code', display_name: 'Claude Code', command: 'claude', capability_probe: 'claude', remote_eligible: true, reports_managed_cli_version: true, supports_runtime_native: true, supports_model_provider: false, provider_api: 'claude_compatible' }
 
-async function fixtures(page, counts, recoveryRun = failed) {
+async function fixtures(page, counts, recoveryRun = failed, liveParts = null) {
   let signedIn = false
   const runtimeKey = recoveryRun.runtime_key
   const adapter = runtimeKey === 'opencode'
@@ -39,6 +39,7 @@ async function fixtures(page, counts, recoveryRun = failed) {
       let abort
       const stream = new ReadableStream({
         start(controller) {
+          window.__recoveryTurnFrame = frame => controller.enqueue(new TextEncoder().encode(`event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`))
           controller.enqueue(new TextEncoder().encode(`event: turn.snapshot\ndata: ${JSON.stringify({ type: 'turn.snapshot', turn: live })}\n\n`))
           abort = () => controller.error(new DOMException('Aborted', 'AbortError'))
           if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true })
@@ -47,7 +48,7 @@ async function fixtures(page, counts, recoveryRun = failed) {
       })
       return Promise.resolve(new Response(stream, { headers: { 'content-type': 'text/event-stream' } }))
     }
-  }, { id: failed.id, live: turn({ run_id: failed.id, state: 'working', source: 'host_thread_events', parts: [
+  }, { id: failed.id, live: turn({ run_id: failed.id, state: 'working', source: 'host_thread_events', parts: liveParts ?? [
     { type: 'diagnostic', index: 0, error_code: 'runtime_compacted', level: 'info', text: 'native context compacted' },
     { type: 'diagnostic', index: 1, error_code: 'runtime_subagent_running', level: 'info', text: 'Check cancellation' },
     { type: 'text', index: 2, text: 'Checking the cancellation path and usage reports.' },
@@ -68,7 +69,7 @@ async function fixtures(page, counts, recoveryRun = failed) {
     else if (path === `/rooms/${room.id}/conversations`) data = pageOf([session])
     else if (path === `/rooms/${room.id}/agent-candidates`) data = { agents: [], presets: [], total: 0, limit: 100, offset: 0 }
     else if (path === `/rooms/${room.id}/invitations`) data = pageOf([])
-    else if (path.endsWith('/messages')) data = { ...pageOf(recoveryRun.status === 'running' ? messages.map(message => message.role === 'assistant' ? { ...message, content: '' } : message) : messages), queued: [] }
+    else if (path.endsWith('/messages')) data = { ...pageOf(liveParts ? messages.filter(message => message.role !== 'assistant') : recoveryRun.status === 'running' ? messages.map(message => message.role === 'assistant' ? { ...message, content: '' } : message) : messages), queued: [] }
     else if (path === `/sessions/${session.id}`) data = session
     else if (path === `/sessions/${session.id}/execution-context`) data = {
       summary: { session_id: session.id, state: 'initialized', host: null, runtime: null, runtimes: [], primary: null,
@@ -85,7 +86,7 @@ async function fixtures(page, counts, recoveryRun = failed) {
     else if (path.endsWith('/quota')) data = { warn_pct: 80, logins: [], holds: [] }
     else if (path === `/runs/${failed.id}`) data = recoveryRun
     else if (path === `/runs/${failed.id}/turn/stream`) {
-      const live = turn({ run_id: failed.id, state: recoveryRun.status === 'running' ? 'working' : 'error', source: 'host_thread_events', parts: [
+      const live = turn({ run_id: failed.id, state: recoveryRun.status === 'running' ? 'working' : 'error', source: 'host_thread_events', parts: liveParts ?? [
         { type: 'diagnostic', index: 0, error_code: 'runtime_compacted', level: 'info', text: 'native context compacted' },
         { type: 'diagnostic', index: 1, error_code: 'runtime_subagent_running', level: 'info', text: 'Check cancellation' },
         { type: 'text', index: 2, text: 'Checking the cancellation path and usage reports.' },
@@ -99,7 +100,7 @@ async function fixtures(page, counts, recoveryRun = failed) {
       if (route.request().method() === 'POST') counts.input = route.request().postDataJSON()
     }
     else if (path === `/runs/${failed.id}/turn`) data = recoveryRun.status === 'running'
-      ? turn({ run_id: failed.id, state: 'working', source: 'host_thread_events', parts: [
+      ? turn({ run_id: failed.id, state: 'working', source: 'host_thread_events', parts: liveParts ?? [
           { type: 'diagnostic', index: 0, error_code: 'runtime_compacted', level: 'info', text: 'native context compacted' },
           { type: 'diagnostic', index: 1, error_code: 'runtime_subagent_running', level: 'info', text: 'Check cancellation' },
           { type: 'text', index: 2, text: 'Checking the cancellation path and usage reports.' },
@@ -129,6 +130,89 @@ async function fixtures(page, counts, recoveryRun = failed) {
     else return route.fulfill({ status: 404, json: { detail: `Unavailable in recovery fixture: ${path}` } })
     return route.fulfill({ json: data })
   })
+}
+
+for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
+  test(`live prose stays visible with collapsed tools: ${locale}/${theme}/${width}`, async () => {
+    const context = await browser.newContext({ viewport: { width, height: 1000 }, serviceWorkers: 'block' })
+    await context.addInitScript(({ locale, theme }) => {
+      localStorage.setItem('rainver:locale', locale)
+      localStorage.setItem('rainver:theme', theme)
+    }, { locale, theme })
+    const page = await context.newPage()
+    page.setDefaultTimeout(10000)
+    try {
+      const tool = (index, name) => ({ type: 'tool_call', index, call_id: `c${index}`, name, kind: 'read', status: 'succeeded', input: null, output: 'Tool details stay collapsed.' })
+      await fixtures(page, { writes: 0, logins: 0 }, { ...failed, status: 'running', ended_at: null, error_message: null, error_json: null }, [
+        { type: 'text', index: 0, text: 'Inspecting the conversation.' },
+        tool(1, 'read_file'), tool(2, 'search_code'),
+        { type: 'text', index: 3, text: 'Checking how messages are displayed.' },
+        tool(4, 'run_checks'),
+      ])
+      await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
+      await page.getByText('Inspecting the conversation.', { exact: true }).waitFor()
+      await page.getByText('Checking how messages are displayed.', { exact: true }).waitFor()
+      assert.equal(await page.getByText('Tool details stay collapsed.', { exact: true }).count(), 0)
+      assert.equal(await page.getByText('read_file', { exact: true }).count(), 0)
+      const group = page.getByRole('button', { name: /search_code/ })
+      assert.equal(await group.getAttribute('aria-expanded'), 'false')
+      await capture(page, `live-prose-${locale}-${theme}-${width}`)
+      await group.focus()
+      await page.keyboard.press('Enter')
+      await page.getByText('read_file', { exact: true }).waitFor()
+      await page.getByText('Inspecting the conversation.', { exact: true }).waitFor()
+      assert.equal(await page.getByText('Tool details stay collapsed.', { exact: true }).count(), 0)
+      await page.getByRole('button', { name: /read_file/ }).click()
+      await page.getByText('Tool details stay collapsed.', { exact: true }).waitFor()
+      await capture(page, `live-prose-expanded-${locale}-${theme}-${width}`)
+      const finalText = 'Final conversation conclusion.'
+      await page.route('**/api/v1/**/messages*', route => route.fulfill({ json: {
+        ...pageOf(messages.map(message => message.role === 'assistant' ? { ...message, content: finalText } : message)), queued: [],
+      } }))
+      await page.route(`**/api/v1/runs/${failed.id}`, route => route.fulfill({ json: { ...failed, status: 'succeeded', error_message: null, error_json: null } }))
+      await page.evaluate(({ id, finalText }) => {
+        window.__recoveryTurnFrame({ type: 'turn.part_appended', run_id: id, cursor: 6, part: { type: 'text', index: 5, text: finalText } })
+        window.__recoveryTurnFrame({ type: 'turn.state_changed', run_id: id, state: 'done', blocked_on: null })
+      }, { id: failed.id, finalText })
+      await page.getByText(finalText, { exact: true }).waitFor()
+      assert.equal(await page.getByText('Inspecting the conversation.', { exact: true }).count(), 0)
+      assert.equal(await page.getByText('Checking how messages are displayed.', { exact: true }).count(), 0)
+      assert.equal(await page.getByText('Tool details stay collapsed.', { exact: true }).count(), 0)
+      const history = page.getByRole('button', { name: locale === 'en' ? /show work/ : /显示过程/ })
+      assert.equal(await history.getAttribute('aria-expanded'), 'false')
+      await page.getByText(finalText, { exact: true }).scrollIntoViewIfNeeded()
+      await capture(page, `live-prose-completed-${locale}-${theme}-${width}`)
+      await history.click()
+      await page.getByText('Inspecting the conversation.', { exact: true }).waitFor()
+      await page.getByText('Checking how messages are displayed.', { exact: true }).waitFor()
+      assert.equal(await page.getByText(finalText, { exact: true }).count(), 1)
+    } finally { await context.close() }
+  })
+}
+
+for(const locale of ['en','zh-CN'])for(const width of [390,1280]){
+ test(`final reply folds buffered progress: ${locale}/${width}`,async()=>{
+  const context=await browser.newContext({viewport:{width,height:1000},serviceWorkers:'block'});
+  await context.addInitScript(locale=>localStorage.setItem('rainver:locale',locale),locale);
+  const page=await context.newPage();page.setDefaultTimeout(10000);
+  const finalText='Only the final answer.',progress='Checking the earlier changes.';
+  const source={...failed,status:'succeeded',error_message:null,error_json:null};
+  try{
+   await fixtures(page,{writes:0,logins:0},source);
+   await page.route('**/api/v1/**/messages*',route=>route.fulfill({json:{...pageOf(messages.map(m=>m.role==='assistant'?{...m,content:finalText}:m)),queued:[]}}));
+   await page.route(`**/api/v1/runs/${failed.id}/turn`,route=>route.fulfill({json:turn({run_id:failed.id,state:'done',source:'host_thread_events',parts:[
+    {type:'text',index:0,text:progress},{type:'text',index:1,text:finalText},
+   ]})}));
+   await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`);
+   await page.getByText(finalText,{exact:true}).waitFor();
+   assert.equal(await page.getByText(progress,{exact:true}).count(),0);
+   await page.getByRole('button',{name:locale==='en'?/show work/:/显示过程/}).click();
+   await page.getByText(progress,{exact:true}).waitFor();
+   assert.equal(await page.getByText(finalText,{exact:true}).count(),1);
+   await capture(page,`final-reply-${locale}-${width}`);
+   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  }finally{await context.close()}
+ });
 }
 
 for (const scenario of ['provider-auth', 'timeout', 'configuration']) for (const locale of ['en', 'zh-CN']) {

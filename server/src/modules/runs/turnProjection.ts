@@ -85,7 +85,7 @@ interface TurnProjection {
  * upserts that entry and every `tool_call_update` patches it in place, so
  * pending, in-progress and terminal states never become separate rows.
  */
-export function projectHostThreadTurn(rows: readonly HostThreadEventRow[]): TurnProjection {
+export function projectHostThreadTurn(rows: readonly HostThreadEventRow[], input: { replyText?: string | null } = {}): TurnProjection {
   const parts: TurnPart[] = [];
   const toolIndexByCallId = new Map<string, number>();
   let openText: { kind: "text" | "reasoning"; index: number } | null = null;
@@ -243,6 +243,22 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[]): Turn
     }
   }
 
+  // A completed reply is authoritative. Keep earlier prose as work, even
+  // when buffered ACP chunks were written together after tool events.
+  if (input.replyText?.trim()) {
+    let lastText = parts.length - 1;
+    while (lastText >= 0 && parts[lastText].type !== "text") lastText--;
+    const last = parts[lastText];
+    if (last?.type === "text" && last.text.endsWith(input.replyText)) {
+      const progress = last.text.slice(0, -input.replyText.length);
+      if (progress.trim()) {
+        last.text = progress;
+        append({ type: "text", text: input.replyText });
+      }
+    } else {
+      append({ type: "text", text: input.replyText });
+    }
+  }
   return { parts, state, source: "host_thread_events", cursor };
 }
 

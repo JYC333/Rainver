@@ -3,14 +3,12 @@ import type { TurnPart } from '../../types/api'
 /** Earlier prose followed by more work, never inferred from sentence content. */
 export function progressTextIndexes(parts: readonly TurnPart[]): Set<number> {
   let lastText = -1
-  let lastWork = -1
   for (const part of parts) {
     if (part.type === 'text' && part.text.trim()) lastText = part.index
-    if (part.type === 'tool_call' || part.type === 'plan') lastWork = part.index
   }
   // Keep the last prose block even if the runtime ended without a closing reply.
   return new Set(parts.flatMap(part => part.type === 'text'
-    && part.text.trim() && !part.streamed && part.index < lastText && part.index < lastWork ? [part.index] : []))
+    && part.text.trim() && !part.streamed && part.index < lastText ? [part.index] : []))
 }
 
 /** Read both current command summaries and already stored provider summaries. */

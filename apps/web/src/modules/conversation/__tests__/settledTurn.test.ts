@@ -66,3 +66,8 @@ describe('settledTurn', () => {
     expect(settled.parts[settled.parts.length - 1]).toMatchObject({ type: 'text', text: 'It failed.' })
   })
 })
+
+it('keeps progress in work history when the saved message contains only the final reply',()=>{
+ const turn:RunTurn={schema_version:'run_turn.v1',run_id:'r',state:'working',source:'host_thread_events',blocked_on:null,cursor:2,updated_at:null,parts:[{type:'text',index:0,text:'Checking.'},{type:'text',index:1,text:'Done.'}]};
+ expect(settledTurn(turn,'done','Done.')!.parts).toEqual(turn.parts);
+});

@@ -64,7 +64,7 @@ export function ConversationTurn({
   const [disclosure, setDisclosure] = useConversationDisclosure(turn.run_id)
   const { work: showWork, diagnostics: showDiagnostics, tools: expanded } = disclosure
   const onExpand = (id: string, open: boolean) => {
-    setDisclosure(current => ({ ...current, tools: { ...current.tools, [id]: open }, work: current.work || open }))
+    setDisclosure(current => ({ ...current, tools: { ...current.tools, [id]: open } }))
   }
   const debugText = [...new Set(turn.parts.filter(isDebugDiagnostic).flatMap(part => part.type === 'diagnostic' ? part.text.split('\n') : []))].join('\n')
   const steps = presentedParts.filter(isStep)

@@ -25,8 +25,10 @@ export function settledTurn(
   // a pause notice or an appended question must still use the canonical message.
   const recordedParts = streamed.parts.filter(part => part.type !== 'text' || !part.streamed)
   const recordedText = recordedParts.flatMap(part => part.type === 'text' ? [part.text] : []).join('')
+  const lastReply = [...recordedParts].reverse().find(part => part.type === 'text')
   const preserveSegments = streamed.source === 'host_thread_events'
-    && recordedText.trim().length > 0 && recordedText.trim() === text.trim()
+    && recordedText.trim().length > 0 && (recordedText.trim() === text.trim()
+      || (lastReply?.type === 'text' && lastReply.text.trim() === text.trim()))
   const steps = streamed.parts.filter(part => part.type !== 'text')
   // Steps keep their stream positions (a host turn interleaves text with
   // them), so the reply takes the first index above every kept step rather
