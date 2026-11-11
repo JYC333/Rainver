@@ -2,6 +2,7 @@ import {publicWorkspaceLaunchError,workspaceScopedCwd} from './workspaceScope.js
 import {prepareWorkspaceAttachments,attachmentReports,attachmentGitBinds,type PreparedAttachment} from './workspaceAttachments.js';
 import { prepareExecutionWorkspace } from "./executionWorkspace.js";
 import { workspaceRunKey,workspaceWorktreeKey } from "./worktreeIdentity.js";
+import { isWorkspaceReview, verifyWorkspaceReviewBasis, workspaceReviewCwd, workspaceReviewLeaseKey } from "./workspaceReview.js";
 import {readOnlyIpcFilter} from './readOnlyIpc.js';
 import {probeReadOnlyWorkspace,readOnlyBinary,assertReadOnlyBinds,workspacePathLeaseKeys,workspaceGitDirectory,readOnlyRootGuard,executableRoots,captureReadOnlyBasis} from './readOnlyWorkspace.js';
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostDaemonFrame, type HostEgressTransport, type HostLaunchFrame, type HostLaunchIsolation, type HostLaunchProviderBinding, type HostLaunchWorkSurface, type HostServerFrameOf } from "@rainver/protocol";
@@ -18,6 +19,8 @@ import { configDir, requireConfig, workspacesRoot } from "./config.js";
 import { buildStrictNamespaceCommand, type StrictBind } from "./strictNamespace.js";
 import { uploadRunDiff, uploadRunOutputs } from "./api.js";
 import { captureGitHead, captureWorkspaceDiff, captureWorkspaceTree } from "./gitDiff.js";
+import { repositoryLeaseKey } from "./repositoryGate.js";
+import { admitRepositories, REPOSITORY_RECOVERY_REQUIRED } from "./branchAlignState.js";
 import { acquireLocationLeases, cancelAllLeaseWaits, cancelLeaseWaits, hasLeaseWaiters, releaseLocationLeases } from "./locationLease.js";
 import { checkLocationRepository, hasTaskWorktreeMaintenance, isTaskWorktreeInUse, prepareTaskWorktree, ownEntry, taskLeaseKey, touchTaskRecord, validTaskWorktreeIds, type LocationRepository, type TaskWorktree } from "./taskWorktree.js";
 import { mergeResolutionWorktree } from "./taskMerge.js";
@@ -96,6 +99,28 @@ export function resolveLocationCwd(
     return null;
   }
 }
+
+/**
+ * The canonical Git common directory of every attachment's actual path (its
+ * Location or shared-root path), whatever Location id or alias it names. An
+ * isolated execution workspace attachment must name a repository: one whose
+ * identity cannot be read now is refused rather than prepared ungated.
+ */
+export async function launchRepositoryDirectories(
+  workspaces: Record<string, string>,
+  sharedRoot: string | null,
+  access: readonly HostWorkspaceAccess[] = [],
+): Promise<{ dirs: string[] } | { refused: string }> {
+  const dirs = new Set<string>();
+  for (const attachment of access) {
+    const path = resolveLocationCwd(workspaces, attachment.workspace_location_id, attachment.workspace_relative_path, sharedRoot);
+    const dir = path ? await workspaceGitDirectory(path) : null;
+    if (dir) dirs.add(dir);
+    else if (attachment.execution_workspace) return { refused: "execution_workspace_attachment_repository_unavailable" };
+  }
+  return { dirs: [...dirs] };
+}
+type HostWorkspaceAccess = NonNullable<HostLaunchFrame["workspace_access"]>[number];
 
 export function resolveInputResourcePaths(
   resources: NonNullable<HostLaunchFrame["input_resources"]> | undefined,
@@ -1177,7 +1202,7 @@ async function launchRun(
   const personalRead=config.trust!=='strict'&&frame.isolation?.sandbox_mode==='read_only';
   const personalMixed=config.trust!=='strict'&&!personalRead&&Boolean(frame.workspace_access?.some(a=>a.execution_workspace&&a.access_mode==='read'));
   const personalNamespace=personalRead||personalMixed;
-  if(personalNamespace&&!(await probeReadOnlyWorkspace()).supported){send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:false,error:'Read-only workspace unavailable: install bubblewrap and allow mount/PID namespaces on this Linux Host; update/reconnect both sides. No writable fallback.'});return;}
+  if(personalNamespace&&!(await probeReadOnlyWorkspace()).supported){send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:false,error:(frame.workspace?.kind==='location' && isWorkspaceReview(frame.workspace.execution_workspace))?'execution_workspace_review_namespace_unavailable':'Read-only workspace unavailable: install bubblewrap and allow mount/PID namespaces on this Linux Host; update/reconnect both sides. No writable fallback.'});return;}
   let cwd: string | undefined;
   try {
     if (frame.workspace?.kind === "managed") {
@@ -1185,6 +1210,14 @@ async function launchRun(
         throw new Error("managed launch workspace is incomplete");
       }
       cwd = await ensureManagedWorkspace(frame.workspace.agent_id, frame.workspace.container);
+    } else if (frame.workspace?.kind === "location" && isWorkspaceReview(frame.workspace.execution_workspace)) {
+      // A read-only delegated review reads its coordinator's existing worktree,
+      // never a writable checkout: only inside a verified read-only namespace.
+      if (!personalRead) throw new Error("execution_workspace_review_requires_read_only");
+      const reviewLocation = frame.workspace.workspace_location_id;
+      const root = reviewLocation ? config.workspaces[reviewLocation] : undefined;
+      if (!reviewLocation || !root) throw new Error("execution_workspace_review_unavailable");
+      cwd = await workspaceReviewCwd(root, reviewLocation, frame.workspace.execution_workspace);
     } else {
       cwd = resolveLocationCwd(
         config.workspaces,
@@ -1225,6 +1258,11 @@ async function launchRun(
   const attachmentRoots=(frame.workspace_access??[]).filter(a=>!a.execution_workspace).map(a=>({path:resolveLocationCwd(config.workspaces,a.workspace_location_id,a.workspace_relative_path,workspacesRoot()),access:a.access_mode})).filter((a):a is {path:string;access:'read'|'write'}=>!!a.path);
   const commonGit=await workspaceGitDirectory(cwd);
   const attachedGit=(await Promise.all(attachmentRoots.map(a=>workspaceGitDirectory(a.path)))).filter((p):p is string=>!!p);
+  // Every repository this Run prepares, mounts, reads or writes — its own and
+  // each attachment, isolated execution workspaces included — by canonical
+  // identity, resolved before anything is prepared.
+  const reached=await launchRepositoryDirectories(config.workspaces,workspacesRoot(),frame.workspace_access);
+  if('refused' in reached){send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:false,error:reached.refused});return;}
   if(personalRead){
     try{assertReadOnlyBinds([cwd,...attachmentRoots.map(a=>a.path),...(commonGit?[commonGit]:[]),...attachedGit],[{path:runDir(frame.run_id),access:'read_write'},...(frame.provider_binding?[{path:providerProfileDir(frame.provider_binding.profile_key),access:'read_write' as const}]:[])]);}
     catch(error){send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:false,error:'Read-only workspace preparation failed; inspect local Host log.'});log(String(error));return;}
@@ -1238,7 +1276,9 @@ async function launchRun(
     : frame.workspace?.workspace_location_id ?? frame.workspace_location_id ?? null;
   const executionRef = frame.workspace?.kind === "location" ? frame.workspace.execution_workspace : undefined;
   if(executionRef && frame.workspace?.kind === "location" && frame.workspace.worktree)throw new Error("Ambiguous execution workspace");
-  const taskId = executionRef ? workspaceWorktreeKey(executionRef) : !personalRead&&frame.workspace?.kind === "location" ? frame.workspace.worktree?.task_id ?? null : null;
+  // A review prepares nothing: it holds the worktree's lease shared (below).
+  const reviewRef = isWorkspaceReview(executionRef) ? executionRef : undefined;
+  const taskId = executionRef && !reviewRef ? workspaceWorktreeKey(executionRef) : !personalRead&&frame.workspace?.kind === "location" ? frame.workspace.worktree?.task_id ?? null : null;
   let taskRepository: LocationRepository | null = null;
   if (locationId && taskId) {
     // Not a checkout, or one with nothing committed: the Run works in place.
@@ -1255,6 +1295,11 @@ async function launchRun(
       return;
     }
     taskRepository = check.kind === "repository" ? check.repo : null;
+    // The checkout a Task worktree is made from is the repository gated below.
+    if (taskRepository && taskRepository.gitCommonDir !== commonGit) {
+      send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false, error: "execution_workspace_repository_unavailable" });
+      return;
+    }
   }
   const taskKey = locationId && taskId && taskRepository ? taskLeaseKey(locationId, taskId) : null;
   // Every Location this Run may write — its own, unless it runs in its Task
@@ -1262,6 +1307,8 @@ async function launchRun(
   // own lease, exclusively; a read-only Run's Locations shared. Taken
   // together, in sorted order.
   const leasePlan = launchLeasePlan(frame, config.trust === "strict"||personalRead, locationId ?? null, taskKey);
+  const reviewKey = reviewRef && locationId ? workspaceReviewLeaseKey(locationId, reviewRef) : null;
+  if (reviewKey) leasePlan.shared.push(reviewKey);
   // Task code runs in its own checkout, not the original Location. Lock that
   // physical root (also when registered through an alias) without serializing
   // independent Tasks on their shared git object store.
@@ -1274,6 +1321,10 @@ async function launchRun(
     if(personalRead||frame.isolation?.sandbox_mode==='read_only'||attachment.access==='read')leasePlan.shared.push(...keys);else leasePlan.exclusive.push(...keys);
   }
   for(const path of attachedGit)(personalRead||frame.isolation?.sandbox_mode==='read_only'?leasePlan.shared:leasePlan.exclusive).push('workspace-git:'+path);
+  // Every repository this Run reaches, shared, by canonical identity: the gate a
+  // branch alignment takes exclusively, whichever Location either came through.
+  const repositories=[...new Set([commonGit,...reached.dirs].filter((p):p is string=>!!p))];
+  leasePlan.shared.push(...repositories.map(repositoryLeaseKey));
   const leaseIds = [...leasePlan.exclusive, ...leasePlan.shared];
   if (stoppedLaunches.has(frame.launch_id)) {
     sendStoppedBeforeStart(frame, send);
@@ -1302,6 +1353,14 @@ async function launchRun(
       return;
     }
     hold.leases = [...new Set(leaseIds)];
+    // Asked once its repositories are held: a quarantine is only recorded under
+    // an alignment's exclusive hold, so none can appear from here on.
+    const quarantined = await admitRepositories(repositories).catch(() => REPOSITORY_RECOVERY_REQUIRED);
+    if (quarantined) {
+      send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false,
+        error: `${quarantined}: an earlier branch alignment of this repository did not finish cleanly. Make the aligned branch and its checkout consistent (clean, at its recorded commit), then start again.` });
+      return;
+    }
     // Checked again: both can change during a wait.
     if (registrationRevoked || isRuntimeKeyBeingReplaced(frame.runtime_key)) {
       send({
@@ -1314,6 +1373,28 @@ async function launchRun(
           ? "This host registration was revoked."
           : `${frame.runtime_key} is being upgraded on this host; retry in a moment.`,
       });
+      return;
+    }
+  }
+  if (reviewRef && reviewKey && locationId) {
+    // A command still running in that worktree (a writer's verification) finishes first.
+    let waited = waitingSent;
+    while (isTaskWorktreeInUse(reviewKey)) {
+      if (stoppedLaunches.has(frame.launch_id)) {
+        sendStoppedBeforeStart(frame, send);
+        return;
+      }
+      if (!waited) {
+        waited = true;
+        send({ type: "waiting_for_workspace", run_id: frame.run_id, launch_id: frame.launch_id });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const root = config.workspaces[locationId];
+    const refusal = root ? await verifyWorkspaceReviewBasis(root, locationId, reviewRef).catch(() => "execution_workspace_review_unavailable") : "execution_workspace_review_unavailable";
+    if (refusal) {
+      log(`run ${frame.run_id}: workspace review refused: ${refusal}`);
+      send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false, error: refusal });
       return;
     }
   }
@@ -1363,7 +1444,7 @@ async function launchRun(
     try{
       const result=await prepareWorkspaceAttachments({attachments:frame.workspace_access,workspaces:config.workspaces,sharedRoot:workspacesRoot(),runId:frame.run_id,launchId:frame.launch_id,
         onQueued:()=>send({type:'waiting_for_workspace',run_id:frame.run_id,launch_id:frame.launch_id}),
-        primary:executionRef&&hold.worktree&&locationId?{ref:executionRef,locationId,worktree:hold.worktree}:null});
+        primary:executionRef&&hold.worktree&&locationId?{ref:executionRef,locationId,worktree:hold.worktree}:null,gated:new Set(repositories)});
       hold.attachedWorktrees=result.prepared;
       attachedWorkspaceEnv.RAINVER_WORKSPACE_ACCESS=JSON.stringify(result.entries);
       for(const entry of result.entries)attachmentExecutionRoots[entry.workspace_location_id]=entry.path;
@@ -1857,7 +1938,7 @@ async function launchRun(
         releaseHeldLeases(frame, hold);
       }
       try {
-        if (diff !== null || gitAfter) {
+        if ((!reviewRef || namespaceReady) && (diff !== null || gitAfter)) {
           await uploadRunDiff(config.server_url, config.token, frame.run_id, {
             launch_id: frame.launch_id,
             diff,
@@ -1921,7 +2002,7 @@ async function launchRun(
         ...(taskWorktree && !executionRef ? { task_worktree: { branch: taskWorktree.branch, start_commit: taskWorktree.startCommit } } : {}),
         ...((hold.attachedWorktrees?.length??0)>0?{execution_workspace_reports:attachmentReports(hold.attachedWorktrees!)}:{}),
         ...(taskWorktree && executionRef ? {execution_workspace:{id:executionRef.id,generation:executionRef.generation,branch:taskWorktree.branch,start_commit:taskWorktree.startCommit,target_ref:taskWorktree.targetRef??executionRef.target_ref??null,baseline_kind:taskWorktree.baselineKind as "committed"|"snapshot"|undefined,snapshot_head:taskWorktree.snapshotHead??null,baseline_tree:taskWorktree.baselineTree??null,launch_sequence:taskWorktree.launchSequence}}:{}),
-        error: launchFailureMessage({
+        error: reviewRef && !namespaceReady && !active.timedOut && !active.terminationRequested ? "execution_workspace_review_namespace_unavailable" : launchFailureMessage({
           namespaceReady,
           timedOut: active.timedOut,
           terminationRequested: active.terminationRequested,

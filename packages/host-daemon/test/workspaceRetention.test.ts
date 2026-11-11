@@ -85,6 +85,30 @@ describe('workspace branch and ref retention',()=>{
   expect(git(['rev-parse',own])).toBe(tip);
  });
 
+ it('discards an explicitly reviewed unmerged tip, removes its directory and branch, and retains bounded recovery refs',async()=>{
+  const ref={id:randomUUID(),generation:1,target_ref:'refs/heads/main',materialization_epoch:1};
+  const {tip,prepared}=await savedRun(ref,'obsolete.txt','obsolete private work');
+  const command=frame(ref,{action:'cleanup',retain_branch:false,expected_commit:tip,discard_commit:tip});
+  const result=await executeWorkspaceCommand(repoDir,command);
+  expect(result).toMatchObject({ok:true,cleanup_state:'cleaned',inventory:{branch:false,worktree:false,registration:false,history_refs:[tip]}});
+  expect(existsSync(prepared.root)).toBe(false);
+  expect(git(['show',`refs/rainver/run-history/${ref.id}/g1/${tip}:obsolete.txt`])).toBe('obsolete private work');
+  expect(await executeWorkspaceCommand(repoDir,command)).toMatchObject({ok:true,inventory:{branch:false}});
+  expect(await executeWorkspaceCommand(repoDir,{...command,discard_commit:git(['rev-parse','main'])})).toMatchObject({ok:false});
+ });
+
+ it('never discards a moved or dirty source or accepts a discard without an epoch',async()=>{
+  const ref={id:randomUUID(),generation:1,target_ref:'refs/heads/main',materialization_epoch:1};
+  const {tip,prepared}=await savedRun(ref,'only.txt','keep');
+  const raw={action:'cleanup',retain_branch:false,expected_commit:tip,discard_commit:tip};
+  expect(await executeWorkspaceCommand(repoDir,frame({...ref,materialization_epoch:undefined},raw))).toMatchObject({ok:false,error:'workspace_discard_invalid'});
+  expect(await executeWorkspaceCommand(repoDir,frame(ref,{...raw,expected_commit:git(['rev-parse','main']),discard_commit:git(['rev-parse','main'])}))).toMatchObject({ok:false,error:'workspace_generation_moved'});
+  await writeFile(join(prepared.root,'only.txt'),'unsaved');
+  expect(await executeWorkspaceCommand(repoDir,frame(ref,raw))).toMatchObject({ok:false,error:'workspace_uncheckpointed'});
+  expect(git(['rev-parse',`refs/heads/rainver/workspace-${ref.id}-g1`])).toBe(tip);
+  expect(await readFile(join(prepared.root,'only.txt'),'utf8')).toBe('unsaved');
+ });
+
  it('rebuilds the same identity from the target with a monotonic sequence and fences the older cleanup',async()=>{
   const ref={id:randomUUID(),generation:1,target_ref:'refs/heads/main'};
   const {tip,prepared}=await savedRun(ref,'a.txt','a');

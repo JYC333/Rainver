@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedAgentWithVersion, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { findManagedWorkspaceRestoreTarget } from "../src/modules/rooms/rosterService.js";
 import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
+import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
+import { retryPendingArchivesForConnectedHosts } from "../src/modules/hosts/managedWorkspaceArchiveRecovery.js";
 
 /**
  * What a re-added Room specialist gets its host state back from.
@@ -190,5 +192,42 @@ describe("finding what a re-added Agent restores", () => {
     } finally {
       client.release();
     }
+  });
+});
+
+describe("retrying committed archives for a Host that stayed connected", () => {
+  it("retries an archive whose after-commit attempt was lost, only for an online Host, until acknowledged", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    await closedConversationThread("managed");
+    // Committed two minutes or more ago and never acknowledged: the first attempt died with its process.
+    await db.pool.query(`UPDATE host_threads SET pending_archive_at = now() - interval '10 minutes' WHERE agent_id = $1`, [AGENT]);
+    const online = vi.spyOn(sharedHostConnectionRegistry, "isOnline");
+    const archive = vi.spyOn(sharedHostConnectionRegistry, "requestManagedWorkspaceAction")
+      .mockResolvedValue({ ok: true, changed: true, error: null } as never);
+    try {
+      online.mockReturnValue(false);
+      await expect(retryPendingArchivesForConnectedHosts(db.pool)).resolves.toBe(0);
+      expect(archive).not.toHaveBeenCalled();
+      online.mockReturnValue(true);
+      await expect(retryPendingArchivesForConnectedHosts(db.pool)).resolves.toBe(1);
+      expect(archive).toHaveBeenCalledWith(HOST, "managed_workspace_archive", expect.objectContaining({ agent_id: AGENT, container_id: CONVERSATION }));
+      expect((await db.pool.query(`SELECT pending_archive_at FROM host_threads WHERE agent_id = $1`, [AGENT])).rows[0].pending_archive_at).toBeNull();
+      // Acknowledged: nothing is owed any more.
+      await expect(retryPendingArchivesForConnectedHosts(db.pool)).resolves.toBe(0);
+      expect(archive).toHaveBeenCalledTimes(1);
+    } finally {
+      online.mockRestore();
+      archive.mockRestore();
+    }
+  });
+
+  it("leaves a fresh intent to its own after-commit attempt", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    await closedConversationThread("managed");
+    await db.pool.query(`UPDATE host_threads SET pending_archive_at = now() WHERE agent_id = $1`, [AGENT]);
+    const online = vi.spyOn(sharedHostConnectionRegistry, "isOnline").mockReturnValue(true);
+    try {
+      await expect(retryPendingArchivesForConnectedHosts(db.pool)).resolves.toBe(0);
+    } finally { online.mockRestore(); }
   });
 });

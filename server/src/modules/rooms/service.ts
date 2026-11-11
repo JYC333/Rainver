@@ -1,10 +1,10 @@
 import { PgRoomRosterRepository } from "./rosterRepository.js";
+import { RoomMutationError, roomRefusal } from "./roomMutationError.js";
 import { defaultRoomDelegationBudget } from "./delegationBudget.js";
-import { createHash, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
-import { getDbPool, type Pool } from "../../db/pool.js";
+import { getDbPool } from "../../db/pool.js";
 import { AgentGroupRunService, type AgentGroupMessageRecipientSegment, type RoomCoordinationTarget } from "../agentGroups/service.js";
-import { HttpError, type Queryable, bestEffortStep, withDbTransaction, dateIso } from "../routeUtils/common.js";
+import { HttpError, type Queryable, bestEffortStep, dateIso, withQueryableTransaction } from "../routeUtils/common.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { PgRunRepository } from "../runs/repository.js";
 import type { AgentRunRecord } from "../runs/repository.js";
@@ -41,7 +41,6 @@ import { PLAIN_STATUS_RESPONSE_POLICY } from "../systemActions/conversationPolic
 import { PgConversationBackendRepository } from "../sessions/conversationBackendRepository.js";
 import { ConversationInputError, ConversationInputService, type PreparedConversationInputPart } from "../sessions/conversationInputService.js";
 import { ConversationInputCapabilityError, assertConversationInputCapabilities, assertConversationInputResourceTools } from "../sessions/conversationInputCapabilities.js";
-import { conversationRetryFingerprint, withConversationRetryIdempotency } from "../sessions/conversationRetry.js";
 import type { MessageOut } from "@rainver/protocol";
 
 export interface RoomIdentity {
@@ -59,7 +58,7 @@ export class RoomService {
 
   constructor(
     private readonly config: ServerConfig,
-    private readonly pool: Pool,
+    private readonly pool: Queryable,
   ) {
     this.references = new RoomReferenceService(config, pool);
   }
@@ -87,7 +86,6 @@ export class RoomService {
     project_folder_id?: string | null;
     title: string;
     personal?: boolean;
-    idempotency_key?: string | null;
     // `RoomDetail`, not a structural echo of it. The schema is `.strict()`
     // with every field required and nothing validates a response at runtime,
     // so the annotation is the only thing that makes a missed branch a
@@ -99,7 +97,7 @@ export class RoomService {
       input.project_id,
       identity.userId,
     );
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       // The Project lock decides the mainline and personal-Room uniqueness
       // below. Do not lock the Space row here. Assistant provisioning runs on
       // the first message.
@@ -116,45 +114,6 @@ export class RoomService {
         input.project_id,
         identity.userId,
       );
-      const idempotencyKey = normalizeIdempotencyKey(input.idempotency_key);
-      const fingerprint = idempotencyKey
-        ? createRoomFingerprint(input)
-        : null;
-      if (idempotencyKey && fingerprint) {
-        const prior = await client.query<{
-          request_fingerprint: string;
-          room_id: string;
-        }>(
-          `SELECT request_fingerprint, room_id
-             FROM room_creation_idempotencies
-            WHERE space_id = $1 AND user_id = $2 AND idempotency_key = $3
-            FOR UPDATE`,
-          [identity.spaceId, identity.userId, idempotencyKey],
-        );
-        const existing = prior.rows[0];
-        if (existing) {
-          if (existing.request_fingerprint !== fingerprint) {
-            throw new HttpError(409, "Idempotency-Key was already used with different Room parameters");
-          }
-          const existingRepository = new PgRoomRepository(client);
-          const existingRoom = await existingRepository.getVisibleRoom(
-            identity.spaceId,
-            identity.userId,
-            existing.room_id,
-            true,
-          );
-          if (!existingRoom) {
-            throw new HttpError(409, "The idempotent Room result is no longer available");
-          }
-          return {
-            room: existingRoom,
-            user_members: await existingRepository.listUserMembers(identity.spaceId, existingRoom.id),
-            agent_members: await existingRepository.listAgentMembers(identity.spaceId, existingRoom.id, identity.userId),
-            viewer_can_write: true,
-            ...(await new PgRoomRepository(client).audienceForViewer(identity.spaceId, existingRoom.id, identity.userId)),
-          };
-        }
-      }
       if (input.project_folder_id) {
         const folder = await new PgProjectFolderRepository(client, this.config).get(
           identity,
@@ -162,7 +121,7 @@ export class RoomService {
           input.project_folder_id,
         );
         if (!folder || folder.status !== "active") {
-          throw new HttpError(
+          throw new RoomMutationError(
             422,
             "project_folder_id must identify an active folder in this Project",
           );
@@ -204,22 +163,6 @@ export class RoomService {
         user_id: identity.userId,
         role: "owner",
       });
-      if (idempotencyKey && fingerprint) {
-        await client.query(
-          `INSERT INTO room_creation_idempotencies (
-             id, space_id, user_id, idempotency_key, request_fingerprint,
-             room_id, created_at, updated_at
-           ) VALUES ($1, $2, $3, $4, $5, $6, now(), now())`,
-          [
-            cryptoRandomId(),
-            identity.spaceId,
-            identity.userId,
-            idempotencyKey,
-            fingerprint,
-            room.id,
-          ],
-        );
-      }
       return {
         room,
         user_members: await repository.listUserMembers(identity.spaceId, room.id),
@@ -264,7 +207,6 @@ export class RoomService {
   addAgentPreset(identity: RoomIdentity, roomId: string, input: {
     preset_id: string;
     name?: string | null;
-    idempotency_key?: string | null;
     confirm_room_share?: boolean;
     execution?: RoomAgentPresetRequest["execution"];
   }) {
@@ -286,7 +228,7 @@ export class RoomService {
    * announced in the Room when written (`runs/chatTurnFinalizer.ts`).
    */
   async summarizeAgentContext(identity: RoomIdentity, roomId: string, agentId: string): Promise<RoomDetail> {
-    await withDbTransaction(this.pool, async (client) => {
+    await withQueryableTransaction(this.pool, async (client) => {
       const rooms = new PgRoomRepository(client);
       const room = await requireRoom(rooms, identity, roomId, true);
       const thread = await lockConversationAgentThread(client, identity, room.id, agentId);
@@ -294,9 +236,9 @@ export class RoomService {
         throw new HttpError(403, "Only the execution host owner can ask this Agent for a summary");
       }
       if (thread.dispatch_lock_id) {
-        throw new HttpError(409, "The Host-bound Agent is still handling a Room turn; ask for a summary after it finishes");
+        throw new RoomMutationError(409, "The Host-bound Agent is still handling a Room turn; ask for a summary after it finishes");
       }
-      if (!thread.vendor_session_id) throw new HttpError(409, "This Agent's session has nothing to summarize yet");
+      if (!thread.vendor_session_id) throw new RoomMutationError(409, "This Agent's session has nothing to summarize yet");
       const content = "Write a summary of this conversation so far, for the record.";
       await this.dispatchRoomMessage(client, rooms, room, identity, thread.session_id, {
         content,
@@ -323,7 +265,7 @@ export class RoomService {
     return this.rosterService().inviteUser(identity, roomId, input);
   }
 
-  listInvitations(identity: RoomIdentity, roomId: string, input: { limit: number; offset: number }) {
+  listInvitations(identity: RoomIdentity, roomId: string, input: { limit: number; offset: number; invitation_id?: string }) {
     return this.rosterService().listInvitations(identity, roomId, input);
   }
 
@@ -355,7 +297,7 @@ export class RoomService {
     projectId: string,
   ): Promise<{ room: RoomRecord; joined: boolean; viewer_can_write: boolean }> {
     await assertProjectReadable(this.pool, identity.spaceId, projectId, identity.userId);
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const repository = new PgRoomRepository(client);
       const room = await repository.getMainlineRoom(identity.spaceId, projectId);
       const viewerCanWrite = await canWriteProject(client, identity.spaceId, projectId, identity.userId);
@@ -548,7 +490,7 @@ export class RoomService {
     // preflight. Keep the expensive preparation outside the transaction, just
     // as the send path does, and enforce membership again under the Room lock.
     const preparation = await this.prepareManagerIfMissing(identity, roomId);
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const rooms = new PgRoomRepository(client);
       const room = await requireRoom(rooms, identity, roomId, true);
       if (preparation) await this.ensureRoomManager(client, rooms, room, identity, preparation);
@@ -572,19 +514,22 @@ export class RoomService {
     identity: RoomIdentity,
     roomId: string,
     sessionId: string,
-    input: { limit: number; offset: number },
+    input: { limit: number; offset: number; message_id?: string },
   ) {
     const roomRepository = new PgRoomRepository(this.pool);
     await requireRoom(roomRepository, identity, roomId);
     const conversation = await requireConversation(roomRepository, identity, roomId, sessionId);
-    const messages = await new PgSessionRepository(this.pool).listRoomMessages(
-      identity.spaceId,
-      identity.userId,
-      roomId,
-      sessionId,
-      input.limit,
-      input.offset,
-    );
+    const sessions = new PgSessionRepository(this.pool);
+    const messages = input.message_id
+      ? await sessions.roomMessageById(identity.spaceId, identity.userId, roomId, sessionId, input.message_id).then(message => message ? [message] : [])
+      : await sessions.listRoomMessages(
+        identity.spaceId,
+        identity.userId,
+        roomId,
+        sessionId,
+        input.limit,
+        input.offset,
+      );
     return {
       items: messages ?? [],
       // What people said while the turn was taken, not yet posted.
@@ -602,7 +547,7 @@ export class RoomService {
 
   /** Speak in an explicitly-created, initialized Conversation in a Room. */
   async sendMessage(identity: RoomIdentity, roomId: string, sessionId: string, input: RoomSendInput) {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       if (input.discussion_id) await lockRoomConversationQueue(client, identity.spaceId, sessionId);
       return this.sendInTransaction(client, identity, roomId, sessionId, input);
     });
@@ -616,7 +561,7 @@ export class RoomService {
    */
   async sendOrQueueMessage(identity: RoomIdentity, roomId: string, sessionId: string, input: RoomSendInput) {
     if (input.input_parts?.length) return this.sendMessage(identity, roomId, sessionId, input);
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       // Taken before the send, as a release and a discussion's advance take
       // it: a message never slips in between a refusal and its queueing, nor
       // ahead of one already waiting.
@@ -721,9 +666,8 @@ export class RoomService {
 
   async retryMessage(identity: RoomIdentity, roomId: string, sessionId: string, input: {
     run_id: string;
-    idempotency_key: string;
   }) {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const rooms = new PgRoomRepository(client);
       const room = await requireRoom(rooms, identity, roomId, true);
       const conversation = await requireConversation(rooms, identity, roomId, sessionId);
@@ -733,7 +677,7 @@ export class RoomService {
         throw new HttpError(404, "The failed Run is not available in this Room conversation");
       }
       if (original.status !== "failed" && original.status !== "degraded") {
-        throw new HttpError(409, "Only a failed conversation turn can be retried");
+        throw new RoomMutationError(409, "Only a failed conversation turn can be retried");
       }
       const sessions = new PgSessionRepository(client);
       const originalMessage = await sessions.roomMessageByRunId(
@@ -744,116 +688,102 @@ export class RoomService {
         original.id,
       );
       if (!originalMessage || originalMessage.role !== "user") {
-        throw new HttpError(409, "The failed Run has no persisted Room input to retry");
+        throw new RoomMutationError(409, "The failed Run has no persisted Room input to retry");
       }
-      const fingerprint = conversationRetryFingerprint({ kind: "room", runId: original.id, sessionId: conversation.id });
-      return withConversationRetryIdempotency(
-        client,
-        {
-          spaceId: identity.spaceId,
-          userId: identity.userId,
-          key: input.idempotency_key,
-          fingerprint,
-          sessionId: conversation.id,
-          messageId: originalMessage.id,
-          runId: original.id,
-        },
-        async () => {
-          const metadata = record(originalMessage.metadata_json);
-          const alreadySupersededRunIds = new Set(stringArray(metadata.retry_superseded_run_ids));
-          if (alreadySupersededRunIds.has(original.id)) {
-            throw new HttpError(409, "This failed Run has already been replaced by a retry");
-          }
-          const originalRunIds = Array.from(new Set([
-            ...stringArray(metadata.run_ids),
-            ...stringArray(metadata.retry_run_ids),
-            original.id,
-          ])).filter(runId => !alreadySupersededRunIds.has(runId));
-          const originalRuns = await Promise.all(originalRunIds.map(runId => runs.getRun(identity.spaceId, runId)));
-          const completeRuns = originalRuns.filter(
-            (run): run is AgentRunRecord => run?.execution_kind === "agent",
-          );
-          if (completeRuns.length !== originalRunIds.length || completeRuns.some(run => run.session_id !== conversation.id || (run.status !== "failed" && run.status !== "degraded"))) {
-            throw new HttpError(409, "Every recipient Run in this Room turn must be failed before retry");
-          }
-          const segments = new Map<number, AgentGroupMessageRecipientSegment>();
-          const backends = new Map<string, { agent_id: string; runtime_profile_id: string; session_config?: RuntimeSessionConfigSelection[]; session_config_inherited?: boolean }>();
-          for (const run of completeRuns) {
-            const model = record(run.model_override_json);
-            const turn = record(model.chat_turn);
-            // A multi-recipient turn records each Run's segment under
-            // room_turn_routing; a single-recipient turn has the one segment.
-            const routing = record(model.room_turn_routing);
-            const segmentIndex = typeof routing.current_segment_index === "number" ? routing.current_segment_index : 0;
-            const agentId = typeof routing.current_recipient_agent_id === "string" ? routing.current_recipient_agent_id : run.agent_id;
-            const content = typeof turn.assigned_task === "string" && turn.assigned_task.trim()
-              ? turn.assigned_task
-              : originalMessage.content;
-            const segment = segments.get(segmentIndex) ?? { recipient_agent_ids: [], content };
-            if (!segment.recipient_agent_ids.includes(agentId)) segment.recipient_agent_ids.push(agentId);
-            segments.set(segmentIndex, segment);
-            const backend = record(model.conversation_backend);
-            const runtimeProfileId = typeof backend?.runtime_profile_id === "string" ? backend.runtime_profile_id : null;
-            if (!runtimeProfileId) throw new HttpError(409, "Retry context needs review: a Room backend is missing");
-            const requestedConfig = Array.isArray(model.acp_session_config)
-              ? model.acp_session_config.filter((value): value is RuntimeSessionConfigSelection => Boolean(value && typeof value === "object"))
-              : [];
-            // The original turn's selections, replayed: a value the runtime has
-            // since withdrawn falls back instead of refusing the retry.
-            backends.set(agentId, { agent_id: agentId, runtime_profile_id: runtimeProfileId, ...(requestedConfig.length ? { session_config: requestedConfig, session_config_inherited: true } : {}) });
-          }
-          // A message the person handed to the manager is retried the same
-          // way, with the same targets — less any no longer in the Room.
-          const coordinated = metadata.routing_mode === "agent_coordination";
-          const activeAgentIds = coordinated
-            ? new Set((await rooms.listAgentMembers(identity.spaceId, roomId, identity.userId)).map((member) => member.agent_id))
-            : new Set<string>();
-          const dispatched = await this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
-            content: originalMessage.content,
-            input_parts: [],
-            routing_mode: coordinated ? "agent_coordination" : "direct",
-            coordination_target_agent_ids: stringArray(metadata.coordination_target_agent_ids)
-              .filter((agentId) => activeAgentIds.has(agentId)),
-            recipient_segments: coordinated ? null : Array.from(segments.entries()).sort(([left], [right]) => left - right).map(([, segment]) => segment),
-            backends: Array.from(backends.values()),
-            kind: "user",
-            capability_input_parts: originalMessage.input_parts ?? [],
-            existing_user_message: originalMessage,
-            retry_of_run_id: original.id,
-          });
-          for (const runId of dispatched.run_ids) {
-            await sessions.appendRetryRunToUserMessage({
-              space_id: identity.spaceId,
-              user_id: identity.userId,
-              session_id: conversation.id,
-              message_id: originalMessage.id,
-              run_id: runId,
-            });
-          }
-          await sessions.markRoomRetrySuperseded({
-            space_id: identity.spaceId,
-            session_id: conversation.id,
-            user_message_id: originalMessage.id,
-            superseded_run_ids: Array.from(new Set([
-              ...alreadySupersededRunIds,
-              ...originalRunIds,
-            ])),
-            replacement_run_ids: dispatched.run_ids,
-          });
-          const runId = dispatched.run_ids[0];
-          if (!runId) throw new HttpError(500, "Room retry created no recipient Run");
-          return {
-            schema_version: "conversation_retry.v1" as const,
-            session_id: conversation.id,
-            run_id: runId,
-            run_ids: dispatched.run_ids,
-            retry_of_run_id: original.id,
-            user_message_id: originalMessage.id,
-            status: "queued" as const,
-            event_stream_url: `/api/v1/runs/${encodeURIComponent(runId)}/turn/stream`,
-          };
-        },
+      // Transport replay is the operation core's; a second retry of a replaced Run stays a conflict.
+      const metadata = record(originalMessage.metadata_json);
+      const alreadySupersededRunIds = new Set(stringArray(metadata.retry_superseded_run_ids));
+      if (alreadySupersededRunIds.has(original.id)) {
+        throw new RoomMutationError(409, "This failed Run has already been replaced by a retry");
+      }
+      const originalRunIds = Array.from(new Set([
+        ...stringArray(metadata.run_ids),
+        ...stringArray(metadata.retry_run_ids),
+        original.id,
+      ])).filter(runId => !alreadySupersededRunIds.has(runId));
+      const originalRuns = await Promise.all(originalRunIds.map(runId => runs.getRun(identity.spaceId, runId)));
+      const completeRuns = originalRuns.filter(
+        (run): run is AgentRunRecord => run?.execution_kind === "agent",
       );
+      if (completeRuns.length !== originalRunIds.length || completeRuns.some(run => run.session_id !== conversation.id || (run.status !== "failed" && run.status !== "degraded"))) {
+        throw new RoomMutationError(409, "Every recipient Run in this Room turn must be failed before retry");
+      }
+      const segments = new Map<number, AgentGroupMessageRecipientSegment>();
+      const backends = new Map<string, { agent_id: string; runtime_profile_id: string; session_config?: RuntimeSessionConfigSelection[]; session_config_inherited?: boolean }>();
+      for (const run of completeRuns) {
+        const model = record(run.model_override_json);
+        const turn = record(model.chat_turn);
+        // A multi-recipient turn records each Run's segment under
+        // room_turn_routing; a single-recipient turn has the one segment.
+        const routing = record(model.room_turn_routing);
+        const segmentIndex = typeof routing.current_segment_index === "number" ? routing.current_segment_index : 0;
+        const agentId = typeof routing.current_recipient_agent_id === "string" ? routing.current_recipient_agent_id : run.agent_id;
+        const content = typeof turn.assigned_task === "string" && turn.assigned_task.trim()
+          ? turn.assigned_task
+          : originalMessage.content;
+        const segment = segments.get(segmentIndex) ?? { recipient_agent_ids: [], content };
+        if (!segment.recipient_agent_ids.includes(agentId)) segment.recipient_agent_ids.push(agentId);
+        segments.set(segmentIndex, segment);
+        const backend = record(model.conversation_backend);
+        const runtimeProfileId = typeof backend?.runtime_profile_id === "string" ? backend.runtime_profile_id : null;
+        if (!runtimeProfileId) throw new RoomMutationError(409, "Retry context needs review: a Room backend is missing");
+        const requestedConfig = Array.isArray(model.acp_session_config)
+          ? model.acp_session_config.filter((value): value is RuntimeSessionConfigSelection => Boolean(value && typeof value === "object"))
+          : [];
+        // The original turn's selections, replayed: a value the runtime has
+        // since withdrawn falls back instead of refusing the retry.
+        backends.set(agentId, { agent_id: agentId, runtime_profile_id: runtimeProfileId, ...(requestedConfig.length ? { session_config: requestedConfig, session_config_inherited: true } : {}) });
+      }
+      // A message the person handed to the manager is retried the same
+      // way, with the same targets — less any no longer in the Room.
+      const coordinated = metadata.routing_mode === "agent_coordination";
+      const activeAgentIds = coordinated
+        ? new Set((await rooms.listAgentMembers(identity.spaceId, roomId, identity.userId)).map((member) => member.agent_id))
+        : new Set<string>();
+      const dispatched = await this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
+        content: originalMessage.content,
+        input_parts: [],
+        routing_mode: coordinated ? "agent_coordination" : "direct",
+        coordination_target_agent_ids: stringArray(metadata.coordination_target_agent_ids)
+          .filter((agentId) => activeAgentIds.has(agentId)),
+        recipient_segments: coordinated ? null : Array.from(segments.entries()).sort(([left], [right]) => left - right).map(([, segment]) => segment),
+        backends: Array.from(backends.values()),
+        kind: "user",
+        capability_input_parts: originalMessage.input_parts ?? [],
+        existing_user_message: originalMessage,
+        retry_of_run_id: original.id,
+      });
+      for (const runId of dispatched.run_ids) {
+        await sessions.appendRetryRunToUserMessage({
+          space_id: identity.spaceId,
+          user_id: identity.userId,
+          session_id: conversation.id,
+          message_id: originalMessage.id,
+          run_id: runId,
+        });
+      }
+      await sessions.markRoomRetrySuperseded({
+        space_id: identity.spaceId,
+        session_id: conversation.id,
+        user_message_id: originalMessage.id,
+        superseded_run_ids: Array.from(new Set([
+          ...alreadySupersededRunIds,
+          ...originalRunIds,
+        ])),
+        replacement_run_ids: dispatched.run_ids,
+      });
+      const runId = dispatched.run_ids[0];
+      if (!runId) throw new HttpError(500, "Room retry created no recipient Run");
+      return {
+        schema_version: "conversation_retry.v1" as const,
+        session_id: conversation.id,
+        run_id: runId,
+        run_ids: dispatched.run_ids,
+        retry_of_run_id: original.id,
+        user_message_id: originalMessage.id,
+        status: "queued" as const,
+        event_stream_url: `/api/v1/runs/${encodeURIComponent(runId)}/turn/stream`,
+      };
     });
   }
 
@@ -889,6 +819,15 @@ export class RoomService {
     return SpaceAssistantService.prepareForRoomCreator(this.pool, this.config, identity);
   }
 
+  /**
+   * Owner-funded imported-session summaries a reference needs, generated
+   * before any Room transaction (provider IO never runs inside one). The
+   * early unlocked Room check keeps a foreign Room id from billing anyone.
+   */
+  prepareReferenceSummaries(identity: RoomIdentity, roomId: string, references: ThreadReferencePick[]) {
+    return this.references.prepareSummaries(identity, roomId, references);
+  }
+
   /** Attach references to a Conversation after explicit draft setup. */
   async attachConversationReferences(
     identity: RoomIdentity,
@@ -896,12 +835,13 @@ export class RoomService {
     sessionId: string,
     input: { references: ThreadReferencePick[]; confirm_disclosure?: boolean | readonly string[] },
   ) {
-    await this.references.prepareSummaries(identity, roomId, input.references);
-    return withDbTransaction(this.pool, async (client) => {
+    // Imported-session summaries are prepared before this transaction by the
+    // caller (`prepareReferenceSummaries`); a missing one is refused below.
+    return withQueryableTransaction(this.pool, async (client) => {
       const rooms = new PgRoomRepository(client);
       const room = await requireRoom(rooms, identity, roomId, true);
       await requireConversation(rooms, identity, roomId, sessionId);
-      await this.references.attach(client, room, identity, sessionId, input);
+      const attached = await this.references.attach(client, room, identity, sessionId, input);
       // Read back on the transaction's own client. `listMessages` builds its
       // repositories from the pool, so it would neither see these uncommitted
       // rows nor be safe to call while holding a connection.
@@ -915,6 +855,7 @@ export class RoomService {
         conversation,
         limit: 50,
         offset: 0,
+        attached,
       };
     });
   }
@@ -950,7 +891,7 @@ export class RoomService {
       session_config?: RuntimeSessionConfigSelection[];
     }>;
   }) {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const rooms = new PgRoomRepository(client);
       const room = await requireRoom(rooms, identity, roomId, true);
       const conversation = await requireConversation(rooms, identity, roomId, sessionId);
@@ -967,10 +908,10 @@ export class RoomService {
         throw new HttpError(404, "Proposal not found for this Room's Project");
       }
       if (proposal.status !== "accepted" && proposal.status !== "rejected") {
-        throw new HttpError(409, "Proposal must be accepted or rejected before continuing");
+        throw new RoomMutationError(409, "Proposal must be accepted or rejected before continuing");
       }
       if (!proposal.created_by_run_id) {
-        throw new HttpError(409, "Proposal is not attached to this Room conversation");
+        throw new RoomMutationError(409, "Proposal is not attached to this Room conversation");
       }
       const sourceRun = await client.query<{ present: boolean }>(
         `SELECT true AS present FROM runs
@@ -978,7 +919,7 @@ export class RoomService {
         [proposal.created_by_run_id, identity.spaceId, sessionId],
       );
       if (!sourceRun.rows[0]?.present) {
-        throw new HttpError(409, "Proposal belongs to a different conversation");
+        throw new RoomMutationError(409, "Proposal belongs to a different conversation");
       }
 
       const sessions = new PgSessionRepository(client);
@@ -996,7 +937,7 @@ export class RoomService {
           ? priorMetadata.task_group_id
           : null;
         if (!priorGroupId || priorRunIds.length === 0) {
-          throw new HttpError(409, "The existing Proposal continuation is incomplete");
+          throw new RoomMutationError(409, "The existing Proposal continuation is incomplete");
         }
         const priorRuns = await client.query<{ id: string; status: string }>(
           `SELECT id,status FROM runs WHERE space_id=$1 AND id=ANY($2::varchar[])`,
@@ -1190,20 +1131,20 @@ export class RoomService {
       const projectStateContext = projectState.text;
       const agentMembers = await rooms.listAgentMembers(identity.spaceId, roomId, identity.userId);
       const manager = agentMembers.find((member) => member.role === "manager");
-      if (!manager) throw new HttpError(409, "Room has no active manager agent");
+      if (!manager) throw new RoomMutationError(409, "Room has no active manager agent");
       const activeAgentIds = new Set(agentMembers.map((member) => member.agent_id));
       const segments = input.recipient_segments?.length
         ? input.recipient_segments
         : null;
       for (const recipient of segments?.flatMap((segment) => segment.recipient_agent_ids) ?? []) {
         if (!activeAgentIds.has(recipient)) {
-          throw new HttpError(422, "Room message recipients must be active Room agents");
+          throw new RoomMutationError(422, "Room message recipients must be active Room agents");
         }
       }
       const coordinationTargets = roomCoordinationTargets(input, agentMembers, manager.agent_id);
       const content = input.content;
       if (!content && !(input.input_parts?.length) && !(input.capability_input_parts?.length)) {
-        throw new HttpError(422, "content or an input part is required");
+        throw new RoomMutationError(422, "content or an input part is required");
       }
       let preparedInputParts = input.prepared_input_parts;
       const capabilityInputParts = input.input_parts?.length
@@ -1247,7 +1188,7 @@ export class RoomService {
           }
         }
         if (capabilityFailures.length > 0) {
-          throw new HttpError(422, `Conversation input is unsupported by: ${capabilityFailures.join("; ")}`);
+          throw new RoomMutationError(422, `Conversation input is unsupported by: ${capabilityFailures.join("; ")}`);
         }
         if (input.input_parts?.length) {
           try {
@@ -1259,7 +1200,7 @@ export class RoomService {
               verifiedSkills,
             });
           } catch (error) {
-            if (error instanceof ConversationInputError) throw new HttpError(error.statusCode, error.message);
+            if (error instanceof ConversationInputError) throw roomRefusal(error.statusCode, error.message);
             throw error;
           }
         }
@@ -1272,7 +1213,7 @@ export class RoomService {
         });
       } catch (error) {
         if (error instanceof ConversationTurnInProgressError) {
-          throw new HttpError(error.statusCode, error.message, { detail: error.message, code: "conversation_turn_in_progress" });
+          throw roomRefusal(error.statusCode, error.message, { detail: error.message, code: "conversation_turn_in_progress" });
         }
         throw error;
       }
@@ -1337,7 +1278,7 @@ export class RoomService {
             parts: preparedInputParts,
           });
         } catch (error) {
-          if (error instanceof ConversationInputError) throw new HttpError(error.statusCode, error.message);
+          if (error instanceof ConversationInputError) throw roomRefusal(error.statusCode, error.message);
           throw error;
         }
       }
@@ -1524,7 +1465,7 @@ async function joinPostedRoomMessage(
   const discussions = new PgRoomDiscussionRepository(client);
   const discussion = await discussions.get(identity.spaceId, discussionId, { forUpdate: true });
   if (!discussion || discussion.room_id !== roomId || discussion.session_id !== sessionId || discussion.status !== "active") {
-    throw new HttpError(409, "This discussion is no longer active; choose ordinary message or another discussion.");
+    throw new RoomMutationError(409, "This discussion is no longer active; choose ordinary message or another discussion.");
   }
   // A quota-held wave can release the conversation turn without finishing its
   // discussion wave. A joined message must wait for that wave, not silently
@@ -1537,7 +1478,7 @@ async function joinPostedRoomMessage(
     [identity.spaceId, discussionId, dispatched.task_group_ids],
   );
   if (unfinished.rowCount) {
-    throw new HttpError(409, "The discussion's current wave is still in progress", {
+    throw new RoomMutationError(409, "The discussion's current wave is still in progress", {
       code: "discussion_wave_in_progress", detail: "The discussion's current wave is still in progress",
     });
   }
@@ -1571,12 +1512,12 @@ function roomCoordinationTargets(
   const requested = Array.from(new Set((input.coordination_target_agent_ids ?? []).map((id) => id.trim()).filter(Boolean)));
   if (requested.length === 0) return [];
   if (input.routing_mode !== "agent_coordination") {
-    throw new HttpError(422, "Coordination targets require routing_mode agent_coordination");
+    throw new RoomMutationError(422, "Coordination targets require routing_mode agent_coordination");
   }
   const members = new Map(agentMembers.map((member) => [member.agent_id, member]));
   return requested.flatMap((agentId) => {
     const member = members.get(agentId);
-    if (!member) throw new HttpError(422, "Coordination targets must be active Room agents");
+    if (!member) throw new RoomMutationError(422, "Coordination targets must be active Room agents");
     return agentId === managerAgentId ? [] : [{ agent_id: agentId, label: member.agent_name }];
   });
 }
@@ -1591,36 +1532,8 @@ function roomRecipientIds(
   return Array.from(new Set(raw.filter((id) => id.trim())));
 }
 
-function normalizeIdempotencyKey(value: string | null | undefined): string | null {
-  if (value === null || value === undefined) return null;
-  const normalized = value.trim();
-  if (!normalized) return null;
-  if (normalized.length > 128) throw new HttpError(422, "Idempotency-Key must be at most 128 characters");
-  return normalized;
-}
 
-function createRoomFingerprint(input: {
-  project_id: string;
-  project_folder_id?: string | null;
-  title: string;
-  personal?: boolean;
-}): string {
-  return createHash("sha256")
-    .update(JSON.stringify({
-      project_id: input.project_id,
-      project_folder_id: input.project_folder_id ?? null,
-      title: input.title.trim(),
-      // A shared Room and a personal one are different requests. Do not omit
-      // the flag. A replayed key with it flipped would return the other kind
-      // instead of 409.
-      personal: input.personal === true,
-    }))
-    .digest("hex");
-}
 
-function cryptoRandomId(): string {
-  return randomUUID();
-}
 
 /** What a person's send carries. */
 interface RoomSendInput {
@@ -1803,7 +1716,7 @@ async function buildRoomProjectStateContext(
 
 function requiredText(value: string, field: string): string {
   const text = value.trim();
-  if (!text) throw new HttpError(422, `${field} is required`);
+  if (!text) throw new RoomMutationError(422, `${field} is required`);
   return text;
 }
 

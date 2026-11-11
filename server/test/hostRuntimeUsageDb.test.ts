@@ -20,6 +20,7 @@ import { waitForLockWaiter } from "./support/lockWait.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { hostsModule } from "../src/modules/hosts/index.js";
+import { hostCommandHarness, seedHostCommandSpace } from "./support/hostCommandHarness.js";
 
 /**
  * Subscription quota is readable only on the host that holds the login (ADR
@@ -597,42 +598,56 @@ describe("a probe that outlives its answer or its authority (real Postgres)", ()
     expect((await db.pool.query("SELECT status FROM hosts WHERE id='host-1'")).rows[0].status).toBe("revoked");
   });
 
-  describe("the refresh route authorizes again after the probe", () => {
-    async function withApp(run: (app: ReturnType<typeof buildModuleServer>) => Promise<void>) {
+  describe("the refresh command authorizes again after the probe", () => {
+    /** The probe is a durable Host command; its reading is released only by the status read. */
+    async function withApp(run: (app: ReturnType<typeof buildModuleServer>, commands: ReturnType<typeof hostCommandHarness>) => Promise<void>) {
       const email = (await db.pool.query<{ email: string }>("SELECT email FROM users WHERE id='user-1'")).rows[0]!.email;
-      const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, INSTANCE_ADMIN_EMAIL: email }), [hostsModule]);
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, INSTANCE_ADMIN_EMAIL: email });
+      await resetTables(db.pool, ["host_command_intents", "jobs", "space_memberships", "spaces"], { cascade: true });
+      await seedHostCommandSpace(db.pool, "space-1", [{ user: "user-1" }]);
+      const app = buildModuleServer(config, [hostsModule]);
+      vi.spyOn(sharedHostConnectionRegistry, "isOnline").mockReturnValue(true);
       __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-      try { await run(app); } finally { __setAuthIdentityForTests(null); await app.close(); }
+      try { await run(app, hostCommandHarness(db.pool, config)); } finally { __setAuthIdentityForTests(null); await app.close(); }
     }
     const url = "/api/v1/hosts/host-1/installations/claude_code/own/usage";
 
     it("returns the reading to a caller who still holds the host", async ctx => {
       if (!db.available) return ctx.skip();
-      await withApp(async app => {
+      await withApp(async (app, commands) => {
         vi.spyOn(sharedHostConnectionRegistry, "requestUsageProbe").mockResolvedValue(reading as never);
-        const response = await app.inject({ method: "POST", url });
-        expect(response.statusCode, response.body).toBe(200);
-        expect(response.json().quota.account_display.email).toBe("owner@vendor.invalid");
+        const { status } = await commands.run(app, { method: "POST", url }, "host-1");
+        expect(status).toMatchObject({ status: "succeeded", kind: "runtime_usage_refresh" });
+        expect((status.result as { quota: { account_display: { email: string } } }).quota.account_display.email).toBe("owner@vendor.invalid");
       });
     });
 
-    for (const [name, change, status] of [
-      ["the instance admin role", "UPDATE users SET email='demoted@test.invalid' WHERE id='user-1'", 403],
-      ["the account", "UPDATE users SET status='disabled' WHERE id='user-1'", 403],
-      ["the copy", `UPDATE hosts SET capabilities_json='{"installations":{}}'::jsonb WHERE id='host-1'`, 404],
-      ["the host", "UPDATE hosts SET status='revoked' WHERE id='host-1'", 404],
+    // The lost authority decides the outcome: needs_attention when the Host answered for someone who may no
+    // longer receive it; failed when the probe's own cache write refuses a revoked Host and nothing was read.
+    for (const [name, change, status, recorded] of [
+      ["the instance admin role", "UPDATE users SET email='demoted@test.invalid' WHERE id='user-1'", 404, "needs_attention"],
+      ["the account", "UPDATE users SET status='disabled' WHERE id='user-1'", 404, "needs_attention"],
+      ["the copy", `UPDATE hosts SET capabilities_json='{"installations":{}}'::jsonb WHERE id='host-1'`, 200, "needs_attention"],
+      ["the host", "UPDATE hosts SET status='revoked' WHERE id='host-1'", 404, "failed"],
     ] as const) {
-      it(`refuses, without the account, when ${name} is lost during the probe`, async ctx => {
+      it(`releases nothing of the account when ${name} is lost during the probe`, async ctx => {
         if (!db.available) return ctx.skip();
-        await withApp(async app => {
+        await withApp(async (app, commands) => {
           const probe = slowSharedProbe();
-          const pending = app.inject({ method: "POST", url });
+          const accepted = await commands.submit(app, { method: "POST", url });
+          expect(accepted.statusCode, accepted.body).toBe(202);
+          const id = accepted.json().data.id as string;
+          const running = commands.process();
           await vi.waitFor(() => expect(probe.spy).toHaveBeenCalled());
           await db.pool.query(change);
           await probe.answered(reading);
-          const response = await pending;
-          expect(response.statusCode, response.body).toBe(status);
-          expect(response.body).not.toContain("owner@vendor.invalid");
+          await running;
+          const read = await commands.status(app, "host-1", id);
+          expect(read.statusCode, read.body).toBe(status);
+          expect(read.body).not.toContain("owner@vendor.invalid");
+          // Recorded as unproven for the person, never as a released reading.
+          const row = (await db.pool.query<{ status: string; result_json: unknown }>("SELECT status, result_json FROM host_command_intents WHERE id = $1", [id])).rows[0]!;
+          expect(row).toMatchObject({ status: recorded, result_json: null });
         });
       });
     }

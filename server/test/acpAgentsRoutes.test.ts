@@ -4,6 +4,9 @@ import { LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import type { FastifyInstance } from "fastify";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { hostCommandHarness, seedHostCommandSpace } from "./support/hostCommandHarness.js";
+import { wakeHostCommandsForHost } from "../src/modules/hosts/hostCommandWorker.js";
+import { keyed, refused, succeeded } from "./support/systemCommandHarness.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { hostsModule } from "../src/modules/hosts/index.js";
 import { acpAgentsModule } from "../src/modules/acpAgents/index.js";
@@ -72,6 +75,8 @@ function asUser(userId: string) {
   __setAuthIdentityForTests({ userId, spaceId: SPACE, sessionToken: userId === ADMIN ? ADMIN_TOKEN : MEMBER_TOKEN } as never);
 }
 
+let commands: ReturnType<typeof hostCommandHarness>;
+
 function httpBaseUrl(): string {
   const address = app!.server.address();
   if (!address || typeof address === "string") throw new Error("not listening on TCP");
@@ -91,13 +96,14 @@ beforeAll(async () => {
     loadConfig({ SERVER_DATABASE_URL: db.connectionUri, INSTANCE_ADMIN_EMAIL: "admin@example.test" }),
     [hostsModule, acpAgentsModule],
   );
+  commands = hostCommandHarness(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri, INSTANCE_ADMIN_EMAIL: "admin@example.test" }));
   await app.listen({ port: 0, host: "127.0.0.1" });
 });
 
 beforeEach(async () => {
   vi.spyOn(ownCliReleases, "peek").mockReturnValue(null);
   if (!db.available) return;
-  await resetTables(db.pool, ["hosts", "settings", "spaces", "users"], { cascade: true });
+  await resetTables(db.pool, ["host_command_intents", "jobs", "hosts", "settings", "operation_idempotency", "policy_decision_records", "space_memberships", "spaces", "users"], { cascade: true });
   const now = new Date().toISOString();
   for (const [id, email] of [[ADMIN, "admin@example.test"], [MEMBER, "member@example.test"]]) {
     await db.pool.query(
@@ -105,6 +111,7 @@ beforeEach(async () => {
       [id, email, now],
     );
   }
+  await seedHostCommandSpace(db.pool, SPACE, [{ user: ADMIN }, { user: MEMBER }]);
   __setAcpRegistryForTests([GOOSE]);
   __setAuthRepositoryForTests(stubAuth());
   setDynamicRuntimeAdapterSpecs([]);
@@ -126,7 +133,7 @@ describe("ACP registry agents", () => {
   it("discovers enabled ACP releases without rewriting approval snapshots or installed copies, and preserves them offline", async ctx => {
     if (!db.available || !app) return ctx.skip();
     const service = new AcpAgentService(db.pool);
-    await service.enable(GOOSE.id, ADMIN);
+    await service.enableIn(GOOSE.id, ADMIN);
     const next = {...GOOSE, version:"2.0.0", distribution:{kind:"npx" as const,package:"goose-acp@2.0.0",args:[],env:{}}};
     __setAcpRegistryForTests([next]);
     await service.refreshRuntimeAdapterSpecs();
@@ -167,16 +174,19 @@ describe("ACP registry agents", () => {
   it("lets only the instance admin enable a registry agent, which then exists as a remote-only runtime adapter", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     asUser(MEMBER);
-    const denied = await app.inject({ method: "PUT", url: "/api/v1/acp-agents/goose" });
-    expect(denied.statusCode).toBe(403);
+    // `acp_agent.enable` answers a member the hidden 404 and writes nothing.
+    const denied = await keyed(app, { method: "PUT", url: "/api/v1/acp-agents/goose" });
+    expect(denied.statusCode).toBe(404);
+    expect((await db.pool.query(`SELECT 1 FROM settings WHERE settings_key LIKE 'acp%'`)).rowCount).toBe(0);
 
     asUser(ADMIN);
-    const missing = await app.inject({ method: "PUT", url: "/api/v1/acp-agents/not-there" });
+    const missing = await keyed(app, { method: "PUT", url: "/api/v1/acp-agents/not-there" });
     expect(missing.statusCode).toBe(404);
 
-    const enabled = await app.inject({ method: "PUT", url: "/api/v1/acp-agents/goose" });
-    expect(enabled.statusCode).toBe(201);
-    expect(enabled.json()).toMatchObject({ id: "goose", runtime_key: "acp_goose" });
+    const enabled = await keyed(app, { method: "PUT", url: "/api/v1/acp-agents/goose" }, "enable-goose");
+    expect(succeeded(enabled, 201)).toMatchObject({ id: "goose", runtime_key: "acp_goose" });
+    // The same key replays the recorded answer instead of re-snapshotting the registry.
+    expect(succeeded(await keyed(app, { method: "PUT", url: "/api/v1/acp-agents/goose" }, "enable-goose"), 201)).toEqual(succeeded(enabled, 201));
 
     // The adapter catalog includes it, shaped as low trust and remote-only.
     const spec = getRuntimeAdapterSpec("acp_goose");
@@ -217,31 +227,35 @@ describe("ACP registry agents", () => {
       payload: { runtime_key: "acp_goose" },
     });
     expect(obsoleteHostDefault.statusCode).toBe(404);
-    const refused = await app.inject({ method: "DELETE", url: "/api/v1/acp-agents/goose" });
-    expect(refused.statusCode).toBe(409);
-    expect(refused.json().detail).toMatch(/Desk/);
+    const stillInstalled = await keyed(app, { method: "DELETE", url: "/api/v1/acp-agents/goose" });
+    expect(refused(stillInstalled, 409)).toBe("operation_conflict");
+    expect(stillInstalled.json().error).toMatchObject({ message: expect.stringMatching(/Desk/), metadata: { code: "acp_agent_installed" } });
     expect((await app.inject({ method: "GET", url: "/api/v1/acp-agents" })).json().items[0].installed_on).toEqual([{ host_id: deskId, name: "Desk" }]);
     await db.pool.query(`UPDATE hosts SET capabilities_json = '{}'::jsonb WHERE id = $1`, [deskId]);
 
-    const disabled = await app.inject({ method: "DELETE", url: "/api/v1/acp-agents/goose" });
-    expect(disabled.statusCode).toBe(204);
+    const disabled = await keyed(app, { method: "DELETE", url: "/api/v1/acp-agents/goose" });
+    expect(succeeded(disabled)).toMatchObject({ registry_id: "goose", disabled: true });
     expect(getRuntimeAdapterSpec("acp_goose")).toBeNull();
   });
 
   it("installs an enabled agent on an owned, connected host, logs it in through the daemon's terminal, and refuses a ModelProvider binding for it", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     asUser(ADMIN);
-    await app.inject({ method: "PUT", url: "/api/v1/acp-agents/goose" });
+    succeeded(await keyed(app, { method: "PUT", url: "/api/v1/acp-agents/goose" }), 201);
 
     const issue = await app.inject({ method: "POST", url: "/api/v1/hosts/pairing-codes", headers: { cookie: `better-auth.session_token=${ADMIN_TOKEN}` }, payload: { name: "Box" } });
     const { host_id: hostId, pairing_code: pairingCode } = issue.json();
     const register = await app.inject({ method: "POST", url: "/api/v1/hosts/register", payload: { pairing_code: pairingCode, ...HELLO_INFO, platform: "linux", arch: "x64" } });
     const { token } = register.json();
 
-    const offline = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/installations/acp_goose` });
-    expect(offline.statusCode).toBe(502);
-    expect(offline.json()).toMatchObject({ ok: false, error: "host_offline" });
-    const stale = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/installations/acp_goose`, payload: { expected_version: "0.0.1" } });
+    // Offline: the install is admitted and waits for its Host; nothing reads as installed.
+    const install = `/api/v1/hosts/${hostId}/installations/acp_goose`;
+    const offline = await commands.submit(app, { method: "POST", url: install });
+    expect(offline.statusCode, offline.body).toBe(202);
+    const offlineId = offline.json().data.id as string;
+    await commands.process();
+    expect((await commands.status(app, hostId, offlineId)).json()).toMatchObject({ status: "pending", result: null });
+    const stale = await commands.submit(app, { method: "POST", url: install, payload: { expected_version: "0.0.1" } });
     expect(stale.statusCode).toBe(409);
 
     const socket = hostSocket(token);
@@ -271,14 +285,16 @@ describe("ACP registry agents", () => {
       own_candidates: [{ kind: "npm", package: "goose-acp", args: [] }],
     });
 
-    const installed = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/installations/acp_goose` });
-    expect(installed.statusCode).toBe(200);
-    expect(installed.json()).toMatchObject({ ok: true, installation: "managed:1.2.3", host_id: hostId, runtime_key: "acp_goose" });
+    // Connected: the waiting command is the one sent, with the parameters it froze when admitted.
+    await wakeHostCommandsForHost(db.pool, hostId);
+    await commands.process();
+    expect((await commands.status(app, hostId, offlineId)).json()).toMatchObject({ status: "succeeded", result: { ok: true, installation: "managed:1.2.3", host_id: hostId, runtime_key: "acp_goose" } });
     expect(await installFrame).toMatchObject({ runtime_key: "acp_goose", version: "1.2.3", distribution: GOOSE.distribution, login: null });
+    expect(installFrames).toHaveLength(1);
     const next = {...GOOSE,version:"2.0.0",distribution:{kind:"npx" as const,package:"goose-acp@2.0.0",args:[],env:{}}};
     __setAcpRegistryForTests([next]);
-    const upgraded = await app.inject({method:"POST",url:`/api/v1/hosts/${hostId}/installations/acp_goose`,payload:{expected_version:next.version}});
-    expect(upgraded.json()).toMatchObject({ok:true,installation:"managed:2.0.0"});
+    const upgraded = await commands.run(app,{method:"POST",url:install,payload:{expected_version:next.version}},hostId);
+    expect(upgraded.status).toMatchObject({status:"succeeded",result:{ok:true,installation:"managed:2.0.0"}});
     expect(installFrames.at(-1)).toMatchObject({version:next.version,distribution:next.distribution});
     expect((await new AcpAgentService(db.pool).listEnabled())[0].version).toBe(GOOSE.version);
     await db.pool.query(
@@ -293,12 +309,12 @@ describe("ACP registry agents", () => {
 
     // Removing a managed copy is the same conversation the other way; `own`
     // is not something the daemon can remove.
-    const notManaged = await app.inject({ method: "DELETE", url: `/api/v1/hosts/${hostId}/installations/acp_goose/own` });
+    const notManaged = await commands.submit(app, { method: "DELETE", url: `/api/v1/hosts/${hostId}/installations/acp_goose/own` });
     expect(notManaged.statusCode).toBe(422);
 
     // Not the owner: the host does not exist as far as this user can tell.
     asUser(MEMBER);
-    const notOwner = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/installations/acp_goose` });
+    const notOwner = await commands.submit(app, { method: "POST", url: install });
     expect(notOwner.statusCode).toBe(404);
 
     // The login terminal: the daemon runs the copy's login on a PTY and the

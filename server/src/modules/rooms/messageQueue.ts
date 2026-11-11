@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { QueuedRoomMessage } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
-import type { Pool } from "../../db/pool.js";
-import { HttpError, withDbTransaction, type Queryable } from "../routeUtils/common.js";
+import { HttpError, type Queryable, withQueryableTransaction } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { isConversationTurnInProgressError } from "../sessions/conversationRuntimeSessionRepository.js";
 import type { AgentGroupMessageRecipientSegment } from "../agentGroups/service.js";
@@ -107,12 +106,12 @@ export async function listQueuedRoomMessages(db: Queryable, spaceId: string, ses
 export class RoomMessageQueue {
   constructor(
     private readonly config: ServerConfig,
-    private readonly pool: Pool,
+    private readonly pool: Queryable,
   ) {}
 
   /** Take back a message that has not been posted yet, or dismiss one that failed. Only its sender may. */
   async withdraw(identity: RoomIdentity, roomId: string, sessionId: string, queuedId: string): Promise<QueuedRoomMessage> {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const room = await new PgRoomRepository(client).getVisibleRoom(identity.spaceId, identity.userId, roomId, false);
       if (!room) throw new HttpError(404, "Room not found in this space");
       const result = await client.query<QueuedRow>(

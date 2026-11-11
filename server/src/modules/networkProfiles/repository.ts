@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { getDbPool, type Pool } from "../../db/pool.js";
+import { getDbPool } from "../../db/pool.js";
+import type { Queryable } from "../routeUtils/common.js";
 import type { ServerConfig } from "../../config.js";
 import {
   validateNetworkProfileInput,
@@ -42,11 +43,24 @@ export class NetworkProfileError extends Error {
   }
 }
 
-class NetworkProfileRepository {
-  private pool: Pool;
+/** A refused profile is the person's input error (400), with the validator's message. */
+function validated(input: Parameters<typeof validateNetworkProfileInput>[0]): ReturnType<typeof validateNetworkProfileInput> {
+  try {
+    return validateNetworkProfileInput(input);
+  } catch (error) {
+    throw new NetworkProfileError(400, error instanceof Error ? error.message : "Invalid network profile");
+  }
+}
 
-  constructor(config: ServerConfig) {
-    if (!config.databaseUrl) {
+class NetworkProfileRepository {
+  private pool: Queryable;
+
+  constructor(config: ServerConfig | null, db?: Queryable) {
+    if (db) {
+      this.pool = db;
+      return;
+    }
+    if (!config?.databaseUrl) {
       throw new Error("Network profiles require SERVER_DATABASE_URL");
     }
     this.pool = getDbPool(config.databaseUrl);
@@ -71,7 +85,7 @@ class NetworkProfileRepository {
   async create(spaceId: string, input: NetworkProfileCreateInput): Promise<Record<string, unknown>> {
     const name = input.name.trim();
     if (!name) throw new NetworkProfileError(400, "name must not be empty");
-    const normalized = validateNetworkProfileInput({
+    const normalized = validated({
       mode: input.mode ?? "http_proxy",
       proxy_url: input.proxy_url,
       no_proxy: input.no_proxy,
@@ -105,7 +119,7 @@ class NetworkProfileRepository {
     const current = await this.getRow(spaceId, id, true);
     const name = input.name === undefined ? current.name : input.name.trim();
     if (!name) throw new NetworkProfileError(400, "name must not be empty");
-    const normalized = validateNetworkProfileInput({
+    const normalized = validated({
       mode: input.mode ?? current.mode,
       proxy_url: input.proxy_url === undefined ? current.proxy_url : input.proxy_url,
       no_proxy: input.no_proxy === undefined ? current.no_proxy : input.no_proxy,
@@ -181,6 +195,11 @@ class NetworkProfileRepository {
 
 let repository: NetworkProfileRepository | null = null;
 let repositoryKey: string | null = null;
+
+/** The repository bound to a caller's transaction (an operation command's port). */
+export function networkProfileRepositoryIn(db: Queryable): NetworkProfileRepository {
+  return new NetworkProfileRepository(null, db);
+}
 
 export function resolveNetworkProfileRepository(config: ServerConfig): NetworkProfileRepository {
   const key = config.databaseUrl ?? "";

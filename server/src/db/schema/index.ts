@@ -102,3 +102,5 @@ export * from "./executionWorkspaces.js";
 
 export * from "./codePatchDecisions.js";
 export * from './projectFolderIo.js';
+export * from './hostCommands.js';
+export * from './systemCommands.js';

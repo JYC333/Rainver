@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { loadConfig, type ServerConfig } from "../src/config.js";
 import { agentsModule } from "../src/modules/agents/index.js";
 import { runsModule } from "../src/modules/runs/index.js";
-import { __setAgentChatIdentityForTests } from "../src/modules/agents/routes.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
 import { registerAgentRunHandler } from "../src/modules/runs/agentRunHandler.js";
 import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
@@ -56,7 +56,7 @@ beforeEach(async () => {
   await resetTables(db.pool, ["spaces", "users", "hosts", "machines", "jobs"], { cascade: true });
 });
 afterEach(async () => {
-  __setAgentChatIdentityForTests(null);
+  __setAuthIdentityForTests(null);
   host?.disconnect();
   host = undefined;
   await app?.close();
@@ -126,11 +126,11 @@ async function world(hostKind: "server" | "remote") {
 async function directChatWorld() {
   const w = await world("server");
   app = buildModuleServer(config, [agentsModule, runsModule]);
-  __setAgentChatIdentityForTests(w.identity);
+  __setAuthIdentityForTests(w.identity);
   const send = async (payload: Record<string, unknown>) => {
-    const response = await app!.inject({ method: "POST", url: `/api/v1/agents/${w.agent}/chat`, payload });
+    const response = await app!.inject({ method: "POST", url: `/api/v1/agents/${w.agent}/chat`, payload, headers: { "idempotency-key": randomUUID() } });
     expect(response.statusCode, response.body).toBe(202);
-    return response.json() as { run_id: string; session_id: string; user_message_id: string };
+    return response.json().data as { run_id: string; session_id: string; user_message_id: string };
   };
   return { ...w, send };
 }
@@ -246,7 +246,7 @@ describe("joined prompt provenance: direct chat", () => {
       headers: { "idempotency-key": randomUUID() }, payload: { run_id: failed.run_id },
     });
     expect(response.statusCode, response.body).toBe(202);
-    const retry = response.json() as { run_id: string; user_message_id: string; retry_of_run_id: string };
+    const retry = response.json().data as { run_id: string; user_message_id: string; retry_of_run_id: string };
     expect(retry).toMatchObject({ user_message_id: failed.user_message_id, retry_of_run_id: failed.run_id });
     expect(await w.execute(retry.run_id)).toMatchObject({ status: "succeeded" });
 
@@ -324,14 +324,14 @@ describe("joined prompt provenance: Room", () => {
     const original = await joinedInvocation(db.pool, host!, sent.run_ids[0]!);
 
     host!.answer = () => ({ text: "Drafted." });
-    const retried = await w.rooms.retryMessage(w.identity, w.room, w.conversation.id, { run_id: sent.run_ids[0]!, idempotency_key: randomUUID() });
-    const retryRunId = retried.value.run_ids[0]!;
+    const retried = await w.rooms.retryMessage(w.identity, w.room, w.conversation.id, { run_id: sent.run_ids[0]! });
+    const retryRunId = retried.run_ids[0]!;
     expect(await w.execute(retryRunId)).toMatchObject({ status: "succeeded" });
     const retry = await joinedInvocation(db.pool, host!, retryRunId);
     // The retry reuses the person's message rather than posting a new one: it
     // is the retry's current input, delivered once with its image once, and
     // the session the failed turn opened is continued.
-    expect(retried.value.user_message_id).toBe(sent.message.id);
+    expect(retried.user_message_id).toBe(sent.message.id);
     expect(retry.current.ref).toEqual({ type: "message", id: sent.message.id });
     expect(retry.delivery.id).not.toBe(original.delivery.id);
     expect(retry.snapshot.sourceRefs.filter((ref) => ref.type === "message")).toEqual([{ type: "message", id: sent.message.id }]);

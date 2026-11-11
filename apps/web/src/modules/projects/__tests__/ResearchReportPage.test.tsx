@@ -57,7 +57,7 @@ describe('ResearchReportPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(projectResearchApi.report).mockResolvedValue(report)
-    vi.mocked(projectResearchApi.runReportIntegrity).mockResolvedValue({})
+    vi.mocked(projectResearchApi.runReportIntegrity).mockResolvedValue({ id: 'report-1', report_id: 'report-1', project_id: 'project-1', space_id: 'space-1' })
     vi.mocked(readerApi.getDocument).mockResolvedValue(documentPayload)
     vi.mocked(readerApi.listAnnotations).mockResolvedValue({ items: [] })
   })

@@ -68,3 +68,15 @@ describe('canonical operation approval gate scope',()=>{
   expect(computeDecision(registry,{...request,action:'unregistered.action'},'registry_default').decision.decision).toBe('deny');
  });
 });
+
+
+describe("human Note navigation policy", () => {
+  it("allows ordinary linking while preserving cross-Space denial", () => {
+    const request = {
+      action: "note.link.create", actor_type: "user", actor_id: "user",
+      space_id: "space", resource_space_id: "space", force_record: false,
+    };
+    expect(computeDecision(registry, request).decision.decision).toBe("allow");
+    expect(computeDecision(registry, { ...request, resource_space_id: "other" }).decision.decision).toBe("deny");
+  });
+});

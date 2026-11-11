@@ -3,6 +3,9 @@ import {registerExecutionWorkspaceJobs} from "../hosts/executionWorkspaceJobs.js
 import {registerCodePatchDecisionHandler,recoverCodePatchDecisions} from '../projectFolders/codePatchDecision.js';
 import {registerProjectFolderForgetHandler} from '../projectFolders/forgetWorkspaceJob.js';
 import {registerProjectFolderIoHandler} from '../projectFolders/ioWorker.js';
+import {registerHostCommandHandler} from '../hosts/hostCommandWorker.js';
+import {registerSystemCommandHandler} from '../systemCommands/worker.js';
+import {registerPluginScopeCleanupHandler} from '../plugins/lifecycle.js';
 import {registerBundleDecisionHandler,recoverBundleDecisionJobs} from '../evolution/bundleDecisionJob.js';
 import {registerRunProposalPublication} from '../runs/proposalPublicationJob.js';
 import {registerProjectReadingJobs} from '../informationDigest/index.js';
@@ -20,6 +23,11 @@ import { RunRecoveryService } from "../runs/recovery.js";
 import { wakeJobWorkers } from "./wakeSignal.js";
 import { registerAgentRunHandler } from "../runs/agentRunHandler.js";
 import { registerProviderTaskRunHandler } from "../runs/providerTaskRunHandler.js";
+import { settleAbandonedQuestionRefineTurns } from "../projectResearch/questionRefineService.js";
+import { getDbPool } from "../../db/pool.js";
+import { registerPublicSummaryDraftRuns } from "../projects/publicSummaryDraftOperation.js";
+import { registerImportedHistoryExtractionJob } from "../importedSessions/extractionOperation.js";
+import { registerProjectSummaryBriefJob } from "../projects/summaryBriefOperation.js";
 import { registerMemoryConsolidationHandler } from "../activity/consolidationJob.js";
 import { registerDailyCaptureReportHandler } from "../dailyReports/jobHandler.js";
 import { registerSourceExtractionHandler } from "../sources/extractionJob.js";
@@ -44,6 +52,10 @@ import { registerRoomConversationTitleHandler } from "../rooms/conversationTitle
 import { registerRoomDelegationCompletionRetryHandler } from "../agentGroups/delegationCompletionRetryJob.js";
 import { registerRoomDiscussionAdvanceRetryHandler } from "../rooms/discussionAdvanceRetryJob.js";
 import { registerRoomQueuedMessageReleaseHandler } from "../rooms/queuedMessageReleaseJob.js";
+import { registerRoomAgentWorkspaceRestoreHandler } from "../rooms/workspaceRestoreJob.js";
+import { registerRunLiveInputDeliveryHandler, settleOrphanedRunLiveInputs } from "../runs/liveInputService.js";
+import { retryPendingArchivesForConnectedHosts } from "../hosts/managedWorkspaceArchiveRecovery.js";
+import { registerAgentGroupResumeWakeHandler } from "../agentGroups/resumeWakeJob.js";
 import { registerResearchAcquisitionPipelineHandler } from "../projectResearch/pipeline/researchAcquisitionPipelineJob.js";
 import { registerResearchOperationFailureNotifyHandler } from "../projectResearch/pipeline/researchOperationFailureNotifyJob.js";
 import { registerResearchOperationCancelHandler } from "../projectResearch/pipeline/researchOperationCancelJob.js";
@@ -111,6 +123,9 @@ export function buildJobHandlerRegistry(
   registerReadingProviderReconciliation(registry,config);
   registerRevisionProviderRuns();
   registerProviderTaskRunHandler(registry, config);
+  registerPublicSummaryDraftRuns(config);
+  registerImportedHistoryExtractionJob(registry, config);
+  registerProjectSummaryBriefJob(registry, config);
   registerMemoryConsolidationHandler(registry, config);
   registerDailyCaptureReportHandler(registry, config);
   registerMonitoringJob(registry, config);
@@ -131,11 +146,17 @@ export function buildJobHandlerRegistry(
   registerRoomDelegationCompletionRetryHandler(registry, config);
   registerRoomDiscussionAdvanceRetryHandler(registry, config);
   registerRoomQueuedMessageReleaseHandler(registry, config);
+  registerRoomAgentWorkspaceRestoreHandler(registry, config);
+  registerRunLiveInputDeliveryHandler(registry, config);
+  registerAgentGroupResumeWakeHandler(registry, config);
   registerResearchAcquisitionPipelineHandler(registry, config);
   registerResearchOperationFailureNotifyHandler(registry, config);
   registerResearchOperationCancelHandler(registry, config);
   registerProjectFolderForgetHandler(registry, config);
   registerProjectFolderIoHandler(registry, config);
+  registerHostCommandHandler(registry, config);
+  registerSystemCommandHandler(registry, config);
+  registerPluginScopeCleanupHandler(registry, config);
   // Plugin-contributed job handlers (enablement-gated by the host context).
   pluginHost?.applyJobHandlers(registry);
   deferWhileInstanceUpdates(config, registry);
@@ -173,7 +194,10 @@ export function startJobsWorker(
       log?.error(`[jobs-worker] stuck job reclaim failed: ${error instanceof Error ? error.message : String(error)}`);
     }
     await recoverCodePatchDecisions(config).catch(error=>log?.error(`[jobs-worker] code patch recovery failed: ${error instanceof Error?error.message:String(error)}`));
+    await settleAbandonedQuestionRefineTurns(getDbPool(config.databaseUrl!)).catch(error=>log?.error(`[jobs-worker] question refine turn recovery failed: ${error instanceof Error?error.message:String(error)}`));
     await recoverBundleDecisionJobs(config).catch(error=>log?.error(`[jobs-worker] bundle decision recovery failed: ${error instanceof Error?error.message:String(error)}`));
+    await settleOrphanedRunLiveInputs(getDbPool(config.databaseUrl!),config).catch(error=>log?.error(`[jobs-worker] live input recovery failed: ${error instanceof Error?error.message:String(error)}`));
+    await retryPendingArchivesForConnectedHosts(getDbPool(config.databaseUrl!)).catch(error=>log?.error(`[jobs-worker] host archive recovery failed: ${error instanceof Error?error.message:String(error)}`));
     await lifecycle.recover(log);
   }, RECLAIM_INTERVAL_MS, error => log?.error(`[jobs-worker] recovery failed: ${error instanceof Error ? error.message : String(error)}`), {
     afterMs: RECOVERY_STALL_MS,

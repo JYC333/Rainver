@@ -263,7 +263,7 @@ export default function ProjectDetailPage({ onAccessChanged }: { onAccessChanged
       if (loadInFlightRef.current?.promise === promise) loadInFlightRef.current = null
     }
   }, [projectId, activeSpaceId, userId, loadImpl])
-  // Stable: Pulse re-reads on an interval keyed on this callback's identity.
+  // Stable callback for Pulse invalidations.
   const refreshOverview = useCallback(() => { void load(true) }, [load])
   function refreshAccess() {
     refreshOverview()

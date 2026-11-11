@@ -1,3 +1,4 @@
+import {freezeReview,frozenReview} from '../src/modules/projectFolders/delegatedWorkspaceReview.js';
 import { readRunFilePreview } from "../src/modules/runs/filePreview.js";
 import { loadConfig } from "../src/config.js";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -342,6 +343,23 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
       summary: "reviewed",
       review_basis: { head: "reviewed-head", branch: "main", tree, changed_during_review: true, launch_id: LAUNCH_A },
     });
+  });
+
+  it("keeps frozen expected review separate from the Host upload and preserves verified status through finalization", async ctx => {
+    if(!db.available)return ctx.skip();
+    const workspace='99999999-9999-4999-8999-999999999999',commit='b'.repeat(40),tree='c'.repeat(40);
+    await db.pool.query(`INSERT INTO sessions(id,space_id,project_id,room_id,status,created_at,updated_at) VALUES($1::varchar(36),$2::varchar(36),$3::varchar(36),(SELECT id FROM rooms WHERE space_id=$2::varchar(36) AND is_mainline=true LIMIT 1),'active',now(),now())`,[workspace,SPACE,PROJECT]);
+    await db.pool.query(`INSERT INTO execution_workspaces(id,space_id,project_id,workspace_location_id,execution_host_id,owner_kind,session_id,generation,state)
+      VALUES($1,$2,$3,'location-a',$4,'conversation',$1,1,'ready')`,[workspace,SPACE,PROJECT,HOST_A]);
+    await db.pool.query("UPDATE runs SET status='running',required_sandbox_level='read_only' WHERE id=$1",[RUN_A]);
+    await freezeReview(db.pool,{runId:RUN_A,spaceId:SPACE,workspaceId:workspace,generation:1,locationId:'location-a',commit});
+    expect(await frozenReview(db.pool,RUN_A,SPACE)).toMatchObject({expected_commit:commit,state:'pending'});
+    const hosts=new PgHostRepository(db.pool);
+    accepted(await hosts.recordDiffArtifact(HOST_A,OWNER,RUN_A,{launch_id:LAUNCH_A,diff:'',git_before:{head:commit,branch:'review'},workspace_tree_before:tree}));
+    expect(await frozenReview(db.pool,RUN_A,SPACE)).toMatchObject({expected_commit:commit,state:'verified'});
+    await new PgRunRepository(db.pool).markRunTerminal({run_id:RUN_A,space_id:SPACE,status:'succeeded',output_json:{summary:'review result'},completed_at:new Date().toISOString()});
+    expect((await new PgRunRepository(db.pool).getRun(SPACE,RUN_A))!.output_json).toMatchObject({summary:'review result',review_basis:{expected_commit:commit,observed_commit:commit,state:'verified'}});
+    expect((await db.pool.query('SELECT 1 FROM workspace_change_sets WHERE workspace_id=$1',[workspace])).rowCount).toBe(0);
   });
 
   it("keeps a Run's diff and its checkout position when the branch name is long", async (ctx) => {

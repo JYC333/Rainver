@@ -11,12 +11,12 @@ import {workspaceReference,type ExecutionWorkspaceRow} from '../projectFolders/e
 import {canWriteProject} from '../projects/access.js';
 import {assessWorkspaceRetention,classifyLocationRefs,hostReleasesRefs,recordRetention,RECLAIM_PROTOCOL} from './workspaceRetention.js';
 import {CONFIRMED_REF_FAILURES,requiredRefLevel} from './workspaceRefRelease.js';
-import {reconcilePublishedWorkspaceChild} from './workspaceAdoption.js';
+import {reconcilePublishedWorkspaceChild,reconcileWorkspaceAdoption} from './workspaceAdoption.js';
 
 /** Bounded database reconciliation. It repairs intent delivery, never invents completion. */
 export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:string,options:{hostId?:string;after?:string;hosts?:HostConnectionRegistry}={}){
  const hosts=options.hosts??sharedHostConnectionRegistry;
- const rows=(await db.query<ExecutionWorkspaceRow & {cleanup_json:Record<string,WorkspaceCleanupResource>;inventory_json:Record<string,unknown>;responsible_user:string|null;host_owner:string|null;host_kind:string;idle:boolean;closed_owner:boolean;host_reclaim:number|null}>(`SELECT w.*,h.kind AS host_kind,h.owner_user_id AS host_owner,(h.capabilities_json->'execution_workspaces'->>'reclaim')::int AS host_reclaim,
+ const rows=(await db.query<ExecutionWorkspaceRow & {cleanup_json:Record<string,WorkspaceCleanupResource>;inventory_json:Record<string,unknown>;retention_json:Record<string,unknown>;responsible_user:string|null;host_owner:string|null;host_kind:string;idle:boolean;closed_owner:boolean;host_reclaim:number|null}>(`SELECT w.*,h.kind AS host_kind,h.owner_user_id AS host_owner,(h.capabilities_json->'execution_workspaces'->>'reclaim')::int AS host_reclaim,
   (SELECT COALESCE(r.instructed_by_user_id,r.owner_user_id) FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id WHERE b.workspace_id=w.id ORDER BY b.created_at DESC LIMIT 1) AS responsible_user,
   w.updated_at<now()-interval '24 hours' AS idle,
   CASE WHEN w.owner_kind='delegation' THEN EXISTS(SELECT 1 FROM run_delegations d WHERE d.id=w.delegation_id AND d.completed_at IS NOT NULL)
@@ -87,6 +87,16 @@ export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:st
   });
   if(!hosts.isOnline(w.execution_host_id))continue;
   if(await reconcilePublishedWorkspaceChild(db,w,user,hosts,workspaceRoot))recovered++;
+  // Settled work already in the target (external merge/squash/rewrite) or with
+  // nothing saved closes on exact evidence only. A failed or deferred Git read
+  // is retried next pass; it never blocks this owner's cleanup.
+  try{if(await reconcileWorkspaceAdoption(db,w,user,hosts,workspaceRoot))recovered++;}catch{/* retried next pass */}
+  // A retired owner whose branch is kept still learns whether the branch was
+  // removed outside Rainver (read-only inventory; no executable state is touched).
+  if(w.state==='retired'&&w.retention_json?.state==='retained'){
+   const seen=await hosts.requestTaskBranch(w.execution_host_id,'execution_workspace_command',{workspace:await workspaceLocationFrame(db,w,workspaceReference(w),workspaceRoot),action:'inspect',operation_id:randomUUID(),retain_branch:true}).catch(()=>null);
+   if(seen?.ok&&seen.inventory)await db.query('UPDATE execution_workspaces SET inventory_json=$2::jsonb WHERE id=$1',[w.id,JSON.stringify(seen.inventory)]);
+  }
   // Retention: a proven-closed source (retired or not) is offered for release
   // after its grace. The cleanup Job re-assesses, observes the tip and lets the
   // Host prove it; offline Hosts simply wait for reconnect.

@@ -25,11 +25,14 @@ task/audit authority, not a second conversation UI.
 
 ## Owns
 - `rooms`, `room_user_members`, `room_agent_members` schema (`server/src/db/schema/rooms.ts`)
-- Room-only specialist grants, invitation/approval snapshots, and preset idempotency records
+- Room-only specialist grants and invitation/approval snapshots
   (`room_agent_access_grants`, `room_user_invitations`,
-  `room_invitation_agent_approvals`, `room_agent_preset_idempotencies`)
-- Room creation idempotency records (`room_creation_idempotencies`,
-  `server/src/db/schema/roomCreationIdempotency.ts`)
+  `room_invitation_agent_approvals`)
+- Historical preset/Room-creation replay tables (`room_agent_preset_idempotencies`,
+  `room_creation_idempotencies`), no longer written: those URLs are operation-core
+  adapters and the scoped core key replays them
+- Room commands' core registrations (`server/src/modules/rooms/operations.ts`); see
+  SYSTEM_ACTIONS "Agent and Room commands"
 - Discussions and the per-conversation message queue (`room_discussions`,
   `room_queued_messages`, `server/src/db/schema/roomDiscussions.ts`)
 - `RoomService` — room/conversation creation, membership, message dispatch (`server/src/modules/rooms/service.ts`)
@@ -458,7 +461,9 @@ forces: the departing Agent's **profile** is always archived, while the
 
 `POST /api/v1/agents/:agentId/host-state/reset` clears an Agent's CLI memory on
 one Host outright: every profile archived, no workspace touched, and that
-Agent's vendor sessions on the Host retired.
+Agent's vendor sessions on the Host retired. It is the journaled
+`agent.host_state.reset` Host command (`.agent/modules/hosts.md` "Host
+commands"); launches of that Agent on that Host wait until the Host settles it.
 
 What a remote Host receives is prompt content, not server-brokered Runtime
 Context; credentials, memory reads, and provider state do not cross to the
@@ -471,8 +476,8 @@ The managed `system_assistant` participant is the hidden, system-controlled
 Manager and is immutable through the roster API. Project-writer Room members
 may add visible existing Agents or instantiate one of the server-defined
 presets, and may remove specialists without deleting the Agent or historical
-messages. Preset creation is retry-safe when the caller supplies an
-`Idempotency-Key`. A preset added without a chosen Host Profile copies the
+messages. Preset creation, like every Room write, is a core command: the
+caller's `Idempotency-Key` replays it. A preset added without a chosen Host Profile copies the
 Manager's Host-bound runtime profiles, each on its own Host and admitted for the
 person adding it; a profile that person cannot run there is left out, and the new
 Agent keeps its own Server Runtime default.
@@ -1477,13 +1482,48 @@ is slow to answer is decided on the cached reading.
   separately typed preset factories
 - `POST /api/v1/rooms/:roomId/agents` — add/reactivate a specialist with
   explicit private Room-share confirmation and optional `restore_workspace`;
-  the Agent is added either way, and the response's
-  `managed_workspace_restore` carries the Host's outcome, which the roster
-  panel reports when nothing was restored
+  the Agent is added either way. The restore commits with the roster as a
+  `room_agent_workspace_restore` Job of the exact closed thread
+  (`workspaceRestoreJob.ts`); the Host call is the Job's, after re-checking
+  membership, Project write, Host ownership and that no newer thread exists. The
+  Job carries one Host operation identity and a generation ordered after the
+  thread's archive intent; every attempt repeats that operation. A still-pending
+  archive of the thread is settled first under its own identity. Host answers
+  are classified (`hosts/managedWorkspaceOperations.ts`): done; definite
+  refusal (`live_conflict`, a stale or mismatched operation, a Host without
+  `managed_workspace_operations`), told once in the conversation; or temporary
+  and unknown (offline, timeout, unsent frame, interrupted move, any other
+  error), deferred and repeated without consuming attempts until it settles or
+  the request is withdrawn. After a week the person is told once
+  (`managed_workspace_restore_overdue`) and the same operation keeps being
+  reconciled hourly; the deadline never settles an unknown outcome. The Job's
+  operation identity, generation and `include_workspace` are fixed when it is
+  enqueued — except a cwd scope that follows an archive whose own scope was only
+  inferred (`include_workspace_after_archive`), which is fixed once, before the
+  restore is first sent, from what the Host confirmed that archive did. A Job
+  an earlier release queued (scope inferred, no marker) keeps its operation's
+  parameters, since the Host may already hold them; once its receipt settled,
+  one corrective operation (`follow_up`, its own identity and a later
+  generation, saved in the payload before it is sent) restores the cwd after a
+  profile-only restore when the archive took the cwd, or the profile alone
+  after a cwd restore refused on a live cwd the archive did not take. When the
+  profile came back but that corrective cwd restore is refused — another
+  Agent rebuilt the shared cwd (`live_conflict`), which is never overwritten —
+  the Job ends `partially_restored` (its result keeps the refusal) and the
+  conversation is told once that the Agent's own state came back while its
+  earlier cwd stays archived on the Host (notice detail `restored: partial`);
+  it is never reported as restored. Before any of this, an identity-less
+  archive ever sent in the Conversation must be drained by the Host (see
+  `hosts.md`). The receipt says only `restore_requested`
 - `POST /api/v1/rooms/:roomId/agent-presets` — instantiate and add a preset
 - `DELETE /api/v1/rooms/:roomId/agents/:agentId` — remove a specialist and
-  revoke future Room grants; `managed_workspace_archive` lists one Host
-  outcome per archived thread
+  revoke future Room grants; closed threads commit `pending_archive_at` with an
+  `archive_generation` and the Host archive runs after commit as operation
+  `archive:<thread>:<generation>` (repeated when the Host reconnects, and by the
+  jobs recovery pass while it stays connected; the shared cwd is included only
+  for the last Agent out, decided when the intent commits and never recomputed;
+  a re-added Agent's next Run settles it first — see `hosts.md`, "Archiving
+  what an Agent leaves behind")
 - `POST /api/v1/rooms/:roomId/agents/:agentId/reset-context` — reset a
   host-bound specialist's vendor session (Host owner and Project writer)
 - `POST /api/v1/rooms/:roomId/agents/:agentId/summarize-context` — ask a
@@ -1496,7 +1536,8 @@ is slow to answer is decided on the cached reading.
   that session and start the Agent's next turn from the summary it wrote in it
   (409 when the current session has none)
 - `GET/POST /api/v1/rooms/:roomId/invitations` — list or create human
-  invitations; pending invitations carry owner approvals. The list answers the
+  invitations; pending invitations carry owner approvals; `invitation_id`
+  reads one exact invitation under the same access. The list answers the
   Room-not-found 404 to a Project reader who is neither an active member nor
   party to any of the Room's invitations (ADR 0018 decision 3); an invitee or
   approval owner reads their own before joining
@@ -1512,6 +1553,7 @@ is slow to answer is decided on the cached reading.
   Room-not-found 404 unless they can already see the Room, in which case 403
 - `GET /api/v1/rooms/:roomId/conversations` — list conversations
 - `GET /api/v1/rooms/:roomId/conversations/:sessionId/messages` — paged history
+  (`message_id` reads one exact message, as a command receipt's read-back does)
 - `POST /api/v1/rooms/:roomId/conversations/:sessionId/messages` — send a
   message; supports direct `@agent` recipient segmentation or manager
   coordination with optional `coordination_target_agent_ids` (active Agent
@@ -1638,3 +1680,11 @@ the parent's workspace branch. A pending checkpoint delays fan-out; its durable
 Job re-evaluates admission on success. A waiting parent is not resumed while a
 child's completed changes still owe integration. Partial or failed child work
 is retained and is not implicitly published.
+
+Quota admission and account summary lines use shared account meters only.
+Independently scoped model/family allowances remain separately visible in Usage
+and do not make other models unavailable. A scoped CLI refusal is retained on
+its interrupted Run rather than treated as account-wide evidence. Native quota
+recovery can explicitly authorize one alternative model from the same installed
+CLI, using the same scheduler, conversation/authority checks and attempt cap;
+see [runtime adapters](runtime-adapters.md).

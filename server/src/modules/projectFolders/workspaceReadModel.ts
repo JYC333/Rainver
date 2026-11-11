@@ -3,6 +3,7 @@ import {WorkspaceChangeViewSchema,WorkspaceRetentionSchema,type WorkspaceChangeV
 import {projectAttentionRegistry,type ProjectAttentionAdapter,type ProjectAttentionItem} from '../projects/attentionRegistry.js';
 import type {RunRecord} from '../runs/repository.js';
 import {runBodyReadableSql} from '../runs/runBodyReadSql.js';
+import {workspaceContributorsReadableSql} from './workspaceContributors.js';
 import {HttpError,type Queryable} from '../routeUtils/common.js';
 import {attentionSessionReadSql} from '../sessions/attentionRead.js';
 
@@ -20,10 +21,11 @@ export function decodeKeyset(cursor:string,size:number):string[]{
  throw new HttpError(422,'Invalid cursor');
 }
 
-/** Host ownership and the origin Run's unwithheld body, as SQL, so hidden
- * rows are dropped before LIMIT and never use up a reader's page. */
+/** Host ownership, the origin Run's unwithheld body and every contributing
+ * Run's (workspaceContributors), as SQL, so hidden rows are dropped before
+ * LIMIT and never use up a reader's page. */
 function visibleChangeSql(userExpr:string){
- return `(h.kind<>'remote' OR h.owner_user_id=${userExpr}) AND ${runBodyReadableSql('origin',userExpr)}`;
+ return `(h.kind<>'remote' OR h.owner_user_id=${userExpr}) AND ${runBodyReadableSql('origin',userExpr)} AND ${workspaceContributorsReadableSql('c',userExpr)}`;
 }
 
 /** The one reader behind every workspace progress surface: exact SQL scope from
@@ -55,7 +57,8 @@ export async function readVisibleWorkspaceChanges(db:Queryable,spaceId:string,us
    WHEN EXISTS(SELECT 1 FROM workspace_change_sets adopter WHERE adopter.workspace_id=w.parent_workspace_id AND adopter.space_id=c.space_id
     AND jsonb_typeof(adopter.verification_json->'adopted_child_change_ids')='array' AND (adopter.verification_json->'adopted_child_change_ids') ? c.id) THEN 'parent'
    ELSE 'parent_unverified' END AS landing,
-  COALESCE((h.capabilities_json->>'native_workspace_integration')::boolean,false) AS native_integration
+  COALESCE((h.capabilities_json->>'native_workspace_integration')::boolean,false) AS native_integration,
+  to_json(c.updated_at)#>>'{}' AS change_updated_at
   FROM workspace_change_sets c
   JOIN execution_workspaces w ON w.id=c.workspace_id AND w.space_id=c.space_id JOIN hosts h ON h.id=w.execution_host_id
   JOIN runs origin ON origin.id=c.originating_run_id AND origin.space_id=c.space_id
@@ -65,7 +68,7 @@ export async function readVisibleWorkspaceChanges(db:Queryable,spaceId:string,us
  const writable=new Map<string,boolean>();
  const entries:VisibleWorkspaceChange[]=[];
  for(const row of rows.slice(0,limit)){
-  const {run_status,run_agent_id,page_created:_,sequence:__,originating_run_id,cleanup_json,project_id,retention_json,...publicView}=row;
+  const {run_status,run_agent_id,page_created:_,sequence:__,originating_run_id,cleanup_json,project_id,retention_json,change_updated_at,...publicView}=row;
   // Attempt instructions and their history can originate in a more private Run
   // than the frozen source. Keep them in durable evidence, not shared progress.
   if(publicView.integration_detail&&typeof publicView.integration_detail==='object'){
@@ -75,7 +78,8 @@ export async function readVisibleWorkspaceChanges(db:Queryable,spaceId:string,us
   const project=String(project_id);
   if(!writable.has(project))writable.set(project,await canWriteProject(db,spaceId,project,userId));
   const cleanup_errors=Object.values((cleanup_json??{}) as Record<string,{error?:string}>).map(r=>r.error).filter((e):e is string=>typeof e==='string').slice(0,5);
-  entries.push({change:WorkspaceChangeViewSchema.parse({...publicView,cleanup_errors,...retentionView(retention_json),can_manage:writable.get(project)}),run:{id:String(originating_run_id),status:run_status,agent_id:run_agent_id}});
+  const retention=currentRetention(retentionView(retention_json).retention,publicView.state==='open'?String(change_updated_at):null);
+  entries.push({change:WorkspaceChangeViewSchema.parse({...publicView,cleanup_errors,...(retention?{retention}:{}),can_manage:writable.get(project)}),run:{id:String(originating_run_id),status:run_status,agent_id:run_agent_id}});
  }
  const last=rows.length>limit?rows[limit-1]:undefined;
  return {entries,next_cursor:last?encodeKeyset([last.page_created,String(last.workspace_id),String(last.sequence),String(last.change_set_id)]):null};
@@ -120,6 +124,18 @@ export async function conversationWorkspaceChangesForViewer(db:Queryable,spaceId
  return workspaceChangesForConversation(db,{spaceId,sessionId,projectId:session.project_id},userId,page);
 }
 /** Stable reason codes and times only: no ref names, paths or commit lists. */
+/**
+ * A missing-branch reading describes the work saved before it was taken. Open
+ * work recorded after that assessment (`assessed_at`) — a newer batch, or the
+ * same batch saved again by a later Run — is not described by it: the reading
+ * is stale for that work and is not shown with it, so the work reads as the
+ * saved/unsaved batch it is. A reading with no newer open work, or without an
+ * assessment time, still stands, so a real missing branch is never hidden.
+ */
+export function currentRetention(retention:WorkspaceRetention|undefined,openWorkAt:string|null):WorkspaceRetention|undefined{
+ if(retention?.state!=='missing'||!openWorkAt||!retention.assessed_at)return retention;
+ return Date.parse(openWorkAt)>Date.parse(retention.assessed_at)?undefined:retention;
+}
 export function retentionView(raw:unknown):{retention?:WorkspaceRetention}{
  if(!raw||typeof raw!=='object'||!('state' in raw))return {};
  const r=raw as Record<string,unknown>,text=(v:unknown)=>typeof v==='string'?v:null,count=(v:unknown)=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0?v:0;

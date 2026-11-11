@@ -42,19 +42,19 @@ export async function authorizeRunResume(
   const run = await runs.getVisibleRun(identity.spaceId, identity.userId, runId);
   if (!run) throw new HttpError(404, "Run not found in this space");
   if (run.status !== "waiting_for_review") {
-    throw new HttpError(409, `Run is not waiting for review (current status: ${run.status})`);
+    throw new RunCommandRefusal(`Run is not waiting for review (current status: ${run.status})`);
   }
   const pause = recordValue(run.error_json);
   if (typeof pause.authorization_request_id === "string") {
     const detail = "Authorization-request Runs reconcile automatically after the request is decided.";
-    throw new HttpError(409, detail, { detail, authorization_request_id: pause.authorization_request_id });
+    throw new RunCommandRefusal(detail, 409, { detail, authorization_request_id: pause.authorization_request_id });
   }
   if (pause.supervisor_review === true) {
     assertCommandStanding(run, identity, "resume");
     return { run, kind: "supervisor_review" };
   }
   if (typeof pause.risk_level !== "string" || !VALID_RISK_LEVELS.has(pause.risk_level)) {
-    throw new HttpError(409, "This pause recorded no risk to approve against; abandon the Run and start it again");
+    throw new RunCommandRefusal("This pause recorded no risk to approve against; abandon the Run and start it again");
   }
   const risk = pause.risk_level as RiskLevel;
   const membership = await db.query<{ role: string }>(
@@ -69,8 +69,40 @@ export async function authorizeRunResume(
   return { run, kind: "approval" };
 }
 
+/**
+ * Whether this person could give a resume that already happened, judged now:
+ * the receipt of a supervisor-review resume needs the Run command standing; that
+ * of an approval needs approval authority for the risk the grant recorded
+ * (critical when an older grant recorded none).
+ */
+export async function mayHoldRunResume(
+  db: Queryable,
+  run: VisibleRunRecord,
+  identity: SpaceUserIdentity,
+  kind: "new_attempt" | "same_attempt" | undefined,
+): Promise<boolean> {
+  if (kind !== "same_attempt") return run.owner_user_id === identity.userId || run.instructed_by_user_id === identity.userId;
+  const grant = await db.query<{ role: string | null; risk_level: string | null }>(
+    `SELECT (SELECT role FROM space_memberships WHERE space_id = $1 AND user_id = $3 AND status = 'active' LIMIT 1) AS role,
+            (SELECT grants.entry->>'risk_level'
+               FROM runs, jsonb_array_elements(COALESCE(runs.permission_snapshot_json->'policy_grants', '[]'::jsonb))
+                    WITH ORDINALITY AS grants(entry, position)
+              WHERE runs.space_id = $1 AND runs.id = $2 AND grants.entry->>'granted_by_user_id' = $3
+              ORDER BY grants.position DESC LIMIT 1) AS risk_level`,
+    [identity.spaceId, run.id, identity.userId],
+  );
+  const row = grant.rows[0];
+  const risk = row?.risk_level && VALID_RISK_LEVELS.has(row.risk_level) ? row.risk_level as RiskLevel : "critical";
+  return roleMayApproveRisk(row?.role ?? null, risk);
+}
+
 function assertCommandStanding(run: VisibleRunRecord, identity: SpaceUserIdentity, command: RunCommand): void {
   if (run.owner_user_id !== identity.userId && run.instructed_by_user_id !== identity.userId) {
     throw new HttpError(403, `Only the Run's owner or the person who started it can ${command} it`);
   }
+}
+
+/** A deterministic refusal of a Run command written for the person (wrong state, stale status). */
+export class RunCommandRefusal extends HttpError {
+  constructor(message: string, statusCode: 409 | 422 = 409, body?: unknown) { super(statusCode, message, body); this.name = "RunCommandRefusal"; }
 }

@@ -77,13 +77,22 @@ it('paginates all matching readable Threads and refuses invalid filters without 
 });
 it('admits HTTP research through existing bounded binding and exposes scoped operations without starting work on reads', async () => {
     const payload = { thread_id: thread, idempotency_key: 'one', intent_note: 'Find cause' };
-    const start = await app.inject({ method: 'POST', url: url() + '/research/acquisitions', payload });
+    const post = (key: string, body: Record<string, unknown> = payload) => app.inject({ method: 'POST', url: url() + '/research/acquisitions', headers: { 'idempotency-key': key }, payload: body });
+    expect((await app.inject({ method: 'POST', url: url() + '/research/acquisitions', payload })).statusCode).toBe(422);
+    const start = await post('transport-one');
     expect(start.statusCode, start.body).toBe(202);
-    const id = start.json().operation_id;
+    expect(start.json().data).toMatchObject({ status: 'queued', thread_id: thread, project_id: project, space_id: space });
+    const id = start.json().data.id;
     expect(id).toBeTruthy();
-    const replay = await app.inject({ method: 'POST', url: url() + '/research/acquisitions', payload });
+    const replay = await post('transport-one');
     expect(replay.statusCode, replay.body).toBe(202);
-    expect(replay.json().operation_id).toBe(id);
+    expect(replay.json().data.id).toBe(id);
+    expect((await post('transport-one', { ...payload, intent_note: 'Changed' })).statusCode).toBe(422);
+    // A fresh transport key is a new call; the retained domain request key still resolves to the same invocation.
+    const domainReplay = await post('transport-two');
+    expect(domainReplay.statusCode, domainReplay.body).toBe(202);
+    expect(domainReplay.json().data.id).toBe(id);
+    expect(Number((await db.pool.query("SELECT count(*) FROM project_operations WHERE space_id=$1 AND project_id=$2 AND kind='research'", [space, project])).rows[0].count)).toBe(1);
     const list = await app.inject({ method: 'GET', url: url() + `/inquiry/threads/${thread}/research-operations` });
     expect(list.statusCode, list.body).toBe(200);
     expect(list.json().items[0]).toMatchObject({ id, progress_json: { workflow_id: expect.any(String) } });

@@ -15,7 +15,7 @@ export function registerProjectFolderForgetHandler(registry:JobHandlerRegistry,c
     if((await db.query('SELECT id FROM workspace_locations WHERE id=$1',[payload.workspace_location_id])).rows.length)return {forgotten:false,reason:'registration_exists'};
     const answer=await hosts.forgetHostWorkspace(payload.host_id,payload.workspace_location_id);
     if(!answer.ok){
-      if(['host_offline','host_timeout'].includes(answer.error??''))throw new JobDeferredError('Folder registration cleanup is waiting for its Host',30000);
+      if(['host_offline','host_disconnected','host_timeout'].includes(answer.error??''))throw new JobDeferredError('Folder registration cleanup is waiting for its Host',30000);
       throw new Error('Folder registration cleanup was refused');
     }
     return {forgotten:true};

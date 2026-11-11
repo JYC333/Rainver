@@ -15,6 +15,16 @@ describe('conversation source Space transport', () => {
 
   it.each(['source-a', 'source-b'])('keeps all reads and commands in %s while URL context stays elsewhere', async spaceId => {
     const options = { spaceId, signal: new AbortController().signal }
+    // Core commands answer with receipts naming their source Space; follow-up reads stay there.
+    const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    vi.mocked(fetch).mockImplementation(async input => {
+      const url = String(input)
+      if (url === '/api/v1/actions/room.message.send') return reply({ status: 'succeeded', data: { id: 'message', space_id: spaceId, room_id: 'room', session_id: 'session', status: 'sent', message_id: 'message', task_group_ids: ['group'], run_ids: ['run'] } })
+      if (url.startsWith('/api/v1/rooms/room/conversations/session/messages')) return reply({ items: [{ id: 'message' }], conversation: { id: 'session' }, task_group_ids: [], limit: 200, offset: 0 })
+      if (url === '/api/v1/actions/room.message.retry') return reply({ status: 'succeeded', data: { space_id: spaceId, room_id: 'room', schema_version: 'conversation_retry.v1', session_id: 'session', run_id: 'run-2', run_ids: ['run-2'], retry_of_run_id: 'run', user_message_id: 'message', status: 'queued', event_stream_url: '/x' } })
+      if (url === '/api/v1/actions/run.stop') return reply({ status: 'succeeded', data: { id: 'run', space_id: spaceId, run_id: 'run', status: 'cancelling' } })
+      return reply({})
+    })
     await roomsApi.get('room', options)
     await roomsApi.messages('room', 'session', { offset: 50 }, options)
     await roomsApi.sendMessage('room', 'session', { content: 'Reply', routing_mode: 'direct', backends: [] }, options)
@@ -32,7 +42,8 @@ describe('conversation source Space transport', () => {
       expect(new Headers(init?.headers).get('X-Rainver-Space-Id')).toBe(spaceId)
       expect(init?.signal).toBe(options.signal)
     }
-    expect(new Headers(vi.mocked(fetch).mock.calls[3]![1]?.headers).get('Idempotency-Key')).toBe('retry-key')
+    const retry = vi.mocked(fetch).mock.calls.find(([url]) => String(url) === '/api/v1/actions/room.message.retry')!
+    expect(new Headers(retry[1]?.headers).get('Idempotency-Key')).toBe('retry-key')
     await runsApi.get('active-run')
     expect(new Headers(vi.mocked(fetch).mock.calls[vi.mocked(fetch).mock.calls.length - 1]![1]?.headers).get('X-Rainver-Space-Id')).toBe('active-space')
   })
@@ -276,3 +287,45 @@ it('encodes Candidate and packet follow-up GET segments without changing operati
 it('queues extraction with an explicit event key and keeps the receipt as queued, without a second legacy request',async()=>{
  const receipt={run_id:'run',space_id:'original',status:'queued'};vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({status:'succeeded',data:receipt}),{status:202,headers:{'Content-Type':'application/json'}}));expect(await knowledgePromotionApi.extract('project',{source_kind:'note',source_id:'note',agent_id:'agent'},'extraction-key')).toEqual(receipt);const [url,init]=vi.mocked(fetch).mock.calls[0]!;expect(url).toBe('/api/v1/actions/knowledge.candidate.extract');expect(new Headers(init?.headers).get('Idempotency-Key')).toBe('extraction-key');expect(JSON.parse(init?.body as string)).toEqual({project_id:'project',source_kind:'note',source_id:'note',agent_id:'agent'});expect(fetch).toHaveBeenCalledTimes(1);
 });
+
+describe('exact receipt read-backs', () => {
+  const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  it('reads the receipt\'s own invitation and message by id, however many newer ones exist', async () => {
+    vi.mocked(fetch).mockImplementation(async input => {
+      const url = String(input)
+      if (url === '/api/v1/actions/room.invitation.decide') return reply({ status: 'succeeded', data: { id: 'old-invitation', space_id: 'source-a', room_id: 'room', invitation_id: 'old-invitation' } })
+      if (url.startsWith('/api/v1/rooms/room/invitations?')) return reply({ items: [{ id: 'old-invitation', status: 'active' }], total: 1, limit: 1, offset: 0 })
+      if (url === '/api/v1/actions/room.message.continue_after_proposal') return reply({ status: 'succeeded', data: { id: 'old-message', space_id: 'source-a', room_id: 'room', session_id: 'session', message_id: 'old-message', task_group_ids: [], run_ids: [] } })
+      if (url.startsWith('/api/v1/rooms/room/conversations/session/messages?')) return reply({ items: [{ id: 'old-message' }], conversation: { id: 'session' }, task_group_ids: [], limit: 1, offset: 0 })
+      return reply({})
+    })
+    await expect(roomsApi.decideInvitation('room', 'old-invitation', { agent_id: 'agent', decision: 'approved' })).resolves.toMatchObject({ id: 'old-invitation' })
+    await expect(roomsApi.continueAfterProposal('room', 'session', { proposal_id: 'proposal' } as never, { spaceId: 'source-a' })).resolves.toMatchObject({ message: { id: 'old-message' } })
+    const urls = vi.mocked(fetch).mock.calls.map(([url]) => String(url))
+    expect(urls).toContain('/api/v1/rooms/room/invitations?limit=1&invitation_id=old-invitation')
+    expect(urls).toContain('/api/v1/rooms/room/conversations/session/messages?limit=1&message_id=old-message')
+    expect(urls.some(url => url.includes('limit=200'))).toBe(false)
+  })
+
+  it('keeps a live input pending while its delivery is still owed, instead of reporting it undelivered', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(fetch).mockImplementation(async input => {
+        const url = String(input)
+        if (url === '/api/v1/actions/run.live_input.submit') return reply({ status: 'succeeded', data: { id: 'message', space_id: 'source-a', run_id: 'run', message_id: 'message', binding_id: 'binding' } })
+        if (url.startsWith('/api/v1/runs/run/live-input?message_id=message')) return reply({ available: true, binding_id: 'binding', delivery_state: 'pending' })
+        return reply({})
+      })
+      const sent = runsApi.sendLiveInput('run', { binding_id: '00000000-0000-4000-8000-000000000001', content: 'More' })
+      await vi.runAllTimersAsync()
+      await expect(sent).resolves.toMatchObject({ state: 'pending', message_id: 'message' })
+      // A recorded outcome, once read, is reported as it is.
+      vi.mocked(fetch).mockImplementation(async input => String(input).startsWith('/api/v1/runs/run/live-input')
+        ? reply({ available: true, binding_id: 'binding', delivery_state: 'unconfirmed' })
+        : reply({ status: 'succeeded', data: { id: 'message', space_id: 'source-a', run_id: 'run', message_id: 'message', binding_id: 'binding' } }))
+      const later = runsApi.sendLiveInput('run', { binding_id: '00000000-0000-4000-8000-000000000001', content: 'More' })
+      await vi.runAllTimersAsync()
+      await expect(later).resolves.toMatchObject({ state: 'unconfirmed' })
+    } finally { vi.useRealTimers() }
+  })
+})

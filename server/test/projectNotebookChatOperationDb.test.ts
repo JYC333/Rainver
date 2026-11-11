@@ -12,6 +12,10 @@ import {systemActionsModule} from '../src/modules/systemActions/index.js';
 import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
 import {ProjectResearchAreaService} from '../src/modules/projectResearch/areaService.js';
 import {PgKnowledgeRepository} from '../src/modules/knowledge/repository.js';
+import {PgProjectRepository} from '../src/modules/projects/repository.js';
+import {authorizeNotebookChatAttempt} from '../src/modules/projectResearch/notebookChatAdmission.js';
+import {withTransaction} from '../src/db/tx.js';
+import type {Queryable} from '../src/modules/routeUtils/common.js';
 const db=useTestDatabase(import.meta.filename,{max:6});
 let space:string,user:string,project:string,provider:string,config:ReturnType<typeof providerTaskTestConfig>,app:ReturnType<typeof buildModuleServer>,fetches:number;
 const output=(note:string|null=null)=>({answer:'PRIVATE answer',notebook_update:{note_id:note,new_note_title:'Generated note',ops:note?[{op:'append',index:null,count:null,markdown:'PRIVATE generated paragraph'}]:[],refs:[]}});
@@ -77,4 +81,24 @@ it('revalidates Source provenance carried by a previous answer before sending fo
 it('declines an unsafe new shared Note without leaving an empty scaffold while retaining the private answer',async()=>{
  const identity={spaceId:space,userId:user},service=new ProjectResearchAreaService(db.pool,config);await service.initializeArea(identity,project);const note=await new PgKnowledgeRepository(db.pool).createNote(identity,{title:'PRIVATE context',primary_project_id:project,plain_text:'PRIVATE context words'});await db.pool.query("UPDATE space_objects SET visibility='private' WHERE id=$1",[note.id]);const peer=randomUUID();await seedSpaceMember(db.pool,{space,user:peer});await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),space,project,peer]);
  reply({answer:'PRIVATE answer',notebook_update:{note_id:null,new_note_title:'Unsafe new Note',ops:[{op:'append',index:null,count:null,markdown:'PRIVATE context words'}],refs:[]}});const r=await call(input());expect(r.statusCode,r.body).toBe(201);const receipt=r.json().data;await perform(receipt.run_id);expect(await service.notebookChatResult(identity,project,receipt.run_id)).toMatchObject({pending:false,ok:true,reply:'PRIVATE answer',notebook_edit:null});expect((await db.pool.query("SELECT id FROM space_objects WHERE space_id=$1 AND title='Unsafe new Note'",[space])).rows).toEqual([]);
+});
+it('holds the Project owning a context Note\'s Folder: member removal there waits for a checked attempt, then refuses the next one',async()=>{
+ const identity={spaceId:space,userId:user},note=(await new ProjectResearchAreaService(db.pool,config).initializeArea(identity,project)).notes[0]!;
+ const peer=randomUUID(),third=randomUUID(),folder=randomUUID();await seedSpaceMember(db.pool,{space,user:peer});
+ await db.pool.query("INSERT INTO projects(id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES($1,$2,$3,'Third','active',now(),now())",[third,space,peer]);
+ await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),space,third,user]);
+ await db.pool.query("INSERT INTO project_folders(id,space_id,project_id,name,status,kind,protected,system_managed,created_by_user_id,created_at,updated_at) VALUES($1,$2,$3,'Third folder','active','code',false,false,$4,now(),now())",[folder,space,third,peer]);
+ await db.pool.query('UPDATE space_objects SET project_folder_id=$2 WHERE id=$1',[note.id,folder]);
+ const contract={source_item_ids:[],note_refs:[{id:note.id}],session_id:null,provider_id:provider,model_name:null};
+ const authorize=(client:Queryable)=>authorizeNotebookChatAttempt(client,config,identity,project,contract);
+ await expect(withTransaction(db.pool,authorize)).resolves.toBeUndefined();
+ let checked!:()=>void,commit!:()=>void;const afterCheck=new Promise<void>(r=>{checked=r;}),mayCommit=new Promise<void>(r=>{commit=r;});
+ const attempting=withTransaction(db.pool,async client=>{await authorize(client);checked();await mayCommit;});
+ await afterCheck;
+ const removing=new PgProjectRepository(db.pool).removeMember({spaceId:space,userId:peer},third,user);
+ try{
+  for(let i=0;;i++){if(Number((await db.pool.query("SELECT count(*) AS n FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'")).rows[0].n)>=1)break;if(i>300)throw new Error('the member removal never waited');await new Promise(r=>setTimeout(r,10));}
+ }finally{commit();}
+ await attempting;await removing;
+ await expect(withTransaction(db.pool,authorize)).rejects.toMatchObject({statusCode:404});
 });

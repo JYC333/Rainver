@@ -17,6 +17,9 @@ export const workspaceUiEn = {
       retained_pending_checkpoint: 'The unfinished checkpoint and any local files are retained. No publication or file cleanup was requested.',
       "reconcile": "Check whether already integrated",
       "reconciling": "Checking target",
+      "no_saved_difference": "No saved difference",
+      "in_target": "Already in the target",
+      "missing_closed": "Closed · branch was removed",
 
       verification: {
         "title": "Configure verification",
@@ -53,6 +56,10 @@ export const workspaceUiEn = {
         native_integration_run_not_active: "The original execution has stopped; continue in the conversation to resume this work.",
         integration_not_finished_in_current_session: "The Agent ended before integration finished. Changes are preserved.",
         execution_host_native_integration_update_required: "Update and reconnect this execution Host to enable integration in the current Agent session.",
+        execution_host_native_rebase_update_required: "Update and reconnect this execution Host to integrate by rebase.",
+        native_rebase_unfinished: "The rebase is not finished. The Agent must resolve the conflict and prepare again.",
+        native_rebase_branch_changed: "The working branch changed during the rebase. Ask the Agent to prepare again.",
+        workspace_squash_requires_person_request: "Squash is used only when you explicitly ask for it.",
 
         "integration_agent_verification_failed": "The Agent could not finish verification. Retry with an available runtime.",
         "integration_agent_verification_unavailable": "The verification Agent could not start. Check its runtime or Host and retry.",
@@ -132,10 +139,12 @@ export const workspaceUiEn = {
       "grace": "Reclaims after {{time}} unless used again",
       "reclaimable": "Ready to reclaim",
       "reclaiming": "Reclaiming workspace and branch",
+      "discarded": "Discarded by request; workspace and branch reclaimed {{time}}",
       "reclaimed": "Workspace and branch reclaimed {{time}} · content is in the target",
       "retained": "Branch kept",
       "held": "Kept until {{time}}",
-      "blocked": "Retention needs attention"
+      "blocked": "Retention needs attention",
+      "missing": "Branch removed outside Rainver · not merged"
     },
     "reason": {
       "merged": "its changes were integrated",
@@ -148,12 +157,15 @@ export const workspaceUiEn = {
       "blocked_changes": "it has blocked changes that need a decision",
       "unpublished_changes": "it has saved changes that are not integrated",
       "kept_without_merging": "it holds changes kept without merging",
+      "discarded": "the reviewed saved source was explicitly discarded",
       "private_baseline": "it contains a private snapshot baseline",
       "unmerged_source": "Git could not prove its content is in the target",
       "safety_review": "it needs a safety review",
       "quarantined": "files were moved aside for review",
       "host_upgrade_required": "update the Host to reclaim branches",
       "held_by_user": "you chose to keep it",
+      "branch_missing": "its branch and worktree are gone and Git cannot prove the saved changes are in the target",
+      "missing_acknowledged": "you closed these records after the branch was removed",
       "branch_absent": "nothing was left to reclaim",
       "reclaiming": "reclaim in progress"
     },
@@ -164,7 +176,10 @@ export const workspaceUiEn = {
     "reclaim_now": "Reclaim now",
     "hold": "Keep 7 more days",
     "release_hold": "Stop keeping",
-    "retry": "Retry cleanup"
+    "retry": "Retry cleanup",
+    "acknowledge_missing": "Close missing records",
+    "acknowledge_missing_description": "Closes the unfinished records of this removed branch as kept without merging. Nothing is marked merged and the audit history stays.",
+    "acknowledge_missing_confirm": "Close records"
   }
 },
     providers: {

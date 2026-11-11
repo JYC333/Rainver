@@ -1,9 +1,11 @@
 import {configureWorkspaceRetention} from './workspaceRetention.js';
+import {registerWorkspaceBranchAlignJob} from '../projectFolders/workspaceBranchAlign.js';
 import {deferIfSourceReleasePending} from './workspaceSourceFence.js';
 import {processNativeWorkspaceRequest,closeEndedNativeWorkspaceRequests} from './workspaceNativeIntegration.js';
 import {freezeSubmittedWorkspaceCommit} from '../projectFolders/workspaceCommitSubmission.js';
 import {workspaceHostFailureIsTemporary,workspaceCheckpointFailureIsSafetyViolation,workspaceCheckpointRunSettledSql} from '../projectFolders/workspacePolicy.js';
 import {workspaceLocationFrame} from './workspaceLocation.js';
+import {appendContributorSql} from '../projectFolders/workspaceContributors.js';
 import {enqueueWorkspaceIntegration} from './workspaceIntegrations.js';
 import {enqueueWorkspaceCleanup,registerWorkspaceCleanupJobs} from './workspaceCleanup.js';
 import {PgRunRepository} from '../runs/repository.js';
@@ -43,7 +45,8 @@ export async function checkpointWorkspaceRun(db:Queryable,runId:string,spaceId:s
    if(!saved.rowCount)return;
    await tx.query("UPDATE workspace_change_sets SET verification_json=verification_json-'checkpoint_recovery' WHERE id=$1 AND NOT EXISTS(SELECT 1 FROM execution_workspace_runs WHERE change_set_id=$1 AND checkpoint_state<>'saved')",[w.change_set_id]);
    await tx.query(`UPDATE execution_workspaces SET head_commit=$2,head_sequence=$4,updated_at=now() WHERE id=$1 AND generation=$3 AND head_sequence<$4`,[w.id,reply.commit,w.generation,w.launch_sequence]);
-   await tx.query(`UPDATE workspace_change_sets SET source_commit=$2,source_sequence=$3,updated_at=now() WHERE id=$1 AND source_sequence<$3`,[w.change_set_id,reply.commit,w.launch_sequence]);
+   // The checkpointing Run is this version's contributor (workspaceContributors).
+   await tx.query(`UPDATE workspace_change_sets SET source_commit=$2,source_sequence=$3,verification_json=${appendContributorSql('$4')},updated_at=now() WHERE id=$1 AND source_sequence<$3`,[w.change_set_id,reply.commit,w.launch_sequence,runId]);
    const closed=await tx.query(`UPDATE workspace_change_sets c SET state='no_changes',revision=revision+1,updated_at=now()
     WHERE c.id=$1 AND c.state='open' AND c.base_commit=c.source_commit AND NOT(c.verification_json ? 'submitted_commit')
      AND EXISTS(SELECT 1 FROM runs completed WHERE completed.id=$2 AND completed.space_id=c.space_id AND completed.status='succeeded')
@@ -140,6 +143,7 @@ export function registerExecutionWorkspaceJobs(registry:JobHandlerRegistry,confi
  const db=getDbPool(config.databaseUrl);
  configureWorkspaceRetention(config);
  registerWorkspaceCleanupJobs(registry,db,hosts,config.workspaceRoot);
+ registerWorkspaceBranchAlignJob(registry,db,config,hosts);
  registry.register('execution_workspace_parent_reconcile',async job=>{
   const run=await new PgRunRepository(db).getRun(job.space_id,String(job.payload.run_id));
   if(run){

@@ -5,6 +5,7 @@ import { QuotaRecoverySchema, QuotaRecoveryUpdateSchema, SUBSCRIPTION_QUOTA_POLI
 
 describe("subscription quota contracts", () => {
   it("keeps the continuation choice explicit and rejects caller-supplied scheduling authority", () => {
+    expect(QuotaRecoveryUpdateSchema.parse({ auto_continue: true, switch_model: true })).toEqual({ auto_continue: true, switch_model: true });
     expect(QuotaRecoveryUpdateSchema.parse({ auto_continue: false })).toEqual({ auto_continue: false });
     expect(QuotaRecoveryUpdateSchema.safeParse({ auto_continue: true, next_check_at: "tomorrow" }).success).toBe(false);
     expect(QuotaRecoveryUpdateSchema.safeParse({ auto_continue: "false" }).success).toBe(false);

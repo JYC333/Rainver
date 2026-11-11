@@ -13,7 +13,24 @@ export function subscriptionPoolId(hostId: string, runtimeKey: string, installat
   return createHash("sha256").update(JSON.stringify(scope)).digest("hex");
 }
 
+/** Old Antigravity daemons stored the fullest independent bucket as a total. */
+export function accountQuota(quota: HostUsageQuota): HostUsageQuota {
+  if (quota.account?.product === "antigravity" || quota.windows?.some(w => /^(gemini|3p)-/.test(w.id))
+    || (quota.windows?.length && quota.windows.every(w => w.scope === "model" || w.scope === "family"))) {
+    return { ...quota, session_pct: null, session_resets: null, week_pct: null, week_resets: null };
+  }
+  // Named account meters take precedence over legacy summaries; scoped meters
+  // such as seven_day_opus never replace seven_day.
+  const session = quota.windows?.find(w => w.id === "five_hour" || w.id === "session");
+  const week = quota.windows?.find(w => w.id === "seven_day" || w.id === "week");
+  return { ...quota,
+    ...(session ? { session_pct: session.used_pct, session_resets: session.resets } : {}),
+    ...(week ? { week_pct: week.used_pct, week_resets: week.resets } : {}),
+  };
+}
+
 export function quotaWindows(quota: HostUsageQuota): NonNullable<HostUsageQuota["windows"]> {
+  quota = accountQuota(quota);
   const named = quota.windows ?? [];
   const includeAccount = !named.length || quota.account?.product === "claude" || named.some(w => /^(five_hour|seven_day)(_|$)/.test(w.id));
   return [

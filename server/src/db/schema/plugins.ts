@@ -1,4 +1,4 @@
-import { pgTable, index, uniqueIndex, unique, check, varchar, text, boolean, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, uniqueIndex, unique, check, varchar, text, boolean, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 export const codePatchSnapshots = pgTable("code_patch_snapshots", {
@@ -84,6 +84,44 @@ export const officialPluginEvents = pgTable("official_plugin_events", {
 	check("official_plugin_events_event_type_non_empty", sql`(event_type)::text <> ''::text`),
 	check("official_plugin_events_metadata_is_object", sql`jsonb_typeof(metadata_json) = 'object'::text`),
 	check("official_plugin_events_plugin_id_non_empty", sql`(plugin_id)::text <> ''::text`),
+]);
+
+/**
+ * One process's hold on an operation package's local effects for one scope
+ * generation (`plugins/lifecycle.ts`). Local resources are bound to the hold
+ * they were admitted under, so a cleanup only ever closes its own hold: a newer
+ * enable admits work under a new hold. `owner_instance` is the process whose
+ * session advisory lock is its lease; only that process can release the hold,
+ * and only a verifiably ended lease (`owner_gone`) settles it elsewhere.
+ * `releasing` is the durable obligation a disable round recorded.
+ */
+export const officialPluginScopeHolds = pgTable("official_plugin_scope_holds", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	pluginId: varchar("plugin_id", { length: 128 }).notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	userId: varchar("user_id", { length: 36 }).notNull(),
+	ownerInstance: varchar("owner_instance", { length: 36 }).notNull(),
+	state: varchar({ length: 16 }).notNull(),
+	/** The plugin whose disable round requested the release (its card shows the obligation). */
+	releasePluginId: varchar("release_plugin_id", { length: 128 }),
+	releaseRound: varchar("release_round", { length: 36 }),
+	attempts: integer().default(0).notNull(),
+	needsAttention: boolean("needs_attention").default(false).notNull(),
+	lastOutcome: varchar("last_outcome", { length: 24 }),
+	lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true, mode: 'string' }),
+	nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true, mode: 'string' }),
+	ownerLostAt: timestamp("owner_lost_at", { withTimezone: true, mode: 'string' }),
+	releasedAt: timestamp("released_at", { withTimezone: true, mode: 'string' }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	uniqueIndex("official_plugin_scope_holds_active_owner").using("btree", table.pluginId.asc().nullsLast(), table.spaceId.asc().nullsLast(), table.userId.asc().nullsLast(), table.ownerInstance.asc().nullsLast()).where(sql`((state)::text = 'active'::text)`),
+	index("official_plugin_scope_holds_releasing_owner_idx").using("btree", table.ownerInstance.asc().nullsLast()).where(sql`((state)::text = 'releasing'::text)`),
+	index("official_plugin_scope_holds_round_idx").using("btree", table.releaseRound.asc().nullsLast()).where(sql`((state)::text = 'releasing'::text)`),
+	index("official_plugin_scope_holds_scope_idx").using("btree", table.pluginId.asc().nullsLast(), table.spaceId.asc().nullsLast(), table.userId.asc().nullsLast()),
+	check("official_plugin_scope_holds_state", sql`(state)::text = ANY (ARRAY['active'::text, 'releasing'::text, 'released'::text, 'owner_gone'::text])`),
+	check("official_plugin_scope_holds_round", sql`((state)::text <> 'releasing'::text) OR ((release_round IS NOT NULL) AND (release_plugin_id IS NOT NULL) AND (next_attempt_at IS NOT NULL))`),
+	check("official_plugin_scope_holds_attempts", sql`attempts >= 0`),
 ]);
 
 export const pluginInstalls = pgTable("plugin_installs", {

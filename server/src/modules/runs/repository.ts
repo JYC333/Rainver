@@ -2822,6 +2822,7 @@ export class PgRunRepository {
                 COALESCE(permission_snapshot_json->'policy_grants', '[]') ||
                   jsonb_build_array(jsonb_build_object(
                     'approval_code', error_json->>'error_code',
+                    'risk_level', error_json->>'risk_level',
                     'granted_by_user_id', $3::text,
                     'granted_at', $4::text
                   ))

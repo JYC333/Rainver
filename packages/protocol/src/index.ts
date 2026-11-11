@@ -221,6 +221,12 @@ export * from './researchWorkspaceOperations.js';
 export * from './inquiryOperations.js';
 
 export * from './projectManagementOperations.js';
+export * from './researchAgentOperations.js';
+export * from './agentOperations.js';
+export * from './roomOperations.js';
+export * from './agentGroupOperations.js';
+export * from './runOperations.js';
+export * from './sessionOperations.js';
 
 export * from './projectExecutionOperations.js';
 
@@ -238,3 +244,9 @@ export * from './projectSourceProposalOperations.js';
 export * from './researchAdhocOperation.js';
 
 export * from './researchExecutionOperations.js';
+export * from './researchControlOperations.js';
+export * from './projectSummaryDraftOperation.js';
+export * from './importedHistoryExtractionOperation.js';
+export * from './projectLive.js';
+export * from './hostOperations.js';
+export * from './settingsOperations.js';

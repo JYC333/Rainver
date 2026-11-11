@@ -1,3 +1,4 @@
+import {ResearchWorkspaceMutationError} from '../workspaceErrors.js';
 import { replayProblemCommand,saveProblemCommand } from "../../inquiry/problemFacts.js";
 import { ResearchCallContentUnavailable, assertResearchCallReadable } from "../researchCallAccess.js";
 import { researchMetadataReadableSql } from "../researchOperationMetadata.js";
@@ -48,9 +49,9 @@ export class ResearchAcquisitionService {
     projectId: string,
     input: StartResearchAcquisitionInput,
   ): Promise<StartResearchAcquisitionResult> {
-    if(input.maxItems!=null&&(!Number.isInteger(input.maxItems)||input.maxItems<1||input.maxItems>2000))throw new HttpError(422,"max_items must be an integer from 1 to 2000");
-    if(input.since&&Number.isNaN(Date.parse(input.since)))throw new HttpError(422,"since must be an ISO date");
-    if(input.intentNote&&input.intentNote.length>4000)throw new HttpError(422,"intent_note is too long");
+    if(input.maxItems!=null&&(!Number.isInteger(input.maxItems)||input.maxItems<1||input.maxItems>2000))throw new ResearchWorkspaceMutationError(422,"max_items must be an integer from 1 to 2000");
+    if(input.since&&Number.isNaN(Date.parse(input.since)))throw new ResearchWorkspaceMutationError(422,"since must be an ISO date");
+    if(input.intentNote&&input.intentNote.length>4000)throw new ResearchWorkspaceMutationError(422,"intent_note is too long");
     return withQueryableTransaction(this.db, async (db) => {
       // The person whose turn this is must be able to write the Project and
       // reach the Thread themselves — Project membership is necessary but not
@@ -89,13 +90,13 @@ export class ResearchAcquisitionService {
       if(active){
        // An admitted but unreadable call is a generic conflict, never an id disclosure.
        try{await assertResearchCallReadable(db,identity,projectId,active.research_call_json,active.progress_json,"stop");}
-       catch(error){if(error instanceof HttpError && error.statusCode===404)throw new HttpError(409,"Another research invocation is active");throw error;}
+       catch(error){if(error instanceof HttpError && error.statusCode===404)throw new ResearchWorkspaceMutationError(409,"Another research invocation is active");throw error;}
        let call;
        try{call=await assertResearchCallReadable(db,identity,projectId,active.research_call_json,active.progress_json);}
-       catch(error){if(error instanceof ResearchCallContentUnavailable)throw new HttpError(409,"Active research content is unavailable; inspect or stop the invocation before starting new work");throw error;}
-       if(!call)throw new HttpError(409,"Active research binding is unresolved");
+       catch(error){if(error instanceof ResearchCallContentUnavailable)throw new ResearchWorkspaceMutationError(409,"Active research content is unavailable; inspect or stop the invocation before starting new work");throw error;}
+       if(!call)throw new ResearchWorkspaceMutationError(409,"Active research binding is unresolved");
        const history=call.scope.history as {max_items?:number;from?:string|null}|undefined;
-       if(call.thread_version!==thread.rows[0].version || input.intentNote!=null&&input.intentNote!==call.gap || input.maxItems!=null&&input.maxItems!==history?.max_items || input.since!=null&&(!history?.from||Date.parse(input.since)!==Date.parse(history.from)))throw new HttpError(409,"An active invocation has different scope or problem version; inspect or cancel it before a new request");
+       if(call.thread_version!==thread.rows[0].version || input.intentNote!=null&&input.intentNote!==call.gap || input.maxItems!=null&&input.maxItems!==history?.max_items || input.since!=null&&(!history?.from||Date.parse(input.since)!==Date.parse(history.from)))throw new ResearchWorkspaceMutationError(409,"An active invocation has different scope or problem version; inspect or cancel it before a new request");
        const response={status:"already_starting" as const,thread_id:input.threadId,operation_id:active.id};
        if(receiptKey)await saveProblemCommand(db,identity,projectId,input.threadId,receiptKey,request,response);
        return response;

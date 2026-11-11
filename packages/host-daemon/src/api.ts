@@ -150,7 +150,15 @@ async function helloInfo(
       // Separate from `installations`: ordinary CLIs are not ACP Runtimes.
       ordinary_tools: await ordinaryToolsReport(log),
       ordinary_tool_accounts: ordinaryToolAccountsCapability(),
-      ordinary_tools_runs: ordinaryToolsRunCapability() },
+      ordinary_tools_runs: ordinaryToolsRunCapability(),
+      // Journaled, generation-fenced managed-workspace archive/restore (managedWorkspaceOperations.ts).
+      managed_workspace_operations: 1,
+      // Isolated-workspace profile archives journaled under the thread's archive identity (executionWorkspace.ts).
+      workspace_profile_operations: 1,
+      // Identity-less archives can be drained and closed for good (legacyArchiveDrain.ts).
+      legacy_archive_drain: 1,
+      // Journaled Host commands with durable receipts (hostCommandJournal.ts).
+      host_command_receipts: 1 },
     workspace_reports: await collectWorkspaceStatus(workspaces),
     managed_workspaces: await listManagedWorkspaces(),
     ambient_sessions: ambientSessionCounts(),

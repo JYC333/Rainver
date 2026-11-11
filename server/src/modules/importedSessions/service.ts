@@ -34,6 +34,8 @@ import { PgHostThreadRepository } from "../hosts/threadRepository.js";
  * cannot fill this process's memory with one request.
  */
 const MAX_SESSIONS_PER_SYNC = 200;
+/** The report's error when a written session's replay stopped part way (and nothing worse happened). */
+const PARTIAL_REPLAY_ERROR = "a session's history could only be read in part; the next sync retries it";
 
 /**
  * A usage event's identity, derived from what it says rather than where it
@@ -285,6 +287,7 @@ export class ImportedSessionService {
       usage_failures: 0,
       malformed_sessions: 0,
       failed_sessions: 0,
+      partial_sessions: 0,
       error: null,
     };
     if (!target.host_online) {
@@ -381,6 +384,11 @@ export class ImportedSessionService {
         records: replay.records,
       }));
       report.sessions_written += 1;
+      // Kept, and offered again next time, but not imported whole: the sync says so.
+      if (replay.load_state === "partial") {
+        report.partial_sessions = (report.partial_sessions ?? 0) + 1;
+        report.error ??= PARTIAL_REPLAY_ERROR;
+      }
       report.records_inserted += outcome.inserted;
       report.records_unchanged += outcome.unchanged;
       report.records_conflicted += outcome.conflicted;
@@ -600,14 +608,26 @@ export class ImportedSessionService {
     await this.requireTarget(identity, session.workspace_location_id);
   }
 
+  /**
+   * The imported session this person may administer now, or the refusal they
+   * would get: 404 when it does not exist in this Space, 403 when they are
+   * neither its importer nor, while its Location exists, that Location's Host
+   * owner with Project write. The operation core asks this for a new change
+   * and again before replaying a recorded one.
+   */
+  async authorizeSession(identity: SpaceUserIdentity, sessionId: string): Promise<ImportedSessionRow> {
+    const session = await this.sessions.byId(identity.spaceId, sessionId);
+    if (!session) throw new HttpError(404, "Imported session not found");
+    await this.requireSessionAuthority(identity, session);
+    return session;
+  }
+
   async setVisibility(
     identity: SpaceUserIdentity,
     sessionId: string,
     visibility: "private" | "space_shared",
   ): Promise<ImportedSessionRow> {
-    const session = await this.sessions.byId(identity.spaceId, sessionId);
-    if (!session) throw new HttpError(404, "Imported session not found");
-    await this.requireSessionAuthority(identity, session);
+    await this.authorizeSession(identity, sessionId);
     const updated = await this.sessions.setVisibility(identity.spaceId, sessionId, visibility);
     return updated!;
   }

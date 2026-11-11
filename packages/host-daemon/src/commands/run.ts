@@ -1,4 +1,5 @@
 import {publicWorkspaceError,resolveWorkspaceScope} from '../workspaceScope.js';
+import {executeGitBranchAlign,recoverBranchAlignments} from '../gitBranchAlign.js';
 import {executeWorkspaceIntegration} from '../workspaceIntegration.js';
 import { executeWorkspaceCommand } from "../executionWorkspace.js";
 import { ensurePackagedAdapter } from "../adapterInstallation.js";
@@ -53,7 +54,10 @@ import { importAmbientSessions, sanitizeFailure, type AmbientImportRequest } fro
 import { FolderReadFrameError, performFolderRead, resolveFolderReadRequest } from "../folderRead.js";
 import { FolderWriteFrameError, performFolderWrite, resolveFolderWriteRequest } from "../folderWrite.js";
 import { forgetWorkspace, listDirectories, registerWorkspace } from "../remoteWorkspaceOps.js";
-import { archiveAgentProfiles, archiveLegacyProfileTree, archiveManagedWorkspace, restoreManagedWorkspace, sweepManagedWorkspaceArchives, type ManagedWorkspaceContainer } from "../managedWorkspaces.js";
+import { archiveAgentProfiles, archiveLegacyProfileTree, sweepManagedWorkspaceArchives } from "../managedWorkspaces.js";
+import { executeManagedWorkspaceOperation } from "../managedWorkspaceOperations.js";
+import { admitLegacyArchive, drainLegacyArchives } from "../legacyArchiveDrain.js";
+import { journaledFrames, runJournaledHostCommand } from "../hostCommandJournal.js";
 import { clearFailedRuntimeOptionsCache, clearRuntimeOptionsCache } from "../capabilities.js";
 import { disableInstalledService } from "../service.js";
 import { augmentProcessPath } from "../userPath.js";
@@ -116,7 +120,7 @@ function openHostSocket(endpoint: string, token: string): WebSocket {
  */
 export function parseServerFrame(raw: unknown):
   | { ok: true; frame: HostServerFrame }
-  | { ok: false; type: string | null; run_id: string | null; launch_id: string | null; detail: string } {
+  | { ok: false; type: string | null; run_id: string | null; launch_id: string | null; request_id: string | null; detail: string } {
   const parsed = HostServerFrameSchema.safeParse(raw);
   if (parsed.success) return { ok: true, frame: parsed.data };
   const record = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
@@ -129,8 +133,28 @@ export function parseServerFrame(raw: unknown):
     type: typeof record.type === "string" ? record.type : null,
     run_id: typeof record.run_id === "string" ? record.run_id : null,
     launch_id: typeof record.launch_id === "string" ? record.launch_id : null,
+    request_id: typeof record.request_id === "string" ? record.request_id : null,
     detail,
   };
+}
+
+/**
+ * The answer to a frame that failed validation, when the server is waiting on
+ * one: a launch is completed as failed, and a failable request is answered with
+ * its failure result, so the server records a definite refusal instead of
+ * retrying a timeout. Anything else can only be logged.
+ */
+export function rejectedFrameReply(
+  rejected: Extract<ReturnType<typeof parseServerFrame>, { ok: false }>,
+): HostDaemonFrame | null {
+  const error = `${rejected.type ?? "unknown"} frame rejected: ${rejected.detail}`;
+  if (rejected.type === "launch" && rejected.run_id && rejected.launch_id) {
+    return { type: "complete", run_id: rejected.run_id, launch_id: rejected.launch_id, exit_code: 1, timed_out: false, error };
+  }
+  if (rejected.request_id && FAILABLE_REQUEST_TYPES.has(rejected.type ?? "")) {
+    return requestFailureFrame({ type: rejected.type as FailableRequestFrame["type"], request_id: rejected.request_id }, error);
+  }
+  return null;
 }
 
 /**
@@ -236,6 +260,13 @@ export async function runService(options: { log?: (line: string) => void } = {})
     try{await recoverSourceExecutions({root:join(configDir(),"source-executions"),cgroupRoot:process.env.RAINVER_SOURCE_CGROUP_ROOT});}
     catch{blockSourceExecution();log("Sources execution disabled: source_recovery_refused");}
   }
+  // Before any Run can be accepted: an alignment cut short by a restart is
+  // closed from Git facts under its Location gate (hosts.md).
+  {
+    const workspaces = config.workspaces;
+    await recoverBranchAlignments(async (meaning) => resolveLocationCwd(workspaces, meaning.workspace.workspace_location_id, meaning.workspace.workspace_relative_path, workspacesRoot()), { workspaces }, log)
+      .catch((error) => log(`branch align recovery failed: ${errorMessage(error)}`));
+  }
   const sink = new ReconnectableFrameSink();
 
   for (;;) {
@@ -317,6 +348,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     log(`connecting to ${endpoint}`);
     const socket = openHostSocket(endpoint, token);
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    let archiveSweepTimer: ReturnType<typeof setInterval> | null = null;
     let taskWorktreeSweepTimer: ReturnType<typeof setInterval> | null = null;
     let helloAcked = false;
     let updateRestartTimer: ReturnType<typeof setInterval> | null = null;
@@ -423,16 +455,33 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       const parsed = parseServerFrame(raw);
       if (!parsed.ok) {
         log(`rejected ${parsed.type ?? "unknown"} frame: ${parsed.detail}`);
-        // A run the server is waiting on must be told, or it hangs until its
-        // timeout; the reply is routed by the dispatch nonce, so a frame with
-        // none can only be logged. Other requests have their own timeouts.
-        if (parsed.type === "launch" && parsed.run_id && parsed.launch_id) {
-          sink.send({ type: "complete", run_id: parsed.run_id, launch_id: parsed.launch_id, exit_code: 1, timed_out: false, error: `launch frame rejected: ${parsed.detail}` });
-        }
+        // A run or request the server is waiting on must be told, or it hangs
+        // until its timeout (and may retry the same refused frame).
+        const reply = rejectedFrameReply(parsed);
+        if (reply) sink.send(reply);
         return;
       }
-      const frame = parsed.frame;
+      dispatchFrame(parsed.frame, sink);
+    });
+
+    /**
+     * Every server frame's handler. A journaled `host_command` runs its inner
+     * frame through this same switch with a capturing sink, so the effect a
+     * receipt records is exactly the ordinary one.
+     */
+    const dispatchFrame = (frame: HostServerFrame, sink: Pick<ReconnectableFrameSink, "send" | "bind" | "unbindIfCurrent">): void => {
       switch (frame.type) {
+        case "host_command": {
+          void runJournaledHostCommand(frame, (inner, capturing) => dispatchFrame(inner as HostServerFrame, {
+            send: (out) => capturing.send(out), bind: (fn) => sink.bind(fn), unbindIfCurrent: (fn) => sink.unbindIfCurrent(fn),
+          }), sink).then((answer) => sink.send(answer), (error: unknown) => sink.send({
+            // The journal answers its own refusals; a rejection means the effect started after its
+            // `in_progress` receipt was written and then threw, so what it changed is unknown.
+            type: "host_command_result", request_id: frame.request_id, command_id: frame.command_id, outcome: "interrupted", replayed: false, result: null,
+            error: `host_command_failed: ${errorMessage(error)}`.slice(0, 1000),
+          }));
+          return;
+        }
         case "source_execute":
         case "source_response":
         case "source_cancel":
@@ -455,6 +504,11 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           sweepWorktrees();
           taskWorktreeSweepTimer = setInterval(sweepWorktrees, TASK_WORKTREE_SWEEP_INTERVAL_MS);
           taskWorktreeSweepTimer.unref?.();
+          archiveSweepTimer = setInterval(() => {
+            void sweepManagedWorkspaceArchives().catch((error) =>
+              log(`managed workspace sweep failed: ${errorMessage(error)}`));
+          }, TASK_WORKTREE_SWEEP_INTERVAL_MS);
+          archiveSweepTimer.unref?.();
           return;
         }
         case "heartbeat_ack":
@@ -535,21 +589,25 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         case "managed_workspace_restore": {
           const action = frame.type === "managed_workspace_archive" ? "archive" : "restore";
           void (async () => {
-            try {
-              const container: ManagedWorkspaceContainer = { kind: frame.container_kind, id: frame.container_id };
-              const changed = action === "archive"
-                ? await archiveManagedWorkspace(frame.agent_id, container, frame.include_workspace)
-                : await restoreManagedWorkspace(frame.agent_id, container, frame.include_workspace);
-              sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action, ok: true, changed, error: null });
-              sendHeartbeat();
-            } catch (error) {
-              sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action, ok: false, changed: false, error: error instanceof Error ? error.message : String(error) });
-            }
+            const result = await executeManagedWorkspaceOperation({
+              action, agent_id: frame.agent_id, container_kind: frame.container_kind, container_id: frame.container_id,
+              include_workspace: frame.include_workspace, operation_id: frame.operation_id, generation: frame.generation,
+            });
+            sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action, ...result });
+            if (result.ok) sendHeartbeat();
           })();
           return;
         }
+        case "managed_workspace_legacy_drain": {
+          // Closes identity-less archives for good, then answers once every one this process admitted finished.
+          void drainLegacyArchives().then(
+            () => sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action: "drain", ok: true, changed: false, error: null }),
+            (error: unknown) => sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action: "drain", ok: false, changed: false,
+              error: error instanceof Error ? error.message : String(error), error_code: "io_error" }));
+          return;
+        }
         case "agent_profiles_reset": {
-          void (async () => {
+          const reset = async () => {
             try {
               const changed = await archiveAgentProfiles(frame.agent_id);
               sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action: "reset", ok: true, changed, error: null });
@@ -557,7 +615,13 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             } catch (error) {
               sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action: "reset", ok: false, changed: false, error: error instanceof Error ? error.message : String(error) });
             }
-          })();
+          };
+          // A reset without a command identity moves profiles with nothing to fence a late copy: it is an
+          // identity-less archive the drain covers, and refused once identity-less archives are closed.
+          if (journaledFrames.has(frame)) void reset();
+          else if (!admitLegacyArchive(reset)) {
+            sink.send({ type: "managed_workspace_result", request_id: frame.request_id, action: "reset", ok: false, changed: false, error: "Identity-less archives are closed on this Host", error_code: "legacy_closed" });
+          }
           return;
         }
         case "command_run": {
@@ -602,10 +666,19 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           })().catch(error=>sink.send({type:'workspace_integration_result',request_id:frame.request_id,ok:false,outcome:null,main_branch:null,onto_commit:null,candidate_commit:null,conflicted_files:[],error:publicWorkspaceError(error)}));
           return;
         }
+        case "git_branch_align": {
+          void (async()=>{
+            const result=await executeGitBranchAlign(await taskLocationRoot(frame.workspace)??null,frame,{workspaces:await currentWorkspaces()});
+            if(result.error)log(`branch align ${frame.request_id}: ${result.error}`);
+            sink.send({type:'git_branch_align_result',request_id:frame.request_id,...result,error:result.error?publicWorkspaceError(result.error):null});
+          })().catch(error=>sink.send({type:'git_branch_align_result',request_id:frame.request_id,ok:false,error:publicWorkspaceError(error),outcome:null,previous_commit:null,aligned_commit:null,backup_ref:null,worktree_updated:false}));
+          return;
+        }
         case "execution_workspace_command": {
           void (async()=>{
-            const locationRoot=frame.action==='archive_profiles'?null:await taskLocationRoot(frame.workspace);
-            const result=await executeWorkspaceCommand(locationRoot??null,frame);
+            // A profile archive is dispatched in this tick (no await first): the legacy drain must see it.
+            const result=frame.action==='archive_profiles'?await executeWorkspaceCommand(null,frame)
+              :await executeWorkspaceCommand(await taskLocationRoot(frame.workspace)??null,frame);
             if(result.error)log(`workspace command ${frame.request_id}: ${result.error}`);
             sink.send({type:"execution_workspace_result",request_id:frame.request_id,...result,error:result.error?publicWorkspaceError(result.error):null});
           })().catch(error=>sink.send({type:"execution_workspace_result",request_id:frame.request_id,ok:false,branch:null,commit:null,error:publicWorkspaceError(error)}));
@@ -960,10 +1033,11 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           return;
         }
       }
-    });
+    };
 
     socket.addEventListener("close", (event) => {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
+      if (archiveSweepTimer) clearInterval(archiveSweepTimer);
       if (taskWorktreeSweepTimer) clearInterval(taskWorktreeSweepTimer);
       if (updateRestartTimer) clearInterval(updateRestartTimer);
       sourceChannel.disconnect();
@@ -1007,6 +1081,11 @@ type FailableRequestFrame = HostServerFrameOf<
   "command_run" | "task_run_settle" | "task_branch_delete"
   | "task_merge_prepare" | "task_merge_continue" | "task_merge_abort" | "task_merge_finish"
 >;
+
+const FAILABLE_REQUEST_TYPES: ReadonlySet<string> = new Set<FailableRequestFrame["type"]>([
+  "command_run", "task_run_settle", "task_branch_delete",
+  "task_merge_prepare", "task_merge_continue", "task_merge_abort", "task_merge_finish",
+]);
 
 /** The failure answer to a request whose handler threw before answering. */
 export function requestFailureFrame(

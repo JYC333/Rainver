@@ -3,9 +3,12 @@ import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { importedSessionsModule } from "../src/modules/importedSessions/index.js";
 import { buildModuleServer } from "./support/moduleServer.js";
+import { hostsModule } from "../src/modules/hosts/index.js";
+import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
+import { wakeHostCommandsForHost } from "../src/modules/hosts/hostCommandWorker.js";
+import { hostCommandHarness } from "./support/hostCommandHarness.js";
 import {
   AmbientSyncReportSchema,
-  ExtractionOutcomeSchema,
   ImportedSessionRecordSchema,
   ImportedSessionSchema,
 } from "@rainver/protocol";
@@ -158,7 +161,7 @@ describe("imported session reconciliation", () => {
     await resetTables(
       db.pool,
       [
-        "imported_session_records", "imported_sessions", "activity_records",
+        "host_command_intents", "jobs", "imported_session_records", "imported_sessions", "activity_records",
         "workspace_locations", "project_folders", "hosts", "machines",
         "projects", "space_memberships", "users", "spaces",
       ],
@@ -189,9 +192,12 @@ describe("imported session reconciliation", () => {
         const response = await app.inject({
           method: "PUT",
           url: `/api/v1/workspace-locations/${LOCATION}/ambient-sessions/policy`,
+          headers: { "idempotency-key": randomUUID() },
           payload,
         });
         expect(response.statusCode, JSON.stringify(payload)).toBe(422);
+        // Refused for the entry itself, not for a missing transport key.
+        expect(response.json().error.code).toBe("operation_invalid_input");
       }
     } finally {
       await app.close();
@@ -205,7 +211,7 @@ describe("imported session reconciliation", () => {
     __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
     const app = buildModuleServer(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
-      [importedSessionsModule],
+      [importedSessionsModule, hostsModule],
     );
     try {
       // No records yet: extraction returns a real zero-work outcome without a
@@ -213,13 +219,12 @@ describe("imported session reconciliation", () => {
       const extraction = await app.inject({
         method: "POST",
         url: `/api/v1/projects/${PROJECT}/imported-sessions/extraction`,
+        headers: { "idempotency-key": "extract-empty" },
         payload: {},
       });
-      expect(extraction.statusCode).toBe(200);
-      expect(ExtractionOutcomeSchema.parse(extraction.json())).toMatchObject({
-        records_covered: 0,
-        records_remaining: 0,
-      });
+      // Admission only: an empty claim queues nothing.
+      expect(extraction.statusCode, extraction.body).toBe(202);
+      expect(extraction.json().data).toMatchObject({ project_id: PROJECT, job_id: null, records_claimed: 0 });
 
       const repository = new PgImportedSessionRepository(db.pool);
       const imported = await repository.reconcile(reconcileInput());
@@ -243,17 +248,23 @@ describe("imported session reconciliation", () => {
       expect(detailRecord.record_key).toBe("message:msg-1");
       expect(detailRecord.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 
+      // A sync is a durable Host command: admitted, run by the worker, and its report released by the
+      // owner-only status read. A Host the service finds offline has done nothing: the command stays
+      // pending for its Host and is never reported as a success.
       await db.pool.query(`UPDATE hosts SET status = 'offline' WHERE id = $1`, [HOST]);
-      const sync = await app.inject({
-        method: "POST",
-        url: `/api/v1/workspace-locations/${LOCATION}/ambient-sessions/sync`,
-        payload: { runtime_key: "claude_code" },
-      });
-      expect(sync.statusCode).toBe(200);
-      expect(AmbientSyncReportSchema.parse(sync.json())).toMatchObject({
-        location_id: LOCATION,
-        error: "host_offline",
-      });
+      vi.spyOn(sharedHostConnectionRegistry, "isOnline").mockReturnValue(true);
+      const harness = hostCommandHarness(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
+      const { receipt, status } = await harness
+        .run(app, { method: "POST", url: `/api/v1/workspace-locations/${LOCATION}/ambient-sessions/sync`, payload: { runtime_key: "claude_code" } }, HOST);
+      expect(status).toMatchObject({ status: "pending", kind: "ambient_sync", result: null });
+      // Online again: the same command runs, and its report is the protocol's.
+      await db.pool.query(`UPDATE hosts SET status = 'online', last_heartbeat_at = now() WHERE id = $1`, [HOST]);
+      vi.spyOn(sharedHostConnectionRegistry, "requestAmbientImport").mockResolvedValue({ ok: true, error: null, session_count: 0, listed_session_ids: [] });
+      await wakeHostCommandsForHost(db.pool, HOST);
+      await harness.process();
+      const settled = (await harness.status(app, HOST, receipt.id)).json();
+      expect(settled).toMatchObject({ status: "succeeded", kind: "ambient_sync" });
+      expect(AmbientSyncReportSchema.parse(settled.result)).toMatchObject({ location_id: LOCATION, error: null });
     } finally {
       await app.close();
     }
@@ -562,11 +573,11 @@ expect((await repository.records(SPACE, first.session.id)).records).toHaveLength
       );
       const rooms = new RoomService(CONFIG, db.pool);
 
-      await expect(rooms.attachConversationReferences(
+      // The pre-transaction preparation is where spending happens; it checks the destination first.
+      await expect(rooms.prepareReferenceSummaries(
         { spaceId: SPACE, userId: OWNER },
         randomUUID(),
-        randomUUID(),
-        { references: [{ kind: "imported_session", id: imported.session.id }] },
+        [{ kind: "imported_session", id: imported.session.id }],
       )).rejects.toMatchObject({ statusCode: 404 });
       expect(provider).not.toHaveBeenCalled();
       // And nothing was written on the way to the refusal.
@@ -593,9 +604,9 @@ expect((await repository.records(SPACE, first.session.id)).records).toHaveLength
       await expect(resolveThreadReference(db.pool, { spaceId: SPACE, userId: OWNER },
         { kind: "imported_session", id: imported.session.id }, OTHER_PROJECT, 2_000,
       )).rejects.toMatchObject({ statusCode: 422 });
-      await expect(rooms.attachConversationReferences(
-        { spaceId: SPACE, userId: OWNER }, elsewhere.room.id, randomUUID(),
-        { references: [{ kind: "imported_session", id: imported.session.id }] },
+      await expect(rooms.prepareReferenceSummaries(
+        { spaceId: SPACE, userId: OWNER }, elsewhere.room.id,
+        [{ kind: "imported_session", id: imported.session.id }],
       )).rejects.toMatchObject({ statusCode: 422 });
       expect(provider).not.toHaveBeenCalled();
     });

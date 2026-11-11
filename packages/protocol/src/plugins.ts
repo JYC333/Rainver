@@ -164,6 +164,36 @@ export interface OfficialPluginEffectiveState {
 export interface OfficialPluginListItem {
   descriptor: OfficialPluginDescriptor;
   effective: OfficialPluginEffectiveState;
+  /**
+   * Unfinished local cleanup of this plugin's disable rounds in this context,
+   * present only for a person who may administer the plugin here (B53) and
+   * only while something is still being released. The repair is a new
+   * disable round (`POST /api/v1/plugins/:id/disable`).
+   */
+  cleanup?: OfficialPluginCleanupStatus | null;
+}
+
+/** Counts and times only: no process, path or error detail is exposed. */
+export interface OfficialPluginCleanupStatus {
+  /**
+   * `needs_attention`: at least one release exhausted its attempts and a retry
+   * (a new disable round) can release it. `awaiting_restart`: nothing is
+   * retryable, but some holds are kept by the service process that owns them
+   * and end only when that process restarts or exits. `pending`: everything
+   * left is being released automatically.
+   */
+  state: "pending" | "needs_attention" | "awaiting_restart";
+  /** Resource holds still being released automatically (including those whose owning process already ended). */
+  pending: number;
+  /** Resource holds whose release failed and that a new disable round retries. */
+  attention: number;
+  /**
+   * Resource holds kept open by a live owning process (original-contract Job
+   * registration windows): no retry releases them; they settle on their own
+   * after that process restarts or exits.
+   */
+  awaiting_restart: number;
+  last_attempt_at: string | null;
 }
 
 /** plugin_id → effective state, computed by the plugin service. */

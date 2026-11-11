@@ -6,7 +6,7 @@ import {Badge} from '../../components/ui/badge'
 import {Button} from '../../components/ui/button'
 import {useAppTranslation} from '../../i18n'
 import {useConversationScope} from './ConversationScope'
-import {WorkspaceChangeList} from '../runs/WorkspaceChangeList'
+import {WorkspaceChangeList,workspaceRunActive} from '../runs/WorkspaceChangeList'
 
 /**
  * Unfinished workspace work of the whole conversation that no loaded turn
@@ -62,7 +62,7 @@ export function ConversationPendingWork({conversationId,presented,refreshToken,a
    {attention&&<Badge variant="warning" role="status">{t('agent_workspaces_ui.turn_summary.status.attention')}</Badge>}
   </summary>
   <div className="mt-2 border-t border-border pt-2">
-   {remaining.length>0&&<WorkspaceChangeList entries={remaining.map(item=>({change:item.change,runId:item.run.id,runSucceeded:item.run.status==='succeeded',agentLabel:agentName(item.run.agent_id)}))} onChanged={refresh} showRunLink/>}
+   {remaining.length>0&&<WorkspaceChangeList entries={remaining.map(item=>({change:item.change,runId:item.run.id,runSucceeded:item.run.status==='succeeded',runActive:workspaceRunActive(item.run.status),agentLabel:agentName(item.run.agent_id)}))} onChanged={refresh} showRunLink/>}
    {cursor&&<div className="mt-2 flex flex-wrap items-center gap-2">
     <Button size="sm" variant="outline" disabled={loadingMore||!ready} onClick={()=>void loadMore()}>{loadingMore?t('agent_workspaces_ui.loading'):t('agent_workspaces_ui.load_more')}</Button>
     {moreError&&<span role="alert" className="text-destructive">{t('agent_workspaces_ui.turn_summary.pending_read_failed')}</span>}

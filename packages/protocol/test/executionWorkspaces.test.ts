@@ -56,3 +56,12 @@ it('requires an explicit inspected reason for basic checks and distinguishes the
  expect(s.safeParse(basic).success).toBe(true);
  for(const extra of [{note:undefined},{note:' '},{note:'x'.repeat(2001)},{test_commands:['true']},{no_project_checks:false}])expect(s.safeParse({...basic,...extra}).success).toBe(false);
 });
+
+it('binds reviewed withdrawal to an exact saved commit and keeps caller proof/authority out',async()=>{
+ const {WorkspaceChangeAbandonInputSchema:s}=await import('../src/index.js');
+ const plain={change_set_id:'change',expected_revision:2,reason:'Obsolete iteration'};
+ expect(s.parse(plain)).toEqual(plain);
+ const review={source_commit:'a'.repeat(40),user_request_quote:'检查后关闭旧工作区',findings:'Reviewed superseded iteration; retain source.'};
+ expect(s.parse({...plain,review})).toEqual({...plain,review});
+ for(const extra of [{source_commit:'HEAD'},{user_request_quote:' '},{findings:''},{approved:true},{adoption_proven:true},{user_id:'forged'}])expect(s.safeParse({...plain,review:{...review,...extra}}).success).toBe(false);
+});

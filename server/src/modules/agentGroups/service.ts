@@ -1,4 +1,6 @@
 import {isolatedWorkspaceContract} from '../projectFolders/executionWorkspaces.js';
+import { enqueueAgentGroupResumeWake } from "./resumeWakeJob.js";
+import { AgentGroupRefusal, HostDispatchRefusal } from "./hostDispatchErrors.js";
 import type {Queryable} from '../routeUtils/common.js';
 import {
   NO_SESSION_CONFIG,
@@ -9,10 +11,10 @@ import {
 } from "../sessions/sessionConfig.js";
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
-import { getDbPool, type Pool } from "../../db/pool.js";
+import { getDbPool } from "../../db/pool.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { enforce, type EnforceResult } from "../policy/service.js";
-import { HttpError, withDbTransaction } from "../routeUtils/common.js";
+import { HttpError, independentPool, independentPoolOrNull, withQueryableTransaction } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { PgRunRepository, type GroupedRunTrigger, type RunRecord } from "../runs/repository.js";
 import { visibleMessagePathSql } from "../sessions/messagePath.js";
@@ -209,7 +211,7 @@ type PolicyEnforcer = (
 export class AgentGroupRunService {
   constructor(
     private readonly config: ServerConfig,
-    private readonly pool: Pool,
+    private readonly pool: Queryable,
     private readonly policyEnforcer: PolicyEnforcer = enforce,
   ) {}
 
@@ -224,7 +226,7 @@ export class AgentGroupRunService {
     group: AgentRunGroupRecord;
     members: AgentGroupTimeline["members"];
   }> {
-    return withDbTransaction(this.pool, (client) =>
+    return withQueryableTransaction(this.pool, (client) =>
       this.createGroupInTransaction(client, identity, input, { allowSystemAssistant: false }),
     );
   }
@@ -242,7 +244,7 @@ export class AgentGroupRunService {
     const managerAgentId = requiredTrimmed(input.manager_agent_id, "manager_agent_id");
     const memberAgentIds = uniqueIds([managerAgentId, ...input.member_agent_ids]);
     if (memberAgentIds.length === 0) {
-      throw new HttpError(422, "member_agent_ids is required");
+      throw new AgentGroupRefusal(422, "member_agent_ids is required");
     }
 
     const repos = this.repos(client);
@@ -333,7 +335,7 @@ export class AgentGroupRunService {
     group: AgentRunGroupRecord;
   }> {
     assertIdentitySpace(identity, input.space_id);
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const repo = new PgAgentGroupRepository(client);
       await this.requireManagedGroup(repo, identity, input.group_id);
       const title = input.title === undefined ? undefined : requiredTrimmed(input.title ?? "", "title");
@@ -354,7 +356,7 @@ export class AgentGroupRunService {
   async sendUserMessage(identity: AgentGroupIdentity, input: SendAgentGroupMessageInput): Promise<{
     message: AgentRunMessageRecord;
   }> {
-    return withDbTransaction(this.pool, (client) =>
+    return withQueryableTransaction(this.pool, (client) =>
       this.sendUserMessageInTransaction(client, identity, input),
     );
   }
@@ -391,20 +393,20 @@ export class AgentGroupRunService {
         throw new HttpError(404, "Agent group not found in this space");
       }
       if (group.status !== "active") {
-        throw new HttpError(409, `Agent group is not active (current status: ${group.status})`);
+        throw new AgentGroupRefusal(409, `Agent group is not active (current status: ${group.status})`);
       }
       if (!roomAuthority && (group.room_id || group.session_id)) {
-        throw new HttpError(
+        throw new AgentGroupRefusal(
           409,
           "Room-backed messages must be sent through the Room conversation endpoint",
         );
       }
       if (!group.manager_agent_id) {
-        throw new HttpError(409, "Agent group has no manager agent");
+        throw new AgentGroupRefusal(409, "Agent group has no manager agent");
       }
       const content = input.content.trim();
       if (!content && !(input.input_parts?.length || input.capability_input_parts?.length)) {
-        throw new HttpError(422, "content or an input part is required");
+        throw new AgentGroupRefusal(422, "content or an input part is required");
       }
       const trigger: GroupedRunTrigger = input.trigger ?? { origin: "manual" };
       const routingMode = input.routing_mode ?? "direct";
@@ -417,7 +419,7 @@ export class AgentGroupRunService {
       const recipientAgentIds = routingSegments.flatMap((segment) => segment.recipient_agent_ids);
       const allRecipientAgentIds = uniqueIds(recipientAgentIds);
       if (group.session_id && recipientAgentIds.length !== allRecipientAgentIds.length) {
-        throw new HttpError(
+        throw new AgentGroupRefusal(
           422,
           "A Room agent may receive only one segment per message",
         );
@@ -444,7 +446,7 @@ export class AgentGroupRunService {
         )
         : new Map<string, AgentCapabilitySnapshotRecord>();
       if (group.session_id && !group.room_id) {
-        throw new HttpError(409, "Room conversation is missing its Room authority");
+        throw new AgentGroupRefusal(409, "Room conversation is missing its Room authority");
       }
       const backends = group.session_id
         ? await prepareRoomConversationBackends({
@@ -538,7 +540,7 @@ export class AgentGroupRunService {
           group.root_run_id,
         );
         if (!rootRun || rootRun.run_group_id !== group.id) {
-          throw new HttpError(409, "Agent group root run is not available");
+          throw new AgentGroupRefusal(409, "Agent group root run is not available");
         }
         rootRunId = group.root_run_id;
         for (let segmentIndex = 0; segmentIndex < routingSegments.length; segmentIndex += 1) {
@@ -595,7 +597,7 @@ export class AgentGroupRunService {
         const firstSegment = routingSegments[0];
         const firstRecipientAgentId = firstSegment?.recipient_agent_ids[0];
         if (!firstSegment || !firstRecipientAgentId) {
-          throw new HttpError(422, "recipient_segments is required");
+          throw new AgentGroupRefusal(422, "recipient_segments is required");
         }
         const preparedRootBackend = backends.get(firstRecipientAgentId);
         const rootRun = await repos.runs.createQueuedRun({
@@ -639,7 +641,7 @@ export class AgentGroupRunService {
           run_group_id: group.id,
         });
         if (!linkedRootRun) {
-          throw new HttpError(409, "Root run could not be linked to the agent group");
+          throw new AgentGroupRefusal(409, "Root run could not be linked to the agent group");
         }
         await repos.groups.updateGroupRootRun({
           space_id: input.space_id,
@@ -712,7 +714,7 @@ export class AgentGroupRunService {
 
       const primaryRun = recipientRuns[0]?.run;
       if (!primaryRun) {
-        throw new HttpError(422, "recipient_segments is required");
+        throw new AgentGroupRefusal(422, "recipient_segments is required");
       }
       const routingSegmentsWithRuns = routingSegments.map((segment, index) => ({
         recipient_agent_ids: segment.recipient_agent_ids,
@@ -803,7 +805,9 @@ export class AgentGroupRunService {
               project_folder_id: recipientRun.project_folder_id ?? null,
               payload: jobPayload,
             },
-            source: liveQuotaSource(this.pool),
+            // Inside a caller's (core) transaction no Host usage probe runs:
+            // the cached reading decides, as when a probe misses its deadline.
+            source: liveQuotaSource(independentPoolOrNull(this.pool)),
           });
           continue;
         }
@@ -829,7 +833,7 @@ export class AgentGroupRunService {
     if (input.manager_user_id !== identity.userId) {
       throw new HttpError(403, "manager_user_id must match the authenticated user");
     }
-    return withDbTransaction(this.pool, async (client) =>
+    return withQueryableTransaction(this.pool, async (client) =>
       this.spawnChildRunInTransaction(this.repos(client), identity, input),
     );
   }
@@ -841,7 +845,7 @@ export class AgentGroupRunService {
   ) {
     assertIdentitySpace(identity, input.space_id);
     if (input.manager_user_id !== identity.userId) throw new HttpError(403, "manager_user_id must match the authenticated user");
-    return withDbTransaction(this.pool, async (client) =>
+    return withQueryableTransaction(this.pool, async (client) =>
       this.spawnChildRunInTransaction(this.repos(client), identity, input, policy),
     );
   }
@@ -854,18 +858,18 @@ export class AgentGroupRunService {
     if (input.manager_user_id !== identity.userId) {
       throw new HttpError(403, "manager_user_id must match the authenticated user");
     }
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const repos = this.repos(client);
       const group = await repos.groups.lockGroup(input.space_id, input.group_id);
       if (!group || !(await this.canManageGroup(repos.groups, identity, group))) {
         throw new HttpError(404, "Agent group not found in this space");
       }
-      if (group.status !== "active") throw new HttpError(409, `Agent group is not active (current status: ${group.status})`);
-      if (!group.root_run_id || input.root_run_id !== group.root_run_id) throw new HttpError(409, "root_run_id must match the agent group root run");
+      if (group.status !== "active") throw new AgentGroupRefusal(409, `Agent group is not active (current status: ${group.status})`);
+      if (!group.root_run_id || input.root_run_id !== group.root_run_id) throw new AgentGroupRefusal(409, "root_run_id must match the agent group root run");
       const parentRun = await repos.runs.getVisibleRun(input.space_id, identity.userId, input.parent_run_id);
       if (!parentRun || parentRun.run_group_id !== group.id) throw new HttpError(404, "Parent run not found in this agent group");
       if (parentRun.agent_id !== input.requesting_agent_id) throw new HttpError(403, "requesting_agent_id must match the parent run agent");
-      if ((parentRun.root_run_id ?? parentRun.id) !== group.root_run_id) throw new HttpError(409, "Parent run does not belong to the group root lineage");
+      if ((parentRun.root_run_id ?? parentRun.id) !== group.root_run_id) throw new AgentGroupRefusal(409, "Parent run does not belong to the group root lineage");
       const childAccess = delegatedWorkspaceAccessFor(parentRun, input.workspace_access);
       // A retried call replays the delegation it already made; judged afresh,
       // that delegation would count against itself and be refused.
@@ -937,7 +941,23 @@ export class AgentGroupRunService {
     groupId: string,
     status: "active" | "paused" | "cancelled",
   ): Promise<AgentRunGroupRecord> {
-    const updated = await withDbTransaction(this.pool, async (client) => {
+    // The wake obligation commits with the resume (its Job recovers it); this pass is only the first attempt.
+    const updated = await withQueryableTransaction(this.pool, async (client) => {
+      const changed = await new AgentGroupRunService(this.config, client).setStatus(identity, groupId, status);
+      if (changed.status === "active") await enqueueAgentGroupResumeWake(client, { spaceId: identity.spaceId, userId: identity.userId, groupId });
+      return changed;
+    });
+    if (updated.status === "active") await this.reevaluateParkedRuns(identity.spaceId, groupId);
+    return updated;
+  }
+
+  /** The status change alone, joining a caller's transaction when given one. */
+  async setStatus(
+    identity: AgentGroupIdentity,
+    groupId: string,
+    status: "active" | "paused" | "cancelled",
+  ): Promise<AgentRunGroupRecord> {
+    return withQueryableTransaction(this.pool, async (client) => {
       const repo = new PgAgentGroupRepository(client);
       await this.requireManagedGroup(repo, identity, groupId);
       const updated = await repo.updateGroupStatus({
@@ -946,27 +966,31 @@ export class AgentGroupRunService {
         status,
       });
       if (!updated) {
-        throw new HttpError(409, "Agent group status could not be changed");
+        throw new AgentGroupRefusal(409, "Agent group status could not be changed");
       }
       return updated;
     });
-    // A dependency that finished while the group was paused woke nobody:
-    // resuming re-evaluates every Run still parked on one.
-    if (updated.status === "active") {
-      const waiting = await this.pool.query<{ id: string }>(
-        `SELECT id FROM runs
-          WHERE space_id = $1 AND run_group_id = $2 AND status = 'waiting_for_dependency'
-          ORDER BY created_at, id`,
-        [identity.spaceId, groupId],
-      );
-      const projector = new AgentGroupRunLifecycleProjector(this.pool, this.config);
-      const runs = new PgRunRepository(this.pool);
-      for (const row of waiting.rows) {
-        const run = await runs.getRun(identity.spaceId, row.id);
-        if (run) await projector.reconcileWaitingRun(run);
-      }
+  }
+
+  /**
+   * A dependency that finished while the group was paused woke nobody:
+   * resuming re-evaluates every Run still parked on one. Runs after the
+   * status change has committed, on an independent pool.
+   */
+  async reevaluateParkedRuns(spaceId: string, groupId: string): Promise<void> {
+    const pool = independentPool(this.pool, "Group lifecycle projection");
+    const waiting = await pool.query<{ id: string }>(
+      `SELECT id FROM runs
+        WHERE space_id = $1 AND run_group_id = $2 AND status = 'waiting_for_dependency'
+        ORDER BY created_at, id`,
+      [spaceId, groupId],
+    );
+    const projector = new AgentGroupRunLifecycleProjector(pool, this.config);
+    const runs = new PgRunRepository(pool);
+    for (const row of waiting.rows) {
+      const run = await runs.getRun(spaceId, row.id);
+      if (run) await projector.reconcileWaitingRun(run);
     }
-    return updated;
   }
 
   private repos(client: Queryable): {
@@ -981,6 +1005,23 @@ export class AgentGroupRunService {
       runs: new PgRunRepository(client),
       jobs: new PgJobQueueRepository(client),
     };
+  }
+
+  /** Whether this person manages the group (owner or managing Room writer); hidden otherwise. */
+  async assertManagedGroup(client: Queryable, identity: AgentGroupIdentity, groupId: string): Promise<void> {
+    await this.requireManagedGroup(new PgAgentGroupRepository(client), identity, groupId);
+  }
+
+  /**
+   * Whether this person still manages the group: false only for the domain
+   * answer (no such group, not its manager, no longer in its Room or
+   * Project). A failed read throws, so a caller cannot mistake it for a
+   * withdrawn permission.
+   */
+  async managesGroup(client: Queryable, identity: AgentGroupIdentity, groupId: string): Promise<boolean> {
+    const repo = new PgAgentGroupRepository(client);
+    const group = await repo.getGroup(identity.spaceId, groupId);
+    return Boolean(group && await this.canManageGroup(repo, identity, group));
   }
 
   private async requireManagedGroup(
@@ -1064,10 +1105,10 @@ export class AgentGroupRunService {
       throw new HttpError(404, "Agent group not found in this space");
     }
     if (group.status !== "active") {
-      throw new HttpError(409, `Agent group is not active (current status: ${group.status})`);
+      throw new AgentGroupRefusal(409, `Agent group is not active (current status: ${group.status})`);
     }
     if (!group.root_run_id || input.root_run_id !== group.root_run_id) {
-      throw new HttpError(409, "root_run_id must match the agent group root run");
+      throw new AgentGroupRefusal(409, "root_run_id must match the agent group root run");
     }
 
     const parentRun = await repos.runs.getVisibleRun(
@@ -1082,7 +1123,7 @@ export class AgentGroupRunService {
       throw new HttpError(403, "requesting_agent_id must match the parent run agent");
     }
     if ((parentRun.root_run_id ?? parentRun.id) !== group.root_run_id) {
-      throw new HttpError(409, "Parent run does not belong to the group root lineage");
+      throw new AgentGroupRefusal(409, "Parent run does not belong to the group root lineage");
     }
     const childAccess = delegatedWorkspaceAccessFor(parentRun, input.workspace_access);
 
@@ -1112,16 +1153,16 @@ export class AgentGroupRunService {
         input.request_message_id,
       );
       if (!requestMessage || requestMessage.group_id !== input.group_id) {
-        throw new HttpError(422, "request_message_id must belong to this agent group");
+        throw new AgentGroupRefusal(422, "request_message_id must belong to this agent group");
       }
       if (requestMessage.run_id && requestMessage.run_id !== input.parent_run_id) {
-        throw new HttpError(422, "request_message_id must belong to the parent run");
+        throw new AgentGroupRefusal(422, "request_message_id must belong to the parent run");
       }
       if (
         requestMessage.sender_agent_id &&
         requestMessage.sender_agent_id !== input.requesting_agent_id
       ) {
-        throw new HttpError(422, "request_message_id sender must match requesting_agent_id");
+        throw new AgentGroupRefusal(422, "request_message_id sender must match requesting_agent_id");
       }
     }
 
@@ -1137,13 +1178,13 @@ export class AgentGroupRunService {
         ? (await repos.db.query<{ kind: string; capabilities_json:unknown }>("SELECT kind,capabilities_json FROM hosts WHERE id=$1", [backend.execution_host_id])).rows[0]
         : null;
       const refusal = readOnlyWorkspaceHostRefusal(childAccess, backend.runtime_key, host?.kind, host?.capabilities_json);
-      if (refusal) throw new HttpError(409, refusal, { code: "workspace_read_only_unenforceable", detail: refusal });
+      if (refusal) throw new AgentGroupRefusal(409, refusal, { code: "workspace_read_only_unenforceable", detail: refusal });
     } else if(childAccess==='read') {
       // Non-Room delegation selects the target's default Profile, as Run admission does.
       const profile=(await repos.db.query<{runtime_key:string;execution_host_id:string|null}>(`SELECT runtime_key,execution_host_id FROM agent_runtime_profiles WHERE space_id=$1 AND agent_id=$2 AND enabled=true AND is_default=true`,[input.space_id,input.target_agent_id])).rows[0];
       const host=profile?.execution_host_id?(await repos.db.query<{kind:string;capabilities_json:unknown}>(`SELECT kind,capabilities_json FROM hosts WHERE id=$1`,[profile.execution_host_id])).rows[0]:null;
       const refusal=readOnlyWorkspaceHostRefusal(childAccess,profile?.runtime_key,host?.kind,host?.capabilities_json);
-      if(refusal)throw new HttpError(409,refusal,{code:'workspace_read_only_unenforceable',detail:refusal});
+      if(refusal)throw new AgentGroupRefusal(409,refusal,{code:'workspace_read_only_unenforceable',detail:refusal});
     }
 
     // Policy preflight is deliberately before every domain write. The
@@ -1257,13 +1298,13 @@ export class AgentGroupRunService {
     let delegatedWorkspaceAccess: Array<{ workspace_location_id: string; access_mode: "read" | "write" }> = [];
     if (group.room_id) {
       if (!parentRun.session_id) {
-        throw new HttpError(409, "Room delegation requires a Room conversation session");
+        throw new AgentGroupRefusal(409, "Room delegation requires a Room conversation session");
       }
       const backendRepository = new PgConversationBackendRepository(repos.db);
       const executionContexts = new PgConversationExecutionContextRepository(repos.db);
       const executionContext = await executionContexts.getContext(input.space_id, parentRun.session_id);
       if (!executionContext || executionContext.state !== "initialized" || !executionContext.execution_host_id || !executionContext.primary_workspace_mode) {
-        throw new HttpError(409, "Initialize the Conversation execution context before delegating a Room task");
+        throw new AgentGroupRefusal(409, "Initialize the Conversation execution context before delegating a Room task");
       }
       const projectLocations = await executionContexts.listProjectLocations(input.space_id, parentRun.project_id);
       for (const attachment of await executionContexts.listAttachments(input.space_id, parentRun.session_id)) {
@@ -1273,7 +1314,7 @@ export class AgentGroupRunService {
         if (!location || location.execution_host_id !== executionContext.execution_host_id
           || location.execution_ready !== true
           || !locationIsOnline(location)) {
-          throw new HttpError(409, "A Conversation attachment is no longer available on its execution Host");
+          throw new AgentGroupRefusal(409, "A Conversation attachment is no longer available on its execution Host");
         }
         delegatedWorkspaceAccess.push({
           workspace_location_id: location.id,
@@ -1290,7 +1331,7 @@ export class AgentGroupRunService {
           requested: null,
         });
         if (!delegatedBackend) {
-          throw new HttpError(409, `Conversation runtime for Agent '${input.target_agent_id}' is unavailable`);
+          throw new AgentGroupRefusal(409, `Conversation runtime for Agent '${input.target_agent_id}' is unavailable`);
         }
         // Nobody chose these for this delegation: a value the runtime has
         // since withdrawn falls back to its default rather than failing it.
@@ -1309,7 +1350,7 @@ export class AgentGroupRunService {
         if (!thread || thread.execution_host_id !== executionContext.execution_host_id
           || thread.workspace_mode !== executionContext.primary_workspace_mode
           || thread.workspace_location_id !== executionContext.primary_workspace_location_id) {
-          throw new HttpError(409, `Conversation runtime continuity for Agent '${input.target_agent_id}' is unavailable`);
+          throw new AgentGroupRefusal(409, `Conversation runtime continuity for Agent '${input.target_agent_id}' is unavailable`);
         }
         delegatedBackend = {
           ...delegatedBackend,
@@ -1617,7 +1658,7 @@ async function assertAgentsActive(
       throw new HttpError(404, `Agent '${agentId}' not found in this space`);
     }
     if (status.status !== "active") {
-      throw new HttpError(409, `Agent '${agentId}' is not active`);
+      throw new AgentGroupRefusal(409, `Agent '${agentId}' is not active`);
     }
   }
 }
@@ -1638,13 +1679,13 @@ async function assertActiveGroupMember(
     user_id: userId,
   });
   if (!member) {
-    throw new HttpError(422, `${fieldName} must be a member of this agent group`);
+    throw new AgentGroupRefusal(422, `${fieldName} must be a member of this agent group`);
   }
   if (member.status !== "active") {
-    throw new HttpError(409, `${fieldName} is not active in this agent group`);
+    throw new AgentGroupRefusal(409, `${fieldName} is not active in this agent group`);
   }
   if (member.agent_status !== "active") {
-    throw new HttpError(409, `${fieldName} agent is not active`);
+    throw new AgentGroupRefusal(409, `${fieldName} agent is not active`);
   }
   if (member.agent_kind === "system_assistant" && !allowSystemAssistant) {
     throw new HttpError(404, `${fieldName} must reference an ordinary Agent`);
@@ -1680,7 +1721,7 @@ function messageRecipientSegmentsForInput(
     }];
   }
   if (routingMode !== "direct") {
-    throw new HttpError(422, "routing_mode must be direct or agent_coordination");
+    throw new AgentGroupRefusal(422, "routing_mode must be direct or agent_coordination");
   }
   const rawSegments = input.recipient_segments?.length
     ? input.recipient_segments
@@ -1692,7 +1733,7 @@ function messageRecipientSegmentsForInput(
       ? segment.content.trim()
       : requiredTrimmed(segment.content, `recipient_segments[${index}].content`),
   })).filter((segment) => segment.recipient_agent_ids.length > 0);
-  if (segments.length === 0) throw new HttpError(422, "recipient_segments is required");
+  if (segments.length === 0) throw new AgentGroupRefusal(422, "recipient_segments is required");
   return segments;
 }
 
@@ -1761,12 +1802,12 @@ export async function prepareHostConversationDispatch(input: {
   const hostBound = hostFields.every(Boolean);
   if (!hostBound) {
     if (hostFields.some(Boolean)) {
-      throw new HttpError(409, `Room agent '${input.agentId}' has an incomplete host execution binding`);
+      throw new HostDispatchRefusal(409, `Room agent '${input.agentId}' has an incomplete host execution binding`);
     }
     return null;
   }
   if (!isLocalCliRuntimeAdapter(input.backend.runtime_key)) {
-    throw new HttpError(409, `Room agent '${input.agentId}' has a host binding for an unsupported runtime`);
+    throw new HostDispatchRefusal(409, `Room agent '${input.agentId}' has a host binding for an unsupported runtime`);
   }
 
   // A Project Room can contain several Conversations. Runtime continuity and
@@ -1798,16 +1839,16 @@ export async function prepareHostConversationDispatch(input: {
       ? target.host_kind
       : null;
   if (!target || target.host_id !== input.backend.execution_host_id || (hostKind !== "remote" && hostKind !== "server")) {
-    throw new HttpError(409, `Room agent '${input.agentId}' has an invalid host execution target`);
+    throw new HostDispatchRefusal(409, `Room agent '${input.agentId}' has an invalid host execution target`);
   }
   if (!conversationScoped && !directUserId) {
-    throw new HttpError(422, "Direct host dispatch requires a user-scoped container");
+    throw new HostDispatchRefusal(422, "Direct host dispatch requires a user-scoped container");
   }
   if (
     input.backend.workspace_mode === "location"
     && (!("project_id" in target) || target.project_id !== input.projectId)
   ) {
-    throw new HttpError(409, `Location-bound Agent '${input.agentId}' requires its Project context`);
+    throw new HostDispatchRefusal(409, `Location-bound Agent '${input.agentId}' requires its Project context`);
   }
   if (hostKind === "remote" && target.host_owner_user_id !== input.userId) {
     throw new HttpError(403, `Room agent '${input.agentId}' can only be triggered by its host owner`);
@@ -1825,7 +1866,7 @@ export async function prepareHostConversationDispatch(input: {
   const runtimeAvailable = hostInstallationIds(target.capabilities_json, input.backend.runtime_key)
     .includes(input.backend.runtime_installation!);
   if (!hostOnline || !executionReady || !runtimeAvailable) {
-    throw new HttpError(409, `Room agent '${input.agentId}' host is offline or its runtime is unavailable`);
+    throw new HostDispatchRefusal(409, `Room agent '${input.agentId}' host is offline or its runtime is unavailable`);
   }
 
   const threads = new PgHostThreadRepository(input.db);
@@ -1873,7 +1914,7 @@ export async function prepareHostConversationDispatch(input: {
     || hostThread.runtime_key !== input.backend.runtime_key
     || hostThread.runtime_installation !== input.backend.runtime_installation
   ) {
-    throw new HttpError(
+    throw new HostDispatchRefusal(
       409,
       `Room agent '${input.agentId}' has an existing host session pinned to a different runtime; remove and re-add it before changing the binding`,
     );
@@ -1891,7 +1932,7 @@ export async function prepareHostConversationDispatch(input: {
     : await threads.claimDirectDispatch(hostThread.id, dispatchLockId);
   if (!claimed) {
     const detail = `Room agent '${input.agentId}' is already handling another Room turn; wait for it to finish before sending another message`;
-    throw new HttpError(409, detail, { detail, code: "room_agent_turn_in_progress" });
+    throw new HostDispatchRefusal(409, detail, { detail, code: "room_agent_turn_in_progress" });
   }
   // A thread with no vendor session is fresh whatever its status says: a
   // first turn after a rotation or reset that failed before the runtime
@@ -1933,14 +1974,14 @@ async function prepareRoomConversationBackends(input: {
   requested: NonNullable<SendAgentGroupMessageInput["backends"]>;
 }): Promise<Map<string, PreparedRoomConversationBackend>> {
   if (!input.messageCursorId) {
-    throw new HttpError(409, "Room task is missing its triggering message");
+    throw new AgentGroupRefusal(409, "Room task is missing its triggering message");
   }
   const requestedByAgent = new Map(
     input.requested.map((selection) => [selection.agent_id, selection]),
   );
   for (const agentId of requestedByAgent.keys()) {
     if (!input.agentIds.includes(agentId)) {
-      throw new HttpError(422, "backend agent_id must be a recipient of this Room message");
+      throw new AgentGroupRefusal(422, "backend agent_id must be a recipient of this Room message");
     }
   }
   const repository = new PgConversationBackendRepository(input.db);
@@ -1965,13 +2006,13 @@ async function prepareRoomConversationBackends(input: {
   if (!session) throw new HttpError(404, "Room conversation not found");
   const executionContext = await executionContexts.lockDraft(session);
   if (!executionContext || executionContext.state !== "initialized" || !executionContext.execution_host_id || !executionContext.primary_workspace_mode) {
-    throw new HttpError(409, "Initialize the Conversation execution context before sending a Room message");
+    throw new AgentGroupRefusal(409, "Initialize the Conversation execution context before sending a Room message");
   }
   const executionHost = await input.db.query<{ kind: "server" | "remote" }>(
     "SELECT kind FROM hosts WHERE id = $1 LIMIT 1",
     [executionContext.execution_host_id],
   );
-  if (!executionHost.rows[0]) throw new HttpError(409, "The Conversation execution Host is unavailable");
+  if (!executionHost.rows[0]) throw new AgentGroupRefusal(409, "The Conversation execution Host is unavailable");
   const hostIsRemote = executionHost.rows[0].kind === "remote";
   const pinnedLocations = await executionContexts.listProjectLocations(input.identity.spaceId, input.projectId);
   const workspaceAccess = [] as Array<{ workspace_location_id: string; access_mode: "read" | "write" }>;
@@ -1982,7 +2023,7 @@ async function prepareRoomConversationBackends(input: {
     if (!location || location.execution_host_id !== executionContext.execution_host_id
       || location.execution_ready !== true
       || !locationIsOnline(location)) {
-      throw new HttpError(409, "A Conversation attachment is no longer available on its execution Host");
+      throw new AgentGroupRefusal(409, "A Conversation attachment is no longer available on its execution Host");
     }
     workspaceAccess.push({
       workspace_location_id: location.id,
@@ -2007,7 +2048,7 @@ async function prepareRoomConversationBackends(input: {
     if (!thread || thread.execution_host_id !== executionContext.execution_host_id
       || thread.workspace_mode !== executionContext.primary_workspace_mode
       || thread.workspace_location_id !== executionContext.primary_workspace_location_id) {
-      throw new HttpError(409, `Conversation runtime continuity for Agent '${agentId}' is unavailable`);
+      throw new AgentGroupRefusal(409, `Conversation runtime continuity for Agent '${agentId}' is unavailable`);
     }
     const pinnedBackend: ResolvedConversationBackend = {
       ...backend,
@@ -2028,7 +2069,7 @@ async function prepareRoomConversationBackends(input: {
       );
     const revision = contextRevisions.get(agentId) ?? null;
     if (!revision?.agent_version_id) {
-      throw new HttpError(409, `Room agent '${agentId}' has no active version`);
+      throw new AgentGroupRefusal(409, `Room agent '${agentId}' has no active version`);
     }
     const hostBound = Boolean(
       pinnedBackend.execution_host_id && pinnedBackend.workspace_mode && pinnedBackend.runtime_installation,
@@ -2053,7 +2094,7 @@ async function prepareRoomConversationBackends(input: {
         agentId,
         userId: input.identity.userId,
       });
-      if (!hostDispatch) throw new HttpError(409, `Room agent '${agentId}' has an incomplete host execution binding`);
+      if (!hostDispatch) throw new AgentGroupRefusal(409, `Room agent '${agentId}' has an incomplete host execution binding`);
       hostProjectFolderId = hostDispatch.project_folder_id;
       hostThread = hostDispatch.host_thread;
       hostWorkspace = hostDispatch.workspace;
@@ -2367,7 +2408,7 @@ async function loadRoomTurnSource(
     [spaceId, sessionId, currentMessageId],
   );
   if (!current.rows[0]) {
-    throw new HttpError(409, "Room task trigger message is no longer available");
+    throw new AgentGroupRefusal(409, "Room task trigger message is no longer available");
   }
   const conversation = await db.query<{ title: string | null }>(
     `SELECT title FROM sessions WHERE space_id = $1 AND id = $2 LIMIT 1`,
@@ -2387,9 +2428,9 @@ async function prepareSummaryTurn(
   input: { identity: AgentGroupIdentity; agentId: string; backend: PreparedRoomConversationBackend | undefined },
 ): Promise<{ agent_id: string; prompt: string; handoff: { thread_id: string; context_tokens: number; budget_tokens: number; manual_summary: true } }> {
   const thread = input.backend?.host_thread;
-  if (!thread || !input.backend) throw new HttpError(409, "This Agent has no host-bound session in this Conversation to summarize");
+  if (!thread || !input.backend) throw new AgentGroupRefusal(409, "This Agent has no host-bound session in this Conversation to summarize");
   if (!thread.vendor_session_id || !input.backend.host_resume_attempted) {
-    throw new HttpError(409, "This Agent's session has nothing to summarize yet");
+    throw new AgentGroupRefusal(409, "This Agent's session has nothing to summarize yet");
   }
   // The window the runtime reported, else the catalog's for the pinned model;
   // an unknown model gets a 200k-window budget rather than the floor.
@@ -2403,7 +2444,7 @@ async function prepareSummaryTurn(
     agentId: input.agentId,
     budgetTokens,
   });
-  if (!prompt) throw new HttpError(409, "The conversation summary prompt is unavailable");
+  if (!prompt) throw new AgentGroupRefusal(409, "The conversation summary prompt is unavailable");
   return {
     agent_id: input.agentId,
     prompt,
@@ -2561,7 +2602,7 @@ async function assertReplayedDelegationAccess(
   if (!existing.child_run_id) return;
   const child = await runs.getRun(existing.space_id, existing.child_run_id);
   if (child && contractWorkspaceAccess(child.contract_snapshot_json) !== requested) {
-    throw new HttpError(409, "This delegation already exists with a different workspace_access contract", {
+    throw new AgentGroupRefusal(409, "This delegation already exists with a different workspace_access contract", {
       code: "delegation_workspace_access_conflict",
       detail: "Replay the original access choice; an existing Run's execution contract cannot be changed.",
     });
@@ -2579,7 +2620,7 @@ function delegatedWorkspaceAccessFor(
 ): "read" | "write" {
   const access = DelegationWorkspaceAccessSchema.safeParse(requested);
   if (!access.success) {
-    throw new HttpError(422, access.error.message, {
+    throw new AgentGroupRefusal(422, access.error.message, {
       code: "delegation_workspace_access_required",
       detail: 'Declare workspace_access: "read" for research/review without workspace changes, or "write" for workspace changes. Instruction text does not set access.',
     });
@@ -2898,7 +2939,7 @@ function uniqueIds(ids: readonly string[]): string[] {
 
 function requiredTrimmed(value: string, field: string): string {
   const normalized = value.trim();
-  if (!normalized) throw new HttpError(422, `${field} is required`);
+  if (!normalized) throw new AgentGroupRefusal(422, `${field} is required`);
   return normalized;
 }
 

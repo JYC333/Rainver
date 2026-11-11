@@ -105,7 +105,7 @@ export class ProjectSourceProposalService {
       const existing = await findIdempotentOperation(db, identity.spaceId, projectId, "source_setup", key);
       if (existing) {
         if (existing.fingerprint !== fingerprint) {
-          throw new HttpError(409, "idempotency_key is already used with different source setup parameters");
+          throw new ProjectSourceMutationError(409, "idempotency_key is already used with different source setup parameters");
         }
         return loadSourceSetupBundle(db, identity, projectId, existing.id);
       }

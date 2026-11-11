@@ -1,8 +1,9 @@
 import type { RoomAgentPresetRequest, RoomDetail } from "@rainver/protocol";
-import { createHash, randomUUID } from "node:crypto";
+import { RoomMutationError } from "./roomMutationError.js";
+import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
-import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
-import { HttpError, withDbTransaction } from "../routeUtils/common.js";
+import { getDbPool } from "../../db/pool.js";
+import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import {
   assertProjectReadable,
   assertProjectWriter,
@@ -24,7 +25,7 @@ import {
 } from "./rosterRepository.js";
 import { listRoomAgentPresets, roomAgentPresetById } from "./presets.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
-import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
+import { sendPendingManagedWorkspaceArchive } from "../hosts/managedWorkspaceOperations.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { latestSummaryArtifactId } from "../agentGroups/sessionHandoff.js";
 
@@ -36,7 +37,7 @@ export interface RoomIdentity {
 }
 
 export class RoomRosterService {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Queryable) {}
 
   static fromConfig(config: ServerConfig): RoomRosterService {
     if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
@@ -82,7 +83,7 @@ export class RoomRosterService {
       });
       if (!agent) throw new HttpError(404, "Agent not found in this Room's Project");
       if (agent.agent_kind === "system_assistant") {
-        throw new HttpError(409, "The managed Room Assistant cannot be added as a specialist");
+        throw new RoomMutationError(409, "The managed Room Assistant cannot be added as a specialist");
       }
       const member = await repository.getAgentMember({
         space_id: identity.spaceId,
@@ -110,7 +111,7 @@ export class RoomRosterService {
         const requiredGrantees = activeUsers.filter((userId) => userId !== identity.userId).sort();
         if (!sameIds(requestedGrantees, requiredGrantees)
           || (requiredGrantees.length > 0 && input.confirm_room_share !== true)) {
-          throw new HttpError(409, "Confirm Room-only sharing for the displayed private-Agent members", {
+          throw new RoomMutationError(409, "Confirm Room-only sharing for the displayed private-Agent members", {
             code: "private_agent_share_confirmation_required",
             detail: "This private Agent stays private outside the Room. Confirm the exact Room members who will receive a Room-only grant.",
             agent_id: agent.id,
@@ -149,60 +150,24 @@ export class RoomRosterService {
         restoreTarget,
       };
     });
-    const { detail: result, restoreTarget } = transactionResult;
-    if (!restoreTarget) return result;
-    const restored = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
-      restoreTarget.hostId,
-      "managed_workspace_restore",
-      {
-        agent_id: restoreTarget.agentId,
-        container_kind: "conversation",
-        container_id: restoreTarget.conversationId,
-        include_workspace: restoreTarget.includeWorkspace,
-      },
-    );
-    return { ...result, managed_workspace_restore: { agent_id: restoreTarget.agentId, ...restored } };
+    // The Host restore is not this transaction's: the caller commits it as a restore Job of this target.
+    return transactionResult;
   }
 
   async addPresetAgent(identity: RoomIdentity, roomId: string, input: {
     preset_id: string;
     name?: string | null;
-    idempotency_key?: string | null;
     confirm_room_share?: boolean;
     execution?: RoomAgentPresetRequest["execution"];
   }) {
     return this.withRoomWriter(identity, roomId, async (client, room) => {
       const preset = roomAgentPresetById(input.preset_id);
       if (!preset) throw new HttpError(404, `Room Agent preset '${input.preset_id}' not found`);
-      const idempotencyKey = normalizeIdempotencyKey(input.idempotency_key);
-      const fingerprint = idempotencyKey
-        ? createHash("sha256").update(JSON.stringify({
-          preset_id: input.preset_id,
-          name: input.name?.trim() ?? null,
-          execution: input.execution ?? null,
-        })).digest("hex")
-        : null;
-      if (idempotencyKey && fingerprint) {
-        const prior = await client.query<{ request_fingerprint: string; agent_id: string }>(
-          `SELECT request_fingerprint, agent_id
-             FROM room_agent_preset_idempotencies
-            WHERE space_id = $1 AND user_id = $2 AND room_id = $3 AND idempotency_key = $4
-            FOR UPDATE`,
-          [identity.spaceId, identity.userId, room.id, idempotencyKey],
-        );
-        const existing = prior.rows[0];
-        if (existing) {
-          if (existing.request_fingerprint !== fingerprint) {
-            throw new HttpError(409, "Idempotency-Key was already used with different preset parameters");
-          }
-          return this.roomDetail(client, identity, room.id);
-        }
-      }
       const roster = new PgRoomRosterRepository(client);
       const activeUsers = await roster.activeMemberIds(identity.spaceId, room.id);
       const sharedMemberIds = activeUsers.filter((userId) => userId !== identity.userId);
       if (sharedMemberIds.length > 0 && input.confirm_room_share !== true) {
-        throw new HttpError(409, "Confirm Room-only sharing for this preset Agent", {
+        throw new RoomMutationError(409, "Confirm Room-only sharing for this preset Agent", {
           code: "private_agent_share_confirmation_required",
           detail: "This preset creates a private Agent owned by you and shares it with current Room members only.",
           member_ids: sharedMemberIds,
@@ -278,15 +243,6 @@ export class RoomRosterService {
         });
       }
       await roster.incrementRosterRevision(identity.spaceId, room.id);
-      if (idempotencyKey && fingerprint) {
-        await client.query(
-          `INSERT INTO room_agent_preset_idempotencies (
-             id, space_id, user_id, room_id, idempotency_key,
-             request_fingerprint, agent_id, created_at, updated_at
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())`,
-          [randomUUID(), identity.spaceId, identity.userId, room.id, idempotencyKey, fingerprint, agent.id],
-        );
-      }
       return this.roomDetail(client, identity, room.id);
     });
   }
@@ -339,28 +295,9 @@ export class RoomRosterService {
         archiveTargets,
       };
     });
-    const { detail: result, archiveTargets } = transactionResult;
-    if (archiveTargets.length === 0) return result;
-    const archived = [];
-    for (const archiveTarget of archiveTargets) {
-      const response = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
-        archiveTarget.hostId,
-        "managed_workspace_archive",
-        {
-          agent_id: archiveTarget.agentId,
-          container_kind: "conversation",
-          container_id: archiveTarget.conversationId,
-          include_workspace: archiveTarget.includeWorkspace,
-        },
-      );
-      archived.push({ agent_id: archiveTarget.agentId, ...response });
-      if (response.ok) {
-        await new PgHostThreadRepository(this.pool)
-          .acknowledgeManagedWorkspaceArchive(archiveTarget.threadId)
-          .catch(() => undefined);
-      }
-    }
-    return { ...result, managed_workspace_archive: archived };
+    // The durable `pending_archive_at` intent commits here; the Host archive is
+    // attempted after commit and recovered on the Host's next connection or by the recovery pass.
+    return transactionResult;
   }
 
   async resetAgentContext(identity: RoomIdentity, roomId: string, agentId: string, sessionId?: string) {
@@ -393,10 +330,10 @@ export class RoomRosterService {
         throw new HttpError(403, "Only the execution host owner can reset this Agent's context");
       }
       if (current.dispatch_lock_id) {
-        throw new HttpError(409, "The Host-bound Agent is still handling a Room turn; reset its context after it finishes");
+        throw new RoomMutationError(409, "The Host-bound Agent is still handling a Room turn; reset its context after it finishes");
       }
       const reset = await new PgHostThreadRepository(client).resetConversationAgent(current.id);
-      if (!reset) throw new HttpError(409, "Host Agent context changed before it could be reset");
+      if (!reset) throw new RoomMutationError(409, "Host Agent context changed before it could be reset");
       if (current.session_id) {
         await new PgSessionRepository(client).addRoomSystemNotice(
           identity.spaceId,
@@ -430,16 +367,16 @@ export class RoomRosterService {
         throw new HttpError(403, "Only the execution host owner can restart this Agent from its summary");
       }
       if (current.dispatch_lock_id) {
-        throw new HttpError(409, "The Host-bound Agent is still handling a Room turn; restart it after it finishes");
+        throw new RoomMutationError(409, "The Host-bound Agent is still handling a Room turn; restart it after it finishes");
       }
       const summaryArtifactId = await latestSummaryArtifactId(client, {
         spaceId: identity.spaceId, threadId: current.id, vendorSessionId: current.vendor_session_id,
       });
       if (!summaryArtifactId || !current.vendor_session_id) {
-        throw new HttpError(409, "This Agent has no summary of its current session to restart from");
+        throw new RoomMutationError(409, "This Agent has no summary of its current session to restart from");
       }
       const rotated = await new PgHostThreadRepository(client).rotateAfterHandoff(current.id, summaryArtifactId, current.vendor_session_id);
-      if (!rotated) throw new HttpError(409, "Host Agent context changed before it could be restarted");
+      if (!rotated) throw new RoomMutationError(409, "Host Agent context changed before it could be restarted");
       await new PgSessionRepository(client).addRoomSystemNotice(
         identity.spaceId,
         identity.userId,
@@ -475,7 +412,7 @@ export class RoomRosterService {
           [identity.spaceId, room.id, input.user_id],
         );
         if (existingMember.rows[0]?.status === "active") {
-          throw new HttpError(409, "User is already an active Room member");
+          throw new RoomMutationError(409, "User is already an active Room member");
         }
         const roster = new PgRoomRosterRepository(client);
         const prior = await client.query<RoomInvitationRecord>(
@@ -506,7 +443,7 @@ export class RoomRosterService {
         const privateAgents = await roster.listPrivateRoster({ space_id: identity.spaceId, room_id: room.id });
         const inviterOwned = privateAgents.filter((agent) => agent.owner_user_id === identity.userId);
         if (inviterOwned.length > 0 && input.confirm_owned_private_agent_shares !== true) {
-          throw new HttpError(409, "Confirm Room-only sharing for private Agents you own", {
+          throw new RoomMutationError(409, "Confirm Room-only sharing for private Agents you own", {
             code: "private_agent_share_confirmation_required",
             detail: "Inviting this user will share your private specialists inside this Room only.",
             agent_ids: inviterOwned.map((agent) => agent.agent_id).sort(),
@@ -550,11 +487,11 @@ export class RoomRosterService {
     }
   }
 
-  async listInvitations(identity: RoomIdentity, roomId: string, input: { limit: number; offset: number }) {
+  async listInvitations(identity: RoomIdentity, roomId: string, input: { limit: number; offset: number; invitation_id?: string }) {
     const notFound = () => new HttpError(404, "Room not found in this space");
     const room = await new PgRoomRepository(this.pool).getRoomById(identity.spaceId, roomId);
     if (!room || room.status !== "active") throw notFound();
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       await assertActiveSpaceUser(client, identity.spaceId, identity.userId);
       // Not getVisibleRoom: an invitee or a private Agent's approval owner reads
       // their own invitation before they are on the roster. Everyone else who
@@ -568,6 +505,7 @@ export class RoomRosterService {
         user_id: identity.userId,
         limit: input.limit,
         offset: input.offset,
+        invitation_id: input.invitation_id,
       });
       if (
         page.total === 0
@@ -644,7 +582,7 @@ export class RoomRosterService {
     decision: "approved" | "rejected";
   }) {
     try {
-      return await withDbTransaction(this.pool, async (client) => {
+      return await withQueryableTransaction(this.pool, async (client) => {
         // Every invitation mutation takes the Room lock before the invitation
         // lock. This matches inviteUser and prevents Room↔invitation deadlocks
         // under concurrent approvals and invitations.
@@ -719,19 +657,19 @@ export class RoomRosterService {
   async removeUser(identity: RoomIdentity, roomId: string, userId: string) {
     return this.withRoomWriter(identity, roomId, async (client, room) => {
       if (userId === identity.userId) {
-        throw new HttpError(409, "Room members cannot remove themselves through the owner-managed removal endpoint");
+        throw new RoomMutationError(409, "Room members cannot remove themselves through the owner-managed removal endpoint");
       }
       // Mainline membership is Project membership. Removing someone here would
       // only last until they next open the Project; the honest place to remove
       // them is the Project itself.
-      if (room.is_mainline) throw new HttpError(409, "room_mainline_membership_follows_project", {
+      if (room.is_mainline) throw new RoomMutationError(409, "room_mainline_membership_follows_project", {
         code: "room_mainline_membership_follows_project",
         detail: "Every Project member belongs to the Project's mainline Room. Remove them from the Project instead.",
       });
       const roster = new PgRoomRosterRepository(client);
       const member = await roster.lockUserMember(identity.spaceId, room.id, userId);
       if (!member || member.status !== "active") throw new HttpError(404, "Room member not found");
-      if (member.role === "owner") throw new HttpError(409, "room_owner_transfer_required", {
+      if (member.role === "owner") throw new RoomMutationError(409, "room_owner_transfer_required", {
         code: "room_owner_transfer_required",
         detail: "Transfer Room ownership before removing the current owner.",
       });
@@ -765,7 +703,7 @@ export class RoomRosterService {
         [identity.spaceId, room.id, [identity.userId, targetUserId]],
       );
       const target = rows.rows.find((candidate) => candidate.user_id === targetUserId);
-      if (!target || target.status !== "active") throw new HttpError(409, "Ownership target must be an active Room member");
+      if (!target || target.status !== "active") throw new RoomMutationError(409, "Ownership target must be an active Room member");
       if (targetUserId === identity.userId) return this.roomDetail(client, identity, room.id);
       await client.query(
         `UPDATE room_user_members
@@ -785,7 +723,7 @@ export class RoomRosterService {
   }
 
   async claimOwner(identity: RoomIdentity, roomId: string) {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const rooms = new PgRoomRepository(client);
       const room = await rooms.getRoomById(identity.spaceId, roomId, true);
       if (!room || room.status !== "active") throw new HttpError(404, "Room not found in this space");
@@ -816,7 +754,7 @@ export class RoomRosterService {
       }
       const currentOwnerId = await this.currentOwner(client, room.id);
       if (currentOwnerId && await canWriteProject(client, identity.spaceId, room.project_id, currentOwnerId)) {
-        throw new HttpError(409, "Room ownership is not suspended");
+        throw new RoomMutationError(409, "Room ownership is not suspended");
       }
       const roster = new PgRoomRosterRepository(client);
       await roster.lockUserMember(identity.spaceId, room.id, currentOwnerId ?? identity.userId);
@@ -845,7 +783,7 @@ export class RoomRosterService {
   }
 
   private async activateInvitation(
-    client: PoolClient,
+    client: Queryable,
     identity: RoomIdentity,
     invitation: RoomInvitationRecord,
     approvals: RoomInvitationApprovalRecord[],
@@ -854,7 +792,7 @@ export class RoomRosterService {
     const room = await rooms.getRoomById(identity.spaceId, invitation.room_id, true);
     if (!room || room.status !== "active") throw new HttpError(404, "Room invitation not found");
     if (Number(room.roster_revision) !== Number(invitation.required_roster_revision)) {
-      throw new HttpError(409, "The Room roster changed; recreate the invitation", {
+      throw new RoomMutationError(409, "The Room roster changed; recreate the invitation", {
         code: "invitation_snapshot_stale",
         invitation_id: invitation.id,
         detail: "The invitation's private-Agent approvals were based on an older Room roster.",
@@ -879,7 +817,7 @@ export class RoomRosterService {
       || approvals.some((approval) => approval.status !== "approved")
       || approvals.some((approval) => currentOwners.get(approval.agent_id) !== approval.owner_user_id)
     ) {
-      throw new HttpError(409, "The private-Agent approval snapshot is stale", {
+      throw new RoomMutationError(409, "The private-Agent approval snapshot is stale", {
         code: "invitation_snapshot_stale",
         invitation_id: invitation.id,
         detail: "The active private specialist roster changed while this invitation was pending.",
@@ -916,7 +854,7 @@ export class RoomRosterService {
   }
 
   private async invitationResponse(
-    client: PoolClient,
+    client: Queryable,
     identity: RoomIdentity,
     invitation: RoomInvitationRecord,
   ) {
@@ -954,7 +892,7 @@ export class RoomRosterService {
     if (!(error instanceof HttpError) || !isInvitationSnapshotStale(error.responseBody)) return;
     const invitationId = error.responseBody.invitation_id;
     try {
-      await withDbTransaction(this.pool, async (client) => {
+      await withQueryableTransaction(this.pool, async (client) => {
         const roster = new PgRoomRosterRepository(client);
         // The same order as every other invitation mutation — Room, then
         // invitation, then its approvals — so a concurrent decision or
@@ -984,9 +922,9 @@ export class RoomRosterService {
   private async withRoomWriter<T>(
     identity: RoomIdentity,
     roomId: string,
-    work: (client: PoolClient, room: RoomRecord) => Promise<T>,
+    work: (client: Queryable, room: RoomRecord) => Promise<T>,
   ): Promise<T> {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const room = await new PgRoomRepository(client).getVisibleRoom(identity.spaceId, identity.userId, roomId, true);
       if (!room) throw new HttpError(404, "Room not found in this space");
       try {
@@ -1015,7 +953,7 @@ export class RoomRosterService {
     return room;
   }
 
-  private async currentOwner(client: PoolClient, roomId: string): Promise<string | null> {
+  private async currentOwner(client: Queryable, roomId: string): Promise<string | null> {
     const result = await client.query<{ user_id: string }>(
       `SELECT user_id FROM room_user_members
         WHERE room_id = $1 AND role = 'owner' AND status = 'active'
@@ -1025,7 +963,7 @@ export class RoomRosterService {
     return result.rows[0]?.user_id ?? null;
   }
 
-  private async presetRuntimeProfiles(client: PoolClient, spaceId: string, roomId: string): Promise<PresetRuntimeProfile[]> {
+  private async presetRuntimeProfiles(client: Queryable, spaceId: string, roomId: string): Promise<PresetRuntimeProfile[]> {
     const result = await client.query<PresetRuntimeProfile>(
       `SELECT profile.name, profile.runtime_key, profile.backend_mode, profile.model_provider_id,
               profile.model_name, profile.execution_host_id, profile.workspace_location_id,
@@ -1056,7 +994,7 @@ export class RoomRosterService {
    * `undefined` and treats it as `false`, hiding every control.
    */
   private async roomDetail(
-    client: PoolClient,
+    client: Queryable,
     identity: RoomIdentity,
     roomId: string,
   ): Promise<RoomDetail> {
@@ -1073,7 +1011,9 @@ export class RoomRosterService {
   }
 }
 
-interface ManagedConversationRestoreTarget {
+export interface ManagedConversationRestoreTarget {
+  /** The exact closed thread whose archived state this restores; re-checked before the Host call. */
+  threadId: string;
   hostId: string;
   agentId: string;
   conversationId: string;
@@ -1097,15 +1037,29 @@ interface ManagedConversationRestoreTarget {
  * others stay archives only the Agent's profile. Requiring a workspace
  * archive would make every one of those unrestorable, then swept after 30 days.
  */
+/** Host restore of a re-added Agent's archived conversation state; only the restore Job calls it, outside any transaction. */
+/** Post-commit Host archive of closed conversation threads; unsettled intents stay for reconnect and recovery, which repeat the same operation. */
+export async function archiveManagedConversationWorkspaces(pool: Queryable, targets: readonly { threadId: string; hostId: string; agentId: string; conversationId: string }[]) {
+  const archived = [];
+  for (const target of targets) {
+    // The intent's own cwd scope, fixed when it committed, goes with every send of it.
+    const response = await sendPendingManagedWorkspaceArchive(pool, target.threadId, {
+      hostId: target.hostId, agentId: target.agentId, containerKind: "conversation", containerId: target.conversationId,
+    }).catch((error: unknown) => ({ ok: false, changed: false, settled: false, error: error instanceof Error ? error.message : String(error) }));
+    archived.push({ agent_id: target.agentId, ...response });
+  }
+  return archived;
+}
+
 export async function findManagedWorkspaceRestoreTarget(
-  client: PoolClient,
+  client: Queryable,
   spaceId: string,
   agentId: string,
   roomId: string,
   userId: string,
 ): Promise<ManagedConversationRestoreTarget | null> {
   const profile = await client.query<ManagedConversationRestoreTarget>(
-    `SELECT thread.execution_host_id AS "hostId", thread.agent_id AS "agentId",
+    `SELECT thread.id AS "threadId", thread.execution_host_id AS "hostId", thread.agent_id AS "agentId",
             thread.session_id AS "conversationId",
             (thread.workspace_mode = 'managed' AND EXISTS (
               SELECT 1
@@ -1129,6 +1083,7 @@ export async function findManagedWorkspaceRestoreTarget(
   const selected = profile.rows[0];
   return selected
     ? {
+      threadId: selected.threadId,
       hostId: selected.hostId,
       agentId: selected.agentId,
       conversationId: selected.conversationId,
@@ -1145,16 +1100,9 @@ function sameIds(left: readonly string[], right: readonly string[]): boolean {
   return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
 }
 
-function normalizeIdempotencyKey(value: string | null | undefined): string | null {
-  if (value === null || value === undefined) return null;
-  const normalized = value.trim();
-  if (!normalized) return null;
-  if (normalized.length > 128) throw new HttpError(422, "Idempotency-Key must be at most 128 characters");
-  return normalized;
-}
 
 function managedRoomAgentImmutable(): HttpError {
-  return new HttpError(409, "The managed Room Assistant cannot be removed or replaced", {
+  return new RoomMutationError(409, "The managed Room Assistant cannot be removed or replaced", {
     code: "managed_room_agent_immutable",
     detail: "The managed Space Assistant is the permanent Room manager.",
   });
@@ -1166,7 +1114,47 @@ function isInvitationSnapshotStale(value: unknown): value is { code: "invitation
   return candidate.code === "invitation_snapshot_stale" && typeof candidate.invitation_id === "string";
 }
 
-async function assertActiveSpaceUser(db: PoolClient, spaceId: string, userId: string): Promise<void> {
+/**
+ * The two Room commands a person may give without being on the Room's roster,
+ * exactly as their services decide them: a party to an invitation (inviter,
+ * invitee, or a private Agent's approval owner) who can still read the Project
+ * decides it; the Project owner or a Space owner/admin claims a Room whose
+ * owner lost authority. Re-read on every admission and replay, never cached.
+ */
+export async function hasRoomCommandStanding(
+  db: Queryable,
+  identity: RoomIdentity,
+  roomId: string,
+  command: { kind: "invitation_decide"; invitationId: string } | { kind: "owner_claim" },
+): Promise<boolean> {
+  const room = await new PgRoomRepository(db).getRoomById(identity.spaceId, roomId);
+  if (!room || room.status !== "active") return false;
+  const member = await db.query<{ role: string }>(
+    `SELECT role FROM space_memberships WHERE space_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+    [identity.spaceId, identity.userId],
+  );
+  if (!member.rows[0]) return false;
+  if (command.kind === "owner_claim") {
+    const project = await db.query<{ owner_user_id: string | null }>(
+      `SELECT owner_user_id FROM projects WHERE space_id = $1 AND id = $2 AND deleted_at IS NULL`,
+      [identity.spaceId, room.project_id],
+    );
+    return Boolean(project.rows[0]
+      && (project.rows[0].owner_user_id === identity.userId || isSpaceOwnerOrAdmin(member.rows[0].role)));
+  }
+  const party = await db.query(
+    `SELECT 1 FROM room_user_invitations invitation
+      WHERE invitation.space_id = $1 AND invitation.room_id = $2 AND invitation.id = $3
+        AND (invitation.invited_by_user_id = $4 OR invitation.invitee_user_id = $4
+          OR EXISTS (SELECT 1 FROM room_invitation_agent_approvals approval
+                      WHERE approval.space_id = invitation.space_id AND approval.invitation_id = invitation.id
+                        AND approval.owner_user_id = $4))`,
+    [identity.spaceId, roomId, command.invitationId, identity.userId],
+  );
+  return Boolean(party.rows[0]) && await canReadProject(db, identity.spaceId, room.project_id, identity.userId);
+}
+
+async function assertActiveSpaceUser(db: Queryable, spaceId: string, userId: string): Promise<void> {
   const result = await db.query(
     `SELECT 1 FROM space_memberships
       WHERE space_id = $1 AND user_id = $2 AND status = 'active'
@@ -1196,7 +1184,7 @@ interface PresetRuntimeProfile {
  * Agent's thread in the Room's most recently touched Conversation, locked.
  */
 export async function lockConversationAgentThread(
-  client: PoolClient,
+  client: Queryable,
   identity: RoomIdentity,
   roomId: string,
   agentId: string,

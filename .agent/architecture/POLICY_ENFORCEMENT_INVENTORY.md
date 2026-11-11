@@ -211,7 +211,7 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
   `current_enforcement_point="not_implemented"` is a human-readable marker.
   Actions: `context.use_personal_grant`, `artifact.export`, `proposal.approve`,
   `memory.read_private`, `memory.promote_shared`, `tool_binding.enable`,
-  `evidence.export`, `note.link.create`, `deployment.propose`, `deployment.execute`.
+  `evidence.export`, `deployment.propose`, `deployment.execute`.
 
 **record_failure_mode** (`PolicyRecordFailureModeEnum` in `packages/protocol/src/policy.ts`): Each action definition carries a typed `record_failure_mode` field:
 - `best_effort` (default) — if `PolicyDecisionRecord` persistence fails, log a warning and continue.
@@ -519,19 +519,21 @@ permission to publish, skip verification, or choose a different target ref.
 `workspace.retention.update` is a user-only Project-scoped policy action with the
 same origin-visibility, Host-owner and Project-writer checks; it cannot release
 unmerged work.
+`workspace.change.list` (low risk, Agent and person) reads with Project read and
+the overview's Host/Run-body visibility, other conversations as metadata only.
+`workspace.branch.align` (high risk, person-only, ungranted to Agents) requires
+Project write and personal Host ownership, rechecked by its Job; it never pushes.
 
 Human Note history/trash core commands now enforce note.edit (wired_direct,
 low risk, audited fail_closed). This instruments the pre-existing canonical
 manual write capability; registration is user-only and ungrantable. It does
-not relax the reserved/default-deny note.link.create entry or authorize Note
-promotion, Memory, Agent mutation or purge. The protocol registry fixture adds
+not authorize Note promotion, Memory, Agent mutation or purge. The protocol registry fixture adds
 only this policy, reaching 126 entries together with the three dedicated workspace policies.
 
 P5-5 basis4cf62800: note.edit also covers the ordinary human Note draft/edit,
 collection/placement/reorder commands through noteObjectOperations. Default
 allow, mandatory failclosed audit and human-only scope are unchanged. Existing
-NoteWriter/Project/read gates remain authoritative. note.link.create stays
-reserved/default-deny; existing link/jot behavior is not changed by this batch.
+NoteWriter/Project/read gates remain authoritative. Human Note linking has its own allow policy and canonical access gates.
 No production approval mapping or new Agent permission is enabled.
 
 P5-5 passage/evidence migration on1d156dfd adds transactional core enforcement at
@@ -552,7 +554,7 @@ ordinary Candidate/review commands. The decision field distinguishes promote
 Knowledge proposal. Existing canonical ProposalApplyService and accepted domain
 appliers retain their roles/provenance checks. Full citation reads record B11
 endpoint audits; mandatory storage failure withholds quotes. No policy default,
-Note-link decision or approval mapping is changed.
+approval mapping is changed.
 
 Candidate extraction core enforcement: knowledgePromotion/extractionOperation.ts
 uses existing inquiry.knowledge.promote with mandatory transactional audit for the
@@ -570,6 +572,32 @@ transactional audit and current Project/content checks in workspaceOperations.ts
 It covers the fourteen user-only workspace entries (including intake drafts,
 stage records, initial-limit, assessment confirmation and standing retry/dismiss), not other Research pipeline or
 Agent calls. No production approval mapping or Agent permission is added.
+
+Project package closure: `research.workspace.update` additionally covers the
+human Research controls in controlOperations.ts (checkpoint, operation repair,
+standing advice action, integrity, refine admission and Corpus rebuild). Commands
+that kept a legacy Source gate reuse it as their single core decision:
+`source.connection.manage` (intake start, incremental trigger, question resolve,
+monitoring/Project Source setup), `source.backfill.plan` (history extension),
+`source.backfill.manage` (item limit/rescan), `project.source.bind` (binding
+proposal), `project.monitoring.configure` (monitoring proposal/reconcile/run and
+private feedback), `research.result.adopt` and `research.acquisition.start`
+(human adoption/start). Built-in rules are not action-configurable, so for a
+person this matches the former multi-gate outcome. New human-only actions
+`project.summary.feedback` and `project.summary.brief.request` (low risk, allow,
+fail-closed audit) cover private summary feedback and the queued Context Brief.
+None is grantable to Agents and no approval mapping is enabled.
+
+Agent/Room block: human-only actions `agent.definition.manage`, `agent.run.start`,
+`agent.conversation.write`, `room.roster.manage`, `room.conversation.write`,
+`agent_group.manage`, `run.control` and `session.write` (fail-closed audit, allow)
+are the single core decision for their families; `session.reflect` records under
+`proposal.create`. The old routes made no policy call, so this adds one audited
+decision without changing who may act (the owning standing checks remain). The
+Agent tools `research.start_acquisition` / `research.adopt_result` keep
+`research.acquisition.start` / `research.result.adopt` as their one core
+decision (unattended origins stay fail-closed: no approval mapping). None is
+grantable to Agents.
 
 The Project parallel migration adds human-only `inquiry.workspace.update`,
 `experiment.command`, `project.folder.command` and `project.management.write`
@@ -612,3 +640,9 @@ core transaction. Unknown effects and independent file changes cannot be
 retried as a fresh same-scope write. Ask AI and Notebook similarly commit private
 Run/Job admission and recheck frozen Source/Note audience before dispatch and
 publication. None of these changes enables a production approval mapping.
+
+Human Note navigation policy (2026-11-10): `note.link.create` is wired_direct,
+low-risk/default allow, with mandatory fail-closed audit at
+`knowledge/noteLinkPolicy.ts` for human link/unlink/jot HTTP entries. Canonical
+repository Note/Project write and endpoint read checks remain in force. No
+Agent tool, canonical graph authority or core migration completion is implied.

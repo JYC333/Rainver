@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ProjectPublicSummaryGenerator } from "../src/modules/projects/publicSummaryGenerator.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
-import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
 import type { QueryResult, Queryable, SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -217,6 +216,10 @@ class ProjectSummaryFakeDb implements Queryable {
         },
       ] as Row[]);
     }
+    if (norm.startsWith("SELECT r.id FROM runs r WHERE r.id = $1")) {
+      // Server-authored draft provenance: the worker's own queued Run.
+      return result(params[0] === "run-1" ? [{ id: "run-1" }] : []) as QueryResult<Row>;
+    }
     if (norm.includes("FROM activity_records")) {
       return result([
         {
@@ -373,40 +376,23 @@ describe("Project public summaries", () => {
 
   it("generates a draft summary without exposing sensitive memory content or hallucinated source refs", async () => {
     const db = new ProjectSummaryFakeDb();
-    const fakeStore = {
-      getTaskChain: async () => null,
-    } as unknown as ProviderCommandStore;
-    let observedPrompt = "";
-    const generator = new ProjectPublicSummaryGenerator(db, fakeStore, async (_spaceId, input) => {
-      observedPrompt = `${input.system}\n${input.user}`;
-      return {
-        text: JSON.stringify({
-          summary_text: "Aster explores safe, high-level project discovery across project boundaries.",
-          topics: ["project discovery", "public summary"],
-          highlights: ["Uses a redacted summary layer instead of exposing project memory."],
-          source_refs: [
-            {
-              source_type: "memory",
-              source_id: "memory-1",
-              label: "Retrieval substrate",
-              trust_level: "derived",
-              content: "must be dropped",
-            },
-            {
-              source_type: "memory",
-              source_id: "missing-memory",
-              label: "Hallucinated",
-            },
-          ],
-        }),
-        model: "test-model",
-        usage: { input_tokens: 100, output_tokens: 50 },
-      };
-    });
-
-    const out = await generator.generateDraft(ownerIdentity, PROJECT, {
+    const generator = new ProjectPublicSummaryGenerator(db);
+    const prepared = await generator.prepareDraft(ownerIdentity, PROJECT, { providerId: "provider-1" });
+    const observedPrompt = `${prepared.prompt.system}\n${prepared.prompt.user}`;
+    // The worker supplies the provider text; only admission-frozen references survive.
+    const out = await generator.applyDraft(ownerIdentity, PROJECT, {
       providerId: "provider-1",
-    });
+      model: "test-model",
+      text: JSON.stringify({
+        summary_text: "Aster explores safe, high-level project discovery across project boundaries.",
+        topics: ["project discovery", "public summary"],
+        highlights: ["Uses a redacted summary layer instead of exposing project memory."],
+        source_refs: [
+          { source_type: "memory", source_id: "memory-1", label: "Retrieval substrate", trust_level: "derived", content: "must be dropped" },
+          { source_type: "memory", source_id: "missing-memory", label: "Hallucinated" },
+        ],
+      }),
+    }, prepared, "run-1");
 
     expect(observedPrompt).toContain("memory:memory-1");
     expect(observedPrompt).not.toContain("SECRET_CUSTOMER_ACCOUNT");
@@ -422,10 +408,7 @@ describe("Project public summaries", () => {
           trust_level: "derived",
         },
       ],
-      generator: {
-        prompt_version: "project_public_summary.prompt.v1",
-        model: "test-model",
-      },
+      generated_by_run_id: "run-1",
     });
     expect(JSON.stringify(out)).not.toContain("must be dropped");
     expect(JSON.stringify(out)).not.toContain("missing-memory");

@@ -221,7 +221,7 @@ describe("Runtime Context invocation entrypoint inventory", () => {
   it("routes every managed conversation producer to the Runtime Context Gateway", () => {
     expect(MANAGED_CONVERSATION_ENTRYPOINT_INVENTORY).toEqual([
       expect.objectContaining({
-        source: "agents/routes.ts",
+        source: "agents/chatOperations.ts",
         executionMode: "conversation_lightweight.v1",
         targetBoundary: "runtime_context_gateway",
       }),
@@ -323,18 +323,19 @@ describe("Runtime Context invocation entrypoint inventory", () => {
   });
 
   it("classifies mixed Provider route callsites independently", () => {
+    // The connection test runs in the system command worker (`provider.test`), not in a route.
     const routes = RUNTIME_INVOCATION_INVENTORY.filter(
-      (item) => item.source === "providers/commands/routes.ts",
+      (item) => item.source === "providers/connectionTest.ts",
     );
     expect(routes).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        entrypoint: "providers/commands/routes.ts#completeProviderChat:1",
+        entrypoint: "providers/connectionTest.ts#completeProviderChat:1",
         classification: "bounded_provider_task",
         targetBoundary: "provider_task",
       }),
     ]));
     const source = readFileSync(join(modulesRoot, "providers", "commands", "routes.ts"), "utf8");
-    expect(source).toContain('app.post("/api/v1/providers/:configId/test"');
+    expect(source).toContain('url: "/api/v1/providers/:configId/test", operation: "provider.test"');
     expect(source).not.toContain('app.post("/api/v1/providers/chat"');
     expect(source).not.toContain("/internal/providers-credentials/providers/complete-text");
   });

@@ -1,5 +1,8 @@
+import { conversationModelSwitchAllowed } from "../sessions/conversationQuotaPolicy.js";
+import { RoomMutationError } from "./roomMutationError.js";
+import { applyQuotaModelSwitch, quotaModelAlternative } from "./quotaModelSwitch.js";
 import { QuotaRecoverySchema, type QuotaRecovery } from "@rainver/protocol";
-import { HttpError, objectValue, type Queryable } from "../routeUtils/common.js";
+import { objectValue, type Queryable } from "../routeUtils/common.js";
 import { canWriteProject } from "../projects/access.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import type { RunRecord } from "../runs/repository.js";
@@ -35,15 +38,22 @@ export async function prepareQuotaRecovery(db: Queryable, run: RunRecord, nextAt
   const reset = validQuotaResetAt(failure.resets_at, now)
     ?? runtimeQuotaResetAt(run.runtime_key, run.error_message ?? null, now)
     ?? (reading.window?.resets_at && Date.parse(reading.window.resets_at) > now.getTime() ? reading.window.resets_at : null);
-  const auto = Boolean(await recoveryTaskId(db, run));
+  const alternative = await quotaModelAlternative(db, run);
+  const settingsConsent = Boolean(run.session_id && run.agent_id && await conversationModelSwitchAllowed(db,
+    run.space_id, run.session_id, run.agent_id, user, run.runtime_profile_id ?? null, run.runtime_key ?? null));
+  const switchedModel = settingsConsent && alternative ? await applyQuotaModelSwitch(db, run, alternative) : null;
+  const auto = Boolean(settingsConsent || await recoveryTaskId(db, run));
   return {
     window: reading.window?.kind ?? "session", resets_at: reset, utilization: 100,
     account_label: accountLabel(login), login, held_at: now.toISOString(),
     job: { user_id: user, agent_id: run.agent_id, project_folder_id: run.project_folder_id,
       payload: { run_id: run.id, supervisor_attempt: nextAttempt } },
     recovery: {
+      can_switch_model: !switchedModel && Boolean(alternative),
+      ...(settingsConsent ? { settings_model_switch: true } : {}),
+      ...(switchedModel ? { switched_model: switchedModel } : {}),
       auto_continue: auto, refused_at: now.toISOString(), intent_at: now.toISOString(),
-      next_check_at: reset ?? new Date(now.getTime() + RECHECK_MS).toISOString(),
+      next_check_at: switchedModel ? now.toISOString() : reset ?? new Date(now.getTime() + RECHECK_MS).toISOString(),
       expires_at: new Date(now.getTime() + MAX_WAIT_MS).toISOString(),
       pause_reason: auto ? null : "user",
     },
@@ -54,6 +64,7 @@ export async function prepareQuotaRecovery(db: Queryable, run: RunRecord, nextAt
 export function quotaRecoveryReady(marker: WaitingForQuota, reading: QuotaReading, now: Date, reservePct = 100): boolean {
   const recovery = marker.recovery;
   if (!recovery?.auto_continue || Date.parse(recovery.next_check_at) > now.getTime()) return false;
+  if (recovery.switched_model) return !reading.window || reading.refusal === true || reading.window.utilization < reservePct;
   const fresh = reading.checked_at !== null && Date.parse(reading.checked_at) > Date.parse(recovery.refused_at);
   if (fresh && reading.window) {
     if (reading.window.utilization < reservePct) return true;
@@ -92,6 +103,8 @@ export async function quotaRecoveryPauseReason(db: Queryable, run: RunRecord, re
   if (Date.parse(recovery.expires_at) <= now.getTime()) return "expired";
   const user = run.instructed_by_user_id ?? run.owner_user_id;
   if (!user) return "authority_changed";
+  if (recovery.settings_model_switch && (!run.session_id || !run.agent_id || !await conversationModelSwitchAllowed(
+    db, run.space_id, run.session_id, run.agent_id, user, run.runtime_profile_id ?? null, run.runtime_key ?? null))) return "user";
   const membership = await db.query(
     `SELECT 1 FROM space_memberships WHERE space_id = $1 AND user_id = $2 AND status = 'active'`, [run.space_id, user],
   );
@@ -127,21 +140,30 @@ export async function quotaRecoveryPauseReason(db: Queryable, run: RunRecord, re
 }
 
 /** Must run in the command's transaction; the row lock serializes with scheduler admission. */
-export async function updateQuotaRecovery(db: Queryable, spaceId: string, runId: string, automatic: boolean, now = new Date()): Promise<QuotaRecovery> {
+export async function updateQuotaRecovery(db: Queryable, spaceId: string, runId: string, automatic: boolean, now = new Date(), switchModel = false): Promise<QuotaRecovery> {
   const row = (await db.query<{ status: string; marker: WaitingForQuota | null }>(
     `SELECT status, output_json->'waiting_for_quota' AS marker FROM runs WHERE space_id = $1 AND id = $2 FOR UPDATE`, [spaceId, runId],
   )).rows[0];
   const parsed = QuotaRecoverySchema.safeParse(row?.marker?.recovery);
   if (row?.status !== "queued" || !row.marker || !parsed.success) {
-    throw new HttpError(409, "The Run is no longer waiting for quota recovery. Refresh its status; stop it if it has already resumed.");
+    throw new RoomMutationError(409, "The Run is no longer waiting for quota recovery. Refresh its status; stop it if it has already resumed.");
+  }
+  let switchedModel: string | undefined;
+  if (switchModel) {
+    if (!automatic) throw new RoomMutationError(422, "Model switching requires continuation consent");
+    const run = (await db.query<RunRecord>(`SELECT * FROM runs WHERE space_id = $1 AND id = $2`, [spaceId, runId])).rows[0]!;
+    // Revalidate the current catalog rather than trusting a stale UI flag.
+    const alternative = await quotaModelAlternative(db, run);
+    if (!alternative) throw new RoomMutationError(409, "No alternative model is currently available on this CLI");
+    switchedModel = await applyQuotaModelSwitch(db, run, alternative);
   }
   const recovery: QuotaRecovery = {
-    ...parsed.data, auto_continue: automatic, pause_reason: automatic ? null : "user",
+    ...parsed.data, ...(automatic && parsed.data.settings_model_switch ? { settings_model_switch: false } : {}), ...(switchedModel ? { switched_model: switchedModel, can_switch_model: false } : {}), auto_continue: automatic, pause_reason: automatic ? null : "user",
     ...(automatic ? { intent_at: now.toISOString(), expires_at: new Date(now.getTime() + MAX_WAIT_MS).toISOString() } : {}),
   };
   // A known reset remains the earliest scheduled retry. Unknown resets are
   // checked for fresh account telemetry, without inventing a physical retry.
-  if (automatic) recovery.next_check_at = row.marker.resets_at && Date.parse(row.marker.resets_at) > now.getTime()
+  if (automatic) recovery.next_check_at = !recovery.switched_model && row.marker.resets_at && Date.parse(row.marker.resets_at) > now.getTime()
     ? row.marker.resets_at : now.toISOString();
   await db.query(
     `UPDATE runs SET output_json = jsonb_set(output_json, '{waiting_for_quota,recovery}', $3::jsonb), updated_at = now()

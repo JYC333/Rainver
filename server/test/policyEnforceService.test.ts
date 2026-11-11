@@ -126,3 +126,14 @@ describe("policy proposal-apply service result mapping", () => {
     expect(res.error_code).toBe("policy_audit_persist_failed");
   });
 });
+
+
+describe("human Note navigation audit failure", () => {
+  it("withholds the write when required audit storage is unavailable", async () => {
+    const result = await enforce(config, registry, req("note.link.create", {
+      actor_type: "user", actor_id: "user", space_id: "space",
+    }));
+    expect(result.status).toBe("error");
+    expect(result.error_code).toBe("policy_audit_persist_failed");
+  });
+});

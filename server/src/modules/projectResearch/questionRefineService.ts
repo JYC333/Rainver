@@ -5,10 +5,15 @@ import { HttpError, objectValue, optionalString, requiredString, withQueryableTr
 import { assertProjectWriter } from "../projects/access.js";
 import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
 import { resolvePrompt } from "../prompts/resolver.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+
+/** One admitted refinement turn; the payload names only the pending message. */
+export const QUESTION_REFINE_JOB_TYPE = "research_question_refine";
 import { resolveProviderCommandStore } from "../providers/commands/store.js";
 import { completeProviderMessages } from "../providers/invocation/invocation.js";
 import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
-import { ProjectResearchExecutionProfileService, type ResearchExecutionSelection } from "./executionProfileService.js";
+import { ProjectResearchExecutionProfileService } from "./executionProfileService.js";
+import { assertThreadReadable } from "../inquiry/threadAccess.js";
 import {ResearchWorkspaceMutationError} from './workspaceErrors.js';
 import {ContentAccessAuditService} from '../contentAccess/audit.js';
 import {
@@ -24,7 +29,9 @@ import type { ResearchContextVersion } from "./question/contracts.js";
 import { ResearchContextRepository } from "./question/researchContextRepository.js";
 import {
   ProjectResearchQuestionAssessmentRepository,
+  questionRefineLeaseHeld,
   type BegunQuestionAssessmentTurn,
+  type QuestionRefineJobLease,
   type QuestionAssessmentConversation,
 } from "./questionAssessmentRepository.js";
 
@@ -207,32 +214,80 @@ export class ProjectResearchQuestionRefineService {
     });
   }
 
-  async refine(
-    identity: SpaceUserIdentity,
-    projectId: string,
-    body: Record<string, unknown>,
-    /** The person refining the Question, or the pipeline job their request queued. */
-    spend: CredentialSpendBasis,
-  ): Promise<QuestionRefinementResult & { assessment_session: QuestionAssessmentConversation }> {
+  /**
+   * Durable admission of one refinement turn: the user's message is recorded
+   * as a pending turn with its frozen request, and a Job performs the model
+   * calls. Nothing here contacts a provider.
+   */
+  async admitRefine(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>): Promise<{ sessionId: string; messageId: string; jobId: string }> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const threadId = requiredString(body.thread_id, "thread_id");
     const message = requiredString(body.message, "message");
-    const establishAssessmentBaseline = body.establish_assessment_baseline === true;
-    if (message.length > 20_000) throw new HttpError(422, "message is too long");
+    if (message.length > 20_000) throw new ResearchWorkspaceMutationError(422, "message is too long");
     const question = optionalString(body.research_question);
-    if (!question) throw new HttpError(422, "research_question is required");
+    if (!question) throw new ResearchWorkspaceMutationError(422, "research_question is required");
     const executionBody = objectValue(body.execution);
-    const selection: ResearchExecutionSelection = {
-      modelProviderId: optionalString(executionBody.model_provider_id),
-      modelName: optionalString(executionBody.model_name),
-    };
     // Question refinement is an incidental bounded call: it selects no Agent,
     // no AgentVersion and no Runtime Profile (ADR 0022 §2/§3), so it resolves
-    // a provider only. Manufacturing the managed Agent here bought nothing —
-    // its id was passed to `resolvePrompt` for an `agent`-scoped prompt
-    // attempt nothing writes for `project_research.question_refine`.
+    // a provider only, frozen with the turn so a later default cannot change it.
     const execution = await new ProjectResearchExecutionProfileService(this.db, this.config)
-      .resolveProvider(identity, selection);
+      .resolveProvider(identity, { modelProviderId: optionalString(executionBody.model_provider_id), modelName: optionalString(executionBody.model_name) });
+    const turn = await new ProjectResearchQuestionAssessmentRepository(this.db).beginTurn(identity, projectId, threadId, message);
+    await this.db.query(
+      `UPDATE project_research_question_assessment_messages
+          SET structured_output_json=COALESCE(structured_output_json,'{}'::jsonb)||jsonb_build_object('refine_request',$4::jsonb)
+        WHERE id=$1 AND session_id=$2 AND space_id=$3 AND role='user' AND status='pending'`,
+      [turn.messageId, turn.sessionId, identity.spaceId, JSON.stringify({ project_id: projectId, thread_id: threadId, research_question: question, model_provider_id: execution.modelProviderId, model_name: execution.modelName, establish_assessment_baseline: body.establish_assessment_baseline === true })],
+    );
+    const job = await new PgJobQueueRepository(this.db).enqueue({
+      job_type: QUESTION_REFINE_JOB_TYPE, space_id: identity.spaceId, user_id: identity.userId,
+      payload: { message_id: turn.messageId, project_id: projectId }, max_attempts: 1,
+    });
+    return { sessionId: turn.sessionId, messageId: turn.messageId, jobId: job.id };
+  }
+
+  /** Worker half: resumes exactly one pending admitted turn; a settled turn is never re-run. */
+  async performRefine(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    messageId: string,
+    spend: CredentialSpendBasis,
+    lease: Omit<QuestionRefineJobLease, "jobType">,
+  ): Promise<{ status: "complete" | "skipped" }> {
+    const jobLease: QuestionRefineJobLease = { ...lease, jobType: QUESTION_REFINE_JOB_TYPE };
+    const conversations = new ProjectResearchQuestionAssessmentRepository(this.db);
+    const pending = (await this.db.query<{ session_id: string; turn_index: number; content: string; request: Record<string, unknown> | null; thread_id: string }>(
+      `SELECT m.session_id,m.turn_index,m.content,m.structured_output_json->'refine_request' AS request,s.thread_id
+         FROM project_research_question_assessment_messages m
+         JOIN project_research_question_assessment_sessions s ON s.id=m.session_id AND s.space_id=m.space_id
+        WHERE m.id=$1 AND m.space_id=$2 AND s.project_id=$3 AND m.role='user' AND m.status='pending' AND m.created_by_user_id=$4`,
+      [messageId, identity.spaceId, projectId, identity.userId],
+    )).rows[0];
+    if (!pending?.request) return { status: "skipped" };
+    // A call whose Job was already cancelled or reclaimed spends nothing; the
+    // locked recheck at completion closes the race with a later cancel.
+    if (!(await questionRefineLeaseHeld(this.db, identity.spaceId, messageId, jobLease, false))) return { status: "skipped" };
+    const history = (await this.db.query<{ role: string; content: string; structured_output_json: unknown }>(
+      `SELECT role,content,structured_output_json FROM project_research_question_assessment_messages
+        WHERE session_id=$1 AND space_id=$2 AND status='complete' AND turn_index < $3
+        ORDER BY turn_index, CASE role WHEN 'user' THEN 0 ELSE 1 END`,
+      [pending.session_id, identity.spaceId, pending.turn_index],
+    )).rows.map(row => ({ role: row.role, content: row.role === "assistant" && row.structured_output_json ? JSON.stringify(row.structured_output_json) : row.content }));
+    const turn = { sessionId: pending.session_id, messageId, turnIndex: pending.turn_index, history } as BegunQuestionAssessmentTurn;
+    const request = pending.request;
+    const message = pending.content;
+    const question = String(request.research_question);
+    const establishAssessmentBaseline = request.establish_assessment_baseline === true;
+    const execution = { modelProviderId: String(request.model_provider_id), modelName: optionalString(request.model_name) ?? null };
+    try {
+      // Current authority when the provider is spent; a refused turn is failed, not left pending.
+      await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
+      await assertThreadReadable(this.db, identity, projectId, pending.thread_id, "change");
+      await assertThreadReadable(this.db, identity, projectId, pending.thread_id, "read_content");
+    } catch (error) {
+      await conversations.failTurn(identity, turn).catch(() => {});
+      throw error;
+    }
     const project = await this.db.query<{ name: string; description: string | null; goal: string | null }>(
       `SELECT p.name, p.description, bv.goal
          FROM projects p
@@ -253,10 +308,7 @@ export class ProjectResearchQuestionRefineService {
       [identity.spaceId, projectId, identity.userId],
     );
     const corpusSummary = `${Number(corpus.rows[0]?.count ?? 0)} active items; examples: ${(corpus.rows[0]?.titles ?? []).slice(0, 8).join(" | ") || "none"}`;
-    const conversations = new ProjectResearchQuestionAssessmentRepository(this.db);
-    let turn: BegunQuestionAssessmentTurn | null = null;
     try {
-      turn = await conversations.beginTurn(identity, projectId, threadId, message);
       const resolved = await resolvePrompt(this.db, {
         spaceId: identity.spaceId,
         userId: identity.userId,
@@ -417,18 +469,38 @@ export class ProjectResearchQuestionRefineService {
           turn!,
           completed,
           establishAssessmentBaseline,
+          jobLease,
         );
         return completed;
       });
-      return {
-        ...result,
-        assessment_session: await conversations.conversationById(identity.spaceId, turn.sessionId),
-      };
+      void result;
+      return { status: "complete" };
     } catch (error) {
-      if (turn) await conversations.failTurn(identity, turn).catch(() => {});
+      await conversations.failTurn(identity, turn).catch(() => {});
       throw error;
     }
   }
+}
+
+/**
+ * Settles admitted turns whose Job ended without settling them: cancelled
+ * before a worker ran it, or failed by stuck-job reclaim after its process
+ * died with the single attempt spent. A turn whose handler threw was already
+ * failed by `performRefine`. Idempotent and terminal-only: it never re-enqueues,
+ * so no provider is consumed again, and a turn with any live Job is left alone.
+ */
+export async function settleAbandonedQuestionRefineTurns(db: Queryable): Promise<number> {
+  const settled = await db.query(
+    `UPDATE project_research_question_assessment_messages m
+        SET status='failed'
+      WHERE m.role='user' AND m.status='pending'
+        AND EXISTS (SELECT 1 FROM jobs j WHERE j.job_type=$1 AND j.space_id=m.space_id
+              AND j.payload_json->>'message_id'=m.id AND j.status IN ('cancelled','failed','completed'))
+        AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.job_type=$1 AND j.space_id=m.space_id
+              AND j.payload_json->>'message_id'=m.id AND j.status NOT IN ('cancelled','failed','completed'))`,
+    [QUESTION_REFINE_JOB_TYPE],
+  );
+  return settled.rowCount ?? 0;
 }
 
 function confirmationFromContextVersion(

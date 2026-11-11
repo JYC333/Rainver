@@ -3,7 +3,6 @@ import {assertThreadReadable} from '../src/modules/inquiry/threadAccess.js';
 import {randomUUID} from 'node:crypto';
 import {beforeEach,afterAll,describe,it,expect} from 'vitest';
 import type {FastifyInstance} from 'fastify';
-import type {SystemActionId} from '@rainver/protocol';
 import {ResearchOperationMetadataSchema} from '@rainver/protocol';
 import {useTestDatabase} from './support/testDatabase.js';
 import {resetTables} from './support/resetTables.js';
@@ -13,15 +12,17 @@ import {InquiryThreadService} from '../src/modules/inquiry/threadService.js';
 import {ResearchAcquisitionService} from '../src/modules/projectResearch/pipeline/researchAcquisitionService.js';
 import {reconcileResearchCall} from '../src/modules/projectResearch/researchProblemCalls.js';
 import {ResearchProblemResultService} from '../src/modules/projectResearch/researchProblemResults.js';
+import {InquiryProblemEngineService} from '../src/modules/inquiry/problemEngineService.js';
 import {ProjectOperationService} from '../src/modules/projects/projectOperationService.js';
 import {loadConfig} from '../src/config.js';
 import {projectsModule} from '../src/modules/projects/index.js';
 import {projectResearchModule} from '../src/modules/projectResearch/index.js';
 import {buildModuleServer} from './support/moduleServer.js';
 import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
-import {registerProjectResearchSystemActionExecutors} from '../src/modules/projectResearch/projectResearchSystemActionExecutors.js';
-import type {SystemActionExecutor,SystemActionDispatchContext} from '../src/modules/systemActions/gateway.js';
-import type {RunRecord} from '../src/modules/runs/repository.js';
+import {CliAgentToolTransport} from '../src/modules/runs/cliToolTransport.js';
+import type {AgentRunRecord} from '../src/modules/runs/repository.js';
+import {operationRuntime} from '../src/modules/systemActions/operations/runtime.js';
+import {runActor} from '../src/modules/systemActions/operations/actor.js';
 const db=useTestDatabase(import.meta.filename);
 let space:string,owner:string,project:string,thread:string,app:FastifyInstance|undefined;
 const identity=()=>({spaceId:space,userId:owner});
@@ -143,10 +144,43 @@ describe('Research metadata and invocation repair (real PostgreSQL)',()=>{
   expect((await start('next-run-a')).operation_id).toBe(first.operation_id);
   expect((await start('fresh-after-complete')).operation_id).not.toBe(first.operation_id);
  });
- it('requires canonical action-call identity instead of deriving it from the Thread',async()=>{
-  const map=new Map<SystemActionId,SystemActionExecutor>();registerProjectResearchSystemActionExecutors(map,config(),{id:randomUUID(),space_id:space,project_id:project,instructed_by_user_id:owner} as RunRecord);
-  await expect(map.get('research.start_acquisition')!({thread_id:thread},{} as SystemActionDispatchContext)).rejects.toMatchObject({statusCode:422});
+ it('runs Agent acquisition/adoption through the core with the call key, Run origin and replay',async()=>{
+  const runId=randomUUID(),agent=randomUUID();await seedRun(db.pool,{id:runId,space,owner,agent,version:randomUUID()});
+  const grant=(ids:string[])=>db.pool.query("UPDATE runs SET status='running',project_id=$2,instructed_by_user_id=$3,permission_snapshot_json=$4::jsonb WHERE id=$1",[runId,project,owner,JSON.stringify({tool_grants:ids.map(action_id=>({action_id}))})]);
+  await grant(['research.start_acquisition','research.adopt_result']);
+  const run=(await db.pool.query<AgentRunRecord>('SELECT * FROM runs WHERE id=$1',[runId])).rows[0]!;
+  const transport=new CliAgentToolTransport(config());
+  type Out={httpStatus:number;body:{ok:boolean;replayed:boolean;data:{id:string;operation_id:string|null;status:string;thread_id:string};error:{code:string}}};
+  const call=(name:string,args:Record<string,unknown>,key:string)=>transport.call(run,{id:key,name,arguments:args}) as Promise<Out>;
+  // The generic entry has no canonical call id: no domain request key is derived from the Thread.
+  const runtime=await operationRuntime(config());
+  const actor=await runActor(db.pool,run);
+  expect((await runtime.execute('research.start_acquisition',{thread_id:thread},actor,randomUUID())).body).toMatchObject({error:{code:'idempotency_key_required'}});
   expect((await db.pool.query(`SELECT count(*)::int AS n FROM project_operations WHERE project_id=$1`,[project])).rows[0].n).toBe(0);
+  const first=await call('research.start_acquisition',{thread_id:thread,max_items:20},'agent-call-1');
+  expect(first.httpStatus).toBe(202);expect(first.body).toMatchObject({ok:true,replayed:false,data:{thread_id:thread,status:'queued'}});
+  const operation=first.body.data.operation_id!;
+  expect((await db.pool.query(`SELECT research_call_json->>'origin_run_id' AS origin,created_by_user_id FROM project_operations WHERE id=$1`,[operation])).rows[0]).toMatchObject({created_by_user_id:owner});
+  const replay=await call('research.start_acquisition',{thread_id:thread,max_items:20},'agent-call-1');
+  expect(replay.body).toMatchObject({ok:true,replayed:true,data:{operation_id:operation}});
+  expect((await call('research.start_acquisition',{thread_id:thread,max_items:21},'agent-call-1')).body.error.code).toBe('idempotency_key_reused');
+  expect((await db.pool.query(`SELECT count(*)::int AS n FROM project_operations WHERE project_id=$1`,[project])).rows[0].n).toBe(1);
+  // Assessment needs a terminal call; then it records Verify work with Run provenance.
+  const problem=await new InquiryProblemEngineService(db.pool).projection(identity(),project,thread);
+  const assessment={applicability:'not_applicable',reason:'Off topic',counterevidence:'None',remaining_gaps:'All',idempotency_key:'assess-1',expected_version:problem.version,expected_revision:problem.revision};
+  const early=await call('research.adopt_result',{operation_id:operation,...assessment},'agent-assess-0');
+  expect(early.httpStatus).not.toBe(200);
+  await db.pool.query(`UPDATE project_operations SET status='completed' WHERE id=$1`,[operation]);
+  // A revoked grant is refused before any domain work.
+  await grant(['research.start_acquisition']);
+  const revoked=await call('research.adopt_result',{operation_id:operation,...assessment},'agent-assess-1');
+  expect(revoked.httpStatus).toBe(404);
+  await grant(['research.adopt_result']);
+  const adopted=await call('research.adopt_result',{operation_id:operation,...assessment},'agent-assess-1');
+  expect(adopted.httpStatus).toBe(200);expect(adopted.body).toMatchObject({ok:true,data:{thread_id:thread,operation_id:operation}});
+  expect((await call('research.adopt_result',{operation_id:operation,...assessment},'agent-assess-1')).body).toMatchObject({ok:true,replayed:true});
+  const steps=await db.pool.query(`SELECT origin,work_kind FROM inquiry_thread_steps WHERE thread_id=$1 AND work_kind='assess_result'`,[thread]);
+  expect(steps.rows).toHaveLength(1);
  });
  it('rejects cross-Space Step binding and protects a referenced Step from standalone deletion',async()=>{
   const first=await start('local');const otherSpace=randomUUID(),otherOwner=randomUUID(),otherProject=randomUUID();await seedSpaceOwnerProject(db.pool,{space:otherSpace,owner:otherOwner,project:otherProject});

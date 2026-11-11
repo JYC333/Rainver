@@ -589,8 +589,7 @@ describe('Rooms page', () => {
     toastError.mockRestore()
   })
 
-  it('says so when a re-added specialist\'s host state was not restored', async () => {
-    const toastError = vi.spyOn(toast, 'error')
+  it('asks the server to restore a re-added specialist\'s host state when the person chooses it', async () => {
     vi.mocked(roomsApi.agentCandidates).mockResolvedValue({
       agents: [{
         agent_id: 'agent-2', name: 'Critical Reviewer', agent_kind: 'standard', visibility: 'space_shared',
@@ -598,11 +597,7 @@ describe('Rooms page', () => {
       }],
       presets: [], total: 1, limit: 100, offset: 0,
     })
-    vi.mocked(roomsApi.addAgent).mockResolvedValue({
-      ...detailWithReviewer,
-      revoked_grant_count: 0,
-      managed_workspace_restore: { agent_id: 'agent-2', ok: false, changed: false, error: 'host_offline' },
-    })
+    vi.mocked(roomsApi.addAgent).mockResolvedValue({ ...detailWithReviewer, revoked_grant_count: 0 })
     renderRooms('/rooms?room=room-1&conversation=session-1')
 
     fireEvent.click(await screen.findByRole('button', { name: /Critical Reviewer/ }))
@@ -610,9 +605,8 @@ describe('Rooms page', () => {
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(screen.getByRole('button', { name: 'Add to Room' }))
 
-    await waitFor(() => expect(roomsApi.addAgent).toHaveBeenCalledWith('room-1', expect.objectContaining({ restore_workspace: true })))
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith(expect.stringContaining('previous host state was not restored')))
-    toastError.mockRestore()
+    // The outcome is the server's after commit (a conversation notice when nothing came back), not this response's.
+    await waitFor(() => expect(roomsApi.addAgent).toHaveBeenCalledWith('room-1', expect.objectContaining({ agent_id: 'agent-2', restore_workspace: true })))
   })
 
   it('shows host-bound specialist facts and lets the host owner reset context', async () => {
@@ -1999,9 +1993,10 @@ describe('Rooms page', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Model' }))
     fireEvent.click(screen.getByRole('option', { name: 'GPT-5.1' }))
     fireEvent.click(screen.getByRole('switch', { name: 'Fast mode' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /Automatically switch models when quota runs out/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(agentsApi.saveConversationSessionConfig).toHaveBeenCalledWith('agent-1', {
-      session_id: 'session-1', runtime_profile_id: 'runtime-cli', session_config: [
+      session_id: 'session-1', runtime_profile_id: 'runtime-cli', allow_quota_model_switch: true, session_config: [
         { id: 'model', type: 'select', value: 'gpt-5.1', category: 'model' },
         { id: 'fast', type: 'boolean', value: true, category: 'model_config' },
       ],

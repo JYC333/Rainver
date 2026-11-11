@@ -101,6 +101,27 @@ decision.
   and revoking stops future syncs without deleting anything.
 - Only the host's registered owner may import, change policy, or delete
   ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)'s hard rule).
+  These are core operations: `host.location.ambient.policy.set` / `.dismiss`,
+  `imported_session.visibility.set` / `.delete` commit in their transaction
+  (`importedSessions/operations.ts`); a person's import is the
+  `host.location.ambient.sync` Host command, which reads the Host only in its
+  Job and whose report is released by the command status read
+  (`.agent/modules/hosts.md` "Host commands"): an import that wrote sessions
+  and then failed is `needs_attention` with its real report, never "nothing
+  happened", and the browser shows what was written. A written session whose
+  replay stopped part way (`load_state: partial`) counts in the report's
+  `partial_sessions` (optional; absent in older reports, read as 0) and sets
+  its `error`, so that import is
+  `needs_attention` too, never a clean success; its records are kept and the
+  next sync retries it, reconciling by vendor identity. The heartbeat-scheduled
+  sync under standing consent is unchanged. `imported_session.visibility.set`
+  is authorized — for a new change and before a recorded one is replayed —
+  by the service's own `authorizeSession`: the importer, or, while the
+  session's Location exists, that Location's Host owner with Project write;
+  a row merely existing in the Space is not enough. `imported_session.delete`
+  checks each session through the same service authority when it runs; its
+  replay returns only the recorded count (the sessions no longer exist to
+  re-authorize against).
   Reading goes through the canonical content predicate instead: a shared session
   is ordinary Project content, a private one stays with its owner, and a
   transcript requires `full` access — `summary`, which oversight grants an admin

@@ -19,6 +19,11 @@ describe("subscription quota exhaustion is a runtime refusal, not a retryable fa
       .toBe(SUBSCRIPTION_QUOTA_EXHAUSTED);
     expect(classifyRuntimeFailure("codex_cli", "You've hit your usage limit. Try again in 2 hours 3 minutes.", { providerBound: false }))
       .toBe(SUBSCRIPTION_QUOTA_EXHAUSTED);
+    expect(classifyRuntimeFailure("opencode", "You have exhausted your capacity on this model. Your quota will reset later.", { providerBound: false }))
+      .toBe(SUBSCRIPTION_QUOTA_EXHAUSTED);
+    expect(classifyRuntimeFailure("claude_code", "Model quota exhausted", { providerBound: false }))
+      .toBe(SUBSCRIPTION_QUOTA_EXHAUSTED);
+    expect(classifyRuntimeFailure("opencode", "Model quota exhausted", { providerBound: true })).toBeNull();
     expect(isRetryableRunErrorCode(SUBSCRIPTION_QUOTA_EXHAUSTED)).toBe(false);
   });
 
@@ -140,5 +145,30 @@ describe("the quota gate's verdict", () => {
     expect(fullerWindow(quota)).toMatchObject({ kind: "week", utilization: 100 });
     expect(fullerWindow(quota, new Date("2026-09-25T01:00:00Z"))).toMatchObject({ kind: "session", utilization: 90 });
     expect(fullerWindow(quota, new Date("2026-09-25T02:00:00Z"))).toBeNull();
+  });
+});
+
+describe("independent model allowances do not gate the account", () => {
+  const base = { available: true, session_pct: 10, session_resets: null, week_pct: 100, week_resets: null, error: null };
+  it("ignores an old Antigravity maximum while retaining named quotas", () => {
+    expect(fullerWindow({ ...base, windows: [
+      { id: "gemini-argon-wtu-weekly", label: "Argon", used_pct: 100, resets: null },
+      { id: "gemini-weekly", label: "Gemini", used_pct: 20, resets: null },
+    ] })).toBeNull();
+  });
+  it("uses Claude's shared weekly meter rather than the fullest model meter", () => {
+    const window = fullerWindow({ ...base, windows: [
+      { id: "seven_day", scope: "account", label: "Weekly", used_pct: 25, resets: null },
+      { id: "seven_day_opus", scope: "model", label: "Opus weekly", used_pct: 100, resets: null },
+    ] });
+    expect(window?.utilization).toBe(25);
+    expect(quotaVerdict({ window, reservePct: 100, override: false }).hold).toBe(false);
+  });
+  it("supports any runtime exposing independent scoped allowances", () => {
+    expect(fullerWindow({ ...base, windows: [
+      { id: "vendor-a", scope: "model", label: "A", used_pct: 100, resets: null },
+      { id: "vendor-b", scope: "family", label: "B", used_pct: 12, resets: null },
+    ] })).toBeNull();
+    expect(quotaVerdict({ window: fullerWindow(base), reservePct: 100, override: false }).hold).toBe(true);
   });
 });

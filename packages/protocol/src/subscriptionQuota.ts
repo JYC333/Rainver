@@ -4,6 +4,9 @@ import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 /** Persisted recovery choice for an interrupted Run; cancellation survives reconnects. */
 export const QuotaRecoverySchema = z.object({
   auto_continue: z.boolean(),
+  can_switch_model: z.boolean().optional(),
+  settings_model_switch: z.boolean().optional(),
+  switched_model: z.string().min(1).max(512).optional(),
   refused_at: ISODateTimeSchema,
   intent_at: ISODateTimeSchema,
   next_check_at: ISODateTimeSchema,
@@ -11,7 +14,7 @@ export const QuotaRecoverySchema = z.object({
   pause_reason: z.enum(["user", "conversation_changed", "authority_changed", "expired"]).nullable(),
 }).strict();
 export type QuotaRecovery = z.infer<typeof QuotaRecoverySchema>;
-export const QuotaRecoveryUpdateSchema = z.object({ auto_continue: z.boolean() }).strict();
+export const QuotaRecoveryUpdateSchema = z.object({ auto_continue: z.boolean(), switch_model: z.boolean().optional() }).strict();
 
 /**
  * Subscription quota as the conversation surface sees it (server

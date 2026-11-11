@@ -9,21 +9,26 @@ import {assertProjectWriterForMutation} from '../projects/access.js';
 import {sharedHostConnectionRegistry,type HostConnectionRegistry,type HostRequestPayload} from './connectionRegistry.js';
 import type {ExecutionWorkspaceRow} from '../projectFolders/executionWorkspaces.js';
 import {assessWorkspaceRetention,hostReleasesRefs,recordRetention,reclaimProofCommits,reclaimBaseCommits,runHistoryCommits,refReleasePlan,localPreimageReleases,workspaceRetentionSettings,REF_RELEASE_PAGE,type RefRelease} from './workspaceRetention.js';
+import {hostJournalsManagedWorkspaceOperations,hostJournalsWorkspaceProfileArchives,nextManagedWorkspaceGeneration} from './managedWorkspaceOperations.js';
 import {advanceRefRelease,enqueueRefRelease,sameRelease,type DelayedRefKind,type RefInflight} from './workspaceRefRelease.js';
 
 export interface WorkspaceCleanupResource {
  kind?:'legacy_profiles'|DelayedRefKind;legacy_agent_id?:string;legacy_container_id?:string;
  version:1;operation_id:string;workspace:ExecutionWorkspaceRef;expected_commit:string;
  retain_branch:boolean;state:'pending'|'running'|'retry_wait'|'blocked'|'cleaned';attempts:number;
- error:string|null;next_retry_at:string|null;profile_agents?:string[];profile_run_ids?:string[];profile_thread_run_ids?:string[];profiles_archived?:boolean;owner_integration_id?:string;
+ error:string|null;next_retry_at:string|null;
+ /** Profile archive identity, fixed before the first send; `sent_unfenced`: once sent to a Host that could not fence it. */
+ archive_generation?:number;sent_unfenced?:boolean;
+ profile_agents?:string[];profile_run_ids?:string[];profile_thread_run_ids?:string[];profiles_archived?:boolean;owner_integration_id?:string;
  capture?:Pick<HostRequestPayload<'workspace_integration'>,'source_commit'|'base_commit'|'target_ref'|'author'>;
  /** Branch release: the materialization epoch being released; the row was raised past it before sending. */
+ discard_commit?:string;
  release_epoch?:number;reclaim_proof?:string[];reclaim_bases?:string[];history_commits?:string[];release_refs?:RefRelease[];
  /** Refs of the proven release beyond the first frame, and the owned-ref cursor
   * after the first Host page (null: no further page). Continued by `ref_pages`. */
  release_rest?:RefRelease[];owned_after?:string|null;retained_count?:number;
  /** `ref_pages`: the visible reason recorded when the last page finishes the release. */
- reason_on_finish?:'merged'|'no_changes';
+ reason_on_finish?:'merged'|'no_changes'|'discarded';
  /** The release's own id, fixed when its epoch is raised (a retry's new operation id keeps it); with `release_epoch`, its full identity. */
  release_id?:string;
  /** A newer materialization made this request obsolete; nothing was removed by it. */
@@ -91,6 +96,10 @@ export async function advanceWorkspaceCleanup(db:Queryable,workspaceId:string,ke
  // and the pages only touch refs owned by that release's closed facts.
  if(r.release_epoch!==undefined&&r.kind!=='ref_pages'&&w.materialization_epoch!==r.release_epoch+1){await save({...r,state:'cleaned',superseded:true,error:null,next_retry_at:null});return {superseded:true};}
  if(r.kind==='local_preimages'||r.kind==='run_history'||r.kind==='ref_pages')return advanceRefRelease(db,w,key,r,userId,hosts,workspaceRoot,save);
+ const discardIntent=(w as ExecutionWorkspaceRow & {retention_json?:{discard_intent?:{source_commit?:string;generation?:number}}}).retention_json?.discard_intent;
+ const discard=!r.workspace.integration_id&&r.kind!=='legacy_profiles'?(r.discard_commit??(discardIntent?.generation===w.generation?discardIntent.source_commit:undefined)):undefined;
+ if(discard&&((w.host_reclaim??0)<5))throw new JobDeferredError('workspace_cleanup_host_upgrade_required',30000);
+ if(discard&&discard!==r.expected_commit)throw new JobDeferredError('workspace_discard_tip_changed',30000);
  let releasing=false;
  if(r.owner_integration_id&&(await db.query("SELECT 1 FROM task_merges WHERE id=$1 AND status IN ('queued','rebasing','resolving','verifying','waiting_local_changes')",[r.owner_integration_id])).rowCount)throw new JobDeferredError('workspace_verification_mirror_in_use',30000);
 
@@ -102,7 +111,7 @@ export async function advanceWorkspaceCleanup(db:Queryable,workspaceId:string,ke
   const unsettled=(await db.query(`SELECT 1 FROM execution_workspace_runs b JOIN runs run ON run.id=b.run_id
    JOIN workspace_change_sets c ON c.id=b.change_set_id WHERE b.workspace_id=$1 AND
    (run.status IN ('queued','running','cancelling','waiting_for_dependency','waiting_for_review') OR
-    (b.checkpoint_state<>'saved' AND NOT(b.checkpoint_state='blocked' AND c.state='abandoned'))) LIMIT 1`,[w.id])).rowCount;
+    (b.checkpoint_state<>'saved' AND ($2::boolean OR NOT(b.checkpoint_state='blocked' AND c.state='abandoned')))) LIMIT 1`,[w.id,Boolean(discard)])).rowCount;
   if(unsettled)throw new JobDeferredError('workspace_cleanup_checkpoint_owed',30000);
   if((await db.query("SELECT 1 FROM task_merges WHERE workspace_id=$1 AND status IN ('queued','rebasing','resolving','verifying','waiting_local_changes') LIMIT 1",[w.id])).rowCount)
    throw new JobDeferredError('workspace_cleanup_integration_active',30000);
@@ -128,21 +137,32 @@ export async function advanceWorkspaceCleanup(db:Queryable,workspaceId:string,ke
  }
  const next={...r,state:'running' as const,attempts:r.attempts+1};
  await save(next);
+ // A profile archive is one Host operation for every attempt of this resource (identity and generation saved
+ // before its first send); sent to a Host that cannot fence it, the launch barrier stays closed on its profile.
+ const fixProfileArchiveIdentity=async(resource:WorkspaceCleanupResource,journaled:boolean)=>{
+  if(!journaled){if(!resource.sent_unfenced){resource.sent_unfenced=true;await save(resource);}return null;}
+  if(!resource.archive_generation){resource.archive_generation=await nextManagedWorkspaceGeneration(db);await save(resource);}
+  return {operation_id:`cleanup:${resource.operation_id}`,generation:resource.archive_generation};
+ };
  let reply:import('./connectionRegistry.js').TaskBranchReply<'execution_workspace_command'>;
  try{
   if(w.host_kind==='remote'&&w.host_owner!==userId)throw new Error('workspace_cleanup_host_authority_changed');
   await assertProjectWriterForMutation(db,w.space_id,w.project_id,userId);
   if(r.kind==='legacy_profiles'){
    if(!r.legacy_agent_id||!r.legacy_container_id)throw new Error('workspace_legacy_profile_identity_missing');
-   const answer=await hosts.requestManagedWorkspaceAction(w.execution_host_id,'managed_workspace_archive',{agent_id:r.legacy_agent_id,container_kind:'conversation',container_id:r.legacy_container_id,include_workspace:false});
-   if(!answer.ok)throw hostFailure(answer.error??'workspace_legacy_profile_archive_failed');
+   const journaled=await hostJournalsManagedWorkspaceOperations(db,w.execution_host_id);
+   const identity=await fixProfileArchiveIdentity(next,journaled);
+   const answer=await hosts.requestManagedWorkspaceAction(w.execution_host_id,'managed_workspace_archive',{agent_id:r.legacy_agent_id,container_kind:'conversation',container_id:r.legacy_container_id,include_workspace:false,...(identity?{operation_id:identity.operation_id,generation:identity.generation}:{})});
+   // A newer operation on that profile was applied first: this archive is superseded, nothing left to move.
+   if(!answer.ok&&answer.error_code!=='stale_generation')throw hostFailure(answer.error??'workspace_legacy_profile_archive_failed');
    await save({...next,state:'cleaned',error:null,next_retry_at:null});return {cleanup_state:'cleaned'};
   }
   if(r.profile_agents?.length&&!r.profiles_archived){
    const active=(await db.query(`SELECT 1 FROM runs run WHERE run.space_id=$3 AND (run.id=ANY($4::varchar[]) OR EXISTS(SELECT 1 FROM task_merges m WHERE m.workspace_id=$1 AND m.attempt_id=$2 AND m.resolution_run_id=run.id)) AND run.status IN ('queued','running','cancelling','waiting_for_dependency','waiting_for_review')`,[w.id,r.workspace.integration_id,w.space_id,r.profile_run_ids??[]])).rowCount;
    if(active)throw new JobDeferredError('workspace_profile_run_active',30000);
-   const archived=await hosts.requestTaskBranch(w.execution_host_id,'execution_workspace_command',{workspace:await workspaceProfileFrame(db,w,r.workspace,userId),action:'archive_profiles',operation_id:r.operation_id,profile_agents:r.profile_agents,retain_branch:true});
-   if(!archived.ok)throw hostFailure(archived.error??'workspace_profiles_archive_failed');
+   const identity=await fixProfileArchiveIdentity(next,await hostJournalsWorkspaceProfileArchives(db,w.execution_host_id));
+   const archived=await hosts.requestTaskBranch(w.execution_host_id,'execution_workspace_command',{workspace:await workspaceProfileFrame(db,w,r.workspace,userId),action:'archive_profiles',operation_id:r.operation_id,profile_agents:r.profile_agents,retain_branch:true,...(identity?{archive_identity:identity}:{})});
+   if(!archived.ok&&archived.error_code!=='stale_generation')throw hostFailure(archived.error??'workspace_profiles_archive_failed');
    next.profiles_archived=true;
    await db.query(`UPDATE host_threads SET status='closed',vendor_session_id=NULL,pending_archive_at=NULL,updated_at=now() WHERE execution_host_id=$3 AND id IN (SELECT run.host_task_thread_id FROM runs run WHERE run.space_id=$4 AND (run.id=ANY($5::varchar[]) OR EXISTS(SELECT 1 FROM task_merges m WHERE m.workspace_id=$1 AND m.attempt_id=$2 AND m.resolution_run_id=run.id)))`,[w.id,r.workspace.integration_id,w.execution_host_id,w.space_id,r.profile_thread_run_ids??r.profile_run_ids??[]]);
    await save(next);
@@ -188,6 +208,7 @@ export async function advanceWorkspaceCleanup(db:Queryable,workspaceId:string,ke
    if(!resuming&&(!observed.ok||!observed.commit&&!absent||!observed.inventory))throw hostFailure(observed.error??'workspace_cleanup_tip_unavailable');
    if(observed.inventory?.active)throw new JobDeferredError('workspace_cleanup_run_active',30000);
    if(!resuming&&releasing&&observed.inventory!.quarantined_whole>0){
+    if(discard)throw new Error('workspace_quarantined');
     releasing=false;await recordRetention(db,w.id,{state:'retained',reason:'quarantined'});
     // An issued release whose branch is still there becomes physical-only: its
     // raised epoch is harmless (later launches carry a newer one).
@@ -197,6 +218,7 @@ export async function advanceWorkspaceCleanup(db:Queryable,workspaceId:string,ke
     }
    }
    if(!resuming&&!absent&&observed.commit!==next.expected_commit){
+    if(discard)throw new Error('workspace_discard_tip_changed');
     await withQueryableTransaction(db,async tx=>{
      const current=(await tx.query<{cleanup_json:Record<string,WorkspaceCleanupResource>;generation:number}>('SELECT cleanup_json,generation FROM execution_workspaces WHERE id=$1 FOR UPDATE',[w.id])).rows[0];
      if(current?.generation===r.workspace.generation&&current.cleanup_json[key]?.operation_id===operationId)
@@ -210,6 +232,7 @@ export async function advanceWorkspaceCleanup(db:Queryable,workspaceId:string,ke
     // remove that rebuilt materialization, even at the same tip.
     const plan=await refReleasePlan(db,w,observed.inventory!.owned_refs??[]);
     const proof=await reclaimProofCommits(db,w.id,w.generation),bases=await reclaimBaseCommits(db,w.id,w.generation),history=await runHistoryCommits(db,w.id,w.generation);
+    if(discard)history.splice(0,history.length,...[...new Set([discard,...bases,...history])].slice(0,1000));
     const releaseId=randomUUID();
     const raised=await withQueryableTransaction(db,async tx=>{
      const row=(await tx.query<{materialization_epoch:number;cleanup_json:Record<string,WorkspaceCleanupResource>;generation:number}>('SELECT materialization_epoch,cleanup_json,generation FROM execution_workspaces WHERE id=$1 FOR UPDATE',[w.id])).rows[0];
@@ -221,7 +244,7 @@ export async function advanceWorkspaceCleanup(db:Queryable,workspaceId:string,ke
      return row.materialization_epoch;
     });
     if(raised===null)throw new JobDeferredError('workspace_cleanup_state_changed',30000);
-    Object.assign(next,{retain_branch:false,release_epoch:raised,release_id:releaseId,reclaim_proof:proof,reclaim_bases:bases,history_commits:history,
+    Object.assign(next,{...(discard?{discard_commit:discard}:{}),retain_branch:false,release_epoch:raised,release_id:releaseId,reclaim_proof:proof,reclaim_bases:bases,history_commits:history,
      // Shared sources go only as re-checked pages, never from this snapshot.
      release_refs:plan.release.slice(0,REF_RELEASE_PAGE),release_rest:[...plan.release.slice(REF_RELEASE_PAGE),...plan.sources],owned_after:observed.inventory!.owned_refs_next??null,retained_count:plan.shared_retained});
     w.materialization_epoch=raised+1;
@@ -232,6 +255,7 @@ export async function advanceWorkspaceCleanup(db:Queryable,workspaceId:string,ke
   const sendRef=next.release_epoch!==undefined?{...r.workspace,...(w.target_ref?{target_ref:w.target_ref}:{}),materialization_epoch:next.release_epoch}:r.workspace;
   reply=await hosts.requestTaskBranch(w.execution_host_id,'execution_workspace_command',{
     workspace:{...frame,execution_workspace:sendRef},action:'cleanup',operation_id:r.operation_id,expected_commit:next.expected_commit,retain_branch:next.retain_branch,
+    ...(next.discard_commit?{discard_commit:next.discard_commit}:{}),
     ...(next.release_epoch!==undefined?{reclaim_proof:next.reclaim_proof??[],reclaim_bases:next.reclaim_bases??[],history_commits:next.history_commits??[],release_refs:next.release_refs??[]}:{})});
   if(reply.inventory)await db.query(`UPDATE execution_workspaces SET inventory_json=$2::jsonb WHERE id=$1`,[w.id,JSON.stringify(reply.inventory)]);
  }catch(error){
@@ -258,7 +282,7 @@ export async function advanceWorkspaceCleanup(db:Queryable,workspaceId:string,ke
   return {superseded:true};
  }
  const branchRetained=reply.inventory?.branch_retained_reason;
- const proven=reply.inventory&&(next.retain_branch||!reply.inventory.branch||Boolean(branchRetained))&&!reply.inventory.worktree&&!reply.inventory.registration&&!reply.inventory.run_record&&!reply.inventory.merge_record&&reply.inventory.quarantined_whole===0;
+ const proven=reply.inventory&&(next.retain_branch||!reply.inventory.branch||!next.discard_commit&&Boolean(branchRetained))&&!reply.inventory.worktree&&!reply.inventory.registration&&!reply.inventory.run_record&&!reply.inventory.merge_record&&reply.inventory.quarantined_whole===0;
 
  const state=reply.ok&&reply.cleanup_state==='cleaned'&&proven?'cleaned':reply.cleanup_state==='blocked'||next.attempts>=8?'blocked':'retry_wait';
  const updated={...next,state,error:reply.error??(state==='cleaned'?null:'workspace_cleanup_incomplete'),next_retry_at:state==='retry_wait'?new Date(Date.now()+Math.min(3600000,30000*2**next.attempts)).toISOString():null} as WorkspaceCleanupResource;
@@ -282,11 +306,11 @@ export async function advanceWorkspaceCleanup(db:Queryable,workspaceId:string,ke
   const more=Boolean(next.release_rest?.length)||typeof next.owned_after==='string';
   const history=reply.inventory?.history_refs??[];
   const facts={retained_refs:kept,reclaim_requested_at:null,history_refs:history.length,history_until:(history.length||historyNext)&&historyUntil?historyUntil.toISOString():null};
-  if(currentRelease)await recordRetention(tx,w.id,more?{state:'reclaiming',reason:'releasing_refs',...facts}:{state:'reclaimed',reason:merged?'merged':'no_changes',...facts,reclaimed_at:new Date().toISOString()});
+  if(currentRelease)await recordRetention(tx,w.id,more?{state:'reclaiming',reason:'releasing_refs',...facts}:{state:'reclaimed',reason:next.discard_commit?'discarded':merged?'merged':'no_changes',...facts,reclaimed_at:new Date().toISOString()});
   else await recordRetention(tx,w.id,{retained_refs:kept,history_refs:history.length,history_until:facts.history_until});
   // The rest of the release continues now, page by page, from the owned-ref cursor.
   // Its pages carry this release's epoch: the Host keeps owned-by-name refs a rebuild may own.
-  if(more)await enqueueRefRelease(tx,w,'ref_pages',next.release_rest??[],userId,new Date(),{owned_after:next.owned_after??null,retained_count:kept,workspace:r.workspace,release_epoch:next.release_epoch!,...(next.release_id?{release_id:next.release_id}:{}),reason_on_finish:merged?'merged':'no_changes'});
+  if(more)await enqueueRefRelease(tx,w,'ref_pages',next.release_rest??[],userId,new Date(),{owned_after:next.owned_after??null,retained_count:kept,workspace:r.workspace,release_epoch:next.release_epoch!,...(next.release_id?{release_id:next.release_id}:{}),reason_on_finish:next.discard_commit?'discarded':merged?'merged':'no_changes'});
   const preimages=await localPreimageReleases(tx,w.id,w.generation);
   if(preimages.length)await enqueueRefRelease(tx,w,'local_preimages',preimages,userId,new Date(Date.now()+workspaceRetentionSettings.localPreimageRetentionMs));
   await refreshCleanupSummary(tx,w.id);

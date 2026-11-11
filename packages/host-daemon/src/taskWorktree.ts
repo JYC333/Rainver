@@ -7,7 +7,8 @@ import { runLocationGit } from "@rainver/folder-read";
 import { configDir } from "./config.js";
 import { captureWorkspaceTree } from "./gitDiff.js";
 import { commitOfRef, resolveMainBranch } from "./mainBranch.js";
-import { isLeaseBusy, releaseLocationLeases, tryAcquireLease } from "./locationLease.js";
+import { isLeaseBusy, leaseKeyLocation, releaseLocationLeases, tryAcquireLease } from "./locationLease.js";
+import { locationRepositoryDirectory, tryHoldRepositories } from "./repositoryGate.js";
 
 /**
  * One git worktree per Task, in the daemon's own directory (ADR 0016 §11,
@@ -183,6 +184,12 @@ export function useTaskWorktree(key: string): () => void {
 }
 
 /** Whether a command (verification) is running in the Task's worktree; a launch waits for it. */
+/** Whether any worktree of this Location is currently used by a live operation. */
+export function locationWorktreesInUse(locationId: string): boolean {
+  for (const [key, uses] of worktreeUses) if (uses > 0 && (key.startsWith(`task:${locationId}:`) || key.startsWith(`workspace:${locationId}:`))) return true;
+  return false;
+}
+
 export function isTaskWorktreeInUse(key: string): boolean {
   return (worktreeUses.get(key) ?? 0) > 0;
 }
@@ -195,17 +202,28 @@ export function hasTaskWorktreeMaintenance(): boolean {
   return maintenanceInFlight > 0;
 }
 
-/** Runs `work` holding the Task's lease without waiting; null when a Run (or anything else) has it. */
+/**
+ * Runs `work` holding the Task's lease without waiting; null when a Run (or
+ * anything else) has it. A Task or workspace key also holds its Location's
+ * repository gate shared (`repositoryGate.ts`), resolved now from the current
+ * configuration, so a branch alignment of that repository — reached through
+ * any Location, however recently registered — and this work never overlap;
+ * a quarantined repository refuses it like a busy one.
+ */
 export async function withTaskHeld<T>(key: string, work: () => Promise<T>): Promise<T | null> {
   if (isTaskBusy(key)) return null;
+  const location = /^(task|workspace):/.test(key) ? leaseKeyLocation(key) : null;
+  const repository = location ? await tryHoldRepositories([await locationRepositoryDirectory(location)]) : null;
+  if (repository && "refused" in repository) return null;
   const holder = `maintenance:${randomUUID()}`;
-  if (!tryAcquireLease(key, holder)) return null;
+  if (isTaskBusy(key) || !tryAcquireLease(key, holder)) { repository?.release(); return null; }
   maintenanceInFlight += 1;
   try {
     return await work();
   } finally {
     maintenanceInFlight -= 1;
     releaseLocationLeases([key], holder);
+    repository?.release();
   }
 }
 
@@ -562,7 +580,7 @@ export async function isAncestor(repoRoot: string, ancestor: string, descendant:
   return result.code === 0;
 }
 
-interface ListedWorktree {
+export interface ListedWorktree {
   path: string;
   /** `refs/heads/…`, or null when detached. */
   branch: string | null;

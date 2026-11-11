@@ -26,6 +26,6 @@ export const projectFolderIoIntents=pgTable('project_folder_io_intents',{
   foreignKey({columns:[table.spaceId],foreignColumns:[spaces.id]}),
   foreignKey({columns:[table.projectId,table.spaceId],foreignColumns:[projects.id,projects.spaceId]}),
   foreignKey({columns:[table.userId],foreignColumns:[users.id]}),
-  check('ck_project_folder_io_kind',sql`kind IN ('create','scan','save_draft','restore_revision')`),
+  check('ck_project_folder_io_kind',sql`kind IN ('create','scan','save_draft','restore_revision','branch_align')`),
   check('ck_project_folder_io_status',sql`status IN ('pending','prepared','applied','succeeded','failed','needs_attention')`),
 ]);

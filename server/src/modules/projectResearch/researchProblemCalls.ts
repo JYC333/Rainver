@@ -1,3 +1,4 @@
+import {ResearchWorkspaceMutationError} from './workspaceErrors.js';
 import { acceptedThreadContext } from "./acceptedThreadContext.js";
 import { ResearchContextRepository } from "./question/researchContextRepository.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
@@ -21,18 +22,18 @@ export async function createBoundResearchOperation(db:Queryable,identity:SpaceUs
   const state=researchState(input.progress),pin=state.thread_scope?.[0];
   if(!pin||state.run_kind==="incremental")return new ProjectOperationService(tx).createManagedResearch(identity,projectId,input); // Independent Research and incremental monitoring need no problem call.
   const thread=await lockProblem(tx,identity,projectId,pin.thread_id);
-  if(thread.blocked_reason)throw new HttpError(409,"Unblock the Thread before invoking Research");
-  if(thread.version!==pin.version)throw new HttpError(409,"Research input no longer matches the Thread revision");
+  if(thread.blocked_reason)throw new ResearchWorkspaceMutationError(409,"Unblock the Thread before invoking Research");
+  if(thread.version!==pin.version)throw new ResearchWorkspaceMutationError(409,"Research input no longer matches the Thread revision");
   const linked=await pinnedResearchThreadId(tx,{spaceId:identity.spaceId,projectId,workflowId:state.workflow_id});
   if(linked!==pin.thread_id||await contentDecisionFromDb(tx,identity,"space_object",state.workflow_id)!=="full")throw new HttpError(404,"Research Workflow does not match the problem snapshot");
   const options=state.problem_call?ResearchCallOptionsSchema.parse(state.problem_call):null;
-  if(options?.expected_version!==undefined&&options.expected_version!==thread.version||options?.expected_revision!==undefined&&options.expected_revision!==thread.problem_revision)throw new HttpError(409,"Research input problem revision changed");
+  if(options?.expected_version!==undefined&&options.expected_version!==thread.version||options?.expected_revision!==undefined&&options.expected_revision!==thread.problem_revision)throw new ResearchWorkspaceMutationError(409,"Research input problem revision changed");
   await assertProblemReferences(tx,identity,projectId,options?.input_refs??[]);
   const key=`user:${identity.userId}:thread:${pin.thread_id}:`+createHash("sha256").update(state.idempotency.key).digest("hex");
   const prior=await tx.query<{id:string;research_call_json:unknown;progress_json:unknown}>(`SELECT id,research_call_json,progress_json FROM project_operations WHERE space_id=$1 AND project_id=$2 AND research_call_key=$3 FOR UPDATE`,[identity.spaceId,projectId,key]);
   if(prior.rows[0]){
    const call=await assertResearchCallReadable(tx,identity,projectId,prior.rows[0].research_call_json,prior.rows[0].progress_json);
-   if(call?.thread_id!==pin.thread_id||objectValue(objectValue(prior.rows[0].progress_json).idempotency).fingerprint!==state.idempotency.fingerprint)throw new HttpError(409,"Research call key already used for different input");
+   if(call?.thread_id!==pin.thread_id||objectValue(objectValue(prior.rows[0].progress_json).idempotency).fingerprint!==state.idempotency.fingerprint)throw new ResearchWorkspaceMutationError(409,"Research call key already used for different input");
    return {id:prior.rows[0].id};
   }
   const created=await new ProjectOperationService(tx).createManagedResearch(identity,projectId,input);
@@ -146,13 +147,13 @@ export async function retryResearchPreparation(db:Queryable,identity:SpaceUserId
   const r=await tx.query<{status:string;version:number;progress_json:unknown;research_call_json:unknown}>(`SELECT status,version,progress_json,research_call_json FROM project_operations WHERE id=$1 AND space_id=$2 AND project_id=$3 FOR UPDATE`,[operationId,identity.spaceId,projectId]);
   const row=r.rows[0];if(!row)throw new HttpError(404,"Research operation not found");
   const call=await assertResearchCallReadable(tx,identity,projectId,row.research_call_json,row.progress_json);
-  if(!call||objectValue(row.progress_json).acquisition_preflight!==true)throw new HttpError(409,"This is not a preparation retry");
+  if(!call||objectValue(row.progress_json).acquisition_preflight!==true)throw new ResearchWorkspaceMutationError(409,"This is not a preparation retry");
   if(row.status==='active')return;
-  if(row.status!=='failed')throw new HttpError(409,"Only failed preparation can retry");
+  if(row.status!=='failed')throw new ResearchWorkspaceMutationError(409,"Only failed preparation can retry");
   const problem=await lockProblem(tx,identity,projectId,call.thread_id);
-  if(problem.version!==call.thread_version)throw new HttpError(409,"Research input snapshot changed; start a new invocation explicitly");
+  if(problem.version!==call.thread_version)throw new ResearchWorkspaceMutationError(409,"Research input snapshot changed; start a new invocation explicitly");
   const jobs=await tx.query<{payload_json:Record<string,unknown>}>(`SELECT j.payload_json FROM jobs j JOIN project_operation_links l ON l.target_type='job' AND l.target_id=j.id AND l.space_id=j.space_id WHERE l.operation_id=$1 AND l.space_id=$2 AND j.job_type='research_pipeline_start' ORDER BY j.created_at DESC LIMIT 1`,[operationId,identity.spaceId]);
-  if(!jobs.rows[0])throw new HttpError(409,"Original preparation execution is unresolved");
+  if(!jobs.rows[0])throw new ResearchWorkspaceMutationError(409,"Original preparation execution is unresolved");
   const payload={...jobs.rows[0].payload_json};delete payload.pipeline_outcome;
   const job=await new PgJobQueueRepository(tx).enqueue({job_type:'research_pipeline_start',space_id:identity.spaceId,user_id:identity.userId,payload});
   const progress={...objectValue(row.progress_json),current_stage:'monitor_setup',stage_state:'running',error:undefined,failed_stage:undefined,acquisition_job_id:job.id};

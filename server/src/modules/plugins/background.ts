@@ -6,14 +6,15 @@ import { withPolicyAuditRecovery } from "../policy/auditWriter.js";
 import type { ScheduledTask } from '../scheduler/registry.js';
 import { getDbPool, getPluginControlPool } from '../../db/pool.js';
 import { withTransaction } from '../../db/tx.js';
-import { operationTransaction, runOperationWork } from '../../db/operationTransaction.js';
+import { operationTransaction, runOperationWork, runHostWorkOutsideOperation } from '../../db/operationTransaction.js';
 import { PgJobQueueRepository } from '../jobs/repository.js';
 import { enforce } from '../policy/service.js';
 import { loadActionRegistry } from '../policy/actionRegistry.js';
 import { assertCurrentActor, sessionActor } from '../systemActions/operations/actor.js';
 import { operationPluginEnabled, lockOperationPluginScope } from './operationEnablement.js';
 import { pluginServiceFor } from './service.js';
-import { PluginEffectScopes } from './effectScopes.js';
+import { PluginEffectScopes, inJobTransaction } from './effectScopes.js';
+import { admitPluginScopeHold, pluginScopeHoldCurrent, pluginScopeLeaseIs, retainPluginScopeHold } from './lifecycle.js';
 import { pluginHostWrite, withPluginDb } from './operationDb.js';
 export class PluginBackground {
   readonly effects = new PluginEffectScopes();
@@ -47,7 +48,9 @@ export class PluginBackground {
   }
   readonly port: PluginLifecyclePort = {
     jobs: {
-      register: (id, handler) => {
+      register: (id, handler, options) => {
+        // The bounded contract closes the Job's registration handle when the handler settles; the original one keeps it open.
+        const bounded = options?.disposeRegistration === 'handler';
         const declared = this.plugin.operationManifest!.jobs?.find(j => j.id === id);
         if (!declared || this.jobs.has(id)) throw new Error('Undeclared/duplicate plugin Job');
         const wrapped: JobHandler = async envelope => {
@@ -59,17 +62,21 @@ export class PluginBackground {
             spaceId: envelope.space_id,
             userId: envelope.user_id ?? ''
           };
-          if (!scope.userId || !(await operationPluginEnabled(this.pool, this.plugin.id, scope.spaceId, scope.userId, this.config))) return {
+          // Admitted under this process's durable hold of the scope generation, or not at all.
+          const resource = scope.userId ? await this.admit(scope) : null;
+          if (!resource) return {
             skipped: true,
             reason: 'plugin_disabled'
           };
-          const resource = this.effects.enter(this.plugin.id, scope);
           const jobAbort = new AbortController();
           const abortJob = () => jobAbort.abort();
           resource.signal.addEventListener("abort", abortJob, {
             once: true
           });
           const audit = getPluginControlPool(this.config.databaseUrl!);
+          // Set until the Job's transaction has ended: an early dispose the handler (or a continuation
+          // it started) requests meanwhile is refused, never run inside the transaction.
+          let endTransaction = () => {};
           try {
             return await withPolicyAuditRecovery(this.config.databaseUrl, () => withTransaction(this.pool, async client => {
               const actor = {
@@ -121,7 +128,7 @@ export class PluginBackground {
                 checking = true;
                 void (async () => {
                   const job = await new PgJobQueueRepository(audit).getJob(envelope.job_id);
-                  if (job?.status === 'cancelled' || !(await operationPluginEnabled(audit, this.plugin.id, scope.spaceId, scope.userId, this.config))) jobAbort.abort();
+                  if (job?.status === 'cancelled' || !(await pluginScopeHoldCurrent(audit, this.config, resource.hold, resource.instance)) || !(await operationPluginEnabled(audit, this.plugin.id, scope.spaceId, scope.userId, this.config))) jobAbort.abort();
                 })().catch(() => jobAbort.abort()).finally(() => {
                   checking = false;
                 });
@@ -130,35 +137,46 @@ export class PluginBackground {
               const tx = operationTransaction(client);
               try {
                 const settings = (await pluginServiceFor(this.config).getPlugin(client, this.plugin.id, scope.spaceId, scope.userId)).effective.settings;
-                const out = await runOperationWork(() => withPluginDb(tx.db, this.plugin.id, actor, db => handler(declared.payload_schema.parse(envelope.payload), {
+                const marked = inJobTransaction(() => runOperationWork(() => withPluginDb(tx.db, this.plugin.id, actor, db => handler(declared.payload_schema.parse(envelope.payload), {
                   db,
                   actor,
                   signal: jobAbort.signal,
                   jobId: envelope.job_id,
                   onDispose: resource.onDispose,
+                  // The host's own short reservation transaction, not the plugin's: outside the operation work's pool refusal.
+                  retain: () => runHostWorkOutsideOperation(() => retainPluginScopeHold(this.config, resource)),
                   jobs: this.intents(db, scope),
                   settings
-                })));
+                }))));
+                endTransaction = marked.close;
+                const out = await marked.result;
                 jobAbort.signal.throwIfAborted();
                 await assertCurrentActor(client, sessionActor(scope), true);
                 await lockOperationPluginScope(client, this.plugin.id, scope.spaceId, scope.userId, this.config);
                 if (!(await operationPluginEnabled(client, this.plugin.id, scope.spaceId, scope.userId, this.config))) throw new Error('Plugin disabled');
+                // A disable (even one followed by a new enable) ended this hold's generation, or this
+                // process's lease is no longer held by its session: its work never commits. The hold
+                // row stays share-locked through this transaction's COMMIT: no transition precedes it.
+                if (!(await pluginScopeHoldCurrent(client, this.config, resource.hold, resource.instance))) throw new Error('Plugin scope generation ended');
                 return out;
               } finally {
-                try {
-                  if (resource.signal.aborted) await resource.dispose();
-                } finally {
-                  clearInterval(timer);
-                  jobAbort.signal.removeEventListener('abort', cancel);
-                  resource.signal.removeEventListener('abort', abortJob);
-                  await cancellation;
-                  tx.close();
-                }
+                // Resource disposal waits for the transaction to end (outer finally): no lock is held across it.
+                clearInterval(timer);
+                jobAbort.signal.removeEventListener('abort', cancel);
+                resource.signal.removeEventListener('abort', abortJob);
+                await cancellation;
+                tx.close();
               }
             }));
           } finally {
+            endTransaction();
             resource.signal.removeEventListener("abort", abortJob);
-            if (resource.signal.aborted) await resource.dispose();
+            // What it registered is drained by its hold's claimed attempts (inside a running attempt at
+            // once, otherwise at the next one), never here. The bounded contract closes the handle now;
+            // under the original one a saved `onDispose` may still register, so the handle stays open
+            // (the hold stays an obligation) until this process ends.
+            if (bounded) resource.leave();
+            else resource.linger();
           }
         };
         this.jobs.set(id, wrapped);
@@ -195,15 +213,21 @@ export class PluginBackground {
       }
     }
   };
+  /** Enters new local work of a scope under this process's current hold, or null when the package is not enabled there. */
+  async admit(scope: PluginScope) {
+    const admitted = await admitPluginScopeHold(this.config, this.plugin.id, scope);
+    if (!admitted) return null;
+    // The lease that admitted it was lost (and renewed) since: entering would hold resources nobody tracks.
+    if (!pluginScopeLeaseIs(this.config, admitted.instance)) throw new Error('Plugin scope is closing');
+    return { ...this.effects.enter(this.plugin.id, scope, admitted.hold), hold: admitted.hold, instance: admitted.instance };
+  }
   validate() {
     const m = this.plugin.operationManifest!;
     if ((m.jobs?.length ?? 0) !== this.jobs.size || (m.schedules?.length ?? 0) !== this.tasks.length || (m.proposalTypes?.length ?? 0) !== this.proposalExecutors.size) throw new Error('Lifecycle declarations/registrations mismatch');
   }
-  async close() {
-    try {
-      await this.effects.closeAll();
-    } finally {
-      for (const dispose of [...this.disposers].reverse()) dispose();
-    }
+  /** Shutdown: nothing new is admitted; the owner's exit round drains what is still held (`lifecycle.ts`). */
+  close() {
+    this.effects.fence();
+    for (const dispose of [...this.disposers].reverse()) dispose();
   }
 }

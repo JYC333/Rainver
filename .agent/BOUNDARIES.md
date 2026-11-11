@@ -388,7 +388,7 @@ data, never used for access control, mount resolution, or identity. A Folder
 is logical and may have multiple Locations; no old Folder host/path column may
 be reintroduced.
 
-**B65** — New isolated Conversation/delegation contracts follow [ADR 0029](decisions/0029-isolated-execution-workspaces.md): execution is in a Host-owned worktree; completion intent, Agent checks on an exact saved tree and controlled integration precede its final answer, with independent durable cleanup. Native-session publication is an authorized Operation Core command completed by the active Agent; it does not require another CLI phase or Folder command configuration. Legacy contracts retain the following behavior.
+**B65** — New isolated Conversation/delegation contracts follow [ADR 0029](decisions/0029-isolated-execution-workspaces.md): execution is in a Host-owned worktree; completion intent, Agent checks on an exact saved tree and controlled integration precede its final answer, with independent durable cleanup. Native-session publication is an authorized Operation Core command completed by the active Agent; it does not require another CLI phase or Folder command configuration. A serial delegated writer may continue in its coordinator's conversation workspace under the Host's exclusive worktree lease but never prepares or publishes that batch; a read-only delegated review may read that worktree only through an enforced read-only mount at a frozen, Host-verified commit; parallel or otherwise unproven placements keep isolated forks (ADR 0029, "Delegated workspace placement"). Legacy contracts retain the following behavior.
 
 On an execution host a change lands without a per-change approval.
 A Conversation turn edits its Location in place. A Task Run's change reaches

@@ -1,4 +1,5 @@
 import { OUTPUT_MAX_TOTAL_BYTES, rasterImageMime } from "@rainver/protocol";
+import { recordReviewObservation } from "../projectFolders/delegatedWorkspaceReview.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
@@ -305,8 +306,9 @@ export class PgHostRepository {
     return result.rows[0] ?? null;
   }
 
-  async recordHeartbeat(hostId: string, info: DaemonHelloInfo): Promise<void> {
-    await withQueryableTransaction(this.pool, async db => {
+  /** False when the row is revoked: the connection that sent this frame must be cut off. */
+  async recordHeartbeat(hostId: string, info: DaemonHelloInfo): Promise<boolean> {
+    const live = await withQueryableTransaction(this.pool, async db => {
       const updated = await db.query(
         `UPDATE hosts
             SET status = 'online', last_heartbeat_at = now(),
@@ -328,7 +330,9 @@ export class PgHostRepository {
       if ((updated.rowCount ?? 0) > 0 && info.capabilities_json) {
         await syncManagedRuntimeBindings(db, hostId, info.capabilities_json);
       }
+      return (updated.rowCount ?? 0) > 0;
     });
+    if (!live) return false;
     if (info.workspace_reports || info.ambient_sessions) {
       const locations = new PgWorkspaceLocationRepository(this.pool);
       if (info.workspace_reports) {
@@ -337,6 +341,7 @@ export class PgHostRepository {
       }
       if (info.ambient_sessions) await locations.recordAmbientSessionCounts(hostId, info.ambient_sessions);
     }
+    return live;
   }
 
   async markOffline(hostId: string): Promise<void> {
@@ -551,14 +556,21 @@ export class PgHostRepository {
       observed_at: new Date().toISOString(),
     };
     await tx.query(
+      // Merged over what the server froze at binding (a delegated review's
+      // workspace identity and review_commit), never replacing it.
       `UPDATE runs
           SET output_json = jsonb_set(
                 CASE WHEN jsonb_typeof(output_json) = 'object' THEN output_json ELSE '{}'::jsonb END,
-                '{review_basis}', $3::jsonb, true),
+                '{review_basis}',
+                COALESCE(CASE WHEN jsonb_typeof(output_json->'review_basis') = 'object' THEN output_json->'review_basis' END, '{}'::jsonb) || $3::jsonb,
+                true),
               updated_at = now()
         WHERE space_id = $1 AND id = $2`,
       [run.space_id, run.id, JSON.stringify(basis)],
     );
+    // A delegated review of a coordinator workspace is verified only by this
+    // report of what the Host actually read (delegatedWorkspaceReview).
+    await recordReviewObservation(tx, run.id, run.space_id, { head: basis.head, tree: basis.tree });
   }
 
   /**

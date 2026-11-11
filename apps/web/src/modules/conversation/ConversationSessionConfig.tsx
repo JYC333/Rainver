@@ -79,34 +79,49 @@ type AgentSessionConfiguration = {
   options: RuntimeSessionConfigOption[]
   value: SessionConfigSelection[]
   onChange: (value: SessionConfigSelection[]) => void
-  onSave?: (value: SessionConfigSelection[]) => Promise<void>
+  onSave?: (value: SessionConfigSelection[], allowQuotaModelSwitch?: boolean) => Promise<void>
   persistedValue?: SessionConfigSelection[]
+  allowQuotaModelSwitch?: boolean
+  quotaModelSwitchAvailable?: boolean
 }
 
-export function SavedConversationSessionConfig({ options, value, onChange, onSave, persistedValue, disabled }: {
+export function SavedConversationSessionConfig({ options, value, onChange, onSave, persistedValue, disabled, allowQuotaModelSwitch = false, quotaModelSwitchAvailable = false }: {
   options: RuntimeSessionConfigOption[]
   value: SessionConfigSelection[]
   onChange: (value: SessionConfigSelection[]) => void
-  onSave?: (value: SessionConfigSelection[]) => Promise<void>
+  onSave?: (value: SessionConfigSelection[], allowQuotaModelSwitch?: boolean) => Promise<void>
   persistedValue?: SessionConfigSelection[]
+  allowQuotaModelSwitch?: boolean
+  quotaModelSwitchAvailable?: boolean
   disabled?: boolean
 }) {
   const { t } = useAppTranslation()
-  const persisted = JSON.stringify(persistedValue ?? null)
+  const persisted = JSON.stringify({ value: persistedValue ?? null, allow: allowQuotaModelSwitch })
+  const [allowSwitch, setAllowSwitch] = useState(allowQuotaModelSwitch)
+  const current = JSON.stringify({ value, allow: allowSwitch })
   const [saved, setSaved] = useState(persisted)
   const [progress, setStatus] = useState<'idle' | 'saving' | 'failed'>('idle')
-  useEffect(() => { setSaved(persisted); setStatus('idle') }, [persisted])
-  const status = progress !== 'idle' ? progress : JSON.stringify(value) === saved ? 'saved' : 'unsaved'
+  useEffect(() => { setSaved(persisted); setAllowSwitch(allowQuotaModelSwitch); setStatus('idle') }, [persisted])
+  const status = progress !== 'idle' ? progress : current === saved ? 'saved' : 'unsaved'
   const [error, setError] = useState('')
   const stale = withdrawnSelections(options, persistedValue ?? [])
   return <div className="flex flex-wrap items-center gap-2">
     <ConversationSessionConfig options={options} value={value} disabled={disabled || status === 'saving'}
       onChange={next => { setStatus('idle'); setError(''); onChange(next) }} />
+    {quotaModelSwitchAvailable && <label className="flex basis-full items-start gap-2 text-xs text-muted-foreground">
+      <input type="checkbox" className="mt-0.5 accent-primary" checked={allowSwitch} disabled={disabled || status === 'saving' || !onSave}
+        onChange={event => { setAllowSwitch(event.target.checked); setStatus('idle'); setError('') }} />
+      <span>{t('conversation_ui.session_config.quota_model_switch')}<span className="mt-1 block">{t('conversation_ui.session_config.quota_model_switch_hint')}</span></span>
+    </label>}
     <Button type="button" size="sm" variant="outline" disabled={disabled || !onSave || status === 'saving' || status === 'saved'}
       onClick={async () => {
         if (!onSave) return
         setStatus('saving'); setError('')
-        try { await onSave(value); setSaved(JSON.stringify(value)); setStatus('idle') }
+        try {
+          if (quotaModelSwitchAvailable) await onSave(value, allowSwitch)
+          else await onSave(value)
+          setSaved(current); setStatus('idle')
+        }
         catch (failure) { setStatus('failed'); setError(failure instanceof Error ? failure.message : String(failure)) }
       }}>
       {t(status === 'saving' ? 'conversation_ui.session_config.saving' : 'conversation_ui.session_config.save')}
@@ -166,6 +181,8 @@ export function ConversationAgentSessionConfigs({
         onChange={agent.onChange}
         onSave={agent.onSave}
         persistedValue={agent.persistedValue}
+        allowQuotaModelSwitch={agent.allowQuotaModelSwitch}
+        quotaModelSwitchAvailable={agent.quotaModelSwitchAvailable}
         disabled={disabled}
       />
     )
@@ -202,6 +219,8 @@ export function ConversationAgentSessionConfigs({
                   onChange={agent.onChange}
                   onSave={agent.onSave}
                   persistedValue={agent.persistedValue}
+                  allowQuotaModelSwitch={agent.allowQuotaModelSwitch}
+                  quotaModelSwitchAvailable={agent.quotaModelSwitchAvailable}
                   disabled={disabled}
                 />
               </div>

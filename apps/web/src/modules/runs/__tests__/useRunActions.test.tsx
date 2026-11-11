@@ -5,7 +5,7 @@ import type { Run } from '../../../types/api'
 import { useRunActions } from '../useRunActions'
 
 vi.mock('../../../api/client', () => ({
-  runsApi: { stop: vi.fn(), resume: vi.fn(), abandon: vi.fn(), get: vi.fn() },
+  runsApi: { quotaRecovery: vi.fn(), stop: vi.fn(), resume: vi.fn(), abandon: vi.fn(), get: vi.fn() },
   authorizationRequestsApi: { approve: vi.fn(), reject: vi.fn() },
 }))
 const canonical = { id: 'run-b', space_id: 'space-b', status: 'cancelled' } as Run
@@ -15,6 +15,12 @@ beforeEach(() => {
   vi.mocked(runsApi.get).mockResolvedValue(canonical)
 })
 describe('shared Run actions', () => {
+  it('sends model-switch consent only with the explicit quota action', async () => {
+    const { result } = renderHook(() => useRunActions('run-b', scope, vi.fn()))
+    await act(async () => { await result.current.perform({ kind: 'quota_recovery', autoContinue: true, switchModel: true }) })
+    expect(runsApi.quotaRecovery).toHaveBeenCalledWith('run-b', true, expect.objectContaining(scope), true)
+    expect(runsApi.resume).not.toHaveBeenCalled()
+  })
   it('removes panel listeners after a command completes normally', async () => {
     const panel = new AbortController()
     const remove = vi.spyOn(panel.signal, 'removeEventListener')
@@ -41,7 +47,7 @@ describe('shared Run actions', () => {
   })
   it('aborts an old command when changing Run/Space and ignores its late result', async () => {
     let finish!: () => void
-    vi.mocked(runsApi.stop).mockReturnValue(new Promise(resolve => { finish = () => resolve({}) }))
+    vi.mocked(runsApi.stop).mockReturnValue(new Promise(resolve => { finish = () => resolve({} as never) }))
     const changed = vi.fn()
     const { result, rerender } = renderHook(({ id, spaceId }) => useRunActions(id, { spaceId }, changed), { initialProps: { id: 'run-a', spaceId: 'space-a' } })
     let old!: Promise<boolean>

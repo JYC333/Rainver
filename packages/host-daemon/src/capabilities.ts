@@ -64,8 +64,10 @@ export interface RuntimeLookup {
  * installations.
  */
 export interface DaemonCapabilities {
-  execution_workspaces?: {version:1|2;reclaim?:1|2|3|4};
+  execution_workspaces?: {version:1|2;reclaim?:1|2|3|4|5;shared_review?:1};
   native_workspace_integration?:true;
+  /** The native integration replays a batch's commits onto the target (publication strategy `rebase`). */
+  native_workspace_rebase?:true;
   workspace_read_only?:{supported:boolean;mechanism:"bwrap-v1";reason:string|null};
   runtimes: ProbedBinary[];
   versions: Partial<Record<ProbedBinary, string>>;
@@ -84,7 +86,10 @@ export function executionWorkspaceCapability(platform:NodeJS.Platform=process.pl
   // reclaim:4 = that settle first keeps every dependent commit under an independent keeper ref
   // (refs/rainver/source-keepers/, which no release list can name), then settles and restores the
   // shared name in the same operation; a shared `sources` ref is deleted only by a fence-marked request.
-  return platform==='win32'?undefined:{version:2,reclaim:4};
+  // reclaim:5 = explicitly reviewed exact-tip discard through the same release fences.
+  // shared_review:1 = a read-only delegated review mounts an existing workspace
+  // read-only at a frozen `review_commit` under a shared lease (workspaceReview.ts).
+  return platform==='win32'?undefined:{version:2,reclaim:5,shared_review:1};
 }
 
 export function probeVersion(bin: string, timeoutMs = 4000, options: { args?: string[]; env?: NodeJS.ProcessEnv; cwd?: string } = {}): Promise<string | null> {
@@ -321,5 +326,5 @@ export async function detectCapabilities(
     versions[bin] = version;
   }
   const workspaceCapability=executionWorkspaceCapability();
-  return { runtimes, versions, installations, ...(workspaceCapability?{execution_workspaces:workspaceCapability,native_workspace_integration:true}:{}), workspace_read_only:await probeReadOnlyWorkspace() };
+  return { runtimes, versions, installations, ...(workspaceCapability?{execution_workspaces:workspaceCapability,native_workspace_integration:true,native_workspace_rebase:true}:{}), workspace_read_only:await probeReadOnlyWorkspace() };
 }

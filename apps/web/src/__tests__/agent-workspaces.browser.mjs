@@ -10,7 +10,7 @@ import { run } from '../modules/agent_work/fixtures.test-support.ts'
 // when the announcing request is on an earlier page (the child's server
 // delegation record groups it), the conversation's other unfinished work stays
 // reachable across pending pages, and Files & Code opens the paged Agent
-// workspace overview and returns.
+// workspace overview (one entry per conversation × repository, history folded) and returns.
 const space = 'space-aw', now = '2026-11-09T09:00:00Z', user = 'user-aw'
 const shots = process.env.AGENT_WORKSPACE_SHOTS ?? '/tmp/rainver-agent-workspace-shots'
 const project = { id: 'project-aw', space_id: space, name: 'Login service', status: 'active', current_user_can_read: true, current_user_can_write: true, owner_user_id: user }
@@ -34,13 +34,59 @@ const messages = [
   { id: 'final', session_id: session.id, space_id: space, role: 'assistant', user_id: null, sender_agent_id: manager.id, run_id: parent.id, content: 'The login flow is refactored, the new tests pass, and the change is merged into dev.', metadata_json: {}, created_at: '2026-11-09T09:10:00Z' },
 ]
 const laterChange = { ...retainedChange, change_set_id: 'change-later', workspace_id: 'ws-later', integration_id: 'merge-later', summary: 'Retained password reset work.' }
-const listItem = (o) => ({ generation: 1, owner_kind: 'conversation', folder: { id: folder.id, name: folder.name }, host: { name: 'Desk workstation', online: true }, conversation: { id: session.id, title: session.title, room_id: room.id }, task: null, agent: { id: manager.id, name: manager.name }, batch_count: 1, retention: null, created_at: now, activity_at: now, ...o })
+const listItem = (o) => ({ generation: 1, owner_kind: 'conversation', parent_workspace_id: null, folder: { id: folder.id, name: folder.name }, host: { name: 'Desk workstation', online: true }, conversation: { id: session.id, title: session.title, room_id: room.id }, task: null, agent: { id: manager.id, name: manager.name }, batch_count: 1, retention: null, created_at: now, activity_at: now, ...o })
 const current = [
   listItem({ workspace_id: 'ws-old', work_state: 'attention', run: { id: 'run-old', status: 'failed' }, conversation: { id: session.id, title: 'Cookie migration', room_id: room.id }, batch_count: 2 }),
   listItem({ workspace_id: 'ws-running', work_state: 'running', owner_kind: 'delegation', agent: { id: helper.id, name: helper.name }, run: { id: 'run-live', status: 'running' }, host: { name: 'Build box', online: false } }),
 ]
-const history = [listItem({ workspace_id: 'ws-parent', work_state: 'merged', run: { id: parent.id, status: 'succeeded' }, retention: reclaimed })]
+const missingRetention = { state: 'missing', reason: 'branch_missing', reclaim_after: null, hold_until: null, reclaimed_at: null, assessed_at: now, retained_refs: 0, unclaimed_refs: 0 }
+// A branch removed outside Rainver with unproven saved work, and a delegation forked from it.
+current.push(
+  listItem({ workspace_id: 'ws-missing', work_state: 'missing', retention: missingRetention, run: { id: 'run-missing', status: 'succeeded' }, conversation: { id: session.id, title: 'Payment retry', room_id: room.id } }),
+  listItem({ workspace_id: 'ws-missing-child', owner_kind: 'delegation', parent_workspace_id: 'ws-missing', work_state: 'saved', agent: { id: helper.id, name: helper.name }, run: { id: 'run-missing-child', status: 'succeeded' } }),
+)
+// The same kind of branch, removed and acknowledged earlier; a later Run then saved new work in it.
+// The server no longer applies the older reading to that work (assessed before it), so it reads as saved.
+current.push(listItem({ workspace_id: 'ws-resaved', work_state: 'saved', run: { id: 'run-resaved', status: 'succeeded' }, conversation: { id: session.id, title: 'Refund follow-up', room_id: room.id }, batch_count: 2 }))
+const resavedChange = { ...retainedChange, change_set_id: 'change-resaved', workspace_id: 'ws-resaved', state: 'open', source_commit: 'e'.repeat(40), integration_id: null, integration_revision: null, integration_status: null, integration_detail: null, summary: 'Refund retries after the branch came back.', cleanup_state: 'pending' }
+const closedMissingChange = { ...retainedChange, change_set_id: 'change-resaved-old', workspace_id: 'ws-resaved', state: 'abandoned', integration_id: null, integration_revision: null, integration_status: null, integration_detail: { missing_acknowledged: true }, summary: 'Earlier refund work on the removed branch.', cleanup_state: 'pending' }
+const missingChange = { ...retainedChange, change_set_id: 'change-missing', workspace_id: 'ws-missing', state: 'open', integration_id: null, integration_revision: null, integration_status: null, integration_detail: null, summary: 'Retry failed card payments.', retention: missingRetention, cleanup_state: 'pending' }
+const discardedRetention = { state:'reclaimed', reason:'discarded', reclaim_after:null,hold_until:null,reclaimed_at:now,assessed_at:now,retained_refs:0,unclaimed_refs:0 }
+const history = [listItem({workspace_id:'ws-discarded',work_state:'discarded',run:{id:'run-discarded',status:'succeeded'},retention:discardedRetention,conversation:{id:session.id,title:'Discarded prototype',room_id:room.id}}),listItem({ workspace_id: 'ws-parent', work_state: 'merged', run: { id: parent.id, status: 'succeeded' }, retention: reclaimed }),
+  listItem({ workspace_id: 'ws-adopted', work_state: 'in_target', run: { id: 'run-adopted', status: 'succeeded' }, conversation: { id: session.id, title: 'Manual squash', room_id: room.id } }),
+  listItem({ workspace_id: 'ws-closed', work_state: 'missing_closed', run: { id: 'run-closed', status: 'succeeded' }, conversation: { id: session.id, title: 'Removed experiment', room_id: room.id } })]
 const pageOf = items => ({ items, total: items.length, limit: 100, offset: 0 })
+// The default overview: one server-aggregated entry per conversation × repository,
+// with its generations (delegations, batches, reclaims) folded into `view=all`.
+const groupKey = conv => `c:${conv}:location-aw`
+const groupOf = (conv, title, members, extra = {}) => ({
+  group_key: groupKey(conv), conversation: { id: conv, title, room_id: room.id }, task: null, folder: { id: folder.id, name: folder.name }, host: members[0].host,
+  work_state: members[0].work_state, current: members[0], latest_result: null, issues: [], unconfirmed: [], unconfirmed_more: false, proven_duplicates: 0,
+  workspace_count: members.length, delegation_count: members.filter(m => m.owner_kind === 'delegation').length, batch_count: members.reduce((n, m) => n + m.batch_count, 0), activity_at: now, ...extra,
+})
+const byId = id => [...current, ...history].find(item => item.workspace_id === id)
+const members = {
+  [groupKey('conv-cookie')]: ['ws-old', 'ws-running'],
+  [groupKey('conv-payment')]: ['ws-missing', 'ws-missing-child'],
+  [groupKey('conv-refund')]: ['ws-resaved'],
+  [groupKey('conv-login')]: ['ws-parent'],
+  [groupKey('conv-settled')]: ['ws-adopted', 'ws-closed', 'ws-discarded'],
+}
+const currentGroups = [
+  groupOf('conv-cookie', 'Cookie migration', [byId('ws-old'), byId('ws-running')], { issues: [{ kind: 'attention', count: 1 }],
+    latest_result: { change_set_id: 'change-old', workspace_id: 'ws-old', state: 'blocked', landing: null, source_commit: 'd'.repeat(40), agent: { id: manager.id, name: manager.name }, run: { id: 'run-old', status: 'failed' }, activity_at: now } }),
+  groupOf('conv-payment', 'Payment retry', [byId('ws-missing'), byId('ws-missing-child')], { work_state: 'missing', issues: [{ kind: 'missing', count: 1 }, { kind: 'unconfirmed', count: 2 }], proven_duplicates: 1,
+    unconfirmed: [
+      { change_set_id: 'change-missing-child', workspace_id: 'ws-missing-child', generation: 1, owner_kind: 'delegation', reason: 'saved_not_merged', source_commit: 'f'.repeat(40), same_commit_count: 1, agent: { id: helper.id, name: helper.name }, run: { id: 'run-missing-child', status: 'succeeded' }, activity_at: now },
+      { change_set_id: 'change-missing', workspace_id: 'ws-missing', generation: 1, owner_kind: 'conversation', reason: 'saved_not_merged', source_commit: 'd'.repeat(40), same_commit_count: 0, agent: { id: manager.id, name: manager.name }, run: { id: 'run-missing', status: 'succeeded' }, activity_at: now },
+    ] }),
+  groupOf('conv-refund', 'Refund follow-up', [byId('ws-resaved')], { issues: [{ kind: 'unconfirmed', count: 1 }],
+    unconfirmed: [{ change_set_id: 'change-resaved', workspace_id: 'ws-resaved', generation: 1, owner_kind: 'conversation', reason: 'saved_not_merged', source_commit: 'e'.repeat(40), same_commit_count: 0, agent: { id: manager.id, name: manager.name }, run: { id: 'run-resaved', status: 'succeeded' }, activity_at: now }] }),
+]
+const historyGroups = [
+  groupOf('conv-login', 'Refactor the login flow', [byId('ws-parent')], { latest_result: { change_set_id: 'change-parent', workspace_id: 'ws-parent', state: 'integrated', landing: 'target', source_commit: 'b'.repeat(40), agent: { id: manager.id, name: manager.name }, run: { id: parent.id, status: 'succeeded' }, activity_at: now } }),
+  groupOf('conv-settled', 'Settled work', [byId('ws-adopted'), byId('ws-closed'), byId('ws-discarded')], { work_state: 'in_target' }),
+]
 
 async function fixtures(page, seen) {
   await page.route('**/api/v1/**', async route => {
@@ -52,16 +98,23 @@ async function fixtures(page, seen) {
     else if (path === '/plugins/effective') data = { plugins: {} }
     else if (path === '/projects') data = pageOf([project])
     else if (path === `/projects/${project.id}`) data = project
-    else if (path === `/projects/${project.id}/overview`) data = { project, brief: null, attention: [] }
+    else if (path === `/projects/${project.id}/overview`) data = { project, brief: null, attention: seen.liveTest&&seen.liveStage!==1?[{id:'task-live',title:'Waiting task',summary:null,href:'/tasks/live',attention_class:'gate',severity:'normal'}]:[] }
     else if (path === `/projects/${project.id}/mainline-room`) data = { room, viewer_can_write: true, other_member_names: [], agent_count: 1, agent_members: [{ agent_id: manager.id, agent_name: manager.name, role: 'manager', status: 'active' }], user_members: [] }
     else if (path === `/projects/${project.id}/folders`) data = pageOf([folder])
     else if (path === `/projects/${project.id}/folders/${folder.id}/locations`) data = [{ id: 'location-aw', project_folder_id: folder.id, execution_host_id: 'desk', execution_host_kind: 'remote', host_name: 'Desk workstation', display_path: '~/src/login-service', root_path: null, status: 'active', execution_ready: true, host_online: true }]
     else if (path === `/projects/${project.id}/folders/${folder.id}/tree`) data = { name: folder.name, path: '', type: 'dir', children: [{ name: 'README.md', path: 'README.md', type: 'file' }, { name: 'src', path: 'src', type: 'dir', children: [] }] }
     else if (path === `/projects/${project.id}/folders/${folder.id}/git/status`) data = { is_repo: true, branch: 'dev', files: [], truncated: false }
-    else if (path === `/projects/${project.id}/agent-workspaces`) {
+    else if (path === `/projects/${project.id}/agent-workspace-groups`) {
       const view = url.searchParams.get('view'), cursor = url.searchParams.get('cursor'); seen.views.push(cursor ? `${view}+` : view)
-      data = view === 'history' ? { items: history, next_cursor: null } : cursor === 'c2' ? { items: current.slice(1), next_cursor: null } : { items: current.slice(0, 1), next_cursor: 'c2' }
+      const fresh = listItem({ workspace_id: 'ws-new', work_state: 'saved', conversation: { id: 'conv-new', title: 'New Agent work', room_id: room.id }, run: { id: 'run-new', status: 'succeeded' } })
+      data = seen.liveTest&&view!=='history'&&seen.liveStage===1?{items:[],next_cursor:null}:seen.liveTest&&view!=='history'&&seen.liveStage===2?{items:[groupOf('conv-new','New Agent work',[fresh])],next_cursor:null}:view === 'history' ? { items: historyGroups, next_cursor: null } : cursor === 'g2' ? { items: currentGroups.slice(1), next_cursor: null } : { items: currentGroups.slice(0, 1), next_cursor: 'g2' }
     }
+    else if (path === `/projects/${project.id}/agent-workspaces`) {
+      const group = url.searchParams.get('group'); seen.histories.push(group)
+      data = url.searchParams.get('view') === 'all' && members[group] ? { items: members[group].map(byId), next_cursor: null } : { items: [], next_cursor: null }
+    }
+    else if (path === `/projects/${project.id}/agent-workspaces/ws-missing`) data = { workspace_id: 'ws-missing', items: [{ change: missingChange, run: { id: 'run-missing', status: 'succeeded', agent_id: manager.id } }], next_cursor: null }
+    else if (path === `/projects/${project.id}/agent-workspaces/ws-resaved`) data = { workspace_id: 'ws-resaved', items: [{ change: resavedChange, run: { id: 'run-resaved', status: 'succeeded', agent_id: manager.id } }, { change: closedMissingChange, run: { id: 'run-resaved-old', status: 'succeeded', agent_id: manager.id } }], next_cursor: null }
     else if (path === `/projects/${project.id}/agent-workspaces/ws-old`) data = { workspace_id: 'ws-old', items: [{ change: retainedChange, run: { id: 'run-old', status: 'failed', agent_id: manager.id } }] }
     else if (path === '/rooms') data = pageOf([room])
     else if (path === '/rooms/pending-approvals') data = pageOf([])
@@ -69,7 +122,7 @@ async function fixtures(page, seen) {
     else if (path === `/rooms/${room.id}/conversations`) data = pageOf([session])
     else if (path === `/rooms/${room.id}/agent-candidates`) data = { agents: [], presets: [], total: 0, limit: 100, offset: 0 }
     else if (path === `/rooms/${room.id}/invitations`) data = pageOf([])
-    else if (path.endsWith('/messages')) data = { ...pageOf(messages), queued: [] }
+    else if (path.endsWith('/messages')) data = { ...pageOf(messages.map(m => seen.reviewRefusal && m.run_id === child.id ? {...m, content: seen.reviewRefusal} : m)), queued: [] }
     else if (path === `/sessions/${session.id}`) data = session
     else if (path === `/sessions/${session.id}/workspace-changes`) data = url.searchParams.get('cursor') === 'p2'
       ? { items: [{ change: laterChange, run: { id: 'run-later', status: 'failed', agent_id: manager.id } }], next_cursor: null }
@@ -85,7 +138,7 @@ async function fixtures(page, seen) {
     else if (path.endsWith('/conversation-backends')) data = { options: [], binding: null }
     else if (path.endsWith('/members')) data = [{ agent_id: manager.id, agent_name: manager.name, status: 'active' }]
     else if (path.endsWith('/quota')) data = { warn_pct: 80, logins: [], holds: [] }
-    else if (runs[path.replace('/runs/', '')]) data = runs[path.replace('/runs/', '')]
+    else if (runs[path.replace('/runs/', '')]) data = seen.reviewRefusal && path === `/runs/${child.id}` ? {...child,status:'failed',workspace_changes:[],contract_snapshot_json:{execution_workspace_version:1,workspace_access:'read'}} : runs[path.replace('/runs/', '')]
     else if (/^\/runs\/[^/]+\/turn$/.test(path)) { const id = path.split('/')[2]; data = { schema_version: 'run_turn.v1', source: 'run_events', cursor: 1, updated_at: now, run_id: id, state: 'done', blocked_on: null, parts: [{ type: 'tool_call', index: 0, name: 'edit_file', status: 'succeeded', input_summary: 'src/login.ts' }, { type: 'text', index: 1, text: messages.find(m => m.run_id === id)?.content ?? '' }] } }
     else if (/\/runs\/[^/]+\/(evaluations|verifications|finalizations|authorization-requests)$/.test(path)) data = []
     else if (/\/runs\/[^/]+\/(activities|artifacts|proposals)$/.test(path)) data = pageOf([])
@@ -109,7 +162,24 @@ async function capture(page, name, full = true) { await settle(page); const size
 async function open(locale, theme, width) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, serviceWorkers: 'block' })
   await context.addInitScript(locale => localStorage.setItem('rainver:locale', locale), locale)
-  const page = await context.newPage(), seen = { writes: [], views: [], errors: [] }
+  await context.addInitScript(()=>{
+    const original=window.fetch.bind(window)
+    window.fetch=(input,options)=>{
+      if(String(input).includes('/updates/stream')){
+        window.__projectStreamConnections=(window.__projectStreamConnections??0)+1
+        const encoder=new TextEncoder()
+        const stream=new ReadableStream({start(controller){
+          let closed=false
+          window.__projectChanged=()=>{if(!closed)controller.enqueue(encoder.encode('event: project.changed\ndata: {"type":"changed"}\n\n'))}
+          controller.enqueue(encoder.encode('event: project.ready\ndata: {"type":"ready"}\n\n'))
+          options?.signal?.addEventListener('abort',()=>{if(!closed){closed=true;controller.close()}})
+        }})
+        return Promise.resolve(new Response(stream,{headers:{'content-type':'text/event-stream'}}))
+      }
+      return original(input,options)
+    }
+  })
+  const page = await context.newPage(), seen = { writes: [], views: [], histories: [], errors: [] }
   page.setDefaultTimeout(10000); page.on('pageerror', e => seen.errors.push(e.message))
   await fixtures(page, seen)
   return { context, page, seen, light: async () => { if (theme === 'light') await page.evaluate(() => document.documentElement.classList.add('theme-light')) } }
@@ -164,20 +234,30 @@ for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for
       await capture(page, `files-entry-${tag}`, false)
       await entry.click()
       await page.waitForURL(`**/projects/${project.id}/files/workspaces`)
-      const row = page.getByTestId('agent-workspace-ws-old'); await row.waitFor()
+      const cookie = page.getByTestId(`agent-workspace-group-${groupKey('conv-cookie')}`); await cookie.waitFor()
       await page.getByRole('button', { name: L(locale, 'Load more', '加载更多'), exact: true }).click()
-      await page.getByTestId('agent-workspace-ws-running').waitFor()
-      assert.match(await row.innerText(), L(locale, /Cookie migration[\s\S]*Needs attention/, /Cookie migration[\s\S]*需要处理/))
-      assert.match(await page.getByTestId('agent-workspace-ws-running').innerText(), L(locale, /Delegated work[\s\S]*Build box offline/, /委派工作[\s\S]*Build box 离线/))
+      await page.getByTestId(`agent-workspace-group-${groupKey('conv-refund')}`).waitFor()
+      const cookieText = await cookie.innerText()
+      assert.match(cookieText, L(locale, /Cookie migration[\s\S]*Needs attention[\s\S]*Latest result:[\s\S]*ddddddd/, /Cookie migration[\s\S]*需要处理[\s\S]*最新成果：[\s\S]*ddddddd/))
+      assert.match(cookieText, L(locale, /Execution history \(2 workspaces · 3 batches\)/, /执行历史（2 个工作区 · 3 个批次）/))
+      // Generations, delegations and batches stay folded: nothing read until asked.
+      assert.equal(await cookie.getByTestId('agent-workspace-ws-old').count(), 0)
+      assert.deepEqual(seen.histories, [])
       await capture(page, `overview-current-${tag}`)
+      await cookie.getByRole('button', { name: L(locale, /Execution history/, /执行历史/) }).click()
+      const row = cookie.getByTestId('agent-workspace-ws-old'); await row.waitFor()
+      assert.deepEqual(seen.histories, [groupKey('conv-cookie')])
+      assert.match(await cookie.getByTestId('agent-workspace-ws-running').innerText(), L(locale, /Delegated work[\s\S]*Build box offline/, /委派工作[\s\S]*Build box 离线/))
+      await capture(page, `overview-group-history-${tag}`)
       await row.getByRole('button', { name: L(locale, 'Details', '详情'), exact: true }).click()
       await row.getByRole('button', { name: L(locale, 'Check whether already integrated', '核对是否已合入'), exact: true }).waitFor()
       assert.equal(await row.getByText('src/session.ts').count(), 1)
       await capture(page, `overview-detail-${tag}`)
       await page.getByRole('tab', { name: L(locale, 'History', '历史'), exact: true }).click()
-      await page.getByTestId('agent-workspace-ws-parent').waitFor()
+      const login = page.getByTestId(`agent-workspace-group-${groupKey('conv-login')}`); await login.waitFor()
+      assert.match(await login.innerText(), L(locale, /Refactor the login flow[\s\S]*Merged[\s\S]*bbbbbbb/, /Refactor the login flow[\s\S]*已合入[\s\S]*bbbbbbb/))
       await capture(page, `overview-history-${tag}`)
-      assert.deepEqual(seen.views, ['current', 'current+', 'history'])
+      assert.ok(seen.views.includes('current')&&seen.views.includes('current+')&&seen.views.at(-1)==='history',JSON.stringify(seen.views))
       await page.getByRole('link', { name: L(locale, 'Files & Code', '文件与代码'), exact: true }).first().click()
       await page.waitForURL(`**/projects/${project.id}/files`)
       await page.getByText('README.md').first().waitFor()
@@ -185,4 +265,101 @@ for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for
       assert.deepEqual(seen.errors, [])
     } finally { await context.close() }
   })
+
+  test(`missing branch, delegated grouping and settled history in the overview: ${tag}`, async () => {
+    const { context, page, seen, light } = await open(locale, theme, width)
+    try {
+      await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/files/workspaces`); await light()
+      await page.getByTestId(`agent-workspace-group-${groupKey('conv-cookie')}`).waitFor()
+      await page.getByRole('button', { name: L(locale, 'Load more', '加载更多'), exact: true }).click()
+      const payment = page.getByTestId(`agent-workspace-group-${groupKey('conv-payment')}`); await payment.waitFor()
+      // Unconfirmed saved work stays listed; only a proven identical commit is folded away.
+      const unconfirmed = payment.getByRole('region', { name: L(locale, '2 saved changes not confirmed as merged', '2 项保存内容尚未确认合入') })
+      assert.match(await unconfirmed.innerText(), L(locale, /Saved, not merged[\s\S]*fffffff[\s\S]*\+1 at the same commit/, /已保存，未合入[\s\S]*fffffff[\s\S]*另有 1 项为同一提交/))
+      assert.match(await payment.innerText(), L(locale, /1 branch removed[\s\S]*2 saved changes to check[\s\S]*1 saved batch is folded away/, /1 个分支已删除[\s\S]*2 项保存内容待核对[\s\S]*1 个保存批次已折叠/))
+      await payment.evaluate(e => e.scrollIntoView({ block: 'start' }))
+      await capture(page, `overview-unconfirmed-${tag}`)
+      await payment.getByRole('button', { name: L(locale, /Execution history/, /执行历史/) }).click()
+      const row = page.getByTestId('agent-workspace-ws-missing'); await row.waitFor()
+      assert.match(await row.innerText(), L(locale, /Payment retry[\s\S]*Branch removed · not merged/, /Payment retry[\s\S]*分支已删除 · 未合入/))
+      const group = page.getByTestId('agent-workspace-delegations-ws-missing')
+      assert.equal(await group.getByTestId('agent-workspace-ws-missing-child').count(), 1)
+      assert.match(await group.innerText(), L(locale, /1 delegated workspace/, /1 个委派工作区/))
+      assert.equal(await row.getByText(L(locale, 'Merged', '已合入'), { exact: true }).count(), 0)
+      await row.evaluate(e => e.scrollIntoView({ block: 'start' }))
+      await capture(page, `overview-missing-${tag}`)
+      await row.getByRole('button', { name: L(locale, 'Details', '详情'), exact: true }).first().click()
+      await row.getByRole('button', { name: L(locale, 'Close missing records', '关闭缺失记录'), exact: true }).click()
+      await row.getByRole('button', { name: L(locale, 'Close records', '关闭记录'), exact: true }).waitFor()
+      assert.deepEqual(seen.writes.filter(p => p !== '/me/agent-attention/views'), [])
+      await capture(page, `overview-missing-confirm-${tag}`)
+      await row.getByRole('button', { name: L(locale, 'Cancel', '取消'), exact: true }).click()
+      // A later Run's saved work after an earlier, closed missing record: unmerged, never "missing" or "closed".
+      await page.getByTestId(`agent-workspace-group-${groupKey('conv-refund')}`).getByRole('button', { name: L(locale, /Execution history/, /执行历史/) }).click()
+      const resaved = page.getByTestId('agent-workspace-ws-resaved'); await resaved.waitFor()
+      const resavedLine = await resaved.innerText()
+      assert.match(resavedLine, L(locale, /Refund follow-up[\s\S]*Saved privately, not merged/, /Refund follow-up[\s\S]*已私下保存，未合入/))
+      assert.doesNotMatch(resavedLine, L(locale, /Branch removed|Closed · branch was removed/, /分支已删除|已关闭 · 分支已被删除/))
+      await resaved.getByRole('button', { name: L(locale, 'Details', '详情'), exact: true }).first().click()
+      const latest = resaved.getByTestId('workspace-change-change-resaved'); await latest.waitFor()
+      assert.doesNotMatch(await latest.innerText(), L(locale, /Branch removed|Close missing records/, /分支已删除|关闭缺失记录/))
+      assert.equal(await resaved.getByRole('button', { name: L(locale, 'Close missing records', '关闭缺失记录'), exact: true }).count(), 0)
+      await resaved.evaluate(e => e.scrollIntoView({ block: 'start' }))
+      await capture(page, `overview-resaved-${tag}`)
+      await page.getByRole('tab', { name: L(locale, 'History', '历史'), exact: true }).click()
+      await page.getByTestId(`agent-workspace-group-${groupKey('conv-settled')}`).getByRole('button', { name: L(locale, /Execution history/, /执行历史/) }).click()
+      await page.getByTestId('agent-workspace-ws-adopted').waitFor()
+      assert.match(await page.getByTestId('agent-workspace-ws-adopted').innerText(), L(locale, /Already in the target/, /内容已在目标分支中/))
+      assert.match(await page.getByTestId('agent-workspace-ws-closed').innerText(), L(locale, /Closed · branch was removed/, /已关闭 · 分支已被删除/))
+      const discarded = await page.getByTestId('agent-workspace-ws-discarded').innerText()
+      assert.match(discarded,L(locale,/Discarded by request; workspace and branch reclaimed/,/已按要求丢弃，工作区与分支已于/))
+      assert.doesNotMatch(discarded,L(locale,/content is in the target|Kept without merging/,/内容已在目标分支中|保留但不合入/))
+      await capture(page, `overview-history-settled-${tag}`)
+      assert.deepEqual(seen.writes.filter(p => p !== '/me/agent-attention/views'), [])
+      assert.deepEqual(seen.errors, [])
+    } finally { await context.close() }
+  })
+}
+
+for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const width of [390,1280]){
+ test(`Project events update workspace creation/closure and Pulse badge without navigation: ${locale}-${theme}-${width}`,async()=>{
+  const {context,page,seen,light}=await open(locale,theme,width)
+  seen.liveTest=true;seen.liveStage=0
+  try{
+   await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/files/workspaces`);await light()
+   await page.getByTestId(`agent-workspace-group-${groupKey('conv-cookie')}`).waitFor()
+   const pulse=page.getByRole('link',{name:/^Pulse/,includeHidden:true})
+   await page.waitForFunction(()=>document.querySelector('[data-project-navigation] a')&&window.__projectChanged)
+   assert.match(await pulse.innerText(),/1/)
+   seen.liveStage=1;await page.evaluate(()=>window.__projectChanged())
+   await page.getByTestId(`agent-workspace-group-${groupKey('conv-cookie')}`).waitFor({state:'detached'})
+   await page.getByText(L(locale,'Nothing active or pending','没有进行中或待处理的工作'),{exact:true}).waitFor()
+   await page.waitForFunction(()=>[...document.querySelectorAll('[data-project-navigation] a')].find(e=>e.textContent.includes('Pulse'))?.textContent.trim()==='Pulse')
+   seen.liveStage=2;await page.evaluate(()=>window.__projectChanged())
+   await page.getByTestId(`agent-workspace-group-${groupKey('conv-new')}`).waitFor()
+   await page.waitForFunction(()=>[...document.querySelectorAll('[data-project-navigation] a')].find(e=>e.textContent.includes('Pulse'))?.textContent.includes('1'))
+   assert.equal(await page.evaluate(()=>window.__projectStreamConnections),1)
+   await capture(page,`live-project-${locale}-${theme}-${width}`)
+   assert.deepEqual(seen.errors,[])
+  }finally{await context.close()}
+ })
+}
+
+for (const [locale,theme,width] of [['en','dark',1280],['zh-CN','light',390]]) {
+ test(`refused review never claims to judge the frozen version: ${locale}-${theme}-${width}`,async()=>{
+  const {context,page,seen,light}=await open(locale,theme,width)
+  const refusal='[Not reviewed: the Host refused to read your workspace at commit bbbbbbbbbbbb because read-only isolation was unavailable. This result does not judge that version.]'
+  seen.reviewRefusal=refusal
+  try {
+   await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`);await light()
+   // Failed reviews are already expanded by the conversation surface.
+   const disclosure=page.getByText(L(locale,'Delegated result · expand to read','委派结果 · 点击展开'),{exact:true})
+   if(await disclosure.count())await disclosure.click()
+   await page.getByText(refusal,{exact:true}).waitFor()
+   await settle(page)
+   await page.getByText(refusal,{exact:true}).evaluate(e=>e.scrollIntoView({block:'center'}))
+   assert.equal(await page.getByText(/Reviewed read-only at your workspace/).count(),0)
+   await capture(page,`review-refused-${locale}-${theme}-${width}`,false)
+  } finally {await context.close()}
+ })
 }

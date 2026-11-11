@@ -1,9 +1,13 @@
 import {executeWorkspaceRunReply} from './workspaceRunReply.js';
 import {enqueueLegacyWorkspaceProfileArchive} from '../hosts/workspaceCleanup.js';
+import {settleLaunchProfileArchives} from '../hosts/managedWorkspaceArchiveRecovery.js';
+import {agentHostResetFence} from '../hosts/hostCommands.js';
 import {workspaceIntegrationRecoveryHints,workspaceClosureRecoveryHints} from '../projectFolders/workspaceRecovery.js';
 import {executionWorkspaceMountRef,resolveWorkspaceScope} from '../hosts/workspaceScopes.js';
 import {workspaceLocationFrame} from '../hosts/workspaceLocation.js';
-import {ensureExecutionWorkspace, integrationWorkspaceForRun, isolatedWorkspaceContract, recordWorkspaceLaunch} from "../projectFolders/executionWorkspaces.js";
+import {ensureExecutionWorkspace, ensurePrimaryExecutionWorkspace, integrationWorkspaceForRun, isolatedWorkspaceContract, recordWorkspaceLaunch} from "../projectFolders/executionWorkspaces.js";
+import {delegatedReviewInstruction,sharedDelegationInstruction} from "../projectFolders/delegatedWorkspaceInstructions.js";
+import {recordReviewRefusal} from "../projectFolders/delegatedWorkspaceReview.js";
 import { randomUUID } from "node:crypto";
 import { ordinaryToolsForLaunch } from "./ordinaryToolLaunch.js";
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type HostLaunchOrdinaryTools, type InvocationDelivery, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent, type RuntimeSessionConfigDroppedSelection as DroppedSessionConfigSelection } from "@rainver/protocol";
@@ -30,6 +34,7 @@ import {
   withAcpModelSelection,
 } from "./cliConversationProtocol.js";
 import { createVendorEventNormalizer } from "./runtimeEventNormalization.js";
+import { directRestoreIdentity, HOST_UPDATE_REQUIRED, restoreDirectManagedWorkspace, settleConversationCwdArchives, type DirectRestoreIdentity } from "../hosts/managedWorkspaceOperations.js";
 import { sharedHostConnectionRegistry, type HostConnectionRegistry, type HostRunCompletion } from "../hosts/connectionRegistry.js";
 import { createThreadEventNormalizer, type ThreadEventDraft } from "../hosts/threadEventNormalization.js";
 import { registerRunLiveInput } from "./liveInput.js";
@@ -38,7 +43,7 @@ import { ConversationInputService } from "../sessions/conversationInputService.j
 import { promptInputLimitFailure, RUNTIME_INPUT_TOO_LARGE } from "./promptInputLimit.js";
 import type { ServerConfig } from "../../config.js";
 import type { ProviderProxyLeaseRegistry } from "../providers/proxy/lease.js";
-import { objectValue, type Queryable } from "../routeUtils/common.js";
+import { objectValue, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { managedHostEgressTransport, readInstanceOperationsPolicy } from "../settings/index.js";
 import {
   boundAcpModelId,
@@ -354,6 +359,14 @@ async function executeRemoteHostCliPhase(
   }
 }
 
+/** The frozen restore request of a direct chat turn, if it carries one. */
+function directTurnRestore(run: RemoteHostCliAdapterInput["run"]): { agentId: string; userId: string; includeWorkspace: boolean; identity: DirectRestoreIdentity | null } | null {
+  const turn = (run.model_override_json as { chat_turn?: { user_id?: unknown; agent_id?: unknown; restore_managed_workspace?: { include_workspace?: unknown } } } | null)?.chat_turn;
+  if (!turn?.restore_managed_workspace || typeof turn.user_id !== "string" || typeof turn.agent_id !== "string") return null;
+  return { agentId: turn.agent_id, userId: turn.user_id, includeWorkspace: turn.restore_managed_workspace.include_workspace === true,
+    identity: directRestoreIdentity(turn.restore_managed_workspace) };
+}
+
 async function runRemoteHostCliAdapter(
   input: RemoteHostCliAdapterInput,
   hostId: string,
@@ -461,7 +474,61 @@ async function runRemoteHostCliAdapter(
   }
 
   const registry = deps.connectionRegistry ?? sharedHostConnectionRegistry;
-  let isolated:Awaited<ReturnType<typeof ensureExecutionWorkspace>>|null=null;
+  // A reset of this Agent's profiles on this Host that the Host has not settled keeps this launch, and
+  // every Host profile/workspace step before it (a direct turn's restore, an owed archive), off them.
+  // A reset admitted later is refused while this Run's thread holds its dispatch lock or the Run is in flight.
+  {
+    const fenceDb = deps.db ?? (deps.config?.databaseUrl ? getDbPool(deps.config.databaseUrl) : null);
+    const reset = fenceDb && input.run.agent_id
+      ? await withQueryableTransaction(fenceDb, (db) => agentHostResetFence(db, hostId, input.run.agent_id!))
+      : null;
+    if (reset) {
+      return remoteFailureWithEvent(input, spec.runtime_key, "agent_host_state_reset_pending",
+        "Clearing this Agent's CLI state on the execution Host has not finished; try again once it completes.",
+        startedAt);
+    }
+  }
+  // A direct turn that asked for its archived managed workspace back gets it
+  // here, in the worker and before launch — never inside the turn's admission
+  // transaction. It is the turn's one journaled Host operation, repeated by a
+  // retry of the turn; a failure fails this turn, which the person can retry,
+  // and nothing launches on the archived state. A Host that cannot journal it,
+  // or a turn without its identity, is refused rather than restored blind.
+  const restore = directTurnRestore(input.run);
+  if (restore) {
+    const db = deps.db ?? (deps.config?.databaseUrl ? getDbPool(deps.config.databaseUrl) : null);
+    const restored = db
+      ? await restoreDirectManagedWorkspace(db, { hostId, ...restore }, registry)
+      : { ok: false, changed: false, error: HOST_UPDATE_REQUIRED };
+    if (!restored.ok) {
+      return remoteFailureWithEvent(input, spec.runtime_key, "managed_workspace_restore_failed",
+        restored.error === "host_offline"
+          ? "The execution Host is offline; the previous managed workspace was not restored."
+          : restored.error === HOST_UPDATE_REQUIRED
+            ? "The execution Host must be updated before the previous managed workspace can be restored."
+            : "The previous managed workspace could not be restored.",
+        startedAt);
+    }
+    if (stopRequested()) return stoppedBeforeLaunch();
+  }
+  // A shared Conversation cwd: an earlier Agent's archive that moves it lands before this Run uses it, never after.
+  if (input.workspace?.kind === "managed" && input.workspace.container.kind === "conversation") {
+    const db = deps.db ?? (deps.config?.databaseUrl ? getDbPool(deps.config.databaseUrl) : null);
+    const settled = db
+      ? await settleConversationCwdArchives(db, { hostId, conversationId: input.workspace.container.conversation_id }, registry)
+      : { ok: true, changed: false, error: null };
+    if (!settled.ok) {
+      return remoteFailureWithEvent(input, spec.runtime_key, "managed_workspace_archive_unsettled",
+        settled.error === "host_offline"
+          ? "The execution Host is offline; an earlier archive of this conversation's workspace is not confirmed."
+          : settled.error === HOST_UPDATE_REQUIRED
+            ? "The execution Host must be updated before a Run can start while an earlier archive of this conversation's workspace is owed."
+            : "An earlier archive of this conversation's workspace is not confirmed yet; try again.",
+        startedAt);
+    }
+    if (stopRequested()) return stoppedBeforeLaunch();
+  }
+  let isolated:Awaited<ReturnType<typeof ensurePrimaryExecutionWorkspace>>|null=null;
   const normalizedScopes=new Map<string,Awaited<ReturnType<typeof resolveWorkspaceScope>>>();
   const canonicalGrants=new Map<string,'read'|'write'>();
   if(isolatedWorkspaceContract(input.run.contract_snapshot_json)&&deps.config?.databaseUrl&&input.run.project_id&&!(input.run.contract_snapshot_json as {workspace_integration_id?:string}).workspace_integration_id){
@@ -483,12 +550,14 @@ async function runRemoteHostCliAdapter(
       const workspaceDb=deps.db??getDbPool(deps.config.databaseUrl);
       const repairContract=input.run.contract_snapshot_json as {workspace_integration_id?:string};
       const scope=normalizedScopes.get(workspaceLocationId);
-      isolated=await (repairContract.workspace_integration_id?integrationWorkspaceForRun:ensureExecutionWorkspace)(workspaceDb,input.run,hostId,scope?.locationId??workspaceLocationId);
+      isolated=await (repairContract.workspace_integration_id?integrationWorkspaceForRun:ensurePrimaryExecutionWorkspace)(workspaceDb,input.run,hostId,scope?.locationId??workspaceLocationId);
       if(scope){isolated.ref=executionWorkspaceMountRef(isolated.ref,scope.subpath);await workspaceDb.query('UPDATE execution_workspace_runs SET launch_reference_json=$3::jsonb WHERE run_id=$1 AND workspace_id=$2',[input.run.id,isolated.workspace.id,JSON.stringify(isolated.ref)]);}
       input.workspace=repairContract.workspace_integration_id
         ?await workspaceLocationFrame(workspaceDb,isolated.workspace,isolated.ref,deps.config.workspaceRoot,input.run.instructed_by_user_id??input.run.owner_user_id??undefined)
         :{...(scope?.workspace??launchWorkspace(input.workspace,workspaceLocationId,input.workspace_relative_path??null)!),execution_workspace:isolated.ref} as LaunchWorkspace;
-      if(!isolated.ref.integration_id&&input.run.host_task_thread_id&&input.run.agent_id&&input.run.session_id){
+      const review=isolated.review;
+      const sharedChild=isolated.sharedWithCoordinator===true;
+      if(!review&&!isolated.ref.integration_id&&input.run.host_task_thread_id&&input.run.agent_id&&input.run.session_id){
         const oldBinding=(await workspaceDb.query<{execution_workspace_json:unknown}>('SELECT execution_workspace_json FROM host_threads WHERE id=$1',[input.run.host_task_thread_id])).rows[0]?.execution_workspace_json;
         if(!oldBinding)await enqueueLegacyWorkspaceProfileArchive(workspaceDb,isolated.workspace,input.run.agent_id,input.run.session_id,input.run.instructed_by_user_id??input.run.owner_user_id!);
       }
@@ -499,13 +568,15 @@ async function runRemoteHostCliAdapter(
         if(previous?.id!==isolated.workspace.id||previous.generation!==isolated.workspace.generation)input.resume_session_id=null;
       }
       if(input.run.host_task_thread_id)await (deps.db??getDbPool(deps.config.databaseUrl)).query("UPDATE host_threads SET execution_workspace_json=$2::jsonb WHERE id=$1 AND execution_host_id=$3",[input.run.host_task_thread_id,JSON.stringify({id:isolated.workspace.id,generation:isolated.workspace.generation,profile_container_id:isolated.ref.integration_id??isolated.workspace.id}),hostId]);
-      if(!isolated.ref.integration_id)supplementalInstructions.push(`Work in this conversation's isolated worktree. You can edit files, inspect Git and use normal Git operations on your own working branch; shared target publication uses workspace.change.complete. Your change set is ${isolated.changeSetId}, revision ${isolated.changeRevision}. For a private save without merging, use normal Git or action=checkpoint alone; do not prepare/publish. For an authorized merge, call workspace.change.complete with action=prepare and a summary. Read workspace.change.get for the actual result and current revision. Preparation applies only this batch's changes onto the target in your CURRENT worktree, retaining your original session and dependencies. Resolve conflicts yourself here, including any necessary related fixes; do not ask for test-command configuration or internal IDs. Save a version using your own Git commit or action=checkpoint, run appropriate project checks in this SAME runtime environment, repair failures and repeat as needed. Then call action=publish with verification={commit:the version you checked,checks:[{command,summary}],note:what you checked}. If there are no applicable checks, use an empty checks array with an honest inspection note. Wait for pending Git operations before editing files or issuing another workspace command. After each operation, workspace.change.get supplies the current revision and progress. If target_moved, prepare again and check the updated result. Only merged/no_changes completes publication; obtain that result BEFORE your final response. There is no successor Agent, configuration phase or system-run test environment. Do not move shared target refs yourself. A prepared or checkpointed commit is private until publish succeeds.`);
+      if(review)supplementalInstructions.push(delegatedReviewInstruction(review.commit));
+      else if(sharedChild)supplementalInstructions.push(sharedDelegationInstruction(isolated.changeSetId!,isolated.changeRevision!));
+      else if(!isolated.ref.integration_id)supplementalInstructions.push(`Work in this conversation's isolated worktree. You can edit files, inspect Git and use normal Git operations on your own working branch; shared target publication uses workspace.change.complete. Your change set is ${isolated.changeSetId}, revision ${isolated.changeRevision}. For a private save without merging, use normal Git or action=checkpoint alone; do not prepare/publish. For an authorized merge, call workspace.change.complete with action=prepare and a summary. Read workspace.change.get for the actual result and current revision. Preparation rebases by default: your uncommitted edits are saved as one commit, then only this batch's own commits are replayed onto the target in your CURRENT worktree, one at a time, retaining your original session and dependencies; the target is later fast-forwarded to them. If prepare reports a conflict, it has stopped at one commit: resolve the listed files here (including any necessary related fixes; do not run git rebase yourself) and call prepare again to continue, until it reports prepared. Use publication={strategy:'squash',user_request_quote:<the person's words>} only when the person explicitly asked for a squash in their current message; never choose squash yourself. Do not ask for test-command configuration or internal IDs. Save a version using your own Git commit or action=checkpoint, run appropriate project checks in this SAME runtime environment, repair failures and repeat as needed. Then call action=publish with verification={commit:the version you checked,checks:[{command,summary}],note:what you checked}. If there are no applicable checks, use an empty checks array with an honest inspection note. Wait for pending Git operations before editing files or issuing another workspace command. After each operation, workspace.change.get supplies the current revision and progress. If target_moved, prepare again and check the updated result. Only merged/no_changes completes publication; obtain that result BEFORE your final response. There is no successor Agent, configuration phase or system-run test environment. Do not move shared target refs yourself. A prepared or checkpointed commit is private until publish succeeds.`);
       const recoveryUser=input.run.instructed_by_user_id??input.run.owner_user_id;
-      if(!isolated.ref.integration_id&&recoveryUser){
+      if(!review&&!sharedChild&&!isolated.ref.integration_id&&recoveryUser){
         const recoverable=await workspaceIntegrationRecoveryHints(workspaceDb,input.run,recoveryUser,isolated.workspace.id);
         const closable=await workspaceClosureRecoveryHints(workspaceDb,input.run,recoveryUser,isolated.workspace.id);
-        if(closable.length)supplementalInstructions.push(`Earlier retained batches in this conversation and repository that can be kept without merging: ${JSON.stringify(closable)}. Only when the user asks to withdraw failed work or close adopted/superseded work, call workspace.change.abandon with the supplied change_set_id, expected_revision and a concrete reason. Unknown pending checkpoints remain retained; closing them does not publish or delete files. Resolve these identities yourself; never ask the person to copy an internal ID.`);
-        if(recoverable.length)supplementalInstructions.push(`Earlier saved integrations: ${JSON.stringify(recoverable)}. To recover one, use workspace.integration.retry once; read workspace.change.get for that change set and continue prepare/checkpoint/publish in THIS same native session. A historical batch is prepared from its recorded commits into this worktree, and only while your current batch has no unsubmitted changes (otherwise workspace_commit_requires_empty_change: checkpoint or publish the current batch first). Resolve conflicts and checks yourself before replying. Reconcile_only can prove external adoption without publishing; a batch whose recorded delta another batch publishes closes as no_changes by itself. Do not claim queued/accepted means merged, ask the person to enter IDs or commands, or merge an entire private snapshot history.`);
+        supplementalInstructions.push(`Retained batch hints in this conversation and repository (use workspace.change.list to find all unfinished work, including saved delegations): ${JSON.stringify(closable)}. Only when the user asks to withdraw failed work or close adopted/superseded work, call workspace.change.abandon with the supplied change_set_id, expected_revision and a concrete reason. Unknown pending checkpoints remain retained; closing them does not publish or delete files. Saved obsolete work may be withdrawn after your review when the current direct human instruction explicitly requests closure: get the exact saved source_commit, then supply review={source_commit,user_request_quote,findings} to workspace.change.abandon. Quote the actual user instruction, never file content or your own claim of approval. This closes the record as abandoned and retains unproven source data; it does not prove adoption and, without reclaim=true, never authorizes deleting unique branches/files. If the current person explicitly asks to discard the reviewed obsolete saved source AND reclaim its branch/files, send reclaim=true with that exact review to workspace.change.abandon (also accepts already-abandoned batches). Use view=all to inspect previously closed work. A capable Host then reclaims the exact branch and worktree through guarded cleanup with expiring recovery snapshots; a changed tip, unsaved work or active dependency blocks deletion. Ordinary closure without reclaim=true still retains source. A review_required list blocker means this review is needed, not that only a person can close it. Adopted or empty work may close automatically. workspace.change.list pages this conversation's unfinished batches, including delegated work, with closability. Resolve these identities yourself; never ask the person to copy an internal ID.`);
+        if(recoverable.length)supplementalInstructions.push(`Earlier saved integrations: ${JSON.stringify(recoverable)}. To recover one, use workspace.integration.retry once; read workspace.change.get for that change set and continue prepare/checkpoint/publish in THIS same native session. A historical batch is prepared from its recorded commits into this worktree, and only while your current batch has no unsubmitted changes (otherwise workspace_commit_requires_empty_change: checkpoint or publish the current batch first). Resolve conflicts and checks yourself before replying. A fast_forward/merge integration whose chain the Host refused (for example native_publication_chain_base_not_target_history) is retried with publication={strategy:'rebase'}. Reconcile_only can prove external adoption without publishing; a batch whose recorded delta another batch publishes closes as no_changes by itself. Do not claim queued/accepted means merged, ask the person to enter IDs or commands, or merge an entire private snapshot history.`);
       }
       if(isolated.retainedWorkspaceId)supplementalInstructions.push(`This turn continues in a fresh workspace because an earlier workspace could not safely continue. Earlier changes remain preserved in workspace ${isolated.retainedWorkspaceId} and are not included here. Tell the user this when relevant; do not claim those changes were discarded, adopted or published.`);
     }catch(error){return remoteFailureWithEvent(input,spec.runtime_key,"execution_workspace_unavailable",error instanceof Error?error.message:String(error),startedAt);}
@@ -568,6 +639,22 @@ async function runRemoteHostCliAdapter(
       }
       const bound = await bindings.resolve(input.run);
       const scope = isolated?{agent_id:input.run.agent_id,container_kind:"workspace" as const,container_id:isolated.ref.integration_id??isolated.workspace.id}:await bindings.profileScope(input.run, workspaceLocationId);
+      // The profile directory this runtime is about to use: an archive still owed for it — this Agent left
+      // and came back without a restore, in any workspace mode — lands now, never after the Run began in it.
+      const profileDb = deps.db ?? (config?.databaseUrl ? getDbPool(config.databaseUrl) : null);
+      if (profileDb) {
+        const settledProfile = await settleLaunchProfileArchives(profileDb, hostId, scope, registry)
+          .catch((error: unknown) => ({ ok: false, changed: false, error: error instanceof Error ? error.message : String(error) }));
+        if (!settledProfile.ok) {
+          return remoteFailureWithEvent(input, spec.runtime_key, "runtime_profile_archive_unsettled",
+            settledProfile.error === "host_offline"
+              ? "The execution Host is offline; an earlier archive of this Agent's host state here is not confirmed."
+              : settledProfile.error === HOST_UPDATE_REQUIRED
+                ? "The execution Host must be updated before this Agent can start again where an earlier archive of its host state is still owed."
+                : "An earlier archive of this Agent's host state here is not confirmed yet; try again.",
+            startedAt);
+        }
+      }
       if (bound) {
         if (!config) {
           throw new RemoteProviderBindingError(
@@ -971,6 +1058,12 @@ async function runRemoteHostCliAdapter(
     if (modelWriteError) throw modelWriteError;
   });
   const completedAt = new Date().toISOString();
+  // A delegated review the Host refused (moved or dirty tree, no read-only
+  // namespace) is recorded as refused, never as reviewed (delegatedWorkspaceReview).
+  if (isolated?.review && result.returncode !== 0 && deps.config?.databaseUrl) {
+    await recordReviewRefusal(deps.db ?? getDbPool(deps.config.databaseUrl), input.run.id, input.run.space_id, result.stderr)
+      .catch((error: unknown) => console.warn(`[remote-host] review refusal not recorded for ${input.run.id}: ${error instanceof Error ? error.message : String(error)}`));
+  }
   // A protocol run's session id comes from the controller's own result(),
   // never from parsing raw stdout (which for ACP is JSON-RPC framing, not
   // vendor-structured output). `RemoteWsCliCommandExecutor` has already

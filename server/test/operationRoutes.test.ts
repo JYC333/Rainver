@@ -16,6 +16,39 @@ interface InventoryRow {
   reason: string;
 }
 const path = new URL('../src/modules/systemActions/operations/routeInventory.json', import.meta.url);
+/**
+ * Host block (P5) exemptions, exact method/path pairs. Daemon registration and
+ * the daemon's bearer-token API are the Host's own authentication protocol (no
+ * user session principal exists to admit); issuing a pairing code is a user's
+ * credential issuance whose one-time secret may not be kept for replay. The relays carry interactive input or a live read
+ * that is never persisted (keystrokes, one-time OAuth codes, Host-private
+ * directory listings, an account status), so no replayable result may be kept.
+ */
+const HOST_PAIRING = 'Host pairing/bearer-token daemon protocol owned by hosts; credential and Host-run authority checked by its owner, no user operation principal';
+const HOST_RELAY = 'Owner-only interactive Host relay; payload or answer is never persisted or replayed (B64), no durable state';
+const HOST_TRANSPORT_EXEMPTIONS: ReadonlyArray<{ method: string; path: string; reason: string }> = [
+  { method: 'POST', path: '/api/v1/hosts/pairing-codes', reason: 'Signed-in user credential issuance for Host pairing (same class as auth keys): user-level, not Space-scoped; the one-time code is hashed at rest, expires, and is shown once, so a replayable result would have to keep the plaintext secret' },
+  { method: 'POST', path: '/api/v1/hosts/register', reason: HOST_PAIRING },
+  { method: 'POST', path: '/api/v1/hosts/me/revoke', reason: HOST_PAIRING },
+  { method: 'POST', path: '/api/v1/hosts/me/workspaces', reason: HOST_PAIRING },
+  { method: 'DELETE', path: '/api/v1/hosts/me/workspaces/:folderId', reason: HOST_PAIRING },
+  { method: 'POST', path: '/api/v1/hosts/me/runs/:runId/diff', reason: `${HOST_PAIRING}; idempotent per launch attempt` },
+  { method: 'POST', path: '/api/v1/hosts/me/runs/:runId/outputs', reason: `${HOST_PAIRING}; idempotent per launch attempt` },
+  { method: 'POST', path: '/api/v1/hosts/:hostId/browse-directories', reason: HOST_RELAY },
+  { method: 'POST', path: '/api/v1/hosts/:hostId/installations/:runtimeKey/:installation/login/input', reason: HOST_RELAY },
+  { method: 'POST', path: '/api/v1/hosts/:hostId/installations/:runtimeKey/:installation/login/callback', reason: HOST_RELAY },
+  { method: 'POST', path: '/api/v1/hosts/:hostId/ordinary-tools/:toolId/account/verify', reason: HOST_RELAY },
+  { method: 'POST', path: '/api/v1/hosts/:hostId/ordinary-tools/:toolId/account/session/cancel', reason: HOST_RELAY },
+];
+/**
+ * Settings block (P5) exemption, exact: the instance admin's keystrokes into
+ * their own in-process managed-subscription OAuth login (`credentials.md`).
+ * The one-time code goes to the live session and is never persisted or
+ * replayed, so a replayable result would have to keep it.
+ */
+const SETTINGS_TRANSPORT_EXEMPTIONS: ReadonlyArray<{ method: string; path: string; reason: string }> = [
+  { method: 'POST', path: '/api/v1/providers/subscriptions/login/input', reason: 'Instance-admin interactive relay into an in-process managed subscription OAuth login; the one-time code is never persisted or replayed (credential channel, ADR 0008)' },
+];
 // Inventory compares exact current method/path pairs; annotations alone never admit a route.
 function classification(method: string, path: string): InventoryRow {
   if(RETIRED_SOURCE_CONNECTION_ROUTES.some(route=>route.method===method&&route.path===path))return {
@@ -29,6 +62,16 @@ function classification(method: string, path: string): InventoryRow {
     classification: 'core_entry',
     reason: 'Generic operation adapter; enabled registrations only'
   };
+  if (method === 'POST' && path === '/api/v1/runs/:runId/tools/:actionId') return {
+    method,
+    path,
+    classification: 'transport_exempt',
+    reason: 'Run bearer-token Agent tool transport; each action is admitted by its own core registration or inventoried legacy executor'
+  };
+  const hostTransport = HOST_TRANSPORT_EXEMPTIONS.find(row => row.method === method && row.path === path);
+  if (hostTransport) return { method, path, classification: 'transport_exempt', reason: hostTransport.reason };
+  const settingsTransport = SETTINGS_TRANSPORT_EXEMPTIONS.find(row => row.method === method && row.path === path);
+  if (settingsTransport) return { method, path, classification: 'transport_exempt', reason: settingsTransport.reason };
   if (path.startsWith('/internal/')) return {
     method,
     path,

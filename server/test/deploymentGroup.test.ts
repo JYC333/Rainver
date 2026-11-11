@@ -23,6 +23,7 @@ import type {
   DeploymentHeartbeatRequest,
   DeploymentStageEventRequest,
 } from "@rainver/protocol";
+import { keyed, refused, succeeded } from "./support/systemCommandHarness.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { seedAgentWithVersion, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
@@ -130,7 +131,7 @@ describe("deployment authority", () => {
 
   beforeEach(async () => {
     if (!db.available) return;
-    await resetTables(db.pool, ["deployment_jobs", "deployment_observations", "spaces", "users"], {
+    await resetTables(db.pool, ["operation_idempotency", "policy_decision_records", "deployment_jobs", "deployment_observations", "space_memberships", "spaces", "users"], {
       cascade: true,
     });
     const now = new Date().toISOString();
@@ -139,6 +140,13 @@ describe("deployment authority", () => {
        VALUES ($1,'admin@example.test','Admin','active',$3,$3, 'system'),
               ($2,'member@example.test','Member','active',$3,$3, 'system')`,
       [ADMIN, MEMBER, now],
+    );
+    // Job commands are admitted for an active member of the request Space.
+    await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Main','team',$2,$2)`, [SPACE, now]);
+    await db.pool.query(
+      `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
+       VALUES (gen_random_uuid(),$1,$2,'owner','active',$4,$4),(gen_random_uuid(),$1,$3,'member','active',$4,$4)`,
+      [SPACE, ADMIN, MEMBER, now],
     );
     const users: Record<string, CurrentUser> = {
       [ADMIN]: user(ADMIN, "admin@example.test"),
@@ -168,22 +176,23 @@ describe("deployment authority", () => {
     if (!db.available || !app) return ctx.skip();
 
     __setAuthIdentityForTests({ userId: MEMBER, spaceId: SPACE } as never);
-    const refused = await app.inject({
+    // `deployment.job.create`: a member is not told it exists.
+    const hiddenToMember = await keyed(app, {
       method: "POST",
       url: "/api/v1/deployments/jobs",
       payload: { job_type: "update" },
     });
-    expect(refused.statusCode).toBe(403);
+    expect(refused(hiddenToMember, 404)).toBe("operation_not_found");
     expect((await db.pool.query(`SELECT id FROM deployment_jobs`)).rowCount).toBe(0);
 
     __setAuthIdentityForTests({ userId: ADMIN, spaceId: SPACE } as never);
-    const created = await app.inject({
+    const created = await keyed(app, {
       method: "POST",
       url: "/api/v1/deployments/jobs",
       payload: { job_type: "update" },
-    });
-    expect(created.statusCode).toBe(201);
-    expect(created.json()).toMatchObject({
+    }, "deploy-update-1");
+    const job = succeeded<Record<string, unknown>>(created, 201);
+    expect(job).toMatchObject({
       job_type: "update",
       status: "queued",
       requested_by_user_id: ADMIN,
@@ -191,22 +200,23 @@ describe("deployment authority", () => {
       current_stage: null,
       target_tag: null,
     });
+    // A repeated request with the same key is the same job, never a second one.
+    expect(succeeded(await keyed(app, { method: "POST", url: "/api/v1/deployments/jobs", payload: { job_type: "update" } }, "deploy-update-1"), 201)).toEqual(job);
+    expect((await db.pool.query(`SELECT id FROM deployment_jobs`)).rowCount).toBe(1);
 
     // The second request loses on the database's single-active index, not on a
     // prior read: two administrators can press Update in the same instant.
-    const second = await app.inject({
+    const second = await keyed(app, {
       method: "POST",
       url: "/api/v1/deployments/jobs",
       payload: { job_type: "check_update" },
     });
-    expect(second.statusCode).toBe(409);
+    expect(refused(second, 409)).toBe("operation_conflict");
 
-    const rejected = await app.inject({
-      method: "POST",
-      url: "/api/v1/deployments/jobs",
-      payload: { job_type: "rebuild_rainver" },
-    });
-    expect(rejected.statusCode).toBe(422);
+    // No job accepts arguments beyond its type (B43).
+    for (const payload of [{ job_type: "rebuild_rainver" }, { job_type: "update", image_tag: "evil" }]) {
+      expect(refused(await keyed(app, { method: "POST", url: "/api/v1/deployments/jobs", payload }), 422)).toBe("operation_invalid_input");
+    }
   });
 
   it("refuses an update outside production instead of queueing one that can only fail", async (ctx) => {
@@ -339,23 +349,22 @@ describe("deployment authority", () => {
     __setAuthIdentityForTests({ userId: ADMIN, spaceId: SPACE } as never);
     const job = await service().createJob("update", ADMIN);
 
-    const cancelled = await app.inject({
+    const cancelled = await keyed(app, {
       method: "POST",
       url: `/api/v1/deployments/jobs/${job.id}/cancel`,
     });
-    expect(cancelled.statusCode).toBe(200);
-    expect(cancelled.json()).toMatchObject({ status: "cancelled" });
+    expect(succeeded(cancelled)).toMatchObject({ status: "cancelled" });
 
     // Nothing is handed out after a cancel.
     expect((await service().heartbeat(beat())).job).toBeNull();
 
     const running = await service().createJob("update", ADMIN);
     await service().heartbeat(beat());
-    const tooLate = await app.inject({
+    const tooLate = await keyed(app, {
       method: "POST",
       url: `/api/v1/deployments/jobs/${running.id}/cancel`,
     });
-    expect(tooLate.statusCode).toBe(409);
+    expect(refused(tooLate, 409)).toBe("operation_conflict");
   });
 
   it("fails a running job whose deployer stopped reporting", async (ctx) => {
@@ -638,21 +647,22 @@ describe("deployment authority", () => {
       ["GET", "/api/v1/deployments/status"],
       ["GET", "/api/v1/deployments/jobs"],
       ["GET", "/api/v1/deployments/jobs/any-job"],
-      ["POST", "/api/v1/deployments/jobs/any-job/cancel"],
     ] as const) {
       expect((await app.inject({ method, url })).statusCode).toBe(403);
     }
+    // The job command answers a member the hidden 404.
+    expect((await keyed(app, { method: "POST", url: "/api/v1/deployments/jobs/any-job/cancel" })).statusCode).toBe(404);
 
     // The internal token grants nothing on the admin routes: the deployer
     // cannot create work for itself (B43).
     __setAuthIdentityForTests({ userId: MEMBER, spaceId: SPACE } as never);
-    const forged = await app.inject({
+    const forged = await keyed(app, {
       method: "POST",
       url: "/api/v1/deployments/jobs",
       headers: internal,
       payload: { job_type: "update" },
     });
-    expect(forged.statusCode).toBe(403);
+    expect(forged.statusCode).toBe(404);
     expect((await db.pool.query(`SELECT id FROM deployment_jobs`)).rowCount).toBe(0);
   });
 
@@ -661,6 +671,9 @@ describe("deployment authority", () => {
     const now = new Date().toISOString();
     // A separate owner: the admin row already exists from the auth fixture.
     const owner = randomUUID();
+    // These Run fixtures seed the Space themselves; the job-command membership seed steps aside.
+    await db.pool.query(`DELETE FROM space_memberships WHERE space_id=$1`, [SPACE]);
+    await db.pool.query(`DELETE FROM spaces WHERE id=$1`, [SPACE]);
     await seedSpaceOwnerProject(db.pool, { space: SPACE, owner, project: PROJECT, now });
     await seedAgentWithVersion(db.pool, {
       agent: AGENT,
@@ -777,6 +790,9 @@ describe("deployment authority", () => {
     if (!db.available) return ctx.skip();
     const now = new Date().toISOString();
     const owner = randomUUID();
+    // These Run fixtures seed the Space themselves; the job-command membership seed steps aside.
+    await db.pool.query(`DELETE FROM space_memberships WHERE space_id=$1`, [SPACE]);
+    await db.pool.query(`DELETE FROM spaces WHERE id=$1`, [SPACE]);
     await seedSpaceOwnerProject(db.pool, { space: SPACE, owner, project: PROJECT, now });
     await seedAgentWithVersion(db.pool, { agent: AGENT, version: AGENT_VERSION, space: SPACE, owner, now });
     const automationId = randomUUID();

@@ -33,7 +33,8 @@ describe('agentsApi.chat', () => {
     const turns: RunTurn[] = []
     const accepted = vi.fn()
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({
+      .mockResolvedValueOnce(jsonResponse({ status: 'succeeded', data: {
+        space_id: 'space-1',
         schema_version: 'chat_turn_accepted.v1',
         session_id: 'session-1',
         run_id: 'run-1',
@@ -44,7 +45,7 @@ describe('agentsApi.chat', () => {
           runtime_profile_id: 'runtime-profile-1',
           runtime_key: 'opencode',
         },
-      }, 202))
+      } }, 202))
       .mockResolvedValueOnce(sse([
         {
           event: 'turn.snapshot',
@@ -115,7 +116,10 @@ describe('agentsApi.chat', () => {
       assistant_message: { id: 'message-assistant-1', artifact_refs: ['artifact-1'] },
     })
 
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/agents/agent-1/chat')
+    // One keyed core command; the turn stream and messages are reads.
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/actions/agent.chat.send')
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ message: 'Hello', agent_id: 'agent-1' })
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Idempotency-Key')).toEqual(expect.any(String))
     expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/runs/run-1/turn/stream')
     expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/sessions/session-1/messages')
     expect(accepted).toHaveBeenCalledWith(expect.objectContaining({ run_id: 'run-1' }))
@@ -135,7 +139,8 @@ describe('agentsApi.chat', () => {
   it('shows live prose once, not twice, when the persisted reply lands', async () => {
     const turns: RunTurn[] = []
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({
+      .mockResolvedValueOnce(jsonResponse({ status: 'succeeded', data: {
+        space_id: 'space-1',
         schema_version: 'chat_turn_accepted.v1',
         session_id: 'session-3',
         run_id: 'run-3',
@@ -143,7 +148,7 @@ describe('agentsApi.chat', () => {
         status: 'queued',
         event_stream_url: '/api/v1/runs/run-3/turn/stream',
         backend: { runtime_profile_id: 'p', runtime_key: 'opencode' },
-      }, 202))
+      } }, 202))
       .mockResolvedValueOnce(sse([
         {
           event: 'turn.snapshot',
@@ -205,7 +210,8 @@ describe('agentsApi.chat', () => {
   it('carries what a turn is waiting for, not just that it is waiting', async () => {
     const turns: RunTurn[] = []
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({
+      .mockResolvedValueOnce(jsonResponse({ status: 'succeeded', data: {
+        space_id: 'space-1',
         schema_version: 'chat_turn_accepted.v1',
         session_id: 'session-4',
         run_id: 'run-4',
@@ -213,7 +219,7 @@ describe('agentsApi.chat', () => {
         status: 'queued',
         event_stream_url: '/api/v1/runs/run-4/turn/stream',
         backend: { runtime_profile_id: 'p', runtime_key: 'opencode' },
-      }, 202))
+      } }, 202))
       .mockResolvedValueOnce(sse([
         {
           event: 'turn.snapshot',
@@ -250,7 +256,8 @@ describe('agentsApi.chat', () => {
 
   it('reports a failed turn from its own diagnostic, without reading a message', async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({
+      .mockResolvedValueOnce(jsonResponse({ status: 'succeeded', data: {
+        space_id: 'space-1',
         schema_version: 'chat_turn_accepted.v1',
         session_id: 'session-1',
         run_id: 'run-2',
@@ -258,7 +265,7 @@ describe('agentsApi.chat', () => {
         status: 'queued',
         event_stream_url: '/api/v1/runs/run-2/turn/stream',
         backend: { runtime_profile_id: 'p', runtime_key: 'opencode' },
-      }, 202))
+      } }, 202))
       .mockResolvedValueOnce(sse([{
         event: 'turn.snapshot',
         data: {

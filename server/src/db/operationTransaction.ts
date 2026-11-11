@@ -9,6 +9,10 @@ export function inOperationWork(): boolean {
 export function runOperationWork<T>(work: () => Promise<T>): Promise<T> {
   return operationWork.run(true, work);
 }
+/** Host-owned work started from inside operation work (never plugin code): its own pool access is not refused. */
+export function runHostWorkOutsideOperation<T>(work: () => Promise<T>): Promise<T> {
+  return operationWork.exit(work);
+}
 const ports = new WeakMap<object, {
   active: boolean;
   host: Queryable;

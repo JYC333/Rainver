@@ -19,5 +19,6 @@ export {
   instanceOperationsDefaults,
   managedHostEgressTransport,
   readInstanceOperationsPolicy,
+  readInstanceOperationsPolicyIn,
   type InstanceOperationsPolicy,
 } from "./instanceOperations.js";

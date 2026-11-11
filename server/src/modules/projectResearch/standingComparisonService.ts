@@ -368,11 +368,11 @@ export class ProjectResearchStandingComparisonService {
       );
       const advice = result.rows[0];
       if (!advice) throw new HttpError(404, "Standing advice not found");
-      if (advice.status === "dismissed") throw new HttpError(409, "Dismissed standing advice cannot be actioned");
-      if (advice.action_id !== "source.raise_as_question") throw new HttpError(422, "Unsupported standing advice action");
+      if (advice.status === "dismissed") throw new ResearchWorkspaceMutationError(409, "Dismissed standing advice cannot be actioned");
+      if (advice.action_id !== "source.raise_as_question") throw new ResearchWorkspaceMutationError(422, "Unsupported standing advice action");
       const input = advice.action_input_json;
       if (!input || typeof input !== "object" || Array.isArray(input)) {
-        throw new HttpError(422, "Standing advice action input is invalid");
+        throw new ResearchWorkspaceMutationError(422, "Standing advice action input is invalid");
       }
       const thread = await new InquiryThreadService(db).createThread(identity, projectId, input as Record<string, unknown>);
       const updated = await db.query<Record<string, unknown>>(

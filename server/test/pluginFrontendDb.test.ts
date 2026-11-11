@@ -195,11 +195,13 @@ it('renders the real Project entry and bundled slot against actual PG/HTTP/propo
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-space-id': space
+        'x-space-id': space,
+        'idempotency-key': `plugin-enable-${plugin.id}`
       },
       body: '{}'
     });
     expect(enable.status).toBe(200);
+    expect(((await enable.json()) as {status: string}).status).toBe('succeeded');
     await page.reload();
     await page.getByRole('navigation', {
       name: 'Project navigation'
@@ -357,7 +359,8 @@ it('renders the real Project entry and bundled slot against actual PG/HTTP/propo
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-space-id': space
+        'x-space-id': space,
+        'idempotency-key': `plugin-disable-${plugin.id}`
       },
       body: '{}'
     });
@@ -373,14 +376,17 @@ it('renders the real Project entry and bundled slot against actual PG/HTTP/propo
       path: join(shots, 'desktop-disabled.png'),
       fullPage: true
     });
-    await fetch(`${api}/api/v1/plugins/${plugin.id}/enable`, {
+    // A new key: re-enabling is a second command, not a replay of the first.
+    const reenabled = await fetch(`${api}/api/v1/plugins/${plugin.id}/enable`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-space-id': space
+        'x-space-id': space,
+        'idempotency-key': `plugin-reenable-${plugin.id}`
       },
       body: '{}'
     });
+    expect(reenabled.status).toBe(200);
     await page.getByRole('button', {
       name: 'Close Project chat',
       exact: true
@@ -531,14 +537,15 @@ it('renders the real Project entry and bundled slot against actual PG/HTTP/propo
       exact: true
     }).click();
     await field.waitFor();
-    await fetch(`${api}/api/v1/plugins/${plugin.id}/disable`, {
+    expect((await fetch(`${api}/api/v1/plugins/${plugin.id}/disable`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-space-id': space
+        'x-space-id': space,
+        'idempotency-key': `plugin-disable-phone-${plugin.id}`
       },
       body: '{}'
-    });
+    })).status).toBe(200);
     await page.evaluate(() => (globalThis as any).window.dispatchEvent(new Event('focus')));
     await page.getByText('This module is disabled or you no longer have access.', {
       exact: true
@@ -547,14 +554,15 @@ it('renders the real Project entry and bundled slot against actual PG/HTTP/propo
       path: join(shots, 'phone-disabled.png'),
       fullPage: true
     });
-    await fetch(`${api}/api/v1/plugins/${plugin.id}/enable`, {
+    expect((await fetch(`${api}/api/v1/plugins/${plugin.id}/enable`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-space-id': space
+        'x-space-id': space,
+        'idempotency-key': `plugin-enable-phone-${plugin.id}`
       },
       body: '{}'
-    });
+    })).status).toBe(200);
     await page.reload();
     await field.waitFor();
     // The old query really reached PostgreSQL; a client-side Project switch must expire its response/port.

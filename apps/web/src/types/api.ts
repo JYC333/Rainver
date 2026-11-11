@@ -2887,7 +2887,7 @@ export interface AgentConfigUpdateBody {
 
 export interface CreateAgentFromTemplateBody {
   template_version_id?: string | null
-  space_id?: string | null
+  project_id?: string | null
   name?: string | null
   description?: string | null
   tool_policy_json?: Record<string, unknown> | null
@@ -3570,7 +3570,6 @@ export interface Feature {
 export interface ReflectResult {
   session_id: string
   proposals_created: number
-  proposals: Proposal[]
 }
 
 export interface ApiError {

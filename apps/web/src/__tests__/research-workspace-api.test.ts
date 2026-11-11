@@ -60,3 +60,41 @@ it('queues standing controls with independent event keys and follows the actual 
  expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe('/api/v1/actions/research.standing.dismiss');expect(String(vi.mocked(fetch).mock.calls[1]![0])).toBe('/api/v1/actions/research.standing.retry');
  vi.mocked(fetch).mockClear().mockResolvedValueOnce(response(reply)).mockResolvedValueOnce(response([{id:'workflow',status:'not_started'}]));expect(await projectResearchApi.updateInitialItemLimit('project',25,null,'limit-key')).toEqual({id:'workflow',status:'not_started'});expect(String(vi.mocked(fetch).mock.calls[1]![0])).toBe('/api/v1/projects/project/research/workflow');expect(new Headers(vi.mocked(fetch).mock.calls[1]![1]!.headers).get('X-Rainver-Space-Id')).toBe('receipt-space');
 });
+it('starts intake with one keyed command and rebuilds the response from receipt-Space reads limited to receipt IDs',async()=>{
+ const json=(body:unknown)=>new Response(JSON.stringify(body),{status:200,headers:{'Content-Type':'application/json'}});
+ const data={id:'op',project_id:'p',space_id:'receipt-space',workflow_id:'w',source_channel_ids:['c1'],source_binding_ids:['b1']};
+ vi.mocked(fetch).mockImplementation(async(input)=>{const url=String(input);
+  if(url.endsWith('/actions/research.intake.start'))return json({status:'succeeded',data});
+  if(url.endsWith('/projects/p/operations/op'))return json({id:'op',status:'active'});
+  if(url.endsWith('/projects/p/research/workflow'))return json([{id:'other'},{id:'w'}]);
+  if(url.endsWith('/sources/channels'))return json([{id:'c1'},{id:'c2'}]);
+  return json([{id:'b1'},{id:'b2'}]);});
+ const out=await projectResearchApi.startInitialIntake('p',{query_strategy_id:'00000000-0000-4000-8000-000000000000',research_question:'Q',history_mode:'all_available',report_depth:'quick',question_refine_skipped:true} as never,'intake-event');
+ expect(out).toMatchObject({workflow:{id:'w'},operation:{id:'op'},source_channels:[{id:'c1'}],source_bindings:[{id:'b1'}],status:'active'});
+ const posts=vi.mocked(fetch).mock.calls.filter(([,init])=>init?.method==='POST');expect(posts).toHaveLength(1);expect(new Headers(posts[0]![1]!.headers).get('Idempotency-Key')).toBe('intake-event');
+ for(const [,init] of vi.mocked(fetch).mock.calls.filter(([,init])=>init?.method!=='POST'))expect(new Headers(init!.headers).get('x-rainver-space-id')).toBe('receipt-space');
+});
+it('returns the receipt turn\'s own refinement, not the session latest owned by a concurrent turn',async()=>{
+ const own={...framework,recommended_question:'Earlier turn answer',research_context_version_id:'context-a'},other={...framework,recommended_question:'Later turn answer',research_context_version_id:'context-b'};
+ const message=(id:string,turn_index:number,role:'user'|'assistant',refinement?:unknown)=>({id,turn_index,role,content:'x',status:'complete',created_by_user_id:null,created_at:'2026-01-01T00:00:00Z',...(refinement?{refinement}:{})});
+ const session={id:'session',thread_id:'thread',recommended_question:'Later turn answer',latest_refinement:other,assessment_baseline:null,research_context_version_id:'context-b',created_at:'',updated_at:'',
+  messages:[message('turn-a',1,'user'),message('answer-a',1,'assistant',own),message('turn-b',2,'user'),message('answer-b',2,'assistant',other)]};
+ vi.mocked(fetch).mockResolvedValueOnce(response({status:'succeeded',data:{id:'turn-a',thread_id:'thread',project_id:'project',space_id:'receipt-space'}})).mockResolvedValueOnce(response(session));
+ const result=await projectResearchApi.refineQuestion('project',{thread_id:'thread',research_question:'Q',message:'m',execution:{}},'refine-key');
+ expect(result).toMatchObject({recommended_question:'Earlier turn answer',research_context_version_id:'context-a'});
+ expect(fetch).toHaveBeenCalledTimes(2);expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe('/api/v1/actions/research.question.refine');
+});
+it('sends scanned items and the business update key in the trigger body, separate from the transport key',async()=>{
+ vi.mocked(fetch).mockResolvedValueOnce(response({status:'succeeded',data:{id:'operation/1',space_id:'receipt-space',project_id:'project/1'}})).mockResolvedValueOnce(response({id:'operation/1',status:'active'}));
+ expect(await projectResearchApi.triggerIncremental('project/1','workflow/1',{source_item_ids:['item/1'],idempotency_key:'daily-2026-11-10'},'transport-key')).toEqual({id:'operation/1',status:'active'});
+ const calls=vi.mocked(fetch).mock.calls;expect(calls).toHaveLength(2);expect(String(calls[0]![0])).toBe('/api/v1/actions/research.workflow.trigger');
+ expect(new Headers(calls[0]![1]!.headers).get('Idempotency-Key')).toBe('transport-key');
+ expect(JSON.parse(calls[0]![1]!.body as string)).toEqual({project_id:'project/1',workflow_id:'workflow/1',source_item_ids:['item/1'],idempotency_key:'daily-2026-11-10'});
+ expect(new Headers(calls[1]![1]!.headers).get('X-Rainver-Space-Id')).toBe('receipt-space');
+ // Without a body it remains a plain scan-first update.
+ vi.mocked(fetch).mockClear().mockResolvedValueOnce(response({status:'succeeded',data:{id:'op',space_id:'s',project_id:'p'}})).mockResolvedValueOnce(response({id:'op'}));
+ await projectResearchApi.triggerIncremental('p','w');expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)).toEqual({project_id:'p',workflow_id:'w'});
+ // An explicit empty list is the same scan-first update; it is sent as given, not refused client-side.
+ vi.mocked(fetch).mockClear().mockResolvedValueOnce(response({status:'succeeded',data:{id:'op',space_id:'s',project_id:'p'}})).mockResolvedValueOnce(response({id:'op'}));
+ await projectResearchApi.triggerIncremental('p','w',{source_item_ids:[]});expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)).toEqual({project_id:'p',workflow_id:'w',source_item_ids:[]});
+});

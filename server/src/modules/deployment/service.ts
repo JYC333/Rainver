@@ -1,3 +1,4 @@
+import type { Queryable } from "../routeUtils/common.js";
 import type { Pool } from "../../db/pool.js";
 import type {
   DeploymentHeartbeatRequest,
@@ -145,8 +146,14 @@ function imageTag(imageRef: string | undefined): string | null {
 export class DeploymentService {
   private readonly repository: DeploymentRepository;
 
+  /**
+   * `pool` may be a caller's transaction for the administrator's job
+   * commands (`deployment.job.create` / `.cancel`, `operations.ts`): the job
+   * row is their only effect and the deployer pulls it (B43). The deployer's
+   * own heartbeat and stage reports need the pool.
+   */
   constructor(
-    private readonly pool: Pool,
+    private readonly pool: Pool | Queryable,
     private readonly rainverEnv: string = "",
     private readonly log?: { warn(message: string): void },
   ) {
@@ -240,7 +247,7 @@ export class DeploymentService {
    * recorded for a job handout that rolled back.
    */
   async heartbeat(input: DeploymentHeartbeatRequest): Promise<DeploymentHeartbeatResponse> {
-    return withDbTransaction(this.pool, async (client) => {
+    return withDbTransaction(this.pool as Pool, async (client) => {
       const repository = new DeploymentRepository(client);
       await repository.upsertObservations({
         services: input.services,
@@ -270,7 +277,7 @@ export class DeploymentService {
   async recordStageEvent(jobId: string, input: DeploymentStageEventRequest): Promise<DeploymentJobDetail> {
     let recorded: Awaited<ReturnType<DeploymentRepository["appendEvent"]>>;
     try {
-      recorded = await withDbTransaction(this.pool, async (client) => {
+      recorded = await withDbTransaction(this.pool as Pool, async (client) => {
         const repository = new DeploymentRepository(client);
         return repository.appendEvent({
           job_id: jobId,

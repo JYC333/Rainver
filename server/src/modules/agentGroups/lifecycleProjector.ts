@@ -436,12 +436,25 @@ function delegationResultSummary(run: RunRecord, change: RunChange | null = null
 }
 
 /** The version a read-only review read, so the reader of its result knows what it judged. */
-function reviewBasisLine(run: RunRecord): string | null {
+export function reviewBasisLine(run: RunRecord): string | null {
   const basis = recordValue(recordValue(run.output_json).review_basis);
-  const head = stringValue(basis.head);
+  // A review of the coordinator's workspace is reported as done only when the
+  // Host verified and read the expected version (delegatedWorkspaceReview).
+  if (basis.mode === "coordinator_workspace") {
+    const expected = stringValue(basis.expected_commit)?.slice(0, 12) ?? "unknown";
+    if (basis.state === "refused") {
+      const reason = basis.refusal === "execution_workspace_review_basis_moved"
+        ? " because it had moved or held uncommitted changes"
+        : basis.refusal === "execution_workspace_review_namespace_unavailable" ? " because read-only isolation was unavailable" : " because the frozen workspace was unavailable";
+      return `[Not reviewed: the Host refused to read your workspace at commit ${expected}${reason}. This result does not judge that version.]`;
+    }
+    if (basis.state !== "verified") return `[Not verified: the Host never confirmed reading your workspace at commit ${expected}. This result does not judge that version.]`;
+  }
+  const head = stringValue(basis.head) ?? (basis.mode === "coordinator_workspace" ? stringValue(basis.observed_commit) : null);
   const tree = stringValue(basis.tree);
   if (!head && !tree) return null;
   const at = [
+    basis.mode === "coordinator_workspace" ? "your workspace" : null,
     head ? `commit ${head.slice(0, 12)}${stringValue(basis.branch) ? ` on ${stringValue(basis.branch)}` : ""}` : null,
     tree ? `working tree ${tree.slice(0, 12)}` : null,
   ].filter(Boolean).join(", ");

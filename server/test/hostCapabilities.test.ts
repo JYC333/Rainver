@@ -1,7 +1,26 @@
 import { describe, expect, it } from 'vitest'
+import { fileURLToPath } from 'node:url'
 import { hostInstallationAuthMethods, hostInstallationCliLoginAvailable, hostInstallationOptions, normalizeHostCapabilities } from '../src/modules/hosts/capabilities.js'
 
 describe('host capability normalization', () => {
+  it.each(['linux', 'darwin'] as const)('preserves the actual %s daemon workspace offer for conversation admission', async platform => {
+    const daemonCapabilities = fileURLToPath(new URL('../../packages/host-daemon/src/capabilities.ts', import.meta.url))
+    const { executionWorkspaceCapability } = await import(daemonCapabilities)
+    const offered = executionWorkspaceCapability(platform)
+    const current = normalizeHostCapabilities({ execution_workspaces: offered })
+    expect(current.execution_workspaces).toEqual(offered)
+    expect(current.execution_workspaces?.version).toBe(2)
+  })
+
+  it.each([1, 2])('ignores retired publication metadata %s without losing workspace readiness', publication => {
+    const current = normalizeHostCapabilities({ execution_workspaces: { version: 2, reclaim: 4, publication } })
+    expect(current.execution_workspaces).toEqual({ version: 2, reclaim: 4 })
+  })
+
+  it.each([{ version: 3 }, { version: 2, reclaim: 5 }])('refuses unsupported workspace protocols %j', offered => {
+    expect(normalizeHostCapabilities({ execution_workspaces: offered }).execution_workspaces).toBeUndefined()
+  })
+
   it('keeps modern generic ACP options and drops obsolete top-level option maps', () => {
     const current = normalizeHostCapabilities({
       runtimes: ['codex'], versions: { codex: '1.0' },

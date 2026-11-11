@@ -5,6 +5,7 @@ import {RefReadError} from './durableRef.js';
 import {commitOfRef} from './mainBranch.js';
 import {overlappingLocalChanges} from './taskMerge.js';
 import {archiveRuntimeProfileContainer} from './managedWorkspaces.js';
+import {admitLegacyArchive} from './legacyArchiveDrain.js';
 import {readWorkspaceFile} from './workspaceFileRead.js';
 import {HostWorkspaceLaunchReportSchema} from '@rainver/protocol';
 import {captureSourceBaseline,assertWorkspaceCheckoutAllowed} from './workspaceBaseline.js';
@@ -99,16 +100,33 @@ export async function executionWorkspacePath(locationRoot:string,locationId:stri
 }
 
 import { configDir } from './config.js';
+import { executeManagedWorkspaceOperation } from './managedWorkspaceOperations.js';
 import { readJson, writeJson, deleteTaskBranchHeld, ownedWorkspaceInventory, withTaskHeld, taskLeaseKey, TASK_BUSY } from './taskWorktree.js';
 import type { HostServerFrameOf } from '@rainver/protocol';
 
-export async function executeWorkspaceCommand(locationRoot:string|null,frame:HostServerFrameOf<'execution_workspace_command'>){
+/** `hooks`: test seam on the legacy profile archive, as in managedWorkspaceOperations. */
+export async function executeWorkspaceCommand(locationRoot:string|null,frame:HostServerFrameOf<'execution_workspace_command'>,hooks?:{beforeLegacyMove?:()=>Promise<void>}){
  const ref=frame.workspace.execution_workspace,key=workspaceWorktreeKey(ref),locationId=frame.workspace.workspace_location_id;
  // Cache identity is Agent × workspace/attempt UUID. Retirement must remain
  // possible after the authorized source Location was removed or unregistered.
  if(frame.action==='archive_profiles'){
   if(!frame.profile_agents?.length)return {ok:false,branch:null,commit:null,error:'workspace_profile_scope_missing'};
-  for(const agentId of frame.profile_agents)await archiveRuntimeProfileContainer(agentId,'workspace',ref.integration_id??ref.id);
+  const containerId=ref.integration_id??ref.id,identity=frame.archive_identity;
+  if(!identity){
+   // Legacy single-shot move, admitted in the dispatch tick so the legacy drain waits for it; refused once drained.
+   const agents=frame.profile_agents;
+   return admitLegacyArchive(async()=>{
+    await hooks?.beforeLegacyMove?.();
+    for(const agentId of agents)await archiveRuntimeProfileContainer(agentId,'workspace',containerId);
+    return {ok:true,branch:null,commit:null,error:null};
+   })??{ok:false,branch:null,commit:null,error:'legacy_closed',error_code:'legacy_closed' as const};
+  }
+  // Journaled per Agent like a managed archive: a repeat replays its receipt and a late copy older than
+  // what this profile target admitted is refused, so it never moves a newer Run's profile.
+  for(const agentId of frame.profile_agents){
+   const result=await executeManagedWorkspaceOperation({action:'archive',agent_id:agentId,container_kind:'workspace',container_id:containerId,include_workspace:false,operation_id:identity.operation_id,generation:identity.generation});
+   if(!result.ok)return {ok:false,branch:null,commit:null,error:result.error_code??'workspace_profile_archive_failed',...(result.error_code?{error_code:result.error_code}:{})};
+  }
   return {ok:true,branch:null,commit:null,error:null};
  }
 
@@ -211,8 +229,11 @@ async function cleanupHeld(repo:LocationRepository,locationRoot:string,locationI
  // The whole request, not only its identity: the same operation or epoch with
  // a different history/ref list/target/proof is a different request.
  const request={id:ref.id,generation:ref.generation,locationId,integrationId:ref.integration_id??null,expected:frame.expected_commit,retain:frame.retain_branch,epoch,target:ref.target_ref??null,
-  history:frame.history_commits,proof:frame.reclaim_proof,bases:frame.reclaim_bases,refs:frame.release_refs};
+  history:frame.history_commits,proof:frame.reclaim_proof,bases:frame.reclaim_bases,refs:frame.release_refs,discard:frame.discard_commit};
  const digest={current:releaseRequestDigest(request),legacy:legacyReleaseRequestDigest(request)},fingerprint=digest.current,digest_version=DIGEST_VERSION;
+ // A discard is a distinct exact-tip release, never a blanket proof bypass.
+ if(frame.discard_commit&&(ref.integration_id||frame.retain_branch||epoch===undefined||frame.discard_commit!==frame.expected_commit))
+  return {ok:false,branch,commit,cleanup_state:'blocked' as const,error:'workspace_discard_invalid'};
  const prior=await readJson(journal);
  // A quarantine refusal had no side effects: the server may turn that same
  // operation into a physical-only request without a conflict. A journal from
@@ -266,7 +287,7 @@ async function cleanupHeld(repo:LocationRepository,locationRoot:string,locationI
  // operation id) passes the fence, finds no branch (nothing to prove) and
  // finishes the remaining history, refs, receipts and fence record.
  const strings=(v:unknown)=>Array.isArray(v)?v.filter((c):c is string=>typeof c==='string'):[];
- const historyCandidates=[...new Set([...(frame.history_commits??[]),...(priorSame?[...strings(prior!.history_intent),...strings(prior!.history_refs)]:[])])];
+ const historyCandidates=[...new Set([...(frame.discard_commit?[frame.discard_commit]:[]),...(frame.history_commits??[]),...(priorSame?[...strings(prior!.history_intent),...strings(prior!.history_refs)]:[])])];
  // Versions whose object Git cleanly reports gone: never kept, recorded and reported as unavailable.
  let unavailable:string[]=priorSame?strings(prior!.history_unavailable):[];
  await writeJsonDurable(journal,{fingerprint,digest_version,state:'running',...(historyCandidates.length?{history_intent:historyCandidates}:{}),...(unavailable.length?{history_unavailable:unavailable}:{}),at:new Date().toISOString()});
@@ -283,12 +304,13 @@ async function cleanupHeld(repo:LocationRepository,locationRoot:string,locationI
   if(epoch!==undefined)await recordHistoryKeepers(locationId,key,historyCandidates,epoch);
   // A read fault throws here, before the branch goes: the journal stays running and the release retries.
   const kept=await keepRunHistory(root,ref,ref.target_ref?await commitOfRef(root,ref.target_ref):null,historyCandidates);
+  if(frame.discard_commit&&kept.unavailable.includes(frame.discard_commit))throw new RunHistoryError(frame.discard_commit,'discard source missing');
   history=kept.kept;unavailable=[...new Set([...unavailable,...kept.unavailable])];
   await writeJsonDurable(journal,{fingerprint,digest_version,state:'running',history_intent:historyCandidates,history_refs:history,...(unavailable.length?{history_unavailable:unavailable}:{}),at:new Date().toISOString()});
  };
  const result=await deleteTaskBranchHeld({locationRoot,locationId,taskId:key,expectedCommit:frame.expected_commit,retainBranch:frame.retain_branch,
   ...(releasing?{branchRelease:{
-   verify:(root:string,tip:string)=>verifyBranchReclaim(root,tip,ref.target_ref,frame.reclaim_proof??[],frame.reclaim_bases??[]),
+   verify:(root:string,tip:string)=>frame.discard_commit?Promise.resolve(tip===frame.discard_commit?null:'workspace_generation_moved'):verifyBranchReclaim(root,tip,ref.target_ref,frame.reclaim_proof??[],frame.reclaim_bases??[]),
    beforeRelease:keepHistory,
   }}:{})});
  let retainedRefs:Array<{ref:string;reason:string}>=[];

@@ -24,6 +24,7 @@ export const en = {
     resets: 'Resets {{time}}', checked: 'Checked {{time}}', connections_one: '{{count}} connection', connections_other: '{{count}} connections',
     online: 'Online', offline: 'Offline', not_logged_in: 'This CLI copy is not logged in.',
     no_measurement: 'No current measured quota. Refresh an online connection to check.',
+    model_exhausted: 'Some model allowances are full for {{account}}. Other models may still be available. View quota.',
     exhausted: 'A quota window is full for account {{account}}. View quota for affected connections.',
     refresh_failed: 'Could not refresh: {{error}}', showing_previous: 'Showing the last successful measurement with its original time.',
   },

@@ -63,8 +63,9 @@ describe("HostConnectionRegistry folder reads", () => {
 
     const dropped = registry.forgetHostWorkspace("host-1", "loc-1");
     registry.unregisterConnection("host-1", connection);
-    // Reported in the reply's own shape, the contract's `workspace_forget_result`.
-    await expect(dropped).resolves.toEqual({ ok: false, changed: false, error: "host_offline" });
+    // Reported in the reply's own shape, the contract's `workspace_forget_result`. The frame already
+    // left, so the outcome is unknown (`host_disconnected`), never "not sent" (`host_offline`).
+    await expect(dropped).resolves.toEqual({ ok: false, changed: false, error: "host_disconnected" });
     await expect(registry.listHostDirectories("host-2", "/"))
       .resolves.toMatchObject({ ok: false, error: "host_offline" });
   });

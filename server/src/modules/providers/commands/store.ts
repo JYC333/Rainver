@@ -1,3 +1,4 @@
+import type { Queryable } from "../../routeUtils/common.js";
 /**
  * Provider command persistence, credential pools, and credential resolution.
  *
@@ -18,19 +19,18 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { PoolClient } from "../../../db/pool.js";
 import { getDbPool, type Pool } from "../db.js";
-import { withTransaction } from "../../../db/tx.js";
+import { withQueryableTransaction } from "../../routeUtils/common.js";
 import type { ServerConfig } from "../../../config.js";
 import {
   decryptModelProviderApiKeySecretRefV1,
   encryptModelProviderApiKeySecretRefV1,
   loadOrCreateModelProviderApiKeyMasterKey,
 } from "../secretRefCrypto.js";
-import { mapProviderRowToDto, resolveProvidersDbPort } from "../dbReader.js";
+import { mapProviderRowToDto, providersDbPortIn, resolveProvidersDbPort } from "../dbReader.js";
 import { providerVendor, type VendorDescriptor } from "../vendors.js";
 import { resolveManagedSubscriptionCredential } from "../subscriptionOAuth.js";
-import { resolveNetworkProfileRepository } from "../../networkProfiles/index.js";
+import { networkProfileRepositoryIn, resolveNetworkProfileRepository } from "../../networkProfiles/index.js";
 import { isSpaceOwnerOrAdmin } from "../../access/roles.js";
 import { providerDeployment } from "../deployment.js";
 import {
@@ -169,14 +169,50 @@ function validateTaskProviderCompatibility(
   );
 }
 
-class PgProviderCommandStore implements ProviderCommandStore {
-  private pool: Pool;
+/** The enabled fallback chain for one task, through any query port (pool or transaction). */
+export async function readProviderTaskChain(db: Queryable, spaceId: string, task: string): Promise<ProviderTaskChainEntry[] | null> {
+  const result = await db.query<{ chain_json: unknown }>(
+    `SELECT chain_json FROM provider_task_policies
+      WHERE space_id = $1 AND task = $2 AND enabled = true
+      LIMIT 1`,
+    [spaceId, task],
+  );
+  const chain = result.rows[0]?.chain_json;
+  if (!Array.isArray(chain)) return null;
+  const entries = chain
+    .filter((e): e is { provider_id: string; model?: string | null } =>
+      e !== null && typeof e === "object" && typeof (e as { provider_id?: unknown }).provider_id === "string",
+    )
+    .map((e) => ({ provider_id: e.provider_id, model: e.model ?? null }));
+  return entries.length > 0 ? entries : null;
+}
 
-  constructor(private config: ServerConfig) {
+class PgProviderCommandStore implements ProviderCommandStore {
+  /** The shared pool; absent when bound to a transaction, whose port is all it may use. */
+  private readonly sharedPool: Pool | null;
+  /**
+   * Every statement runs here: the shared pool, or the caller's transaction
+   * (an operation-core command binds the store to its transaction port, so the
+   * provider, grant, key and pool writes commit with its audit and receipt).
+   */
+  private db: Queryable;
+
+  constructor(private config: ServerConfig, db?: Queryable) {
     if (!config.databaseUrl) {
       throw new Error("Provider command store requires SERVER_DATABASE_URL");
     }
-    this.pool = getDbPool(config.databaseUrl);
+    this.sharedPool = db ? null : getDbPool(config.databaseUrl);
+    this.db = db ?? this.sharedPool!;
+  }
+
+  private bound(): boolean {
+    return this.sharedPool === null;
+  }
+
+  /** Runtime credential paths (resolution, spend, attempts) use the shared pool only. */
+  private get pool(): Pool {
+    if (!this.sharedPool) throw new Error("Provider runtime paths are not available inside a command transaction");
+    return this.sharedPool;
   }
 
   private async masterKey(): Promise<Buffer> {
@@ -184,7 +220,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
   }
 
   private async providerById(spaceId: string, providerId: string): Promise<ProviderRow | null> {
-    const result = await this.pool.query<ProviderRow>(
+    const result = await this.db.query<ProviderRow>(
       `SELECT p.id,
               g.space_id AS space_id,
               p.space_id AS home_space_id,
@@ -214,7 +250,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
   }
 
   private async defaultProvider(spaceId: string): Promise<ProviderRow | null> {
-    const result = await this.pool.query<ProviderRow>(
+    const result = await this.db.query<ProviderRow>(
       `SELECT p.id,
               g.space_id AS space_id,
               p.space_id AS home_space_id,
@@ -245,7 +281,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
   }
 
   private async providerOwnedBy(userId: string, providerId: string): Promise<ProviderRow | null> {
-    const result = await this.pool.query<ProviderRow>(
+    const result = await this.db.query<ProviderRow>(
       `SELECT id, space_id, space_id AS home_space_id, owner_user_id, name, provider_type,
               base_url, default_model, network_profile_id, enabled, credential_id,
               capabilities_json, config_json, created_at, updated_at
@@ -263,7 +299,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
    * Provider row.
    */
   private async requireSpaceOwnerOrAdmin(spaceId: string, userId: string): Promise<void> {
-    const result = await this.pool.query<{ role: string }>(
+    const result = await this.db.query<{ role: string }>(
       `SELECT role FROM space_memberships WHERE space_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
       [spaceId, userId],
     );
@@ -299,7 +335,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
   private async clearDefault(
     spaceId: string,
     exceptId?: string,
-    db: Pool | PoolClient = this.pool,
+    db: Queryable = this.db,
   ): Promise<void> {
     await db.query(
       `UPDATE model_provider_space_grants
@@ -317,7 +353,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
   ): Promise<string | null> {
     const networkProfileId = optionalTrimmedString(value);
     if (!networkProfileId) return null;
-    const profile = await resolveNetworkProfileRepository(this.config).resolve(
+    const profile = await (this.bound() ? networkProfileRepositoryIn(this.db) : resolveNetworkProfileRepository(this.config)).resolve(
       spaceId,
       networkProfileId,
     );
@@ -341,7 +377,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     const homeSpaceId = typeof row.home_space_id === "string" && row.home_space_id
       ? row.home_space_id
       : row.space_id;
-    await this.pool.query(
+    await this.db.query(
       `INSERT INTO model_provider_credentials
         (id, space_id, provider_id, credential_id, position, enabled, healthy,
          request_count, failure_count, created_at, updated_at)
@@ -358,7 +394,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     withSecrets: boolean,
   ): Promise<PoolMemberRow[]> {
     const secretColumn = withSecrets ? ", c.secret_ref" : "";
-    const result = await this.pool.query<PoolMemberRow>(
+    const result = await this.db.query<PoolMemberRow>(
       `SELECT m.id, m.credential_id, c.name, m.position, m.enabled, m.healthy,
               m.cooldown_until, m.last_failure_class, m.request_count,
               m.failure_count, m.last_used_at, m.created_at, m.updated_at${secretColumn}
@@ -378,7 +414,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     providerName: string,
     existingCredentialId: string | null | undefined,
     apiKey: string,
-    db: Pool | PoolClient = this.pool,
+    db: Queryable = this.db,
     masterKey?: Buffer,
   ): Promise<string> {
     const secretRef = encryptModelProviderApiKeySecretRefV1(apiKey, masterKey ?? await this.masterKey());
@@ -451,7 +487,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     const baseUrl = normalizeBaseUrl(input.provider_type, input.base_url);
     // The new default replaces the old one only together with the provider,
     // grant, and key writes, so a failed create leaves the Space default intact.
-    await withTransaction(this.pool, async (client) => {
+    await withQueryableTransaction(this.db, async (client) => {
       if (isDefault) await this.clearDefault(spaceId, undefined, client);
       await client.query(
         `INSERT INTO model_providers
@@ -507,7 +543,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     providerId: string,
     fallback: ProviderRow,
   ): Promise<ReturnType<typeof mapProviderRowToDto>> {
-    const listed = await resolveProvidersDbPort(this.config)?.getProvider(spaceId, userId, providerId);
+    const listed = await (this.bound() ? providersDbPortIn(this.db) : resolveProvidersDbPort(this.config))?.getProvider(spaceId, userId, providerId);
     return listed ? listed as ReturnType<typeof mapProviderRowToDto> : mapProviderRowToDto(fallback);
   }
 
@@ -599,7 +635,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
       else delete configJson.openai_compatible_base_url;
     }
 
-    const updated = await this.pool.query<ProviderRow>(
+    const updated = await this.db.query<ProviderRow>(
       `UPDATE model_providers
           SET name = $3,
               provider_type = $4,
@@ -646,13 +682,13 @@ class PgProviderCommandStore implements ProviderCommandStore {
     const current = await this.requireOwnedProvider(userId, providerId);
     const cfg = configRecord(current);
     cfg.is_default = false;
-    await this.pool.query(
+    await this.db.query(
       `UPDATE model_providers
           SET enabled = false, config_json = $3::jsonb, updated_at = $4
         WHERE id = $1 AND space_id = $2`,
       [providerId, current.space_id, json(cfg), new Date()],
     );
-    await this.pool.query(
+    await this.db.query(
       `UPDATE model_provider_space_grants
           SET enabled = false, is_default = false, updated_at = $2
         WHERE provider_id = $1`,
@@ -661,7 +697,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
   }
 
   private async userSpaceRole(userId: string, spaceId: string): Promise<string | null> {
-    const result = await this.pool.query<{ role: string }>(
+    const result = await this.db.query<{ role: string }>(
       `SELECT role
          FROM space_memberships
         WHERE user_id = $1 AND space_id = $2 AND status = 'active'
@@ -698,7 +734,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
       );
     }
     if (provider.credential_id) {
-      const credential = await this.pool.query<{ credential_type: string }>(
+      const credential = await this.db.query<{ credential_type: string }>(
         `SELECT credential_type FROM credentials WHERE id=$1 LIMIT 1`,
         [provider.credential_id],
       );
@@ -716,7 +752,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
       input.network_profile_id === undefined
         ? undefined
         : await this.validateNetworkProfileId(targetSpaceId, input.network_profile_id);
-    const existingGrant = await this.pool.query<{ is_default: boolean }>(
+    const existingGrant = await this.db.query<{ is_default: boolean }>(
       `SELECT is_default
          FROM model_provider_space_grants
         WHERE provider_id = $1 AND space_id = $2
@@ -729,7 +765,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
         : Boolean(input.is_default);
     if (isDefault) await this.clearDefault(targetSpaceId, providerId);
     const now = new Date();
-    const result = await this.pool.query<{
+    const result = await this.db.query<{
       id: string;
       provider_id: string;
       space_id: string;
@@ -783,7 +819,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     if (!owned && !(await this.canAdminSpace(userId, grantSpaceId))) {
       throw new ProviderCommandNotFoundError(`ModelProvider '${providerId}' not found`);
     }
-    const result = await this.pool.query(
+    const result = await this.db.query(
       `UPDATE model_provider_space_grants
           SET enabled = false,
               is_default = false,
@@ -814,7 +850,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
       throw new ProviderCommandNotFoundError(`ModelProvider '${row.id}' is disabled`);
     }
     if (row.credential_id) {
-      const credentialClass = await this.pool.query<{ credential_type: string }>(
+      const credentialClass = await this.db.query<{ credential_type: string }>(
         `SELECT credential_type FROM credentials WHERE id=$1 LIMIT 1`,
         [row.credential_id],
       );
@@ -833,7 +869,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
         );
         return {
           provider: providerInfoFromRow(row),
-          network_profile: await resolveNetworkProfileRepository(this.config).resolve(
+          network_profile: await (this.bound() ? networkProfileRepositoryIn(this.db) : resolveNetworkProfileRepository(this.config)).resolve(
             spaceId,
             row.network_profile_id,
           ),
@@ -871,7 +907,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     }
     return {
       provider: providerInfoFromRow(row),
-      network_profile: await resolveNetworkProfileRepository(this.config).resolve(
+      network_profile: await (this.bound() ? networkProfileRepositoryIn(this.db) : resolveNetworkProfileRepository(this.config)).resolve(
         spaceId,
         row.network_profile_id,
       ),
@@ -896,7 +932,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
   async recordPoolOutcome(memberId: string, outcome: PoolOutcome): Promise<void> {
     const now = new Date();
     if (outcome.kind === "success") {
-      await this.pool.query(
+      await this.db.query(
         `UPDATE model_provider_credentials
             SET request_count = request_count + 1,
                 last_used_at = $2,
@@ -912,7 +948,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     const cooldownUntil = outcome.cooldown_seconds
       ? new Date(now.getTime() + outcome.cooldown_seconds * 1_000)
       : null;
-    await this.pool.query(
+    await this.db.query(
       `UPDATE model_provider_credentials
           SET request_count = request_count + 1,
               failure_count = failure_count + 1,
@@ -1027,7 +1063,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     refs: ProviderTaskAttemptRefs,
     result: { status: "accepted" | "failed"; error_code?: string | null },
   ): Promise<void> {
-    await this.pool.query(
+    await this.db.query(
       `UPDATE provider_task_snapshots
           SET status=$2,error_code=$3,updated_at=$4,
               safe_snapshot_json=safe_snapshot_json || $5::jsonb
@@ -1052,7 +1088,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
   }
 
   async resolveCredentialApiKey(spaceId: string, credentialId: string): Promise<string> {
-    const result = await this.pool.query<{ secret_ref: string }>(
+    const result = await this.db.query<{ secret_ref: string }>(
       `SELECT secret_ref
          FROM credentials
         WHERE id = $1 AND space_id = $2 AND credential_type = 'api_key'
@@ -1116,7 +1152,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     const name = input.name?.trim() || `${row.name} pool key`;
     let position = input.position;
     if (position === undefined) {
-      const result = await this.pool.query<{ max: number | null }>(
+      const result = await this.db.query<{ max: number | null }>(
         `SELECT MAX(position) AS max FROM model_provider_credentials
           WHERE provider_id = $1`,
         [providerId],
@@ -1124,13 +1160,13 @@ class PgProviderCommandStore implements ProviderCommandStore {
       position = (result.rows[0]?.max ?? -1) + 1;
     }
 
-    await this.pool.query(
+    await this.db.query(
       `INSERT INTO credentials
         (id, space_id, owner_user_id, name, credential_type, secret_ref, scopes_json, created_at, updated_at)
        VALUES ($1, $2, $3, $4, 'api_key', $5, $6::jsonb, $7, $7)`,
       [credentialId, row.space_id, userId, name, secretRef, json([]), now],
     );
-    await this.pool.query(
+    await this.db.query(
       `INSERT INTO model_provider_credentials
         (id, space_id, provider_id, credential_id, position, enabled, healthy,
          request_count, failure_count, created_at, updated_at)
@@ -1139,7 +1175,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     );
     // A provider that previously had no key at all gains this one as primary.
     if (!row.credential_id) {
-      await this.pool.query(
+      await this.db.query(
         `UPDATE model_providers SET credential_id = $3, updated_at = $4
           WHERE id = $1 AND space_id = $2`,
         [providerId, row.space_id, credentialId, now],
@@ -1159,7 +1195,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
   ): Promise<void> {
     const row = await this.requireOwnedProvider(userId, providerId);
     this.assertPoolSupported(row);
-    const member = await this.pool.query<{ credential_id: string }>(
+    const member = await this.db.query<{ credential_id: string }>(
       `DELETE FROM model_provider_credentials
         WHERE id = $1 AND provider_id = $2
         RETURNING credential_id`,
@@ -1174,14 +1210,14 @@ class PgProviderCommandStore implements ProviderCommandStore {
       // Primary removed: promote the lowest-position remaining member.
       const remaining = await this.poolMembers(spaceId, providerId, false);
       const next = remaining[0]?.credential_id ?? null;
-      await this.pool.query(
+      await this.db.query(
         `UPDATE model_providers SET credential_id = $3, updated_at = $4
           WHERE id = $1 AND space_id = $2`,
         [providerId, row.space_id, next, now],
       );
     }
     // Drop the credential row itself unless any other pool still references it.
-    const stillUsed = await this.pool.query(
+    const stillUsed = await this.db.query(
       `SELECT 1 FROM model_provider_credentials WHERE credential_id = $1
         UNION ALL
        SELECT 1 FROM model_providers WHERE credential_id = $1
@@ -1189,7 +1225,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
       [credentialId],
     );
     if (stillUsed.rows.length === 0) {
-      await this.pool.query(`DELETE FROM credentials WHERE id = $1 AND space_id = $2`, [
+      await this.db.query(`DELETE FROM credentials WHERE id = $1 AND space_id = $2`, [
         credentialId,
         row.space_id,
       ]);
@@ -1224,7 +1260,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
       }
       cfg.fallback_provider_ids = input.fallback_provider_ids;
     }
-    await this.pool.query(
+    await this.db.query(
       `UPDATE model_providers SET config_json = $3::jsonb, updated_at = $4
         WHERE id = $1 AND space_id = $2`,
       [providerId, row.space_id, json(cfg), new Date()],
@@ -1237,24 +1273,11 @@ class PgProviderCommandStore implements ProviderCommandStore {
   // -------------------------------------------------------------------------
 
   async getTaskChain(spaceId: string, task: string): Promise<ProviderTaskChainEntry[] | null> {
-    const result = await this.pool.query<{ chain_json: unknown }>(
-      `SELECT chain_json FROM provider_task_policies
-        WHERE space_id = $1 AND task = $2 AND enabled = true
-        LIMIT 1`,
-      [spaceId, task],
-    );
-    const chain = result.rows[0]?.chain_json;
-    if (!Array.isArray(chain)) return null;
-    const entries = chain
-      .filter((e): e is { provider_id: string; model?: string | null } =>
-        e !== null && typeof e === "object" && typeof (e as { provider_id?: unknown }).provider_id === "string",
-      )
-      .map((e) => ({ provider_id: e.provider_id, model: e.model ?? null }));
-    return entries.length > 0 ? entries : null;
+    return readProviderTaskChain(this.db, spaceId, task);
   }
 
   async listTaskPolicies(spaceId: string): Promise<unknown[]> {
-    const result = await this.pool.query<{
+    const result = await this.db.query<{
       task: string;
       chain_json: unknown;
       enabled: boolean;
@@ -1289,7 +1312,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
       validateTaskProviderCompatibility(task, provider);
     }
     const now = new Date();
-    await this.pool.query(
+    await this.db.query(
       `INSERT INTO provider_task_policies
         (id, space_id, task, chain_json, enabled, created_at, updated_at)
        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $6)
@@ -1311,7 +1334,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     if (!(await this.canAdminSpace(userId, spaceId))) {
       throw new ProviderCommandForbiddenError("Requires space owner or admin role");
     }
-    const result = await this.pool.query(
+    const result = await this.db.query(
       `DELETE FROM provider_task_policies WHERE space_id = $1 AND task = $2`,
       [spaceId, task],
     );
@@ -1346,4 +1369,14 @@ export function resolveProviderCommandStore(config: ServerConfig): ProviderComma
 
 function stringConfig(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * The store bound to one caller's transaction: an operation-core command's
+ * port. Only the command methods are used through it; runtime credential
+ * resolution and task attempts keep the shared pool.
+ */
+export function providerCommandStoreIn(config: ServerConfig, db: Queryable): ProviderCommandStore {
+  if (testOverride) return testOverride;
+  return new PgProviderCommandStore(config, db);
 }

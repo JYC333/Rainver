@@ -5,7 +5,6 @@ import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { HttpError, dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
 import { ProjectResearchRepository } from "./repository.js";
 import { ProjectResearchPipelineService } from "./pipeline/researchPipelineService.js";
-import { enforceSources } from "../sources/enforceSources.js";
 import { ProjectResearchReportRepository } from "./reportRepository.js";
 import { ProjectResearchQuestionRefineService } from "./questionRefineService.js";
 import { registerProjectResearchAreaRoutes } from "./areaRoutes.js";
@@ -54,10 +53,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
     try{return reply.send(await new ResearchProblemResultService(dbPool(context.config)).read(identity,requireParam(request,"projectId"),requireParam(request,"operationId")));}catch(error){return sendRouteError(reply,error);}
   });
-  app.post(`${base}/operations/:operationId/adopt-result`,async(request,reply)=>{
-    const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
-    try{return reply.send(await new ResearchProblemResultService(dbPool(context.config)).adopt(identity,requireParam(request,"projectId"),requireParam(request,"operationId"),jsonBody(request)));}catch(error){return sendRouteError(reply,error);}
-  });
   const reports = () => new ProjectResearchReportRepository(dbPool(context.config));
   registerProjectResearchAreaRoutes(app, context, base, "/api/v1/projects/:projectId");
 
@@ -74,16 +69,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
 
 
-  app.post(`${base}/standing/advice/:adviceId/action`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await new ProjectResearchStandingComparisonService(dbPool(context.config), context.config)
-        .actionAdvice(identity, requireParam(request, "projectId"), requireParam(request, "adviceId")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
 
 
@@ -101,16 +86,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post(`${base}/question/refine`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await new ProjectResearchQuestionRefineService(dbPool(context.config), context.config)
-        .refine(identity, requireParam(request, "projectId"), jsonBody(request), { kind: "person", user_id: identity.userId }));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get(`${base}/question/assessment/confirmations`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -127,39 +102,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
 
 
-  app.post(`${base}/initial-intake/start`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const sourceGate = await enforceSources(context, identity, "source.connection.manage", "source_channel");
-      if (sourceGate.blocked) return reply.code(403).send(sourceGate.reply403);
-      const bindingGate = await enforceSources(context, identity, "project.source.bind", "project_source");
-      if (bindingGate.blocked) return reply.code(403).send(bindingGate.reply403);
-      const backfillGate = await enforceSources(context, identity, "source.backfill.plan", "source_backfill_plan");
-      if (backfillGate.blocked) return reply.code(403).send(backfillGate.reply403);
-      return reply.code(201).send(await orchestrator(context).startInitialIntake(identity, requireParam(request, "projectId"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
 
 
 
 
-  app.post(`${base}/question/apply-forward`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const sourceGate = await enforceSources(context, identity, "source.connection.manage", "source_channel");
-      if (sourceGate.blocked) return reply.code(403).send(sourceGate.reply403);
-      const workflowId = optionalString(jsonBody(request).workflow_id);
-      if (!workflowId) throw new HttpError(422, "workflow_id is required");
-      return reply.send(await orchestrator(context).applyQuestionForward(identity, requireParam(request, "projectId"), workflowId));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get(`${base}/question/impact`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -173,23 +120,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post(`${base}/question/resolve`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const sourceGate = await enforceSources(context, identity, "source.connection.manage", "source_channel");
-      if (sourceGate.blocked) return reply.code(403).send(sourceGate.reply403);
-      const strategy = optionalString(jsonBody(request).strategy);
-      const workflowId = optionalString(jsonBody(request).workflow_id);
-      if (!workflowId) throw new HttpError(422, "workflow_id is required");
-      if (strategy !== "rescreen" && strategy !== "synthesis_only" && strategy !== "apply_forward") {
-        throw new HttpError(422, "strategy must be rescreen, synthesis_only, or apply_forward");
-      }
-      return reply.send(await orchestrator(context).resolveQuestionChange(identity, requireParam(request, "projectId"), workflowId, strategy));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
 
   app.get(`${base}/workflow`, async (request, reply) => {
@@ -217,59 +147,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post(`${base}/workflow/:workflowId/trigger`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "source.connection.manage", "source_channel");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(202).send(
-        await orchestrator(context).triggerIncremental(
-          identity,
-          requireParam(request, "projectId"),
-          requireParam(request, "workflowId"),
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post(`${base}/workflow/:workflowId/history-backfill`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "source.backfill.plan", "source_backfill_plan");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(202).send(
-        await orchestrator(context).startHistoricalBackfill(
-          identity,
-          requireParam(request, "projectId"),
-          requireParam(request, "workflowId"),
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post(`${base}/operations/:operationId/retry`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(202).send(
-        await orchestrator(context).retryFailedOperation(
-          identity,
-          requireParam(request, "projectId"),
-          requireParam(request, "operationId"),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.post(`${base}/operations/:operationId/cancel`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -290,59 +169,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post(`${base}/operations/:operationId/reconcile`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await orchestrator(context).reconcileOperationForUser(
-          identity,
-          requireParam(request, "projectId"),
-          requireParam(request, "operationId"),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.put(`${base}/operations/:operationId/item-limit`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "source.backfill.manage", "source_backfill_plan");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(
-        await orchestrator(context).updateItemLimit(
-          identity,
-          requireParam(request, "projectId"),
-          requireParam(request, "operationId"),
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post(`${base}/operations/:operationId/rescan`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "source.backfill.manage", "source_backfill_plan");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(202).send(
-        await orchestrator(context).rescanEmptyBackfill(
-          identity,
-          requireParam(request, "projectId"),
-          requireParam(request, "operationId"),
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
 
 
@@ -358,23 +186,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post(`${base}/workflow/:workflowId/checkpoints/:checkpointId/decide`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await orchestrator(context).decideCheckpoint(
-          identity,
-          requireParam(request, "projectId"),
-          requireParam(request, "workflowId"),
-          requireParam(request, "checkpointId"),
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get(`${base}/reports`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
@@ -426,26 +237,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post(`${base}/evidence-matrix/rebuild`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await repository(context).rebuildEvidenceMatrix(identity, requireParam(request, "projectId")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post(`${base}/reports/:reportId/integrity`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply
-        .code(201)
-        .send(await repository(context).runReportIntegrity(identity, requireParam(request, "projectId"), requireParam(request, "reportId")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
 }

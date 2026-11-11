@@ -8,6 +8,5 @@ export const agentsModule: ServerModule = {
 
 export {
   __setAgentChatIdentityForTests,
-  __setAgentChatServicesFactoryForTests,
 } from "./routes.js";
 export { PgAgentRepository } from "./repository.js";

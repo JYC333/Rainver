@@ -112,9 +112,17 @@ HTTP routes under `/projects/:projectId/research/operations/:operationId`:
 - GET `/result`: read the versioned result package.
 - POST `/adopt-result`: explicit current-version applicability/reason,
   counterevidence and remaining gaps; writes current-round Inquiry Verify work.
+  It is the human core command `research.result.adopt` (explicit Idempotency-Key,
+  ID receipt); the body's `idempotency_key` remains the domain request key.
 
 Agent tools `research.read_result` / `research.adopt_result` use separately
-granted `research.result.read` / `research.result.adopt` policies. Adoption is
+granted `research.result.read` / `research.result.adopt` policies.
+`research.adopt_result` and `research.start_acquisition` are grant-bound core
+registrations (`agentResearchOperations.ts`): the live Run binds the Project, the
+canonical tool-call id is the transport key and derives the domain request key
+(`problemCommandKey` with the Run), Room origin comes from the Run's own group,
+adoption keeps the Run destination Source egress gate, and an unknown Thread id
+answers with the visible active Questions. Their old executor callbacks are removed. Adoption is
 origin-gated like other problem writes; older Run grants do not gain either
 action implicitly. It atomically checks the current result attempt and both
 problem versions and records an idempotent `assess_result` fact with its
@@ -209,9 +217,10 @@ exhaustive pagination.
 ## Problem workspace and page routing (P5)
 
 Research execution is embedded in the selected problem, not another five-stage
-workbench. `POST /projects/:projectId/research/acquisitions` is an authenticated
-human command: the server sets manual trigger origin at the policy gate (never
-accepts origin/Run identity from the body), then reuses the P3 acquisition service.
+workbench. `POST /projects/:projectId/research/acquisitions` is the authenticated
+human core command `research.acquisition.start`: manual origin comes from the
+session actor (never from the body), the transport key is separate from the
+body's domain request key, and it reuses the P3 acquisition service.
 Omitted item/date limits stay omitted; the existing bounded default, approvals,
 credential budget, Source authority and pipeline remain in force. Reading a page
 never initializes an Area, queues acquisition, or adopts evidence.

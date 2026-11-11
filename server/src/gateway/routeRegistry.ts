@@ -29,6 +29,7 @@ import { backupsModule } from "../modules/backups/index.js";
 import { providersModule } from "../modules/providers/index.js";
 import { networkProfilesModule } from "../modules/networkProfiles/index.js";
 import { acpAgentsModule } from "../modules/acpAgents/index.js";
+import { systemCommandsModule } from "../modules/systemCommands/index.js";
 import { usageModule } from "../modules/usage/index.js";
 import { runsModule } from "../modules/runs/index.js";
 import { artifactsModule } from "../modules/artifacts/index.js";
@@ -172,6 +173,7 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   hostsModule,
   importedSessionsModule,
   acpAgentsModule,
+  systemCommandsModule,
   jobsModule,
   autonomyModule,
   automationsModule,

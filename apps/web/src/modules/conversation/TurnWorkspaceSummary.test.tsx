@@ -221,3 +221,39 @@ it('never shows or continues the previous conversation or permission scope after
   expect(screen.queryByTestId('workspace-change-theirs')).not.toBeInTheDocument()
   expect(screen.queryByTestId('workspace-change-old-scope')).not.toBeInTheDocument()
 })
+
+it('does not call an empty open batch saved and names removed-branch work exactly', async () => {
+  const empty = workspaceRun({ id: 'empty-run', workspace_changes: [workspaceChange({ state: 'open', source_commit: 'a'.repeat(40), base_commit: 'a'.repeat(40) })] })
+  vi.mocked(runsApi.get).mockResolvedValue(empty)
+  const view = show([empty])
+  expect(await screen.findByText('No saved difference')).toBeInTheDocument()
+  expect(screen.queryByText(/Saved privately/)).not.toBeInTheDocument()
+  view.unmount()
+  const missing = { state: 'missing' as const, reason: 'branch_missing', reclaim_after: null, hold_until: null, reclaimed_at: null, assessed_at: null, retained_refs: 0, unclaimed_refs: 0 }
+  const settled = workspaceRun({ id: 'settled-run', workspace_changes: [
+    workspaceChange({ change_set_id: 'gone', workspace_id: 'other', state: 'open', retention: missing }),
+  ] })
+  vi.mocked(runsApi.get).mockResolvedValue(settled)
+  show([settled])
+  expect(await screen.findByText(/Branch removed · not merged/)).toBeInTheDocument()
+  expect(screen.queryByText(/Saved privately/)).not.toBeInTheDocument()
+})
+
+it('lets live Run and batch facts outrank a recorded missing branch (restored, re-run, merging or blocked)', async () => {
+  const missing = { state: 'missing' as const, reason: 'branch_missing', reclaim_after: null, hold_until: null, reclaimed_at: null, assessed_at: '2026-11-08T12:00:00Z', retained_refs: 0, unclaimed_refs: 0 }
+  const cases: Array<[Partial<Run>, NonNullable<Parameters<typeof workspaceChange>[0]>, RegExp]> = [
+    [{ status: 'running' }, { state: 'open', source_commit: null, retention: missing }, /Not saved yet/],
+    [{}, { state: 'integrating', retention: missing }, /Merging/],
+    [{}, { state: 'blocked', retention: missing }, /Needs your decision/],
+  ]
+  for (const [runFields, change, phrase] of cases) {
+    const run = workspaceRun({ id: `stale-${change.state}`, ...runFields, workspace_changes: [workspaceChange(change)] })
+    vi.mocked(runsApi.get).mockResolvedValue(run)
+    const view = show([run])
+    expect((await screen.findAllByText(phrase)).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/Branch removed · not merged/)).not.toBeInTheDocument()
+    // A blocked batch keeps the record's explanation and its close action; live work does not repeat it.
+    if (change.state !== 'blocked') expect(screen.queryByText(/Branch removed/)).not.toBeInTheDocument()
+    view.unmount()
+  }
+})

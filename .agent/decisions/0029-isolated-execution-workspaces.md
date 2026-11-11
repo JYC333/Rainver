@@ -1,6 +1,6 @@
 # ADR 0029 — Isolated execution workspaces and verified integration
 
-Date: 2026-11-06; native-session simplification: 2026-11-08
+Date: 2026-11-06; native-session simplification: 2026-11-08; delegated placement and grouped overview: 2026-11-10
 Status: accepted for staged implementation; enabled paths are documented in the owning guides.
 
 ## Scope
@@ -20,8 +20,10 @@ A registered Location identifies the source and target repository, not an
 exclusive execution directory. New folder-backed conversations run in a
 Host-owned Git worktree before the ACP process starts. One logical workspace
 belongs to a conversation, Task or delegation and a Location; retries and
-continuations reuse it. Independent delegated writers fork a frozen parent
-checkpoint and integrate back into their parent before root publication.
+continuations reuse it. Independent (parallel) delegated writers fork a frozen parent
+checkpoint and integrate back into their parent before root publication;
+serial delegated work reuses the coordinator's workspace (see "Delegated
+workspace placement" below).
 No Task Board object is invented to obtain a workspace.
 
 The control plane owns logical workspace/change-set identity, authorization,
@@ -58,9 +60,15 @@ rebuildable intent. `workspace.change.get` reads the actual result and revision.
 Checkpoint alone saves privately without publication intent, and settlement
 preserves native commit identities/history. No Host I/O happens in the core transaction; no Agent loop is owned by Rainver.
 
-Preparation applies the frozen baseline-to-source delta onto the target in the
-same owned worktree. It preserves a preimage, dependency/build directories and
-all source history. The Agent resolves conflicts and necessary related files
+Preparation rebases by default: the batch's own commits after its frozen base
+(never the base itself, so a private snapshot baseline does not travel) are
+replayed one at a time onto the target in the same owned worktree, and
+publication fast-forwards the target to them, keeping their authors and
+messages. A conflict stops at its commit for the Agent; the next prepare
+continues. Squash, one new commit carrying the whole baseline-to-source delta,
+is used only on the person's explicit request; fast-forward and merge of an
+unchanged chain remain explicit plans. Preparation preserves a preimage,
+dependency/build directories and all source history. The Agent resolves conflicts and necessary related files
 with its ordinary tools. There is no frozen repair-path allowlist, configuration
 phase, fixed one-repair budget, candidate profile or final-summary invocation.
 Trusted Hosts allow normal Git in the Agent's own branch; strict Hosts keep
@@ -231,3 +239,84 @@ survive a release only as owned, expiring run-history refs; after that period
 the Run preview reports them expired rather than reading a different version,
 and only when Git cleanly reports the version missing, never on a read fault. Details and controls are
 in the Hosts and Project Files guides.
+
+
+### Delegated workspace placement (2026-11-10)
+
+Forking every delegation produced a workspace, batch, checkpoint and
+"unmerged" record per review or follow-up, even for strictly serial work. The
+owner authorized reuse for serial work while keeping the other constraints.
+Placement is decided when a delegated child of a version-1 conversation binds
+its primary Location (`projectFolders/delegatedWorkspacePlacement.ts`):
+
+- **Serial writer → the coordinator's workspace.** The child joins the
+  coordinator's conversation workspace (same conversation, Location, Project
+  and Host; never another conversation's) and its current batch, only when the
+  coordinator's binding is saved at exactly the workspace head, every other
+  bound Run has settled with a saved checkpoint, no batch is publishing or
+  blocked, the tree is not released/reclaiming/missing, and no other unfinished
+  writing sibling of the same coordinator Run exists. Mutual exclusion is the
+  Host's exclusive worktree lease (every writer of that worktree key, including
+  later conversation turns) plus these server checks under the conversation
+  workspace's advisory lock. The child keeps its own vendor session; it may
+  save (Git commit or `checkpoint`) but `prepare`/`publish`/`reconcile`,
+  retry, abandon and conversation recovery reach are refused for it: the
+  coordinator alone publishes. Every Run that checkpoints or prepares into a
+  batch is its contributor (its binding, or `contributor_run_ids` for a
+  native operation; a parent also carries its `adopted_child_change_ids`).
+  Every read model, change get/diff, publication and closure requires the
+  origin *and* every contributor to be readable with an unwithheld body
+  (`workspaceContributors.ts`), so a readable coordinator never exposes an
+  unreadable child's commit identity, activity time or content; one
+  unreadable contributor hides the batch. A stopped or failed child's leftovers are
+  captured by the existing per-Run checkpoint as its own commit range, never
+  silently discarded or published; a blocked checkpoint strands that generation
+  exactly as for any other Run of it.
+- **Read-only child → review at a frozen version.** On a personal Host that
+  advertises `execution_workspaces.shared_review = 1` and verified read-only
+  namespaces, a reviewer with no unfinished writing sibling reads the
+  coordinator's worktree at the coordinator's saved checkpoint
+  (`ExecutionWorkspaceRef.review_commit`). The Host refuses unless the branch,
+  HEAD and a clean tree equal that commit, holds the worktree lease shared (so
+  readers run together and no writer, cleanup or release runs beside them) and
+  never launches it outside the read-only namespace. No workspace, batch,
+  binding or checkpoint is created. The first placement stores an immutable
+  review reference (`execution_workspace_reviews`: workspace, generation,
+  Location, `expected_commit`); every replay of that Run reuses it verbatim,
+  so a retry after the coordinator moved is neither re-placed nor forked and
+  the Host refuses the stale basis instead. Expected and observed stay apart:
+  the review is `verified` only when the Host's read-only basis report (sent
+  only for a review it verified and started) names exactly the expected
+  commit; a Host refusal or another HEAD is `refused`, an unreadable HEAD
+  stays `pending`. The Run's `review_basis` mirrors that state and its result
+  says "Reviewed" only when verified. Instruction text never substitutes for
+  these checks.
+- **Everything else keeps an isolated fork** from the parent checkpoint:
+  parallel writers, readers beside a writer, attachments, strict or
+  non-capable Hosts, and any workspace not provably idle and healthy.
+
+Unchanged: Project/Host/Location authority, parent-checkpoint and Host
+fencing, retention and approval rules, per-repository publication and the
+cleanup contract. Completed, proven-adopted forks with no dependents continue
+through the existing retention sweep; unproven work is never released by age.
+
+### Grouped Agent workspaces overview (2026-11-10)
+
+The default overview aggregates on the server one entry per conversation ×
+repository (`projectFolders/workspaceOverviewGroups.ts`): current state,
+latest result and open problems. Delegations, batches, older generations and
+reclaims are the folded execution history (`view=all&group=…`). Visibility
+(Project read, owned Host, readable conversation, unwithheld Run body) is
+applied before grouping, counting or paging; delegated children join their
+coordinator's conversation group through their own visible Run, so neither
+paging nor the coordinator's view hides them. A batch is visible only when
+its origin and every contributing Run are readable (above). Saved work is
+folded away only by an exact commit match with work that provably reached the
+target (published from a root workspace, or a recorded target adoption proof)
+or another unconfirmed batch at the same commit; otherwise it stays listed as
+unconfirmed. A child adopted into its parent's batch is not such proof: the
+parent's unpublished work at that commit stays listed until the target proof
+exists. Diff sizes or missing states are never evidence of adoption. The
+group's current workspace is the session's conversation workspace with the
+highest generation; activity only orders groups and picks the latest result,
+so a late update to an older generation never replaces it.

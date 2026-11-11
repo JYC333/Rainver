@@ -18,6 +18,7 @@ import {classifyLocationRefs,configureWorkspaceRetention,freeSourceCommits,type 
 import {reconcileExecutionWorkspaces} from '../src/modules/hosts/workspaceReconcile.js';
 import {enqueueRefRelease} from '../src/modules/hosts/workspaceRefRelease.js';
 import {freezeSubmittedWorkspaceCommit,pinRegisteredSource} from '../src/modules/projectFolders/workspaceCommitSubmission.js';
+import {HostCommandRunFrameSchema} from '@rainver/protocol';
 
 /**
  * The shared-source deletion fence (hosts/workspaceSourceFence, migration
@@ -626,12 +627,15 @@ describe('pre-fence deletions, native commits, Run start and recovery',()=>{
   await expect(write(native(t.frozen))).rejects.toMatchObject(PENDING);
   expect(await advance(w.workspace.id,key,hosts)).toEqual({cleanup_state:'cleaned'});
   // Pinned before use: a pruned object is refused; a present one is pinned under its shared name.
-  const attempt=async(argv:string[])=>{try{return t.git(argv);}catch{return null;}};
+  // Every argument must be one the Host accepts in a command_run frame.
+  const attempt=async(argv:string[])=>{HostCommandRunFrameSchema.shape.command.parse(['git',...argv]);try{return t.git(argv);}catch{return null;}};
   expect(t.present(t.frozen)).toBe(false);
   await write(native(t.frozen));
   await expect(pinRegisteredSource(attempt,t.frozen)).rejects.toMatchObject({message:'workspace_commit_unavailable'});
   const kept=t.git(['commit-tree',`${t.parent}^{tree}`,'-p',t.parent,'-m','native submission']);
   await write(native(kept));
+  await pinRegisteredSource(attempt,kept);
+  // Creation is CAS on absence; pinning again proves the existing exact ref.
   await pinRegisteredSource(attempt,kept);
   t.gc();
   expect(t.ref(kept)).toBe(kept);

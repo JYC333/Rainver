@@ -14,13 +14,25 @@ import {errMsg} from '../../lib/utils'
 import {ConversationRunControls,PresentedRunDecisions} from '../conversation/ConversationRunControls'
 
 /** One batch and the Run it is read through: commands recheck that Run's authority. */
-export type WorkspaceChangeEntryView={change:WorkspaceChangeView;runId:string;runSucceeded:boolean;agentLabel?:string}
+export type WorkspaceChangeEntryView={change:WorkspaceChangeView;runId:string;runSucceeded:boolean;runActive?:boolean;agentLabel?:string}
+const ACTIVE_RUN_STATUSES=new Set(['queued','running','cancelling','waiting_for_review','waiting_for_dependency'])
+/** Whether the Run a batch is read through is still working (the server's active set). */
+export const workspaceRunActive=(status:string)=>ACTIVE_RUN_STATUSES.has(status)
 
 export const TERMINAL_CHANGE_STATES=['integrated','no_changes','abandoned']
 
 /** The visible state label of a batch, including where an integrated batch landed. */
-export function workspaceChangeLabelKey(c:WorkspaceChangeView){
+export function workspaceChangeLabelKey(c:WorkspaceChangeView,runActive=false){
+ // A branch removed outside Rainver no longer holds a private save to merge. The
+ // record is a past reading: a merging or blocked batch, or one whose Run is
+ // working now, shows that live state instead.
+ if(c.state==='open'&&!runActive&&c.retention?.state==='missing')return 'workspace_ui.execution.retention.state.missing'
  if(c.state==='open'&&!c.source_commit)return 'workspace_ui.execution.unsaved'
+ // An open batch whose saved source equals its base holds nothing private to merge.
+ if(c.state==='open'&&c.source_commit===c.base_commit)return 'workspace_ui.execution.no_saved_difference'
+ if(c.state==='no_changes'&&c.integration_detail?.adoption_proof==='target_paths_match')return 'workspace_ui.execution.in_target'
+ if(c.state==='abandoned'&&c.retention?.reason==='discarded')return 'agent_workspaces_ui.state.discarded'
+ if(c.state==='abandoned'&&c.integration_detail?.missing_acknowledged===true)return 'workspace_ui.execution.missing_closed'
  if(c.state==='integrating'&&c.integration_detail?.reconcile_only===true)return 'workspace_ui.execution.reconciling'
  if(c.state==='integrated'&&c.landing==='parent')return 'agent_workspaces_ui.landing.parent'
  if(c.state==='integrated'&&c.landing==='parent_unverified')return 'agent_workspaces_ui.landing.parent_unverified'
@@ -88,7 +100,7 @@ export function WorkspaceChangeList({entries,onChanged,showRunLink=false}:{entri
    return <Fragment key={c.change_set_id}><div className="min-w-0 space-y-2 border-t border-border pt-3 first:border-t-0 first:pt-0" data-testid={`workspace-change-${c.change_set_id}`}>
     <div className="flex flex-wrap items-center gap-2">
      {entry.agentLabel&&<span className="text-xs font-medium text-muted-foreground">{entry.agentLabel}</span>}
-     <Badge variant={c.state==='blocked'?'warning':'default'}>{t(workspaceChangeLabelKey(c))}</Badge>
+     <Badge variant={c.state==='blocked'?'warning':'default'}>{t(workspaceChangeLabelKey(c,entry.runActive))}</Badge>
      {!saved&&!checkpointBlocked&&!terminal&&<span className="text-xs text-muted-foreground">{t('workspace_ui.execution.checkpoint_pending')}</span>}
      {target&&<span className="min-w-0 break-all text-xs text-muted-foreground">{t('workspace_ui.execution.target',{target})}</span>}
     </div>
@@ -99,7 +111,8 @@ export function WorkspaceChangeList({entries,onChanged,showRunLink=false}:{entri
     {(terminal||c.cleanup_state==='blocked')&&!(firstOfWorkspace&&c.retention?.state==='reclaimed')&&<p className="text-xs text-muted-foreground">{t(c.integration_detail?.pending_checkpoint_retained===true?'workspace_ui.execution.retained_pending_checkpoint':`workspace_ui.execution.cleanup.${c.cleanup_state}`)}</p>}
     {(Number(c.inventory?.quarantined_whole??0)>0||Number(c.inventory?.retained_quarantine??0)>0)&&<p className="text-xs text-muted-foreground">{t('workspace_ui.execution.retained_evidence',{whole:Number(c.inventory?.quarantined_whole??0),captured:Number(c.inventory?.retained_quarantine??0)})}</p>}
     {c.cleanup_errors.map((e,i)=><p key={i} className="break-words text-xs text-muted-foreground">{e}</p>)}
-    {firstOfWorkspace&&<WorkspaceRetentionStatus change={c} onChanged={onChanged} showRefCounts={false}/>}
+    {/* A missing-branch reading is not repeated while the batch is merging or its Run is working: the live state above outranks it. */}
+    {firstOfWorkspace&&!(c.retention?.state==='missing'&&(entry.runActive||['ready','integrating'].includes(c.state)))&&<WorkspaceRetentionStatus change={c} onChanged={onChanged} showRefCounts={false}/>}
     {technical&&<details className="text-xs text-muted-foreground">
      <summary className="cursor-pointer">{t('agent_workspaces_ui.technical')}</summary>
      <div className="mt-1 space-y-1 break-all font-mono">
@@ -112,7 +125,7 @@ export function WorkspaceChangeList({entries,onChanged,showRunLink=false}:{entri
     </details>}
     <div className="flex flex-wrap gap-2 empty:hidden">
      {c.can_manage&&c.state==='blocked'&&c.integration_id&&!checkpointBlocked&&<Button size="sm" variant="outline" disabled={busy} onClick={()=>void execute(entry,'reconcile')}>{t('workspace_ui.execution.reconcile')}</Button>}
-     {c.can_manage&&c.native_integration&&!checkpointBlocked&&['open','blocked'].includes(c.state)&&<WorkspaceVerificationAction changeSetId={c.change_set_id} onRetried={onChanged}/>}
+     {c.can_manage&&c.native_integration&&!checkpointBlocked&&c.retention?.state!=='missing'&&['open','blocked'].includes(c.state)&&<WorkspaceVerificationAction changeSetId={c.change_set_id} onRetried={onChanged}/>}
      {c.can_manage&&!c.native_integration&&saved&&(c.state==='open'||c.state==='blocked'&&!c.integration_id)&&entry.runSucceeded&&<Button size="sm" variant="outline" disabled={busy||checkpointBlocked} onClick={()=>{setText(c.summary??t('workspace_ui.execution.default_summary'));setDialog({entry,action:'complete'})}}>{t('workspace_ui.execution.complete')}</Button>}
      {c.can_manage&&!c.native_integration&&c.integration_id&&(c.integration_detail?.error==='verification_unconfigured'||['verification_failed','conflict'].includes(c.integration_status??''))&&<WorkspaceVerificationAction integrationId={c.integration_id} onRetried={onChanged}/>}
      {c.can_manage&&!c.native_integration&&c.state==='blocked'&&c.integration_id&&(c.integration_detail?.error==='verification_unconfigured'||c.integration_status==='verification_failed'?null:canResolve?<Button size="sm" variant="outline" disabled={busy||checkpointBlocked} onClick={()=>{setText('');setDialog({entry,action:'resolve'})}}>{t('workspace_ui.execution.resolve')}</Button>:<Button size="sm" variant="outline" disabled={busy||checkpointBlocked} onClick={()=>void execute(entry,'retry')}>{t('workspace_ui.execution.retry')}</Button>)}

@@ -9,7 +9,6 @@ export const runsModule: ServerModule = {
 export {
   __setRunsCommandServicesFactoryForTests,
   __setRunsIdentityForTests,
-  __setRunsReadResponseForTests,
 } from "./routes.js";
 
 export { turnState as runTurnState } from "./turnReadModel.js";

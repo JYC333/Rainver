@@ -1228,23 +1228,21 @@ Four old URLs migrated, none added. P5-2 and overall P5 remain in progress.
 Unrelated usage/INDEX/runtime-adapters/worktree-plan/reports are preserved.
 
 
-## Note-link policy decision isolated from continuing implementation
+## Note-link permission decision — resolved 2026-11-10
 
-Source review found a real policy/implementation conflict for P5-5:
-`POLICY_ACTION_REGISTRY.note.link.create` is explicitly reserved/default-deny
-and says not implemented; the live Knowledge POST/DELETE note-link routes and
-NoteEditor already create/remove navigational links under canonical object
-write/read authority without consulting that action. Core migration cannot
-silently change deny to allow or disable existing human functionality.
+The user explicitly authorized ordinary human Note linking. The registry now
+allows this low-risk action and the link/unlink/atomic-jot HTTP entries enforce
+it with mandatory policy audit. Existing Note/Project write, typed endpoint
+readability and same-Space checks remain authoritative. Links are navigational;
+this decision adds no canonical graph authority, Agent tool or approval bypass.
+Core migration of these entries remains separate engineering work.
 
-Concrete recommended decision: wire existing human-only create/remove linking
-as allowed ordinary commands, with mandatory core policy audit/receipt, current
-writable Note plus writable source for incoming links, readable typed target,
-Project authority and same-Space constraints. Preserve navigational-only edges,
-no canonical graph authority, Agent grant or approval bypass. Alternative:
-retain the deny and remove/disable both current mutations and UI affordances.
-This permission choice applies only to Note link operations. Note-to-Question,
-Source ordinary work and other P5 implementation continue independently.
+Verification for this permission cleanup: protocol policy/SystemAction 35,
+server policy decision/enforcement 41 and Note action/target/guide 17 tests
+passed (93 total). Nine real-Postgres jot/navigation tests were skipped because
+this runtime has no working Docker/Postgres strategy. Protocol build and
+protocol/server typechecks passed. No full-suite, live deployment or P5-5
+completion is claimed. No new dependency or domain writer was introduced.
 
 
 ## Human Inquiry creation and Note-to-Question (basis 3c906199)
@@ -1280,8 +1278,7 @@ policies and current enforcement points, without a policy permission change.
 No full suite or visual change claim. Independent reviewers remain skipped for
 the fixed exhausted budget; own review is not called independent approval.
 Exact inventory636=588legacy+31exempt+17core;573 baseline core legacy remain.
-Two existing URLs migrated, none added. P5-6 continues; P5-5's specific Note-link
-choice remains waiting for review while other implementation proceeds.
+Two existing URLs migrated, none added. P5-6 continues; the Note-link permission decision is resolved above.
 
 
 ## P5-2 Project Source consumption (basis991fc8b5)
@@ -1467,8 +1464,7 @@ Implemented knowledge.note.rollback/delete with strict user-only contracts,
 current canonical Note/Project write authority and explicit transport keys.
 The existing formal endpoints join the same canonical NoteWriter/core tx.
 Only the already-available manual restore/soft-delete capability is evaluated
-by new wired/audited note.edit; plain Note linking stays reserved/default-denied
-and its human choice is still pending. No Agent, Wiki/Memory promotion, purge,
+by new wired/audited note.edit; human Note linking is allowed under its own access gates. No Agent, Wiki/Memory promotion, purge,
 Note create/update/placement or new selection-toolbar action is enabled here.
 
 Project authority is pinned before the Note root, then authority/scope rechecked
@@ -1491,7 +1487,7 @@ Working inventory636=569legacy+39exempt+28core,554 baseline core legacy remain;
 HEAD before this draft remains556. This is preparatory P5-5 Note work, not P5-8 execution or completion. Independent dual review is outstanding because the fixed shared budget
 is exhausted; self-inspection/test evidence is not a substitute approval.
 Other partial checkpoints have been returned to ready, retaining their commit
-reports. P5-5 still waits only on the explicit Note-link policy decision.
+reports. The Note-link permission decision is resolved; remaining engineering stays open.
 
 Verification for this uncommitted draft: affected selections cover8 server
 files/141 tests, zero skips (real PG103: Note controls19, canonical writer8,
@@ -2107,9 +2103,8 @@ Original checkpoint5 DoD, bounded current scope:
   The former still uses retained direct repository calls, the latter keeps its
   canonical appliers/worker boundaries. P5-4 writer qualification is not a flag
   enabling any of those production mappings.
-- Awaiting only a permission choice: note.link.create reserved/default-deny versus
-  existing human link REST/editor. No link behavior or new Agent rights changed.
-  Other remaining engineering does not need another product confirmation.
+- Human Note linking is allowed under the resolved decision above.
+  Remaining migration work adds no Agent rights.
 
 Final scoped server5files63, protocol2files42, Web3files65 pass. Real PG is used
 for durable behavior; one injected unknown HttpError tests classification without
@@ -2167,9 +2162,8 @@ Original checkpoint5 DoD progress:
 - Remaining engineering in5: Note/Wiki promotion and ordinary Source object/
   activation/promotion/consent-egress/invalid-material-attempt entry closures.
   P5-4 writer qualification is reused, not permission to enable mappings.
-- Only existing human permission choice: reserved/default-denied Note link versus
-  current human linking. Link and its atomic targeted jot public contract stay
-  unchanged/excluded; that choice does not block the independent engineering.
+- Human Note linking is allowed. Link and atomic targeted jot retain their
+  public contract; their core migration remains independent engineering.
 - Sensitive purge and final stateful-GET/inventory closure are not smuggled into
   ordinary Note capabilities or used to claim checkpoint5/overall P5 completion.
 
@@ -2268,8 +2262,7 @@ implemented here passage-to-Knowledge proposal submission and evidence Source
 CRUD. Actual remaining independent families: curated item-to-evidence Source
 links (POST/DELETE /knowledge/items/:itemId/sources...), modern KnowledgeCandidate
 promotion submission, managed activation and consent/egress/material-attempt
-controls. They are not mislabelled as this evidence CRUD. Note link policy remains
-the existing human choice; atomic jot stays excluded. No claim checkpoint5 done.
+controls. They are not mislabelled as this evidence CRUD. Human Note linking is allowed; atomic jot core migration stays excluded. No claim checkpoint5 done.
 
 Inventory: formal HEAD538; working534=636(549legacy/39exempt/48core) minus15plugin.
 Exactly4 retained URLs migrate. Internal B11/error/authority fixes do not reduce
@@ -2343,8 +2336,7 @@ Original checkpoint5 progress: history/trash, ordinary Note objects, passage
 promotion/evidence CRUD committed; this batch implements curated citations and
 manual modern Candidate/review closure. Actual remaining engineering: Candidate
 extraction Job/worker command entry; managed Source activation, consent/egress and
-material submission/invalid-attempt controls. Note link still awaits the existing
-human choice; atomic jot remains excluded. No checkpoint6/7/8 work is claimed,
+material submission/invalid-attempt controls. Human Note linking is allowed; atomic jot core migration remains excluded. No checkpoint6/7/8 work is claimed,
 no production mapping/publicproposal.decide/Agent authority is enabled, and5 is
 not declared complete. Working525=636(540legacy/39exempt/57core) minus15plugins;
 formal534 until coordinator commit. Only9 migrated retained URLs reduce counts.
@@ -2468,7 +2460,7 @@ original approval proposal; Agent Channel activation creates a paused draft and
 proposal with different ownership/audience/credential rules. They are not the same
 operation, and neither is changed/enabled by this batch. Consent/egress/material
 submission/invalid-attempt gates remain real checkpoint5 work, not claimed complete.
-Note link/jot remains the existing pending human choice. No production mapping,
+Human Note link/jot permission is resolved above. No production mapping,
 new Agent grant or public proposal.decide authority is enabled. No new Task/Proposal
 was written in the live Project; review/commit remain coordinator-owned.
 
@@ -2517,7 +2509,7 @@ new execution/retry engine or dependency. External effects stay on existing work
 
 | Group | Method | Retained path | Implementation status |
 |---|---|---|---|
-| 1 | POST | `/api/v1/projects/:projectId/research/acquisitions` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/acquisitions` | implemented; see final 29 closure |
 | 1 | POST | `/api/v1/projects/:projectId/research/area` | implemented Research workspace command; focused verification below |
 | 1 | POST | `/api/v1/projects/:projectId/research/ask-ai` | implemented `research.ask_ai`; continuation evidence below |
 | 1 | POST | `/api/v1/projects/:projectId/research/checklist` | implemented Research workspace command; focused verification below |
@@ -2525,30 +2517,30 @@ new execution/retry engine or dependency. External effects stay on existing work
 | 1 | PATCH | `/api/v1/projects/:projectId/research/checklist/:itemId` | implemented Research workspace command; focused verification below |
 | 1 | POST | `/api/v1/projects/:projectId/research/claims` | implemented Research workspace command; focused verification below |
 | 1 | PATCH | `/api/v1/projects/:projectId/research/claims/:claimLinkId` | implemented Research workspace command; focused verification below |
-| 1 | POST | `/api/v1/projects/:projectId/research/evidence-matrix/rebuild` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/evidence-matrix/rebuild` | implemented; see final 29 closure |
 | 1 | PUT | `/api/v1/projects/:projectId/research/initial-intake` | implemented in parallel Project batch; focused evidence below |
-| 1 | POST | `/api/v1/projects/:projectId/research/initial-intake/start` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/initial-intake/start` | implemented; see final 29 closure |
 | 1 | PUT | `/api/v1/projects/:projectId/research/item-limit` | implemented workspace command; continuation evidence below |
-| 1 | POST | `/api/v1/projects/:projectId/research/operations/:operationId/adopt-result` | pending |
-| 1 | PUT | `/api/v1/projects/:projectId/research/operations/:operationId/item-limit` | pending |
-| 1 | POST | `/api/v1/projects/:projectId/research/operations/:operationId/reconcile` | pending |
-| 1 | POST | `/api/v1/projects/:projectId/research/operations/:operationId/rescan` | pending |
-| 1 | POST | `/api/v1/projects/:projectId/research/operations/:operationId/retry` | pending |
-| 1 | POST | `/api/v1/projects/:projectId/research/question/apply-forward` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/operations/:operationId/adopt-result` | implemented; see final 29 closure |
+| 1 | PUT | `/api/v1/projects/:projectId/research/operations/:operationId/item-limit` | implemented; see final 29 closure |
+| 1 | POST | `/api/v1/projects/:projectId/research/operations/:operationId/reconcile` | implemented; see final 29 closure |
+| 1 | POST | `/api/v1/projects/:projectId/research/operations/:operationId/rescan` | implemented; see final 29 closure |
+| 1 | POST | `/api/v1/projects/:projectId/research/operations/:operationId/retry` | implemented; see final 29 closure |
+| 1 | POST | `/api/v1/projects/:projectId/research/question/apply-forward` | implemented; see final 29 closure |
 | 1 | POST | `/api/v1/projects/:projectId/research/question/assessment/confirm` | implemented `research.question.assessment.confirm`; continuation evidence below |
-| 1 | POST | `/api/v1/projects/:projectId/research/question/refine` | pending |
-| 1 | POST | `/api/v1/projects/:projectId/research/question/resolve` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/question/refine` | implemented; see final 29 closure |
+| 1 | POST | `/api/v1/projects/:projectId/research/question/resolve` | implemented; see final 29 closure |
 | 1 | PUT | `/api/v1/projects/:projectId/research/reading-list/:sourceItemId/card` | implemented Research workspace command; focused verification below |
 | 1 | POST | `/api/v1/projects/:projectId/research/reports` | implemented `research.report.snapshot`; continuation evidence below |
-| 1 | POST | `/api/v1/projects/:projectId/research/reports/:reportId/integrity` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/reports/:reportId/integrity` | implemented; see final 29 closure |
 | 1 | PUT | `/api/v1/projects/:projectId/research/screening-criteria` | implemented Research workspace command; focused verification below |
-| 1 | POST | `/api/v1/projects/:projectId/research/standing/advice/:adviceId/action` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/standing/advice/:adviceId/action` | implemented; see final 29 closure |
 | 1 | POST | `/api/v1/projects/:projectId/research/standing/advice/:adviceId/dismiss` | implemented workspace command; continuation evidence below |
 | 1 | POST | `/api/v1/projects/:projectId/research/standing/batches/:batchId/retry` | implemented workspace command; continuation evidence below |
-| 1 | POST | `/api/v1/projects/:projectId/research/workflow/:workflowId/checkpoints/:checkpointId/decide` | pending |
-| 1 | POST | `/api/v1/projects/:projectId/research/workflow/:workflowId/history-backfill` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/workflow/:workflowId/checkpoints/:checkpointId/decide` | implemented; see final 29 closure |
+| 1 | POST | `/api/v1/projects/:projectId/research/workflow/:workflowId/history-backfill` | implemented; see final 29 closure |
 | 1 | POST | `/api/v1/projects/:projectId/research/workflow/:workflowId/stages/:stageKey/run` | implemented in parallel Project batch; focused evidence below |
-| 1 | POST | `/api/v1/projects/:projectId/research/workflow/:workflowId/trigger` | pending |
+| 1 | POST | `/api/v1/projects/:projectId/research/workflow/:workflowId/trigger` | implemented; see final 29 closure |
 | 2 | POST | `/api/v1/projects/:projectId/inquiry/candidates/:candidateId/decision` | implemented in parallel Project batch; focused evidence below |
 | 2 | POST | `/api/v1/projects/:projectId/inquiry/candidates/:candidateId/reopen` | implemented in parallel Project batch; focused evidence below |
 | 2 | POST | `/api/v1/projects/:projectId/inquiry/delta-briefs` | implemented in parallel Project batch; focused evidence below |
@@ -2596,18 +2588,18 @@ new execution/retry engine or dependency. External effects stay on existing work
 | 3 | POST | `/api/v1/projects/:projectId/folders/scan` | implemented `project.folder.scan`; continuation evidence below |
 | 4 | POST | `/api/v1/projects/:projectId/corpus` | implemented `project.corpus.upsert`; continuation evidence below |
 | 4 | PATCH | `/api/v1/projects/:projectId/corpus/:corpusItemId` | implemented `project.corpus.update`; continuation evidence below |
-| 4 | POST | `/api/v1/projects/:projectId/corpus/backfill-source-items` | pending |
+| 4 | POST | `/api/v1/projects/:projectId/corpus/backfill-source-items` | implemented; see final 29 closure |
 | 4 | PATCH | `/api/v1/projects/:projectId/information-monitoring/details` | implemented in parallel Project batch; focused evidence below |
-| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/items/:itemId/feedback` | pending |
-| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/proposals` | pending |
-| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/reconcile` | pending |
-| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/runs` | pending |
-| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/source-setup` | pending |
+| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/items/:itemId/feedback` | implemented; see final 29 closure |
+| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/proposals` | implemented; see final 29 closure |
+| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/reconcile` | implemented; see final 29 closure |
+| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/runs` | implemented; see final 29 closure |
+| 4 | POST | `/api/v1/projects/:projectId/information-monitoring/source-setup` | implemented; see final 29 closure |
 | 4 | PATCH | `/api/v1/projects/:projectId/information-monitoring/state` | implemented in parallel Project batch; focused evidence below |
 | 4 | POST | `/api/v1/projects/:projectId/knowledge-candidate-extractions` | existing extraction draft + finite review fixes; 21 PG tests passed |
 | 4 | POST | `/api/v1/projects/:projectId/sources/bindings/:bindingId/propose-backfill` | implemented `project.source.propose_backfill`; continuation evidence below |
-| 4 | POST | `/api/v1/projects/:projectId/sources/propose-bind` | pending |
-| 4 | POST | `/api/v1/projects/:projectId/sources/propose-setup` | pending |
+| 4 | POST | `/api/v1/projects/:projectId/sources/propose-bind` | implemented; see final 29 closure |
+| 4 | POST | `/api/v1/projects/:projectId/sources/propose-setup` | implemented; see final 29 closure |
 | 5 | POST | `/api/v1/projects` | implemented in parallel Project batch; focused evidence below |
 | 5 | PATCH | `/api/v1/projects/:projectId` | implemented `project.update`; continuation evidence below |
 | 5 | POST | `/api/v1/projects/:projectId/archive` | implemented `project.archive`; continuation evidence below |
@@ -2623,7 +2615,7 @@ new execution/retry engine or dependency. External effects stay on existing work
 | 5 | POST | `/api/v1/projects/:projectId/decision-cases/:caseId/options` | implemented in parallel Project batch; focused evidence below |
 | 5 | POST | `/api/v1/projects/:projectId/decision-cases/:caseId/scores` | implemented in parallel Project batch; focused evidence below |
 | 5 | PUT | `/api/v1/projects/:projectId/focus-area` | implemented `project.focus_area.set`; continuation evidence below |
-| 5 | POST | `/api/v1/projects/:projectId/imported-sessions/extraction` | pending |
+| 5 | POST | `/api/v1/projects/:projectId/imported-sessions/extraction` | implemented; see final 29 closure |
 | 5 | POST | `/api/v1/projects/:projectId/instruction-versions` | implemented in parallel Project batch; focused evidence below |
 | 5 | POST | `/api/v1/projects/:projectId/instruction-versions/:versionId/publish` | implemented in parallel Project batch; focused evidence below |
 | 5 | POST | `/api/v1/projects/:projectId/instruction-versions/:versionId/submit-review` | implemented in parallel Project batch; focused evidence below |
@@ -2631,15 +2623,15 @@ new execution/retry engine or dependency. External effects stay on existing work
 | 5 | DELETE | `/api/v1/projects/:projectId/members/:userId` | implemented in parallel Project batch; focused evidence below |
 | 5 | POST | `/api/v1/projects/:projectId/notebook-chat` | implemented `project.notebook.chat`; continuation evidence below |
 | 5 | PUT | `/api/v1/projects/:projectId/public-summary` | implemented `project.public_summary.save`; continuation evidence below |
-| 5 | POST | `/api/v1/projects/:projectId/public-summary/draft` | pending |
+| 5 | POST | `/api/v1/projects/:projectId/public-summary/draft` | implemented; see final 29 closure |
 | 5 | POST | `/api/v1/projects/:projectId/public-summary/publish` | implemented `project.public_summary.publish`; continuation evidence below |
 | 5 | POST | `/api/v1/projects/:projectId/public-summary/revoke` | implemented `project.public_summary.revoke`; continuation evidence below |
 | 5 | POST | `/api/v1/projects/:projectId/review-sessions` | implemented `project.review_session.open`; continuation evidence below |
 | 5 | POST | `/api/v1/projects/:projectId/updates` | implemented `project.update.report`; continuation evidence below |
 | 5 | POST | `/api/v1/projects/:projectId/updates/:eventId/undo` | implemented `project.update.undo`; continuation evidence below |
-| 5 | POST | `/api/v1/projects/public-summaries/feedback` | pending |
-| 5 | POST | `/api/v1/projects/public-summaries/search` | pending |
-| 5 | POST | `/api/v1/projects/retrieval/brief` | pending |
+| 5 | POST | `/api/v1/projects/public-summaries/feedback` | implemented; see final 29 closure |
+| 5 | POST | `/api/v1/projects/public-summaries/search` | retired unused endpoint; see final 29 closure |
+| 5 | POST | `/api/v1/projects/retrieval/brief` | implemented; see final 29 closure |
 
 ### Project total-package implementation progress (not unified review/acceptance)
 
@@ -2674,7 +2666,7 @@ new execution/retry engine or dependency. External effects stay on existing work
 - This is incomplete implementation, not a request to stop for a small-family
   review. The unified five-package review and overall migration acceptance remain
   pending. No new product choice, production mapping or public proposal.decide
-  permission was introduced. The independent Note link choice stays unchanged.
+  permission was introduced. Human Note linking is allowed under the resolved decision above.
 
 ### Current Project-package file ownership and executed checks
 
@@ -3059,3 +3051,511 @@ Claude and Antigravity independently reviewed the final implementation snapshot
 and found no blockers. These were code reviews, not independent executions of
 all suites; the coordinator ran the checks above. No performance threshold,
 production authority guard or transaction requirement was weakened to pass.
+
+## Project package — final 29 routes (working tree on 886b1aaf, uncommitted)
+
+All 29 rows left after the 94/123 checkpoint are settled; the Project package's
+123 baseline URLs now have no legacy owner. Re-verified against actual code
+first: 16 Research, 8 Corpus/monitoring/Source ingress and 5 summary/import rows,
+as listed in the matrix above. Inventory **636 = 418 legacy + 39 exemptions + 179
+core** (HEAD 637 = 447 / 39 / 151); excluding the 15 plugin writes, **403** P5
+legacy entries remain for the Agent/Room, Host and system-settings packages.
+
+| Retained URL(s) | Outcome |
+|---|---|
+| initial-intake/start; workflow trigger; history-backfill | `research.intake.start`, `research.workflow.trigger`, `research.workflow.history_backfill` |
+| question/resolve and question/apply-forward | one `research.question.resolve` (apply-forward adapter fixes `strategy`) |
+| checkpoints/:id/decide; operations/:id/retry, reconcile, item-limit, rescan | `research.checkpoint.decide`, `research.operation.retry` / `.reconcile` / `.item_limit` / `.rescan` |
+| operations/:id/adopt-result; research/acquisitions | `research.result.adopt`, `research.acquisition.start` (human; Agent tools unchanged) |
+| standing advice action; report integrity | `research.standing.action`, `research.report.integrity` |
+| evidence-matrix/rebuild and corpus/backfill-source-items | one `project.corpus.backfill_sources` |
+| question/refine | `research.question.refine`: pending turn + frozen request + Job; worker completes/fails the turn |
+| information-monitoring source-setup, proposals, reconcile, runs, item feedback | `project.monitoring.source.setup` / `.proposal.create` / `.reconcile` / `.run.start` / `.feedback` |
+| sources/propose-bind, sources/propose-setup | `project.source.bind.propose`, `project.source.setup.propose` |
+| public-summaries/feedback | `project.summary.feedback` |
+| public-summary/draft | `project.public_summary.draft.generate`: private queued `provider_task` Run; worker writes the draft |
+| imported-sessions/extraction | `project.imported_sessions.extract`: claim + Job; worker extracts and proposes |
+| retrieval/brief | `project.summary.brief.request`: requester-owned Job builds the brief (and optional artifact) |
+| public-summaries/search | retired: no browser/client caller; its only test removed; Agent `project.summary.search` unaffected |
+
+Reuse / Dependency Check: OperationExecutor, branded transaction port, host
+Run-terminal owner, owning domain services, canonical Proposal writers,
+`provider_task_run` worker, PgJobQueue and existing GETs are reused; no new
+dependency, schema change, execution engine or retry. One query was extracted
+for reuse (`readProviderTaskChain`) so admission reads through the transaction
+port; the core's guard correctly refused the store's independent pool there.
+
+Boundaries kept: deterministic domain 409/422 sites are marked with existing
+domain error classes (other `HttpError`s stay uncached internal errors); every
+command reuses the route's former primary policy gate or a new human-only,
+non-grantable action (`project.summary.feedback`, `project.summary.brief.request`);
+proposal-producing commands name their existing Proposal type and gate per ADR
+0017; no approval mapping, Agent grant or public proposal decision is added.
+`trigger` keeps its compatible body: optional `source_item_ids` (0–500
+already-scanned items of the Workflow's own monitors, each readable in full;
+omitted or `[]` — normalized to one request fingerprint — scans the channels
+first), optional business `idempotency_key` stored on the Operation (distinct
+from the transport `Idempotency-Key`), and the historical `run_kind:
+"incremental"` marker. Narrowings: the draft no longer accepts a caller `generated_by_run_id` or `max_tokens`, refine now requires
+the same Thread `change` + `read_content` reach as confirmation, propose-bind
+requires an existing non-archived Source, and monitoring reconcile reports an
+active coordinator in its receipt instead of rolling back the committed repair.
+Provider-backed responses became asynchronous; browser helpers submit one keyed
+command and poll only reads, so the existing panels are unchanged.
+
+Remaining outside this package: Agent tools `research.start_acquisition` and
+`research.adopt_result` still use their legacy executors (Agent block); all other
+P5 families are untouched. Independent Claude/Antigravity review is pending.
+
+### Project package — verification gate on 06cf3cfc (2026-11-10)
+
+Claude ran these on the full candidate 06cf3cfc (parent 9083331b; 71 files over
+886b1aaf) in one native runtime, using Node 24.22.2, 32 cores and the shared real-PG test container. Tools
+were invoked as `node node_modules/...` because the worktree path contains `:`. Logs are
+outside the repo, in `/tmp/rainver-g1-logs/r3/`, with exit codes in `exits.txt`.
+
+- Package builds (`tsc -p tsconfig.build.json`) for protocol, agent-cli, folder-read,
+  outbound-guard and reader-document all exited 0. host-daemon first exited 2 because it was built
+  before outbound-guard's dist existed. After that dependency was built it exited 0.
+- Typechecks for protocol, web and server (`tsc --noEmit` / `tsc -p tsconfig.typecheck.json`) all exited 0.
+- Builds: web `vite build` exited 0, and server `tsc -p tsconfig.json` exited 0.
+- Protocol `vitest run`: exit 0, **75 files / 442 passed**.
+- Web `vitest run`: exit 0, **275 files / 2,513 passed**.
+- Server `vitest run` at the default 16 workers: exit 1. **604 files passed, 1 skipped; 7,616
+  passed, 5 skipped, 0 failed.** The only violation is `pluginFrontendDb` at 50.8s (limit 30.0s).
+  Suite totals were within budget (import 146.9s / 190s; tests 2,043.9s / 2,670s).
+- Server `vitest run --maxWorkers=8`: exit 1 with identical counts. The only violation was again
+  `pluginFrontendDb`, at 48.8s.
+- The two files that had overrun, run alone: exit 0, 42 passed. `pluginFrontendDb` took 24.2s and
+  `taskLifecycleOperationsDb`'s Task Detail case took 14.7s.
+
+The previous runtime's first run (`/tmp/rainver-g1-logs/server-test.log`) had 1 failure:
+the Task Detail case hit the 30s test timeout at 30.8s, and `pluginFrontendDb` took 51.7s.
+Its rerun (`server-test2.log`) passed 7,616 tests, with only `pluginFrontendDb` over (50.6s). The Task Detail
+case took 20.0–21.3s in the three later full runs, so that one failure is treated as
+contention. `pluginFrontendDb` (Vite dev server + Chromium + pg_dump/restore, with its own 180s
+timeout) was 48–88s in every full run logged since 2026-11-08, including the dev
+checkout and earlier commits, and ~24s alone. The overrun therefore predates the candidate,
+which does not modify that test. Load stayed at 13–17 on 32 cores, and 8 workers did not help, so
+CPU count alone is not the cause.
+No production code, threshold, reporter or coverage was changed. The full server gate
+stays blocked until that test's cost or its budget is deliberately addressed in its own
+change. Codex's static review of the 71 files / 29 routes is separate from these runs, and Antigravity
+has not reviewed.
+
+### Project package — review completion and accepted verification exception (2026-11-10)
+
+Antigravity subsequently reviewed the full 71-file / 29-URL candidate
+248b88d2 independently and reported no new actionable blockers. Codex and
+Antigravity reviews were static, not independent test executions. The user
+explicitly accepted the existing pluginFrontendDb duration-budget failure and
+authorized committing this block and continuing in the previously agreed order.
+The server suite still exited 1; this acceptance does not turn that check green
+or change its threshold. Project implementation/review is complete for this
+block (28 adapters migrated, one unused search URL retired). Remaining work now
+moves to Agent/Room, then Host, then system settings/tool configuration. No shared
+branch publication or deployment is implied by this local commit authorization.
+
+## Agent/Room block — exact list (basis fb827016, in progress)
+
+Second of the three remaining blocks (Agent/Room → Host → system settings/tool
+configuration). Basis is the committed Project block `fb827016` (parent
+886b1aaf). Its inventory is **636 = 418 legacy + 39 exemptions + 179 core**.
+The rows below were taken from `routeInventory.json` legacy rows owned by the
+`agents`, `agentTemplates`, `rooms`, `agentGroups`, `runs`, `sessions` and
+`agentAttention` route modules, checked against their actual Fastify handlers.
+The block is implemented as one unit and returned for one Codex/Antigravity
+review; there is no per-family review stop.
+
+| Owner / retained URL(s) | Operation | Notes |
+|---|---|---|
+| agents POST `/agents` | `agent.create` | human; Personal/Project placement as today |
+| agents PATCH `/agents/:agentId` | `agent.update` | identity + config patch in one transaction |
+| agents POST `/agents/:agentId/config` | `agent.config.update` | config-only body stays distinct |
+| agents PUT `/agents/runtime-default` | `agent.runtime_default.set` | Space owner/admin |
+| agents PATCH `/agents/default-assistant/settings` | `agent.assistant_settings.update` | existing configurer rule |
+| agents POST `/agents/:agentId/runtime-profiles` | `agent.runtime_profile.create` | credential fields still refused |
+| agents PATCH `/agents/:agentId/runtime-profiles/:profileId` | `agent.runtime_profile.update` | |
+| agents POST `/agents/:agentId/runtime-profiles/resolve-host-target` | `agent.runtime_profile.ensure_host` | DB-only profile ensure |
+| agents PUT `/agents/:agentId/conversation-session-config` | `conversation.session_config.save` | Room writer / direct owner |
+| agents POST `/agents/:agentId/versions/:versionId/restore` | `agent.version.restore` | |
+| agents POST `/agents/:agentId/runs` and `/run` | `agent.run.create` | two adapters, one capability |
+| agents POST `/agents/:agentId/chat` | `agent.chat.send` | turn + Run + Job; Host restore leaves the transaction |
+| agents POST `/agents/:agentId/chat/retry` | `agent.chat.retry` | domain retry key retained |
+| agents POST `/agents/:agentId/chat/reset-context` | `agent.chat.reset_context` | |
+| agentTemplates POST `/agent-templates/:templateId/agents` | `agent.template.instantiate` | |
+| rooms POST `/rooms` | `room.create` | |
+| rooms POST `/rooms/:roomId/agents`, `/agent-presets`; DELETE `/agents/:agentId` | `room.agent.add`, `room.agent.add_preset`, `room.agent.remove` | Host archive/restore after commit |
+| rooms POST `.../agents/:agentId/reset-context`, `summarize-context`, `restart-from-summary` | `room.agent.reset_context`, `.summarize_context`, `.restart_from_summary` | |
+| rooms POST `/invitations`, `/invitations/:id/decision`; DELETE `/members/:userId` | `room.invitation.create`, `room.invitation.decide`, `room.member.remove` | audience revision locks |
+| rooms POST `/owner-transfer`, `/owner-claim` | `room.owner.transfer`, `room.owner.claim` | |
+| rooms POST `/conversations`, `.../references` | `room.conversation.create`, `room.conversation.attach_references` | |
+| rooms POST `.../messages`, `.../retry`, `.../proposal-continuations`; DELETE `.../queued-messages/:id` | `room.message.send`, `room.message.retry`, `room.message.continue_after_proposal`, `room.message.withdraw_queued` | sender is the authenticated person |
+| rooms POST `.../quota/continue` | `room.quota.continue` | |
+| rooms POST `.../discussions`, `/:id/stop`, `/:id/extend` | `room.discussion.start`, `.stop`, `.extend` | |
+| agentGroups POST `/agent-groups`, PATCH `/:groupId`, POST `/:groupId/messages` | `agent_group.create`, `agent_group.update`, `agent_group.message.send` | |
+| agentGroups POST `/:groupId/pause`, `/resume`, `/cancel` | `agent_group.status.set` | three adapters fix `status` |
+| runs POST `/runs/:runId/abandon`, `/resume`, PATCH `/stop`, `/quota-recovery` | `run.abandon`, `run.resume`, `run.stop`, `run.quota_recovery.update` | Run terminal owner; no process/Host IO in transaction |
+| runs POST `/runs/:runId/execute`, `/finalize`, `/live-input` | `run.execute`, `run.finalize`, `run.live_input.submit` | external execution leaves the transaction |
+| runs POST `/runs/:runId/tools/:actionId` | transport exemption | Run bearer-token Agent tool transport; each action is admitted by its own core or legacy owner |
+| sessions POST `/sessions`, DELETE `/sessions/:id`, POST `/messages`, `/reflect` | `session.create`, `session.delete`, `session.message.add`, `session.reflect` | |
+| sessions POST `.../execution-context/preflight`, `/initialize`, `/attachments` | `conversation.execution.preflight`, `.initialize`, `.attachment.mutate` | |
+
+Agent tool closure carried from the Project block: `research.start_acquisition`
+and `research.adopt_result` move from legacy executors to core-owned Agent
+operations with the same Run grant, Thread/Run/Source/Artifact authority,
+domain request key and Room origin; their human counterparts already share
+the owning services.
+
+Assigned to later blocks, not part of this count: POST
+`/agents/:agentId/host-state/reset` (synchronous Host profile reset under a
+thread lock — Host block). Workspace restore/archive/profile commands
+themselves remain Host-owned; this block only moves their post-commit callers
+out of Agent/Room transactions. `/jobs/:jobId/cancel`,
+`/imported-sessions/*`, `/acp-agents/*` and all `/me/*` rows (including Agent
+Attention) stay with their own owners in the Host or settings blocks.
+
+Count: 62 legacy rows examined; **59** in scope (58 core adapters + 1 reviewed
+transport exemption: agents 15, agentTemplates 1, rooms 22, agentGroups 6, runs 8,
+sessions 7). Reassigned during implementation: the two agentAttention `/me`
+read markers (`POST /me/agent-attention/views`, `PATCH /me/agent-attention/read-state`)
+are per-view personal state across Spaces owned by agentAttention; they move with
+the other `/me/*` rows to the later personal/settings block. 1 row
+(`host-state/reset`) is assigned to the Host block.
+
+### Agent/Room block — implementation (working tree on fb827016, uncommitted)
+
+All 59 in-scope rows are settled: inventory **636 = 359 legacy + 40 exemptions +
+237 core** (was 418 / 39 / 179). Excluding the 15 plugin writes, **344** P5 legacy
+rows remain for the Host and settings blocks; of this block's owners only
+`POST /agents/:agentId/host-state/reset` stays legacy (Host block).
+
+Reuse / Dependency Check: OperationExecutor, the shared transaction port and
+`withQueryableTransaction`, Run terminal owner admission, the owning Agent/Room/
+Agent-group/Run/session writers, PgJobQueue, canonical Proposal insertion and the
+existing GETs are reused. One shared formal adapter (`routeAdapter.ts`) replaces
+per-module copies for these URLs; no new dependency, schema change, execution or
+retry engine. Small additions: `OperationRefusal`/`markedRefusal` (reflect only
+explicitly marked, person-written refusals), `independentPool` (worker-only steps
+fail closed inside a core transaction), the executor's durable-placement allowlist
+(five creation commands), a read-only execution-context preview, and a live-input
+delivery-state read on the existing GET.
+
+Semantics kept or changed (all documented in SYSTEM_ACTIONS "Agent and Room
+commands"): placement, owner/configurer/Room writer/member/Host-owner/Run standing
+and sender identity are unchanged and rechecked in the transaction; non-standing
+callers now get the hidden 404 (several legacy 403s). Host/process/provider IO left
+the transactions: direct-turn restore runs in the Host dispatch before launch;
+Room/session archives and Room restore run after commit; Run stop/finalize/abandon
+finalization after commit; `run.execute` queues the Run Job (no synchronous
+execution); live input delivers after commit; imported-session summaries stay the
+references URL's explicit pre-transaction step. Transport-only replay tables
+(`room_creation_idempotencies`, `room_agent_preset_idempotencies`,
+`conversation_turn_idempotencies`) are no longer written; domain uniqueness stays.
+The UI's `POST /agents` tool/output/schedule policies are now kept (legacy dropped
+them). The Agent tools `research.start_acquisition` / `research.adopt_result` are
+core-owned with unchanged inputs, grants, domain keys, Room origin and egress gates.
+No approval mapping, Agent grant or human-only surface widening is added.
+
+Known limits for review: the Room add-Agent restore outcome is no longer reported
+synchronously (`restore_requested` only); the web `agent_groups` API has no browser
+consumer; `conversation.execution.preflight` is a query at its historical POST URL.
+
+## Host block — exact list and implementation (basis 11279541, uncommitted)
+
+Third of the remaining blocks (Agent/Room → **Host** → system settings/tool
+configuration). Basis is the committed Agent/Room block `1127954190bd`
+(parent `fb827016`); its inventory is 636 = 359 legacy + 40 exemptions + 237
+core. The list was taken from every legacy write registered by
+`server/src/modules/hosts/*` and `server/src/modules/importedSessions/routes.ts`
+(checked against the Fastify handlers, including the templated
+`account/${action}` pair) plus the Agent row the Agent/Room block assigned
+here. It was implemented as one unit for one Codex/Antigravity review. The
+work started in an orphaned earlier attempt of this Run (worktree commit
+`5ba42c92`); it was reviewed, completed and repaired here rather than redone.
+
+| Owner / retained URL(s) | Outcome |
+|---|---|
+| hosts POST `/hosts/:hostId/workspaces` | `host.workspace.register` (Host command) |
+| hosts POST `/installations/:runtimeKey`, DELETE `/:installation`, POST `/own/update`, `/managed/update`, `/rollback`, `/:installation/usage` | `host.runtime.install` / `.uninstall` / `.own_update` / `.managed_update` / `.rollback` / `.usage.refresh` (Host commands) |
+| hosts POST `/ordinary-tools/:toolId/install`, `/register`, DELETE `/ordinary-tools/:toolId`, POST `/account/logout` | `host.ordinary_tool.install` / `.register` / `.remove` / `.account.logout` (Host commands) |
+| agents POST `/agents/:agentId/host-state/reset` | `agent.host_state.reset` (journaled Host command, launch fence) |
+| importedSessions POST `/workspace-locations/:locationId/ambient-sessions/sync` | `host.location.ambient.sync` (Host command) |
+| hosts POST `/runtime-provisioning/opencode/retry`, PUT `/provider-proxy-url`, POST `/:hostId/revoke` | `host.runtime.provisioning.retry`, `host.provider_proxy.set`, `host.revoke` (transactional) |
+| importedSessions PUT `.../ambient-sessions/policy`, POST `.../dismiss`, PATCH `/imported-sessions/:id`, POST `/imported-sessions/delete` | `host.location.ambient.policy.set` / `.dismiss`, `imported_session.visibility.set` / `.delete` (transactional) |
+| hosts POST `/hosts/pairing-codes` | exemption: a user's one-time credential issuance (hashed, 10 min TTL, shown once; a replayable result would keep the secret) |
+| hosts POST `/hosts/register`, `/hosts/me/revoke`, `/hosts/me/workspaces`, DELETE `/hosts/me/workspaces/:folderId`, POST `/hosts/me/runs/:runId/diff`, `/outputs` | exemption: daemon pairing/bearer-token protocol, no user principal |
+| hosts POST `/browse-directories`, `.../login/input`, `.../login/callback`, `.../account/verify`, `.../account/session/cancel` | exemption: owner-only interactive relays, nothing persisted or replayed |
+
+Count: **32** rows in scope (hosts 26, importedSessions 5, agents 1) → 20
+core adapters (13 Host commands + 7 transactional) and 12 exact exemptions.
+Inventory **636 = 327 legacy + 52 exemptions + 257 core**. No Host-, Host
+Location- or execution-host-owned legacy write remains.
+
+Not in this block, explicitly:
+
+- Fourth block (system settings / tool global configuration, 34 rows):
+  providers 17, network-profiles 3, acp-agents 2 (instance ACP registry),
+  plugins install/enable/disable/settings 4, system backups/manual and
+  instance-settings 2, instance source-catalog 3 (sources-owned, instance-admin
+  global catalog), deployments 2, server notifications webhook dispatch 1.
+- Personal `/me/*` rows (8: agent-attention 2, filings 1, retrieval 5) stay
+  with their owning modules; the earlier plan deferred them to a
+  personal/settings pass, and the fourth block must decide them explicitly —
+  they are not counted as settings here.
+- Other P5 business families keep their own legacy rows and are not Host or
+  settings work: e.g. `POST /jobs/:jobId/cancel` (Jobs), the Skill library
+  (`skill-sources/*` including the Host skill scan relay, `skill-packages`,
+  `skills`), runtime-context, sources, spaces, knowledge, evolution, prompts,
+  memory, reader, relations and the plugin-owned writes.
+
+Reuse / Dependency Check: OperationExecutor and the shared formal route
+adapter, the transaction port, `PgJobQueueRepository` and `JobWorker`, the
+policy audit writer, the existing Host connection registry requests, the
+daemon's `writeJsonDurable`, the owning usage/import/provisioning services and
+the existing GETs are reused. Added, as the one missing durable owner for Host
+effects: `host_command_intents` (Drizzle schema, appended migration 0024;
+0020–0023 untouched), one `host_command` Job handler, the daemon receipt
+journal (`host_command_receipts` capability) and the owner-only status read.
+No new dependency, engine or retry framework.
+
+Kept boundaries: authority is the legacy route's (paired-Host owner,
+instance admin for the built-in Host, Project write, Agent owner, the
+caller's own account key), rechecked at admission, before every send and
+before any result is released; non-owners get the hidden 404. No Host RPC or
+provider IO runs in a transaction. Transport keys and the per-scope
+active-command rule are separate. Unknown outcomes are `needs_attention`,
+never success; afterCommit work is only process-local reach (socket cut-off,
+provisioner wake) with durable backstops (heartbeat revocation check,
+scheduler). Managed-workspace identity/generation, the shared-cwd
+conversation locks, per-Agent profile isolation, legacy drain closure and
+partial-restore reporting are unchanged; the reset is refused on a Host
+without receipts, and an unjournaled `agent_profiles_reset` is treated as an
+identity-less archive (refused once the drain closed them).
+
+Repairs made while completing the orphaned work: the reset fence now runs
+before a direct turn's restore and every pre-launch profile/workspace step
+(it ran after them); a Room re-add restore Job waits on that fence and a reset
+is refused while such a restore is unfinished (`host_restore_in_progress`), so
+the two never interleave on the Host; a settled intent also drops its frozen
+`egress_transport` (a proxy URL may carry credentials); the protocol policy
+registry fixture gained the five Host policy actions; the Host wake moves Jobs slightly into
+the past so a worker's own clock can claim them; the pairing-code exemption
+reason was corrected; browser helpers were moved to keyed commands plus
+status polling (they still expected synchronous results).
+
+Known limits for review: results that were synchronous now arrive through
+the status read (UI helpers poll up to 25 minutes, never resubmit); an
+unjournaled lost answer is reported `needs_attention` instead of a 502; the
+ordinary-tool failure no longer carries the Host's tool report (the
+heartbeat refreshes it); a person's ambient import is settled by its report
+(`hosts.md` "Host commands"): a definite error with nothing committed is
+`failed`, an offline Host or a lost answer with nothing committed is repeated,
+and a commit followed by an error is `needs_attention` with the real report. A
+command whose frame never left fails after 10 minutes (`host_offline`, or
+`host_command_expired` when the Host is online but the Job ran late) instead of
+running whenever the Host reconnects (the legacy routes refused an offline Host
+at once).
+
+### Host block — final pre-commit gate (2026-11-11, on `edbbba21`)
+
+Gate run and results: [OPERATION_CORE_ACCEPTANCE](../../architecture/OPERATION_CORE_ACCEPTANCE.md#host-block-final-pre-commit-gate-2026-11-11-on-edbbba21).
+Two narrow production repairs came out of it and need review again:
+`browse-directories` answers `host_disconnected` as 409 (unreachable Host),
+and `AmbientSyncReport.partial_sessions` is optional (absent means 0) so
+writers built before it still type. Two browser fixtures were updated to the
+receipt/status contract. No scope was added.
+
+## Fourth block — system settings / tool configuration (basis fd454edd)
+
+Last of the remaining blocks (Agent/Room → Host → **system settings / tool
+configuration**). Basis is the committed Host block `fd454edd` (parent
+`11279541`, which carries Project `fb827016`). Its inventory is **636 = 327
+legacy + 52 exemptions + 257 core**. The list below is every legacy write
+registered by `providers` (commands, plan usage, quota policy),
+`networkProfiles`, `acpAgents`, `plugins` (core lifecycle routes), `backups`,
+`system`, `sources` (instance catalog only), `deployment` and `notifications`,
+checked against the Fastify handlers, plus the eight personal `/me/*` rows the
+earlier blocks deferred here for an explicit decision. It is implemented as
+one unit for one Codex/Antigravity review.
+
+| Owner / retained URL(s) | Outcome |
+|---|---|
+| providers POST `/providers`, `/providers/from-preset`, PATCH/DELETE `/providers/:configId` | `provider.create`, `.create_from_preset`, `.update`, `.delete` (transactional) |
+| providers POST `/:configId/credentials`, DELETE `/:configId/credentials/:memberId`, PATCH `/:configId/credentials/config` | `provider.credential.add`, `.credential.remove`, `.pool_config.update` (transactional; keys only through the encrypted credential channel) |
+| providers PUT `/:configId/grants`, DELETE `/:configId/grants/:spaceId` | `provider.grant.set`, `.grant.revoke` (transactional) |
+| providers PUT/DELETE `/providers/task-policies/:task`, PUT `/providers/subscription-quota-policy`, DELETE `/:configId/subscription` | `provider.task_policy.set`, `.task_policy.delete`, `provider.subscription_quota_policy.set`, `provider.subscription.disconnect` (transactional; embedding reset/backfill Job in the same transaction) |
+| providers POST `/:configId/test`, `/:configId/plan-usage`, `/:configId/subscription/quota` | `provider.test`, `provider.plan_usage.refresh`, `provider.subscription.quota.refresh` (system commands: vendor IO after commit) |
+| providers POST `/providers/subscriptions/login/input` | exemption: instance-admin interactive relay into an in-process OAuth login; the one-time code is never persisted or replayed |
+| networkProfiles POST `/network-profiles`, PATCH/DELETE `/:profileId` | `network_profile.create`, `.update`, `.delete` (transactional) |
+| acpAgents PUT/DELETE `/acp-agents/:registryId` | `acp_agent.enable` (registry read before the transaction), `acp_agent.disable` (transactional) |
+| plugins POST `/plugins/:pluginId/install` | `official_plugin.install` (system command: plugin migrations run in the worker's own transaction, which settles the intent atomically) |
+| plugins POST `/enable`, `/disable`, PATCH `/settings` | `official_plugin.enable`, `official_plugin.disable`, `official_plugin.settings.update` (transactional; operation-package local effects stay outside every transaction) |
+| backups POST `/system/backups/manual` | `system.backup.create` (system command) |
+| system PUT `/system/instance-settings` | `system.instance_settings.update` (transactional) |
+| sources PATCH `/instance/source-catalog/{providers,connectors,mappings}/:id` | `source_catalog.provider.update`, `.connector.update`, `.mapping.update` (transactional, instance admin) |
+| deployment POST `/deployments/jobs`, `/deployments/jobs/:jobId/cancel` | `deployment.job.create`, `deployment.job.cancel` (transactional; the deployer pulls, B43) |
+| notifications POST `/server/notifications/webhooks/dispatch` | `notification.webhook.dispatch` (system command) |
+
+Count: **34** rows in scope → 33 core adapters (27 transactional + 6 system
+commands) and 1 exact exemption.
+
+Personal `/me/*` rows (8), decided explicitly — they stay with their owners
+as legacy, not settings: all eight act across the caller's Spaces with the
+person, not the request Space, as authority (`includeSpaceContext:false`),
+while the operation core's actor, idempotency scope and policy audit are
+Space-scoped. Moving them needs a person-scoped operation actor, which is a
+separate decision, not a tool-configuration migration:
+
+- agentAttention PATCH `/me/agent-attention/read-state`, POST `/views` — per-view
+  read markers over a cross-Space attention list (Agent/Room deferred them here).
+- captureFiling POST `/me/filings` — files a personal-Space capture into a
+  Project in another Space (capture/Project placement family).
+- crossSpaceRetrieval POST `/me/retrieval/search`, `/pointers/resolve`,
+  `/egress/disclose`, `/summaries`, `/fused-conclusions` — cross-Space retrieval
+  and its disclosure/derived-artifact writes (retrieval family).
+
+Other P5 business families keep their own legacy rows (Jobs cancel, Skills,
+runtime-context, sources, spaces, knowledge, evolution, prompts, memory,
+reader, relations, plugin-owned writes and the rest); this block does not
+complete P5.
+
+### Fourth block — implementation (working tree on fd454edd, uncommitted)
+
+All 34 rows are settled: inventory **636 = 293 legacy + 53 exemptions + 290
+core** (was 327 / 52 / 257). Excluding the 15 plugin-owned writes, **278** P5
+legacy rows remain in other business families (including the eight personal
+`/me/*` rows decided above); this block does not complete P5.
+
+Reuse / Dependency Check: OperationExecutor, the shared formal route adapter,
+the transaction port, `PgJobQueueRepository`/`JobWorker`, the policy audit
+writer and recovery, and every owning writer (`ProviderCommandStore`, the
+network profile repository, `AcpAgentService`, the plugin service/installer/
+lifecycle, `InstanceOperationsSettingsService`, `SourceProviderCatalogService`,
+`DeploymentService`, the backup service, the webhook policy) are reused —
+bound to the operation transaction instead of the pool, not copied. Added, as
+the one missing durable owner for this block's IO effects (the Host intent is
+Host-scoped): `system_command_intents` (Drizzle, appended migration 0025;
+0020–0024 untouched), one `system_command` Job handler and the issuer-only
+status read (`systemCommands`). Two small generic hooks: the executor's
+`fingerprintInput` (keyed digest of secret fields in the request fingerprint)
+and the adapter's `around` (an owner's local step around the operation, used
+only by operation-package plugin transitions). No new dependency, engine or
+retry framework. Shared `isInstanceAdminIn` moved from `hosts` to
+`routeUtils/access.ts` (Host re-exports it; no behaviour change).
+
+Semantics kept: Provider owner / Space owner-admin / instance admin / plugin
+descriptor scope (B53) / deployment B43 are rechecked in the transaction and
+before a replayed result; non-holders get the hidden 404. Keys stay in the
+encrypted credential channel (ADR 0008). No vendor, filesystem, webhook or
+registry IO runs inside a transaction. User-only, ungrantable; no Agent
+surface, approval mapping or exemption beyond the one relay.
+
+Known limits for review: synchronous results now come from the command status
+(helpers read exactly that command, bounded, never resubmit); deletes answer
+200 with a flag instead of 204; webhook policy refusals are 409/422 (were
+403/413); a deployer-offline update is 409 (was 503); a second plan-usage read
+while one is active is 409 busy rather than a joined request; the settings
+fingerprint needs the Provider master key under `RAINVER_HOME` whenever a
+secret-bearing field is present; there is no browser consumer for manual
+backup or webhook dispatch, so none was added.
+
+Verification is in [OPERATION_CORE_ACCEPTANCE](../../architecture/OPERATION_CORE_ACCEPTANCE.md#settings--tool-configuration-block-working-tree-on-fd454edd).
+
+### Fourth block — review repair (Codex 8cba3638)
+
+Five blockers repaired as one unit on the full `8265c920` tree (no migration,
+no new engine; reused the plugin lifecycle + Job queue and the credential
+channel): plugin disable has no local effect before its commit and a durable,
+generation-guarded cleanup Job; disconnect and grant-revoke replays keep the
+original writer's current authority (admin+owner; owner or target Space admin);
+the managed-subscription OAuth refresh is a once-only credential step outside
+every transaction with an `unknown` state that requires reconnect; the login
+stream's write rechecks user/Space/admin in its transaction. Evidence:
+[acceptance](../../architecture/OPERATION_CORE_ACCEPTANCE.md#settings-block-review-repair-codex-8cba3638-five-blockers-working-tree--8265c920--repair).
+Second review (Codex a0982f79) left two plugin P1s, repaired on `044588fc`:
+scope cleanup disposes outside every DB transaction between short
+claim/settle transactions, and a rejected dispose keeps its scope retained with
+exact per-callback state so the bounded recovery Job retries it (or ends
+`failed` with `scope_cleanup_needs_attention`) instead of completing on an
+empty scan. Evidence:
+[acceptance](../../architecture/OPERATION_CORE_ACCEPTANCE.md#settings-block-plugin-cleanup-repair-codex-a0982f79-two-p1-working-tree--044588fc--repair).
+Third review (Codex 465e2745) found the fence process-local; repaired on
+`d2fb7f89`: local effects are bound to durable scope holds (0026) per owner
+process and generation, release rounds are recorded by the disable, only the
+owner (lease = session advisory lock) releases its holds, another process
+settles only a verifiably ended owner as `owner_gone`, late registrations are
+drained before a hold counts as released, and the plugin card shows the
+obligation with a Retry cleanup (new disable round). Evidence:
+[acceptance](../../architecture/OPERATION_CORE_ACCEPTANCE.md#settings-block-plugin-cleanup-repair-codex-465e2745-three-p1--one-p2-working-tree--d2fb7f89--repair).
+Fourth review (Codex e566d3a3) left two P1 + two P2; repaired on `667bf04b`:
+the owner lease is checked on its own timer and proven inside every admission
+and commit transaction (lost lease → immediate fence, renewal, adoption); a
+late registration after release makes its hold durably `releasing` again; all
+release entries share one claimed per-round attempt counter (at most three);
+every process's recovery pass judges crashed foreign owners without a Job.
+Evidence:
+[acceptance](../../architecture/OPERATION_CORE_ACCEPTANCE.md#settings-block-plugin-cleanup-repair-codex-e566d3a3-two-p1--two-p2-working-tree--667bf04b--repair).
+Fifth review (Codex fdb60e89) left two P1 + two P2; repaired on `3e16e561`:
+the commit check share-locks the hold row through COMMIT (every hold
+transition is ordered after it; lease proven in the same statement; the old
+key is never acquired by probes); a closed handle refuses registration and a
+late resource needs `ctx.retain()`, which makes its hold durably an
+obligation under the scope's write locks before resolving; callbacks run only
+in claimed attempts (a late callback's first run is attempt 1); foreign owners
+are visited in rotation. Evidence:
+[acceptance](../../architecture/OPERATION_CORE_ACCEPTANCE.md#settings-block-plugin-cleanup-repair-codex-fdb60e89-two-p1--two-p2-working-tree--3e16e561--repair).
+Sixth review (Codex c80caf46) confirmed the hold/order, drain and rotation
+repairs and left two P1 + one P2; repaired on `958d897e` (checkpoint, working
+tree only, not committed): the system-command worker share-locks the issuer's
+user and membership rows through its authority check until the install DDL or
+settlement commits; a registration through a closed handle (the original
+`onDispose` contract) is taken over, tracked at once, and reopens a closing
+hold in the scope order (release writes recheck and roll back); the function
+`onDispose` returns shares the per-round three-invocation budget, the
+in-flight invocation and success, and is refused inside the Job transaction.
+Evidence:
+[acceptance](../../architecture/OPERATION_CORE_ACCEPTANCE.md#settings-block-worker-authority-and-late-resource-repair-codex-c80caf46-two-p1--one-p2-working-tree--958d897e--repair).
+Remaining before commit: dual review of this repair, then the full gate.
+Seventh review (Codex 4a3d2805) left one P1 + one P2; repaired on `53d4c3a9`
+(checkpoint, working tree only, not committed): registration windows replace
+takeover — a dispose callback is registered only through a handle opened while
+its hold is durably an obligation, and no owner path records a hold released
+while a handle is open; the bounded contract (`disposeRegistration:
+'handler'`) closes the Job handle at handler settle, the original contract
+keeps it open until the process ends (hold `releasing`, enable refused
+everywhere, `owner_gone` after exit); `retain()` refuses an ended generation;
+every early dispose runs under the same SQL claim as the host's attempts (no
+local budget). Evidence:
+[acceptance](../../architecture/OPERATION_CORE_ACCEPTANCE.md#settings-block-registration-window-and-early-dispose-repair-codex-4a3d2805-one-p1--one-p2-working-tree--53d4c3a9--repair).
+Remaining before commit: dual review of this repair, then the full gate.
+Eighth review (Codex 77c87dab) left one P1 + one P2; repaired on `b7224475`
+(checkpoint, working tree only, not committed): the early-dispose runner
+releases its scheduling right in the same synchronous step that finds nothing
+pending (a request from a settled caller's continuation is never stranded);
+the cleanup read separates `awaiting_restart` holds (kept by a live
+original-contract owner, released only after that service process restarts or
+exits) from retryable ones, and the card offers Retry only for the latter.
+Evidence:
+[acceptance](../../architecture/OPERATION_CORE_ACCEPTANCE.md#settings-block-early-runner-hand-off-and-process-held-cleanup-read-codex-77c87dab-one-p1--one-p2-working-tree--b7224475--repair).
+Both reviews of `84d72b1c` left no blockers; the full gate followed.
+
+### Fourth block — final pre-commit gate (2026-11-11, on `84d72b1c`)
+
+Gate run and results: [OPERATION_CORE_ACCEPTANCE](../../architecture/OPERATION_CORE_ACCEPTANCE.md#settings-block-final-pre-commit-gate-2026-11-11-on-84d72b1c).
+The first run was killed during the daemon tests (exit unknown); a resume ran
+only the unfinished items once on the same tree.
+
+| Gate item | Terminal state |
+|---|---|
+| builds, protocol/server/daemon typecheck, protocol tests, schema check | exit 0 (first run) |
+| daemon tests | first run killed (unknown); resume exit 0 |
+| web typecheck, build, tests | exit 0 (resume) |
+| server full suite | exit 1: 1 hygiene failure + 2 budget violations |
+| hygiene failure (`pluginLifecycleDb` real-time sleeps) | test-only repair; targeted exit 0 |
+| budget violations (`pluginFrontendDb` 51.2 s > 30 s; import total 224.5 s > 190 s) | open, thresholds unchanged |
+| 18 browser suites | not run (outside this gate) |
+
+Remaining before commit: the parent's review of the test-only repair and a
+decision on the two budget violations. This closes only the fourth block's gate
+evidence; P5 legacy migration as a whole is not complete.

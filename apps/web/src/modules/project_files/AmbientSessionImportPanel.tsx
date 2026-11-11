@@ -157,7 +157,12 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
       const rejected = report.malformed_sessions + report.failed_sessions
       const summary = `${report.sessions_written} session${report.sessions_written === 1 ? '' : 's'}, `
         + `${report.records_inserted} new record${report.records_inserted === 1 ? '' : 's'}`
-      if (report.error) toast.error(`Import finished with an error: ${report.error}`)
+      // An import that stopped after writing some sessions says what it wrote: that part did happen.
+      const committed = report.sessions_written > 0 || report.marked_gone > 0
+      // A session read only in part is kept and retried next time, but was not imported whole.
+      const partial = report.partial_sessions ?? 0
+      const kept = `${summary}${partial > 0 ? ` (${partial} only in part)` : ''}${report.marked_gone > 0 ? `, ${report.marked_gone} marked gone` : ''}`
+      if (report.error) toast.error(committed ? `${kept} saved, then the import stopped: ${report.error}` : `Import did not complete: ${report.error}`)
       // Said rather than swallowed: a short total for a reason must not read
       // as a short total because nothing happened.
       else if (rejected > 0) toast.warning(`${summary} — ${rejected} session${rejected === 1 ? '' : 's'} could not be read`)

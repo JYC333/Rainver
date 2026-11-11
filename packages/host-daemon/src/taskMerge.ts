@@ -11,6 +11,7 @@ import { configDir } from "./config.js";
 import { captureWorkspaceTree } from "./gitDiff.js";
 import { commitOfRef, resolveMainBranch } from "./mainBranch.js";
 import { releaseLocationLeases, tryAcquireLease, isLeaseBusy } from "./locationLease.js";
+import { writeMergeCommit } from "./publicationChain.js";
 import {
   addTaskWorktree,
   checkLocationRepository,
@@ -101,6 +102,8 @@ interface MergeRecord {
   author: GitIdentity;
   message: string;
   updated_at: string;
+  /** A frozen chain plan's published commit (the chain tip, or the merge commit), fixed once so a repeated finish publishes the same one. */
+  publication_commit?: string;
 }
 
 /**
@@ -226,6 +229,7 @@ function storedMergeRecord(value: Record<string, unknown> | null): MergeRecord |
     pending_task_commit, merged_tree, conflicts: conflicts as ConflictEntry[],
     author: { name: identity.name, email: identity.email }, message, updated_at,
     ...(value.verification_prepared===true?{verification_prepared:true}:{}),
+    ...(typeof value.publication_commit==='string'&&COMMIT_ID.test(value.publication_commit)?{publication_commit:value.publication_commit}:{}),
   };
 }
 
@@ -808,7 +812,7 @@ export async function abortTaskMerge(input: MergeTarget): Promise<TaskMergeAbort
  * kept, as a settle does) and the Task branch go.
  */
 export async function finishTaskMerge(
-  input: MergeTarget & { mainBranch: string; ontoCommit: string; taskCommit: string; log?: (line: string) => void },
+  input: MergeTarget & { mainBranch: string; ontoCommit: string; taskCommit: string; log?: (line: string) => void; publication?: FrozenPublication },
 ): Promise<TaskMergeFinishResult> {
   if (!validTarget(input)) return finishError("The Location, Task or merge id cannot name a Task worktree.");
   const { locationId, taskId, mergeId, mainBranch, ontoCommit, taskCommit } = input;
@@ -834,14 +838,56 @@ export async function finishTaskMerge(
     const taskRef = taskBranchRef(taskId);
     if (await commitOfRef(repo.root, taskRef) !== taskCommit) return finishError("task_commit_mismatch");
     if (await commitOfRef(repo.root, `${taskCommit}^1`) !== ontoCommit) return finishError("task_commit_mismatch");
-    const published=await publishWorkspaceCommit(repo,locationId,taskId,mainBranch,ontoCommit,taskCommit);
+    // A frozen chain plan publishes the chain itself (fast-forward) or an ordinary
+    // merge commit of it, carrying exactly the verified candidate's tree; never the squash.
+    let publishing=taskCommit;
+    if(input.publication){
+     if(!record.publication_commit){
+      const chain=await frozenPublicationCommit(repo.root,record,ontoCommit,taskCommit,input.publication);
+      if(typeof chain!=='string')return finishError(chain.error);
+      await writeMergeRecord(locationId,taskId,{...record,publication_commit:chain,updated_at:new Date().toISOString()});
+      record.publication_commit=chain;
+     }
+     publishing=record.publication_commit;
+    }
+    const published=await publishWorkspaceCommit(repo,locationId,taskId,mainBranch,ontoCommit,publishing);
     if(!published.ok||published.outcome!=='merged')return published;
-    await recordMerged(repo, locationId, taskId, mergeId, taskCommit, log);
-    return merged(taskCommit);
+    await recordMerged(repo, locationId, taskId, mergeId, publishing, log);
+    return merged(publishing);
   }).catch((error: unknown) => finishError(errorText(error)));
   if (outcome) return outcome;
   // Busy: a finished merge still answers, its cleanup retried by a later repeat.
   return finished ? merged(finished.merged_commit) : finishError(TASK_BUSY);
+}
+
+/** A frozen fast-forward/merge plan, as recorded by the control plane at its native prepare. */
+export interface FrozenPublication {strategy:'fast_forward'|'merge'|'rebase';chainTip:string;chainLength:number}
+
+/**
+ * The commit a frozen chain plan publishes from a verified legacy candidate
+ * (hosts.md, "Controlled Git publication"); a rebase chain is fast-forwarded. The chain must still be the
+ * recorded one: a linear run of exactly `chainLength` commits from where it
+ * leaves target history to its recorded tip. Fast-forward publishes that tip
+ * only when the target is its ancestor and the tip's tree is the verified
+ * tree (a repair or a moved target cannot ride along); merge writes one
+ * ordinary merge commit of the target tip and the chain tip with the
+ * verified tree.
+ */
+async function frozenPublicationCommit(root:string,record:MergeRecord,onto:string,candidate:string,plan:FrozenPublication):Promise<string|{error:string}>{
+ if(await commitOfRef(root,plan.chainTip)!==plan.chainTip)return {error:'native_publication_chain_changed'};
+ const fork=(await runLocationGit(['merge-base',onto,plan.chainTip],root)).stdout.trim();
+ if(!fork)return {error:'native_publication_chain_changed'};
+ const listed=(await runLocationGit(['rev-list','--count',`${fork}..${plan.chainTip}`],root)).stdout.trim();
+ const merges=(await runLocationGit(['rev-list','--min-parents=2','--max-count=1',`${fork}..${plan.chainTip}`],root)).stdout.trim();
+ if(Number(listed)!==plan.chainLength||merges)return {error:'native_publication_chain_changed'};
+ const verified=await treeOf(root,candidate);
+ // A rebase chain was replayed onto the target by its Agent session: it is published like a fast-forward.
+ if(plan.strategy==='fast_forward'||plan.strategy==='rebase'){
+  if(fork!==onto)return {error:'native_publication_fast_forward_target_moved'};
+  if(await treeOf(root,plan.chainTip)!==verified)return {error:'native_publication_fast_forward_tree_differs'};
+  return plan.chainTip;
+ }
+ return writeMergeCommit(root,verified,onto,plan.chainTip,record.author,record.message);
 }
 
 /** Short target publication shared by native conversation and legacy Task integration.

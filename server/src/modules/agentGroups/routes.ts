@@ -1,9 +1,7 @@
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
-  HttpError,
-  jsonBody,
   optionalString,
   parsePage,
   params,
@@ -11,23 +9,14 @@ import {
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
-import {
-  AgentGroupRunService,
-  type CreateAgentGroupInput,
-  type SendAgentGroupMessageInput,
-  type UpdateAgentGroupInput,
-} from "./service.js";
+import { AgentGroupRunService } from "./service.js";
 
 type AgentGroupsServicePort = Pick<
   AgentGroupRunService,
-  | "createGroup"
   | "listGroups"
   | "getGroup"
-  | "updateGroup"
-  | "sendUserMessage"
   | "getTimeline"
   | "getTrace"
-  | "changeStatus"
 >;
 
 type AgentGroupsServiceFactory = (context: ModuleContext) => AgentGroupsServicePort;
@@ -45,17 +34,6 @@ function service(context: ModuleContext): AgentGroupsServicePort {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
-  app.post("/api/v1/agent-groups", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = protocol.CreateAgentRunGroupRequestSchema.parse(jsonBody(request));
-      const result = await service(context).createGroup(identity, body as CreateAgentGroupInput);
-      return reply.code(201).send(result);
-    } catch (error) {
-      return sendAgentGroupError(reply, error);
-    }
-  });
 
   app.get("/api/v1/agent-groups", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -84,37 +62,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.patch("/api/v1/agent-groups/:groupId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = protocol.UpdateAgentRunGroupRequestSchema.parse(jsonBody(request));
-      return reply.send(
-        await service(context).updateGroup(identity, {
-          ...(body as Omit<UpdateAgentGroupInput, "group_id">),
-          group_id: routeGroupId(request),
-        }),
-      );
-    } catch (error) {
-      return sendAgentGroupError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/agent-groups/:groupId/messages", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = protocol.SendAgentRunGroupMessageRequestSchema.parse(jsonBody(request));
-      assertBodyGroupMatchesRoute(body.group_id, routeGroupId(request));
-      const result = await service(context).sendUserMessage(
-        identity,
-        body as SendAgentGroupMessageInput,
-      );
-      return reply.code(201).send(result);
-    } catch (error) {
-      return sendAgentGroupError(reply, error);
-    }
-  });
 
   app.get("/api/v1/agent-groups/:groupId/timeline", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -139,41 +87,23 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/agent-groups/:groupId/pause", statusHandler(context, "paused"));
-  app.post("/api/v1/agent-groups/:groupId/resume", statusHandler(context, "active"));
-  app.post("/api/v1/agent-groups/:groupId/cancel", statusHandler(context, "cancelled"));
+  const group = { groupId: "group_id" };
+  registerOperationAdapters(app, context.config, [
+    { method: "POST", url: "/api/v1/agent-groups", operation: "agent_group.create" },
+    { method: "PATCH", url: "/api/v1/agent-groups/:groupId", operation: "agent_group.update", params: group },
+    // The message body has always carried its group id; it must equal the URL's.
+    { method: "POST", url: "/api/v1/agent-groups/:groupId/messages", operation: "agent_group.message.send", params: group, restated: ["group_id"] },
+    { method: "POST", url: "/api/v1/agent-groups/:groupId/pause", operation: "agent_group.status.set", params: group, fixed: { status: "paused" } },
+    { method: "POST", url: "/api/v1/agent-groups/:groupId/resume", operation: "agent_group.status.set", params: group, fixed: { status: "active" } },
+    { method: "POST", url: "/api/v1/agent-groups/:groupId/cancel", operation: "agent_group.status.set", params: group, fixed: { status: "cancelled" } },
+  ]);
 }
 
-function statusHandler(
-  context: ModuleContext,
-  status: "active" | "paused" | "cancelled",
-) {
-  return async (request: FastifyRequest, reply: FastifyReply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await service(context).changeStatus(
-          identity,
-          routeGroupId(request),
-          status,
-        ),
-      );
-    } catch (error) {
-      return sendAgentGroupError(reply, error);
-    }
-  };
-}
 
 function routeGroupId(request: FastifyRequest): string {
   return params(request).groupId ?? "";
 }
 
-function assertBodyGroupMatchesRoute(bodyGroupId: string, routeGroupIdValue: string): void {
-  if (bodyGroupId !== routeGroupIdValue) {
-    throw new HttpError(422, "group_id must match the route groupId");
-  }
-}
 
 function sendAgentGroupError(reply: FastifyReply, error: unknown): FastifyReply {
   if (isZodError(error)) {

@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { __setAgentGroupsServiceFactoryForTests } from "../src/modules/agentGroups/routes.js";
+import { authorityWidening } from "../src/modules/agentGroups/service.js";
+import { agentGroupsModule } from "../src/modules/agentGroups/index.js";
 import { AgentGroupRuntimeDelegationMaterializer } from "../src/modules/agentGroups/runtimeDelegationMaterializer.js";
 import { type AgentRunGroupRecord, PgAgentGroupRepository, type RunDelegationRecord } from "../src/modules/agentGroups/repository.js";
 import { PgAgentChatRepository, PgAgentRepository } from "../src/modules/agents/repository.js";
@@ -666,5 +672,79 @@ describe("agentGroupsRuntimeDelegationMaterializer", () => {
         }),
       });
     });
+  });
+});
+
+describe("agent group routes", () => {
+  let app: ReturnType<typeof buildModuleServer> | undefined;
+  afterEach(async () => {
+    __setAuthIdentityForTests(null);
+    __setAgentGroupsServiceFactoryForTests(null);
+    await app?.close();
+    app = undefined;
+  });
+  const config = () => loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" });
+
+  it("does not expose direct public child-run spawning", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    __setAgentGroupsServiceFactoryForTests(() => {
+      throw new Error("service should not be constructed");
+    });
+    app = buildModuleServer(config(), [agentGroupsModule]);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/agent-groups/group-1/spawn-child-run",
+      payload: {
+        space_id: "space-1",
+        group_id: "group-1",
+        parent_run_id: "run-parent",
+        root_run_id: "run-root",
+        requesting_agent_id: "agent-a",
+        target_agent_id: "agent-b",
+        manager_user_id: "user-1",
+        instruction: "Do this",
+      },
+    });
+
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("detects delegated context authority widening", () => {
+    expect(
+      authorityWidening(
+        { project_folder_id: "workspace-1", project_id: "project-1", model_provider_id: "provider-1" },
+        {
+          project_folder_id: "workspace-1",
+          project_id: "project-1",
+          model_provider_id: "provider-1",
+          memory_scope: "project",
+        },
+      ).context_widens_authority,
+    ).toBe(false);
+    const widened = authorityWidening(
+      { project_folder_id: "workspace-1", project_id: "project-1", model_provider_id: "provider-1" },
+      {
+        nested: {
+          project_folder_id: "workspace-2",
+          project_id: "project-2",
+          model_provider_id: "provider-2",
+        },
+      },
+    );
+    expect(widened.workspace_scope_widens).toBe(true);
+    expect(widened.project_scope_widens).toBe(true);
+    expect(widened.credential_scope_widens).toBe(true);
+    expect(widened.context_widens_authority).toBe(true);
+
+    const directDurableWrite = authorityWidening(
+      { project_folder_id: "workspace-1", project_id: "project-1", model_provider_id: "provider-1" },
+      {
+        memory_policy_json: { writable_scopes: ["semantic"], requires_proposal: false },
+        output_policy_json: { proposal_only: false },
+      },
+    );
+    expect(directDurableWrite.durable_write_scope_widens).toBe(true);
+    expect(directDurableWrite.context_widens_authority).toBe(true);
   });
 });

@@ -1,4 +1,5 @@
-import { HttpError, objectValue } from "../routeUtils/common.js";
+import {ResearchWorkspaceMutationError} from './workspaceErrors.js';
+import { objectValue } from "../routeUtils/common.js";
 
 /**
  * Research execution is intentionally narrower than the general runtime API.
@@ -25,6 +26,6 @@ export function rejectLegacyResearchRuntimeFields(body: Record<string, unknown>)
     legacyTopLevel.some((key) => Object.hasOwn(body, key)) ||
     legacyExecution.some((key) => Object.hasOwn(execution, key))
   ) {
-    throw new HttpError(422, "Auto Research accepts only a managed Model Provider and optional model");
+    throw new ResearchWorkspaceMutationError(422, "Auto Research accepts only a managed Model Provider and optional model");
   }
 }

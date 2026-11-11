@@ -1,8 +1,5 @@
-import type { FastifyReply, FastifyRequest } from "fastify";
 import { request as undiciRequest } from "undici";
 import type { ServerConfig } from "../../config.js";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
-import { resolveRequestId } from "../../gateway/requestContext.js";
 
 const SUPPORTED_EVENT_TYPES = new Set(["proposal.pending"]);
 
@@ -13,7 +10,7 @@ export interface NotificationWebhookPolicy {
   max_payload_bytes: number;
 }
 
-interface WebhookDispatchBody {
+export interface WebhookDispatchBody {
   target_url: string;
   event_type: string;
   payload: unknown;
@@ -43,10 +40,6 @@ function isLocalHttpWebhookHost(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
 
-function errKind(error: unknown): string {
-  return error instanceof Error ? error.name : typeof error;
-}
-
 export function normalizeNotificationWebhookUrl(value: string): string | undefined {
   try {
     const url = new URL(value);
@@ -59,24 +52,6 @@ export function normalizeNotificationWebhookUrl(value: string): string | undefin
   } catch {
     return undefined;
   }
-}
-
-function parseJsonBody(body: unknown): unknown {
-  if (!(body instanceof Buffer)) return body;
-  if (body.length === 0) return {};
-  return JSON.parse(body.toString("utf8"));
-}
-
-function asDispatchBody(value: unknown): WebhookDispatchBody | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const record = value as Record<string, unknown>;
-  if (typeof record.target_url !== "string") return undefined;
-  if (typeof record.event_type !== "string") return undefined;
-  return {
-    target_url: record.target_url,
-    event_type: record.event_type,
-    payload: record.payload,
-  };
 }
 
 export function evaluateWebhookPolicy(
@@ -122,108 +97,41 @@ async function drainResponseBody(body: AsyncIterable<unknown>): Promise<void> {
   }
 }
 
-export async function dispatchWebhookRoute(
+/**
+ * `notification_webhook` system command effect (`operations.ts`): one POST of
+ * `{event_type, payload}` to an allowlisted target, no redirects, bounded
+ * timeout, response body drained and discarded. The policy is evaluated again
+ * here, just before the send. `transport` is the test seam (a fake target).
+ */
+export type WebhookTransport = (url: string, body: string, timeoutMs: number) => Promise<{ statusCode: number }>;
+let transportOverride: WebhookTransport | null = null;
+export function __setNotificationWebhookTransportForTests(transport: WebhookTransport | null): void {
+  transportOverride = transport;
+}
+export async function sendNotificationWebhook(
   config: ServerConfig,
-  request: FastifyRequest,
-  reply: FastifyReply,
-): Promise<FastifyReply> {
-  const requestId = resolveRequestId(request);
-  if (request.body instanceof Buffer && request.body.length > config.notificationMaxPayloadBytes) {
-    return sendErrorEnvelope(
-      reply,
-      413,
-      errorEnvelope(
-        "notification_payload_too_large",
-        "Notification webhook payload is too large",
-        requestId,
-      ),
-    );
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = parseJsonBody(request.body);
-  } catch {
-    return sendErrorEnvelope(
-      reply,
-      400,
-      errorEnvelope("invalid_json_body", "Request body must be valid JSON", requestId),
-    );
-  }
-
-  const body = asDispatchBody(parsed);
-  if (!body) {
-    return sendErrorEnvelope(
-      reply,
-      400,
-      errorEnvelope(
-        "invalid_notification_webhook_request",
-        "Request must include target_url and event_type",
-        requestId,
-      ),
-    );
-  }
-
+  body: WebhookDispatchBody,
+): Promise<{ ok: true; result: { delivered: boolean; target_origin: string; upstream_status: number } } | { ok: false; code: string; detail: string }> {
   const decision = evaluateWebhookPolicy(config, body);
   if (!decision.allowed || !decision.normalizedTargetUrl || !decision.targetOrigin) {
-    return sendErrorEnvelope(
-      reply,
-      decision.statusCode,
-      errorEnvelope(
-        decision.error ?? "notification_webhook_denied",
-        decision.message ?? "Notification webhook denied",
-        requestId,
-      ),
-    );
+    return { ok: false, code: decision.error ?? "notification_webhook_denied", detail: decision.message ?? "Notification webhook denied" };
   }
-
-  const outboundBody = JSON.stringify({
-    event_type: body.event_type,
-    payload: body.payload ?? null,
-  });
+  const outboundBody = JSON.stringify({ event_type: body.event_type, payload: body.payload ?? null });
   if (Buffer.byteLength(outboundBody, "utf8") > config.notificationMaxPayloadBytes) {
-    return sendErrorEnvelope(
-      reply,
-      413,
-      errorEnvelope(
-        "notification_payload_too_large",
-        "Notification webhook payload is too large",
-        requestId,
-      ),
-    );
+    return { ok: false, code: "notification_payload_too_large", detail: "Notification webhook payload is too large" };
   }
-
-  try {
-    const upstream = await undiciRequest(decision.normalizedTargetUrl, {
+  const timeoutMs = Math.min(config.requestTimeoutMs, 30_000);
+  const send: WebhookTransport = transportOverride ?? (async (url, outbound, timeout) => {
+    const upstream = await undiciRequest(url, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "user-agent": "rainver-server",
-      },
-      body: outboundBody,
+      headers: { "content-type": "application/json", "user-agent": "rainver-server" },
+      body: outbound,
       maxRedirections: 0,
-      signal: AbortSignal.timeout(Math.min(config.requestTimeoutMs, 30_000)),
+      signal: AbortSignal.timeout(timeout),
     });
     await drainResponseBody(upstream.body);
-    const delivered = upstream.statusCode >= 200 && upstream.statusCode < 300;
-    return reply.code(delivered ? 202 : 502).send({
-      delivered,
-      target_origin: decision.targetOrigin,
-      upstream_status: upstream.statusCode,
-    });
-  } catch (err) {
-    request.log.warn(
-      { target_origin: decision.targetOrigin, reason: errKind(err) },
-      "notification webhook dispatch failed",
-    );
-    return sendErrorEnvelope(
-      reply,
-      502,
-      errorEnvelope(
-        "notification_webhook_unavailable",
-        "Notification webhook target is unavailable",
-        requestId,
-      ),
-    );
-  }
+    return { statusCode: upstream.statusCode };
+  });
+  const upstream = await send(decision.normalizedTargetUrl, outboundBody, timeoutMs);
+  return { ok: true, result: { delivered: upstream.statusCode >= 200 && upstream.statusCode < 300, target_origin: decision.targetOrigin, upstream_status: upstream.statusCode } };
 }

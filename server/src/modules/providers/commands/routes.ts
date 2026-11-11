@@ -1,46 +1,47 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { stateChangingReadAllowed } from "../../../gateway/csrfOrigin.js";
 import * as protocol from "@rainver/protocol";
-import type { ProviderFromPresetCreateRequest } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../../gateway/requestContext.js";
 import { introspectIdentity } from "../../auth/identity.js";
+import { registerOperationAdapters, type OperationAdapterRoute } from "../../systemActions/operations/routeAdapter.js";
 import { resolveProviderCommandStore } from "./store.js";
-import type {
-  ModelProviderCreateInput,
-  ModelProviderUpdateInput,
-  ProviderPoolConfigUpdateInput,
-  ProviderPoolCredentialAddInput,
-  ProviderTaskChainEntry,
-  RotationStrategy,
-} from "./store.js";
 import { ProviderCommandForbiddenError } from "./store.js";
-import { ProviderCommandNotFoundError } from "./types.js";
-import { resolveProvidersDbPort } from "../dbReader.js";
-import {
-  completeProviderChat,
-  completeProviderEmbedding,
-  completeProviderRerank,
-  listProviderModels,
-} from "../invocation/invocation.js";
-import {
-  enqueueRetrievalEmbeddingBackfill,
-  resetRetrievalEmbeddingsForSpace,
-} from "../../retrieval/embedding/job.js";
-import { RETRIEVAL_EMBEDDING_TASK } from "../../retrieval/embedding/config.js";
-import { createProviderFromPreset } from "./fromPreset.js";
+import { listProviderModels } from "../invocation/invocation.js";
 import { getDbPool } from "../db.js";
 import {
   createManagedSubscriptionLoginSession,
-  disconnectManagedSubscription,
   loginManagedSubscription,
   parseManagedSubscriptionType,
-  refreshManagedSubscriptionQuota,
   type ManagedSubscriptionLoginSession,
 } from "../subscriptionOAuth.js";
-import { requireProviderVendor } from "../vendors.js";
 import { sseResponseHeaders } from "../../../gateway/sse.js";
+
+const provider = { configId: "provider_id" };
+/**
+ * The provider block's retained write URLs, each bound to one core operation
+ * (`providers/operations.ts`). Bodies are the legacy request bodies; the URL's
+ * ids are the operation's target fields.
+ */
+export const PROVIDER_OPERATION_ROUTES: readonly OperationAdapterRoute[] = [
+  { method: "POST", url: "/api/v1/providers", operation: "provider.create" },
+  { method: "POST", url: "/api/v1/providers/from-preset", operation: "provider.create_from_preset" },
+  { method: "PATCH", url: "/api/v1/providers/:configId", operation: "provider.update", params: provider },
+  { method: "DELETE", url: "/api/v1/providers/:configId", operation: "provider.delete", params: provider },
+  { method: "POST", url: "/api/v1/providers/:configId/credentials", operation: "provider.credential.add", params: provider },
+  { method: "DELETE", url: "/api/v1/providers/:configId/credentials/:memberId", operation: "provider.credential.remove", params: { ...provider, memberId: "member_id" } },
+  { method: "PATCH", url: "/api/v1/providers/:configId/credentials/config", operation: "provider.pool_config.update", params: provider },
+  { method: "PUT", url: "/api/v1/providers/:configId/grants", operation: "provider.grant.set", params: provider },
+  { method: "DELETE", url: "/api/v1/providers/:configId/grants/:spaceId", operation: "provider.grant.revoke", params: { ...provider, spaceId: "target_space_id" } },
+  { method: "PUT", url: "/api/v1/providers/task-policies/:task", operation: "provider.task_policy.set", params: { task: "task" } },
+  { method: "DELETE", url: "/api/v1/providers/task-policies/:task", operation: "provider.task_policy.delete", params: { task: "task" } },
+  { method: "PUT", url: "/api/v1/providers/subscription-quota-policy", operation: "provider.subscription_quota_policy.set" },
+  { method: "DELETE", url: "/api/v1/providers/:configId/subscription", operation: "provider.subscription.disconnect", params: provider },
+  { method: "POST", url: "/api/v1/providers/:configId/test", operation: "provider.test", params: provider },
+  { method: "POST", url: "/api/v1/providers/:configId/plan-usage", operation: "provider.plan_usage.refresh", params: provider },
+  { method: "POST", url: "/api/v1/providers/:configId/subscription/quota", operation: "provider.subscription.quota.refresh", params: provider },
+];
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
@@ -57,46 +58,6 @@ function bodyText(request: FastifyRequest): string {
 function jsonBody(request: FastifyRequest): unknown {
   const text = bodyText(request);
   return text ? JSON.parse(text) : {};
-}
-
-function defaultRerankModelForProvider(providerType: string): string | null {
-  if (providerType === "zeroentropy") return "zerank-2";
-  if (providerType === "cohere") return "rerank-v4.0-pro";
-  return null;
-}
-
-function configuredProviderModels(provider: { default_model?: string | null; available_models?: string[] }): string[] {
-  return [provider.default_model, ...(provider.available_models ?? [])]
-    .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
-}
-
-function looksLikeEmbeddingModel(model: string): boolean {
-  const value = model.toLowerCase();
-  return value.startsWith("embed") || value.startsWith("zembed") || value.includes("embedding");
-}
-
-function looksLikeRerankModel(model: string): boolean {
-  const value = model.toLowerCase();
-  return value.startsWith("rerank") || value.startsWith("zerank") || value.includes("rerank");
-}
-
-function retrievalProviderTestScope(provider: { provider_type: string; default_model?: string | null; available_models?: string[] }): "embedding" | "rerank" | "both" {
-  const models = configuredProviderModels(provider);
-  const hasEmbedding = models.some(looksLikeEmbeddingModel);
-  const hasRerank = models.some(looksLikeRerankModel);
-  if (hasEmbedding && !hasRerank) return "embedding";
-  if (hasRerank && !hasEmbedding) return "rerank";
-  if (hasEmbedding && hasRerank) return "both";
-  const vendor = requireProviderVendor(provider.provider_type);
-  if (vendor.supportsEmbedding && vendor.supportsRerank) return "both";
-  return vendor.supportsRerank ? "rerank" : "embedding";
-}
-
-function firstModelMatching(
-  provider: { default_model?: string | null; available_models?: string[] },
-  predicate: (model: string) => boolean,
-): string | null {
-  return configuredProviderModels(provider).find(predicate) ?? null;
 }
 
 async function resolveIdentity(
@@ -137,27 +98,6 @@ function sendDomainError(reply: FastifyReply, error: unknown): FastifyReply {
   return reply.code(Number.isInteger(statusCode) ? statusCode : 400).send({ detail: message });
 }
 
-/** The provider a connection test targets, read without resolving its key. */
-async function testedProvider(
-  config: ServerConfig,
-  identity: { spaceId: string; userId: string },
-  providerId: string,
-): Promise<{ id: string; provider_type: string; default_model: string | null; available_models: string[] }> {
-  const provider = await resolveProvidersDbPort(config)?.getProvider(identity.spaceId, identity.userId, providerId);
-  if (!provider || typeof provider !== "object") {
-    throw new ProviderCommandNotFoundError(`ModelProvider '${providerId}' not found`);
-  }
-  const row = provider as Record<string, unknown>;
-  return {
-    id: String(row.id),
-    provider_type: String(row.provider_type),
-    default_model: typeof row.default_model === "string" ? row.default_model : null,
-    available_models: Array.isArray(row.available_models)
-      ? row.available_models.filter((model): model is string => typeof model === "string")
-      : [],
-  };
-}
-
 async function requireInstanceAdmin(config: ServerConfig, userId: string): Promise<void> {
   if (!config.instanceAdminEmail || !config.databaseUrl) {
     throw new ProviderCommandForbiddenError("INSTANCE_ADMIN_EMAIL is not configured");
@@ -190,6 +130,7 @@ export function registerProviderCommandRoutes(
   // owned by SchedulerRegistry (see modules/scheduler/backgroundServices.ts)
   // so that shutdown, failure alerting, and liveness cover it like every other
   // recurring job.
+  registerOperationAdapters(app, config, PROVIDER_OPERATION_ROUTES);
 
   app.get("/api/v1/providers/subscriptions/login/stream", async (request, reply) => {
     // A GET because it is a long-lived stream, but it starts a vendor login —
@@ -225,7 +166,9 @@ export function registerProviderCommandRoutes(
         );
         emit({ type: "connected", provider });
       } catch (error) {
-        emit({ type: "error", message: error instanceof Error ? error.message : "Subscription login failed" });
+        // Authority lost while the login waited is the hidden answer: nothing was written.
+        const withdrawn = [403, 404].includes((error as { statusCode?: number })?.statusCode ?? 0);
+        emit({ type: "error", message: !withdrawn && error instanceof Error ? error.message : "Subscription login failed" });
       } finally {
         reply.raw.removeListener("close", close);
         subscriptionLoginSessions.delete(sessionKey);
@@ -237,6 +180,11 @@ export function registerProviderCommandRoutes(
     }
   });
 
+  /**
+   * Transport exemption (`operationRoutes.test.ts`): the instance admin's
+   * keystrokes into their own in-process OAuth login. The one-time code is
+   * handed to the live session and never persisted or replayed.
+   */
   app.post("/api/v1/providers/subscriptions/login/input", async (request, reply) => {
     const identity = await resolveIdentity(config, request, reply);
     if (!identity) return reply;
@@ -249,151 +197,6 @@ export function registerProviderCommandRoutes(
         return reply.code(404).send({ detail: `No ${type} subscription login is awaiting input` });
       }
       return reply.send({ status: "sent" });
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/providers/:configId/subscription/quota", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      await requireInstanceAdmin(config, identity.userId);
-      return reply.send(await refreshManagedSubscriptionQuota(
-        config,
-        identity.spaceId,
-        identity.userId,
-        params(request).configId ?? "",
-      ));
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.delete("/api/v1/providers/:configId/subscription", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      await requireInstanceAdmin(config, identity.userId);
-      return reply.send(await disconnectManagedSubscription(
-        config,
-        identity.spaceId,
-        identity.userId,
-        params(request).configId ?? "",
-      ));
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/providers", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = await parseWith<ModelProviderCreateInput>(
-        "ModelProviderCreateRequestSchema",
-        jsonBody(request),
-      );
-      const value = await resolveProviderCommandStore(config).createProvider(
-        identity.spaceId,
-        identity.userId,
-        body,
-      );
-      return reply.code(201).send(value);
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/providers/from-preset", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = await parseWith<ProviderFromPresetCreateRequest>(
-        "ProviderFromPresetCreateRequestSchema",
-        jsonBody(request),
-      );
-      const value = await createProviderFromPreset(
-        config,
-        resolveProviderCommandStore(config),
-        identity.spaceId,
-        identity.userId,
-        body,
-      );
-      return reply.code(201).send(value);
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.patch("/api/v1/providers/:configId", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = await parseWith<ModelProviderUpdateInput>(
-        "ModelProviderUpdateRequestSchema",
-        jsonBody(request),
-      );
-      const value = await resolveProviderCommandStore(config).updateProvider(
-        identity.spaceId,
-        identity.userId,
-        params(request).configId ?? "",
-        body,
-      );
-      return reply.send(value);
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.delete("/api/v1/providers/:configId", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      await resolveProviderCommandStore(config).deleteProvider(
-        identity.spaceId,
-        identity.userId,
-        params(request).configId ?? "",
-      );
-      return reply.code(204).send();
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.put("/api/v1/providers/:configId/grants", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = await parseWith<{
-        space_id: string;
-        enabled?: boolean;
-        is_default?: boolean;
-        network_profile_id?: string | null;
-      }>("ModelProviderSpaceGrantRequestSchema", jsonBody(request));
-      const value = await resolveProviderCommandStore(config).grantProviderToSpace(
-        identity.spaceId,
-        identity.userId,
-        params(request).configId ?? "",
-        body,
-      );
-      return reply.send(value);
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.delete("/api/v1/providers/:configId/grants/:spaceId", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      await resolveProviderCommandStore(config).revokeProviderGrant(
-        identity.spaceId,
-        identity.userId,
-        params(request).configId ?? "",
-        params(request).spaceId ?? "",
-      );
-      return reply.code(204).send();
     } catch (error) {
       return sendDomainError(reply, error);
     }
@@ -416,71 +219,6 @@ export function registerProviderCommandRoutes(
     }
   });
 
-  app.post("/api/v1/providers/:configId/test", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const store = resolveProviderCommandStore(config);
-      // Read without resolving a key: each completion below decides its spend
-      // before it resolves one.
-      const provider = await testedProvider(config, identity, params(request).configId ?? "");
-      const vendor = requireProviderVendor(provider.provider_type);
-      if (!vendor.supportsChat && (vendor.supportsEmbedding || vendor.supportsRerank)) {
-        const scope = retrievalProviderTestScope(provider);
-        const embedding = scope === "rerank" ? null : await completeProviderEmbedding(store, identity.spaceId, {
-          provider_id: provider.id,
-          model: firstModelMatching(provider, looksLikeEmbeddingModel),
-          inputs: ["rainver retrieval provider connection test"],
-          inputType: "document",
-          metering: { subject_user_id: identity.userId },
-          spend: { kind: "person", user_id: identity.userId },
-        });
-        const rerank = scope === "embedding" ? null : await completeProviderRerank(store, identity.spaceId, {
-          provider_id: provider.id,
-          query: "retrieval provider test",
-          documents: ["retrieval provider test document", "unrelated document"],
-          topN: 1,
-          model: firstModelMatching(provider, looksLikeRerankModel) ?? defaultRerankModelForProvider(provider.provider_type),
-          metering: { subject_user_id: identity.userId },
-          spend: { kind: "person", user_id: identity.userId },
-        });
-        const success = (embedding ? embedding.vectors.length > 0 : true) && (rerank ? rerank.scores.length > 0 : true);
-        const message = scope === "embedding"
-          ? "Embedding connection successful"
-          : scope === "rerank"
-            ? "Rerank connection successful"
-            : "Embedding and rerank connection successful";
-        const model = [embedding?.model, rerank?.model].filter(Boolean).join("; ");
-        return reply.send({
-          success,
-          message,
-          model,
-        });
-      }
-      const models = await store.listConfiguredModels(identity.spaceId, provider.id);
-      const model = provider.default_model || models[0];
-      if (!model) return reply.send({ success: false, message: "No models configured" });
-      const result = await completeProviderChat(store, identity.spaceId, {
-        provider_id: provider.id,
-        model,
-        messages: [{ role: "user", content: "Hi" }],
-        max_tokens: 5,
-        metering: { subject_user_id: identity.userId },
-        spend: { kind: "person", user_id: identity.userId },
-      });
-      return reply.send({
-        success: true,
-        message: "Connection successful",
-        model: result.model,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Connection failed";
-      return reply.send({ success: false, message });
-    }
-  });
-
-  // ----- Credential pool management ---------------------------------------
-
   app.get("/api/v1/providers/:configId/credentials", async (request, reply) => {
     const identity = await resolveIdentity(config, request, reply);
     if (!identity) return reply;
@@ -496,125 +234,11 @@ export function registerProviderCommandRoutes(
     }
   });
 
-  app.post("/api/v1/providers/:configId/credentials", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = await parseWith<ProviderPoolCredentialAddInput>(
-        "ProviderPoolCredentialAddRequestSchema",
-        jsonBody(request),
-      );
-      const member = await resolveProviderCommandStore(config).addPoolCredential(
-        identity.spaceId,
-        identity.userId,
-        params(request).configId ?? "",
-        body,
-      );
-      return reply.code(201).send(member);
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.delete("/api/v1/providers/:configId/credentials/:memberId", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      await resolveProviderCommandStore(config).removePoolCredential(
-        identity.spaceId,
-        identity.userId,
-        params(request).configId ?? "",
-        params(request).memberId ?? "",
-      );
-      return reply.code(204).send();
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.patch("/api/v1/providers/:configId/credentials/config", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = await parseWith<{
-        rotation_strategy?: RotationStrategy;
-        fallback_provider_ids?: string[];
-      }>("ProviderPoolConfigUpdateRequestSchema", jsonBody(request));
-      return reply.send(
-        await resolveProviderCommandStore(config).updatePoolConfig(
-          identity.spaceId,
-          identity.userId,
-          params(request).configId ?? "",
-          body as ProviderPoolConfigUpdateInput,
-        ),
-      );
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  // ----- Per-auxiliary-task provider chains --------------------------------
-
   app.get("/api/v1/providers/task-policies", async (request, reply) => {
     const identity = await resolveIdentity(config, request, reply);
     if (!identity) return reply;
     return reply.send(
       await resolveProviderCommandStore(config).listTaskPolicies(identity.spaceId),
     );
-  });
-
-  app.put("/api/v1/providers/task-policies/:task", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = await parseWith<{ chain: ProviderTaskChainEntry[]; enabled?: boolean }>(
-        "ProviderTaskPolicyPutRequestSchema",
-        jsonBody(request),
-      );
-      const task = params(request).task ?? "";
-      const store = resolveProviderCommandStore(config);
-      const updated = await store.putTaskPolicy(
-        identity.spaceId,
-        identity.userId,
-        task,
-        body.chain,
-        body.enabled,
-      );
-      if (task === RETRIEVAL_EMBEDDING_TASK) {
-        await resetRetrievalEmbeddingsForSpace(config, identity.spaceId);
-        await enqueueRetrievalEmbeddingBackfill(config, {
-          spaceId: identity.spaceId,
-          userId: identity.userId,
-          trigger: "retrieval_embedding_policy_update",
-        });
-      }
-      return reply.send(updated);
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.delete("/api/v1/providers/task-policies/:task", async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    try {
-      const task = params(request).task ?? "";
-      await resolveProviderCommandStore(config).deleteTaskPolicy(
-        identity.spaceId,
-        identity.userId,
-        task,
-      );
-      if (task === RETRIEVAL_EMBEDDING_TASK) {
-        await resetRetrievalEmbeddingsForSpace(config, identity.spaceId);
-        await enqueueRetrievalEmbeddingBackfill(config, {
-          spaceId: identity.spaceId,
-          userId: identity.userId,
-          trigger: "retrieval_embedding_policy_delete",
-        });
-      }
-      return reply.code(204).send();
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
   });
 }

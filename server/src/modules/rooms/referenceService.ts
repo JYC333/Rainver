@@ -9,12 +9,12 @@
  * the transaction boundary is visible in one place.
  */
 
+import { RoomMutationError } from "./roomMutationError.js";
 import type { ServerConfig } from "../../config.js";
-import type { Pool, PoolClient } from "../../db/pool.js";
 import type { ThreadReferencePick } from "@rainver/protocol";
 import { ensureImportedHistorySummary } from "../importedSessions/summary.js";
 import { resolveBriefingHighlightReference } from "../informationDigest/briefing/followUp.js";
-import { HttpError } from "../routeUtils/common.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { PgRoomRepository, type RoomRecord } from "./repository.js";
 import {
@@ -31,7 +31,7 @@ type RoomIdentity = { spaceId: string; userId: string };
 export class RoomReferenceService {
   constructor(
     private readonly config: ServerConfig,
-    private readonly pool: Pool,
+    private readonly pool: Queryable,
   ) {}
 
   /**
@@ -86,7 +86,7 @@ export class RoomReferenceService {
    * person confirms it, with the people who would gain access named.
    */
   async attach(
-    client: PoolClient,
+    client: Queryable,
     room: RoomRecord,
     identity: RoomIdentity,
     conversationId: string,
@@ -104,7 +104,7 @@ export class RoomReferenceService {
     // Content whose audience may never grow is refused, not confirmed, when the target reaches further.
     const fixed = resolved.filter((reference) => reference.disclosable === false);
     if ((await disclosureGainedBy(client, identity.spaceId, room, identity.userId, fixed)).length > 0) {
-      throw new HttpError(409, "This content can only be discussed where its own audience already reads it", { code: "briefing_reference_scope_mismatch" });
+      throw new RoomMutationError(409, "This content can only be discussed where its own audience already reads it", { code: "briefing_reference_scope_mismatch" });
     }
     // One check over the whole batch: attaching three references where two
     // disclose should ask once, naming everyone who gains access.

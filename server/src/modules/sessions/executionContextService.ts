@@ -14,9 +14,7 @@ import type {
   ConversationRuntimeSelection,
   ConversationRuntimeChoice,
 } from "@rainver/protocol";
-import type { Pool } from "../../db/pool.js";
-import { withTransaction } from "../../db/tx.js";
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectWriter } from "../projects/access.js";
 import { PgHostRepository } from "../hosts/repository.js";
 import {locationIsOnline,runtimeAvailability,hostInstallationAvailability} from "./executionRuntimeAvailability.js";
@@ -43,7 +41,16 @@ import {
 
 interface ConversationExecutionContextIdentity extends SpaceUserIdentity {}
 
-class ConversationExecutionContextError extends HttpError {
+/** The not-yet-stored draft a conversation has before its first initialize. */
+function draftContext(session: { space_id: string; id: string }): ExecutionContextRow {
+  const now = new Date().toISOString();
+  return { id: "", space_id: session.space_id, session_id: session.id, execution_host_id: null, primary_workspace_mode: null,
+    primary_project_folder_id: null, primary_workspace_location_id: null, state: "draft", initialized_at: null, initialized_by_user_id: null,
+    dispatch_lock_id: null, queue_paused_at: null, workspace_baseline: null, git_branch: null, git_head: null, git_dirty: null,
+    git_execution_ready: null, git_observed_at: null, created_at: now, updated_at: now };
+}
+
+export class ConversationExecutionContextError extends HttpError {
   constructor(statusCode: number, message: string) {
     super(statusCode, message);
     this.name = "ConversationExecutionContextError";
@@ -51,18 +58,32 @@ class ConversationExecutionContextError extends HttpError {
 }
 
 export class ConversationExecutionContextService {
-  constructor(private readonly pool: Pool) {}
+  /** A Pool opens its own transactions; a client or core transaction port is joined. */
+  constructor(private readonly pool: Queryable) {}
 
   async preflight(
     identity: ConversationExecutionContextIdentity,
     sessionId: string,
     request: ConversationExecutionPreflightRequest = { selection: null, runtime: null },
   ): Promise<ConversationExecutionPreflightResponse> {
-    const repository = new PgConversationExecutionContextRepository(this.pool);
+    return this.preview(identity, sessionId, request);
+  }
+
+  /**
+   * What the person may choose for this conversation, given a proposed
+   * selection. Reads only: a conversation without a stored context is a draft
+   * (`initialize` creates its row under the conversation lock), and the
+   * built-in Host row is ensured at boot.
+   */
+  async preview(
+    identity: ConversationExecutionContextIdentity,
+    sessionId: string,
+    request: ConversationExecutionPreflightRequest = { selection: null, runtime: null },
+  ): Promise<ConversationExecutionPreflightResponse> {
+    const repository = new PgConversationExecutionContextRepository(this.pool as never);
     const session = await repository.getVisibleSession(identity, sessionId);
     if (!session) throw new ConversationExecutionContextError(404, "Conversation not found");
-    await new PgHostRepository(this.pool).ensureServerHostId();
-    const context = await repository.ensureDraft(session);
+    const context = await repository.getContext(session.space_id, session.id) ?? draftContext(session);
     return this.buildPreflight(repository, identity, session, context, request);
   }
 
@@ -71,7 +92,7 @@ export class ConversationExecutionContextService {
     sessionId: string,
     request: ConversationExecutionInitializeRequest,
   ): Promise<ConversationExecutionSummary> {
-    return withTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       await new PgConversationRuntimeSessionRepository(client).lockConversation(
         identity.spaceId,
         sessionId,
@@ -308,7 +329,7 @@ export class ConversationExecutionContextService {
     sessionId: string,
     mutation: ConversationAttachmentMutation,
   ): Promise<ConversationAttachmentMutationResponse> {
-    return withTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       // Attachment state is read into every subsequent Run under the same
       // Conversation advisory lock. Taking the lock before the row lock
       // prevents a grant/revoke from committing between dispatch admission

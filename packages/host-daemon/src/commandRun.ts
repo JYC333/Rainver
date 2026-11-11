@@ -9,9 +9,11 @@ import { join } from "node:path";
 import type { HostLaunchIsolation } from "@rainver/protocol";
 import { configDir, requireConfig, workspacesRoot } from "./config.js";
 import { buildStrictNamespaceCommand } from "./strictNamespace.js";
-import { isRuntimeKeyBeingReplaced, daemonRuntimeRoot, withRuntimeKeyHeld, managedToolTreeForLaunch, resolveAcpLaunch, resolveLocationCwd, strictBindsForRun } from "./execution.js";
+import { isRuntimeKeyBeingReplaced, daemonRuntimeRoot, withRuntimeKeyHeld, managedToolTreeForLaunch, resolveAcpLaunch, resolveLocationCwd, launchRepositoryDirectories, strictBindsForRun } from "./execution.js";
 import { OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { ensureManagedWorkspace, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
+import { enterLocations } from "./locationLease.js";
+import { holdRepositories } from "./repositoryGate.js";
 import { ownEntry,checkLocationRepository,existingTaskWorktree, taskLeaseKey, useTaskWorktree } from "./taskWorktree.js";
 
 /**
@@ -121,6 +123,23 @@ export async function runHostCommand(
   // from. A command in a Task worktree marks it in use for as long, so the
   // sweep and a settle leave it alone.
   const workspace = request.workspace?.kind === "location" ? request.workspace : undefined;
+  // A command in a Location (its checkout or a worktree) waits out a branch
+  // alignment of it and keeps a new one out while it runs.
+  const locationIds = [...(workspace?.workspace_location_id ? [workspace.workspace_location_id] : []), ...(request.workspace_access ?? []).map((a) => a.workspace_location_id)];
+  // Resolved from the actual paths (registered or shared-root), attachments
+  // with isolated execution workspaces included.
+  const workspaces = (await requireConfig()).workspaces;
+  const primaryPath = workspace?.workspace_location_id ? resolveLocationCwd(workspaces, workspace.workspace_location_id, workspace.workspace_relative_path, workspacesRoot()) : null;
+  const reached = await launchRepositoryDirectories(workspaces, workspacesRoot(), request.workspace_access ?? []);
+  const leaveLocations = await enterLocations(locationIds);
+  // And its repositories by canonical identity (`repositoryGate.ts`), however
+  // the Location was registered: an alignment reached through another Location
+  // of the same repository is waited out too, and a quarantined one refuses.
+  const repositories = "refused" in reached ? reached : await holdRepositories([primaryPath ? await workspaceGitDirectory(primaryPath) : null, ...reached.dirs]);
+  if ("refused" in repositories) {
+    leaveLocations();
+    return { exit_code: 1, stdout: "", stderr: "", timed_out: false, error: repositories.refused };
+  }
   const key=workspace?.execution_workspace?workspaceWorktreeKey(workspace.execution_workspace):workspace?.worktree?.task_id;
   const attachmentReleases=(request.workspace_access??[]).filter(a=>a.execution_workspace).map(a=>useTaskWorktree(taskLeaseKey(a.workspace_location_id,workspaceWorktreeKey(a.execution_workspace!))));
   const release = key && workspace?.workspace_location_id
@@ -131,6 +150,8 @@ export async function runHostCommand(
   } finally {
     release?.();
     for(const releaseAttachment of attachmentReleases)releaseAttachment();
+    repositories.release();
+    leaveLocations();
   }
 }
 

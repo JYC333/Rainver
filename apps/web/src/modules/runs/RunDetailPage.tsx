@@ -306,7 +306,7 @@ function RunDetailPageContent() {
     setExecutingRun(true)
     try {
       await runsApi.executeQueuedRun(runId, commandScope)
-      toast.success('Run finished — status should be terminal (e.g. succeeded).')
+      toast.success('Run queued for execution — its status updates as the worker runs it.')
       setReloadKey(k => k + 1)
       await loadSubs()
     } catch (e) {

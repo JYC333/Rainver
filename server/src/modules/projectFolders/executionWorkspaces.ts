@@ -6,6 +6,8 @@ import {assertProjectWriterForMutation} from '../projects/access.js';
 import {PgJobQueueRepository} from '../jobs/repository.js';
 import {workspaceCheckpointRunSettledSql} from './workspacePolicy.js';
 import {refuseSourceFenceWithoutWaiting,retryOutsideSourceFence} from '../hosts/workspaceSourceFence.js';
+import {delegatedWorkspacePlacement} from './delegatedWorkspacePlacement.js';
+import {freezeReview,frozenReview,reviewReference} from './delegatedWorkspaceReview.js';
 
 export interface ExecutionWorkspaceRow {
  id:string;space_id:string;project_id:string;workspace_location_id:string;execution_host_id:string;
@@ -16,7 +18,17 @@ export interface ExecutionWorkspaceRow {
 export function isolatedWorkspaceContract(contract:unknown):boolean {
  return !!contract&&typeof contract==='object'&&(contract as {execution_workspace_version?:unknown}).execution_workspace_version===1;
 }
-export async function ensureExecutionWorkspace(db:Queryable,run:RunRecord,hostId:string,locationId:string,accessMode?:"read"|"write"){
+export type ExecutionWorkspaceBinding={workspace:ExecutionWorkspaceRow;changeSetId:string;changeRevision:number;ref:ExecutionWorkspaceRef;retainedWorkspaceId?:string;sharedWithCoordinator?:true;review?:undefined};
+export type DelegatedReviewBinding={workspace:ExecutionWorkspaceRow;changeSetId:null;changeRevision:null;ref:ExecutionWorkspaceRef;review:{commit:string};retainedWorkspaceId?:undefined;sharedWithCoordinator?:undefined};
+/** Bind a Run to its workspace; attachments and other callers never use delegated placement. */
+export function ensureExecutionWorkspace(db:Queryable,run:RunRecord,hostId:string,locationId:string,accessMode?:"read"|"write"):Promise<ExecutionWorkspaceBinding>{
+ return bindExecutionWorkspace(db,run,hostId,locationId,accessMode,false) as Promise<ExecutionWorkspaceBinding>;
+}
+/** The Run's primary Location: a delegated child may continue in, or review, its coordinator's workspace. */
+export function ensurePrimaryExecutionWorkspace(db:Queryable,run:RunRecord,hostId:string,locationId:string):Promise<ExecutionWorkspaceBinding|DelegatedReviewBinding>{
+ return bindExecutionWorkspace(db,run,hostId,locationId,undefined,true);
+}
+async function bindExecutionWorkspace(db:Queryable,run:RunRecord,hostId:string,locationId:string,accessMode:"read"|"write"|undefined,placementEnabled:boolean):Promise<ExecutionWorkspaceBinding|DelegatedReviewBinding>{
  if(!run.project_id||!run.session_id)throw new HttpError(409,'Isolated execution requires a Project conversation');
  const user=run.instructed_by_user_id??run.owner_user_id;
  if(!user)throw new HttpError(403,'Execution has no responsible user');
@@ -26,7 +38,7 @@ export async function ensureExecutionWorkspace(db:Queryable,run:RunRecord,hostId
  // outside the transaction until that deletion ended (hosts/workspaceSourceFence).
  return retryOutsideSourceFence(()=>withQueryableTransaction(db,async tx=>{
   await refuseSourceFenceWithoutWaiting(tx);
-  const source=(await tx.query<{branch:string|null;kind:string;owner_user_id:string|null;capabilities_json:{execution_workspaces?:{version:number;reclaim?:number}};workspace_baseline?:"committed"|"snapshot"|null}>(`SELECT wl.branch,h.kind,h.owner_user_id,h.capabilities_json,cx.workspace_baseline FROM workspace_locations wl JOIN project_folders f ON f.id=wl.project_folder_id JOIN hosts h ON h.id=wl.execution_host_id LEFT JOIN conversation_execution_contexts cx ON cx.session_id=$5 AND cx.space_id=wl.space_id WHERE wl.id=$1 AND wl.space_id=$2 AND f.project_id=$3 AND wl.execution_host_id=$4 AND wl.status IN ('active','stale') AND wl.execution_ready=true
+  const source=(await tx.query<{branch:string|null;kind:string;owner_user_id:string|null;capabilities_json:{execution_workspaces?:{version:number;reclaim?:number;shared_review?:number};workspace_read_only?:{supported?:boolean}};workspace_baseline?:"committed"|"snapshot"|null}>(`SELECT wl.branch,h.kind,h.owner_user_id,h.capabilities_json,cx.workspace_baseline FROM workspace_locations wl JOIN project_folders f ON f.id=wl.project_folder_id JOIN hosts h ON h.id=wl.execution_host_id LEFT JOIN conversation_execution_contexts cx ON cx.session_id=$5 AND cx.space_id=wl.space_id WHERE wl.id=$1 AND wl.space_id=$2 AND f.project_id=$3 AND wl.execution_host_id=$4 AND wl.status IN ('active','stale') AND wl.execution_ready=true
     AND (wl.status='active' OR (cx.state='initialized' AND cx.primary_workspace_location_id=wl.id)
       OR EXISTS(SELECT 1 FROM conversation_folder_access_grants g WHERE g.space_id=wl.space_id AND g.session_id=$5 AND g.workspace_location_id=wl.id AND g.status='active')
       OR EXISTS(SELECT 1 FROM execution_workspace_runs b JOIN execution_workspaces w ON w.id=b.workspace_id WHERE b.run_id=$6 AND b.space_id=wl.space_id AND w.workspace_location_id=wl.id))`,[locationId,run.space_id,run.project_id,hostId,run.session_id,run.id])).rows[0];
@@ -39,11 +51,27 @@ export async function ensureExecutionWorkspace(db:Queryable,run:RunRecord,hostId
   if(old?.state==='blocked')throw new HttpError(409,'workspace_permission_violation_needs_review');
   if(old?.state==='retired')throw new HttpError(409,'execution_workspace_generation_retired');
   if(old&&['integrated','no_changes','abandoned'].includes(old.change_state))throw new HttpError(409,'workspace_change_already_closed');
-  if(old)return {workspace:old,changeSetId:old.change_set_id,changeRevision:old.change_revision,ref:old.launch_reference_json??workspaceReference(old),...(old.retained_workspace_id?{retainedWorkspaceId:old.retained_workspace_id}:{})};
-  let workspace=(await tx.query<ExecutionWorkspaceRow>(`SELECT * FROM execution_workspaces WHERE space_id=$1 AND workspace_location_id=$2 AND owner_kind=$3 AND ${kind==='delegation'?'delegation_id':'session_id'}=$4 ORDER BY generation DESC LIMIT 1 FOR UPDATE`,[run.space_id,locationId,kind,owner])).rows[0];
+  if(old)return {workspace:old,changeSetId:old.change_set_id,changeRevision:old.change_revision,ref:old.launch_reference_json??workspaceReference(old),...(old.retained_workspace_id?{retainedWorkspaceId:old.retained_workspace_id}:{}),...(run.delegation_id&&old.owner_kind==='conversation'?{sharedWithCoordinator:true as const}:{})};
+  // A serial delegated writer continues in its coordinator's workspace; a
+  // read-only child may read it at the saved checkpoint (delegatedWorkspacePlacement).
+  // Attachments (an explicit accessMode) keep their own forks.
+  const placing=placementEnabled&&kind==='delegation'&&accessMode===undefined;
+  // A replay of a placed review reuses its frozen basis verbatim: never
+  // re-placed (no fork, no other version) even after the coordinator moved.
+  const frozen=placing?await frozenReview(tx,run.id,run.space_id):null;
+  if(frozen){
+   if(source.kind!=='remote'||source.capabilities_json?.execution_workspaces?.shared_review!==1||source.capabilities_json?.workspace_read_only?.supported!==true)throw new HttpError(409,'execution_workspace_review_unavailable');
+   const w=(await tx.query<ExecutionWorkspaceRow>('SELECT * FROM execution_workspaces WHERE id=$1 AND space_id=$2',[frozen.workspace_id,run.space_id])).rows[0];
+   if(!w||w.generation!==frozen.generation||w.workspace_location_id!==locationId||w.execution_host_id!==hostId)throw new HttpError(409,'execution_workspace_review_unavailable');
+   return {workspace:w,changeSetId:null,changeRevision:null,ref:reviewReference(frozen,{target_ref:w.target_ref,baseline_mode:source.workspace_baseline??null}),review:{commit:frozen.expected_commit}};
+  }
+  const placement=placing?await delegatedWorkspacePlacement(tx,run,{locationId,hostId,host:source}):null;
+  if(placement?.mode==='review')return reviewPlacement(tx,run,placement.workspace,placement.commit,source.workspace_baseline??null);
+  const shared=placement?.mode==='shared';
+  let workspace=shared?placement.workspace:(await tx.query<ExecutionWorkspaceRow>(`SELECT * FROM execution_workspaces WHERE space_id=$1 AND workspace_location_id=$2 AND owner_kind=$3 AND ${kind==='delegation'?'delegation_id':'session_id'}=$4 ORDER BY generation DESC LIMIT 1 FOR UPDATE`,[run.space_id,locationId,kind,owner])).rows[0];
   // A new turn may leave an unusable generation behind. Never revive, abandon,
   // publish or clean that generation, and never import its unverified result.
-  const stranded=workspace&&workspace.state!=='retired'&&(workspace.state==='blocked'||Boolean((await tx.query(`SELECT 1 FROM execution_workspace_runs b
+  const stranded=!shared&&workspace&&workspace.state!=='retired'&&(workspace.state==='blocked'||Boolean((await tx.query(`SELECT 1 FROM execution_workspace_runs b
    JOIN runs r ON r.id=b.run_id AND r.space_id=b.space_id JOIN workspace_change_sets c ON c.id=b.change_set_id
    WHERE b.workspace_id=$1 AND ${workspaceCheckpointRunSettledSql('r')} AND
     (b.checkpoint_state='blocked' OR c.verification_json->'checkpoint_recovery'->>'state'='exhausted'
@@ -63,7 +91,8 @@ export async function ensureExecutionWorkspace(db:Queryable,run:RunRecord,hostId
   if(workspace.state==='blocked')throw new HttpError(409,'workspace_permission_violation_needs_review');
   const outstanding=Boolean((await tx.query("SELECT 1 FROM workspace_change_sets WHERE workspace_id=$1 AND state IN ('open','ready','integrating','blocked') LIMIT 1",[workspace.id])).rowCount);
   let rebuilding=false;
-  const ref:ExecutionWorkspaceRef={...workspaceReference(workspace),...(source.workspace_baseline?{baseline_mode:source.workspace_baseline}:{}),...(!outstanding&&!workspace.parent_workspace_id&&workspace.head_commit?{sync_to_target:true}:{})};
+  // A shared child continues exactly where its coordinator saved: never synced to the target.
+  const ref:ExecutionWorkspaceRef={...workspaceReference(workspace),...(source.workspace_baseline?{baseline_mode:source.workspace_baseline}:{}),...(!shared&&!outstanding&&!workspace.parent_workspace_id&&workspace.head_commit?{sync_to_target:true}:{})};
   if((source.capabilities_json?.execution_workspaces?.reclaim??0)>=1){
    // Same identity after a cold reclaim: the native session and cwd survive.
    // The epoch fences older cleanup; the floor keeps launch sequences monotonic.
@@ -93,8 +122,21 @@ export async function ensureExecutionWorkspace(db:Queryable,run:RunRecord,hostId
    rebuilding?null:workspace.head_commit??workspace.base_commit,JSON.stringify({adopted_child_change_ids:[],...(retainedWorkspaceId?{continuation_from_workspace_id:retainedWorkspaceId}:{})})])).rows[0];
   await tx.query('INSERT INTO execution_workspace_runs(run_id,workspace_id,space_id,change_set_id,launch_reference_json,access_mode) VALUES($1,$2,$3,$4,$5::jsonb,$6)',[run.id,workspace.id,run.space_id,change!.id,JSON.stringify(ref),accessMode??((run.contract_snapshot_json as {workspace_access?:string})?.workspace_access==='read'?'read':'write')]);
   await new PgJobQueueRepository(tx).enqueue({job_type:'execution_workspace_checkpoint',space_id:run.space_id,user_id:user,payload:{run_id:run.id,workspace_id:workspace.id}});
-  return {workspace,changeSetId:change!.id,changeRevision:change!.revision,ref,...(change!.retained_workspace_id?{retainedWorkspaceId:change!.retained_workspace_id}:{})};
+  return {workspace,changeSetId:change!.id,changeRevision:change!.revision,ref,...(change!.retained_workspace_id?{retainedWorkspaceId:change!.retained_workspace_id}:{}),...(shared?{sharedWithCoordinator:true as const}:{})};
  }));
+}
+/**
+ * A read-only delegated review of the coordinator's workspace at its saved
+ * checkpoint: no binding, batch or checkpoint Job. The frozen version and
+ * workspace identity are stored once (delegatedWorkspaceReview) and only as
+ * the *expected* basis; the Host refuses the launch unless that worktree is
+ * clean at exactly this commit, under a shared lease no writer can hold beside
+ * it, in a verified read-only namespace, and only its report of what it read
+ * marks the review verified.
+ */
+async function reviewPlacement(tx:Queryable,run:RunRecord,workspace:ExecutionWorkspaceRow,commit:string,baseline:'committed'|'snapshot'|null):Promise<DelegatedReviewBinding>{
+ const frozen=await freezeReview(tx,{runId:run.id,spaceId:run.space_id,workspaceId:workspace.id,generation:workspace.generation,locationId:workspace.workspace_location_id,commit});
+ return {workspace,changeSetId:null,changeRevision:null,ref:reviewReference(frozen,{target_ref:workspace.target_ref,baseline_mode:baseline}),review:{commit:frozen.expected_commit}};
 }
 export function workspaceReference(w:ExecutionWorkspaceRow):ExecutionWorkspaceRef {
  return {id:w.id,generation:w.generation,...(w.head_commit??w.base_commit?{base_commit:(w.head_commit??w.base_commit)!}:{}),...(w.target_ref?{target_ref:w.target_ref}:{})};
@@ -120,6 +162,10 @@ export async function recordWorkspaceLaunch(db:Queryable,run:RunRecord,info:{id:
    await tx.query("UPDATE workspace_change_sets SET base_commit=$2 WHERE workspace_id=$1 AND state='open' AND source_commit IS NULL",[w.id,info.start_commit]);
   }
   await tx.query(`UPDATE execution_workspaces SET retention_json=retention_json||jsonb_build_object('state','active','reason','run_active','assessed_at',now()) WHERE id=$1 AND retention_json->>'state' IS DISTINCT FROM 'active'`,[w.id]);
+  // This launch report is the Host's own, newer observation that the branch and
+  // worktree exist: an earlier inventory that found neither is stale and must not
+  // turn this generation's new work back into "missing" when its Run ends.
+  await tx.query(`UPDATE execution_workspaces SET inventory_json=inventory_json||jsonb_build_object('branch',true,'worktree',true,'observed_by_launch_at',now()) WHERE id=$1 AND (inventory_json->>'branch'='false' OR inventory_json->>'worktree'='false')`,[w.id]);
   await tx.query(`UPDATE execution_workspaces SET state='ready',base_commit=COALESCE(base_commit,$3),target_ref=COALESCE(target_ref,$4),baseline_mode=COALESCE($5,baseline_mode),snapshot_head=COALESCE($6,snapshot_head),base_tree=COALESCE($7,base_tree),updated_at=now() WHERE id=$1 AND space_id=$2`,[w.id,run.space_id,info.start_commit,info.target_ref,info.baseline_kind??null,info.snapshot_head??null,info.baseline_tree??null]);
   await tx.query(`UPDATE workspace_change_sets SET base_commit=CASE WHEN source_commit IS NULL AND (SELECT count(*) FROM execution_workspace_runs WHERE change_set_id=workspace_change_sets.id)=1 THEN $3 ELSE COALESCE(base_commit,$3) END WHERE id=(SELECT change_set_id FROM execution_workspace_runs WHERE run_id=$1 AND workspace_id=$2)`,[run.id,w.id,info.start_commit]);
   const jobs=new PgJobQueueRepository(tx);

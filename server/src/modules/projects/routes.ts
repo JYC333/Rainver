@@ -1,3 +1,4 @@
+import {registerProjectLiveUpdates} from './liveUpdates.js';
 import {registerProjectSourceProposalOperationRoutes} from './sourceProposalOperationRoutes.js';
 import {registerProjectCorpusOperationRoutes} from './corpusOperationRoutes.js';
 import {registerProjectManagementOperationRoutes} from './managementOperationRoutes.js';
@@ -10,13 +11,6 @@ import { sessionActor } from '../systemActions/operations/actor.js';
 import { OperationError } from '../systemActions/operations/errors.js';
 import { registerMonitoringRoutes } from "./monitoring/routes.js";
 import type { FastifyInstance } from "fastify";
-import * as protocol from "@rainver/protocol";
-import type {
-  ProjectPublicSummaryDraftRequest,
-  RetrievalBriefRequest,
-  RetrievalFeedbackRequest,
-  RetrievalSearchRequest,
-} from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
@@ -31,27 +25,12 @@ import {
   sendRouteError,
 } from "../routeUtils/common.js";
 import { projectReaders } from "./access.js";
-import {
-  RetrievalFeedbackService,
-  RetrievalSearchService,
-  persistRetrievalBriefArtifact,
-} from "../retrieval/index.js";
-import { readSpaceRetrievalSettings, resolveRetrievalSearchControls } from "../retrieval/settings.js";
-import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker.js";
-import { ProviderQueryRewriter } from "../retrieval/queryRewriteProvider/providerQueryRewriter.js";
-import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder.js";
-import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer.js";
-import { resolveProviderCommandStore } from "../providers/commands/store.js";
-import { projectRetrievalRegistry } from "./retrievalAdapter.js";
 import { ProjectCorpusRepository } from "./corpusRepository.js";
-import { ProjectPublicSummaryGenerator } from "./publicSummaryGenerator.js";
 import { PgProjectRepository } from "./repository.js";
 import { ProjectSourceBindingService } from "./projectSourceBindingService.js";
-import { ProjectSourceProposalService } from "./projectSourceProposalService.js";
 import { ProjectKernelService } from "./kernelService.js";
 import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "./attentionService.js";
 import { ProjectOverviewService } from "./overviewService.js";
-import { enforceSources } from "../sources/enforceSources.js";
 import { ProjectOperationService } from "./projectOperationService.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
@@ -60,11 +39,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   registerProjectManagementOperationRoutes(app,context,'projects');
   registerProjectSourceOperationRoutes(app,context);
   registerMonitoringRoutes(app, context);
+  registerProjectLiveUpdates(app,context);
   const repository = () => PgProjectRepository.fromConfig(context.config);
   const corpusRepository = () => new ProjectCorpusRepository(dbPool(context.config));
-  const summaryGenerator = () => ProjectPublicSummaryGenerator.fromConfig(context.config);
   const sourceBindings = () => new ProjectSourceBindingService(dbPool(context.config));
-  const sourceProposals = () => new ProjectSourceProposalService(dbPool(context.config), context.config);
   const operations = () => new ProjectOperationService(dbPool(context.config));
 
   for (const [url, id] of [
@@ -153,33 +131,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/sources/propose-bind", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "project.source.bind", "project_source");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      const p = params(request);
-      return reply.code(201).send(await sourceProposals().proposeBind(identity, requiredString(p.projectId, "project_id"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/:projectId/sources/propose-setup", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const sourceGate = await enforceSources(context, identity, "source.connection.manage", "source_connection");
-      if (sourceGate.blocked) return reply.code(403).send(sourceGate.reply403);
-      const projectGate = await enforceSources(context, identity, "project.source.bind", "project_source");
-      if (projectGate.blocked) return reply.code(403).send(projectGate.reply403);
-      const p = params(request);
-      return reply.code(201).send(await sourceProposals().proposeSourceSetup(identity, requiredString(p.projectId, "project_id"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
 
 
@@ -216,200 +168,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/public-summaries/search", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = parseRetrievalSearchBody(protocol.RetrievalSearchRequestSchema, jsonBody(request));
-      const objectTypes = body.object_types ?? ["project_public_summary"];
-      if (objectTypes.some((objectType) => objectType !== "project_public_summary")) {
-        throw new HttpError(422, "project public summary search only supports project_public_summary");
-      }
-      const pool = dbPool(context.config);
-      const retrievalSettings = await readSpaceRetrievalSettings(pool, identity.spaceId);
-      const controls = resolveRetrievalSearchControls(body, retrievalSettings);
-      const store = resolveProviderCommandStore(context.config);
-      const egressPolicy = { externalEgressEnabled: retrievalSettings.externalEgressEnabled };
-      const search = new RetrievalSearchService(pool, projectRetrievalRegistry, {
-        egressPolicy,
-        // Vector recall arm (parity with knowledge/memory): provider egress is
-        // checked at invocation time, so local providers remain usable when
-        // external egress is disabled.
-        queryEmbedder: new ProviderQueryEmbedder(
-          store,
-          { kind: "person", user_id: identity.userId },
-          null,
-          undefined,
-          retrievalSettings.embeddingDimensions,
-          egressPolicy,
-        ),
-        feedbackService: new RetrievalFeedbackService(pool, projectRetrievalRegistry),
-        // Reranker is off unless this space enables it; degrades to the fused order otherwise.
-        reranker: retrievalSettings.rerankEnabled
-          ? new ProviderReranker(store, {
-              spend: { kind: "person", user_id: identity.userId },
-              databaseUrl: context.config.databaseUrl,
-              surface: "project_public_summary_search",
-              egressPolicy,
-            })
-          : undefined,
-        // Query rewriter is off unless this space enables it; degrades to the original query.
-        queryRewriter: retrievalSettings.queryRewriteEnabled
-          ? new ProviderQueryRewriter(store, {
-              spend: { kind: "person", user_id: identity.userId },
-              databaseUrl: context.config.databaseUrl,
-              surface: "project_public_summary_search",
-              egressPolicy,
-            })
-          : undefined,
-      });
-      return reply.send(await search.search({
-        spaceId: identity.spaceId,
-        viewerUserId: identity.userId,
-        query: body.query,
-        objectTypes: ["project_public_summary"],
-        objectProfiles: body.object_profiles,
-        maxResults: controls.maxResults,
-        includeTrace: controls.includeTrace,
-        feedbackSurface: "project_public_summary_search",
-        mode: controls.mode,
-        rewrite: controls.rewrite,
-        useCache: controls.useCache,
-        adaptiveReturn: controls.adaptiveReturn,
-        rankingConfig: controls.rankingConfig,
-      }));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/retrieval/brief", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = parseRetrievalBriefBody(protocol.RetrievalBriefRequestSchema, jsonBody(request));
-      const objectTypes = body.object_types ?? ["project_public_summary"];
-      if (objectTypes.some((objectType) => objectType !== "project_public_summary")) {
-        throw new HttpError(422, "project retrieval brief only supports project_public_summary");
-      }
-      const pool = dbPool(context.config);
-      const retrievalSettings = await readSpaceRetrievalSettings(pool, identity.spaceId);
-      const store = resolveProviderCommandStore(context.config);
-      const egressPolicy = { externalEgressEnabled: retrievalSettings.externalEgressEnabled };
-      const search = new RetrievalSearchService(pool, projectRetrievalRegistry, {
-        egressPolicy,
-        queryEmbedder: new ProviderQueryEmbedder(
-          store,
-          { kind: "person", user_id: identity.userId },
-          null,
-          undefined,
-          retrievalSettings.embeddingDimensions,
-          egressPolicy,
-        ),
-        reranker: retrievalSettings.rerankEnabled
-          ? new ProviderReranker(store, {
-              spend: { kind: "person", user_id: identity.userId },
-              databaseUrl: context.config.databaseUrl,
-              surface: "project_public_summary_brief",
-              egressPolicy,
-            })
-          : undefined,
-        synthesizer: new ProviderSynthesizer(store, {
-          spend: { kind: "person", user_id: identity.userId },
-          databaseUrl: context.config.databaseUrl,
-          surface: "project_public_summary_brief",
-          egressPolicy,
-        }),
-      });
-      const maxResults = body.max_results ?? retrievalSettings.maxResultsDefault;
-      const includeTrace = body.include_trace ?? retrievalSettings.includeTrace;
-      const mode = body.mode ?? retrievalSettings.defaultSearchMode;
-      const adaptiveReturn = body.adaptive_return ?? resolveRetrievalSearchControls(body, retrievalSettings).adaptiveReturn;
-      const response = await search.buildBrief({
-        spaceId: identity.spaceId,
-        viewerUserId: identity.userId,
-        query: body.query,
-        objectTypes: ["project_public_summary"],
-        objectProfiles: body.object_profiles,
-        maxResults,
-        includeTrace,
-        mode,
-        useCache: retrievalSettings.useQueryCache,
-        adaptiveReturn,
-        rankingConfig: retrievalSettings.rankingConfig,
-      });
-      if (!body.persist_artifact) return reply.send(response);
-      try {
-        const artifactId = await persistRetrievalBriefArtifact(pool, {
-          spaceId: identity.spaceId,
-          ownerUserId: identity.userId,
-          runId: null,
-          projectId: null,
-          query: body.query,
-          objectTypes: ["project_public_summary"],
-          objectProfiles: body.object_profiles,
-          maxResults,
-          includeTrace,
-          mode,
-          surface: "project_public_summary_brief",
-          response,
-          persistTrace: false,
-          egressPolicySnapshot: {
-            external_egress_enabled: retrievalSettings.externalEgressEnabled,
-          },
-          settingsSnapshot: {
-            default_search_mode: retrievalSettings.defaultSearchMode,
-            rerank_enabled: retrievalSettings.rerankEnabled,
-            query_rewrite_enabled: retrievalSettings.queryRewriteEnabled,
-            use_query_cache: retrievalSettings.useQueryCache,
-            embedding_dimensions: retrievalSettings.embeddingDimensions,
-            max_results_default: retrievalSettings.maxResultsDefault,
-          },
-        });
-        return reply.send({ ...response, artifact_id: artifactId });
-      } catch (error) {
-        request.log.warn(
-          { err: error },
-          "project retrieval brief artifact persistence failed",
-        );
-        return reply.send({ ...response, artifact_error: "retrieval_brief_persist_failed" });
-      }
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/projects/public-summaries/feedback", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = parseBodyWith<RetrievalFeedbackRequest>(
-        protocol.RetrievalFeedbackRequestSchema,
-        jsonBody(request),
-      );
-      if (body.object_type !== "project_public_summary") {
-        throw new HttpError(422, "project public summary feedback only supports project_public_summary");
-      }
-      const recorded = await new RetrievalFeedbackService(
-        dbPool(context.config),
-        projectRetrievalRegistry,
-      ).record({
-        spaceId: identity.spaceId,
-        viewerUserId: identity.userId,
-        surface: "project_public_summary_search",
-        query: body.query,
-        objectType: "project_public_summary",
-        objectId: body.object_id,
-        signalType: body.signal_type,
-        dwellMs: body.dwell_ms ?? null,
-        metadata: body.metadata ?? null,
-      });
-      if (!recorded) return reply.code(404).send({ detail: "Retrieval result not found" });
-      return reply.send({ ok: true });
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/projects/:projectId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -451,26 +211,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
 
 
-  app.post("/api/v1/projects/:projectId/public-summary/draft", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = parseBodyWith<ProjectPublicSummaryDraftRequest>(
-        protocol.ProjectPublicSummaryDraftRequestSchema,
-        jsonBody(request),
-      );
-      return reply.send(
-        await summaryGenerator().generateDraft(identity, params(request).projectId ?? "", {
-          providerId: optionalString(body.model_provider_id) ?? optionalString(body.provider_id),
-          model: optionalString(body.model),
-          maxTokens: body.max_tokens ?? null,
-          generatedByRunId: optionalString(body.generated_by_run_id),
-        }),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
 
 
@@ -508,15 +248,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
 
 
-  app.post("/api/v1/projects/:projectId/corpus/backfill-source-items", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await corpusRepository().backfillFromSources(identity, params(request).projectId ?? ""));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
 
 
@@ -622,37 +353,4 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return sendRouteError(reply, error);
     }
   });
-}
-
-type ProtocolSchema<T> = {
-  safeParse(value: unknown):
-    | { success: true; data: T }
-    | { success: false; error: { issues: Array<{ path: Array<string | number>; message: string }> } };
-};
-
-function parseRetrievalSearchBody(
-  schema: ProtocolSchema<RetrievalSearchRequest>,
-  value: unknown,
-): RetrievalSearchRequest {
-  return parseBodyWith(schema, value);
-}
-
-function parseRetrievalBriefBody(
-  schema: ProtocolSchema<RetrievalBriefRequest>,
-  value: unknown,
-): RetrievalBriefRequest {
-  return parseBodyWith(schema, value);
-}
-
-function parseBodyWith<T>(schema: ProtocolSchema<T>, value: unknown): T {
-  const parsed = schema.safeParse(value);
-  if (!parsed.success) throw new HttpError(422, validationMessage(parsed.error.issues));
-  return parsed.data;
-}
-
-function validationMessage(issues: Array<{ path: Array<string | number>; message: string }>): string {
-  const issue = issues[0];
-  if (!issue) return "Invalid request body";
-  const path = issue.path.length ? `${issue.path.join(".")}: ` : "";
-  return `${path}${issue.message}`;
 }

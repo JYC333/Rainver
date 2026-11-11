@@ -1,3 +1,4 @@
+import {ProjectUpdateFrameSchema} from '@rainver/protocol'
 import type { ApiPlanUsageProvider, ApiPlanUsageSnapshot } from '@rainver/protocol'
 import {INQUIRY_OPERATION_SCHEMAS} from '@rainver/protocol';
 import type { RunLiveInputAvailability, RunLiveInputRequest, RunLiveInputResult } from "@rainver/protocol"
@@ -816,14 +817,15 @@ export async function streamTurnParts(
 }
 
 async function postChatTurn(
-  path: string,
-  body: unknown,
+  agentId: string,
+  body: Omit<OperationInput<'agent.chat.send'>, 'agent_id'>,
   options: RequestOptions & {
     onAccepted?: (accepted: ChatTurnAccepted) => void
     onTurn?: (turn: RunTurn) => void
   } = {},
 ): Promise<ChatTurnOut> {
-  const accepted = await post<ChatTurnAccepted>(path, body, options)
+  // One keyed turn command, never retried automatically; the stream is a read.
+  const { space_id: _space, ...accepted } = await commandReceipt('agent.chat.send', { ...body, agent_id: agentId }, options.idempotencyKey ?? crypto.randomUUID(), options)
   if (options.signal?.aborted) throw new DOMException('Request aborted', 'AbortError')
   options.onAccepted?.(accepted)
   const response = await fetch(accepted.event_stream_url, { headers: streamHeaders(options.spaceId), signal: options.signal })
@@ -1288,20 +1290,42 @@ export const knowledgeSourcesApi = {
 export const sessionsApi = {
   list:       (params: Record<string, string> = {}) =>
     get<Page<Session>>('/sessions?' + new URLSearchParams(params)),
-  create:     (data: Partial<Session>)              => post<Session>('/sessions', data),
+  create:     async (data: { title?: string | null; project_id?: string | null; project_folder_id?: string | null; metadata?: Record<string, unknown> | null }, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('session.create', data, key)
+    return get<Session>(`/sessions/${encodeURIComponent(receipt.session_id)}`, { spaceId: receipt.space_id })
+  },
   get:        (id: string, options: RequestOptions = {})                          => get<Session>(`/sessions/${id}`, options),
   messages:   (id: string, options: RequestOptions = {})                          => get<Message[]>(`/sessions/${id}/messages`, options),
-  addMessage: (id: string, data: { content: string }) =>
-    post<Message>(`/sessions/${id}/messages`, data),
-  reflect:    (id: string)                          => post<ReflectResult>(`/sessions/${id}/reflect`),
+  addMessage: async (id: string, data: { content: string }, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('session.message.add', { ...data, session_id: id }, key)
+    const messages = await get<Message[]>(`/sessions/${encodeURIComponent(receipt.session_id)}/messages`, { spaceId: receipt.space_id })
+    const message = messages.find(item => item.id === receipt.message_id)
+    if (!message) throw new Error('Message no longer available')
+    return message
+  },
+  reflect:    async (id: string, key: string = crypto.randomUUID()): Promise<ReflectResult> => {
+    const receipt = await commandReceipt('session.reflect', { session_id: id }, key)
+    return { session_id: receipt.session_id, proposals_created: receipt.proposals_created }
+  },
   executionContext: (id: string, options: RequestOptions = {}) => get<ConversationExecutionPreflightResponse>(`/sessions/${encodeURIComponent(id)}/execution-context`, options),
-  preflightExecution: (id: string, body: ConversationExecutionPreflightRequest, options: RequestOptions = {}) =>
-    post<ConversationExecutionPreflightResponse>(`/sessions/${encodeURIComponent(id)}/execution-context/preflight`, body, options),
-  initializeExecution: (id: string, body: ConversationExecutionInitializeRequest, options: RequestOptions = {}) =>
-    post<ConversationExecutionSummary>(`/sessions/${encodeURIComponent(id)}/execution-context/initialize`, body, options),
-  mutateExecutionAttachments: (id: string, body: ConversationAttachmentMutation, options: RequestOptions = {}) =>
-    post<ConversationAttachmentMutationResponse>(`/sessions/${encodeURIComponent(id)}/execution-context/attachments`, body, options),
-  remove:     (id: string)                          => del<Session>(`/sessions/${id}`),
+  // A read-only query: no key, nothing written.
+  preflightExecution: async (id: string, body: ConversationExecutionPreflightRequest, options: RequestOptions = {}): Promise<ConversationExecutionPreflightResponse> => {
+    const result = await queryOperation('conversation.execution.preflight', { ...body, session_id: id }, options)
+    if (!('status' in result) || result.status !== 'succeeded') throw new Error('Preview did not complete')
+    return result.data
+  },
+  initializeExecution: async (id: string, body: ConversationExecutionInitializeRequest, options: RequestOptions = {}): Promise<ConversationExecutionSummary> => {
+    const receipt = await commandReceipt('conversation.execution.initialize', { ...body, session_id: id }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    return (await sessionsApi.executionContext(receipt.session_id, { ...options, spaceId: receipt.space_id })).summary
+  },
+  mutateExecutionAttachments: async (id: string, body: ConversationAttachmentMutation, options: RequestOptions = {}): Promise<ConversationAttachmentMutationResponse> => {
+    const receipt = await commandReceipt('conversation.execution.attachment.mutate', { ...body, session_id: id }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    const context = await sessionsApi.executionContext(receipt.session_id, { ...options, spaceId: receipt.space_id })
+    const attachment = context.summary.attachments.find(item => item.id === receipt.attachment_id)
+    if (!attachment) throw new Error('Folder attachment no longer available')
+    return { attachment, effective_after_run_id: receipt.effective_after_run_id }
+  },
+  remove:     async (id: string, key: string = crypto.randomUUID()) => { await commandReceipt('session.delete', { session_id: id }, key) },
 }
 
 // ── Prompt Registry ──────────────────────────────────────────────────────
@@ -1457,13 +1481,44 @@ export const runsApi = {
   get:    (id: string, options: RequestOptions = {}) => get<Run>(`/runs/${id}`, options),
   logicalIO: (id: string, options: RequestOptions = {}) => get<RunLogicalIO>(`/runs/${id}/io`, options),
   status: (id: string, options: RequestOptions = {}) => get<RunStatusOut>(`/runs/${id}/status`, options),
-  stop:   (id: string, options: RequestOptions = {}) => patch<Record<string, unknown>>(`/runs/${id}/stop`, undefined, options),
+  // One keyed command; the process stop completes before the reply, then the Run is re-read.
+  stop:   async (id: string, options: RequestOptions = {}) => {
+    const receipt = await commandReceipt('run.stop', { run_id: id }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    return get<Run>(`/runs/${encodeURIComponent(receipt.run_id)}`, { ...options, spaceId: receipt.space_id })
+  },
   liveInput: (id: string, options: RequestOptions = {}) => get<RunLiveInputAvailability>(`/runs/${id}/live-input`, options),
-  sendLiveInput: (id: string, body: RunLiveInputRequest, options: RequestOptions = {}) => post<RunLiveInputResult>(`/runs/${id}/live-input`, body, options),
-  quotaRecovery: (id: string, autoContinue: boolean, options: RequestOptions = {}) => patch<import('@rainver/protocol').QuotaRecovery>(`/runs/${id}/quota-recovery`, { auto_continue: autoContinue }, options),
-  executeQueuedRun: (id: string, options: RequestOptions = {}) => post<Run>(`/runs/${id}/execute`, undefined, options),
-  resume: (id: string, options: RequestOptions = {}) => post<{ id: string; status: string; resumed_at: string; resume_kind: string }>(`/runs/${id}/resume`, {}, options),
-  abandon: (id: string, body: { reason?: string | null } = {}, options: RequestOptions = {}) => post<{ id: string; status: string; abandoned_at: string }>(`/runs/${id}/abandon`, body, options),
+  sendLiveInput: async (id: string, body: RunLiveInputRequest, options: RequestOptions = {}): Promise<RunLiveInputResult> => {
+    const receipt = await commandReceipt('run.live_input.submit', { ...body, run_id: id }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    // Delivery is the server's committed obligation after commit; its outcome is read back for this
+    // message. An outcome not yet recorded stays `pending` — never reported as not delivered.
+    const path = `/runs/${encodeURIComponent(receipt.run_id)}/live-input?message_id=${encodeURIComponent(receipt.message_id)}`
+    let state: RunLiveInputResult['state'] = 'pending'
+    for (let attempt = 0; attempt < LIVE_INPUT_READBACK_ATTEMPTS; attempt++) {
+      if (attempt > 0) await new Promise(resolve => setTimeout(resolve, LIVE_INPUT_READBACK_DELAY_MS))
+      const read = await get<RunLiveInputAvailability & { delivery_state?: string | null }>(path, { ...options, spaceId: receipt.space_id })
+      const known = read.delivery_state === 'injected' || read.delivery_state === 'unconfirmed' || read.delivery_state === 'not_injected' ? read.delivery_state : null
+      if (known) { state = known; break }
+      if (options.signal?.aborted) break
+    }
+    return { state, message_id: receipt.message_id, delivery_id: null }
+  },
+  // The new recovery choice is read back with the Run's turn; the command returns identities only.
+  quotaRecovery: async (id: string, autoContinue: boolean, options: RequestOptions = {}, switchModel = false): Promise<void> => {
+    await commandReceipt('run.quota_recovery.update', { run_id: id, auto_continue: autoContinue, ...(switchModel ? { switch_model: true } : {}) }, options.idempotencyKey ?? crypto.randomUUID(), options)
+  },
+  // Queues the Run's Job; execution happens in the worker, not in this request.
+  executeQueuedRun: async (id: string, options: RequestOptions = {}) => {
+    const receipt = await commandReceipt('run.execute', { run_id: id }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    return get<Run>(`/runs/${encodeURIComponent(receipt.run_id)}`, { ...options, spaceId: receipt.space_id })
+  },
+  resume: async (id: string, options: RequestOptions = {}) => {
+    const { space_id: _space, run_id: _run, ...receipt } = await commandReceipt('run.resume', { run_id: id }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    return receipt
+  },
+  abandon: async (id: string, body: { reason?: string | null } = {}, options: RequestOptions = {}) => {
+    const { space_id: _space, run_id: _run, ...receipt } = await commandReceipt('run.abandon', { ...body, run_id: id }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    return receipt
+  },
   activities: (id: string, params: Record<string, string> = {}, options: RequestOptions = {}) =>
     get<Page<ActivityInboxRecord>>(`/runs/${id}/activities?` + new URLSearchParams(params), options),
   artifacts: (id: string, params: Record<string, string> = {}, options: RequestOptions = {}) =>
@@ -1509,6 +1564,39 @@ export const plansApi = {
   reconcile: (id: string) => post<PlanExecutionResult>(`/plans/${encodeURIComponent(id)}/reconcile`, {}),
 }
 
+/** A live input's recorded outcome is read back briefly; past that it is reported as still pending. */
+const LIVE_INPUT_READBACK_ATTEMPTS = 6
+const LIVE_INPUT_READBACK_DELAY_MS = 500
+/** Current Room roster after a roster command; the receipt names only the Room. */
+async function roomDetailAfter(receipt:{room_id:string;space_id:string},options:RequestOptions={}):Promise<RoomDetail>{
+  return get<RoomDetail>(`/rooms/${encodeURIComponent(receipt.room_id)}`,{...options,spaceId:receipt.space_id})
+}
+async function roomMutationAfter(receipt:{room_id:string;space_id:string},options:RequestOptions={},revoked=0):Promise<RoomAgentMutationResponse>{
+  return {...await roomDetailAfter(receipt,options),revoked_grant_count:revoked}
+}
+async function roomInvitationAfter(receipt:{room_id:string;space_id:string;invitation_id:string}):Promise<RoomInvitation>{
+  // The exact invitation, however many newer ones exist; access is the page's.
+  const page=await get<RoomInvitationListResponse>(`/rooms/${encodeURIComponent(receipt.room_id)}/invitations?limit=1&invitation_id=${encodeURIComponent(receipt.invitation_id)}`,{spaceId:receipt.space_id})
+  const invitation=page.items.find(item=>item.id===receipt.invitation_id);if(!invitation)throw new Error('Room invitation no longer available');return invitation
+}
+/** The receipt's exact message (an old one on replay, too) with the conversation it belongs to. */
+async function turnAfter(receipt:{room_id:string;session_id:string;space_id:string;message_id:string},options:RequestOptions={}){
+  const q=new URLSearchParams({limit:'1',message_id:receipt.message_id})
+  const page=await get<{items:RoomMessage[];conversation?:RoomConversation}>(`/rooms/${encodeURIComponent(receipt.room_id)}/conversations/${encodeURIComponent(receipt.session_id)}/messages?${q}`,{...options,spaceId:receipt.space_id})
+  return turnFrom(page,receipt.message_id)
+}
+/** The posted turn's message and conversation, read back from the conversation page. */
+function turnFrom(page:{items:RoomMessage[];conversation?:RoomConversation},messageId:string):{message:RoomMessage;conversation:RoomConversation}{
+  const message=page.items.find(item=>item.id===messageId)
+  if(!message||!page.conversation)throw new Error('Room message no longer available')
+  return {message,conversation:page.conversation}
+}
+/** A keyed command at a retained URL whose adapter owns a pre-transaction step; never retried. */
+async function operationAt<T>(method:'POST'|'PUT'|'PATCH'|'DELETE',path:string,body:unknown,key:string,options:RequestOptions={}):Promise<T>{
+  const result=await request<OperationOutcome<T>>(method,path,body,{...options,idempotencyKey:key})
+  if(!('status' in result)||result.status!=='succeeded')throw new Error('Command did not complete')
+  return result.data
+}
 export const roomsApi = {
   list: (params: { project_id?: string; limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
@@ -1523,63 +1611,72 @@ export const roomsApi = {
     if (params.offset !== undefined) q.set('offset', String(params.offset))
     return get<RoomPendingApprovalListResponse>(`/rooms/pending-approvals?${q}`)
   },
-  create: (body: CreateRoomRequest, idempotencyKey?: string) =>
-    post<CreateRoomResponse>('/rooms', body, { idempotencyKey }),
+  create: async (body: CreateRoomRequest, idempotencyKey: string = crypto.randomUUID()): Promise<CreateRoomResponse> =>
+    roomDetailAfter(await commandReceipt('room.create', body, idempotencyKey)),
   get: (roomId: string, options: RequestOptions = {}) => get<RoomDetail>(`/rooms/${roomId}`, options),
   /** Copy picked content into a conversation that already exists. */
-  attachReferences: (
+  attachReferences: async (
     roomId: string,
     sessionId: string,
     body: { references: ThreadReferencePick[]; confirm_disclosure?: boolean | string[] }, options: RequestOptions = {},
-  ) => post<{
-    items: RoomMessage[]
-    task_group_ids: string[]
-    conversation: RoomConversation | null
-    limit: number
-    offset: number
-  }>(`/rooms/${roomId}/conversations/${sessionId}/references`, body, options),
+  ) => {
+    // The retained URL, not the generic entry: it prepares owner-funded imported-session summaries before the command.
+    const receipt = await operationAt<OperationOutput<'room.conversation.attach_references'>>('POST', `/rooms/${encodeURIComponent(roomId)}/conversations/${encodeURIComponent(sessionId)}/references`, body, options.idempotencyKey ?? crypto.randomUUID(), options)
+    const page = await roomsApi.messages(receipt.room_id, receipt.session_id, { limit: 50 }, { ...options, spaceId: receipt.space_id })
+    return { items: page.items, task_group_ids: page.task_group_ids, conversation: page.conversation ?? null, limit: page.limit, offset: page.offset }
+  },
   agentCandidates: (roomId: string, params: { limit?: number; offset?: number } = {}) => {
     const q = new URLSearchParams()
     if (params.limit !== undefined) q.set('limit', String(params.limit))
     if (params.offset !== undefined) q.set('offset', String(params.offset))
     return get<RoomAgentCandidatesResponse>(`/rooms/${roomId}/agent-candidates?${q}`)
   },
-  addAgent: (roomId: string, body: RoomAgentAddRequest) =>
-    post<RoomAgentMutationResponse>(`/rooms/${roomId}/agents`, body),
-  addAgentPreset: (roomId: string, body: RoomAgentPresetRequest, idempotencyKey?: string) =>
-    post<RoomAgentMutationResponse>(`/rooms/${roomId}/agent-presets`, body, { idempotencyKey }),
-  removeAgent: (roomId: string, agentId: string) =>
-    del<RoomAgentMutationResponse>(`/rooms/${roomId}/agents/${agentId}`),
+  // Host restore/archive happen after the roster commits; the receipt says whether a restore was requested.
+  addAgent: async (roomId: string, body: RoomAgentAddRequest, key: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse> =>
+    roomMutationAfter(await commandReceipt('room.agent.add', { ...body, room_id: roomId }, key)),
+  addAgentPreset: async (roomId: string, body: RoomAgentPresetRequest, idempotencyKey: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse> =>
+    roomMutationAfter(await commandReceipt('room.agent.add_preset', { ...body, room_id: roomId }, idempotencyKey)),
+  removeAgent: async (roomId: string, agentId: string, key: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse> => {
+    const receipt = await commandReceipt('room.agent.remove', { room_id: roomId, agent_id: agentId }, key)
+    return roomMutationAfter(receipt, {}, receipt.revoked_grant_count)
+  },
   invitations: (roomId: string, params: { limit?: number; offset?: number } = {}) => {
     const q = new URLSearchParams()
     if (params.limit !== undefined) q.set('limit', String(params.limit))
     if (params.offset !== undefined) q.set('offset', String(params.offset))
     return get<RoomInvitationListResponse>(`/rooms/${roomId}/invitations?${q}`)
   },
-  inviteUser: (roomId: string, body: RoomInvitationCreateRequest) =>
-    post<RoomInvitation>(`/rooms/${roomId}/invitations`, body),
-  decideInvitation: (roomId: string, invitationId: string, body: RoomInvitationDecisionRequest) =>
-    post<RoomInvitation>(`/rooms/${roomId}/invitations/${invitationId}/decision`, body),
-  removeUser: (roomId: string, userId: string) =>
-    del<RoomAgentMutationResponse>(`/rooms/${roomId}/members/${userId}`),
-  transferOwner: (roomId: string, body: RoomOwnerTransferRequest) =>
-    post<RoomAgentMutationResponse>(`/rooms/${roomId}/owner-transfer`, body),
-  claimOwner: (roomId: string) =>
-    post<RoomAgentMutationResponse>(`/rooms/${roomId}/owner-claim`, {}),
-  resetAgentContext: (roomId: string, agentId: string, sessionId?: string, options: RequestOptions = {}) =>
-    post<RoomAgentMutationResponse>(`/rooms/${roomId}/agents/${agentId}/reset-context`, sessionId ? { session_id: sessionId } : {}, options),
-  summarizeAgentContext: (roomId: string, agentId: string) =>
-    post<RoomAgentMutationResponse>(`/rooms/${roomId}/agents/${agentId}/summarize-context`, {}),
-  restartFromSummary: (roomId: string, agentId: string) =>
-    post<RoomAgentMutationResponse>(`/rooms/${roomId}/agents/${agentId}/restart-from-summary`, {}),
+  inviteUser: async (roomId: string, body: RoomInvitationCreateRequest, key: string = crypto.randomUUID()) =>
+    roomInvitationAfter(await commandReceipt('room.invitation.create', { ...body, room_id: roomId }, key)),
+  decideInvitation: async (roomId: string, invitationId: string, body: RoomInvitationDecisionRequest, key: string = crypto.randomUUID()) =>
+    roomInvitationAfter(await commandReceipt('room.invitation.decide', { ...body, room_id: roomId, invitation_id: invitationId }, key)),
+  removeUser: async (roomId: string, userId: string, key: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse | null> => {
+    const receipt = await commandReceipt('room.member.remove', { room_id: roomId, user_id: userId }, key)
+    // Leaving may end the person's own access; the roster is then simply no longer theirs to read.
+    return roomMutationAfter(receipt).catch(() => null)
+  },
+  transferOwner: async (roomId: string, body: RoomOwnerTransferRequest, key: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse> =>
+    roomMutationAfter(await commandReceipt('room.owner.transfer', { ...body, room_id: roomId }, key)),
+  claimOwner: async (roomId: string, key: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse> =>
+    roomMutationAfter(await commandReceipt('room.owner.claim', { room_id: roomId }, key)),
+  resetAgentContext: async (roomId: string, agentId: string, sessionId?: string, options: RequestOptions = {}): Promise<RoomAgentMutationResponse> =>
+    roomMutationAfter(await commandReceipt('room.agent.reset_context', { room_id: roomId, agent_id: agentId, ...(sessionId ? { session_id: sessionId } : {}) }, options.idempotencyKey ?? crypto.randomUUID(), options), options),
+  summarizeAgentContext: async (roomId: string, agentId: string, key: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse> =>
+    roomMutationAfter(await commandReceipt('room.agent.summarize_context', { room_id: roomId, agent_id: agentId }, key)),
+  restartFromSummary: async (roomId: string, agentId: string, key: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse> =>
+    roomMutationAfter(await commandReceipt('room.agent.restart_from_summary', { room_id: roomId, agent_id: agentId }, key)),
   conversations: (roomId: string, params: { limit?: number; offset?: number } = {}, options: RequestOptions = {}) => {
     const q = new URLSearchParams()
     if (params.limit !== undefined) q.set('limit', String(params.limit))
     if (params.offset !== undefined) q.set('offset', String(params.offset))
     return get<Page<RoomConversation>>(`/rooms/${roomId}/conversations?${q}`, options)
   },
-  createConversation: (roomId: string, options: RequestOptions = {}) =>
-    post<RoomConversation>(`/rooms/${roomId}/conversations`, {}, options),
+  createConversation: async (roomId: string, options: RequestOptions = {}): Promise<RoomConversation> => {
+    const receipt = await commandReceipt('room.conversation.create', { room_id: roomId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    const page = await roomsApi.messages(receipt.room_id, receipt.session_id, { limit: 1 }, { ...options, spaceId: receipt.space_id })
+    if (!page.conversation) throw new Error('Room conversation no longer available')
+    return page.conversation
+  },
   messages: (
     roomId: string,
     sessionId: string,
@@ -1600,55 +1697,68 @@ export const roomsApi = {
     }>(`/rooms/${roomId}/conversations/${sessionId}/messages?${q}`, options)
     )
   },
-  sendMessage: (
+  sendMessage: async (
     roomId: string,
     sessionId: string,
     body: Omit<SendRoomMessageRequest, 'input_parts' | 'queue'> & { input_parts?: ConversationInputPart[]; queue?: boolean }, options: RequestOptions = {},
-  ) =>
-    post<{
-      message: RoomMessage
-      conversation: RoomConversation
-      task_group_ids: string[]
-      run_ids: string[]
-    } | QueuedRoomMessageResponse>(`/rooms/${roomId}/conversations/${sessionId}/messages`, body, options),
+  ): Promise<{ message: RoomMessage; conversation: RoomConversation; task_group_ids: string[]; run_ids: string[] } | QueuedRoomMessageResponse> => {
+    const receipt = await commandReceipt('room.message.send', { ...body, room_id: roomId, session_id: sessionId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    if (receipt.status === 'queued') {
+      // Queued messages are listed whole with any page; only one item is needed.
+      const page = await roomsApi.messages(receipt.room_id, receipt.session_id, { limit: 1 }, { ...options, spaceId: receipt.space_id })
+      const queued = page.queued?.find(item => item.id === receipt.queued_id)
+      if (!queued) throw new Error('Queued message no longer available')
+      return { queued }
+    }
+    return { ...await turnAfter(receipt, options), task_group_ids: receipt.task_group_ids, run_ids: receipt.run_ids }
+  },
   /** Takes back one's own message that is still waiting for the turn. */
-  withdrawQueuedMessage: (roomId: string, sessionId: string, queuedId: string, options: RequestOptions = {}) =>
-    del<QueuedRoomMessage>(`/rooms/${roomId}/conversations/${sessionId}/queued-messages/${encodeURIComponent(queuedId)}`, options),
-  retryMessage: (roomId: string, sessionId: string, runId: string, options: RequestOptions = {}) =>
-    post<ConversationRetryResponse>(`/rooms/${roomId}/conversations/${sessionId}/retry`, { run_id: runId }, {
-      ...options,
-      idempotencyKey: options.idempotencyKey ?? crypto.randomUUID(),
-    }),
-  continueAfterProposal: (
+  withdrawQueuedMessage: async (roomId: string, sessionId: string, queuedId: string, options: RequestOptions = {}) => {
+    const receipt = await commandReceipt('room.message.withdraw_queued', { room_id: roomId, session_id: sessionId, queued_id: queuedId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    return { id: receipt.queued_id }
+  },
+  retryMessage: async (roomId: string, sessionId: string, runId: string, options: RequestOptions = {}): Promise<Omit<ConversationRetryResponse, 'reused'>> => {
+    const { space_id: _space, room_id: _room, ...retry } = await commandReceipt('room.message.retry', { room_id: roomId, session_id: sessionId, run_id: runId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    return retry
+  },
+  continueAfterProposal: async (
     roomId: string,
     sessionId: string,
     body: ContinueRoomAfterProposalRequest, options: RequestOptions = {},
-  ) => post<{
-    message: RoomMessage
-    conversation: RoomConversation
-    task_group_ids: string[]
-    run_ids: string[]
-  }>(`/rooms/${roomId}/conversations/${sessionId}/proposal-continuations`, body, options),
+  ): Promise<{ message: RoomMessage; conversation: RoomConversation; task_group_ids: string[]; run_ids: string[] }> => {
+    const receipt = await commandReceipt('room.message.continue_after_proposal', { ...body, room_id: roomId, session_id: sessionId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    return { ...await turnAfter(receipt, options), task_group_ids: receipt.task_group_ids, run_ids: receipt.run_ids }
+  },
   /** Posts the topic as the person's message and dispatches the first wave; 409 while another discussion is active. */
-  openDiscussion: (roomId: string, sessionId: string, body: OpenRoomDiscussionRequest, options: RequestOptions = {}) =>
-    post<OpenRoomDiscussionResponse>(`/rooms/${roomId}/conversations/${sessionId}/discussions`, body, options),
+  openDiscussion: async (roomId: string, sessionId: string, body: OpenRoomDiscussionRequest, options: RequestOptions = {}): Promise<OpenRoomDiscussionResponse> => {
+    const receipt = await commandReceipt('room.discussion.start', { ...body, room_id: roomId, session_id: sessionId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    const scoped = { ...options, spaceId: receipt.space_id }
+    const [turn, detail] = await Promise.all([turnAfter(receipt, options), roomsApi.discussion(receipt.room_id, receipt.session_id, receipt.discussion_id, scoped)])
+    return { ...turn, task_group_ids: receipt.task_group_ids, run_ids: receipt.run_ids, discussion: detail.discussion }
+  },
   /** Newest first. */
   discussions: (roomId: string, sessionId: string, options: RequestOptions = {}) =>
     get<RoomDiscussionListResponse>(`/rooms/${roomId}/conversations/${sessionId}/discussions`, options),
   discussion: (roomId: string, sessionId: string, discussionId: string, options: RequestOptions = {}) =>
     get<RoomDiscussionDetail>(`/rooms/${roomId}/conversations/${sessionId}/discussions/${discussionId}`, options),
   /** No further waves; the Manager then writes the conclusion. */
-  stopDiscussion: (roomId: string, sessionId: string, discussionId: string, options: RequestOptions = {}) =>
-    post<RoomDiscussion>(`/rooms/${roomId}/conversations/${sessionId}/discussions/${discussionId}/stop`, {}, options),
+  stopDiscussion: async (roomId: string, sessionId: string, discussionId: string, options: RequestOptions = {}): Promise<RoomDiscussion> => {
+    const receipt = await commandReceipt('room.discussion.stop', { room_id: roomId, session_id: sessionId, discussion_id: discussionId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    return (await roomsApi.discussion(receipt.room_id, receipt.session_id, receipt.discussion_id, { ...options, spaceId: receipt.space_id })).discussion
+  },
   /** Adds rounds; on an emergent discussion held at its cap this also opens it. */
-  extendDiscussion: (roomId: string, sessionId: string, discussionId: string, body: ExtendRoomDiscussionRequest, options: RequestOptions = {}) =>
-    post<RoomDiscussion>(`/rooms/${roomId}/conversations/${sessionId}/discussions/${discussionId}/extend`, body, options),
+  extendDiscussion: async (roomId: string, sessionId: string, discussionId: string, body: ExtendRoomDiscussionRequest, options: RequestOptions = {}): Promise<RoomDiscussion> => {
+    const receipt = await commandReceipt('room.discussion.extend', { ...body, room_id: roomId, session_id: sessionId, discussion_id: discussionId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    return (await roomsApi.discussion(receipt.room_id, receipt.session_id, receipt.discussion_id, { ...options, spaceId: receipt.space_id })).discussion
+  },
   /** The Space's quota lines, the windows of the logins this conversation's Agents use, and what is held. */
   conversationQuota: (roomId: string, sessionId: string, options: RequestOptions = {}) =>
     get<RoomConversationQuota>(`/rooms/${roomId}/conversations/${sessionId}/quota`, options),
   /** "Continue anyway": admits the Agent-triggered turns held at the reserve line (Project writer). */
-  continuePastQuota: (roomId: string, sessionId: string, options: RequestOptions = {}) =>
-    post<RoomConversationQuota>(`/rooms/${roomId}/conversations/${sessionId}/quota/continue`, {}, options),
+  continuePastQuota: async (roomId: string, sessionId: string, options: RequestOptions = {}): Promise<RoomConversationQuota> => {
+    const receipt = await commandReceipt('room.quota.continue', { room_id: roomId, session_id: sessionId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    return roomsApi.conversationQuota(receipt.room_id, receipt.session_id, { ...options, spaceId: receipt.space_id })
+  },
 }
 
 // ── Personal Memory Grants ─────────────────────────────────────────────────
@@ -1986,6 +2096,11 @@ export type SaveWorkflowFromRunResult =
   | { status: 'draft_saved'; asset_id: string; version_id: string; version_status: 'draft'; risk_level: string }
 
 // ── Agents ────────────────────────────────────────────────────────────────
+/** Current Profile view after a Profile command; the receipt carries only identities. */
+async function runtimeProfile(receipt:{agent_id:string;profile_id:string;space_id:string}):Promise<AgentRuntimeProfileOut>{
+  const profiles=await get<AgentRuntimeProfileOut[]>(`/agents/${encodeURIComponent(receipt.agent_id)}/runtime-profiles`,{spaceId:receipt.space_id})
+  const profile=profiles.find(row=>row.id===receipt.profile_id);if(!profile)throw new Error('Runtime profile no longer available');return profile
+}
 export const agentsApi = {
   list: (params: Record<string, string> = {}, options: { spaceId?: string } = {}) =>
     get<AgentOut[]>('/agents?' + new URLSearchParams(params), { spaceId: options.spaceId }),
@@ -1993,27 +2108,40 @@ export const agentsApi = {
   /** The managed Assistant instance for a scope: the Space's own, or a Project's (null before its first Room message). */
   getSystemAssistant: (projectId?: string | null) =>
     get<{ assistant: AgentOut | null }>(`/agents/system-assistant${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
-  create: (data: AgentCreateBody) => post<AgentOut>('/agents', data),
-  update: (agentId: string, data: AgentUpdateBody) => patch<AgentOut>(`/agents/${agentId}`, data),
+  // One keyed command per call (no retries); the receipt names the Agent, then the current view is read.
+  create: async (data: AgentCreateBody, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('agent.create', data, key)
+    return get<AgentOut>(`/agents/${encodeURIComponent(receipt.agent_id)}`, { spaceId: receipt.space_id })
+  },
+  update: async (agentId: string, data: AgentUpdateBody, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('agent.update', { ...data, agent_id: agentId }, key)
+    return get<AgentOut>(`/agents/${encodeURIComponent(receipt.agent_id)}`, { spaceId: receipt.space_id })
+  },
   // Config edit: appends a new immutable AgentVersion and repoints current_version_id.
-  updateConfig: (agentId: string, data: AgentConfigUpdateBody) =>
-    post<AgentOut>(`/agents/${agentId}/config`, data),
+  updateConfig: async (agentId: string, data: AgentConfigUpdateBody, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('agent.config.update', { ...data, agent_id: agentId }, key)
+    return get<AgentOut>(`/agents/${encodeURIComponent(receipt.agent_id)}`, { spaceId: receipt.space_id })
+  },
   listRuntimeProfiles: (agentId: string, options: RequestOptions = {}) =>
     get<AgentRuntimeProfileOut[]>(`/agents/${agentId}/runtime-profiles`, options),
   getSpaceRuntimeDefault: () => get<SpaceAgentRuntimeDefaultOut | null>('/agents/runtime-default'),
-  setSpaceRuntimeDefault: (data: SpaceAgentRuntimeDefaultWrite) =>
-    put<SpaceAgentRuntimeDefaultOut>('/agents/runtime-default', data),
-  createRuntimeProfile: (agentId: string, data: AgentRuntimeProfileCreateBody) =>
-    post<AgentRuntimeProfileOut>(`/agents/${agentId}/runtime-profiles`, data),
-  resolveHostRuntimeProfile: (agentId: string, data: {
+  setSpaceRuntimeDefault: async (data: SpaceAgentRuntimeDefaultWrite, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('agent.runtime_default.set', data, key)
+    const value = await get<SpaceAgentRuntimeDefaultOut | null>('/agents/runtime-default', { spaceId: receipt.space_id })
+    if (!value) throw new Error('Runtime default no longer available')
+    return value
+  },
+  createRuntimeProfile: async (agentId: string, data: AgentRuntimeProfileCreateBody, key: string = crypto.randomUUID()) =>
+    runtimeProfile(await commandReceipt('agent.runtime_profile.create', { ...data, agent_id: agentId }, key)),
+  resolveHostRuntimeProfile: async (agentId: string, data: {
     execution_host_id: string
     workspace_location_id: string | null
     workspace_mode: 'location' | 'managed'
     runtime_key: string
     runtime_installation: string
-  }) => post<AgentRuntimeProfileOut>(`/agents/${agentId}/runtime-profiles/resolve-host-target`, data),
-  updateRuntimeProfile: (agentId: string, profileId: string, data: AgentRuntimeProfileUpdateBody) =>
-    patch<AgentRuntimeProfileOut>(`/agents/${agentId}/runtime-profiles/${profileId}`, data),
+  }, key: string = crypto.randomUUID()) => runtimeProfile(await commandReceipt('agent.runtime_profile.ensure_host', { ...data, agent_id: agentId }, key)),
+  updateRuntimeProfile: async (agentId: string, profileId: string, data: AgentRuntimeProfileUpdateBody, key: string = crypto.randomUUID()) =>
+    runtimeProfile(await commandReceipt('agent.runtime_profile.update', { ...data, agent_id: agentId, profile_id: profileId }, key)),
   currentVersion: (agentId: string) => get<AgentVersionOut>(`/agents/${agentId}/current-version`),
   conversationBackends: (
     agentId: string,
@@ -2025,26 +2153,34 @@ export const agentsApi = {
         : ''}`,
       { spaceId: options.spaceId, signal: options.signal },
     ),
-  saveConversationSessionConfig: (
+  saveConversationSessionConfig: async (
     agentId: string,
-    data: { session_id: string; runtime_profile_id: string; session_config: NonNullable<ConversationBackendCatalog['session_config']> },
+    data: { session_id: string; runtime_profile_id: string; session_config: NonNullable<ConversationBackendCatalog['session_config']>; allow_quota_model_switch?: boolean },
     options: RequestOptions = {},
-  ) => put<{ session_config: NonNullable<ConversationBackendCatalog['session_config']> }>(
-    `/agents/${agentId}/conversation-session-config`, data, options,
-  ),
+  ) => {
+    const receipt = await commandReceipt('conversation.session_config.save', { ...data, agent_id: agentId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    const catalog = await get<ConversationBackendCatalog>(`/agents/${encodeURIComponent(agentId)}/conversation-backends?session_id=${encodeURIComponent(receipt.session_id)}`, { spaceId: receipt.space_id, signal: options.signal })
+    return { session_config: catalog.session_config ?? [] }
+  },
   // Assistant preferences (soft UI/context layer — never edits prompt or hard policy).
   getAssistantSettings: () => get<SpaceAssistantSettingsOut>('/agents/default-assistant/settings'),
-  updateAssistantSettings: (data: SpaceAssistantSettingsUpdate) =>
-    patch<SpaceAssistantSettingsOut>('/agents/default-assistant/settings', data),
+  updateAssistantSettings: async (data: SpaceAssistantSettingsUpdate, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('agent.assistant_settings.update', data, key)
+    return get<SpaceAssistantSettingsOut>(`/agents/default-assistant/settings${receipt.project_id ? `?project_id=${encodeURIComponent(receipt.project_id)}` : ''}`, { spaceId: receipt.space_id })
+  },
   listVersions: (agentId: string) => get<AgentVersionOut[]>(`/agents/${agentId}/versions`),
   getVersion: (agentId: string, versionId: string) =>
     get<AgentVersionOut>(`/agents/${agentId}/versions/${versionId}`),
-  restoreVersion: (agentId: string, versionId: string) =>
-    post<AgentOut>(`/agents/${agentId}/versions/${versionId}/restore`),
+  restoreVersion: async (agentId: string, versionId: string, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('agent.version.restore', { agent_id: agentId, version_id: versionId }, key)
+    return get<AgentOut>(`/agents/${encodeURIComponent(receipt.agent_id)}`, { spaceId: receipt.space_id })
+  },
   listProposals: (agentId: string, status = 'pending') =>
     get<Proposal[]>(`/agents/${agentId}/proposals?status=${encodeURIComponent(status)}`),
-  createRun: (agentId: string, body: RunCreateBody = {}) =>
-    post<Run>(`/agents/${agentId}/runs`, body),
+  createRun: async (agentId: string, body: RunCreateBody = {}, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('agent.run.create', { ...body, agent_id: agentId }, key)
+    return get<Run>(`/runs/${encodeURIComponent(receipt.run_id)}`, { spaceId: receipt.space_id })
+  },
   // Queue the Chat Run, then subscribe to its canonical lifecycle stream.
   chat: (
     agentId: string,
@@ -2061,14 +2197,16 @@ export const agentsApi = {
       onAccepted?: (accepted: ChatTurnAccepted) => void
       onTurn?: (turn: RunTurn) => void
     } = {},
-  ) => postChatTurn(`/agents/${agentId}/chat`, body, options),
-  retryConversation: (agentId: string, runId: string, options: RequestOptions = {}) =>
-    post<ConversationRetryResponse>(`/agents/${encodeURIComponent(agentId)}/chat/retry`, { run_id: runId }, {
-      ...options,
-      idempotencyKey: options.idempotencyKey ?? crypto.randomUUID(),
-    }),
-  resetContext: (agentId: string, options: RequestOptions = {}) =>
-    post<{ agent_id: string; session_reset: boolean; thread_id: string | null; workspace_mode: 'location' | 'managed' | null }>(`/agents/${agentId}/chat/reset-context`, {}, options),
+  ) => postChatTurn(agentId, body, options),
+  // A same-key replay returns the same receipt; the transport no longer reports a separate `reused` flag.
+  retryConversation: async (agentId: string, runId: string, options: RequestOptions = {}): Promise<Omit<ConversationRetryResponse, 'reused'>> => {
+    const { space_id: _space, ...retry } = await commandReceipt('agent.chat.retry', { agent_id: agentId, run_id: runId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    return retry
+  },
+  resetContext: async (agentId: string, options: RequestOptions = {}) => {
+    const receipt = await commandReceipt('agent.chat.reset_context', { agent_id: agentId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    return { agent_id: receipt.agent_id, session_reset: receipt.session_reset, thread_id: receipt.thread_id, workspace_mode: receipt.workspace_mode }
+  },
   listRuns:       (limit = 50)        => get<Run[]>(`/agents/runs?limit=${limit}`),
   getRun:         (runId: string, options: RequestOptions = {})     => get<Run>(`/runs/${runId}`, options),
   listRunsForAgent:  (agentId: string, options: RequestOptions = {})   => get<Run[]>(`/agents/${agentId}/runs`, options),
@@ -2083,8 +2221,10 @@ export const agentTemplatesApi = {
     get<AgentTemplateVersionOut[]>(`/agent-templates/${templateId}/versions`),
   getVersion: (templateId: string, versionId: string) =>
     get<AgentTemplateVersionOut>(`/agent-templates/${templateId}/versions/${versionId}`),
-  createAgent: (templateId: string, body: CreateAgentFromTemplateBody = {}) =>
-    post<AgentOut>(`/agent-templates/${templateId}/agents`, body),
+  createAgent: async (templateId: string, body: CreateAgentFromTemplateBody = {}, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('agent.template.instantiate', { ...body, template_id: templateId }, key)
+    return get<AgentOut>(`/agents/${encodeURIComponent(receipt.agent_id)}`, { spaceId: receipt.space_id })
+  },
 }
 
 // ── Automations ───────────────────────────────────────────────────────────
@@ -2126,6 +2266,30 @@ async function readPrivateFolderDraft(receipt:{id:string;space_id:string;project
   if(current.version!==version){const error=new ApiRequestError('The draft changed in another tab',409,'operation_conflict',{error:{code:'operation_conflict',metadata:{code:'draft_version_conflict',current_draft_id:current.id,current_version:current.version}}});throw Object.assign(error,{currentDraft:current});}
   return current;
 }
+/** Read-only polling of one requester-owned Job. Never resubmits its command. */
+async function waitForJobResult<T>(receipt:{job_id:string;space_id:string},label:string):Promise<T>{
+  const started=Date.now(),authGeneration=_authContextGeneration
+  for(;;){
+    if(authGeneration!==_authContextGeneration)throw new ApiRequestError(`The session changed while the ${label} was running`,401,'authentication_required')
+    const job=await get<{status:string;result:T|null}>(`/jobs/${encodeURIComponent(receipt.job_id)}`,{spaceId:receipt.space_id})
+    if(job.status==='completed'&&job.result)return job.result
+    if(job.status==='failed'||job.status==='cancelled')throw new Error(`${label} did not complete`)
+    if(Date.now()-started>180000)throw new Error(`${label} is still running; refresh later`)
+    await new Promise(resolve=>setTimeout(resolve,1000))
+  }
+}
+/** Read-only polling of one queued provider Run. Never resubmits its command. */
+async function waitForProviderRun(receipt:{run_id:string;space_id:string},label:string):Promise<void>{
+  const started=Date.now(),authGeneration=_authContextGeneration
+  for(;;){
+    if(authGeneration!==_authContextGeneration)throw new ApiRequestError(`The session changed while the ${label} was running`,401,'authentication_required')
+    const run=await get<Run>(`/runs/${encodeURIComponent(receipt.run_id)}`,{spaceId:receipt.space_id})
+    if(run.status==='succeeded'||run.status==='degraded')return
+    if(['failed','cancelled','orphaned'].includes(run.status))throw new Error(`${label} did not complete`)
+    if(Date.now()-started>180000)throw new Error(`${label} is still running; refresh later`)
+    await new Promise(resolve=>setTimeout(resolve,1000))
+  }
+}
 /** Read-only polling of one durable Folder request. Never resubmits its command. */
 async function waitForFolderIo(receipt:import('@rainver/protocol').OperationOutput<'project.folder.scan'>):Promise<import('@rainver/protocol').ProjectFolderIoStatus>{
   const started=Date.now(),authGeneration=_authContextGeneration;
@@ -2144,13 +2308,90 @@ async function waitForFolderIo(receipt:import('@rainver/protocol').OperationOutp
     await new Promise(resolve=>setTimeout(resolve,250));
   }
 }
+const hostPath=(hostId:string)=>`/hosts/${encodeURIComponent(hostId)}`
+/**
+ * One keyed Host command at its retained URL (`.agent/modules/hosts.md` "Host
+ * commands"): the core answers a receipt, the Host acts after commit, and only
+ * the owner-only status read releases the outcome. Read-only polling; the
+ * command is never resubmitted. `needs_attention` means the Host may have
+ * acted and is never reported as success.
+ */
+async function hostCommand<T>(method:'POST'|'PUT'|'PATCH'|'DELETE',path:string,body:unknown,label:string,key:string=crypto.randomUUID()):Promise<T>{
+  const receipt=await operationAt<import('@rainver/protocol').HostCommandReceipt>(method,path,body,key)
+  const started=Date.now(),authGeneration=_authContextGeneration
+  for(let delay=500;;delay=Math.min(delay*2,3000)){
+    if(authGeneration!==_authContextGeneration)throw new ApiRequestError(`The session changed while the ${label} was running`,401,'authentication_required')
+    let current:import('@rainver/protocol').HostCommandStatus
+    try{
+      current=await get<import('@rainver/protocol').HostCommandStatus>(`${hostPath(receipt.host_id)}/commands/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id})
+    }catch(error){
+      // A lost read is not the command's outcome: keep polling through a network blip or a 5xx; a
+      // refused read (signed out, no longer the person's) ends it.
+      if(error instanceof ApiRequestError&&error.status<500)throw error
+      if(Date.now()-started>25*60*1000)throw error
+      await new Promise(resolve=>setTimeout(resolve,delay))
+      continue
+    }
+    if(current.status==='succeeded')return current.result as T
+    if(current.status==='failed'||current.status==='needs_attention'){
+      const attention=current.status==='needs_attention'
+      const detail=current.error?.detail??current.error?.code??null
+      const message=attention?`${label}: the Host may have acted, but its outcome is unknown${detail?` (${detail})`:''}. Check the Host's current state before repeating.`:`${label} did not complete${detail?`: ${detail}`:''}`
+      // `result` is present only when the command committed part of its work (a history import that wrote some sessions).
+      throw new ApiRequestError(message,409,'operation_conflict',{error:{code:'operation_conflict',metadata:{code:current.error?.code??null,command_id:receipt.id,job_id:receipt.job_id,status:current.status,result:current.result??null}}})
+    }
+    // A Host may take its full install timeout; past that the command is still durable and keeps running.
+    if(Date.now()-started>25*60*1000)throw new ApiRequestError(`${label} is still running on the Host; check again later`,503,'operation_temporarily_unavailable',{error:{code:'operation_temporarily_unavailable',metadata:{command_id:receipt.id,job_id:receipt.job_id}}})
+    await new Promise(resolve=>setTimeout(resolve,delay))
+  }
+}
+/**
+ * A system settings / tool configuration command whose effect runs after
+ * commit (`provider.test`, plan usage and subscription quota reads, plugin
+ * installation, a manual backup, a webhook send): submit once with its key,
+ * then read exactly that command's status until it settles. Never resubmits;
+ * an unknown outcome is reported as such, never as success.
+ */
+async function systemCommand<T>(method:'POST'|'PUT'|'PATCH'|'DELETE',path:string,body:unknown,label:string,key:string=crypto.randomUUID(),timeoutMs=10*60*1000):Promise<T>{
+  const receipt=await operationAt<import('@rainver/protocol').SystemCommandReceipt>(method,path,body,key)
+  const started=Date.now(),authGeneration=_authContextGeneration
+  for(let delay=400;;delay=Math.min(delay*2,3000)){
+    if(authGeneration!==_authContextGeneration)throw new ApiRequestError(`The session changed while the ${label} was running`,401,'authentication_required')
+    let current:import('@rainver/protocol').SystemCommandStatus
+    try{
+      current=await get<import('@rainver/protocol').SystemCommandStatus>(`/system/commands/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id})
+    }catch(error){
+      // A lost read is not the command's outcome: keep reading through a network blip or a 5xx;
+      // a refused read (signed out, no longer the person's) ends it.
+      if(error instanceof ApiRequestError&&error.status<500)throw error
+      if(Date.now()-started>timeoutMs)throw error
+      await new Promise(resolve=>setTimeout(resolve,delay))
+      continue
+    }
+    if(current.status==='succeeded')return current.result as T
+    if(current.status==='failed'||current.status==='needs_attention'){
+      const attention=current.status==='needs_attention'
+      const detail=current.error?.detail??current.error?.code??null
+      const message=attention?`${label}: it may have run, but its outcome is unknown${detail?` (${detail})`:''}. Check the current state before repeating.`:`${label} did not complete${detail?`: ${detail}`:''}`
+      throw new ApiRequestError(message,409,'operation_conflict',{error:{code:'operation_conflict',metadata:{code:current.error?.code??null,command_id:receipt.id,job_id:receipt.job_id,status:current.status}}})
+    }
+    if(Date.now()-started>timeoutMs)throw new ApiRequestError(`${label} is still running; check again later`,503,'operation_temporarily_unavailable',{error:{code:'operation_temporarily_unavailable',metadata:{command_id:receipt.id,job_id:receipt.job_id}}})
+    await new Promise(resolve=>setTimeout(resolve,delay))
+  }
+}
 /** Isolated Agent workspace progress: read-only projections. Commands stay in Operation Core. */
 export const agentWorkspacesApi = {
   conversationChanges: (sessionId: string, page: { cursor?: string | null } = {}, options?: RequestOptions) =>
     get<import('@rainver/protocol').ConversationWorkspaceChanges>(`/sessions/${encodeURIComponent(sessionId)}/workspace-changes${page.cursor ? `?${new URLSearchParams({ cursor: page.cursor })}` : ''}`, options),
-  list: (projectId: string, params: { view: 'current' | 'history'; cursor?: string | null; limit?: number }, options?: RequestOptions) =>
-    get<import('@rainver/protocol').AgentWorkspacePage>(`/projects/${encodeURIComponent(projectId)}/agent-workspaces?` + new URLSearchParams({
+  /** One entry per conversation × repository: state, latest result and open problems. */
+  groups: (projectId: string, params: { view: 'current' | 'history'; cursor?: string | null; limit?: number }, options?: RequestOptions) =>
+    get<import('@rainver/protocol').AgentWorkspaceGroupPage>(`/projects/${encodeURIComponent(projectId)}/agent-workspace-groups?` + new URLSearchParams({
       view: params.view, limit: String(params.limit ?? 20), ...(params.cursor ? { cursor: params.cursor } : {}),
+    }), options),
+  /** Per-generation rows; `view=all` with `group` is one entry's execution history. */
+  list: (projectId: string, params: { view: 'current' | 'history' | 'all'; group?: string; cursor?: string | null; limit?: number }, options?: RequestOptions) =>
+    get<import('@rainver/protocol').AgentWorkspacePage>(`/projects/${encodeURIComponent(projectId)}/agent-workspaces?` + new URLSearchParams({
+      view: params.view, limit: String(params.limit ?? 20), ...(params.group ? { group: params.group } : {}), ...(params.cursor ? { cursor: params.cursor } : {}),
     }), options),
   detail: (projectId: string, workspaceId: string, page: { cursor?: string | null } = {}, options?: RequestOptions) =>
     get<import('@rainver/protocol').AgentWorkspaceDetail>(`/projects/${encodeURIComponent(projectId)}/agent-workspaces/${encodeURIComponent(workspaceId)}${page.cursor ? `?${new URLSearchParams({ cursor: page.cursor })}` : ''}`, options),
@@ -2249,28 +2490,46 @@ export const ambientSessionsApi = {
     get<{ policy: AmbientImportPolicy; counts: AmbientSessionCount[] }>(
       `/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/offer`,
     ),
-  setPolicy: (locationId: string, body: { runtime_key: string; installation?: string; sync: boolean; default_visibility?: 'private' | 'space_shared'; auto_extract?: boolean }) =>
-    put<AmbientImportPolicy>(`/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/policy`, body),
-  dismiss: (locationId: string) =>
-    post<AmbientImportPolicy>(`/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/dismiss`, {}),
+  setPolicy: async (locationId: string, body: { runtime_key: string; installation?: string; sync: boolean; default_visibility?: 'private' | 'space_shared'; auto_extract?: boolean }, key: string = crypto.randomUUID()): Promise<AmbientImportPolicy> =>
+    (await operationAt<{ policy: AmbientImportPolicy }>('PUT', `/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/policy`, body, key)).policy,
+  dismiss: async (locationId: string, key: string = crypto.randomUUID()): Promise<AmbientImportPolicy> =>
+    (await operationAt<{ policy: AmbientImportPolicy }>('POST', `/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/dismiss`, {}, key)).policy,
   list: (locationId: string) =>
     get<{ sessions: ImportedSession[] }>(`/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions`),
   /** Everything in the Project this viewer may read, gated by the content predicate rather than host ownership. */
   listForProject: (projectId: string) =>
     get<{ sessions: ImportedSession[] }>(`/projects/${encodeURIComponent(projectId)}/imported-sessions`),
-  sync: (locationId: string, body: { runtime_key: string; installation?: string; session_ids?: string[] | null; visibility?: 'private' | 'space_shared' }) =>
-    post<AmbientSyncReport>(`/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/sync`, body),
+  /**
+   * A durable Host command: imports on the Host after commit; the report is released by its status read.
+   * An import that ended in an error still answers its real report (its `error` set, and what it
+   * committed counted), so what was written is never shown as not having happened.
+   */
+  sync: async (locationId: string, body: { runtime_key: string; installation?: string; session_ids?: string[] | null; visibility?: 'private' | 'space_shared' }, key?: string): Promise<AmbientSyncReport> => {
+    try {
+      return await hostCommand<AmbientSyncReport>('POST', `/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/sync`, body, 'History import', key)
+    } catch (error) {
+      const report = error instanceof ApiRequestError
+        ? ((error.payload?.error as { metadata?: { result?: unknown } } | undefined)?.metadata?.result as AmbientSyncReport | null | undefined)
+        : null
+      if (report && typeof report.error === 'string') return report
+      throw error
+    }
+  },
   records: (sessionId: string) =>
     get<{ session: ImportedSession; records: ImportedSessionRecord[]; truncated: boolean }>(`/imported-sessions/${encodeURIComponent(sessionId)}`),
-  setVisibility: (sessionId: string, visibility: 'private' | 'space_shared') =>
-    patch<ImportedSession>(`/imported-sessions/${encodeURIComponent(sessionId)}`, { visibility }),
-  remove: (sessionIds: string[]) =>
-    post<{ deleted: number }>('/imported-sessions/delete', { session_ids: sessionIds }),
+  setVisibility: async (sessionId: string, visibility: 'private' | 'space_shared', key: string = crypto.randomUUID()): Promise<ImportedSession> =>
+    (await operationAt<{ session: ImportedSession }>('PATCH', `/imported-sessions/${encodeURIComponent(sessionId)}`, { visibility }, key)).session,
+  remove: async (sessionIds: string[], key: string = crypto.randomUUID()): Promise<{ deleted: number }> =>
+    ({ deleted: (await operationAt<{ deleted: number }>('POST', '/imported-sessions/delete', { session_ids: sessionIds }, key)).deleted }),
   /** What an extraction would read right now — the count behind the "Extract to Brief" button. */
   pendingExtraction: (projectId: string) =>
     get<{ records: number; sessions: number }>(`/projects/${encodeURIComponent(projectId)}/imported-sessions/extraction`),
-  extract: (projectId: string) =>
-    post<ExtractionOutcome>(`/projects/${encodeURIComponent(projectId)}/imported-sessions/extraction`, {}),
+  /** Claims one batch with an explicit key, then reads its Job until it settles; never resubmits. */
+  extract: async (projectId: string, key:string=crypto.randomUUID()):Promise<ExtractionOutcome> => {
+    const receipt=await commandReceipt('project.imported_sessions.extract',{project_id:projectId},key)
+    if(!receipt.job_id)return {brief_proposal_id:null,memory_packet_proposal_id:null,records_covered:0,sessions_covered:0,decisions:0,facts:0,records_remaining:0}
+    return waitForJobResult<ExtractionOutcome>({job_id:receipt.job_id,space_id:receipt.space_id},'History extraction')
+  },
 }
 
 // ADR 0016: multi-host control center — pairing, dispatch, and the
@@ -2283,43 +2542,46 @@ export const hostsApi = {
   executionTargets: (projectId?: string | null) =>
     get<HostExecutionTargetsResponse>(`/hosts/execution-targets${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
   pairingCode: (name: string) => post<HostPairingCode>('/hosts/pairing-codes', { name }),
-  revoke: (hostId: string) => post<null>(`/hosts/${hostId}/revoke`),
+  revoke: async (hostId: string, key: string = crypto.randomUUID()): Promise<null> => {
+    await operationAt<{ revoked: true }>('POST', `${hostPath(hostId)}/revoke`, {}, key)
+    return null
+  },
   listRuntimeDefinitions: () => get<{ items: HostRuntimeDefinitionOption[] }>('/hosts/runtime-definitions'),
   /** Pinned Server OpenCode provisioning and ACP health state. */
   serverRuntimeProvisioning: (hostId: string) =>
     get<HostRuntimeProvisioningStatus>(`/hosts/${encodeURIComponent(hostId)}/runtime-provisioning/opencode`),
   /** Requeues a failed Server OpenCode install/health check; admins only. */
-  retryServerRuntimeProvisioning: (hostId: string) =>
-    post<{ host_id: string; runtime_key: 'opencode'; state: 'queued' | 'installing'; desired_version: string }>(
-      `/hosts/${encodeURIComponent(hostId)}/runtime-provisioning/opencode/retry`, {}),
+  retryServerRuntimeProvisioning: async (hostId: string, key: string = crypto.randomUUID()) => {
+    const { space_id: _space, ...state } = await operationAt<{ host_id: string; space_id: string; runtime_key: 'opencode'; state: 'queued' | 'installing'; desired_version: string }>(
+      'POST', `${hostPath(hostId)}/runtime-provisioning/opencode/retry`, {}, key)
+    return state
+  },
   /** One level of subdirectory names on an owned host — the daemon answers; lazy and bounded. */
   browseDirectories: (hostId: string, path?: string | null) =>
     post<{ path: string | null; parent: string | null; dirs: string[]; truncated: boolean }>(
       `/hosts/${encodeURIComponent(hostId)}/browse-directories`, { path: path ?? null }),
   /** Registers a directory on an owned host as a Project Location, exactly as the CLI's `workspace add` would. */
-  registerWorkspace: (hostId: string, body: { path: string; project_id: string; name: string }) =>
-    post<{ workspace_id: string | null; display_path: string | null }>(
-      `/hosts/${encodeURIComponent(hostId)}/workspaces`, body),
+  registerWorkspace: (hostId: string, body: { path: string; project_id: string; name: string }, key?: string) =>
+    hostCommand<{ workspace_id: string | null; display_path: string | null }>('POST', `${hostPath(hostId)}/workspaces`, body, 'Location registration', key),
   /** Asks the host's daemon to install a managed copy of a runtime (any ACP adapter with a distribution). */
-  installRuntime: (hostId: string, runtimeKey: string, expectedVersion?: string) =>
-    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}`, expectedVersion ? { expected_version: expectedVersion } : undefined),
-  updateManagedRuntime: (hostId: string, runtimeKey: string) =>
-    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/managed/update`),
-  updateOwnRuntime: (hostId: string, runtimeKey: string) =>
-    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/own/update`),
-  uninstallRuntime: (hostId: string, runtimeKey: string, installation: string) =>
-    del<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}`),
+  installRuntime: (hostId: string, runtimeKey: string, expectedVersion?: string, key?: string) =>
+    hostCommand<RuntimeInstallResult>('POST', `${hostPath(hostId)}/installations/${encodeURIComponent(runtimeKey)}`, expectedVersion ? { expected_version: expectedVersion } : {}, 'Installation', key),
+  updateManagedRuntime: (hostId: string, runtimeKey: string, key?: string) =>
+    hostCommand<RuntimeInstallResult>('POST', `${hostPath(hostId)}/installations/${encodeURIComponent(runtimeKey)}/managed/update`, {}, 'CLI update', key),
+  updateOwnRuntime: (hostId: string, runtimeKey: string, key?: string) =>
+    hostCommand<RuntimeInstallResult>('POST', `${hostPath(hostId)}/installations/${encodeURIComponent(runtimeKey)}/own/update`, {}, 'Own CLI update', key),
+  uninstallRuntime: (hostId: string, runtimeKey: string, installation: string, key?: string) =>
+    hostCommand<RuntimeInstallResult>('DELETE', `${hostPath(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}`, undefined, 'Removal', key),
   /** Undoes the last upgrade of a managed copy, promoting the version the host kept behind it. */
-  rollbackRuntime: (hostId: string, runtimeKey: string) =>
-    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/rollback`),
+  rollbackRuntime: (hostId: string, runtimeKey: string, key?: string) =>
+    hostCommand<RuntimeInstallResult>('POST', `${hostPath(hostId)}/installations/${encodeURIComponent(runtimeKey)}/rollback`, {}, 'Rollback', key),
   /** What has changed about every host's runtimes, newest first. */
   runtimeChanges: () => get<{ items: HostRuntimeChange[] }>('/hosts/runtime-changes'),
   /** The cached subscription quota for each copy on a host; a read, never a probe. */
   usage: (hostId: string) => get<{ items: HostRuntimeUsage[] }>(`/hosts/${encodeURIComponent(hostId)}/usage`),
   /** Asks one copy now, on the host that holds its login. */
-  refreshUsage: (hostId: string, runtimeKey: string, installation: string) =>
-    post<HostRuntimeUsage>(
-      `/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}/usage`),
+  refreshUsage: (hostId: string, runtimeKey: string, installation: string, key?: string) =>
+    hostCommand<HostRuntimeUsage>('POST', `${hostPath(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}/usage`, {}, 'Quota check', key),
   /**
    * The login terminal for one copy of a runtime on a host: the daemon runs
    * the copy's login command on a PTY and this relays it, frame by frame,
@@ -2373,11 +2635,11 @@ export const hostsApi = {
   loginInput: (hostId: string, runtimeKey: string, installation: string, data: string) =>
     post<null>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}/login/input`, { data }),
   /** Empty string clears the override and returns this host to the derived address. */
-  setProviderProxyUrl: (hostId: string, baseUrl: string) =>
-    put<{ host_id: string; provider_proxy_base_url: string | null }>(
-      `/hosts/${encodeURIComponent(hostId)}/provider-proxy-url`,
-      { base_url: baseUrl },
-    ),
+  setProviderProxyUrl: async (hostId: string, baseUrl: string, key: string = crypto.randomUUID()) => {
+    const out = await operationAt<{ host_id: string; space_id: string; provider_proxy_base_url: string | null }>(
+      'PUT', `${hostPath(hostId)}/provider-proxy-url`, { base_url: baseUrl.trim() ? baseUrl : null }, key)
+    return { host_id: out.host_id, provider_proxy_base_url: out.provider_proxy_base_url }
+  },
 }
 
 /** What the account session stream sends to the person who opened it. */
@@ -2393,19 +2655,22 @@ export type OrdinaryAccountStreamEvent =
 export const ordinaryToolsApi = {
   list: (hostId: string, options?: RequestOptions) =>
     get<import('@rainver/protocol').HostOrdinaryToolsResponse>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools`, options),
-  install: (hostId: string, toolId: string) =>
-    post<unknown>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/install`),
-  register: (hostId: string, toolId: string, path: string | null) =>
-    post<unknown>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/register`, path ? { path } : {}),
-  remove: (hostId: string, toolId: string, source: 'managed' | 'registered') =>
-    del<unknown>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}?source=${source}`),
+  install: (hostId: string, toolId: string, key?: string) =>
+    hostCommand<unknown>('POST', `${hostPath(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/install`, {}, 'Tool installation', key),
+  register: (hostId: string, toolId: string, path: string | null, key?: string) =>
+    hostCommand<unknown>('POST', `${hostPath(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/register`, path ? { path } : {}, 'Tool registration', key),
+  remove: (hostId: string, toolId: string, source: 'managed' | 'registered', key?: string) =>
+    hostCommand<unknown>('DELETE', `${hostPath(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}?source=${source}`, undefined, 'Tool removal', key),
   account: (hostId: string, toolId: string, options?: RequestOptions) =>
     get<import('@rainver/protocol').HostOrdinaryAccountResponse>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/account`, options),
   verify: (hostId: string, toolId: string) =>
     post<import('@rainver/protocol').HostOrdinaryAccountResponse>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/account/verify`),
-  logout: (hostId: string, toolId: string) =>
-    post<import('@rainver/protocol').HostOrdinaryAccountResponse & { logout?: { local_cleared: boolean; remote_revocation: 'attempted_unconfirmed' | 'not_applicable' } }>(
-      `/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/account/logout`),
+  /** A durable Host command for the caller's own account; the account is then read back from the Host. */
+  logout: async (hostId: string, toolId: string, key?: string): Promise<import('@rainver/protocol').HostOrdinaryAccountResponse & { logout?: { local_cleared: boolean; remote_revocation: 'attempted_unconfirmed' | 'not_applicable' } }> => {
+    const done = await hostCommand<{ logout?: { local_cleared: boolean; remote_revocation: 'attempted_unconfirmed' | 'not_applicable' } }>('POST', `${hostPath(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/account/logout`, {}, 'Logout', key)
+    const account = await get<import('@rainver/protocol').HostOrdinaryAccountResponse>(`${hostPath(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/account`)
+    return { ...account, ...(done?.logout ? { logout: done.logout } : {}) }
+  },
   cancelSession: (hostId: string, toolId: string) =>
     post<{ cancelled: boolean }>(`/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/account/session/cancel`),
   /**
@@ -2590,8 +2855,11 @@ export interface AcpAgentOut extends AcpRegistryEntry {
 export const acpAgentsApi = {
   registry: () => get<{ items: AcpRegistryEntry[] }>('/acp-agents/registry'),
   list: () => get<{ items: AcpAgentOut[] }>('/acp-agents'),
-  enable: (registryId: string) => put<AcpAgentOut>(`/acp-agents/${encodeURIComponent(registryId)}`, {}),
-  disable: (registryId: string) => del<null>(`/acp-agents/${encodeURIComponent(registryId)}`),
+  enable: (registryId: string, key: string = crypto.randomUUID()) => operationAt<AcpAgentOut>('PUT', `/acp-agents/${encodeURIComponent(registryId)}`, {}, key),
+  disable: async (registryId: string, key: string = crypto.randomUUID()): Promise<null> => {
+    await operationAt('DELETE', `/acp-agents/${encodeURIComponent(registryId)}`, undefined, key)
+    return null
+  },
 }
 
 /** One frame of a runtime copy's login terminal. */
@@ -2620,10 +2888,12 @@ interface RuntimeInstallResult {
 export const networkProfilesApi = {
   list: () => get<NetworkProfileOut[]>('/network-profiles'),
   get: (id: string) => get<NetworkProfileOut>(`/network-profiles/${encodeURIComponent(id)}`),
-  create: (body: NetworkProfileCreateBody) => post<NetworkProfileOut>('/network-profiles', body),
-  patch: (id: string, body: NetworkProfileUpdateBody) =>
-    patch<NetworkProfileOut>(`/network-profiles/${encodeURIComponent(id)}`, body),
-  delete: (id: string) => del<void>(`/network-profiles/${encodeURIComponent(id)}`),
+  create: (body: NetworkProfileCreateBody, key: string = crypto.randomUUID()) => operationAt<NetworkProfileOut>('POST', '/network-profiles', body, key),
+  patch: (id: string, body: NetworkProfileUpdateBody, key: string = crypto.randomUUID()) =>
+    operationAt<NetworkProfileOut>('PATCH', `/network-profiles/${encodeURIComponent(id)}`, body, key),
+  delete: async (id: string, key: string = crypto.randomUUID()): Promise<void> => {
+    await operationAt('DELETE', `/network-profiles/${encodeURIComponent(id)}`, undefined, key)
+  },
 }
 
 // ── Jobs ──────────────────────────────────────────────────────────────────
@@ -2781,12 +3051,12 @@ export const sourcesApi = {
   requestMaterialStorage:(itemId:string,options?:RequestOptions)=>post<{proposal_id?:string;source_name?:string;allowed?:boolean}>(`/sources/items/${itemId}/processing/request_storage`,{},options),
   providers: (options?: RequestOptions) => get<SourceProvider[]>('/sources/providers', options),
   sourceCatalog: () => get<SourceCatalog>('/instance/source-catalog'),
-  updateCatalogProvider: (id: string, body: { status?: 'active' | 'disabled' }) =>
-    patch<SourceCatalogProvider>(`/instance/source-catalog/providers/${id}`, body),
-  updateCatalogConnector: (id: string, body: { status?: 'active' | 'disabled' }) =>
-    patch<SourceConnector>(`/instance/source-catalog/connectors/${id}`, body),
-  updateCatalogMapping: (id: string, body: { status?: 'active' | 'disabled'; priority?: number }) =>
-    patch<SourceCatalogMapping>(`/instance/source-catalog/mappings/${id}`, body),
+  updateCatalogProvider: (id: string, body: { status?: 'active' | 'disabled' }, key: string = crypto.randomUUID()) =>
+    operationAt<SourceCatalogProvider>('PATCH', `/instance/source-catalog/providers/${encodeURIComponent(id)}`, body, key),
+  updateCatalogConnector: (id: string, body: { status?: 'active' | 'disabled' }, key: string = crypto.randomUUID()) =>
+    operationAt<SourceConnector>('PATCH', `/instance/source-catalog/connectors/${encodeURIComponent(id)}`, body, key),
+  updateCatalogMapping: (id: string, body: { status?: 'active' | 'disabled'; priority?: number }, key: string = crypto.randomUUID()) =>
+    operationAt<SourceCatalogMapping>('PATCH', `/instance/source-catalog/mappings/${encodeURIComponent(id)}`, body, key),
   channels: (params: { status?: string; provider_key?: string } = {}, options?: RequestOptions) => {
     const q = new URLSearchParams()
     if (params.status) q.set('status', params.status)
@@ -3185,6 +3455,18 @@ async function currentProjectVersion<T extends {id:string}>(kind:'brief'|'instru
   const row=rows.find(r=>r.id===receipt.id);if(!row)throw new Error('Project version no longer available');return row;
 }
 export const projectsApi = {
+  streamUpdates: async(id:string,onFrame:(frame:import('@rainver/protocol').ProjectUpdateFrame)=>void,options:RequestOptions={})=>{
+    const headers:Record<string,string>={Accept:'text/event-stream','X-Rainver-Space-Id':options.spaceId??_spaceId}
+    if(_apiKey)headers.Authorization=`Bearer ${_apiKey}`
+    const response=await fetch(`${BASE}/projects/${encodeURIComponent(id)}/updates/stream`,{headers,signal:options.signal})
+    if(response.status===401)window.dispatchEvent(new Event('auth:required'))
+    if(!response.ok){await response.body?.cancel().catch(()=>{});throw new ApiRequestError('Project stream unavailable',response.status)}
+    for await(const frame of readServerSentEvents(response)){
+      if(options.signal?.aborted)return
+      onFrame(ProjectUpdateFrameSchema.parse(JSON.parse(frame.data)))
+    }
+    if(!options.signal?.aborted)throw new ApiRequestError('Project stream disconnected',502)
+  },
   members: (id: string) => get<ProjectMember[]>(`/projects/${encodeURIComponent(id)}/members`),
   addMember: async (id: string, body: ProjectMemberInput,key:string=crypto.randomUUID()) => {
     const receipt=await projectManagementCall('project.member.add',{...body,project_id:id},key);
@@ -3213,8 +3495,14 @@ export const projectsApi = {
     const receipt=await projectManagementCall('project.public_summary.save',{project_id:id,...body},key),state=await get<ProjectPublicSummaryEditorState>(`/projects/${encodeURIComponent(receipt.project_id)}/public-summary/editor`,{spaceId:receipt.space_id});
     if(!state.draft)throw new Error('Public summary draft is no longer available');return state.draft;
   },
-  generatePublicSummaryDraft: (id: string) =>
-    post<ProjectPublicSummaryDraft>(`/projects/${encodeURIComponent(id)}/public-summary/draft`, {}),
+  /** Queues one draft generation, then reads its Run until it settles; never resubmits the command. */
+  generatePublicSummaryDraft: async (id: string, key:string=crypto.randomUUID()):Promise<ProjectPublicSummaryDraft> => {
+    const receipt=await commandReceipt('project.public_summary.draft.generate',{project_id:id},key)
+    await waitForProviderRun(receipt,'Public summary draft')
+    const state=await get<ProjectPublicSummaryEditorState>(`/projects/${encodeURIComponent(receipt.project_id)}/public-summary/editor`,{spaceId:receipt.space_id})
+    if(!state.draft||state.draft.generated_by_run_id!==receipt.run_id)throw new Error('The generated draft is no longer the current draft; refresh before publishing')
+    return state.draft
+  },
   /** Approves the named draft version as the space-public snapshot (owner-level). */
   publishPublicSummary: async(id:string,draftVersion:number,key:string=crypto.randomUUID()) => {
     const receipt=await projectManagementCall('project.public_summary.publish',{project_id:id,draft_version:draftVersion},key);return get<ProjectPublicSummary>(`/projects/${encodeURIComponent(receipt.project_id)}/public-summary`,{spaceId:receipt.space_id});
@@ -3267,9 +3555,12 @@ export const projectsApi = {
   sourceHealth: (id: string) => get<SourceHealth[]>(`/projects/${id}/sources/health`),
   createSourceBinding: (id:string,body:Omit<OperationInput<'project.source.bind'>,'project_id'>,key?:string) =>
     sourcesApi.createProjectSourceBinding({...body,project_id:id},key),
-  proposeSourceBinding: (id: string, body: Record<string, unknown>) =>
-    post<{ proposal: Proposal; auto_applied: boolean }>(`/projects/${id}/sources/propose-bind`, body),
-  proposeSourceSetup: (id:string,body:Record<string,unknown>) => post<{operation:ProjectOperation;channel_draft:SourceChannel;source_proposal:Proposal;binding_proposal:Proposal}>(`/projects/${id}/sources/propose-setup`,body),
+  proposeSourceBinding: async (id: string, body: Omit<OperationInput<'project.source.bind.propose'>,'project_id'>, key:string=crypto.randomUUID()) => {
+    const receipt=await commandReceipt('project.source.bind.propose',{...body,project_id:id},key)
+    return {proposal:await get<Proposal>(`/proposals/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id}),auto_applied:false}
+  },
+  proposeSourceSetup: (id:string,body:Omit<OperationInput<'project.source.setup.propose'>,'project_id'>,key:string=crypto.randomUUID()) =>
+    commandReceipt('project.source.setup.propose',{...body,project_id:id},key),
   updateSourceBinding: (id:string,bindingId:string,body:OperationInput<'project.source.update'>['changes'],key?:string) =>
     sourcesApi.updateProjectSourceBinding(id,bindingId,body,key),
   deleteSourceBinding: (id:string,bindingId:string,key?:string) =>
@@ -3321,12 +3612,19 @@ export const projectsApi = {
     const result=await callOperation('project.corpus.update',{project_id:projectId,corpus_item_id:corpusItemId,...data},key);
     if(!('status' in result)||result.status!=='succeeded')throw new Error('Corpus command did not complete');return {id:result.data.id};
   },
-  backfillCorpusFromSources: (id: string) =>
-    post<ProjectCorpusBackfillResult>(`/projects/${id}/corpus/backfill-source-items`),
-  publicSummaryFeedback: (data: RetrievalFeedbackRequest) =>
-    post<RetrievalFeedbackResponse>('/projects/public-summaries/feedback', data),
-  publicSummaryBrief: (data: RetrievalBriefRequest) =>
-    post<RetrievalBriefResponse>('/projects/retrieval/brief', data),
+  backfillCorpusFromSources: async (id: string, key:string=crypto.randomUUID()):Promise<ProjectCorpusBackfillResult> => {
+    const {space_id:_space,...result}=await commandReceipt('project.corpus.backfill_sources',{project_id:id},key);return result
+  },
+  publicSummaryFeedback: async (data: RetrievalFeedbackRequest, key:string=crypto.randomUUID()):Promise<RetrievalFeedbackResponse> => {
+    if(data.object_type!=='project_public_summary')throw new Error('Project summary feedback only accepts public summaries')
+    await commandReceipt('project.summary.feedback',{...data,object_type:'project_public_summary'},key);return {ok:true}
+  },
+  /** Queues one public-summary Context Brief, then reads its Job result; never resubmits. */
+  publicSummaryBrief: async (data: RetrievalBriefRequest, key:string=crypto.randomUUID()):Promise<RetrievalBriefResponse> => {
+    if(data.object_types?.some(type=>type!=='project_public_summary'))throw new Error('Project summary briefs only read public summaries')
+    const receipt=await commandReceipt('project.summary.brief.request',{...data,object_types:data.object_types?['project_public_summary']:undefined},key)
+    return waitForJobResult<RetrievalBriefResponse>(receipt,'Context Brief')
+  },
   getActiveBriefVersion: (id: string) => get<ProjectBriefVersion | null>(`/projects/${id}/brief-versions/active`),
   listBriefVersions: (id: string) => get<ProjectBriefVersion[]>(`/projects/${id}/brief-versions`),
   createBriefVersion: async (id: string, data: Partial<Pick<ProjectBriefVersion,
@@ -3601,16 +3899,17 @@ export const learningApi = {
 }
 
 export const projectResearchApi = {
-  startAcquisition:(project:string,body:Record<string,unknown>)=>post<{status:string;operation_id:string}>(`/projects/${encodeURIComponent(project)}/research/acquisitions`,body),
+  startAcquisition:async(project:string,body:{thread_id:string;idempotency_key:string;intent_note:string;max_items?:number;since?:string},key:string=crypto.randomUUID())=>{
+    const receipt=await commandReceipt('research.acquisition.start',{project_id:project,...body},key);return {status:receipt.status,operation_id:receipt.id}
+  },
   problemOperations:(project:string,thread:string,after?:string)=>get<{items:ProjectOperation[];next_cursor:string|null}>(`/projects/${encodeURIComponent(project)}/inquiry/threads/${encodeURIComponent(thread)}/research-operations${after?`?after_operation_id=${encodeURIComponent(after)}`:''}`),
   result:(project:string,operation:string)=>get<typeof ResearchResultSchema._output>(`/projects/${encodeURIComponent(project)}/research/operations/${encodeURIComponent(operation)}/result`),
-  adoptResult:(project:string,operation:string,body:Record<string,unknown>)=>post<Record<string,unknown>>(`/projects/${encodeURIComponent(project)}/research/operations/${encodeURIComponent(operation)}/adopt-result`,body),
+  adoptResult:(project:string,operation:string,body:Omit<OperationInput<'research.result.adopt'>,'project_id'|'operation_id'>,key:string=crypto.randomUUID())=>
+    commandReceipt('research.result.adopt',{project_id:project,operation_id:operation,...body},key),
   standing: (projectId: string) =>
     get<import('../types/api').ProjectResearchStandingStatus>(`/projects/${encodeURIComponent(projectId)}/research/standing`),
-  actionStandingAdvice: (projectId: string, adviceId: string) =>
-    post<{ advice: import('../types/api').ProjectResearchStandingAdvice; thread: InquiryThread }>(
-      `/projects/${encodeURIComponent(projectId)}/research/standing/advice/${encodeURIComponent(adviceId)}/action`, {},
-    ),
+  actionStandingAdvice: (projectId: string, adviceId: string, key:string=crypto.randomUUID()) =>
+    commandReceipt('research.standing.action',{project_id:projectId,advice_id:adviceId},key),
   dismissStandingAdvice: async (projectId:string,adviceId:string,key:string=crypto.randomUUID())=>{
     const result=await callOperation('research.standing.dismiss',{project_id:projectId,advice_id:adviceId},key);
     if(!('status' in result)||result.status!=='succeeded')throw new Error('Standing advice command did not complete');return result.data;
@@ -3664,13 +3963,33 @@ export const projectResearchApi = {
     if(!('status' in result)||result.status!=='succeeded')throw new Error('Research snapshot command did not complete');
     return get<ProjectOperation>(`/projects/${encodeURIComponent(projectId)}/operations/${encodeURIComponent(result.data.id)}`,{spaceId:result.data.space_id});
   },
-  refineQuestion: (projectId: string, body: {
+  /**
+   * Admits one refinement turn with an explicit key, then reads the durable
+   * session until that turn settles. The panel's own progress polling shows
+   * repair events meanwhile; the command is never resubmitted.
+   */
+  refineQuestion: async (projectId: string, body: {
     thread_id: string
     research_question: string
     message: string
     establish_assessment_baseline?: boolean
     execution: { model_provider_id?: string; model_name?: string }
-  }) => post<ProjectResearchQuestionRefinementResponse>(`/projects/${encodeURIComponent(projectId)}/research/question/refine`, body),
+  }, key:string=crypto.randomUUID()):Promise<ProjectResearchQuestionRefinementResponse> => {
+    const receipt=await commandReceipt('research.question.refine',{project_id:projectId,...body},key)
+    const path=`/projects/${encodeURIComponent(receipt.project_id)}/research/question/assessment?thread_id=${encodeURIComponent(receipt.thread_id)}`
+    const started=Date.now(),authGeneration=_authContextGeneration
+    for(;;){
+      if(authGeneration!==_authContextGeneration)throw new ApiRequestError('The session changed while the question was being assessed',401,'authentication_required')
+      const session=await get<ProjectResearchQuestionAssessmentSession|null>(path,{spaceId:receipt.space_id})
+      const turn=session?.messages.find(message=>message.id===receipt.id)
+      // This receipt's own answer: another concurrent turn may own latest_refinement.
+      const answer=turn?.status==='complete'?session?.messages.find(message=>message.role==='assistant'&&message.turn_index===turn.turn_index&&message.status==='complete')?.refinement:undefined
+      if(session&&answer)return {...answer,assessment_session:session} as ProjectResearchQuestionRefinementResponse
+      if(!turn||turn.status==='failed')throw new Error([...(turn?.processing_events??[])].reverse().find(event=>event.status==='failed')?.message??'Question assessment did not complete')
+      if(Date.now()-started>180000)throw new Error('Question assessment is still running; refresh later')
+      await new Promise(resolve=>setTimeout(resolve,700))
+    }
+  },
   questionAssessment: (projectId: string, threadId: string) =>
     get<ProjectResearchQuestionAssessmentSession | null>(
       `/projects/${encodeURIComponent(projectId)}/research/question/assessment?thread_id=${encodeURIComponent(threadId)}`,
@@ -3701,8 +4020,19 @@ export const projectResearchApi = {
     const rows=await get<ProjectResearchWorkflow[]>(`/projects/${encodeURIComponent(result.data.project_id)}/research/workflow`,{spaceId:result.data.space_id});
     const row=rows.find(r=>r.id===result.data.id);if(!row)throw new Error('Research workflow no longer available');return row;
   },
-  startInitialIntake: (projectId: string, body: ProjectResearchInitialIntakeInput) =>
-    post<ProjectResearchInitialIntakeResponse>(`/projects/${encodeURIComponent(projectId)}/research/initial-intake/start`, body),
+  startInitialIntake: async (projectId: string, body: ProjectResearchInitialIntakeInput, key:string=crypto.randomUUID()):Promise<ProjectResearchInitialIntakeResponse> => {
+    // The server validates query_strategy_id and the remaining intake fields; the draft type keeps them optional.
+    const receipt=await commandReceipt('research.intake.start',{project_id:projectId,...body} as OperationInput<'research.intake.start'>,key)
+    const scope={spaceId:receipt.space_id},project=encodeURIComponent(receipt.project_id)
+    const [operation,workflows,channels,bindings]=await Promise.all([
+      researchOperation(receipt),
+      get<ProjectResearchWorkflow[]>(`/projects/${project}/research/workflow`,scope),
+      receipt.source_channel_ids.length?get<SourceChannel[]>('/sources/channels',scope):Promise.resolve([] as SourceChannel[]),
+      receipt.source_binding_ids.length?get<ProjectSourceBinding[]>(`/projects/${project}/sources/bindings`,scope):Promise.resolve([] as ProjectSourceBinding[]),
+    ])
+    const sourceChannels=channels.filter(c=>receipt.source_channel_ids.includes(c.id)),sourceBindings=bindings.filter(b=>receipt.source_binding_ids.includes(b.id))
+    return {workflow:workflows.find(w=>w.id===receipt.workflow_id)??null,operation,source_channel:sourceChannels[0]??null,source_channels:sourceChannels,source_binding:sourceBindings[0]??null,source_bindings:sourceBindings,status:operation.status==='completed'?'succeeded':operation.status} as ProjectResearchInitialIntakeResponse
+  },
   workflows: (projectId: string) =>
     get<ProjectResearchWorkflow[]>(`/projects/${encodeURIComponent(projectId)}/research/workflow`),
   scanSummaries: (projectId: string, limit = 30) =>
@@ -3715,77 +4045,56 @@ export const projectResearchApi = {
     const rows=await get<ProjectResearchWorkflow[]>(`/projects/${encodeURIComponent(result.data.project_id)}/research/workflow`,{spaceId:result.data.space_id});
     const row=rows.find(r=>r.id===result.data.id);if(!row)throw new Error('Research workflow no longer available');return row;
   },
-  triggerIncremental: (projectId: string, workflowId: string, body: { source_item_ids?: string[]; idempotency_key?: string } = {}) =>
-    post<Record<string, unknown>>(
-      `/projects/${encodeURIComponent(projectId)}/research/workflow/${encodeURIComponent(workflowId)}/trigger`,
-      { run_kind: 'incremental', ...body },
-    ),
-  historyBackfill: (projectId: string, workflowId: string, body: { from: string; to?: string; max_items?: number; idempotency_key?: string }) =>
-    post<Record<string, unknown>>(
-      `/projects/${encodeURIComponent(projectId)}/research/workflow/${encodeURIComponent(workflowId)}/history-backfill`,
-      body,
-    ),
+  /** `body.idempotency_key` is the update's business key; `key` is this request's transport key. */
+  triggerIncremental: async (projectId: string, workflowId: string, body: { source_item_ids?: string[]; idempotency_key?: string } = {}, key:string=crypto.randomUUID()) =>
+    researchOperation(await commandReceipt('research.workflow.trigger',{project_id:projectId,workflow_id:workflowId,...body},key)),
+  historyBackfill: async (projectId: string, workflowId: string, body: { from: string; to?: string; max_items?: number; idempotency_key?: string }, key:string=crypto.randomUUID()) =>
+    researchOperation(await commandReceipt('research.workflow.history_backfill',{project_id:projectId,workflow_id:workflowId,...body},key)),
   updateInitialItemLimit: async (projectId:string,max_items:number,workflowId?:string|null,key:string=crypto.randomUUID())=>{
     const result=await callOperation('research.intake.limit',{project_id:projectId,max_items,workflow_id:workflowId??null},key);
     if(!('status' in result)||result.status!=='succeeded')throw new Error('Research limit command did not complete');
     const rows=await get<ProjectResearchWorkflow[]>(`/projects/${encodeURIComponent(result.data.project_id)}/research/workflow`,{spaceId:result.data.space_id});
     const row=rows.find(r=>r.id===result.data.id);if(!row)throw new Error('Research workflow no longer available');return row;
   },
-  applyQuestionForward: (projectId: string, workflowId: string) =>
-    post<ProjectResearchWorkflow>(
-      `/projects/${encodeURIComponent(projectId)}/research/question/apply-forward`,
-      { workflow_id: workflowId },
-    ),
+  applyQuestionForward: (projectId: string, workflowId: string, key:string=crypto.randomUUID()) =>
+    projectResearchApi.resolveQuestionChange(projectId, workflowId, 'apply_forward', key),
   questionChangeImpact: (projectId: string, workflowId: string) =>
     get<import('../types/api').ProjectResearchQuestionImpact>(
       `/projects/${encodeURIComponent(projectId)}/research/question/impact?workflow_id=${encodeURIComponent(workflowId)}`,
     ),
-  resolveQuestionChange: (projectId: string, workflowId: string, strategy: import('../types/api').ProjectResearchQuestionResolutionStrategy) =>
-    post<{ workflow: import('../types/api').ProjectResearchWorkflow; operation?: ProjectOperation } | import('../types/api').ProjectResearchWorkflow>(
-      `/projects/${encodeURIComponent(projectId)}/research/question/resolve`,
-      { strategy, workflow_id: workflowId },
-    ),
-  retryOperation: (projectId: string, operationId: string) =>
-    post<Record<string, unknown>>(
-      `/projects/${encodeURIComponent(projectId)}/research/operations/${encodeURIComponent(operationId)}/retry`,
-      {},
-    ),
+  resolveQuestionChange: async (projectId: string, workflowId: string, strategy: import('../types/api').ProjectResearchQuestionResolutionStrategy, key:string=crypto.randomUUID()):Promise<{ workflow: ProjectResearchWorkflow; operation?: ProjectOperation }> => {
+    const receipt=await commandReceipt('research.question.resolve',{project_id:projectId,workflow_id:workflowId,strategy},key)
+    const [workflows,operation]=await Promise.all([
+      get<ProjectResearchWorkflow[]>(`/projects/${encodeURIComponent(receipt.project_id)}/research/workflow`,{spaceId:receipt.space_id}),
+      receipt.operation_id?researchOperation({...receipt,id:receipt.operation_id}):Promise.resolve(undefined),
+    ])
+    const workflow=workflows.find(w=>w.id===receipt.id);if(!workflow)throw new Error('Research workflow no longer available')
+    return {workflow,...(operation?{operation}:{})}
+  },
+  retryOperation: async (projectId: string, operationId: string, key:string=crypto.randomUUID()) =>
+    researchOperation(await commandReceipt('research.operation.retry',{project_id:projectId,operation_id:operationId},key)),
   cancelOperation: (projectId: string, operationId: string, reason?: string) =>
     post<{ operation_id: string; status: 'cancelled'; already_terminal: boolean }>(
       `/projects/${encodeURIComponent(projectId)}/research/operations/${encodeURIComponent(operationId)}/cancel`,
       reason ? { reason } : {},
     ),
-  reconcileOperation: (projectId: string, operationId: string) =>
-    post<ProjectOperation & { reconcile_diagnostic?: {
-      operation_id: string
-      bound_run_id: string | null
-      bound_run_status: string | null
-      before_status: string
-      after_status: string
-      after_stage: string
-    } }>(
-      `/projects/${encodeURIComponent(projectId)}/research/operations/${encodeURIComponent(operationId)}/reconcile`,
-      {},
-    ),
-  updateItemLimit: (projectId: string, operationId: string, max_items: number) =>
-    put<Record<string, unknown>>(
-      `/projects/${encodeURIComponent(projectId)}/research/operations/${encodeURIComponent(operationId)}/item-limit`,
-      { max_items },
-    ),
-  rescanBackfill: (projectId: string, operationId: string) =>
-    post<Record<string, unknown>>(
-      `/projects/${encodeURIComponent(projectId)}/research/operations/${encodeURIComponent(operationId)}/rescan`,
-      {},
-    ),
+  reconcileOperation: async (projectId: string, operationId: string, key:string=crypto.randomUUID()) => {
+    const receipt=await commandReceipt('research.operation.reconcile',{project_id:projectId,operation_id:operationId},key)
+    return {...await researchOperation(receipt),reconcile_diagnostic:{before_status:receipt.before_status,after_status:receipt.after_status}}
+  },
+  updateItemLimit: async (projectId: string, operationId: string, max_items: number, key:string=crypto.randomUUID()) =>
+    researchOperation(await commandReceipt('research.operation.item_limit',{project_id:projectId,operation_id:operationId,max_items},key)),
+  rescanBackfill: async (projectId: string, operationId: string, key:string=crypto.randomUUID()) =>
+    researchOperation(await commandReceipt('research.operation.rescan',{project_id:projectId,operation_id:operationId},key)),
   checkpoints: (projectId: string, workflowId: string) =>
     get<ProjectResearchCheckpoint[]>(
       `/projects/${encodeURIComponent(projectId)}/research/workflow/${encodeURIComponent(workflowId)}/checkpoints`,
     ),
-  decideCheckpoint: (projectId: string, workflowId: string, checkpointId: string, body: { decision: string; reason?: string | null }) =>
-    post<ProjectResearchCheckpoint>(
-      `/projects/${encodeURIComponent(projectId)}/research/workflow/${encodeURIComponent(workflowId)}/checkpoints/${encodeURIComponent(checkpointId)}/decide`,
-      body,
-    ),
+  decideCheckpoint: async (projectId: string, workflowId: string, checkpointId: string, body: { decision: 'approved' | 'rejected' | 'waived'; reason?: string | null }, key:string=crypto.randomUUID()) => {
+    const receipt=await commandReceipt('research.checkpoint.decide',{project_id:projectId,workflow_id:workflowId,checkpoint_id:checkpointId,...body},key)
+    const rows=await get<ProjectResearchCheckpoint[]>(`/projects/${encodeURIComponent(receipt.project_id)}/research/workflow/${encodeURIComponent(receipt.workflow_id)}/checkpoints`,{spaceId:receipt.space_id})
+    const row=rows.find(r=>r.id===receipt.id);if(!row)throw new Error('Research checkpoint no longer available');return row
+  },
   screeningCriteria: (projectId: string) =>
     get<ProjectResearchScreeningCriteria>(`/projects/${encodeURIComponent(projectId)}/research/screening-criteria`),
   upsertScreeningCriteria: async (projectId: string, body: Partial<Pick<
@@ -3798,15 +4107,17 @@ export const projectResearchApi = {
   },
   evidenceMatrix: (projectId: string) =>
     get<ProjectResearchEvidenceMatrixItem[]>(`/projects/${encodeURIComponent(projectId)}/research/evidence-matrix`),
-  rebuildEvidenceMatrix: (projectId: string) =>
-    post<ProjectResearchEvidenceMatrixItem[]>(`/projects/${encodeURIComponent(projectId)}/research/evidence-matrix/rebuild`, {}),
+  rebuildEvidenceMatrix: async (projectId: string, key:string=crypto.randomUUID()) => {
+    const receipt=await commandReceipt('project.corpus.backfill_sources',{project_id:projectId},key)
+    return get<ProjectResearchEvidenceMatrixItem[]>(`/projects/${encodeURIComponent(receipt.project_id)}/research/evidence-matrix`,{spaceId:receipt.space_id})
+  },
   reportPage:(project:string,after?:string)=>get<{items:ProjectResearchReport[];next_cursor:string|null}>(`/projects/${encodeURIComponent(project)}/research/report-page${after?`?after_report_id=${encodeURIComponent(after)}`:''}`),
   reports: (projectId: string) =>
     get<ProjectResearchReport[]>(`/projects/${encodeURIComponent(projectId)}/research/reports`),
   report: (projectId: string, reportId: string) =>
     get<ProjectResearchReport>(`/projects/${encodeURIComponent(projectId)}/research/reports/${encodeURIComponent(reportId)}`),
-  runReportIntegrity: (projectId: string, reportId: string) =>
-    post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/research/reports/${encodeURIComponent(reportId)}/integrity`, {}),
+  runReportIntegrity: (projectId: string, reportId: string, key:string=crypto.randomUUID()) =>
+    commandReceipt('research.report.integrity',{project_id:projectId,report_id:reportId},key),
 }
 
 export const researchDiscoveryApi = {
@@ -3845,19 +4156,19 @@ export const runtimeContextApi = {
 
 export const instanceOperationsApi = {
   get: () => get<InstanceOperationsSettings>('/system/instance-settings'),
-  update: (body: InstanceOperationsSettingsUpdate) =>
-    put<InstanceOperationsSettings>('/system/instance-settings', body),
+  update: (body: InstanceOperationsSettingsUpdate, key: string = crypto.randomUUID()) =>
+    operationAt<InstanceOperationsSettings>('PUT', '/system/instance-settings', body, key),
 }
 
 // ── Instance update (ADR 0020; instance admin only) ───────────────────────
 export const deploymentApi = {
   status: () => get<DeploymentStatus>('/deployments/status'),
   /** Creating the job is the administrator's approval; it takes no arguments. */
-  createJob: (jobType: DeploymentJobType) =>
-    post<DeploymentJob>('/deployments/jobs', { job_type: jobType }),
+  createJob: (jobType: DeploymentJobType, key: string = crypto.randomUUID()) =>
+    operationAt<DeploymentJob>('POST', '/deployments/jobs', { job_type: jobType }, key),
   job: (jobId: string) => get<DeploymentJobDetail>(`/deployments/jobs/${jobId}`),
   /** Only from `queued`: once the deployer has it, the job runs to its end. */
-  cancelJob: (jobId: string) => post<DeploymentJob>(`/deployments/jobs/${jobId}/cancel`, {}),
+  cancelJob: (jobId: string, key: string = crypto.randomUUID()) => operationAt<DeploymentJob>('POST', `/deployments/jobs/${encodeURIComponent(jobId)}/cancel`, {}, key),
 }
 
 // ── Auth / Identity ───────────────────────────────────────────────────────
@@ -4061,7 +4372,7 @@ export type ManagedSubscriptionLoginEvent =
 
 export const providersApi = {
   planUsageProviders: () => get<{ items: ApiPlanUsageProvider[] }>('/providers/plan-usage'),
-  refreshPlanUsage: (id: string) => post<ApiPlanUsageSnapshot>(`/providers/${encodeURIComponent(id)}/plan-usage`, {}),
+  refreshPlanUsage: (id: string, key?: string) => systemCommand<ApiPlanUsageSnapshot>('POST', `/providers/${encodeURIComponent(id)}/plan-usage`, {}, 'Plan usage refresh', key, 3 * 60 * 1000),
   /** Every Provider this person may see here, including the ones they own and disabled. For management. */
   list: () => get<ModelProviderOut[]>('/providers'),
   /** The Providers a run can use here: enabled, with an enabled grant. For pickers. */
@@ -4083,10 +4394,10 @@ export const providersApi = {
     openai_compatible_base_url?: string
     enabled?: boolean
     is_default?: boolean
-  }) => post<ModelProviderOut>('/providers', data),
+  }, key: string = crypto.randomUUID()) => operationAt<ModelProviderOut>('POST', '/providers', data, key),
 
-  createFromPreset: (data: ProviderFromPresetCreateRequest) =>
-    post<ProviderFromPresetCreateResponse>('/providers/from-preset', data),
+  createFromPreset: (data: ProviderFromPresetCreateRequest, key: string = crypto.randomUUID()) =>
+    operationAt<ProviderFromPresetCreateResponse>('POST', '/providers/from-preset', data, key),
 
   patch: (id: string, data: Partial<{
     name: string
@@ -4102,24 +4413,25 @@ export const providersApi = {
     openai_compatible_base_url: string | null
     enabled: boolean
     is_default: boolean
-  }>) => patch<ModelProviderOut>(`/providers/${id}`, data),
+  }>, key: string = crypto.randomUUID()) => operationAt<ModelProviderOut>('PATCH', `/providers/${encodeURIComponent(id)}`, data, key),
 
-  delete: (id: string) => del<void>(`/providers/${id}`),
+  delete: async (id: string, key: string = crypto.randomUUID()): Promise<void> => { await operationAt('DELETE', `/providers/${encodeURIComponent(id)}`, undefined, key) },
 
   models: (id: string) => get<ModelProviderModelsOut>(`/providers/${id}/models`),
 
-  test: (id: string) => post<TestConnectionOut>(`/providers/${id}/test`, {}),
+  /** A connection test spends one small completion; it runs after commit and is never resubmitted. */
+  test: (id: string, key?: string) => systemCommand<TestConnectionOut>('POST', `/providers/${encodeURIComponent(id)}/test`, {}, 'Connection test', key, 3 * 60 * 1000),
 
-  refreshSubscriptionQuota: (id: string) =>
-    post<ModelProviderOut>(`/providers/${id}/subscription/quota`, {}),
+  refreshSubscriptionQuota: (id: string, key?: string) =>
+    systemCommand<ModelProviderOut>('POST', `/providers/${encodeURIComponent(id)}/subscription/quota`, {}, 'Subscription quota refresh', key, 3 * 60 * 1000),
 
   /** Where the Space draws the subscription warning and reserve lines. */
   subscriptionQuotaPolicy: () => get<SubscriptionQuotaPolicy>('/providers/subscription-quota-policy'),
-  updateSubscriptionQuotaPolicy: (body: SubscriptionQuotaPolicyUpdate) =>
-    put<SubscriptionQuotaPolicy>('/providers/subscription-quota-policy', body),
+  updateSubscriptionQuotaPolicy: (body: SubscriptionQuotaPolicyUpdate, key: string = crypto.randomUUID()) =>
+    operationAt<SubscriptionQuotaPolicy>('PUT', '/providers/subscription-quota-policy', body, key),
 
-  disconnectSubscription: (id: string) =>
-    del<ModelProviderOut>(`/providers/${id}/subscription`),
+  disconnectSubscription: (id: string, key: string = crypto.randomUUID()) =>
+    operationAt<ModelProviderOut>('DELETE', `/providers/${encodeURIComponent(id)}/subscription`, undefined, key),
 
   sendSubscriptionLoginInput: (type: ManagedSubscriptionType, input: string) =>
     post<{ status: string }>(`/providers/subscriptions/login/input?type=${encodeURIComponent(type)}`, { input }),
@@ -4162,18 +4474,19 @@ export const providersApi = {
 
   taskPolicies: () => get<ProviderTaskPolicyOut[]>('/providers/task-policies'),
 
-  putTaskPolicy: (task: string, data: ProviderTaskPolicyPutRequest) =>
-    put<ProviderTaskPolicyOut>(`/providers/task-policies/${encodeURIComponent(task)}`, data),
+  putTaskPolicy: (task: string, data: ProviderTaskPolicyPutRequest, key: string = crypto.randomUUID()) =>
+    operationAt<ProviderTaskPolicyOut>('PUT', `/providers/task-policies/${encodeURIComponent(task)}`, data, key),
 
-  deleteTaskPolicy: (task: string) =>
-    del<void>(`/providers/task-policies/${encodeURIComponent(task)}`),
+  deleteTaskPolicy: async (task: string, key: string = crypto.randomUUID()): Promise<void> => {
+    await operationAt('DELETE', `/providers/task-policies/${encodeURIComponent(task)}`, undefined, key)
+  },
 
   grant: (id: string, data: {
     space_id: string
     enabled?: boolean
     is_default?: boolean
     network_profile_id?: string | null
-  }) => put(`/providers/${encodeURIComponent(id)}/grants`, data),
+  }, key: string = crypto.randomUUID()) => operationAt<unknown>('PUT', `/providers/${encodeURIComponent(id)}/grants`, data, key),
 
   vendors: () => get<ProviderVendorOut[]>('/providers/vendors'),
 
@@ -4191,14 +4504,15 @@ export const pluginsApi = {
   list: (options:RequestOptions={}) => get<{ items: import('@rainver/protocol').OfficialPluginListItem[] }>('/plugins',options),
   effective: (options:RequestOptions={}) => get<OfficialPluginEffectiveResponse>('/plugins/effective',options),
   get: (pluginId: string) => get<unknown>(`/plugins/${encodeURIComponent(pluginId)}`),
-  install: (pluginId: string) =>
-    post<unknown>(`/plugins/${encodeURIComponent(pluginId)}/install`, {}),
-  enable: (pluginId: string, body: { settings?: Record<string, unknown> } = {}) =>
-    post<unknown>(`/plugins/${encodeURIComponent(pluginId)}/enable`, body),
-  disable: (pluginId: string, body: Record<string, never> = {}) =>
-    post<unknown>(`/plugins/${encodeURIComponent(pluginId)}/disable`, body),
-  patchSettings: (pluginId: string, settings: Record<string, unknown>) =>
-    patch<unknown>(`/plugins/${encodeURIComponent(pluginId)}/settings`, { settings }),
+  /** Installation runs the plugin's migrations after commit; `{ install, item }` comes from the command status. */
+  install: (pluginId: string, key?: string) =>
+    systemCommand<{ install: unknown; item: unknown }>('POST', `/plugins/${encodeURIComponent(pluginId)}/install`, {}, 'Plugin installation', key, 5 * 60 * 1000),
+  enable: (pluginId: string, body: { settings?: Record<string, unknown> } = {}, key: string = crypto.randomUUID()) =>
+    operationAt<unknown>('POST', `/plugins/${encodeURIComponent(pluginId)}/enable`, body, key),
+  disable: (pluginId: string, body: Record<string, never> = {}, key: string = crypto.randomUUID()) =>
+    operationAt<unknown>('POST', `/plugins/${encodeURIComponent(pluginId)}/disable`, body, key),
+  patchSettings: (pluginId: string, settings: Record<string, unknown>, key: string = crypto.randomUUID()) =>
+    operationAt<unknown>('PATCH', `/plugins/${encodeURIComponent(pluginId)}/settings`, { settings }, key),
 }
 
 export const dailyReportApi = {
@@ -4480,10 +4794,17 @@ export const diaryApi = {
 
 
 export const projectMonitoringApi = {
-  reconcile:(projectId:string)=>post<ProjectMonitoringState>(`/projects/${projectId}/information-monitoring/reconcile`,{}),
+  reconcile:async(projectId:string,key:string=crypto.randomUUID())=>{
+    const receipt=await commandReceipt('project.monitoring.reconcile',{project_id:projectId},key)
+    // Stopped work is reconciled either way; an active coordinator still needs the person to wait or cancel.
+    if(receipt.coordinator_active)throw new Error('Coordinator or child Run is still active; wait or cancel the child Run before retrying')
+    return get<ProjectMonitoringState>(`/projects/${encodeURIComponent(receipt.project_id)}/information-monitoring`,{spaceId:receipt.space_id})
+  },
   state:(projectId:string,offset=0)=>get<ProjectMonitoringState>(`/projects/${projectId}/information-monitoring?offset=${offset}`),
-  setup:(projectId:string,query:string,provider_key:'arxiv'|'rss'|'atom'|'web_page'='arxiv')=>post<{channel_draft:{id:string};source_proposal:{id:string;status:string};binding_proposal:{id:string;status:string}}>(`/projects/${projectId}/information-monitoring/source-setup`,{query,provider_key,idempotency_key:crypto.randomUUID()}),
-  propose:(projectId:string,config:ProjectMonitoringConfig,active:string|null)=>post(`/projects/${projectId}/information-monitoring/proposals`,{config,expected_active_version_id:active,idempotency_key:crypto.randomUUID()}),
+  setup:(projectId:string,query:string,provider_key:'arxiv'|'rss'|'atom'|'web_page'='arxiv',key:string=crypto.randomUUID())=>
+    commandReceipt('project.monitoring.source.setup',{project_id:projectId,query,provider_key,idempotency_key:key},key),
+  propose:(projectId:string,config:ProjectMonitoringConfig,active:string|null,key:string=crypto.randomUUID())=>
+    commandReceipt('project.monitoring.proposal.create',{project_id:projectId,config,expected_active_version_id:active,idempotency_key:key},key),
   details:async(projectId:string,body:{expected_version_id:string;recommendation_count:number;language:string},key:string=crypto.randomUUID())=>{
     const result=await callOperation('project.monitoring.details.update',{project_id:projectId,...body},key);
     if(!('status' in result)||result.status!=='succeeded')throw new Error('Monitoring details command did not complete');
@@ -4495,8 +4816,10 @@ export const projectMonitoringApi = {
     if(!('status' in result)||result.status!=='succeeded')throw new Error('Monitoring state command did not complete');
     return get<ProjectMonitoringState>(`/projects/${encodeURIComponent(result.data.project_id)}/information-monitoring`,{spaceId:result.data.space_id});
   },
-  run:(projectId:string,version:MonitoringVersion,kind:'initial'|'check'='initial')=>post(`/projects/${projectId}/information-monitoring/runs`,{version_id:version.id,config_hash:version.config_hash,kind,idempotency_key:crypto.randomUUID()}),
-  feedback:(projectId:string,itemId:string,feedback:'read'|'relevant'|'not_relevant')=>post(`/projects/${projectId}/information-monitoring/items/${itemId}/feedback`,{feedback}),
+  run:(projectId:string,version:MonitoringVersion,kind:'initial'|'check'='initial',key:string=crypto.randomUUID())=>
+    commandReceipt('project.monitoring.run.start',{project_id:projectId,version_id:version.id,config_hash:version.config_hash,kind,idempotency_key:key},key),
+  feedback:(projectId:string,itemId:string,feedback:'read'|'relevant'|'not_relevant',key:string=crypto.randomUUID())=>
+    commandReceipt('project.monitoring.feedback',{project_id:projectId,item_id:itemId,feedback},key),
 };
 
 // Goal collection uses the same scoped transport and canonical Run stream.
@@ -4573,6 +4896,14 @@ export function callOperation<Id extends OperationId>(id:Id,input:OperationInput
   if(!key)throw new Error('An explicit idempotency key is required')
   return request('POST',`/actions/${encodeURIComponent(id)}`,input,{...options,idempotencyKey:key})
 }
+/** One explicit-key command attempt; never retried. Returns only the body-free receipt. */
+async function commandReceipt<Id extends OperationId>(id:Id,input:OperationInput<Id>,key:string,options:RequestOptions={}):Promise<OperationOutput<Id>> {
+  const result=await callOperation(id,input,key,options)
+  if(!('status' in result)||result.status!=='succeeded')throw new Error('Command did not complete')
+  return result.data
+}
+const researchOperation=(receipt:{id:string;project_id:string;space_id:string})=>
+  get<ProjectOperation>(`/projects/${encodeURIComponent(receipt.project_id)}/operations/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id})
 
 /** Local manifest adapters use the same transport and mandatory explicit command keys as core operations. */
 export function queryPluginOperation<T>(id:import('@rainver/protocol').PluginOperationId,input:unknown,options:RequestOptions={}):Promise<OperationOutcome<T>>{

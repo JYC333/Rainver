@@ -137,17 +137,37 @@ export class ImportedHistoryExtractionService {
      */
     workspaceLocationId?: string,
   ): Promise<ExtractionOutcome> {
+    const claimed = await this.claim(identity, projectId, workspaceLocationId);
+    return this.processClaim(identity, projectId, claimed.checkpointId, spend);
+  }
+
+  /**
+   * Durable admission half: claiming *is* the read mark, taken atomically
+   * before any model call. Two extractions — a scheduled one and a pressed
+   * button, or a double click — therefore take disjoint batches instead of
+   * both paying for the same records. An advisory lock would not do this: it
+   * is per connection, and on a pool the second caller can be handed the
+   * connection that already holds it.
+   */
+  async claim(identity: SpaceUserIdentity, projectId: string, workspaceLocationId?: string): Promise<{ checkpointId: string; records: number }> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const checkpointId = randomUUID();
     await this.releaseStaleClaims(identity.spaceId, projectId);
-    // Claiming *is* the read mark, taken atomically before the model is
-    // called. Two extractions — a scheduled one and a pressed button, or a
-    // double click — therefore take disjoint batches instead of both paying
-    // for the same records and putting two proposals about one batch on an
-    // attention list that has to stay short enough to read. An advisory lock
-    // would not do this: it is per connection, and on a pool the second
-    // caller can be handed the connection that already holds it.
     const records = await this.claimRecords(identity.spaceId, projectId, checkpointId, workspaceLocationId);
+    return { checkpointId, records: records.length };
+  }
+
+  /** Worker half: reads exactly the claimed batch, then proposes it or releases the claim. */
+  async processClaim(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    checkpointId: string,
+    spend: CredentialSpendBasis,
+  ): Promise<ExtractionOutcome> {
+    // Authority is current at processing time; a refused attempt frees its batch.
+    try { await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId); }
+    catch (error) { await this.releaseClaim(checkpointId); throw error; }
+    const records = await this.claimedRecords(identity.spaceId, projectId, checkpointId);
     if (records.length === 0) {
       return {
         brief_proposal_id: null,
@@ -291,6 +311,35 @@ export class ImportedHistoryExtractionService {
   }
 
   /** Puts a claimed batch back, so a failure never costs the records it was reading. */
+  /**
+   * Refreshes one claim before its model call, so a late queued attempt is
+   * never mistaken for an abandoned claim and re-read by another batch.
+   * Records whose session stopped being shared are released, not sent.
+   */
+  private async claimedRecords(spaceId: string, projectId: string, checkpointId: string): Promise<PendingRecord[]> {
+    await this.db.query(
+      `UPDATE imported_session_records r SET extracted_in = NULL, extracted_at = NULL
+         FROM imported_sessions s
+        WHERE s.id = r.imported_session_id AND r.extracted_in = $1 AND r.space_id = $2
+          AND (s.project_id IS DISTINCT FROM $3 OR s.visibility <> 'space_shared')`,
+      [`claim:${checkpointId}`, spaceId, projectId],
+    );
+    const result = await this.db.query<PendingRecord>(
+      `UPDATE imported_session_records r SET extracted_at = now()
+         FROM imported_sessions s
+        WHERE s.id = r.imported_session_id AND r.extracted_in = $1 AND r.space_id = $2
+          AND s.project_id = $3 AND s.visibility = 'space_shared'
+       RETURNING r.id, r.imported_session_id, r.kind, r.sequence, r.text, r.tool_name,
+                 r.tool_status, r.tool_input, s.title AS session_title, s.runtime_key,
+                 to_char(s.vendor_updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS vendor_updated_at`,
+      [`claim:${checkpointId}`, spaceId, projectId],
+    );
+    return result.rows.sort((left, right) =>
+      (left.vendor_updated_at ?? "").localeCompare(right.vendor_updated_at ?? "")
+      || left.imported_session_id.localeCompare(right.imported_session_id)
+      || left.sequence - right.sequence);
+  }
+
   private async releaseClaim(checkpointId: string): Promise<void> {
     await this.db.query(
       `UPDATE imported_session_records SET extracted_in = NULL, extracted_at = NULL WHERE extracted_in = $1`,

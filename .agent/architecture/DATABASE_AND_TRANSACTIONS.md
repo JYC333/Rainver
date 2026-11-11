@@ -31,6 +31,15 @@ retain the existing short-transaction owner. Code given a checked-out Client mus
 starting the next; `Promise.all` of queries on that Client queues them concurrently
 and triggers the pg@9 deprecation warning.
 
+Services an operation core may call take a `Queryable` and open their
+transactions through `withQueryableTransaction` (Agent, Room, Room roster/
+discussion/queue, Agent group and conversation execution-context services do),
+so a Pool caller keeps its own short transaction and a core caller is joined.
+A worker-only step that genuinely needs its own per-item transactions (turn
+boundary admission, group lifecycle projection, quota-held dispatch) asks for
+`independentPool(db, purpose)`, which fails closed on a client or core port
+instead of joining the caller or opening a second connection.
+
 ## Prepared Run terminal owners
 
 `withRunTerminalOwner` reuses `withQueryableTransaction`, the existing operation
@@ -179,6 +188,37 @@ scope cursor, creates an immutable Micro Checkpoint, and writes the snapshot's
 capture/cursor projection in the same transaction. Noncritical capture failures
 create explicit gap rows that stay on record; nothing extracts from the ledger
 or replays into it afterwards.
+
+A public-summary draft's attempt and publication transactions first admit the
+closure's whole Project set (`lockPublicSummaryProjects`): every Project it
+names — the draft's own, the Projects of a research Artifact's Operations,
+Thread (and every Project the Thread is shared into), requesting Run, Source
+items and connections, and the Projects owning its Folders (the sources', the
+Thread's, the requesting Run's) and Rooms — is discovered unlocked and then locked in one id order, the draft's own
+`FOR UPDATE` and the rest `FOR SHARE`. Two drafts whose research read each
+other's Project Sources therefore queue on the lower id instead of each holding
+its own Project and waiting for the other's (a real deadlock before). The
+closure never waits for a Project outside that admitted set: reaching one after
+its waits refuses with 409. They then share-lock the frozen sources' closure
+(`projects/publicSummarySourceClosure.ts`) before re-reading it: the viewer's
+audience in every admitted Project → research Operations → Source
+connections → channels → the viewer's subscriptions → windows → Source items
+(Notebook admission's order, shared as `lockSourceReadClosure`) → research
+Threads → their Project shares → content rows → the viewer's content grants →
+Folder scope (sources', Threads', requesting Runs') → Run → research Runs'
+grants → session/group → Room → Room member. The requesting Run is held to the
+whole `runInheritedReadSql` gate (its own Project and Folder scope, visibility,
+grants and Room); an ordinary Artifact's or Proposal's Run contributes only its
+Room (`roomRunReadAccessSql`). Every row is
+locked before its grants, the order the content-policy writer uses. A frozen
+research-call output Artifact's closure (producing Operations, Thread and its
+current Project shares, requesting Run with its Project and Folder, Source
+items/channels/connections;
+`projectResearch/researchArtifactClosure.ts`) is discovered before these locks
+and again after them; a changed closure refuses the request with 409 instead
+of resting on rows it never locked. A question-refinement completion share-locks
+its Job row (`running`, same claim and attempt) before the session lock, so
+cancel, reclaim and fail serialize against the answer write.
 
 ## External Call Boundary
 
@@ -868,9 +908,31 @@ recognizer and ownership checks. Utility wrappers, SELECT INTO, built-in SQL
 string evaluators and session/advisory functions are refused. The shared lexical
 scanner rejects Unicode-escaped identifiers instead of losing their executable
 meaning in placeholders. This is a trusted-code safeguard, not general SQL
-function safety. Local enable/disable transitions order cleanup before DB locks
-and settle attempt-owned versus committed admission holds independently; failed
-enables preserve existing disabled holds. See the
+function safety. Local enable/disable transitions touch local effects only after a
+new outcome commits. Effects are bound to durable scope holds (one per owner
+process and generation); a disable's release round, the owner's after-commit
+release and recovery, and the cleanup Job are fenced by hold and round, never
+by the scope alone, and dispose callbacks run outside every DB transaction.
+The commit of work under a hold reads the hold row `FOR SHARE` (active, owned
+by the admitting instance, its lease held by its session's pid in the same
+statement); that row lock lasts through COMMIT, so every hold transition
+(disable round, release, adoption, `owner_gone`) is ordered after the commit and
+fails the check after it — the database, not a timer or a separate `pg_locks`
+read, orders the two. Query errors fail closed. Hold transitions follow scope
+locks → hold row; confirming or reopening a hold (a late resource's
+`retain()`, adoption, exit) takes the scope's write locks like enable/disable,
+so an enable either commits before it or sees the hold `releasing`; `retain()`
+refuses a hold whose generation ended rather than reopening it. A dispose
+callback is registered only through a handle opened while its hold is durably
+an obligation, and no owner path records a hold released while a handle is
+open (an original-contract Job's handle stays open until its process ends), so
+no asynchronous reopen exists. Every dispose invocation, an early dispose
+included, runs under an attempt claimed in one statement against the hold's
+durable per-round counter (lease proven in it), at most once per claim. Background settlement writes
+skip rows another transaction locks. A cross-process owner is settled only by
+its verifiably ended lease (`owner_gone`), by any process's recovery pass, which
+visits foreign owners in rotation. Effects outside PostgreSQL are not fenced
+by this. See the
 [owner contract](OFFICIAL_OPTIONAL_MODULES.md#sql-data-port-and-lifecycle-hardening)
 for admitted SQL, concurrency boundaries and real-PG evidence.
 
@@ -880,11 +942,12 @@ also refuses calls to the exact database-wide large-object functions, without
 reserving the lo_ prefix for ordinary identifiers. Both ports refuse setseed
 session-state changes. Resource cleanup has a
 three-second cooperative deadline: disable commits with cleanup_pending while
-unfinished callbacks quarantine only their scopes; reenable returns 409 until
-those callbacks settle. Phase-specific failure events distinguish installation,
+unfinished or rejected callbacks keep only their holds `releasing`; reenable
+returns 409 in every process until they are released or their owner verifiably
+ended. Phase-specific failure events distinguish installation,
 provision, individual migrations, reconcile and finalization; only an actual
-migration failure gets a failed plugin_migrations row. No schema change or
-historical journal rewrite is required.
+migration failure gets a failed plugin_migrations row. The hold table is the
+appended migration 0026; no historical migration or journal is rewritten.
 
 A repair-required install retry is rejected under the install session lock before
 the journaled transaction starts; it preserves the original failure summary and

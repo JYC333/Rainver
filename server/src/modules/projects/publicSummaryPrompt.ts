@@ -230,11 +230,15 @@ function section(title: string, rows: string[]): string {
   return `## ${title}\n${rows.join("\n")}`;
 }
 
+/** Whether the prompt carries this Memory's body; the level it needs follows from this. */
+export function memoryExcerptIncluded(row: PublicSummaryPromptContext["memories"][number], viewerUserId: string): boolean {
+  const sensitive = row.sensitivity_level === "sensitive" || row.sensitivity_level === "restricted";
+  return !sensitive && !shouldRedactMemoryContent(row, viewerUserId) && Boolean(row.content?.trim());
+}
+
 function memoryLine(row: PublicSummaryPromptContext["memories"][number], viewerUserId: string): string {
   const tags = stringArray(row.tags).slice(0, 8).join(", ");
-  const sensitive = row.sensitivity_level === "sensitive" || row.sensitivity_level === "restricted";
-  const redacted = sensitive || shouldRedactMemoryContent(row, viewerUserId);
-  const content = redacted ? null : compactText(row.content ?? "", 280);
+  const content = memoryExcerptIncluded(row, viewerUserId) ? compactText(row.content ?? "", 280) : null;
   return [
     `- memory:${row.id}`,
     `type=${row.memory_type}`,

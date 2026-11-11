@@ -267,34 +267,162 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
 - `POST /api/v1/hosts/:hostId/browse-directories` — `{ path? }`, owner only;
   the daemon lists that directory and the server forwards the answer
   (`{ path, parent, dirs, truncated }`) without opening a path itself. 409 when
-  the Host is offline or does not answer.
+  the Host is offline, disconnects before answering (`code: host_disconnected`)
+  or does not answer.
 - `POST /api/v1/hosts/:hostId/workspaces` — `{ project_id, path, name }`, owner
-  only, requires Project write access; the daemon registers the directory as a
-  Location (201 `{ workspace_id, display_path }`, 409 when offline).
+  only, requires Project write access: the `host.workspace.register` Host
+  command (see "Host commands"); its result `{ workspace_id, display_path }`
+  is read from the command status, and the private `path` is dropped from the
+  intent once it settles.
 - `GET /api/v1/hosts/:hostId/tool-operations`,
   `POST /api/v1/hosts/:hostId/installations/:runtimeKey` (install),
   `.../:runtimeKey/own/update`, `.../:runtimeKey/rollback` and
   `DELETE .../:runtimeKey/:installation` (uninstall a `managed:` copy only) —
-  the owner's installation actions; see "Installations" below.
+  the owner's installation actions, each a Host command (see "Host commands"
+  and "Installations" below). `tool-operations` lists both the frames on the
+  socket now and the committed commands still waiting for their Job.
   `GET /api/v1/hosts/runtime-changes` lists the recorded install, rollback and
   removal changes newest first.
 - `GET /api/v1/hosts/:hostId/runtime-provisioning/opencode` and `.../retry` —
-  the built-in host's OpenCode provisioning state.
+  the built-in host's OpenCode provisioning state; `retry` is the transactional
+  `host.runtime.provisioning.retry` (instance admin, the requeue commits in the
+  core transaction and the scheduler's provisioner picks it up).
 - `GET /api/v1/hosts/:hostId/usage` (cached quota) and
   `POST .../installations/:runtimeKey/:installation/usage` (probe one reported
-  copy now); see "Subscription quota" under "Installations" below.
+  copy now, the `host.runtime.usage.refresh` Host command); see "Subscription
+  quota" under "Installations" below.
 - `.../installations/:runtimeKey/:installation/login/stream`, `/login/input`
   and `/login/callback` — the interactive login; see "Installations" below.
 - `PUT /api/v1/hosts/:hostId/provider-proxy-url` — `{ base_url }`, owner
-  only; sets or clears (`null`/empty) the Host's `provider_proxy_base_url`
-  override, which must be an absolute http(s) URL.
-- `POST /api/v1/hosts/:hostId/revoke` — terminal; a revoked host's token stops
-  authenticating. Also closes the host's live WebSocket connection
+  only (`host.provider_proxy.set`, transactional); sets or clears
+  (`null`/empty) the Host's `provider_proxy_base_url` override, which must be
+  an absolute http(s) URL.
+- `POST /api/v1/hosts/:hostId/revoke` — `host.revoke`, owner only, terminal;
+  the committed `status = 'revoked'` is the revocation and a revoked host's
+  token stops authenticating. A transport replay of the owner's revoke answers
+  its original receipt; a new revoke of a revoked Host is the hidden 404. Also closes the host's live WebSocket connection
   immediately if it has one (`HostConnectionRegistry.closeConnection`) — so
   revoke cuts off an already-connected daemon right away, not just its next
   reconnect attempt. A hello that authenticated just before the revoke and
   reaches `registerConnection` after it is refused and closed the same way
-  (`forgetRevokedHost`), so the host never shows online again.
+  (`forgetRevokedHost`), so the host never shows online again. These
+  process-local cut-offs run after commit and are not the obligation: a
+  connection this process missed is closed at its next heartbeat, which finds
+  the row revoked (`recordHeartbeat` returns false).
+
+### Host commands (`hosts/hostCommands.ts`, `hostCommandWorker.ts`, daemon `src/hostCommandJournal.ts`)
+
+Every person's command about a Host, its Locations or its imported history is
+one operation-core operation (P5 Host block; `packages/protocol/src/hostOperations.ts`).
+Commands with a Host effect — `host.workspace.register`, `host.runtime.install`
+/ `.uninstall` / `.own_update` / `.managed_update` / `.rollback` /
+`.usage.refresh`, `host.ordinary_tool.install` / `.register` / `.remove` /
+`.account.logout`, `agent.host_state.reset` and `host.location.ambient.sync` —
+never reach the Host from their transaction. The transaction locks the Host
+(share lock; `revoke` takes the row) and rechecks the same authority the
+legacy route had — paired-Host owner, instance admin for the built-in Host,
+Project write, Agent owner, the caller's own account key — freezes every
+parameter the Host frame needs, and commits one `host_command_intents` row
+plus its `host_command` Job, answering 202 with a receipt `{ id, space_id,
+host_id, kind, job_id, status: 'pending' }`. At most one command per Host
+scope (runtime, ordinary tool, account, Agent, Location+runtime) is active;
+a second answers 409 `host_command_busy`, naming the active command only to
+its own issuer. The transport `Idempotency-Key` replays the receipt (and only
+to someone who may still read the command); the active-scope rule is the
+business dedupe, separate from it.
+
+The worker (`executeHostCommand`) holds the intent's session advisory lock and
+its Job lease. Before any frame leaves it rechecks the actor, the authority
+and the policy audit in a short transaction and commits `dispatched_at` /
+`journaled` / `sends`; the outcome is recorded in a second short transaction
+that rechecks authority again before any result is released. A Host reporting
+`host_command_receipts` gets the `host_command` frame: the daemon writes the
+command `in_progress` durably (`writeJsonDurable`) before the effect and
+`done` with its own result frame before answering, so a repeat of the same
+`command_id` replays the receipt. It answers `completed` only for a receipt
+that is durably `done`: the final write is retried, and a replayed `done`
+receipt is fsynced again first (`syncExistingDurable`), because an earlier
+write may have renamed it into place and then failed its directory sync. If
+the write still fails, the process keeps the outcome in memory and answers
+`unrecorded` (no result, never proof); a repeat in that process records it
+and then answers `completed` without running the effect again, and a
+restarted process finds the receipt `in_progress` (interrupted, or a reset
+finished by running it again while the fence still holds). The worker repeats a sent command with an
+identical frame (same id and fingerprint) after a lost answer, a timeout or a
+disconnect until the receipt arrives. An older Host gets the bare frame at
+most once.
+
+| Situation | Status |
+|---|---|
+| Never sent (offline, socket refused synchronously) | `pending`, retried; a first send that never left clears its marker |
+| Still unsent 10 minutes after admission, checked in the dispatch transaction before the first send whether or not the Host is online now | `failed` (`host_offline` when offline, `host_command_expired` when online, e.g. a Job backlog), no frame sent; a command already sent is never settled by this expiry, it keeps repeating its identical frame |
+| Bare (unjournaled) send whose Host disconnected before answering | the registry answers `host_disconnected` (sent, outcome unknown), never `host_offline` → `needs_attention`, never resent |
+| Journal `refused` on a repeat of a command already sent | `needs_attention` (an earlier copy may have acted); on a first send `failed` |
+| Answered `ok` and still authorized | `succeeded`, kind result released by the status read |
+| Answered not ok / journal `refused` (could not record, nothing ran) | `failed` |
+| Journal `interrupted` (an earlier daemon process started it and stopped) or `mismatch` | `needs_attention` |
+| Journal `unrecorded` (this daemon process ran it, its `done` receipt is not durable yet) | still `dispatched`, no receipt recorded, no result; the identical frame is repeated (a reset's fence holds); a reconcile reads it as "waiting" |
+| Unjournaled send without an answer, or a dispatch marker without a known send | `needs_attention` (`host_command_outcome_unknown`), never resent |
+| Authority lost before send / after send | `failed` / `needs_attention` (`host_command_authority_withdrawn`), result withheld |
+| Job cancelled or exhausted before send / after send | `failed` / `needs_attention` (`host_command_job_*`) |
+| Journaled and unanswered for 24 h | `needs_attention` (`host_command_unconfirmed`) |
+| History import (`ambient_sync`, server-side `run`) | by its report: no error → `succeeded`; nothing committed and the Host offline or lost → repeated (the import reconciles by vendor identity); nothing committed and a definite error → `failed` (`ambient_sync_failed`); sessions written or marked gone and then an error → `needs_attention` (`ambient_sync_partial`), including a written session whose replay the Host read only in part (`load_state: partial`, counted in `partial_sessions`; the daemon's `ambient_import_result` stays `ok`, so the session frame is the evidence). The failed and partial outcomes keep the real report as their released result and are not repeated by the Job |
+| Reset whose earlier reset of the same Agent/Host is owed a receipt and the Host answers it without one | `failed` (`host_reset_unreconciled`), its own frame never sent |
+
+Only a profile reset is repeated by the daemon after an interruption (it moves
+only what is still there). `agent.host_state.reset` requires the receipt
+capability (`host_update_required` otherwise), refuses while a dispatch holds
+or a Run is in flight on the Agent's threads, retires the vendor sessions in
+its transaction, and keeps every launch of that Agent on that Host behind
+`agentHostResetFence` while a reset is active or a sent one is unproven. A sent
+reset that ended `needs_attention` (lost answer, cancelled or exhausted Job,
+24 h unconfirmed) is released only by **its own** Host receipt
+(`effect_json.receipt = { at, by, replayed }`): read by its own delivery, or by
+the next reset of the same Agent on the same Host, whose worker first
+re-delivers every such earlier reset under that reset's exact `command_id` and
+fingerprint before sending itself (`reconcileEarlierResets`). The daemon's
+journal replays the receipt, finishes an in-progress one, or runs one that never
+arrived; from then on a late copy only replays. A later reset that fails —
+never sent, refused, or answered after archiving only part of the profiles —
+proves nothing and releases nothing; no generation is bumped in its place. If
+the Host is offline or does not answer, the new reset stays unsent and waits; if
+it answers without a receipt (mismatch, refused journal), the new reset fails
+`host_reset_unreconciled` and the fence stays. An unjournaled `agent_profiles_reset`
+is an identity-less archive the legacy drain covers and is refused once the
+Host has closed them. `needs_attention` is never success: the person checks the
+Host before repeating.
+
+`GET /api/v1/hosts/:hostId/commands/:commandId` (`private, no-store`) is the
+only release of an outcome: the issuer, in the same Space, still an active
+member, while they hold **today** the authority the command's kind needs
+(`authorizeHostCommandResource`, shared with the worker's dispatch and settle
+checks): the Host (owner, or instance admin for the built-in Host where the
+kind applies to it; the caller's own usable Host for an account logout), plus
+the Agent for a reset, Project write for a Location registration, and the
+Location on that Host with its Project's write for a history import. A
+revoked Host, a lost Agent, Project write or Location hides it as 404 in every
+settled state, and the core's receipt replay (`authorizeResult`) checks the
+same thing. The check reads only ids a settled row keeps (`agent_id`,
+`project_id`, `location_id`, `operation.tool_id`), never a redacted path. It also settles a
+command whose Job can no longer run. A settled intent keeps no Host-private
+path (`path`, `operation.path`) and no frozen `egress_transport` (a proxy URL
+may carry credentials): every terminal write applies `REDACTED_FROZEN`
+(`hostCommands.ts`) — the worker's settle and record steps and
+`settleStaleHostCommand` for a cancelled or exhausted Job — and keeps only the
+ids the read authority needs. The browser submits one keyed command and polls
+only this read (`apps/web/src/api/client.ts` `hostCommand`). A Host coming
+online wakes its waiting commands (`wakeHostCommandsForHost`); the Job, not
+the wake, is the owner.
+
+Transactional Host commands with no Host effect: `host.runtime.provisioning.retry`,
+`host.provider_proxy.set`, `host.revoke`, and the Location/history commands
+`host.location.ambient.policy.set` / `.dismiss`, `imported_session.visibility.set`
+and `imported_session.delete` (`importedSessions/operations.ts`). Exempt (exact
+pairs in `server/test/operationRoutes.test.ts`): pairing-code issuance (a
+user's one-time credential, never stored for replay), daemon registration and
+the `/hosts/me/*` bearer-token protocol, and the interactive relays
+(`browse-directories`, login `input`/`callback`, ordinary account `verify`
+and session `cancel`) whose payload or answer is never persisted.
 
 Unauthenticated (the pairing code itself is the one-time credential):
 
@@ -645,7 +773,25 @@ client, credential parser, synchronizer, lock manager or dependency is added.
 ### Archiving what an Agent leaves behind
 
 Profiles join the archive-not-delete rule the managed workspaces already
-follow, on the same 30-day sweep. Two things move, with different owners:
+follow, on the same 30-day sweep.
+Runtime profile archives evict only known re-downloadable CLI caches immediately:
+Codex `.codex/cache/{remote_plugin_catalog,codex_apps_tools,codex_apps_server_info}`
+and `.codex/plugins/cache/openai-curated-remote`, under each provider HOME.
+Unknown caches and local/private plugin payloads are retained: a directory named
+`cache` alone does not prove its contents can be downloaded again. Recent
+existing archives receive the same treatment on connection and hourly while
+connected; overlapping sweeps share one pass. Restoration may require network
+access to download plugins/catalogs again. Sessions, SQLite databases and their
+WAL/SHM, credentials, custom skills and plugin registration remain until the
+30-day expiry. Live profiles and managed user workspaces are never cache-trimmed.
+Archive/restore/sweep directory operations serialize locally; cache traversal
+refuses symlinked HOME, cache and intermediate directories. Archive success is
+preserved if eviction fails; the logged background sweep retries it.
+
+Reuse / Dependency Check: extend the existing profile archive/restore/sweep
+owner and daemon connection timers with Node filesystem operations; no new
+cache service, cross-Agent shared mutable HOME, dependency or polling API.
+ Two things move, with different owners:
 
 - the Agent's **runtime profile** is the Agent's alone, so it is archived
   whenever that Agent leaves — removed from a Room, or its direct session
@@ -653,8 +799,91 @@ follow, on the same 30-day sweep. Two things move, with different owners:
 - the **workspace** is shared by every Agent in a Conversation, so it follows
   only when the last one leaves. `include_workspace` on the
   `managed_workspace_archive` / `_restore` frames says which of the two the
-  daemon should move, computed by `listPendingManagedWorkspaceArchives` and
-  `closeConversationAgentForRoom` rather than guessed on the host.
+  daemon should move. An archive's value is decided once, by
+  `closeConversationAgentForRoom` / `closeDirectAgent` when the intent commits,
+  and stored with its generation (`host_threads.archive_include_workspace`);
+  every send of that intent (`pendingArchiveIntent`) carries it unchanged,
+  whatever membership did since, so a repeat is never an `operation_mismatch`.
+  A restore Job fixes its own value when it is enqueued. Before a Run starts in
+  a Conversation's managed cwd, the remote dispatch settles every pending
+  archive there that moves the cwd (`settleConversationCwdArchives`), so a
+  delayed archive never moves a cwd another Agent has begun working in; an
+  unconfirmed one refuses that launch.
+- **Before any Run's runtime starts**, in every workspace mode (managed cwd, a
+  registered Location, an isolated execution workspace), the dispatch also
+  settles every archive still owed for the exact profile directory it is about
+  to use (`settleLaunchProfileArchives`, after the profile scope is resolved).
+  An Agent that left — its profile archive committed, profile-only while
+  others stay — and was re-added without a restore starts in that same
+  directory; settled first, the old archive cannot land after the new Run
+  began. A repeat of a journaled one replays its receipt, a late copy is
+  refused by the Host's generation fence, and an unconfirmed one (offline, lost
+  reply, interrupted move) fails the launch with
+  `runtime_profile_archive_unsettled`; the next turn repeats the same
+  operation. Only that Agent's own profile target is considered, never another
+  Agent's. An isolated-workspace profile archive is the workspace command's
+  `archive_profiles`, carrying the thread's archive identity
+  (`archive_identity`: `archive:<thread>:<generation>`) on a Host reporting
+  `workspace_profile_operations`; the daemon journals it per Agent under the
+  `workspace` profile target with the same receipt and generation fence, so
+  the original request arriving after the barrier's repeat settled it (and
+  the next Run began) replays its receipt and moves nothing. The workspace
+  cleanup Job's profile archives (a cutover's legacy Conversation profile, a
+  retired workspace's profiles) fix one identity and generation per resource
+  before their first send; one sent and not yet confirmed keeps the launch on
+  that exact profile refused until the Job settles it.
+- A Host without the fencing capability (`managed_workspace_operations` for a
+  managed or location profile and cwd, `workspace_profile_operations` for an
+  isolated profile) refuses either launch barrier while an archive is owed
+  (`host_update_required`). The recovery pass still delivers a legacy
+  archive, but every identity-less send first records
+  `host_threads.archive_unfenced_at` (wall clock; a cleanup resource:
+  `sent_unfenced`): its acknowledgement does not prove that another copy —
+  an earlier one timed out in flight, or a duplicate the daemon admitted
+  after it — cannot still land. Neither a reported capability nor a
+  reconnect proves it either: the daemon runs each request detached from the
+  connection that delivered it, so the same process, reconnected to an
+  upgraded control plane, may still be moving a profile or cwd for an old
+  frame. The marker is cleared only by the Host's **legacy drain**
+  (`legacy_archive_drain` capability, `managed_workspace_legacy_drain` frame,
+  `drainUnfencedArchives`): the daemon (`legacyArchiveDrain.ts`) first closes
+  its installation to identity-less archives and restores for good — durably,
+  so a restarted process stays closed and refuses one with `legacy_closed`,
+  moving nothing — then answers once every one it admitted (synchronously
+  with the frame's dispatch) has finished. Markers recorded before the drain
+  was asked for are cleared; until then the barrier refuses the launch —
+  `host_update_required` on a Host that cannot drain, the drain's own answer
+  (`host_timeout`, `host_offline`) otherwise. The cwd barrier drains every
+  marked thread of the Conversation whatever its recorded scope (an
+  identity-less copy chose its cwd scope per send), and the restores drain
+  too: the Room restore Job before anything else (a non-draining Host makes
+  it `unavailable`), and a direct turn's restore before its archives. A
+  cleanup resource sent and not yet done keeps the launch on its profile
+  refused however it was sent (`workspace_cleanup_profile_archive_unconfirmed`;
+  the Job will send it again); done and sent unfenced, it is released only by
+  the drain. Migration 0023 marks every intent committed before it (isolated
+  ones on every Host, managed ones on Hosts without the journal) and every
+  cleanup profile archive already attempted. Once a draining control plane
+  drained a Host, a control plane from before this release can no longer
+  archive there (its identity-less requests are refused; their intents stay
+  pending). Residual: an old daemon process that outlived its own replacement
+  (two processes of one installation at once) is outside the drain; the
+  owner-only profile reset (`agent_profiles_reset`) remains an identity-less
+  single request, not tracked by the drain.
+- An intent committed before its scope was recorded is **unconfirmed**
+  (`host_threads.archive_scope_confirmed = false`; migration 0022 marks every
+  intent already pending). Its earlier sends chose `include_workspace` per
+  send under the same operation id, so the value migration 0021 inferred from
+  membership at migration time is only the first guess: the Host's receipt is
+  what the operation is. A send answered `operation_mismatch` is repeated once
+  with the other value — the Host replays that receipt, or finishes it under
+  its fences — and that value is then recorded as confirmed; one the Host
+  accepts is confirmed as sent. No new generation is minted, so an earlier
+  copy in flight stays the same, fenced operation. Both cwd and profile
+  barriers settle unconfirmed intents whatever was inferred, and a restore Job
+  following one fixes its cwd scope only after the Host settled it
+  (`archiveTookConversationCwd`). A confirmed intent's `operation_mismatch`
+  stays a refusal.
 
 The re-add offer and the restore ask the same question: is there a closed
 thread for this Agent in this Room on this host. The candidate flag is
@@ -686,14 +915,17 @@ would re-arm a retired thread with a session whose store is gone. Which threads
 are the Agent's: those carrying its `agent_id`, and the Location threads whose
 **latest** Run was its (that is where the session currently lives; an earlier
 Run of the same Agent does not make a session now in another Agent's profile
-this reset's to retire). Inside one transaction it retires that Agent's vendor
-sessions through the existing `session_reset` path **first**, then asks the
-host, and rolls the retirement back if the host refuses. The two orderings fail
-differently and only one is recoverable: a thread still claiming a
-`vendor_session_id` whose store has been archived resumes into nothing, while a
-thread reset without the archive happening starts a fresh session in a profile
-that still holds the old one — wasteful, visible in the error the caller gets,
-and fixed by running it again. There is no web surface for this reset.
+this reset's to retire). It is the journaled `agent.host_state.reset` Host
+command (see "Host commands"): its admission transaction retires that Agent's
+vendor sessions through the existing `session_reset` path and commits the
+intent; the Host archives the profiles after commit under the command's
+identity, and the Agent's launches on that Host wait on the reset fence until
+the Host settles it. Retiring first is the recoverable order: a thread still
+claiming a `vendor_session_id` whose store has been archived resumes into
+nothing, while a fresh session in a profile that still holds the old one is
+only wasteful. The retirement is not rolled back when the Host later refuses;
+the fence and the command status say what happened. There is no web surface
+for this reset.
 
 A remote run has **no default whole-run time budget**. The launch frame sends
 `timeout_seconds: null` (`runs/remoteHostCliAdapter.ts`) and the daemon never
@@ -1918,7 +2150,12 @@ field being *lost* is that nothing names fields by hand. Do not map a frame
 field by field: `provider_binding`, `server_url`, and `work_surface` must
 leave the sender in the same change that drops them. A frame that fails to parse is
 answered with an `error` frame naming the path, never dropped silently; a
-`launch` that fails is answered with a `complete` so the run does not hang.
+`launch` that fails is answered with a `complete` so the run does not hang, and
+a `command_run`, `task_run_settle`, `task_branch_delete` or `task_merge_*`
+request with a `request_id` is answered with its failure result
+(`rejectedFrameReply`, error `<type> frame rejected: <path>: <issue>`), so the
+server records a definite refusal instead of retrying a timeout. Other request
+types are still only logged and wait out their server timeout.
 
 Every `launch` carries a `launch_id` nonce the daemon echoes on that run's
 `launched`/`output`/`stderr`/`complete` frames, and the registry routes a run
@@ -3277,13 +3514,62 @@ direct-chat container id. Conversation workspaces are shared at
 `managed_workspace_archive` renames a live directory to a timestamped
 `.removed-…` sibling, `managed_workspace_restore` brings back the newest
 archive when no live directory exists, and heartbeat sweeps archives older
-than 30 days. A direct chat turn sent with `restore_workspace` asks for the
-restore as the last step of its transaction, after everything that can refuse
-the turn and after its job is queued in the same transaction: a refused turn
-restores nothing, a failed restore rolls the turn back so it can be sent again,
-and the Run cannot start on a still-archived workspace. With nothing archived
-the restore is a no-op, not an error. Heartbeats report only Agent/container ids and the boolean
+than 30 days. A direct chat turn sent with `restore_workspace` freezes the
+request on its Run (`chat_turn.restore_managed_workspace`) with an operation
+identity and generation taken when the turn commits; the remote dispatch
+settles this Agent's still-pending direct archives on the Host, then performs
+the restore before launch, outside any transaction. A refused turn restores
+nothing, a failed restore fails the turn without launching (its retry keeps
+the same operation, so a restore whose reply was lost replays instead of
+conflicting), a Host without the journal or a turn without an identity is
+refused rather than restored blind, and the Run cannot start on a
+still-archived workspace.
+With nothing archived the restore is a no-op, not an error. Heartbeats report only Agent/container ids and the boolean
 `archived_available` flag.
+
+Archive and restore of Room and direct-chat containers are journaled
+operations on daemons reporting `managed_workspace_operations: 1`
+(`managedWorkspaceOperations.ts`; server side `hosts/managedWorkspaceOperations.ts`).
+A frame with `operation_id` and `generation` is recorded per Agent × container
+under `<configDir>/managed-operations/`: the plan (which archive entry each
+stage moves) is written before anything moves, and each completed stage is
+written (temporary file, fsync, rename) before the next. A repeat of the same
+operation — after a lost reply, a timeout or a daemon crash between the
+workspace and the profile — replays its receipt or finishes the remaining
+stage, deciding from the filesystem whether the interrupted move happened. A
+live shared workspace remains a `live_conflict` refusal; nothing live is
+deleted or merged. Generations come from `managed_workspace_generation_seq`:
+an archive intent takes one when `pending_archive_at` commits
+(`host_threads.archive_generation`), a restore takes a later one when its Job
+commits. The daemon refuses an operation whose generation is not above the
+newest it admitted for that target (`stale_generation`), so an archive
+delivered late cannot undo a restore ordered after it; the control plane
+treats that refusal as settling the old intent. The fence holds for an
+operation left in progress, too: a repeat of an unfinished receipt whose
+generation is below the target's newest admitted one ends `stale_generation`
+without moving anything, since finishing it would undo that newer operation.
+Only a completed receipt replays without being re-checked. A Conversation's
+shared cwd has its own cross-Agent fence
+(`<configDir>/managed-operations/conversations/<id>.json`, the newest
+generation and operation that moved the cwd): a cwd stage of an older
+operation, admitted or in progress, is skipped (`superseded` in its receipt)
+while that Agent's own profile stage still runs. Conversation operations take
+the conversation lock, then the Agent × container lock, always in that order.
+An older daemon is sent legacy archives and no restore (`host_update_required`),
+and a Run is not launched there while an archive is owed for its profile or cwd.
+A daemon reporting `legacy_archive_drain: 1` answers `managed_workspace_legacy_drain`
+(`legacyArchiveDrain.ts`): it closes its process at once, writes
+`<configDir>/managed-operations/legacy-archives-closed` with `writeJsonDurable`,
+refuses every later identity-less archive or restore with `legacy_closed` (in a
+restarted process too, while the marker exists), and replies
+`managed_workspace_result` (`drain`) once that write is durable and every one its
+process admitted finished — the proof the barriers above need before passing a
+target an identity-less archive was ever sent to. The marker's existence is not
+that proof (a failed directory fsync leaves it visible): each process writes it
+again before its first answer; concurrent drains share one write, a failed write
+answers each of them `io_error`, and the next drain redoes it.
+Every launch first settles the archives owed for its own profile directory and,
+in a managed Conversation, its cwd ("Archiving what an Agent leaves behind").
 
 Capability discovery (`src/capabilities.ts`) probes PATH via `--version` for
 `git` plus every runtime binary the server named in `hello_ack.runtime_probes`
@@ -3689,7 +3975,33 @@ Agent already read through `workspace.change.get`; its own answer stands and the
 Run carries them as `workspace_integrations`. Legacy records publish after the
 Run through their own Job and notices.
 
-A delegated result publishes into the validated, yielded parent worktree under
+**Delegated workspace placement** (`projectFolders/delegatedWorkspacePlacement.ts`,
+ADR 0029). A serial delegated writer binds to its coordinator's conversation
+workspace and current batch instead of a fork when the coordinator's binding is
+saved at the workspace head, every other binding settled and saved, no batch is
+publishing/blocked, the tree is live, and no other unfinished writing sibling
+exists; it runs under the same exclusive worktree lease every writer of that
+key takes, keeps its own vendor session, and is refused prepare/publish/
+reconcile/retry/abandon (checkpoint only). A read-only child on a personal Host
+with `execution_workspaces.shared_review = 1` and verified read-only namespaces
+reviews the coordinator's worktree at the saved checkpoint: the frame carries
+`execution_workspace.review_commit`, `src/workspaceReview.ts` resolves the
+existing worktree (never creates one), the launch holds that worktree's lease
+key shared and refuses unless branch, HEAD and a clean tree equal the commit
+(`execution_workspace_review_basis_moved` / `_unavailable`) or the launch is not
+read-only (`execution_workspace_review_requires_read_only`). It is not a Task
+worktree launch: no preparation, settle or checkpoint. The server freezes the
+review once in `execution_workspace_reviews` (`expected_commit`) and replays
+reuse it verbatim (`projectFolders/delegatedWorkspaceReview.ts`); a Host capability
+downgrade refuses the replay rather than placing it again. Nothing is
+marked reviewed before the Host verifies and starts it. The Host's read-only
+basis upload (only sent after a verified start) sets `verified` when its HEAD
+is the expected commit (otherwise `refused`); a refusal code returned at launch
+(`execution_workspace_review_*`) is recorded as `refused`. Both are mirrored
+into the Run's `review_basis` (`expected_commit`, `observed_commit`, `state`).
+Every other delegated child forks as below.
+
+A forked delegated result publishes into the validated, yielded parent worktree under
 its own short lease. Parent checkpoints/adopted-child provenance and the existing
 parent reconciliation Job are updated before the manager resumes. Other
 conversations keep independent worktrees and only target publication serializes.
@@ -4395,7 +4707,7 @@ re-pin is a durable, fenced operation; an RPC timeout is never treated as its en
    resource replaced by a merge carries `inflight` along; the older Job can
    neither write nor claim again.
 4. *Fence writers.* While any intent row for a commit exists, the
-   `workspace_source_release_fence` trigger (migrations 0019/0020) on
+   `workspace_source_release_fence` trigger (migration 0017, composed from the former 0019/0020) on
    `task_merges` and `workspace_change_sets` refuses any new or changed
    dependent of that commit on that Host. Which commits a row depends on has
    one definition, `workspace_source_dependent_commits` /
@@ -4435,7 +4747,8 @@ re-pin is a durable, fenced operation; an RPC timeout is never treated as its en
    A dependent registered after a deletion pins its commit before using it:
    a submission's freeze and a native request's explicit commit (an
    Agent-submitted one or a historical batch's recorded source, before
-   `native_prepare`) pin `refs/rainver/sources/<c>` on the Host (CAS on absence)
+   `native_prepare`) pin `refs/rainver/sources/<c>` on the Host (CAS on absence
+   via the all-zero old value: a `command_run` argument is never empty)
    and prove the object present; a pruned object is refused
    (`workspace_commit_unavailable`). Integrations still pin their source at
    their own Host step. These pins are ordinary shared refs: later releases
@@ -4609,3 +4922,432 @@ so a parent waits (`child_workspace_dependency`) until each launched child is
 reclaimed or closed without a branch; a retained child keeps its parent too.
 A reclaimed child that is later continued keeps its recorded base; continued
 children are uncommon and this is not rebuilt from the parent automatically.
+
+### Controlled Git publication (2026-11-09)
+
+Native publication keeps one canonical path (`workspace.change.complete` →
+Operation Core → `execution_workspace_native_integrate` Job → Host
+`workspace_integration` → `publishWorkspaceCommit` CAS). Git publication,
+chain retries and the canonical repository gate use this path without a separate
+publication capability level. Workspace protocol and native-integration admission
+remain enforced. Workspace capability reports ignore undeclared metadata while
+validating the supported workspace and reclamation protocols.
+
+**Publication plan.** `action=prepare` may carry `publication:{strategy,
+target_branch?}`; it is frozen with the integration in
+`task_merges.detail_json.publication_plan` (with the requesting person and Run)
+and `task_merges.target_ref`, and later requests may repeat but never change it,
+except the explicit switch of a refused chain below
+(`workspacePublicationPlan.ts`). Without a request a new native integration
+freezes `rebase` (below). `squash` writes one new commit on the target tip and
+is admitted only on the person's own request: the person acting directly, or an
+Agent passing `user_request_quote`, which `workspaceClosureRequest` checks
+against the current turn's own message (otherwise
+`workspace_squash_requires_person_request`). An integration admitted before
+plans defaulted to rebase, and integrations of non-native Hosts, have no plan
+and stay squash. `fast_forward` publishes the Agent's own commits
+`base..HEAD` unchanged (identities preserved); `merge` writes an ordinary
+two-parent merge commit (target tip, chain tip) whose tree is the exact checked
+version, so conflict resolutions and fixes made after prepare are the merge
+commit's content, never part of the chain. Squash is never forced.
+
+*Rebase (default).* The Host (`nativeRebase.ts`, `workspaceNativeIntegration.ts`)
+first saves uncommitted edits as one commit (the summary as message), then
+replays the batch's own non-merge commits `base..HEAD` that the target does not
+already hold onto the target tip, oldest first, in the object store — Git's
+sequencer is never used. The base itself (a private snapshot baseline, earlier
+private history) never travels. A commit whose parent already is the replayed
+tip is kept as it is; a clean pick keeps its author, author date and message
+with the Agent as committer; an empty pick is dropped. The first conflicting
+commit stops the replay: the journal records the pre-rebase tip, base, replayed
+tip and remaining commits, the branch moves (CAS) to the replayed tip and the
+merged tree with conflict markers is written into the worktree (preimage under
+`refs/rainver/native-preimages/`, untracked and ignored files untouched,
+overlaps refused). The reply is `conflict` with that commit's files. The Agent
+resolves them in the worktree (its own commits on top count as the resolution;
+it does not run `git rebase`) and prepares again: remaining markers in those
+files answer `conflict` again; otherwise the resolution becomes that commit and
+the replay continues. Every worktree step is journaled first (`applying`) and
+finished after a restart. When all commits are replayed, the chain
+`target..tip` is frozen as a `rebase` chain (same bounds and path checks as
+above) and reported as `rebased` with source/base = the replayed tip and the
+target; publish then fast-forwards the target to that tip (`main_moved` when it
+moved: the next prepare replays the chain again from where it left the
+target). Publishing a stopped rebase is `native_rebase_unfinished`. A batch the
+target already holds closes as `no_changes`. An explicit or historical commit
+is replayed from its recorded base into a worktree without unsubmitted changes.
+
+On the server, a completed rebase rewrites the integration's
+`base_commit`/`source_commit` and the change set's base to the replayed chain,
+keeps the first replaced delta as `detail_json.replayed_from` (a blocked batch
+recording that delta is still adopted on publication), and moves an empty open
+batch bound to this worktree at the replaced source to the replayed tip.
+Hosts report `native_workspace_rebase`; an older Host refuses a rebase plan with
+`execution_host_native_rebase_update_required`, never a silent squash. The
+person's retry (controlled Job) publishes a recorded rebase chain like a
+fast-forward and cannot start a replay.
+
+The Host freezes the chain at prepare (`publicationChain.ts`, journaled with the
+native integration): a clean committed worktree (`native_publication_chain_uncommitted`),
+a base that is already target history (so a private snapshot baseline or
+earlier private history can never travel: `native_publication_chain_base_not_target_history`),
+no merge inside the chain, at most 200 commits/2000 changed paths and no
+credential-like or `.git`/`..` path in any commit. Fast-forward is re-frozen on
+each prepare and refused once the target moved (`native_publication_fast_forward_target_moved`;
+prepare a `merge` plan in a new batch instead). Publish re-checks the frozen
+chain (`native_publication_chain_changed`), the checked tree, `diff --check`
+and the target CAS (`main_moved`). A chain already in the target closes as
+`no_changes`. Server and Host both refuse Rainver-managed, `HEAD`, `refs/…` and
+malformed target names; the Host additionally runs `git check-ref-format` and
+requires the branch to exist. Delegated work keeps publishing into its parent.
+Limit: a source published to an explicit non-default branch keeps its own
+branch until the workspace's own target contains that content (the release
+proof is against the workspace target), shown as `unmerged_source`.
+
+The plan and the Host-reported chain identity (`detail_json.publication`:
+strategy, chain tip, length) are top-level keys every rewrite of the
+integration's detail carries forward (`frozenPublicationDetail`, with
+`replayed_from`; a retry's `previous_detail` copy is history, never searched).
+A chain plan is never squashed implicitly on any route.
+
+*Switching a refused chain.* A `fast_forward`/`merge` integration that failed
+while no chain tip was recorded (the Host refused the chain, for example
+`native_publication_chain_base_not_target_history` for a private baseline, or
+never checked it) may be switched into the same target by an explicit
+`publication:{strategy:'rebase'}` — or `'squash'` under the squash rule above —
+on `workspace.integration.retry` or `workspace.change.complete` prepare
+(`chainPlanMaySwitch`). The switch rewrites `publication_plan` with the
+requester and `replaced_plan` (strategy, last error) and drops any
+`publication` key. A rebase switch needs the Agent session; the person's route
+refuses it (`native_publication_chain_unrecorded`). A recorded chain, an
+integration in flight or in conflict, another target or a chain strategy is
+refused (`operation_conflict`); the Host journal of a recorded chain would
+refuse a changed strategy anyway.
+
+*Person's retry of a chain plan.* `workspace.integration.retry` by the person
+(no Run; optionally with a content `resolution` for the recorded conflict
+paths) goes through the existing controlled `task_merge` Job, with the frozen
+plan and recorded chain kept top-level and no Agent ownership
+(`reply_owner_run_id` is not carried). The Job prepares and verifies the
+candidate in its integration worktree as for squash (a conflict is repaired by
+the visible repair Run under the person's `human_resolution`, or the automatic
+Agent repair without one; an Agent's `repair_instruction` stays Agent-only),
+then sends `finish` with `publication_strategy`, `publication_chain_tip` and
+`publication_chain_length`. The Host (`finishTaskMerge` →
+`frozenPublicationCommit`) re-checks the chain (a linear run of exactly that
+many commits from where it leaves target history to the recorded tip,
+`native_publication_chain_changed`) and publishes: for `fast_forward` the chain
+tip itself, only when the target is its ancestor and the tip's tree is the
+verified tree (`native_publication_fast_forward_target_moved` /
+`native_publication_fast_forward_tree_differs`; a fast-forward conflict is
+blocked at once, never repaired); for `merge` one ordinary merge commit (target
+tip, chain tip) with the verified tree, fixed in the merge record so a
+repeated finish publishes the same commit. The same CAS, `main_moved` retry,
+egress, Project-write and Host-ownership checks apply. Admission and the Job
+refuse an unrecorded chain (`native_publication_chain_unrecorded`). The native
+worker sends the chain tip recorded at prepare with `native_publish` (`publication_chain_tip`);
+the Host refuses a journal whose frozen chain differs or a publish without it
+(`native_publication_chain_changed`; the server refuses an unrecorded one,
+`native_publication_chain_unrecorded`).
+
+**Branch alignment.** `workspace.branch.align` (person-only public API, policy
+action of the same name, high risk, audited) aligns one local branch of a
+Folder's single active Location to another: `fast_forward` or `reset`, with
+frozen `expected_source_commit`/`expected_target_commit`. Admission writes a
+`project_folder_io_intents` row (`kind='branch_align'`, migration 0018; one
+active intent per Location × source branch) and a `workspace_branch_align` Job.
+The Job rechecks Project write and Host ownership and sends `git_branch_align`;
+the Host (`gitBranchAlign.ts`) answers from Git facts and its journal.
+
+*Exclusion.* The gate is the repository's canonical identity
+(`repositoryGate.ts`): one lease key `repository:<git common dir>` (symlinks
+resolved), so every Location, alias, linked worktree and Task worktree of the
+repository meets at it, whenever its Location was registered. Everything of
+Rainver that can move a ref or a checkout of the repository holds that key
+*shared* for its whole duration, each resolving its own repository afresh at
+start: every Run launch (its Location and attachments, also a Task or isolated
+worktree), host commands, `withTaskHeld` maintenance (settle, delete, sweep,
+legacy merge/publication, cleanup) and Location registration through the
+daemon. An alignment takes it *exclusively without waiting*, so it starts only
+while nothing of the repository is held or waiting, and anything arriving
+later waits (launches, commands, registration) or is refused as busy
+(maintenance). From its first check to its durable answer the Host also holds a
+*Location gate* (`locationLease.ts`, `tryGateLocations`) on every configured
+Location whose Git directory is the repository's, plus the repository's
+`workspace-git:` key and the path keys of every worktree, all taken in one
+synchronous step after the busy check, so nothing can start in between. While
+a Location is gated, a launch (root, Task worktree or isolated workspace;
+baselines too) waits at the gate in its normal lease acquisition and reports
+waiting for the workspace; non-waiting holders (`tryAcquireLease`, hence
+`withTaskHeld`: settle, delete, sweep, legacy merge/publication, cleanup) are
+refused as busy; a host command (`commandRun`, `enterLocations`) waits and,
+while running, keeps a gate out. The gate is refused (`location_busy`,
+deferred) while any lease of those Locations is held, awaited or being
+acquired, or any of their worktrees or host commands is in use. It is
+in-process state: a Host restart ends every holder with it, and before any Run
+is accepted `recoverBranchAlignments` closes unfinished journals under the same
+gate (below). Limit: Git processes outside Rainver (a terminal, an IDE) take no
+lease. Against them the move relies on Git's ref transaction (CAS on both refs)
+and on refusing a dirty or busy checkout; a change made in the checkout during
+the short worktree step is detected (`recovery_required`), not prevented.
+
+*Repository quarantine.* Isolation is one state machine (`gitBranchAlign.ts`
+`settle`, `branchAlignState.ts`). An alignment makes its repository's
+quarantine record durable under `branch-align-quarantine/` — one per
+operation, keyed by the canonical Git common directory — *before* its intent
+journal and before any ref or checkout side effect; a recovery at Host start
+records it before it is attempted. The record is lifted in exactly one place,
+under the alignment's exclusive hold: after the answer is durably recorded
+(`done`) and the repository is proven to be what that answer says — untouched
+(no backup ref, source still at its old tip) or source ref, symbolic HEAD,
+index, tracked files and submodule commits exactly at the answered commit
+with no untracked file outside the recorded baseline. "Durably recorded" is
+re-established at every use, never assumed from a visible file: every read of
+a journal that a replay, settlement, admission or continuation acts on
+(`loadJournal`) first fsyncs the file, its directory and the directory chain
+up to the config directory (`syncExistingDurable`); a visible `done` or
+`intent` whose rename landed but whose directory sync failed is therefore
+neither replayed nor released nor continued from until that sync succeeds.
+Lifting is `removeDurable`: unlink, then directory sync; the in-memory record
+is dropped only after it, a failure propagates with the repository still
+isolated, and a retry syncs the directory again even though the file is
+already gone. Any throw, lost Git result, failed durable write (file fsync,
+rename, or directory sync after a visible rename), a recovery that cannot
+reach its Location, `recovery_required`, or a crash meanwhile leaves the
+repository — and only it — isolated, across restarts. Tested by injecting
+these failures through the durable I/O seam (`setDurableIoForTest`), in the
+same process and after a simulated restart; this relies on the filesystem
+honouring fsync and is not a power-loss experiment. Every start
+path asks for admission after it holds the repository shared: launches end
+with `workspace_repository_recovery_required`, host commands and alignments are
+refused with it (an alignment's own record does not refuse its redelivery,
+which settles it), maintenance is refused as busy. Admission releases a record
+when the operation is untouched, or when the source names one of the two
+commits the operation knew, is checked out at most once, and that checkout is
+consistent with the operation's own recorded baseline (only a journal whose
+fingerprint and common directory are this operation's, only for the checkout
+it recorded); an unfinished journal is then closed from those facts (aligned,
+worktree update failed, or interrupted) and never acted on later.
+
+*Journal identity* is one check (`ownJournal`) used by every replay,
+continuation, settlement and admission: the journal's path is derived from the
+request meaning (`branch-align/<Location>/<operation>.json`), it is made
+durable before use, its fingerprint and stored meaning must equal the
+request's, and its `common_dir` — and that of the operation's quarantine
+record, if any — must equal the canonical common directory the Location
+resolves to *now*. A Location whose root or symlink target now names another
+repository (even a clone or copy with the same commits and backup ref) gets
+`workspace_branch_align_repository_changed` (`needs_attention` on the server):
+an answer recorded in the old repository is not replayed and its intent is not
+continued in the new one; the new repository is neither changed nor isolated,
+and the old one stays isolated by its own record until admission proves it.
+At Host start no frame exists, so a journal is trusted only through its
+envelope: the Location directory and file name it was found at must be its
+meaning's Location and operation, its fingerprint must be its meaning, and it
+must name a repository; a quarantine record of the operation must name the
+same repository and meaning (records themselves count only at their own
+operation's file name). A journal failing that is logged and not acted on; one
+with no record whose configured Location now resolves to another repository
+isolates nothing; otherwise its repository is isolated, and a Location that
+cannot be reached or now resolves elsewhere leaves the journal unfinished. All writers record the
+canonical (symlink-resolved) common directory, so a normal restart or
+redelivery through an alias of the same repository still recovers.
+
+*Consistent checkout* (`checkoutMatches`) is judged from the files, not the
+index stat cache: no unfinished merge/rebase/cherry-pick/revert/sequencer/
+bisect or held `index.lock`; `write-tree` equals the commit's tree with nothing
+unmerged; every tracked path exists with the tree's type and executable bit
+(when `core.fileMode`); a symlink entry is a real symlink or, only when the
+effective `core.symlinks` is false, the plain placeholder file Git writes
+instead, and either form's raw bytes (link target or file content, hashed
+`--no-filters`, never through the path's `eol`/filter attributes) must equal
+the tree's blob; file contents hash to the tree's
+blobs through Git's own content semantics (attributes such as `eol`, trusted
+global/system filter drivers; a checkout's own filter drivers are disabled for
+every Rainver Git call alike), every path passed to `hash-object
+--stdin-paths` Git-quoted so names starting with `"` or holding backslashes,
+newlines or non-ASCII are hashed as themselves; every gitlink is an
+unpopulated submodule (no `.git`) that is an empty directory, or a populated one
+whose HEAD is the recorded commit — a missing path fails. The submodule's HEAD
+is compared from the superproject (`diff-files --ignore-submodules=dirty`) on a
+fresh index of the commit in a temporary file, never the checkout's index, so
+assume-unchanged, skip-worktree or stat-cache bits cannot hide a moved
+submodule and the person's index flags are never changed; every step on that
+temporary index runs with `core.ignoreStat=false` (which otherwise makes
+`update-index` mark entries assume-unchanged), without changing the person's
+configuration; because Git counts a
+HEAD it cannot resolve as unchanged, the match is also proven positively (with
+each recorded id replaced, every populated submodule must differ). Rainver
+never runs Git inside a nested repository under its own configuration, so
+edits inside a populated submodule are not judged; and no untracked non-ignored file outside the recorded
+*untracked baseline*. That baseline is taken before any side effect and stored
+in the `intent` journal (visible untracked files plus ignored paths, an
+ignored directory as one `dir/` entry), carried into `rollback`/`done`, and
+reused — never retaken — by the live step, settlement, replay, admission and
+Host-start recovery, so a person's file the target un-ignores is still
+theirs, while a leftover or a file that appeared later is never adopted (it is
+kept and the repository needs a person until it is moved). Ignored file
+contents (for example `node_modules`) are never read. A person repairing an isolated repository
+therefore brings the branch to one of the two recorded commits and its
+checkout to exactly that commit (`git reset --hard` plus removing leftover
+untracked files); the next start of any Run, command or alignment of the
+repository then proves it and proceeds.
+
+*Attachments.* A launch resolves the canonical common directory of its own
+checkout and of every attachment's actual path — registered or shared-root,
+isolated execution workspace attachments included, whatever Location id or
+alias names it — before anything is prepared, holds them all shared and asks
+admission once, so a healthy primary never takes a quarantined attachment's
+repository into a Run; an execution attachment whose repository identity
+cannot be read is refused, and `prepareWorkspaceAttachments` refuses to
+prepare a repository the caller did not gate. Host commands resolve the same
+way.
+
+*Move.* It refuses a Rainver-managed/invalid/same branch, moved tips, a source
+checked out in more than one worktree, or a checked-out source with any staged,
+unstaged or untracked change or an unfinished merge/rebase/cherry-pick/revert/
+bisect — judged by `status` and by its files (`checkoutMatches`), so an index
+flag hiding an edited file or a moved submodule is refused before any side
+effect (`workspace_branch_align_worktree_dirty`). Before any side effect it also refuses a move that adds, removes or
+moves a gitlink at a *populated* submodule of the checkout
+(`workspace_branch_align_submodule_unsupported`: alignment never updates,
+initializes or cleans submodules, and read-tree would leave them at the old
+commit), a move changing a path the checkout keeps skip-worktree (sparse;
+`workspace_branch_align_sparse_unsupported`), and a path the move adds where
+the checkout already has an untracked or ignored file or symlink, a file
+standing where a directory is needed, or a directory holding anything other
+than tracked paths this same move removes
+(`workspace_branch_align_untracked_in_the_way`: Git's read-tree overwrites
+ignored files). A clean tracked directory therefore becomes a file, and a
+tracked file a directory, as Git converts them; paths are compared exactly,
+never by name prefix. It writes the journal (`intent`, with the untracked
+baseline) durably, then runs one `git update-ref
+--stdin` transaction: create `refs/rainver/branch-backups/<intent>` at the old
+tip, `verify` the target at `expected_target_commit` and update the source from
+`expected_source_commit`. Git holds both ref locks until commit, so a target
+that moved forward or back after the checks fails the whole move
+(`workspace_branch_align_target_moved`, final for that intent: a redelivery
+never moves later). The backup ref existing is the proof the transaction
+committed: an exit code is not trusted, so a transaction whose result was
+lost is continued from the backup ref instead of being answered as moved. A
+checked-out source (still its checkout's symbolic HEAD) whose files are
+exactly the old commit then follows with `read-tree -m -u`, verified afterwards
+as a consistent checkout of the new commit. The in-the-way check runs again
+just before read-tree; if something is in the way, untracked files outside the
+baseline appeared over an otherwise old checkout, or read-tree fails, the
+journal records `rollback` (baseline kept) and the branch is put back only by
+CAS from the aligned tip, never by checking out over a person's file; restored to a consistent old checkout it answers
+`workspace_branch_align_worktree_update_failed` (`needs_attention`, backup
+kept). When the branch moved again meanwhile, HEAD left the source, read-tree
+reported success but the files do not match, a partial write left leftovers,
+or branch and checkout cannot be brought to one state, nothing is overwritten:
+`workspace_branch_align_recovery_required` (`needs_attention`, isolated). Every answer is recorded (`done`), so a lost reply replays
+it. At Host start an `intent` whose transaction committed is finished (or put
+back); one that never committed is closed as `workspace_branch_align_interrupted`
+without acting, since the control plane may already have given up on it. A
+dead Job leaves the intent `needs_attention`, never succeeded. Backup refs are
+attributed to their intent in the Location ref inventory and are never
+released automatically. Nothing is pushed or rewritten remotely.
+
+### Adoption and record reconciliation (2026-11-09)
+
+`reconcileWorkspaceAdoption` (`hosts/workspaceAdoption.ts`) runs with the
+existing per-minute reconciliation, after delegated-child adoption. For a
+settled owner (no active Run, every binding saved, no pending native request,
+no integration or other unfinished batch, not blocked or quarantined):
+
+- an open batch with nothing saved (source equals base) closes as `no_changes`
+  (`no_change_reason: empty_saved_delta`) without Host access;
+- a conversation batch with a saved difference closes as `no_changes` only when
+  every path of its recorded `base..source` delta (modes and deletions included,
+  ≤500 safe paths) is identical in the current workspace target tip
+  (`adoption_proof: target_paths_match`, `already_present_at`). This survives an
+  external merge, squash or history rewrite. Branch absence, equal titles and
+  source ancestry alone never close anything; a later edit of those paths keeps
+  the batch. A refused proof is re-tried only after the target tip or source
+  changes, or six hours (`retention_json.adoption_check`). Host failures defer
+  to the next pass and never block cleanup.
+
+Limit: a delta beyond the proof bound (more than 500 paths or 128 KiB of path
+list, or any unsafe/credential-like path) is never closed automatically, however
+it was adopted; the bound is not widened for large batches. It stays an open
+saved batch for the person to close (`workspace.change.abandon`, or Close in
+Active & pending) or to publish.
+
+The recorded target tip joins `reclaimProofCommits`; grace, holds,
+`private_baseline`, quarantine and the Host's own release proof then reclaim the
+worktree and branch exactly as after a publication.
+
+**Missing branches.** When the Host inventory reports neither branch nor
+worktree for a never-released generation that still holds unpublished, blocked
+or kept work, retention is `missing` / `branch_missing` (Active & pending,
+attention badge), never merged. Retired owners whose branch is kept are
+re-inspected hourly, read-only. The person may close those records with
+`workspace.retention.update` `acknowledge_missing`: open/ready/blocked batches
+become `abandoned` with `missing_acknowledged` (failed integrations
+`superseded`), retention `missing` / `missing_acknowledged` (History); records,
+evidence and audit stay. No raw SQL or Host deletion is involved.
+A missing reading describes the work saved before it: a Run launch report
+(`recordWorkspaceLaunch`) is the Host's newer observation that branch and
+worktree exist and replaces an inventory that found neither, so the
+re-assessment when that Run ends does not call its new work missing again; and
+read models (`currentRetention`: overview, change views, Active & pending,
+`workspace.change.list`) do not apply a missing reading assessed before an open
+batch's latest update to that work, which then reads as saved/unsaved. A
+reading with no newer open work, or without an assessment time, still stands.
+
+### Active management (2026-11-09)
+
+`workspace.change.list` (Agent tool and public API, `workspaceChangeList.ts`)
+pages visible change sets through `readVisibleWorkspaceChanges`, so hidden rows
+never use up a page. An Agent reads its own conversation tree (every generation
+and delegated workspace at any depth) in full; `scope=project` adds other
+conversations of the Project only for Runs the same person instructed, as
+metadata (no summary or conversation id). A person reads `scope=project` with
+`project_id`. Each item reports `saved_difference`, retention and
+`closable`/`close_blocker` (`run_active`, `checkpoint_pending`,
+`integration_active`, `requires_person`, `review_required`,
+`project_write_required`). Closing stays `workspace.change.abandon`; an Agent's
+`closable` is computed by abandon's own authorizer (`authorizedWorkspaceChange`
+with closure scope), so a listed closable row is one it can close. An Agent
+closing an open batch with saved changes must supply the explicit reviewed
+withdrawal described below (otherwise 409), and still cannot reach other conversations. Closure scope also
+reaches a delegated workspace forked at any depth below a conversation
+workspace of the caller's own conversation, when the caller writes that
+conversation for the same person and Project; other conversations, other
+people's Hosts, invisible origins and batches with a live Run stay refused.
+`workspace.change.get` reads with the same scope (a delegated batch at any
+depth below the caller's conversation, through the same origin-Run body, Host
+and Project gates), so what is listed and closable can be read in detail; it
+widens no write: such a batch reports `can_retry: false` and is still refused
+by complete and retry.
+
+Reviewed withdrawal is available through `workspace.change.abandon.review` (see
+[Project Files: reviewed conversational withdrawal](project-files.md#reviewed-conversational-withdrawal)).
+This is audited logical closure with source retention, not a Host adoption proof
+or permission to delete unique source data. The direct manual Run and exact saved
+version fence the request; Agent interpretation of the human instruction remains
+necessary. Launch instructions expose this workflow even without blocked-batch hints.
+
+
+#### Reviewed exact-tip discard (reclaim 5)
+
+The control plane can request `discard_commit` on a source `cleanup` only after
+an explicit reviewed-discard admission (see project-files). It must equal
+`expected_commit`, require `retain_branch:false` and a materialization epoch,
+and cannot name an integration candidate. The complete cleanup digest includes
+this field (including legacy comparison), so changing it is not a replay of an
+ordinary proof-checked release. Existing requests retain their digest identity.
+Under the same Task lease, only adoption proof is replaced by exact-tip discard;
+CAS, active lease, dirty-tree, quarantine and epoch guards remain. Before branch
+deletion, existing Run-history keeps and durability protect the discarded source;
+the server schedules its normal expiry even for interrupted cleanup. The plan
+includes the recorded bases and saved Run checkpoints. Ref pages preserve the
+`discarded` outcome, use the same shared-source fences and never claim merge.
+The branch and physical tree are removed, while recovery refs have bounded
+retention (30 days by default), after which normal Git GC can collect unreferenced
+objects. This is not immediate object-store erasure or a bypass for unsaved files.
+
+Reuse / Dependency Check: extends existing Operation Core admission, durable
+workspace cleanup/ref-release Jobs, Task leases, Git CAS and Run-history expiry;
+no new scheduler, dependency, generic transport or deletion runner is introduced.

@@ -74,6 +74,35 @@ export const executionWorkspaceRuns=pgTable('execution_workspace_runs',{
 ] satisfies PgTableExtraConfigValue[]);
 
 /**
+ * The frozen basis of a read-only delegated review of its coordinator's
+ * workspace (ADR 0029, "Delegated workspace placement"): written once when the
+ * review is first placed and reused verbatim by every replay of the same Run,
+ * so a retry can neither re-place it (a fork, another version) nor move the
+ * expected commit. It is no batch and no binding: it never creates a change
+ * set, checkpoint or saved result. `expected_commit` is what the server froze;
+ * `observed_commit`/`observed_tree` are what the Host reported reading after it
+ * verified that clean version under its shared lease. Only `verified` means the
+ * review actually ran on the expected version; `refused` records the Host's
+ * refusal code.
+ */
+export const executionWorkspaceReviews=pgTable('execution_workspace_reviews',{
+ runId:varchar('run_id',{length:36}).primaryKey(),spaceId:varchar('space_id',{length:36}).notNull(),
+ workspaceId:varchar('workspace_id',{length:36}).notNull(),generation:integer().notNull(),
+ workspaceLocationId:varchar('workspace_location_id',{length:36}).notNull(),
+ expectedCommit:varchar('expected_commit',{length:64}).notNull(),
+ state:varchar({length:16}).notNull().default('pending'),
+ observedCommit:varchar('observed_commit',{length:64}),observedTree:varchar('observed_tree',{length:64}),
+ refusal:varchar({length:64}),
+ createdAt:timestamp('created_at',{withTimezone:true,mode:'string'}).notNull().defaultNow(),
+ observedAt:timestamp('observed_at',{withTimezone:true,mode:'string'}),
+},t=>[
+ foreignKey({columns:[t.runId,t.spaceId],foreignColumns:[runs.id,runs.spaceId]}),
+ foreignKey({columns:[t.workspaceId,t.spaceId],foreignColumns:[executionWorkspaces.id,executionWorkspaces.spaceId]}),
+ check('ck_workspace_review_state',sql`state IN ('pending','verified','refused')`),
+ index('ix_workspace_reviews_workspace').on(t.spaceId,t.workspaceId),
+] satisfies PgTableExtraConfigValue[]);
+
+/**
  * Durable deletion intents for shared `refs/rainver/sources/<commit>` refs:
  * one row per (Host, commit, unended Host operation). A ref release inserts the
  * rows of its batch in the claim transaction, under the per-(Host, commit)

@@ -140,6 +140,8 @@ export const ProjectResearchQuestionAssessmentMessageSchema = z.object({
     message: z.string().min(1),
     created_at: z.string(),
   }).strict()).optional(),
+  /** Present on a completed assistant turn: that turn's own answer, not the session's latest. */
+  refinement: ProjectResearchQuestionRefinementResultSchema.optional(),
   created_by_user_id: z.string().nullable(),
   created_at: z.string(),
 }).strict();

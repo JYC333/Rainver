@@ -316,8 +316,11 @@ INFO  scheduler registry started tasks=...backup_scheduler...
 Or trigger a manual backup and confirm (instance administrator session):
 ```bash
 curl -s -X POST http://localhost:3000/api/v1/system/backups/manual \
-  --cookie 'session_id=<admin-session>'
-# Expected: {"status": "ok", "backup": "manual-YYYYMMDD-HHMMSS.tar.gz"}
+  --cookie 'session_id=<admin-session>' -H "Idempotency-Key: $(uuidgen)"
+# A keyed system command: 202 {"status":"succeeded","data":{"id":"<command-id>","status":"pending",...}}.
+# The archive is written after commit; its name is the command's result:
+curl -s http://localhost:3000/api/v1/system/commands/<command-id> --cookie 'session_id=<admin-session>'
+# Expected once settled: {"status":"succeeded","result":{"status":"ok","backup":"manual-YYYYMMDD-HHMMSS.tar.gz"},...}
 
 curl -s http://localhost:3000/api/v1/system/backups \
   --cookie 'session_id=<admin-session>'
@@ -500,9 +503,9 @@ curl -s "http://localhost:3000/api/v1/home/summary?space_id=<user-a-personal-spa
 # Deployment jobs are instance-admin only, and take no arbitrary job type
 curl -s -X POST "http://localhost:3000/api/v1/deployments/jobs" \
   -H "X-API-Key: <user-a-api-key>" \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Idempotency-Key: $(uuidgen)" \
   -d '{"job_type": "arbitrary", "target": "local"}'
-# Expected: 403 for a non-admin; 422 for that body as the admin
+# Expected: 404 (hidden) for a non-admin; 422 for that body as the admin
 
 # The job list is admin-only too
 curl -s "http://localhost:3000/api/v1/deployments/jobs" \
@@ -538,8 +541,11 @@ docker compose -p rainver-dev -f ops/compose/docker-compose.dev.yml logs server 
 **API (server running, instance administrator session):**
 ```bash
 curl -s -X POST http://localhost:3000/api/v1/system/backups/manual \
-  --cookie 'session_id=<admin-session>'
-# Expected: {"status": "ok", "backup": "manual-YYYYMMDD-HHMMSS.tar.gz"}
+  --cookie 'session_id=<admin-session>' -H "Idempotency-Key: $(uuidgen)"
+# A keyed system command: 202 {"status":"succeeded","data":{"id":"<command-id>","status":"pending",...}}.
+# The archive is written after commit; its name is the command's result:
+curl -s http://localhost:3000/api/v1/system/commands/<command-id> --cookie 'session_id=<admin-session>'
+# Expected once settled: {"status":"succeeded","result":{"status":"ok","backup":"manual-YYYYMMDD-HHMMSS.tar.gz"},...}
 ```
 
 **Offline full-system CLI (server not running, postgres up):**

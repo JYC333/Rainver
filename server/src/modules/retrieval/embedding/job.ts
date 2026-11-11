@@ -178,3 +178,16 @@ function numberValue(value: unknown): number | null {
   }
   return null;
 }
+
+/**
+ * A changed embedding chain invalidates the Space's vectors: reset them and
+ * queue (or reuse a queued) backfill in the caller's transaction, so the
+ * policy change, the reset and the Job commit together.
+ */
+export async function resetAndQueueRetrievalEmbeddingsIn(
+  db: import("../../routeUtils/common.js").Queryable,
+  input: { spaceId: string; userId: string; trigger: string },
+): Promise<void> {
+  await new RetrievalEmbeddingStore(db).resetEmbeddingsForSpace(input.spaceId);
+  await enqueueRetrievalEmbeddingBackfillWithQueue(new PgJobQueueRepository(db), input);
+}

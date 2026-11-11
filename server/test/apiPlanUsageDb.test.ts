@@ -11,6 +11,8 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { resolveProviderCommandStore } from "../src/modules/providers/commands/store.js";
 import { listApiPlanUsageProviders, refreshApiPlanUsage } from "../src/modules/providers/planUsage/service.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { keyed, refused, succeeded, systemCommandHarness } from "./support/systemCommandHarness.js";
+import { systemCommandsModule } from "../src/modules/systemCommands/index.js";
 import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
 
 const db = useTestDatabase(import.meta.filename);
@@ -113,7 +115,8 @@ it("returns a safe failure instead of a zero meter or vendor error body", async 
 
 it("serves owner-only public quota routes and keeps the list route distinct from provider detail", async () => {
   const routeConfig = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: home, SERVER_DEBUG: "true" });
-  const app = buildModuleServer(routeConfig, [providersModule]);
+  const app = buildModuleServer(routeConfig, [providersModule, systemCommandsModule]);
+  const commands = systemCommandHarness(db.pool, routeConfig);
   vi.stubGlobal("fetch", async () => vendorResponse());
   try {
     __setAuthIdentityForTests({ spaceId: space, userId: owner });
@@ -121,14 +124,19 @@ it("serves owner-only public quota routes and keeps the list route distinct from
     expect(listed.statusCode).toBe(200);
     expect(listed.headers["cache-control"]).toContain("no-store");
     expect(listed.json()).toEqual({ items: [{ provider_id: providerId, name: "MiniMax plan", vendor: "minimax" }] });
-    const refreshed = await app.inject({ method: "POST", url: `/api/v1/providers/${providerId}/plan-usage`, payload: {} });
-    expect(refreshed.statusCode).toBe(200);
-    expect(refreshed.json().windows[0].used_pct).toBe(25);
-    expect(refreshed.payload).not.toContain("secret");
+    // `provider.plan_usage.refresh`: a receipt; the vendor read runs after commit and the
+    // snapshot is released only by the issuer's status read.
+    const { receipt, status } = await commands.run(app, { method: "POST", url: `/api/v1/providers/${providerId}/plan-usage`, payload: {} });
+    expect(receipt.kind).toBe("provider_plan_usage_refresh");
+    expect(status).toMatchObject({ status: "succeeded", error: null });
+    expect((status.result as { windows: Array<{ used_pct: number }> }).windows[0]!.used_pct).toBe(25);
+    expect(JSON.stringify(status)).not.toContain("secret");
     __setAuthIdentityForTests({ spaceId: space, userId: other });
-    const denied = await app.inject({ method: "POST", url: `/api/v1/providers/${providerId}/plan-usage`, payload: {} });
+    const denied = await keyed(app, { method: "POST", url: `/api/v1/providers/${providerId}/plan-usage`, payload: {} });
     expect(denied.statusCode).toBe(404);
     expect(denied.payload).not.toContain("secret");
+    // Nor may anyone else read the owner's command.
+    expect((await commands.status(app, receipt.id)).statusCode).toBe(404);
   } finally { await app.close(); }
 });
 
@@ -151,7 +159,7 @@ it("does not return a result after the Space grant's network profile is changed 
   }
 });
 
-describe("the refresh route authorizes each caller's real session again after the vendor wait", () => {
+describe("the refresh command releases the quota only to a session that still holds the authority", () => {
   // No identity override: the real session table and account status decide.
   const routeConfig = () => loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: home, SERVER_DEBUG: "true" });
   async function signIn(): Promise<{ sessionId: string; headers: Record<string, string> }> {
@@ -169,57 +177,85 @@ describe("the refresh route authorizes each caller's real session again after th
     vi.stubGlobal("fetch", fetcher);
     return { fetcher, release: async () => { await vi.waitFor(() => expect(fetcher).toHaveBeenCalled()); release(); } };
   }
+  const submit = (app: ReturnType<typeof buildModuleServer>, headers: Record<string, string>) =>
+    keyed(app, { method: "POST", url: `/api/v1/providers/${providerId}/plan-usage`, headers, payload: {} });
+  const status = (app: ReturnType<typeof buildModuleServer>, id: string, headers: Record<string, string>) =>
+    app.inject({ method: "GET", url: `/api/v1/system/commands/${id}`, headers });
   afterEach(async () => {
     await db.pool.query("UPDATE users SET status='active' WHERE id=$1", [owner]);
     await db.pool.query("DELETE FROM user_sessions WHERE user_id=$1", [owner]);
   });
 
   it("returns the quota to a session that is still signed in", async () => {
-    const app = buildModuleServer(routeConfig(), [providersModule]);
+    const app = buildModuleServer(routeConfig(), [providersModule, systemCommandsModule]);
+    const commands = systemCommandHarness(db.pool, routeConfig());
     try {
       const { headers } = await signIn();
       vi.stubGlobal("fetch", async () => vendorResponse());
-      const response = await app.inject({ method: "POST", url: `/api/v1/providers/${providerId}/plan-usage`, headers, payload: {} });
-      expect(response.statusCode, response.body).toBe(200);
-      expect(response.json().windows[0].used_pct).toBe(25);
+      const receipt = succeeded<{ id: string }>(await submit(app, headers), 202);
+      await commands.process();
+      const read = await status(app, receipt.id, headers);
+      expect(read.statusCode, read.body).toBe(200);
+      expect(read.json().result.windows[0].used_pct).toBe(25);
     } finally { await app.close(); }
   });
 
-  for (const [name, change] of [
-    ["the session is signed out", "DELETE FROM user_sessions WHERE id=$1"],
-    ["the account is disabled", "UPDATE users SET status='disabled' WHERE id=(SELECT user_id FROM user_sessions WHERE id=$1)"],
-  ] as const) {
-    it(`refuses, without the quota, when ${name} during the vendor request`, async () => {
-      const app = buildModuleServer(routeConfig(), [providersModule]);
-      try {
-        const { sessionId, headers } = await signIn();
-        const vendor = slowVendor();
-        const pending = app.inject({ method: "POST", url: `/api/v1/providers/${providerId}/plan-usage`, headers, payload: {} });
-        await vi.waitFor(() => expect(vendor.fetcher).toHaveBeenCalled());
-        await db.pool.query(change, [sessionId]);
-        await vendor.release();
-        const response = await pending;
-        expect(response.statusCode, response.body).toBe(401);
-        expect(response.body).not.toContain("used_pct");
-      } finally { await app.close(); }
-    });
-  }
+  it("refuses, without the quota, a session signed out during the vendor request", async () => {
+    const app = buildModuleServer(routeConfig(), [providersModule, systemCommandsModule]);
+    const commands = systemCommandHarness(db.pool, routeConfig());
+    try {
+      const { sessionId, headers } = await signIn();
+      const receipt = succeeded<{ id: string }>(await submit(app, headers), 202);
+      const vendor = slowVendor();
+      const running = commands.process();
+      await vi.waitFor(() => expect(vendor.fetcher).toHaveBeenCalled());
+      await db.pool.query("DELETE FROM user_sessions WHERE id=$1", [sessionId]);
+      await vendor.release();
+      await running;
+      const read = await status(app, receipt.id, headers);
+      expect(read.statusCode, read.body).toBe(401);
+      expect(read.body).not.toContain("used_pct");
+    } finally { await app.close(); }
+  });
 
-  it("checks each joined caller's own session: a signed-out joiner is refused while the other still gets the shared answer", async () => {
-    const app = buildModuleServer(routeConfig(), [providersModule]);
+  it("records no quota for an account disabled during the vendor request", async () => {
+    const app = buildModuleServer(routeConfig(), [providersModule, systemCommandsModule]);
+    const commands = systemCommandHarness(db.pool, routeConfig());
+    try {
+      const { sessionId, headers } = await signIn();
+      const receipt = succeeded<{ id: string }>(await submit(app, headers), 202);
+      const vendor = slowVendor();
+      const running = commands.process();
+      await vi.waitFor(() => expect(vendor.fetcher).toHaveBeenCalled());
+      await db.pool.query("UPDATE users SET status='disabled' WHERE id=(SELECT user_id FROM user_sessions WHERE id=$1)", [sessionId]);
+      await vendor.release();
+      await running;
+      // The worker's settle step found the person no longer active: nothing is kept to release.
+      const row = (await db.pool.query<{ status: string; result_json: unknown; error_code: string }>(`SELECT status,result_json,error_code FROM system_command_intents WHERE id=$1`, [receipt.id])).rows[0]!;
+      expect(row).toMatchObject({ status: "needs_attention", result_json: null, error_code: "system_command_authority_withdrawn" });
+      const read = await status(app, receipt.id, headers);
+      expect(read.statusCode, read.body).toBe(401);
+      expect(read.body).not.toContain("used_pct");
+    } finally { await app.close(); }
+  });
+
+  it("gives a second request for the same read the active command instead of a second vendor request", async () => {
+    const app = buildModuleServer(routeConfig(), [providersModule, systemCommandsModule]);
+    const commands = systemCommandHarness(db.pool, routeConfig());
     try {
       const kept = await signIn(), lost = await signIn();
       const vendor = slowVendor();
-      const url = `/api/v1/providers/${providerId}/plan-usage`;
-      const first = app.inject({ method: "POST", url, headers: kept.headers, payload: {} });
-      const second = app.inject({ method: "POST", url, headers: lost.headers, payload: {} });
+      const receipt = succeeded<{ id: string }>(await submit(app, kept.headers), 202);
+      const busy = await submit(app, lost.headers);
+      expect(refused(busy, 409)).toBe("operation_conflict");
+      expect(busy.json().error.metadata).toEqual({ code: "system_command_busy", command_id: receipt.id });
+      const running = commands.process();
       await vi.waitFor(() => expect(vendor.fetcher).toHaveBeenCalled());
-      // Let both callers authorize and join before signing one out.
-      await new Promise(resolve => setTimeout(resolve, 100));
       await db.pool.query("DELETE FROM user_sessions WHERE id=$1", [lost.sessionId]);
       await vendor.release();
-      const [a, b] = await Promise.all([first, second]);
+      await running;
       expect(vendor.fetcher).toHaveBeenCalledTimes(1);
+      const a = await status(app, receipt.id, kept.headers), b = await status(app, receipt.id, lost.headers);
       expect(a.statusCode, a.body).toBe(200);
       expect(b.statusCode, b.body).toBe(401);
       expect(b.body).not.toContain("used_pct");

@@ -1,3 +1,6 @@
+import {workspacePublicationNeedsReview} from '../src/modules/projectFolders/workspacePublication.js';
+import {checkpointWorkspaceRun} from '../src/modules/hosts/executionWorkspaceJobs.js';
+import type {HostConnectionRegistry} from '../src/modules/hosts/connectionRegistry.js';
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -5,9 +8,12 @@ import { resetTables } from "./support/resetTables.js";
 import { seedAgentWithVersion, seedRun, seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { conversationWorkspaceChangesForViewer, workspaceChangesForConversation, workspaceChangesForRun } from "../src/modules/projectFolders/workspaceReadModel.js";
 import { agentWorkspaceDetail, listAgentWorkspaces } from "../src/modules/projectFolders/workspaceOverview.js";
+import { listAgentWorkspaceGroups } from "../src/modules/projectFolders/workspaceOverviewGroups.js";
 import { workspaceIntegrationRecoveryHints } from "../src/modules/projectFolders/workspaceRecovery.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { runBodyReadableSql } from "../src/modules/runs/runBodyReadSql.js";
+import { authorizedWorkspaceChange } from "../src/modules/projectFolders/workspaceOperations.js";
+import { sessionActor } from "../src/modules/systemActions/operations/actor.js";
 
 /**
  * Workspace progress readers on real PostgreSQL: one batch belongs to the Runs
@@ -93,6 +99,40 @@ async function delegation(parentRun: string, childRun: string) {
   await db.pool.query("UPDATE runs SET parent_run_id=$2,delegation_id=$3 WHERE id=$1", [childRun, parentRun, id]);
   return id;
 }
+
+it('keeps removed branches in history without closing or claiming adoption of their saved work',async ctx=>{
+ if(!db.available)return ctx.skip();
+ const closed=await workspace({retention:{state:'missing',reason:'missing_acknowledged'}});
+ await batch(closed,[await run('succeeded')],'abandoned');
+ const stale=await workspace({retention:{state:'retained',reason:'unpublished_changes'}});
+ await batch(stale,[await run('succeeded')],'abandoned');
+ const unresolved=await workspace({retention:{state:'missing',reason:'branch_missing'}});
+ await batch(unresolved,[await run('succeeded')],'open');
+ const current=await listAgentWorkspaces(db.pool,identity,PROJECT,{view:'current',limit:50});
+ expect(current.items.some(i=>i.workspace_id===closed||i.workspace_id===stale)).toBe(false);
+ expect(current.items.some(i=>i.workspace_id===unresolved)).toBe(false);
+ const history=await listAgentWorkspaces(db.pool,identity,PROJECT,{view:'history',limit:50});
+ expect(history.items.find(i=>i.workspace_id===closed)).toMatchObject({work_state:'missing_closed'});
+ expect(history.items.find(i=>i.workspace_id===unresolved)).toMatchObject({work_state:'missing'});
+ expect((await agentWorkspaceDetail(db.pool,identity,PROJECT,unresolved)).items[0]?.change.state).toBe('open');
+ expect(history.items.find(i=>i.workspace_id===stale)).toMatchObject({work_state:'kept'});
+});
+
+it('keeps live work and new saves current despite an older missing-branch assessment',async ctx=>{
+ if(!db.available)return ctx.skip();
+ const ids:string[]=[];
+ for(const [status,state] of [['running','open'],['succeeded','integrating'],['succeeded','blocked']] as const){
+  const id=await workspace({retention:{state:'missing',reason:'branch_missing'}});
+  await batch(id,[await run(status)],state);ids.push(id);
+ }
+ const resaved=await workspace({retention:{state:'missing',reason:'branch_missing',assessed_at:'2026-01-01T00:00:00Z'}});
+ await batch(resaved,[await run()],'open',{updatedAt:'2026-01-02T00:00:00Z'});ids.push(resaved);
+ const current=await listAgentWorkspaces(db.pool,identity,PROJECT,{view:'current',limit:50});
+ expect(current.items.map(i=>i.workspace_id).sort()).toEqual(ids.sort());
+ expect(current.items.find(i=>i.workspace_id===resaved)).toMatchObject({work_state:'saved',retention:null});
+ const history=await listAgentWorkspaces(db.pool,identity,PROJECT,{view:'history',limit:50});
+ expect(history.items).toEqual([]);
+});
 
 describe("workspace progress ownership", () => {
   it("returns a conversation batch only under the Runs bound to it, and its pending work once per conversation", async ctx => {
@@ -353,5 +393,184 @@ describe("Run body gate in SQL", () => {
     expect(narrowed.sql.has(reading)).toBe(false);
     expect(narrowed.sql.has(archivedRun)).toBe(false);
     expect(narrowed.detail.has(archivedRun)).toBe(true);
+  });
+});
+
+describe("Agent workspace groups", () => {
+  const X = "1".repeat(40), Y = "2".repeat(40), Z = "3".repeat(40);
+  const KEY = `c:${CONVERSATION}:${LOCATION}`;
+  it("aggregates one conversation × repository, folds delegations into its history and only exact proven duplicates away", async ctx => {
+    if (!db.available) return ctx.skip();
+    const coordinator = await run();
+    const main = await workspace();
+    await batch(main, [coordinator], "integrated", { source: X, updatedAt: new Date(Date.now() - 600_000).toISOString() });
+    const next = await workspace();
+    await batch(next, [await run()], "open", { source: Y, updatedAt: new Date(Date.now() - 500_000).toISOString() });
+    const children: string[] = [];
+    for (const [source, age] of [[X, 400_000], [Z, 300_000], [Z, 200_000]] as const) {
+      const childRun = await run();
+      const id = await workspace({ owner: "delegation", parent: main, delegation: await delegation(coordinator, childRun) });
+      await batch(id, [childRun], "open", { source, updatedAt: new Date(Date.now() - age).toISOString() });
+      children.push(id);
+    }
+    const other = await workspace({ session: OTHER_CONVERSATION });
+    await batch(other, [await run("succeeded", OTHER_CONVERSATION)], "integrated", { source: X });
+    const current = await listAgentWorkspaceGroups(db.pool, identity, PROJECT, { view: "current", limit: 20 });
+    expect(current.items.map(g => g.group_key)).toEqual([KEY]);
+    const [g] = current.items;
+    expect(g).toMatchObject({ workspace_count: 5, delegation_count: 3, work_state: "saved", proven_duplicates: 1,
+      conversation: { id: CONVERSATION, title: "Refactor login", room_id: roomId }, folder: { id: FOLDER, name: "repo" },
+      latest_result: { workspace_id: children[2], state: "open", source_commit: Z } });
+    // Z is listed once (same commit), Y stays visible; X folded because that exact commit landed.
+    expect(g!.unconfirmed.map(u => [u.source_commit, u.same_commit_count, u.reason])).toEqual([[Z, 1, "saved_not_merged"], [Y, 0, "saved_not_merged"]]);
+    expect(g!.issues).toEqual([{ kind: "unconfirmed", count: 2 }]);
+    const history = await listAgentWorkspaceGroups(db.pool, identity, PROJECT, { view: "history", limit: 20 });
+    expect(history.items.map(h => h.group_key)).toEqual([`c:${OTHER_CONVERSATION}:${LOCATION}`]);
+    // The folded execution history returns every generation of the group, delegations included.
+    const all = await listAgentWorkspaces(db.pool, identity, PROJECT, { view: "all", group: KEY, limit: 50 });
+    expect(all.items.map(i => i.workspace_id).sort()).toEqual([main, next, ...children].sort());
+  });
+
+  it("groups and pages only what the reader may see", async ctx => {
+    if (!db.available) return ctx.skip();
+    const mine = await workspace();
+    await batch(mine, [await run()], "open", { source: Y });
+    // Another person's private saved work in the same conversation and repository never appears or counts.
+    const hidden = await workspace();
+    await batch(hidden, [await run("succeeded", CONVERSATION, "hidden")], "open", { source: Z });
+    const withheld = await workspace();
+    await batch(withheld, [await run("failed", CONVERSATION, "withheld")], "blocked");
+    // A conversation with only hidden work is no group at all.
+    const foreign = await workspace({ session: OTHER_CONVERSATION });
+    await batch(foreign, [await run("failed", OTHER_CONVERSATION, "hidden")], "blocked");
+    const [g, ...rest] = (await listAgentWorkspaceGroups(db.pool, identity, PROJECT, { view: "current", limit: 20 })).items;
+    expect(rest).toEqual([]);
+    expect(g).toMatchObject({ group_key: KEY, workspace_count: 1, batch_count: 1, issues: [{ kind: "unconfirmed", count: 1 }] });
+    expect(g!.unconfirmed.map(u => u.source_commit)).toEqual([Y]);
+    expect((await listAgentWorkspaceGroups(db.pool, identity, PROJECT, { view: "history", limit: 20 })).items).toEqual([]);
+    expect((await listAgentWorkspaces(db.pool, identity, PROJECT, { view: "all", group: KEY, limit: 50 })).items.map(i => i.workspace_id)).toEqual([mine]);
+    // Group paging: a cursor names only a group this reader was shown.
+    const second = await workspace({ session: OTHER_CONVERSATION });
+    await batch(second, [await run("succeeded", OTHER_CONVERSATION)], "open", { source: X });
+    const first = await listAgentWorkspaceGroups(db.pool, identity, PROJECT, { view: "current", limit: 1 });
+    expect(first.items).toHaveLength(1);
+    const page2 = await listAgentWorkspaceGroups(db.pool, identity, PROJECT, { view: "current", limit: 1, cursor: first.next_cursor! });
+    expect([...first.items, ...page2.items].map(i => i.group_key).sort()).toEqual([KEY, `c:${OTHER_CONVERSATION}:${LOCATION}`].sort());
+    expect(page2.next_cursor).toBeNull();
+    await expect(listAgentWorkspaceGroups(db.pool, { spaceId: SPACE, userId: OUTSIDER }, PROJECT, { view: "current", limit: 20 })).rejects.toMatchObject({ statusCode: expect.any(Number) });
+    await expect(listAgentWorkspaceGroups(db.pool, identity, PROJECT, { view: "current", limit: 5, cursor: "bad" })).rejects.toMatchObject({ statusCode: 422 });
+  });
+});
+
+describe("Workspace batch contributors", () => {
+  const X = "4".repeat(40), Z = "5".repeat(40);
+  const KEY = `c:${CONVERSATION}:${LOCATION}`;
+  const actor = sessionActor({ spaceId: SPACE, userId: OWNER });
+  const everyRead = async () => JSON.stringify([
+    await listAgentWorkspaceGroups(db.pool, identity, PROJECT, { view: "current", limit: 20 }),
+    await listAgentWorkspaceGroups(db.pool, identity, PROJECT, { view: "history", limit: 20 }),
+    await listAgentWorkspaces(db.pool, identity, PROJECT, { view: "current", limit: 50 }),
+    await listAgentWorkspaces(db.pool, identity, PROJECT, { view: "history", limit: 50 }),
+    await listAgentWorkspaces(db.pool, identity, PROJECT, { view: "all", group: KEY, limit: 50 }),
+    await conversationWorkspaceChangesForViewer(db.pool, SPACE, CONVERSATION, OWNER),
+  ]);
+
+  it("hides a readable coordinator's batch from every read model and operation once an unreadable shared child checkpointed into it", async ctx => {
+    if (!db.available) return ctx.skip();
+    const older = await workspace();
+    await batch(older, [await run()], "open", { source: X, updatedAt: new Date(Date.now() - 600_000).toISOString() });
+    const coordinator = await run("succeeded");
+    const shared = await workspace();
+    // The child continued in the coordinator's batch: its checkpoint moved the
+    // source to Z and the activity time, though the batch origin stays readable.
+    const child = await run("succeeded", CONVERSATION, "hidden");
+    await delegation(coordinator, child);
+    const changed = await batch(shared, [coordinator, child], "open", { source: X });
+    await db.pool.query("UPDATE runs SET instructed_by_user_id=$2 WHERE id=$1", [child, OWNER]);
+    await db.pool.query("UPDATE execution_workspace_runs SET checkpoint_state='pending',start_commit=$2,launch_sequence=2 WHERE run_id=$1", [child, X]);
+    await db.pool.query('UPDATE hosts SET capabilities_json=$2::jsonb WHERE id=$1',[HOST,JSON.stringify({execution_workspaces:{version:2}})]);
+    const hosts = { requestTaskBranch: async () => ({ok:true,commit:Z}) } as unknown as HostConnectionRegistry;
+    await checkpointWorkspaceRun(db.pool, child, SPACE, hosts);
+    expect((await db.pool.query('SELECT source_commit,verification_json FROM workspace_change_sets WHERE id=$1',[changed])).rows[0])
+      .toMatchObject({source_commit:Z,verification_json:{contributor_run_ids:[child]}});
+    expect(await workspaceChangesForRun(db.pool,{id:coordinator,space_id:SPACE},OWNER)).toEqual([]);
+    const visiblePage=await listAgentWorkspaces(db.pool,identity,PROJECT,{view:'current',limit:1});
+    expect(visiblePage.items.map(i=>i.workspace_id)).toEqual([older]);
+    expect(visiblePage.next_cursor).toBeNull();
+    const reads = await everyRead();
+    expect(reads).not.toContain(Z);
+    expect(reads).not.toContain(changed);
+    expect(reads).not.toContain(shared);
+    const [g] = (await listAgentWorkspaceGroups(db.pool, identity, PROJECT, { view: "current", limit: 20 })).items;
+    expect(g).toMatchObject({ workspace_count: 1, current: { workspace_id: older } });
+    await expect(agentWorkspaceDetail(db.pool, identity, PROJECT, shared, {})).rejects.toMatchObject({ statusCode: 404 });
+    // get, diff, publication and closure all authorize through the same gate.
+    await expect(authorizedWorkspaceChange(db.pool, changed, actor)).rejects.toThrow();
+    // A withheld (summary-only) child hides it just the same; a readable one shows it.
+    const summaryChild = await run("succeeded", CONVERSATION, "withheld");
+    const withheld = await batch(await workspace(), [await run(), summaryChild], "open", { source: Z });
+    await expect(authorizedWorkspaceChange(db.pool, withheld, actor)).rejects.toThrow();
+    const readable = await batch(await workspace(), [await run(), await run()], "open", { source: Z });
+    await expect(authorizedWorkspaceChange(db.pool, readable, actor)).resolves.toMatchObject({ id: readable, access: "person" });
+    expect(await everyRead()).toContain(readable);
+  });
+
+  it("applies recorded native contributors and adopted child batches the same way", async ctx => {
+    if (!db.available) return ctx.skip();
+    const hiddenRun = await run("succeeded", CONVERSATION, "hidden");
+    // A Run that prepared or checkpointed through the native operation without a binding.
+    const recorded = await batch(await workspace(), [await run()], "open", { source: Z, verification: { contributor_run_ids: [hiddenRun] } });
+    // A parent batch carrying an adopted child batch whose Run is unreadable.
+    const parentWorkspace = await workspace(), parentRun = await run();
+    const childRun = await run("succeeded", CONVERSATION, "hidden");
+    const childBatch = await batch(await workspace({ owner: "delegation", parent: parentWorkspace, delegation: await delegation(parentRun, childRun) }), [childRun], "integrated", { source: Z });
+    const adopter = await batch(parentWorkspace, [parentRun], "open", { source: Z, verification: { adopted_child_change_ids: [childBatch] } });
+    const reads = await everyRead();
+    for (const id of [recorded, adopter, childBatch]) expect(reads).not.toContain(id);
+    // A native-only contributor of the adopted batch is inherited recursively.
+    const nativeParent=await workspace();
+    const nativeChild = await batch(await workspace({owner:'delegation',parent:nativeParent,delegation:await delegation(parentRun,await run())}), [await run()], 'integrated', {source:Z,verification:{contributor_run_ids:[hiddenRun]}});
+    const nativeAdopter=await batch(nativeParent,[await run()], 'open', {source:Z,verification:{adopted_child_change_ids:[nativeChild]}});
+    expect(await everyRead()).not.toContain(nativeAdopter);
+    await db.pool.query("UPDATE runs SET has_context_taint=true,context_taint_json='{}'::jsonb WHERE id=$1",[hiddenRun]);
+    for(const id of [recorded,nativeAdopter]) expect(await workspacePublicationNeedsReview(db.pool,{spaceId:SPACE,changeSetId:id,requesterId:OWNER,repairRunId:null})).toBe(true);
+    for (const id of [recorded, adopter, nativeAdopter]) await expect(authorizedWorkspaceChange(db.pool, id, actor)).rejects.toThrow();
+  });
+
+  it("keeps a parent's unpublished work at the commit a child adopted, and folds only what reached the target", async ctx => {
+    if (!db.available) return ctx.skip();
+    const coordinator = await run();
+    const parent = await workspace();
+    // The child forked from the parent's unpublished checkpoint X and its batch was adopted back into the parent.
+    const childRun = await run();
+    const child = await workspace({ owner: "delegation", parent, delegation: await delegation(coordinator, childRun) });
+    const childBatch = await batch(child, [childRun], "integrated", { source: X, updatedAt: new Date(Date.now() - 300_000).toISOString() });
+    const open = await batch(parent, [coordinator], "open", { source: X, verification: { adopted_child_change_ids: [childBatch] } });
+    let [g] = (await listAgentWorkspaceGroups(db.pool, identity, PROJECT, { view: "current", limit: 20 })).items;
+    expect(g!.proven_duplicates).toBe(0);
+    expect(g!.unconfirmed.map(u => [u.change_set_id, u.reason])).toEqual([[open, "saved_not_merged"]]);
+    // A child's proof against its parent target cannot suppress root work.
+    await batch(child, [await run()], "no_changes", {source:X,verification:{adoption_proof:'target_paths_match'}});
+    [g] = (await listAgentWorkspaceGroups(db.pool, identity, PROJECT, {view:'current',limit:20})).items;
+    expect(g!.unconfirmed.map(u=>u.change_set_id)).toContain(open);
+    // Once that exact commit is published from a root workspace, the duplicate folds away.
+    await batch(await workspace(), [await run()], "integrated", { source: X, updatedAt: new Date(Date.now() - 900_000).toISOString() });
+    [g] = (await listAgentWorkspaceGroups(db.pool, identity, PROJECT, { view: "current", limit: 20 })).items;
+    expect(g).toMatchObject({ proven_duplicates: 1, unconfirmed: [] });
+  });
+
+  it("shows the session's newest generation as current even when an older generation was updated later", async ctx => {
+    if (!db.available) return ctx.skip();
+    const old = await workspace();
+    const current = await workspace();
+    await batch(current, [await run()], "open", { source: Z, updatedAt: new Date(Date.now() - 600_000).toISOString() });
+    // The older generation's closure lands after the newer generation's last activity.
+    const late = await batch(old, [await run()], "abandoned", { source: X });
+    const [g] = (await listAgentWorkspaceGroups(db.pool, identity, PROJECT, { view: "current", limit: 20 })).items;
+    // Activity still picks the latest result (the newer generation's saved work here) and orders members.
+    expect(g).toMatchObject({ current: { workspace_id: current, generation: expect.any(Number) }, latest_result: { workspace_id: current } });
+    expect(g!.current.generation).toBeGreaterThan((await listAgentWorkspaces(db.pool, identity, PROJECT, { view: "all", group: KEY, limit: 50 })).items.find(i => i.workspace_id === old)!.generation);
+    expect(g!.unconfirmed.map(u => u.change_set_id)).toContain(late);
+    expect((await listAgentWorkspaces(db.pool, identity, PROJECT, { view: "all", group: KEY, limit: 50 })).items.map(i => i.workspace_id)).toEqual([old, current]);
   });
 });

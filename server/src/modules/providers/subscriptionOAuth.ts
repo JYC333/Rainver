@@ -1,3 +1,4 @@
+import type { Queryable } from "../routeUtils/common.js";
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "./db.js";
@@ -10,6 +11,11 @@ import {
 } from "./secretRefCrypto.js";
 import { parseCodexManagedUsageResponse, probeClaudeOAuthQuotaWithAccessToken, type QuotaResult } from "./subscriptionQuota.js";
 import { ProviderCommandNotFoundError, ProviderCommandValidationError } from "./commands/types.js";
+import { secretFingerprint } from "./secretRefCrypto.js";
+import { withTransaction } from "../../db/tx.js";
+import { assertCurrentActor, sessionActor } from "../systemActions/operations/actor.js";
+import { hidden } from "../systemActions/operations/errors.js";
+import { isInstanceAdminIn } from "../routeUtils/access.js";
 import { loadManagedOAuthFlow } from "./invocation/piAiChat.js";
 import type {
   ManagedAuthEvent,
@@ -104,42 +110,110 @@ export async function refreshManagedSubscriptionQuota(
   return subscriptionProviderDto(pool, spaceId, userId, providerId);
 }
 
-export async function disconnectManagedSubscription(
-  config: ServerConfig,
+/**
+ * Disconnects the owner's managed subscription in the caller's transaction:
+ * the Provider keeps its row (disabled) and the encrypted OAuth credential is
+ * deleted. Instance-admin authority is the caller's to check.
+ */
+export async function disconnectManagedSubscriptionIn(
+  db: Queryable,
   spaceId: string,
   userId: string,
   providerId: string,
 ): Promise<Record<string, unknown>> {
-  if (!config.databaseUrl) throw new Error("Managed subscription OAuth requires SERVER_DATABASE_URL");
-  const pool = getDbPool(config.databaseUrl);
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const found = await client.query<{ credential_id: string }>(
-      `SELECT p.credential_id
-         FROM model_providers p
-         JOIN credentials c ON c.id=p.credential_id AND c.credential_type='subscription_oauth'
-        WHERE p.id=$1 AND p.space_id=$2 AND p.owner_user_id=$3
-        FOR UPDATE OF p, c`,
-      [providerId, spaceId, userId],
-    );
-    const credentialId = found.rows[0]?.credential_id;
-    if (!credentialId) throw new ProviderCommandNotFoundError(`Managed subscription provider '${providerId}' not found`);
-    await client.query(
-      `UPDATE model_providers SET credential_id=NULL,enabled=false,updated_at=$2 WHERE id=$1`,
-      [providerId, new Date()],
-    );
-    await client.query(`DELETE FROM credentials WHERE id=$1`, [credentialId]);
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-  return subscriptionProviderDto(pool, spaceId, userId, providerId, true);
+  const found = await db.query<{ credential_id: string }>(
+    `SELECT p.credential_id
+       FROM model_providers p
+       JOIN credentials c ON c.id=p.credential_id AND c.credential_type='subscription_oauth'
+      WHERE p.id=$1 AND p.space_id=$2 AND p.owner_user_id=$3
+      FOR UPDATE OF p, c`,
+    [providerId, spaceId, userId],
+  );
+  const credentialId = found.rows[0]?.credential_id;
+  if (!credentialId) throw new ProviderCommandNotFoundError(`Managed subscription provider '${providerId}' not found`);
+  await db.query(
+    `UPDATE model_providers SET credential_id=NULL,enabled=false,updated_at=$2 WHERE id=$1`,
+    [providerId, new Date()],
+  );
+  await db.query(`DELETE FROM credentials WHERE id=$1`, [credentialId]);
+  return subscriptionProviderDto(db, spaceId, userId, providerId, true);
 }
 
+/**
+ * The OAuth refresh state a managed subscription credential carries in
+ * `credentials.metadata_json.oauth_refresh` (never a token: `from` is the
+ * keyed fingerprint of the refresh token the attempt spends).
+ *
+ * A vendor refresh rotates the grant remotely, so it is a once-only effect,
+ * never repeated blindly: a short transaction records the intent under the
+ * credential's row lock, the vendor call runs outside every transaction, and a
+ * second short transaction stores the new tokens only if the intent and the
+ * spent token are still the current ones. An intent whose lease ran out
+ * (a crash, a lost connection before the second commit) or a vendor call that
+ * ended without a definite refusal is `unknown`: the old refresh token may
+ * already be spent, so it is never sent again and the subscription needs a
+ * new login (which replaces the credential and clears this state).
+ */
+interface OAuthRefreshState {
+  state: "in_flight" | "unknown";
+  attempt_id: string;
+  from: string;
+  started_at: string;
+  lease_until?: string;
+}
+export class ManagedSubscriptionRefreshError extends Error {
+  constructor(readonly code: "subscription_reconnect_required" | "subscription_refresh_busy") {
+    super(code === "subscription_reconnect_required"
+      ? "This subscription's sign-in could not be renewed safely; disconnect and connect it again."
+      : "This subscription's sign-in is being renewed; try again shortly.");
+    this.name = "ManagedSubscriptionRefreshError";
+  }
+}
+const REFRESH_EXPIRY_MARGIN_MS = 60_000;
+const REFRESH_TIMEOUT_MS = 30_000;
+const REFRESH_LEASE_MS = 60_000;
+const REFRESH_WAIT_MS = 250;
+/** A vendor answer that refused the refresh (so nothing rotated); anything else may have rotated. */
+const VENDOR_REFUSAL = /\((40[0-3])\)|\bstatus[ =:](40[0-3])\b|invalid_grant|invalid_request|unauthorized_client/i;
+let refreshClock: () => number = () => Date.now();
+export function __setManagedSubscriptionRefreshClockForTests(value: (() => number) | null): void {
+  refreshClock = value ?? (() => Date.now());
+}
+
+type CredentialRow = { credential_id: string; provider_type: string; secret_ref: string; oauth_refresh: OAuthRefreshState | null };
+async function lockCredential(db: Queryable, spaceId: string, providerId: string, ownerUserId: string | null): Promise<CredentialRow> {
+  const row = (await db.query<CredentialRow>(
+    `SELECT c.id AS credential_id,p.provider_type,c.secret_ref,c.metadata_json->'oauth_refresh' AS oauth_refresh
+       FROM model_provider_space_grants g
+       JOIN model_providers p ON p.id=g.provider_id
+       JOIN credentials c ON c.id=p.credential_id
+      WHERE g.space_id=$1 AND p.id=$2 AND g.enabled=true AND p.enabled=true
+        AND c.credential_type='subscription_oauth'
+        AND ($3::text IS NULL OR p.owner_user_id=$3)
+      FOR UPDATE OF c`,
+    [spaceId, providerId, ownerUserId],
+  )).rows[0];
+  if (!row) throw new ProviderCommandNotFoundError(`Managed subscription provider '${providerId}' not found`);
+  return row;
+}
+async function writeRefreshState(db: Queryable, credentialId: string, state: OAuthRefreshState | null, secretRef?: string): Promise<void> {
+  await db.query(
+    `UPDATE credentials
+        SET metadata_json=CASE WHEN $2::jsonb IS NULL THEN COALESCE(metadata_json,'{}'::jsonb)-'oauth_refresh'
+                               ELSE jsonb_set(COALESCE(metadata_json,'{}'::jsonb),'{oauth_refresh}',$2::jsonb,true) END,
+            secret_ref=COALESCE($3,secret_ref),updated_at=now()
+      WHERE id=$1`,
+    [credentialId, state ? JSON.stringify(state) : null, secretRef ?? null],
+  );
+}
+
+/**
+ * Resolves a managed subscription's current OAuth credential for in-process
+ * use (a Run's provider call, a quota read). Every DB step is a short
+ * transaction; the vendor refresh, when the access token is about to expire,
+ * follows the once-only protocol above. Decrypted tokens never leave the
+ * process and are never written anywhere but the encrypted `secret_ref`.
+ */
 export async function resolveManagedSubscriptionCredential(
   config: ServerConfig,
   pool: Pool,
@@ -152,52 +226,74 @@ export async function resolveManagedSubscriptionCredential(
   credentialId: string;
   credential: ModelProviderOAuthSecretV1;
 }> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const selected = await client.query<{
-      credential_id: string;
-      provider_type: string;
-      secret_ref: string;
-    }>(
-      `SELECT c.id AS credential_id,p.provider_type,c.secret_ref
-         FROM model_provider_space_grants g
-         JOIN model_providers p ON p.id=g.provider_id
-         JOIN credentials c ON c.id=p.credential_id
-        WHERE g.space_id=$1 AND p.id=$2 AND g.enabled=true AND p.enabled=true
-          AND c.credential_type='subscription_oauth'
-          AND ($3::text IS NULL OR p.owner_user_id=$3)
-        FOR UPDATE OF c`,
-      [spaceId, providerId, ownerUserId ?? null],
-    );
-    const row = selected.rows[0];
-    if (!row) throw new ProviderCommandNotFoundError(`Managed subscription provider '${providerId}' not found`);
-    const type = parseManagedSubscriptionType(row.provider_type);
-    const masterKey = await loadOrCreateModelProviderApiKeyMasterKey(config.rainverHome);
-    let credential = decryptModelProviderOAuthSecretRefV1(row.secret_ref, masterKey);
-    if (credential.expires <= Date.now() + 60_000) {
-      const controller = new AbortController();
-      const abort = () => controller.abort();
-      signal?.addEventListener("abort", abort, { once: true });
-      if (signal?.aborted) controller.abort();
-      try {
-        credential = await (await oauthFlow(type)).refresh(credential as ManagedOAuthCredential, controller.signal);
-      } finally {
-        signal?.removeEventListener("abort", abort);
+  const masterKey = await loadOrCreateModelProviderApiKeyMasterKey(config.rainverHome);
+  const deadline = refreshClock() + REFRESH_LEASE_MS;
+  for (;;) {
+    signal?.throwIfAborted();
+    const step = await withTransaction(pool, async (tx) => {
+      const row = await lockCredential(tx, spaceId, providerId, ownerUserId ?? null);
+      const type = parseManagedSubscriptionType(row.provider_type);
+      const credential = decryptModelProviderOAuthSecretRefV1(row.secret_ref, masterKey);
+      const from = await secretFingerprint(config.rainverHome, credential.refresh);
+      const pending = row.oauth_refresh;
+      if (pending?.state === "unknown" && pending.from === from) throw new ManagedSubscriptionRefreshError("subscription_reconnect_required");
+      if (pending?.state === "in_flight" && pending.from === from) {
+        if (Date.parse(pending.lease_until ?? "") > refreshClock()) return { kind: "wait" as const };
+        // Its attempt never settled: the vendor may have rotated the token it spent.
+        await writeRefreshState(tx, row.credential_id, { ...pending, state: "unknown", lease_until: undefined });
+        return { kind: "unknown" as const };
       }
-      await client.query(
-        `UPDATE credentials SET secret_ref=$2,updated_at=$3 WHERE id=$1`,
-        [row.credential_id, encryptModelProviderOAuthSecretRefV1(credential, masterKey), new Date()],
-      );
+      if (credential.expires > refreshClock() + REFRESH_EXPIRY_MARGIN_MS) {
+        // A state left behind by a credential that was replaced since (a new login) is not this one's.
+        if (pending) await writeRefreshState(tx, row.credential_id, null);
+        return { kind: "ready" as const, type, credentialId: row.credential_id, credential };
+      }
+      const attempt: OAuthRefreshState = {
+        state: "in_flight", attempt_id: randomUUID(), from,
+        started_at: new Date(refreshClock()).toISOString(),
+        lease_until: new Date(refreshClock() + REFRESH_LEASE_MS).toISOString(),
+      };
+      await writeRefreshState(tx, row.credential_id, attempt);
+      return { kind: "refresh" as const, type, credentialId: row.credential_id, credential, attempt };
+    });
+    if (step.kind === "ready") return { type: step.type, credentialId: step.credentialId, credential: step.credential };
+    if (step.kind === "unknown") throw new ManagedSubscriptionRefreshError("subscription_reconnect_required");
+    if (step.kind === "wait") {
+      if (refreshClock() >= deadline) throw new ManagedSubscriptionRefreshError("subscription_refresh_busy");
+      await new Promise((resolve) => setTimeout(resolve, REFRESH_WAIT_MS));
+      continue;
     }
-    await client.query("COMMIT");
-    return { type, credentialId: row.credential_id, credential };
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
+    // Outside every transaction: the one vendor call this attempt may make.
+    let refreshed: ManagedOAuthCredential;
+    const timeout = AbortSignal.timeout(REFRESH_TIMEOUT_MS);
+    try {
+      refreshed = await (await oauthFlow(step.type)).refresh(step.credential as ManagedOAuthCredential,
+        signal ? AbortSignal.any([signal, timeout]) : timeout);
+    } catch (error) {
+      const refusedByVendor = error instanceof Error && VENDOR_REFUSAL.test(error.message);
+      await settleRefresh(pool, step.credentialId, step.attempt, refusedByVendor ? null : { ...step.attempt, state: "unknown", lease_until: undefined });
+      if (!refusedByVendor) throw new ManagedSubscriptionRefreshError("subscription_reconnect_required");
+      throw error;
+    }
+    const secretRef = encryptModelProviderOAuthSecretRefV1(refreshed, masterKey);
+    const stored = await settleRefresh(pool, step.credentialId, step.attempt, null, secretRef);
+    // Replaced meanwhile (a new login): the new credential is the current one, not this refresh.
+    if (!stored) continue;
+    return { type: step.type, credentialId: step.credentialId, credential: refreshed };
   }
+}
+
+/** Settles one refresh attempt, only while it is still the credential's current attempt. */
+async function settleRefresh(pool: Pool, credentialId: string, attempt: OAuthRefreshState, next: OAuthRefreshState | null, secretRef?: string): Promise<boolean> {
+  return withTransaction(pool, async (tx) => {
+    const current = (await tx.query<{ oauth_refresh: OAuthRefreshState | null }>(
+      `SELECT metadata_json->'oauth_refresh' AS oauth_refresh FROM credentials WHERE id=$1 AND credential_type='subscription_oauth' FOR UPDATE`,
+      [credentialId],
+    )).rows[0];
+    if (!current || current.oauth_refresh?.attempt_id !== attempt.attempt_id || current.oauth_refresh.state !== "in_flight") return false;
+    await writeRefreshState(tx, credentialId, next, secretRef);
+    return true;
+  });
 }
 
 async function persistSubscription(
@@ -216,6 +312,11 @@ async function persistSubscription(
   let providerId = "";
   try {
     await client.query("BEGIN");
+    // The login waited on the person and the vendor: whoever started it must still be an
+    // active member of this Space and the instance admin now, in the transaction that
+    // writes, or nothing (credential, Provider, grant) is written.
+    await assertCurrentActor(client, sessionActor({ spaceId, userId }), true);
+    if (!(await isInstanceAdminIn(client, config, userId))) throw hidden();
     const existing = await client.query<{ id: string; credential_id: string | null }>(
       `SELECT p.id,p.credential_id FROM model_providers p
         LEFT JOIN credentials c ON c.id=p.credential_id
@@ -258,14 +359,16 @@ async function persistSubscription(
        DO UPDATE SET enabled=true,updated_at=EXCLUDED.updated_at`,
       [randomUUID(), providerId, spaceId, userId, now],
     );
+    // Read in the same transaction: what the stream releases is what this checked authority wrote.
+    const dto = await subscriptionProviderDto(client, spaceId, userId, providerId);
     await client.query("COMMIT");
+    return dto;
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();
   }
-  return subscriptionProviderDto(pool, spaceId, userId, providerId);
 }
 
 async function safeProbeQuota(type: ManagedSubscriptionType, credential: ManagedOAuthCredential): Promise<QuotaResult> {
@@ -305,7 +408,7 @@ async function probeCodexQuota(credential: ManagedOAuthCredential): Promise<Quot
 }
 
 async function subscriptionProviderDto(
-  pool: Pool,
+  pool: Queryable,
   spaceId: string,
   userId: string,
   providerId: string,

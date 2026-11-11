@@ -17,6 +17,9 @@ export const workspaceUiZhCN = {
       retained_pending_checkpoint: '未完成的快照和可能存在的本地文件已保留，没有发布修改，也没有请求删除文件。',
       "reconcile": "核对是否已合入",
       "reconciling": "正在核对目标",
+      "no_saved_difference": "没有已保存的差异",
+      "in_target": "内容已在目标分支中",
+      "missing_closed": "已关闭 · 分支已被删除",
 
       verification: {
         "title": "配置验证",
@@ -53,6 +56,10 @@ export const workspaceUiZhCN = {
         native_integration_run_not_active: "原执行已停止，可在对话中继续处理。",
         integration_not_finished_in_current_session: "Agent 在整合完成前结束了本轮，修改已保留。",
         execution_host_native_integration_update_required: "更新并重连执行 Host 后，可启用当前 Agent 会话中的整合。",
+        execution_host_native_rebase_update_required: "更新并重连执行 Host 后，才能用 rebase 方式合入。",
+        native_rebase_unfinished: "rebase 尚未完成，Agent 需先解决冲突并继续准备。",
+        native_rebase_branch_changed: "rebase 过程中工作分支被改动，请让 Agent 重新准备。",
+        workspace_squash_requires_person_request: "只有在你明确要求时才能用 squash 合入。",
 
         "integration_agent_verification_failed": "Agent 未能完成验证，请使用可运行的 runtime 重试。",
         "integration_agent_verification_unavailable": "验证 Agent 暂时无法启动，请检查 runtime 或 Host 后重试。",
@@ -132,10 +139,12 @@ export const workspaceUiZhCN = {
       "grace": "若不再使用，将于 {{time}} 后回收",
       "reclaimable": "可以回收",
       "reclaiming": "正在回收工作区与分支",
+      "discarded": "已按要求丢弃，工作区与分支已于 {{time}} 回收",
       "reclaimed": "工作区与分支已于 {{time}} 回收 · 内容已在目标分支中",
       "retained": "分支已保留",
       "held": "保留至 {{time}}",
-      "blocked": "保留状态需要处理"
+      "blocked": "保留状态需要处理",
+      "missing": "分支已在 Rainver 之外删除 · 未合入"
     },
     "reason": {
       "merged": "其修改已整合",
@@ -148,12 +157,15 @@ export const workspaceUiZhCN = {
       "blocked_changes": "存在需要决定的受阻修改",
       "unpublished_changes": "存在尚未整合的已保存修改",
       "kept_without_merging": "其中保留了未合并的修改",
+      "discarded": "已明确要求丢弃审核过的保存版本",
       "private_baseline": "其中包含私有快照基线",
       "unmerged_source": "Git 无法证明其内容已在目标分支中",
       "safety_review": "需要安全复核",
       "quarantined": "有文件被移出待复核",
       "host_upgrade_required": "请更新 Host 以回收分支",
       "held_by_user": "你选择了保留",
+      "branch_missing": "分支和工作树已不存在，且 Git 无法证明已保存的改动在目标分支中",
+      "missing_acknowledged": "分支删除后你已关闭这些记录",
       "branch_absent": "已无可回收内容",
       "reclaiming": "正在回收"
     },
@@ -164,7 +176,10 @@ export const workspaceUiZhCN = {
     "reclaim_now": "立即回收",
     "hold": "再保留 7 天",
     "release_hold": "取消保留",
-    "retry": "重试清理"
+    "retry": "重试清理",
+    "acknowledge_missing": "关闭缺失记录",
+    "acknowledge_missing_description": "把这个已删除分支的未完成记录关闭为“保留但不合入”。不会标记为已合入，审计历史会保留。",
+    "acknowledge_missing_confirm": "关闭记录"
   }
 },
     providers: {

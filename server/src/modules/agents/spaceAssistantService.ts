@@ -119,13 +119,13 @@ export class SpaceAssistantService {
 
   constructor(
     private readonly client: Queryable,
-    pool: Pool,
+    pool: Queryable,
   ) {
     this.agents = new PgAgentRepository(pool);
   }
 
   static async prepareForRoomCreator(
-    pool: Pool,
+    pool: Queryable,
     config: ServerConfig,
     identity: { spaceId: string; userId: string },
   ): Promise<ManagedAssistantPreparation> {

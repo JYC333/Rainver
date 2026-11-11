@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { seedHostCommandSpace } from "./support/hostCommandHarness.js";
 import type { FastifyInstance } from "fastify";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
@@ -81,7 +83,7 @@ function get(path: string, token: string): Promise<Response> {
 function post(path: string, token: string, body: unknown = {}): Promise<Response> {
   return fetch(`${baseUrl()}${path}`, {
     method: "POST",
-    headers: { cookie: `better-auth.session_token=${token}`, "content-type": "application/json" },
+    headers: { cookie: `better-auth.session_token=${token}`, "content-type": "application/json", "idempotency-key": randomUUID() },
     body: JSON.stringify(body),
   });
 }
@@ -106,12 +108,13 @@ afterEach(() => {
 
 beforeEach(async (ctx) => {
   if (!db.available || !db.pool) return ctx.skip();
-  await resetTables(db.pool, ["hosts", "machines", "users"], { cascade: true });
+  await resetTables(db.pool, ["host_command_intents", "jobs", "hosts", "machines", "space_memberships", "spaces", "users"], { cascade: true });
   await db.pool.query(
     `INSERT INTO users (id, email, display_name, status, created_at, updated_at, registration_source)
      VALUES ($1, $2, 'Admin', 'active', now(), now(), 'system'), ($3, 'member@example.test', 'Member', 'active', now(), now(), 'system')`,
     [ADMIN, ADMIN_EMAIL, MEMBER],
   );
+  await seedHostCommandSpace(db.pool, SPACE, [{ user: ADMIN }, { user: MEMBER }]);
   builtinHostId = await new PgHostRepository(db.pool).ensureServerHostId();
   __setAuthRepositoryForTests(stubAuth());
 });
@@ -128,24 +131,26 @@ describe("the built-in host's management surface", () => {
     expect(body.items.every((item) => item.kind === "server" || item.max_concurrent_runs === null)).toBe(true);
   });
 
-  it("refuses a member's attempt to install a runtime on it, in a way that says why", async () => {
+  it("refuses a member's attempt to install a runtime on it, admitting nothing", async () => {
     asUser(MEMBER, MEMBER_TOKEN);
     const response = await post(`/api/v1/hosts/${builtinHostId}/installations/opencode`, MEMBER_TOKEN);
-    // 403, not 404: unlike a paired host someone does not own, the built-in
-    // host's existence is on every member's host list already.
-    expect(response.status).toBe(403);
-    expect((await response.json() as { detail: string }).detail).toMatch(/instance admin/i);
+    // Managing the built-in Host is instance-admin work (B63). The core answers a caller without that
+    // standing the hidden 404, as for any command they may not give; members still read what is installed.
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: { code: "operation_not_found" } });
+    expect((await db.pool!.query("SELECT 1 FROM host_command_intents")).rowCount).toBe(0);
   });
 
   it("lets an instance admin through that gate to the daemon", async () => {
     asUser(ADMIN, ADMIN_TOKEN);
     const response = await post(`/api/v1/hosts/${builtinHostId}/installations/opencode`, ADMIN_TOKEN);
     // Past the gate: whatever answers now is about the adapter or the daemon,
-    // not about who is asking. (Here it is the adapter — this test loads no
-    // ACP registry, so the install has no distribution to resolve.)
+    // not about who is asking.
     expect(response.status).not.toBe(403);
     expect(response.status).not.toBe(404);
-    expect((await response.json() as { detail?: string }).detail ?? "").not.toMatch(/instance admin/i);
+    // Admitted: the install is a durable Host command the worker sends; nothing ran in the request.
+    expect(response.status).toBe(202);
+    expect(await response.json()).toMatchObject({ status: "succeeded", data: { host_id: builtinHostId, kind: "runtime_install", status: "pending" } });
   });
 
   it("cannot be revoked, by an admin or anyone else", async () => {

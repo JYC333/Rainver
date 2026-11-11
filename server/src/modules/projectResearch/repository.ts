@@ -550,14 +550,14 @@ export class ProjectResearchRepository {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     await this.requireWorkflow(identity.spaceId, projectId, workflowId);
     const decision = enumValue(body.decision, CHECKPOINT_DECISIONS, "decision");
-    if (!decision) throw new HttpError(422, "decision is required and must be one of approved, rejected, waived");
+    if (!decision) throw new ResearchWorkspaceMutationError(422, "decision is required and must be one of approved, rejected, waived");
     const row = await this.checkpointRow(identity.spaceId, projectId, checkpointId);
     if (!row || row.workflow_id !== workflowId) throw new HttpError(404, "Checkpoint not found");
     // A decided checkpoint is final; only the same decision may be replayed
     // (to repair a stale operation projection). Reversing it would fail or
     // resume an operation that already moved on and overwrite who decided.
     const replay = row.status === decision && row.user_decision === decision;
-    if (row.status !== "pending" && !replay) throw new HttpError(409, "This checkpoint has already been decided");
+    if (row.status !== "pending" && !replay) throw new ResearchWorkspaceMutationError(409, "This checkpoint has already been decided");
     if (["approved", "waived"].includes(decision) && row.checkpoint_type === "screening_gate") {
       const operationId = optionalString(objectValue(row.machine_result_json).operation_id);
       const priorSynthesis = operationId
@@ -574,10 +574,10 @@ export class ProjectResearchRepository {
         const review = await this.checkpointReview(identity, projectId, row);
         const processingStatus = optionalString(objectValue(review?.summary).processing_status);
         if (processingStatus === "incomplete") {
-          throw new HttpError(409, "Screening is not complete; wait for every item to receive an AI classification before approving this batch");
+          throw new ResearchWorkspaceMutationError(409, "Screening is not complete; wait for every item to receive an AI classification before approving this batch");
         }
         if (processingStatus === "empty") {
-          throw new HttpError(409, "No material matched this search window; revise the search query or date range and rescan before continuing");
+          throw new ResearchWorkspaceMutationError(409, "No material matched this search window; revise the search query or date range and rescan before continuing");
         }
       }
     }
@@ -590,7 +590,7 @@ export class ProjectResearchRepository {
           AND (status = 'pending' OR (status = $5 AND user_decision = $5))`,
       [identity.spaceId, projectId, workflowId, checkpointId, decision, optionalString(body.reason), identity.userId, now],
     );
-    if (decided.rowCount === 0) throw new HttpError(409, "This checkpoint has already been decided");
+    if (decided.rowCount === 0) throw new ResearchWorkspaceMutationError(409, "This checkpoint has already been decided");
     const updated = await this.checkpointRow(identity.spaceId, projectId, checkpointId);
     if (!updated) throw new HttpError(500, "Failed to decide checkpoint");
     return checkpointOut(updated, await this.checkpointReview(identity, projectId, updated));

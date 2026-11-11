@@ -2,7 +2,7 @@ import { isRepositoryAcpRegistryId } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { ScopedSettingsStore } from "../settings/scopedSettings.js";
 import { listRuntimeAdapterSpecs, setDynamicRuntimeAdapterSpecs, type RuntimeAdapterSpec } from "../runtimeAdapters/index.js";
-import { AcpRegistryError, fetchAcpRegistry, setResolvedRegistryEntries } from "./registry.js";
+import { AcpRegistryError, cachedAcpRegistry, fetchAcpRegistry, setResolvedRegistryEntries } from "./registry.js";
 import { ACP_AGENTS_SCOPE_ID, ACP_AGENTS_SETTINGS, ACP_REGISTRY_CACHE_SETTINGS, type EnabledAcpAgent } from "./settings.js";
 import { acpAgentStateBoundary } from "./stateBoundaries.js";
 
@@ -83,17 +83,22 @@ export class AcpAgentService {
     return (await this.store.get(ACP_AGENTS_SETTINGS, ACP_AGENTS_SCOPE_ID)).value.agents;
   }
 
-  /** Enables (or re-snapshots) a registry agent and republishes the adapter catalog. */
-  async enable(registryId: string, userId: string | null): Promise<EnabledAcpAgent> {
+  /**
+   * `acp_agent.enable`, in the caller's transaction: snapshots a registry
+   * entry this process already fetched (the adapter refreshed the registry
+   * before the transaction; no network here). Publishing to the process
+   * catalog is the caller's after commit; the refresh timer is the backstop.
+   */
+  async enableIn(registryId: string, userId: string | null): Promise<EnabledAcpAgent> {
     if (isRepositoryAcpRegistryId(registryId)) throw new AcpRegistryError("repository_managed_adapter", "This ACP adapter is managed by the Rainver release", 422);
-    const entry = (await fetchAcpRegistry()).find((candidate) => candidate.id === registryId);
+    const registry = cachedAcpRegistry();
+    if (!registry) throw new AcpRegistryError("acp_registry_unavailable", "The ACP registry could not be read just now. Try again.", 409);
+    const entry = registry.find((candidate) => candidate.id === registryId);
     if (!entry) throw new AcpRegistryError("acp_agent_not_in_registry", `'${registryId}' is not in the ACP registry.`, 404);
     const agent: EnabledAcpAgent = { ...entry, enabled_at: new Date().toISOString(), enabled_by_user_id: userId };
     const current = await this.listEnabled();
     const agents = [...current.filter((existing) => existing.id !== registryId), agent];
     await this.store.upsert(ACP_AGENTS_SETTINGS, ACP_AGENTS_SCOPE_ID, { agents }, { updatedByUserId: userId });
-    publish(agents);
-    await this.refreshRegistryCache();
     return agent;
   }
 
@@ -115,7 +120,8 @@ export class AcpAgentService {
     return result.rows.map((row) => ({ host_id: row.id, name: row.name }));
   }
 
-  async disable(registryId: string, userId: string | null): Promise<boolean> {
+  /** `acp_agent.disable`, in the caller's transaction; publishing is the caller's after commit. */
+  async disableIn(registryId: string, userId: string | null): Promise<boolean> {
     const current = await this.listEnabled();
     const agents = current.filter((existing) => existing.id !== registryId);
     if (agents.length === current.length) return false;
@@ -128,7 +134,6 @@ export class AcpAgentService {
       );
     }
     await this.store.upsert(ACP_AGENTS_SETTINGS, ACP_AGENTS_SCOPE_ID, { agents }, { updatedByUserId: userId });
-    publish(agents);
     return true;
   }
 

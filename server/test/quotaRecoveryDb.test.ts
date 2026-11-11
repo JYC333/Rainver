@@ -1,3 +1,5 @@
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { saveConversationModelSwitch, conversationModelSwitchAllowed } from "../src/modules/sessions/conversationQuotaPolicy.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -49,7 +51,7 @@ beforeEach(async () => {
   await db.pool.query(`INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, error_code, started_at, ended_at, created_at, updated_at)
     VALUES ($1,$2,$3,1,'failed',$4,now(),now(),now(),now())`, [randomUUID(), SPACE, RUN, SUBSCRIPTION_QUOTA_EXHAUSTED]);
 });
-afterEach(async () => { __setRunsIdentityForTests(null); await app?.close(); app = undefined; });
+afterEach(async () => { __setRunsIdentityForTests(null); __setAuthIdentityForTests(null); await app?.close(); app = undefined; });
 
 async function supervise() {
   const repository = new PgRunRepository(db.pool);
@@ -367,16 +369,92 @@ describe("interrupted quota recovery", () => {
     app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [runsModule]);
     const other = randomUUID();
     await seedSpaceMember(db.pool, { space: SPACE, user: other, role: "member" });
-    const request = () => app!.inject({ method: "PATCH", url: `/api/v1/runs/${RUN}/quota-recovery`, payload: { auto_continue: false } });
-    __setRunsIdentityForTests({ spaceId: SPACE, userId: other });
-    expect((await request()).statusCode).toBe(403);
-    __setRunsIdentityForTests({ spaceId: randomUUID(), userId: USER });
+    const request = () => app!.inject({ method: "PATCH", url: `/api/v1/runs/${RUN}/quota-recovery`, payload: { auto_continue: false }, headers: { "idempotency-key": randomUUID() } });
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: other });
     expect((await request()).statusCode).toBe(404);
-    __setRunsIdentityForTests({ spaceId: SPACE, userId: USER });
+    __setAuthIdentityForTests({ spaceId: randomUUID(), userId: USER });
+    expect((await request()).statusCode).toBe(404);
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
     expect((await request()).statusCode).toBe(200);
     expect((await marker()).recovery.auto_continue).toBe(false);
-    expect((await app.inject({ method: "PATCH", url: `/api/v1/runs/${RUN}/quota-recovery`, payload: { auto_continue: "false" } })).statusCode).toBe(422);
+    expect((await app.inject({ method: "PATCH", url: `/api/v1/runs/${RUN}/quota-recovery`, payload: { auto_continue: "false" }, headers: { "idempotency-key": randomUUID() } })).statusCode).toBe(422);
     await db.pool.query(`UPDATE runs SET output_json = output_json - 'waiting_for_quota' WHERE id = $1`, [RUN]);
-    expect((await request()).statusCode).toBe(409);
+    const raced = await request();
+    expect(raced.statusCode, raced.body).toBe(409);
+  });
+});
+
+describe("explicit native model switching", () => {
+  async function advertise() {
+    await db.pool.query(`UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`, [HOST, JSON.stringify({
+      installations: { claude_code: [{ id: "managed:1.0.0", version: "1.0.0", logged_in: true,
+        options: { config_options: [{ id: "model", name: "Model", category: "model", type: "select", current_value: "opus",
+          options: ["opus", "sonnet"].map(value => ({ value, name: value, description: null })) }] } }] },
+    })]);
+    await db.pool.query(`UPDATE runs SET model_override_json = '{"runtime_reported_model":"opus","acp_session_config":[{"id":"mode","type":"select","category":"mode","value":"safe"}]}'::jsonb WHERE id = $1`, [RUN]);
+  }
+  it("uses saved conversation consent without another confirmation and permits revocation", async ctx => {
+    if (!db.available) return ctx.skip();
+    await advertise();
+    const run = (await new PgRunRepository(db.pool).getRun(SPACE, RUN))!;
+    const profile = run.runtime_profile_id!;
+    expect(await conversationModelSwitchAllowed(db.pool, SPACE, SESSION, AGENT, USER, profile, "claude_code")).toBe(false);
+    await saveConversationModelSwitch(db.pool, SPACE, SESSION, AGENT, USER, profile, "claude_code", true);
+    expect(await conversationModelSwitchAllowed(db.pool, SPACE, SESSION, AGENT, USER, profile, "claude_code")).toBe(true);
+    expect(await conversationModelSwitchAllowed(db.pool, SPACE, SESSION, AGENT, "another-user", profile, "claude_code")).toBe(false);
+    expect(await conversationModelSwitchAllowed(db.pool, SPACE, SESSION, AGENT, USER, "another-profile", "claude_code")).toBe(false);
+    expect(await conversationModelSwitchAllowed(db.pool, SPACE, SESSION, AGENT, USER, profile, "another-runtime")).toBe(false);
+    await supervise();
+    expect((await marker()).recovery).toMatchObject({ switched_model: "sonnet", auto_continue: true, settings_model_switch: true });
+    await saveConversationModelSwitch(db.pool, SPACE, SESSION, AGENT, USER, profile, "claude_code", false);
+    expect(await releaseHeldRuns(db.pool, { source: emptyQuota, now: new Date(Date.now() + 1000) })).toBe(0);
+    expect((await marker()).recovery).toMatchObject({ auto_continue: false, pause_reason: "user" });
+    expect(await jobs()).toHaveLength(0);
+  });
+  it("automatically admits a same-CLI successor after saved consent", async ctx => {
+    if (!db.available) return ctx.skip();
+    await advertise();
+    const run = (await new PgRunRepository(db.pool).getRun(SPACE, RUN))!;
+    await saveConversationModelSwitch(db.pool, SPACE, SESSION, AGENT, USER, run.runtime_profile_id!, "claude_code", true);
+    await supervise();
+    expect(await releaseHeldRuns(db.pool, { source: emptyQuota, now: new Date(Date.now() + 1000) })).toBe(1);
+    expect((await jobs())[0].payload_json.supervisor_attempt).toBe(2);
+  });
+  it("waits for consent then switches within the same native session and existing attempt budget", async ctx => {
+    if (!db.available) return ctx.skip();
+    await advertise();
+    await supervise();
+    expect((await marker()).recovery).toMatchObject({ can_switch_model: true, auto_continue: false });
+    expect(await releaseHeldRuns(db.pool, { source: emptyQuota })).toBe(0);
+    await withDbTransaction(db.pool, client => updateQuotaRecovery(client, SPACE, RUN, true, new Date(), true));
+    expect((await marker()).recovery).toMatchObject({ switched_model: "sonnet", auto_continue: true });
+    const run = (await new PgRunRepository(db.pool).getRun(SPACE, RUN))!;
+    expect(run.host_task_thread_id).toBe(THREAD);
+    expect(run.model_override_json).toMatchObject({ acp_session_config: [
+      { id: "mode", category: "mode", value: "safe" }, { id: "model", category: "model", value: "sonnet" },
+    ] });
+    expect(await releaseHeldRuns(db.pool, { source: emptyQuota, now: new Date(Date.now() + 1000) })).toBe(1);
+    expect(await jobs()).toHaveLength(1);
+    expect((await jobs())[0].payload_json.supervisor_attempt).toBe(2);
+  });
+  it("does not promote a Claude model refusal to an account-wide gate", async ctx => {
+    if (!db.available) return ctx.skip();
+    await db.pool.query(`INSERT INTO host_runtime_usage (host_id,runtime_key,installation,quota_json,checked_at)
+      VALUES ($1,'claude_code','managed:1.0.0',$2::jsonb,now() - interval '1 minute')`, [HOST, JSON.stringify({
+      available: true, session_pct: 15, session_resets: null, week_pct: 20, week_resets: null, error: null,
+      windows: [{ id: "seven_day", scope: "account", label: "Weekly", used_pct: 20, resets: null },
+        { id: "seven_day_opus", scope: "model", label: "Opus weekly", used_pct: 100, resets: null }],
+    })]);
+    const reading = await liveQuotaSource(null).read(db.pool, { host_id: HOST, host_name: "Server", runtime_key: "claude_code", installation: "managed:1.0.0" });
+    expect(reading.window?.utilization).toBe(20);
+  });
+  it("refuses stale alternative choices and leaves the waiting Run unchanged", async ctx => {
+    if (!db.available) return ctx.skip();
+    await advertise(); await supervise();
+    await db.pool.query(`UPDATE hosts SET capabilities_json = '{}'::jsonb WHERE id = $1`, [HOST]);
+    await expect(withDbTransaction(db.pool, client => updateQuotaRecovery(client, SPACE, RUN, true, new Date(), true)))
+      .rejects.toMatchObject({ statusCode: 409 });
+    expect((await marker()).recovery.auto_continue).toBe(false);
+    expect(await jobs()).toHaveLength(0);
   });
 });

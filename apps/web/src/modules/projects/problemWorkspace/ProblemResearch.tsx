@@ -39,7 +39,7 @@ export function ProblemResearch({ project, thread, kind, projection, editable, r
     const selectedRef=useRef(''),resultRequest=useRef(0);
     async function readResult(id:string){const ticket=++resultRequest.current;selectedRef.current=id;setSelected(id);setResult(null);try{const value=await projectResearchApi.result(project,id);if(mounted.current&&ticket===resultRequest.current)setResult(value)}catch(error){if(mounted.current&&ticket===resultRequest.current)toast.error(errMsg(error))}}
     const [reason, setReason] = useState('');
-    const [applicability, setApplicability] = useState('limited');
+    const [applicability, setApplicability] = useState<'applicable' | 'limited' | 'not_applicable'>('limited');
     const [counter, setCounter] = useState('');
     const [gaps, setGaps] = useState('');
     const [checkpoints, setCheckpoints] = useState<Record<string, Awaited<ReturnType<typeof projectResearchApi.checkpoints>>>>({});
@@ -119,7 +119,7 @@ export function ProblemResearch({ project, thread, kind, projection, editable, r
             <p className="whitespace-pre-wrap break-words">{f.summary}</p>
             <SpaceLink className="text-primary underline" to={`/projects/${project}/research/reports/${f.report_id}?thread=${thread}`}>{text('Open full report', '打开完整报告')}</SpaceLink>
             </article>)}{result.limitations.map((s, i) => <p className="text-sm text-muted-foreground" key={i}>{s}</p>)}{editable && ['completed', 'failed', 'cancelled'].includes(result.status) && <>
-            <Select ariaLabel={text('Applicability', '适用性')} value={applicability} onChange={setApplicability} options={[{ value: 'applicable', label: text('Applicable', '适用') }, { value: 'limited', label: text('Limited', '有限适用') }, { value: 'not_applicable', label: text('Not applicable', '不适用') }]}/>
+            <Select ariaLabel={text('Applicability', '适用性')} value={applicability} onChange={value => setApplicability(value as typeof applicability)} options={[{ value: 'applicable', label: text('Applicable', '适用') }, { value: 'limited', label: text('Limited', '有限适用') }, { value: 'not_applicable', label: text('Not applicable', '不适用') }]}/>
             <Textarea aria-label={text('Assessment reason', '评估理由')} maxLength={1800} value={reason} onChange={e => setReason(e.target.value)}/>
             <Textarea aria-label={text('Counterevidence', '反证')} maxLength={900} value={counter} onChange={e => setCounter(e.target.value)}/>
             <Textarea aria-label={text('Remaining gaps', '剩余缺口')} maxLength={900} value={gaps} onChange={e => setGaps(e.target.value)}/>

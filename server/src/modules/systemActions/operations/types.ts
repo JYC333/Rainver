@@ -29,6 +29,13 @@ export interface OperationRegistration {
   };
   successStatus?: 200 | 201 | 202;
   resolve(db: Queryable, input: unknown, actor: OperationActor): Promise<ResolvedOperation>;
+  /**
+   * What the request fingerprint is computed over, when the input carries a
+   * secret (a Provider API key): the domain replaces each secret with a keyed,
+   * non-reversible digest so a stored fingerprint never derives from it
+   * alone. The operation itself still receives the real input.
+   */
+  fingerprintInput?(input: unknown): unknown | Promise<unknown>;
   /** Pure normalization after stable target binding; never includes observed mutable versions. */
   normalizeInput?(input: unknown, scope: ResolvedOperation): unknown;
   authorize(db: Queryable, input: unknown, actor: OperationActor, scope: ResolvedOperation): Promise<void>;

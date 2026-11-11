@@ -7,7 +7,7 @@ import {ProjectMonitoringService} from './service.js';
 import {MonitoringControlError} from './operationErrors.js';
 type Input={project_id:string;expected_version_id:string;paused:boolean};
 export function projectIngressRegistrations(definitions:ReadonlyMap<string,RegisteredSystemActionDefinition>,config:ServerConfig):OperationRegistration[]{
- return Object.keys(PROJECT_INGRESS_SCHEMAS).map(id=>({
+ return (['project.monitoring.details.update','project.monitoring.state.update'] as const satisfies readonly (keyof typeof PROJECT_INGRESS_SCHEMAS)[]).map(id=>({
   definition:definitions.get(id)!,
   async resolve(_db,raw){const i=raw as Input;return {authority:`project:${i.project_id}`,targets:{project_id:i.project_id,version_id:i.expected_version_id},resourceType:'project',resourceId:i.project_id};},
   async authorize(db,raw,a){const i=raw as Input;

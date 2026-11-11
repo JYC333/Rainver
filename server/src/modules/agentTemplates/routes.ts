@@ -2,22 +2,15 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
 import type { FastifyInstance } from "fastify";
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
-  HttpError,
-  dbPool,
-  jsonBody,
   objectValue,
-  optionalObject,
   optionalString,
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
-import { PgAgentRepository } from "../agents/index.js";
-import { agentTemplateSystemPromptKey, resolveAgentSystemPrompt, type ResolvedAgentSystemPrompt } from "../agents/promptRegistry.js";
-import { promptProvenanceOf } from "../prompts/provenance.js";
-import { resolveContentCreationContext } from "../access/creationContext.js";
-import { parseExecutionConstraints, rejectRetiredAgentDeploymentFields } from "../agents/agentRouteInputs.js";
+import { parseExecutionConstraints } from "../agents/agentRouteInputs.js";
 
 interface TemplateSpec {
   id: string;
@@ -31,6 +24,8 @@ interface TemplateSpec {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  // Formal adapter: the core resolves Personal/Project placement and creates through the Agent writer.
+  registerOperationAdapters(app, context.config, [{ method: "POST", url: "/api/v1/agent-templates/:templateId/agents", operation: "agent.template.instantiate", params: { templateId: "template_id" } }]);
   app.get("/api/v1/agent-templates", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -92,81 +87,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/agent-templates/:templateId/agents", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const template = await findSpec(context.config.catalogRoot, param(request, "templateId"));
-      if (!template || template.visibility === "system_internal") {
-        return reply.code(404).send({ detail: "Agent template not found" });
-      }
-      const body = jsonBody(request);
-      const creation = await resolveContentCreationContext(dbPool(context.config), {
-        userId: identity.userId,
-        requestSpaceId: identity.spaceId,
-        projectId: optionalString(body.project_id),
-      });
-      const version = templateVersionToOut(template);
-      const requestedVersion = optionalString(body.template_version_id);
-      if (requestedVersion && requestedVersion !== version.id && requestedVersion !== version.version) {
-        throw new HttpError(404, "Agent template version not found");
-      }
-      rejectRetiredAgentDeploymentFields(body);
-      const executionConstraints = parseExecutionConstraints(
-        body.execution_constraints ?? version.execution_constraints,
-      );
-      const requestSystemPrompt = optionalString(body.system_prompt);
-      const resolvedSystemPrompt = requestSystemPrompt
-        ? null
-        : await resolveTemplateSystemPrompt(
-            context,
-            { spaceId: creation.spaceId, userId: identity.userId },
-            template.key,
-          );
-      const systemPrompt = requestSystemPrompt ?? resolvedSystemPrompt?.system ?? null;
-      if (!systemPrompt) throw new HttpError(500, "Agent template system prompt is not resolvable");
-      const agent = await PgAgentRepository.fromConfig(context.config).create({
-        spaceId: creation.spaceId,
-        projectId: creation.projectId,
-        userId: identity.userId,
-        name: optionalString(body.name) ?? template.name,
-        description: body.description === undefined
-          ? template.description
-          : optionalString(body.description),
-        visibility: creation.visibility,
-        systemPrompt,
-        promptProvenanceJson: resolvedSystemPrompt
-          ? promptProvenanceOf(resolvedSystemPrompt.resolveResult)
-          : null,
-        contextPolicyJson: optionalObject(body.context_policy_json) ?? version.context_policy_json,
-        memoryPolicyJson: optionalObject(body.memory_policy_json) ?? version.memory_policy_json,
-        riskLevel: executionConstraints.risk_level,
-        maxRunTimeSeconds: executionConstraints.max_run_time_seconds,
-        toolPolicyJson: optionalObject(body.tool_policy_json) ?? version.tool_policy_json,
-        outputPolicyJson: optionalObject(body.output_policy_json) ?? version.output_policy_json,
-        scheduleConfigJson: optionalObject(body.schedule_config_json) ?? version.schedule_defaults_json,
-        outputSchemaJson: optionalObject(body.output_schema_json) ?? version.output_schema_json,
-        sourceTemplate: { templateId: template.id, versionId: version.id },
-      });
-      return reply.code(201).send(agent);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-}
-
-async function resolveTemplateSystemPrompt(
-  context: ModuleContext,
-  identity: { spaceId: string; userId: string },
-  templateKey: string,
-): Promise<ResolvedAgentSystemPrompt> {
-  const resolved = await resolveAgentSystemPrompt(dbPool(context.config), {
-    spaceId: identity.spaceId,
-    userId: identity.userId,
-    assetKey: agentTemplateSystemPromptKey(templateKey),
-  });
-  if (!resolved) throw new HttpError(500, "Agent template system prompt is not resolvable");
-  return resolved;
 }
 
 async function listSpecs(catalogRoot: string): Promise<TemplateSpec[]> {
@@ -205,7 +125,7 @@ async function listSpecs(catalogRoot: string): Promise<TemplateSpec[]> {
   return specs;
 }
 
-async function findSpec(catalogRoot: string, templateId: string): Promise<TemplateSpec | null> {
+export async function findSpec(catalogRoot: string, templateId: string): Promise<TemplateSpec | null> {
   return (await listSpecs(catalogRoot)).find((template) =>
     template.id === templateId || template.key === templateId
   ) ?? null;
@@ -230,7 +150,7 @@ function templateToOut(template: TemplateSpec): Record<string, unknown> {
   };
 }
 
-function templateVersionToOut(template: TemplateSpec): Record<string, unknown> & {
+export function templateVersionToOut(template: TemplateSpec): Record<string, unknown> & {
   id: string;
   version: string;
   system_prompt: string | null;

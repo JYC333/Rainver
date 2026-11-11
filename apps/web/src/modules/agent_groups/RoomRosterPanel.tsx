@@ -150,22 +150,14 @@ export function RoomRosterPanel({
       variant: 'default',
       restoreAvailable,
     })) return
-    await mutate(async () => {
-      const result = await roomsApi.addAgent(detail.room.id, {
-        agent_id: candidate.agent_id,
-        share_private_with_member_ids: candidate.private ? privateShareIds() : [],
-        confirm_room_share: candidate.private,
-        restore_workspace: restoreAvailable && restoreChoiceRef.current,
-      })
-      // The Agent is in the Room either way; a restore that brought nothing
-      // back is the one outcome the person would otherwise never learn of.
-      const restore = result.managed_workspace_restore
-      if (restore && (!restore.ok || !restore.changed)) {
-        toast.error(restore.error === 'host_offline'
-          ? `${candidate.name} was added, but its host is offline, so its previous host state was not restored.`
-          : `${candidate.name} was added, but its previous host state could not be restored${restore.error ? ` (${restore.error})` : ''}.`)
-      }
-    })
+    // A restore runs on the Host after the add commits; one that brought
+    // nothing back is posted as a notice in the conversation it was for.
+    await mutate(() => roomsApi.addAgent(detail.room.id, {
+      agent_id: candidate.agent_id,
+      share_private_with_member_ids: candidate.private ? privateShareIds() : [],
+      confirm_room_share: candidate.private,
+      restore_workspace: restoreAvailable && restoreChoiceRef.current,
+    }))
   }
 
   async function addPreset(presetId: string) {

@@ -834,8 +834,7 @@ canonical Thread/revision/outbox/work-event and Thread-to-Note reference writers
 The Note remains unchanged. Question/hypothesis fields, parent, link kind and
 independent producer uniqueness remain supported. Receipt replay rechecks
 both current Project authority and Note/Thread reach. No Wiki approval, Agent
-permission or plain `note_links` policy is changed. The latter's reserved-deny
-versus existing UI conflict remains a separate recorded human decision.
+permission or plain `note_links` policy is changed. Human Note linking is allowed under its own policy and object access checks.
 
 
 ### Core human history/trash controls
@@ -843,9 +842,7 @@ versus existing UI conflict remains a separate recorded human decision.
 Human restore and soft-delete enter knowledge.note.rollback/delete through
 keyed core adapters and the canonical Note repository/writer. note.edit is
 wired/audited for these existing human controls only; it grants no Agent,
-Wiki/Memory promotion, plain Note-link or purge capability. The separate
-note.link.create reserved-deny discrepancy is unchanged and awaits its recorded
-choice. Source Note creation/editing/placement interfaces remain separate.
+Wiki/Memory promotion, plain Note-link or purge capability. Human Note linking is allowed under its own policy and object access checks. Source Note creation/editing/placement interfaces remain separate.
 
 Project writer authority is pinned before a Note root lock; canonical current
 read/write authority is rechecked afterwards. No folder/placement mutation is
@@ -875,8 +872,8 @@ the existing metadata/status lifecycle: it creates no synthetic content revision
 or revision-created outbox event. Neither command has a required external Job.
 
 This scope does not migrate create/edit/placement/promotion/collection/jot or
-change Note links. Link's reserved/default-deny registry versus existing human
-REST/editor policy choice remains unresolved; existing link behavior is retained.
+change Note links. Human link/unlink/jot routes enforce the ordinary allow policy with mandatory
+audit and retain canonical endpoint access checks.
 Memory/Wiki promotion still requires its canonical proposal/provenance path.
 
 ### Ordinary Note objects, collections and placement (basis4cf62800)

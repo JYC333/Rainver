@@ -1290,16 +1290,18 @@ function ConversationSurfaceContent({
                     options: option.session_config_options,
                     value: sessionConfig[agent.id] ?? [],
                     persistedValue: catalog?.session_config,
+                    allowQuotaModelSwitch: catalog?.allow_quota_model_switch ?? false,
+                    quotaModelSwitchAvailable: catalog?.allow_quota_model_switch === true || option.session_config_options.some(option => option.category === 'model' && option.type === 'select' && option.options.length > 1),
                     onChange: (value: SessionConfigSelection[]) => setSessionConfig(current => ({ ...current, [agent.id]: value })),
-                    onSave: conversationId && backend && !readOnly && detail?.viewer_can_write ? async (value: SessionConfigSelection[]) => {
+                    onSave: conversationId && backend && !readOnly && detail?.viewer_can_write ? async (value: SessionConfigSelection[], allowQuotaModelSwitch?: boolean) => {
                       setSavingSettings(current => current + 1)
                       try {
                         await agentsApi.saveConversationSessionConfig(agent.id, {
-                          session_id: conversationId, runtime_profile_id: backend.runtime_profile_id, session_config: value,
+                          session_id: conversationId, runtime_profile_id: backend.runtime_profile_id, session_config: value, ...(allowQuotaModelSwitch !== undefined ? { allow_quota_model_switch: allowQuotaModelSwitch } : {}),
                         }, scope)
                         if (scope.signal?.aborted || previousConversationId.current !== conversationId) return
                         setLoadedBackendCatalogs(current => ({ ...current,
-                          [agent.id]: { ...current[agent.id]!, session_config: value },
+                          [agent.id]: { ...current[agent.id]!, session_config: value, allow_quota_model_switch: allowQuotaModelSwitch ?? current[agent.id]?.allow_quota_model_switch },
                         }))
                       } finally { setSavingSettings(current => current - 1) }
                     } : undefined,

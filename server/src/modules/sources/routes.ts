@@ -1,3 +1,4 @@
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 import {resolveRequestId} from '../../gateway/requestContext.js';
 import {introspectIdentity} from '../auth/identity.js';
 import {OperationError} from '../systemActions/operations/errors.js';
@@ -140,6 +141,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  // The instance admin's catalog switches (`sourceCatalogOperations.ts`), same URLs and bodies.
+  registerOperationAdapters(app, context.config, [
+    { method: "PATCH", url: "/api/v1/instance/source-catalog/providers/:providerId", operation: "source_catalog.provider.update", params: { providerId: "provider_id" } },
+    { method: "PATCH", url: "/api/v1/instance/source-catalog/connectors/:connectorId", operation: "source_catalog.connector.update", params: { connectorId: "connector_id" } },
+    { method: "PATCH", url: "/api/v1/instance/source-catalog/mappings/:mappingId", operation: "source_catalog.mapping.update", params: { mappingId: "mapping_id" } },
+  ]);
   app.get("/api/v1/instance/source-catalog", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -149,33 +156,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     } catch (error) {
       return sendRouteError(reply, error);
     }
-  });
-
-  app.patch("/api/v1/instance/source-catalog/providers/:providerId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    if (!(await requireInstanceAdmin(context.config, identity, reply))) return reply;
-    try { return reply.send(await catalog().updateProvider(params(request).providerId ?? "", { status: optionalString(jsonBody(request).status) ?? undefined })); }
-    catch (error) { return sendRouteError(reply, error); }
-  });
-
-  app.patch("/api/v1/instance/source-catalog/connectors/:connectorId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    if (!(await requireInstanceAdmin(context.config, identity, reply))) return reply;
-    try { return reply.send(await catalog().updateConnector(params(request).connectorId ?? "", { status: optionalString(jsonBody(request).status) ?? undefined })); }
-    catch (error) { return sendRouteError(reply, error); }
-  });
-
-  app.patch("/api/v1/instance/source-catalog/mappings/:mappingId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    if (!(await requireInstanceAdmin(context.config, identity, reply))) return reply;
-    try {
-      const body = jsonBody(request);
-      const priority = body.priority === undefined ? undefined : Number(body.priority);
-      return reply.send(await catalog().updateMapping(params(request).mappingId ?? "", { status: optionalString(body.status) ?? undefined, priority }));
-    } catch (error) { return sendRouteError(reply, error); }
   });
 
   app.get("/api/v1/sources/channels/:channelId/backfill/plans", async (request, reply) => {

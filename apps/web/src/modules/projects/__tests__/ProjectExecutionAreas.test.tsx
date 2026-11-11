@@ -13,7 +13,7 @@ vi.mock('../../../contexts/SpaceContext', () => ({
 }))
 
 vi.mock('../../../api/client', () => ({
-  projectsApi: { get: vi.fn(), getOverview: vi.fn(), operations: vi.fn() },
+  projectsApi: { streamUpdates:vi.fn(()=>new Promise<void>(()=>{})), get: vi.fn(), getOverview: vi.fn(), operations: vi.fn() },
   tasksApi: { list: vi.fn(), create: vi.fn(), update: vi.fn() },
   agentsApi: { list: vi.fn() },
   automationsApi: { list: vi.fn(), update: vi.fn(), fire: vi.fn() },
@@ -45,7 +45,9 @@ beforeEach(() => {
     updated_at: '2026-07-24T00:00:00.000Z',
     archived_at: null,
   })
-  vi.mocked(projectsApi.getOverview).mockResolvedValue({
+  // clearAllMocks keeps queued once-values; a test that fails before using its
+  // queue must not hand them to the next test.
+  vi.mocked(projectsApi.getOverview).mockReset().mockResolvedValue({
     project: { id: 'project-1', name: 'Execution Project', status: 'active' },
     brief: null,
     attention: [
@@ -96,6 +98,17 @@ beforeEach(() => {
     steps: [],
   }])
 })
+
+// The badge text is committed before React runs that commit's effects. The
+// review-event listener and the live subscription that can refresh the badge
+// are both attached by effects of the same commit (both wait for the loaded
+// Project), so under a loaded event loop an event fired as soon as the badge
+// shows reaches the listener from before the load and is dropped. Wait for the
+// subscription request as well, which proves those effects have run.
+async function waitForLoadedPulseBadge() {
+  await waitFor(() => expect(screen.getByRole('link', { name: /^Pulse/ })).toHaveTextContent('2'))
+  await waitFor(() => expect(projectsApi.streamUpdates).toHaveBeenCalledWith('project-1', expect.any(Function), expect.anything()))
+}
 
 describe('Project execution Areas', () => {
   it('keeps every Project domain reachable through persistent grouped navigation', async () => {
@@ -225,8 +238,23 @@ describe('Project execution Areas', () => {
       </MemoryRouter>,
     )
 
-    await waitFor(()=>expect(screen.getByRole('link', { name: /^Pulse/ })).toHaveTextContent('2'))
+    await waitForLoadedPulseBadge()
     notifyReviewAttentionChanged()
     await waitFor(() => expect(screen.getByRole('link', { name: /^Pulse/ })).not.toHaveTextContent('2'))
   })
+  it('updates the Pulse badge for closed and newly waiting Tasks from events without changing route',async()=>{
+    const base=await projectsApi.getOverview('project-1')
+    let changed:(frame:{type:'changed'})=>void=()=>{}
+    vi.mocked(projectsApi.streamUpdates).mockImplementation(async(_project,emit)=>{changed=emit;await new Promise<void>(()=>{})})
+    render(<MemoryRouter initialEntries={['/spaces/space-1/projects/project-1/inquiry']}><Routes><Route path="/spaces/:spaceId/projects/:projectId" element={<ProjectAreaLayout/>}><Route path="inquiry" element={<div>Stay here</div>}/></Route></Routes></MemoryRouter>)
+    await waitForLoadedPulseBadge()
+    vi.mocked(projectsApi.getOverview).mockResolvedValue({...base,attention:[]})
+    changed({type:'changed'})
+    await waitFor(()=>expect(screen.getByRole('link',{name:/^Pulse/})).not.toHaveTextContent('2'))
+    vi.mocked(projectsApi.getOverview).mockResolvedValue(base)
+    changed({type:'changed'})
+    await waitFor(()=>expect(screen.getByRole('link',{name:/^Pulse/})).toHaveTextContent('2'))
+    expect(screen.getByText('Stay here')).toBeInTheDocument()
+  })
+
 })

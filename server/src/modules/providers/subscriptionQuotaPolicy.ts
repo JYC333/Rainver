@@ -2,8 +2,7 @@ import type { FastifyInstance } from "fastify";
 import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
-import { requireSpaceOwnerOrAdmin } from "../routeUtils/access.js";
-import { HttpError, jsonBody, resolveIdentity, sendRouteError, type Queryable } from "../routeUtils/common.js";
+import { HttpError, resolveIdentity, sendRouteError, type Queryable } from "../routeUtils/common.js";
 import { defineScopedSetting, ScopedSettingsStore, settingsRecord } from "../settings/scopedSettings.js";
 
 /**
@@ -35,13 +34,20 @@ const SUBSCRIPTION_QUOTA_POLICY = defineScopedSetting<SubscriptionQuotaPolicyVal
   },
 });
 
+/** `provider.subscription_quota_policy.set`, in the caller's transaction; authority is the operation's. */
+export async function writeSubscriptionQuotaPolicyIn(db: Queryable, spaceId: string, userId: string, value: SubscriptionQuotaPolicyValue): Promise<SubscriptionQuotaPolicyValue> {
+  const stored = await new ScopedSettingsStore(db).upsert(SUBSCRIPTION_QUOTA_POLICY, spaceId, value, { updatedByUserId: userId });
+  return protocol.SubscriptionQuotaPolicySchema.parse(stored.value);
+}
+
 export async function readSubscriptionQuotaPolicy(db: Queryable, spaceId: string): Promise<SubscriptionQuotaPolicyValue> {
   return (await new ScopedSettingsStore(db).get(SUBSCRIPTION_QUOTA_POLICY, spaceId)).value;
 }
 
 /**
- * `GET|PUT /api/v1/providers/subscription-quota-policy`. Any member reads the
- * lines (the composer needs them); a Space owner or admin moves them. Claimed
+ * `GET /api/v1/providers/subscription-quota-policy`. Any member reads the
+ * lines (the composer needs them); a Space owner or admin moves them through
+ * `provider.subscription_quota_policy.set` (`PUT` on the same URL). Claimed
  * explicitly because `GET /api/v1/providers/:configId` would otherwise read
  * it as a provider id.
  */
@@ -54,21 +60,6 @@ export function registerSubscriptionQuotaPolicyRoutes(app: FastifyInstance, conf
       return reply.send(protocol.SubscriptionQuotaPolicySchema.parse(
         await readSubscriptionQuotaPolicy(pool(config), identity.spaceId),
       ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-  app.put(path, async (request, reply) => {
-    const identity = await resolveIdentity(config, request, reply);
-    if (!identity) return reply;
-    if (!(await requireSpaceOwnerOrAdmin(config, identity, reply, "Only space owners or admins may change the subscription quota lines"))) return reply;
-    try {
-      const parsed = protocol.SubscriptionQuotaPolicyUpdateSchema.safeParse(jsonBody(request));
-      if (!parsed.success) return reply.code(422).send({ detail: parsed.error.message });
-      const stored = await new ScopedSettingsStore(pool(config)).upsert(SUBSCRIPTION_QUOTA_POLICY, identity.spaceId, parsed.data, {
-        updatedByUserId: identity.userId,
-      });
-      return reply.send(protocol.SubscriptionQuotaPolicySchema.parse(stored.value));
     } catch (error) {
       return sendRouteError(reply, error);
     }
